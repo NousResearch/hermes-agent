@@ -206,16 +206,21 @@ def test_a_clone_in_use_is_never_evicted(probe, monkeypatch):
 
 
 def test_reload_tears_down_a_servers_clones(root, probe):
+    """Self-contained: the test creates BOTH servers' clones itself (an earlier version relied on
+    clones earlier tests had left behind and failed standalone)."""
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     _register(root, "cwdprobe_reload")
     _call("cwdprobe_reload", cwd=probe.b)
+    _call(cwd=probe.a)  # another server's clone, alive across the prune
     clone = _clones("cwdprobe_reload")[probe.b]
+    keeper = _clones("cwdprobe")[probe.a]
 
     shutdown_mcp_servers(scope=None, names={"cwdprobe_reload"})
 
     assert not _clones("cwdprobe_reload")
     assert clone._task.done() and clone.session is None
-    assert _clones(), "pruning one server tore down another server's clones"
+    assert _clones("cwdprobe").get(probe.a) is keeper, "pruning one server tore down another server's clones"
+    assert keeper.session is not None
 
 
 def test_a_clone_connecting_during_a_prune_is_discarded(root):
@@ -374,6 +379,98 @@ def test_a_discarded_clone_whose_shutdown_failed_is_handed_to_the_reaper(root, m
             _orphan_stdio_pid_servers.pop(4711, None)
 
 
+def test_a_clone_holding_only_a_lease_is_never_evicted(probe, monkeypatch):
+    """The lease alone (a handler holding the clone before its RPC reaches ``_rpc_lock``) must
+    block eviction, and the check must be visible the moment the evicting call returns — the
+    in-flight twin of this test can only detect a no-op lease through its 10 s wait expiring."""
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    monkeypatch.setattr(scope, "_MAX_SCOPED_TRANSPORTS_PER_SERVER", 1)
+    _call(cwd=probe.a)
+    busy = _clones()[probe.a]
+    with mcp_tool._lock:
+        busy._scoped_leases += 1  # a handler's lease; the RPC has not taken _rpc_lock yet
+    try:
+        _call(cwd=probe.b)  # over the cap while the lease is the only thing holding the clone
+
+        assert _clones().get(probe.a) is busy, "a merely-leased clone was evicted"
+        assert busy.session is not None, "the leased clone's child was shut down"
+    finally:
+        with mcp_tool._lock:
+            busy._scoped_leases -= 1
+    # Restore the cap=1 world the neighbouring tests assume (the file's eviction tests count on a
+    # fresh connect evicting down to one clone): the released clone is idle again, so it evicts now.
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key("cwdprobe")
+    scope._evict_idle_overflow(key, keep=(key, probe.b))
+    assert list(_clones()) == [probe.b], "the released lease left the clone ledger over the cap"
+
+
+def test_recovery_of_a_dead_clone_child_respawns_the_clone_not_the_baseline(probe, monkeypatch):
+    """E2E through the real respawn path: a project clone's stdio child dies between calls; the
+    pre-dispatch fast-fail raises ``_StdioChildExited`` and the recoverer must reconnect THAT
+    clone. On a caller-scoped lookup that resolved the baseline instead, the retry re-runs
+    against the still-dead captured clone and the call fails (T00014(b))."""
+    import signal
+    from tests.waiting import wait_until
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+
+    _spawned_cwd, old_pid = _call(cwd=probe.a)  # the clone's child; _call asserts the spawn cwd
+    clone = _clones()[probe.a]
+    baseline_pid = _call()[1]
+    signalled = []
+    real_signal = scope._loop._signal_reconnect_and_wait
+
+    def _spy_signal(server_name, srv, **kwargs):
+        signalled.append(srv)
+        return real_signal(server_name, srv, **kwargs)
+
+    monkeypatch.setattr(scope._loop, "_signal_reconnect_and_wait", _spy_signal)
+    os.kill(old_pid, signal.SIGKILL)  # the clone's child dies before the next dispatch
+    wait_until(lambda: clone._stdio_children_dead(), timeout=15, what="the killed child to register as dead")
+
+    new_cwd, new_pid = _call(cwd=probe.a)  # _call asserts a clean (non-error) payload
+    assert new_cwd == probe.a
+    assert new_pid != old_pid, "the call was served by the dead child"
+    assert signalled == [clone], f"recovery signalled {signalled!r}, not the caller's clone"
+    assert _call()[1] == baseline_pid, "the baseline child was respawned for a clone's death"
+
+
+def test_recovery_lookup_follows_the_server_the_failed_rpc_ran_on(root, probe):
+    """Gate twin of the T00015 contract: the lookup resolves the object ``_dispatch`` ran the RPC
+    on — the caller's clone for a tool call, the BASELINE for the events utilities, whatever
+    project the caller sits in — never a re-resolution of the caller's cwd."""
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _lookup_reconnectable_server
+
+    _call(cwd=probe.a)  # the caller's project clone exists
+    clone = _clones()[probe.a]
+    baseline = mcp_tool._servers["cwdprobe"]
+
+    assert _lookup_reconnectable_server("cwdprobe", used=baseline) is baseline, \
+        "a baseline-routed events RPC's recovery resolved the caller's clone instead"
+    assert _lookup_reconnectable_server("cwdprobe", used=clone) is clone, \
+        "a tool call's recovery did not follow the clone the call ran on"
+
+
+def test_recovery_declines_when_the_used_server_has_left_the_registries(root, probe):
+    """The T00015 contract, decline half: when the used clone was popped between the failed call
+    and the lookup (a reload/eviction landing mid-recovery), recovery returns None rather than
+    falling back to the baseline — the retry re-runs against the captured dead object, so
+    signalling the baseline would only restart a child the retry never uses."""
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+    from tools.mcp_tool_handlers import _lookup_reconnectable_server
+
+    _call(cwd=probe.a)
+    clone = _clones()[probe.a]
+    with mcp_tool._lock:  # the teardown, between the failure and the recovery lookup
+        for key in [k for k, s in scope._scoped_servers.items() if s is clone]:
+            scope._scoped_servers.pop(key)
+    assert _lookup_reconnectable_server("cwdprobe", used=clone) is None, \
+        "recovery fell back to an object the retry will never use"
+    # The popped clone stands for a teardown's victim; give its child the same teardown here.
+    scope._loop._run_on_mcp_loop(clone.shutdown, timeout=15)
+
+
 def test_event_utility_handlers_serve_the_baseline_not_the_callers_clone(probe):
     """The events utilities manage webhook routes keyed by server NAME, shared by every project:
     each clone resubscribing them would deliver the same event several times, and a clone child's
@@ -392,6 +489,38 @@ def test_event_utility_handlers_serve_the_baseline_not_the_callers_clone(probe):
     assert "error" not in listing, listing
     assert int(listing["events"][0]["name"].removeprefix("pid-")) == baseline_pid, \
         "the events handler talked to the caller's project clone"
+
+
+def test_an_events_rpc_recovery_signals_the_baseline_it_ran_on(root, probe, monkeypatch):
+    """E2E through the real dispatch: the events utilities route to the baseline (``scoped=False``),
+    so a session-expired failure must be recovered on the BASELINE. The recovery lookup used to be
+    caller-scoped — from a project session it resolved the caller's CLONE, recovery signalled a
+    child the failed RPC never used, and the reconnect was lost (T00015, events half)."""
+    from tools import mcp_tool, mcp_tool_handlers as handlers
+    from tools.mcp_tool_events import _make_events_handler
+
+    _call(cwd=probe.a)  # the caller's project clone exists
+    baseline = mcp_tool._servers["cwdprobe"]
+
+    class _Expired(RuntimeError):
+        pass
+
+    async def _raising_rpc(session, args, server_name):
+        raise _Expired("the server-side transport session state is gone")
+
+    monkeypatch.setattr(handlers, "_is_session_expired_error", lambda exc: isinstance(exc, _Expired))
+    signalled = []
+    monkeypatch.setattr(handlers._loop, "_signal_reconnect_and_wait",
+                        lambda name, srv, **kw: signalled.append(srv) or True)
+
+    handler = _make_events_handler("events/list", "list_event_types", _raising_rpc, needs_name=False)
+    set_session_cwd(probe.a)
+    try:
+        payload = handler("cwdprobe", 30)({})
+    finally:
+        clear_session_cwd()
+    assert "error" in json.loads(payload), payload  # the retry re-raises; the model gets a clean error
+    assert signalled == [baseline], f"the events RPC's recovery signalled {signalled!r}, not the baseline it ran on"
 
 
 def test_two_connect_generations_never_overwrite_each_others_clone(root, monkeypatch):
@@ -623,6 +752,12 @@ def test_eviction_never_shuts_a_victim_down_on_the_callers_thread(root, probe, m
     monkeypatch.setattr(scope, "_MAX_SCOPED_TRANSPORTS_PER_SERVER", 1)
     _call(cwd=probe.a)
     old = _clones()[probe.a]
+    # Self-contained: earlier tests may have left other idle clones, and this test's contract needs
+    # the evicting call to CONNECT (eviction only runs on the connect path) — trim to the victim.
+    from tools.mcp_tool_scope import _resolve_server_key
+    _key = _resolve_server_key("cwdprobe")
+    scope._evict_idle_overflow(_key, keep=(_key, probe.a))
+    assert list(_clones()) == [probe.a]
     shutdown_go = threading.Event()
     real_run_on_loop = scope._loop._run_on_mcp_loop
 

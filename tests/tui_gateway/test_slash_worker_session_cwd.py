@@ -125,6 +125,35 @@ def test_a_project_move_persists_the_cwd_exactly_once(live_session, monkeypatch,
     assert session["cwd"] == str(tmp / "new")
 
 
+def test_a_worker_restart_spawns_in_the_session_project(local_backend, monkeypatch, tmp_path):
+    """``_restart_slash_worker`` (model switch, compression, a project move) must hand the session
+    project to the respawned worker as ``cwd=``, like the first-use spawn does — the restarted
+    worker parents the session's stdio MCP children and they read their project from its cwd
+    (T00014 test gap: no test asserted the restart's cwd=)."""
+    (tmp_path / "proj").mkdir()
+    session = {"session_key": "k", "cwd": str(tmp_path / "proj"), "slash_worker": object()}
+    spawned_kwargs = []
+
+    class _RecordingWorker:
+        def __init__(self, *args, **kwargs):
+            spawned_kwargs.append(kwargs)
+            self.stderr_tail = []
+
+        def close(self):
+            pass
+
+    attached = []
+    monkeypatch.setattr(server, "_SlashWorker", _RecordingWorker)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "m")
+    monkeypatch.setattr(server, "_attach_worker", lambda sid, s, w: attached.append(sid))
+
+    server._restart_slash_worker("ui", session)
+
+    assert attached == ["ui"]
+    assert spawned_kwargs[0].get("cwd") == str(tmp_path / "proj"), \
+        "the restarted worker was not spawned in the session project"
+
+
 def test_worker_argv_carries_the_session_cwd(spawned):
     """The child must receive the project as ``--session-cwd`` so it can re-pin after its cli
     import; off the local backend there is no project and the flag stays absent (review finding 7)."""

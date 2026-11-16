@@ -35,5 +35,7 @@ export function parseFrontmatter(content: string): { body: string; meta: [string
 
   flush()
 
-  return { body: content.slice(match[0].length), meta }
+  // No `key:` line means the fences were a rule and prose, not metadata:
+  // keep every line rather than hiding text the parser could not place.
+  return meta.length > 0 ? { body: content.slice(match[0].length), meta } : { body: content, meta }
 }

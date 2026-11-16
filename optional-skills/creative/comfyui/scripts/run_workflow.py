@@ -171,7 +171,12 @@ class ComfyRunner:
 
     # ---------- submit ----------
     def submit(self, workflow: dict) -> dict:
-        payload: dict[str, Any] = {"prompt": workflow, "client_id": self.client_id}
+        # Bundled workflow files carry metadata keys like "_comment" next to the
+        # node entries. ComfyUI validates every top-level prompt key as a node
+        # (validate_prompt calls .get on each value), so a string key 500s the
+        # whole submission — forward only node dicts.
+        prompt = {k: v for k, v in workflow.items() if isinstance(v, dict)}
+        payload: dict[str, Any] = {"prompt": prompt, "client_id": self.client_id}
         if self.partner_key:
             payload["extra_data"] = {"api_key_comfy_org": self.partner_key}
 

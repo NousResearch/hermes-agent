@@ -1,4 +1,4 @@
-"""Prompt-cache warming (agent/prompt_cache_warmer.py, port of earendil-works/pi#9668).
+"""Prompt-cache warming (agent/prompt_cache_lifecycle.py, port of earendil-works/pi#9668).
 
 The timer callback is invoked directly after the armed timer is cancelled, so no test sleeps.
 """
@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import agent.prompt_cache_warmer as pcw
+import agent.prompt_cache_lifecycle as pcw
 
 _OPUS = SimpleNamespace(  # claude-opus-4-7 official rates, $/M
     input_cost_per_million=5, output_cost_per_million=25,
@@ -131,8 +131,8 @@ def test_replay_is_the_original_request_capped_at_one_token(priced):
 
 
 def test_turn_end_stops_warming_and_a_run_never_outspends_the_miss_it_prevents(priced):
-    """No warming between turns (the next request would be a guess), and a tool call that
-    outlasts ``miss / warm`` refreshes stops warming rather than pay more than one cache write."""
+    """A cancelled run sends nothing more, and a run stops at its budget of keep-alives, never
+    paying more than the one cache write it prevents."""
     agent = _agent()
     warmer = pcw.get_prompt_cache_warmer(agent)
     _arm(agent, _request(), _RESPONSE)
@@ -146,8 +146,8 @@ def test_turn_end_stops_warming_and_a_run_never_outspends_the_miss_it_prevents(p
         if warmer._run is None:
             break
         _fire(warmer)
-    assert len(agent._anthropic_client.calls) == affordable
-    assert warmer.status["reason"] == "refreshes would cost more than the cache write they prevent"
+    assert len(agent._anthropic_client.calls) == min(affordable, pcw.WARM_BUDGET)
+    assert warmer.status["reason"] == "warm budget spent"
     assert agent.session_estimated_cost_usd <= d.miss_cost
 
 

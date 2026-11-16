@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
-from agent.prompt_cache_warmer import cancel_prompt_cache_warming
+from agent.prompt_cache_lifecycle import cancel_prompt_cache_warming
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
 from utils import env_var_enabled
 

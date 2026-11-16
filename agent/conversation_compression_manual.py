@@ -79,9 +79,8 @@ def compress_now(
     ``preview=True`` performs no compression and leaves ``agent`` untouched. A held compression lock
     yields ``lock_skipped`` with the agent's signal cleared and the deferred context-engine notification
     discarded; ``trigger`` (an automatic owner, e.g. cache-expiry compaction) runs the same sequence
-    WITHOUT ``force``, so the failure cooldown and breakers apply and telemetry names that trigger;
-    the window is re-read first: a prefix no longer guaranteed warm answers ``nothing_to_do``;
-    otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
+    WITHOUT ``force``, so the failure cooldown and breakers apply, a ready prepared summary is reused
+    (``compression.prepare_ahead``) and telemetry names that trigger; otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
     committed=True)`` once its own history transaction commits (``committed=False`` on failure).
     ``system_message=None`` makes ``_compress_context`` rebuild the prompt; passing the cached prompt
     duplicated the identity block (#15281). ``skip_without_window`` (gateway) answers ``nothing_to_do``
@@ -106,10 +105,6 @@ def compress_now(
         report = summarize_compress_preview(before, request.partial, request.keep_last, request.focus_topic, before_tokens)
         return CompressResult("preview", before, before, before_tokens, before_tokens, request, lines=report["lines"])
 
-    from agent.cache_expiry_compaction import TRIGGER, window_still_warm
-    if trigger == TRIGGER:
-        if not window_still_warm(agent):
-            return CompressResult("nothing_to_do", before, before, before_tokens, before_tokens, request)
     compressor = getattr(agent, "context_compressor", None)
     has_content = getattr(compressor, "has_content_to_compress", None)
     if skip_without_window and callable(has_content) and has_content(head) is False:

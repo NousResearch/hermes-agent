@@ -1049,9 +1049,10 @@ class CLISessionMixin:
 
     def _maybe_compact_before_cache_expiry(self) -> None:
         """Idle hook: compact while the prompt cache is still warm, just before its window closes
-        (``agent.cache_expiry_compaction``). Runs on the input loop between turns, so no turn is
-        in flight; queued input waits for it like it waits for ``/compress``."""
-        from agent.cache_expiry_compaction import CHECK_INTERVAL_SECONDS, TRIGGER, claim_cache_expiry_compaction
+        (step 2 of ``agent.prompt_cache_lifecycle``), then prime the compacted chat for one fresh
+        budget of keep-alives. Runs on the input loop between turns, so no turn is in flight; queued
+        input waits for it like it waits for ``/compress``."""
+        from agent.prompt_cache_lifecycle import CHECK_INTERVAL_SECONDS, TRIGGER, claim_compaction, prime_after_compaction
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest, compress_now
 
@@ -1062,7 +1063,7 @@ class CLISessionMixin:
         if (self.agent is None or self._agent_running or not self._pending_input.empty()
                 or len(self.conversation_history or ()) < MIN_MESSAGES):
             return
-        if not claim_cache_expiry_compaction(self.agent, now=now):
+        if not claim_compaction(self.agent, now=now):
             return
         with self._busy_command(t("cli.session.compress_busy"), blocks_input=False):
             try:
@@ -1074,6 +1075,7 @@ class CLISessionMixin:
                 return
             if result.status == "compressed":
                 self._adopt_compress_result(result)
+                prime_after_compaction(self.agent, self.conversation_history)
 
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
         """Print a one-line scrollback summary of a resolved modal prompt (approval/clarify

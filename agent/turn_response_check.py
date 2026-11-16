@@ -14,7 +14,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
-from agent.prompt_cache_warmer import start_prompt_cache_warming
+from agent.prompt_cache_lifecycle import start_prompt_cache_warming
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import agent.prompt_cache_warmer as pcw
+import agent.prompt_cache_lifecycle as pcw
 from agent.prompt_cache_clock import attempt_facts, cache_window, record_cache_response
 from agent.usage_pricing import normalize_usage
 

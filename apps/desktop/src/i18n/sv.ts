@@ -20,6 +20,22 @@ export const svOverrides: TranslationOverrides = {
       off: 'Avstängda',
       offNote: 'Inloggningarna behålls.'
     },
+    card: {
+      kindManaged: 'Hanterad',
+      kindCatalog: 'MCP · Katalog',
+      kindCustom: 'MCP · Anpassad',
+      kindPlugin: plugin => `MCP · Insticksprogram ${plugin}`,
+      inCatalog: 'I Hermes-katalogen',
+      hostedTwin: 'Hanterad version finns',
+      alsoLocal: 'Körs även på den här datorn',
+      open: name => `Öppna ${name}`,
+      turnServerOn: name => `Slå på ${name}`,
+      turnServerOff: name => `Slå av ${name}`,
+      state: { accessExpired: 'Åtkomsten har upphört', available: 'Tillgänglig', connected: 'Ansluten', connecting: 'Ansluter', connectionUnknown: 'Okänd status', couldNotConnect: 'Det gick inte att ansluta', offByYourOrganisation: 'Avstängd av din organisation', offForYou: 'Avstängd för dig', serverConnecting: 'Ansluter…', serverError: 'Fel', serverNeedsAuth: 'Kräver autentisering', serverOff: 'Av', serverOn: 'På', serverOnUnused: 'På, används inte' },
+      fact: { tools: count => `${count} verktyg`, toolsOff: count => `${count} verktyg av`, toolsOn: count => `${count} verktyg på`, toolsSomeOn: (total, on) => `${total} verktyg, ${on} på` },
+      verb: { authenticate: 'Autentisera', connect: 'Anslut', install: 'Installera', openLogs: 'Öppna loggar', reconnect: 'Återanslut', stopWaiting: 'Sluta vänta', tryAgain: 'Försök igen', turnBackOn: 'Slå på igen' },
+      reason: { finishSignIn: 'Slutför inloggningen i webbläsaren.', reconnect: 'Återanslut så fortsätter appen att fungera.', serverError: 'Servern avvisade anslutningen.', serverNeedsAuth: 'Logga in så att servern kan svara.' }
+    },
     tools: {
       title: 'Verktyg',
       notInstalledBody: 'Installera den på den här datorn för att se vilka verktyg den ger.',

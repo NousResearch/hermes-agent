@@ -39,7 +39,7 @@ import { readStoredWorkspace, writeStoredWorkspace } from "@/lib/chat-workspaces
 import { latchChatActivation } from "@/lib/chat-activation";
 import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-panel-collapsed";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { normalizeSessionTitle } from "@/lib/chat-title";
+import { activeChatSessionId, nextLiveSession, normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
@@ -89,7 +89,7 @@ import {
   PTY_START_FAILED_MESSAGE,
   PTY_TOKEN_MISSING_BANNER,
   ptyReconnectExhausted,
-  ptyRejectionBanner,
+  ptyRejectionBanner, ptyTokenMissing,
   type PtyBannerAction,
 } from "@/lib/pty-close-copy";
 import { ptyAttachToken } from "@/lib/pty-attach-token";
@@ -159,15 +159,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setHasActivated((prev) => latchChatActivation(prev, isActive));
   }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
-  // Lazy-init: the missing-token check happens at construction so the effect
-  // body doesn't have to setState (React 19's set-state-in-effect rule).
-  // In gated (OAuth) mode the server intentionally omits the session token —
-  // the dashboard API layer authenticates the WS via a single-use ticket,
-  // so a missing token there is expected, not an error.
-  const tokenMissing =
-    typeof window !== "undefined" &&
-    !window.__HERMES_SESSION_TOKEN__ &&
-    !window.__HERMES_AUTH_REQUIRED__;
+  const tokenMissing = ptyTokenMissing();
   const [banner, setBanner] = useState<string | null>(() =>
     tokenMissing ? PTY_TOKEN_MISSING_BANNER.text : null,
   );
@@ -367,20 +359,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
   );
-  // The session the embedded TUI is actually running, from its session.info. It can differ from
-  // `?resume=` after /resume, /new or /branch inside the PTY, or the server's active-session
-  // fallback; the header title and the SESSIONS highlight follow it, not the URL (#94716).
-  // Scoped to the PTY process, not the socket: a transport reconnect reattaches the same PTY,
-  // whose TUI does not re-send session.info. A fresh PTY (startFresh*) or a new channel drops it.
-  const liveSessionId = liveSessionState?.scope === channel ? liveSessionState.id : null;
-  const activeSessionId = liveSessionId ?? resumeParam;
-  const handleLiveSessionChange = useCallback(
-    (id: string) =>
-      setLiveSessionState((prev) =>
-        prev?.scope === channel && prev.id === id ? prev : { scope: channel, id },
-      ),
-    [channel],
-  );
+  // The session the embedded TUI runs (its session.info); the header title and SESSIONS highlight follow it (#94716).
+  const activeSessionId = activeChatSessionId(liveSessionState, channel, resumeParam);
+  const handleLiveSessionChange = useCallback((id: string) => setLiveSessionState((prev) => nextLiveSession(prev, channel, id)), [channel]);
 
   useLayoutEffect(() => {
     if (!isActive) {

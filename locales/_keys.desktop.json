@@ -2997,6 +2997,7 @@
     "settings.backup.doneTitle",
     "settings.backup.down",
     "settings.backup.errorTitle",
+    "settings.backup.gatewayDown",
     "settings.backup.intro",
     "settings.backup.keeps",
     "settings.backup.keepsTitle",

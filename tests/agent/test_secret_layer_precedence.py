@@ -12,7 +12,7 @@ from tests.conformance.secrets.reference_view import MemoryViewProvider
 
 @pytest.fixture(params=["local", "memview"])
 def profile_store(request, tmp_path, monkeypatch):
-    home = tmp_path / "home"
+    home = tmp_path / "profile-store-home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_SECRET_STORE", request.param)
@@ -40,6 +40,20 @@ def test_dotenv_overrides_launch_value(profile_store, monkeypatch):
     from hermes_cli.env_loader import load_hermes_dotenv
     load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
     assert os.environ["OPENAI_API_KEY"] == "profile-marker"
+
+
+def test_dotenv_expansion_and_project_fallback(profile_store, tmp_path, monkeypatch):
+    home, seed = profile_store
+    seed({"EXPAND_BASE": "profile", "EXPANDED": "${EXPAND_BASE}/suffix"})
+    monkeypatch.setenv("EXPAND_BASE", "launch")
+    monkeypatch.delenv("EXPANDED", raising=False)
+    project = tmp_path / "project.env"
+    project.write_text("PROJECT_REF=${EXPANDED}\nEXPAND_BASE=project\n", encoding="utf-8")
+    from hermes_cli.env_loader import load_hermes_dotenv
+    load_hermes_dotenv(hermes_home=home, project_env=project, load_external_secrets=False)
+    assert os.environ["EXPANDED"] == "profile/suffix"
+    assert os.environ["PROJECT_REF"] == "profile/suffix"
+    assert os.environ["EXPAND_BASE"] == "profile"
 
 
 def test_managed_external_profile_and_caller_rank(profile_store, monkeypatch):

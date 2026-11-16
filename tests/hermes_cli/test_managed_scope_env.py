@@ -3,6 +3,8 @@ import os
 
 import pytest
 
+pytest_plugins = ["tests.agent.test_secret_layer_precedence"]
+
 
 @pytest.fixture
 def env_homes(tmp_path, monkeypatch):
@@ -17,11 +19,12 @@ def env_homes(tmp_path, monkeypatch):
     return home, managed
 
 
-def test_managed_env_beats_user_env(env_homes, monkeypatch):
+def test_managed_env_beats_user_env(env_homes, profile_store, monkeypatch):
     from hermes_cli.env_loader import load_hermes_dotenv
 
-    home, managed = env_homes
-    (home / ".env").write_text("OPENAI_API_BASE=https://user.example/v1\n", encoding="utf-8")
+    _unused_home, managed = env_homes
+    home, seed = profile_store
+    seed({"OPENAI_API_BASE": "https://user.example/v1"})
     (managed / ".env").write_text("OPENAI_API_BASE=https://org.example/v1\n", encoding="utf-8")
     load_hermes_dotenv(hermes_home=str(home))
     assert os.environ["OPENAI_API_BASE"] == "https://org.example/v1"

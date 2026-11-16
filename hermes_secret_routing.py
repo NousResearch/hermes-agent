@@ -316,13 +316,15 @@ def view_changed(home: Path, old_env=None, new_env=None) -> None:
     """
     from agent.secret_scope import invalidate_env_file_cache, is_multiplex_active
     from hermes_constants import hermes_home_key
-    from hermes_cli.env_loader import _LOADED_DOTENV_KEYS
+    from hermes_cli.env_loader import _LOADED_DOTENV_KEYS, _resolve_dotenv_assignments, _dotenv_lookup_env, _DOTENV_LOCK
     from tui_gateway.launch_profile_policy import move_launch_env
     provider = routed_provider()
     if provider is None:
         return
     snapshot = provider.current_snapshot(home)
     new = {k: v for k, v in snapshot.env.items() if not stays_local(provider, k)}
+    with _DOTENV_LOCK:
+        new = _resolve_dotenv_assignments(list(new.items()), {**_dotenv_lookup_env(None), **new}, override=True)
     key = hermes_home_key(home)
     multiplex = is_multiplex_active()
     invalidate_env_file_cache()

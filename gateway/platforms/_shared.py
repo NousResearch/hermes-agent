@@ -15,7 +15,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 # Profile-scoped secret reader for multiplexing support (PR #50094)
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -79,17 +79,17 @@ def _current_scope():
     return current_secret_scope()
 
 
-_UNSCOPED_PROFILE_SECRETS: Optional[dict] = None
+_UNSCOPED_PROFILE_SECRETS: Optional[Mapping[str, str]] = None
 
 
-def _unscoped_profile_secrets() -> dict:
+def _unscoped_profile_secrets() -> Mapping[str, str]:
     """Process-cached profile secret mapping (external resolvers are slow); failures degrade to {}."""
     global _UNSCOPED_PROFILE_SECRETS
     if _UNSCOPED_PROFILE_SECRETS is None:
         try:
             from agent.secret_scope import build_profile_secret_scope
             from hermes_constants import get_hermes_home
-            _UNSCOPED_PROFILE_SECRETS = dict(build_profile_secret_scope(get_hermes_home()))
+            _UNSCOPED_PROFILE_SECRETS = build_profile_secret_scope(get_hermes_home())
         except Exception:
             logger.warning(
                 "Could not build the profile secret scope; externally managed credentials will not be "

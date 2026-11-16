@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 from typing import Callable
 
 
@@ -21,5 +20,4 @@ def build_import_cmd_parser(subparsers, *, cmd_import: Callable) -> None:
         help="Replace this agent with the backup but keep what its host set up: its Nous Portal "
         "sign-in, model/provider, tool-gateway, dashboard and scheduler settings, and NOUS_*/HERMES_* "
         "keys. A full backup of this agent is written first (the undo point). For Hermes Cloud agents")
-    import_parser.add_argument("--undo-point", metavar="ZIP", help=argparse.SUPPRESS)
     import_parser.set_defaults(func=cmd_import)

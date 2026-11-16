@@ -127,7 +127,7 @@ import {
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { cleanupClerkBridge, installClerkBridge, registerClerkRendererProtocol } from './clerk'
-import { CLERK_RENDERER_SCHEME } from './clerk-config'
+import { CLERK_DEV_RENDERER_SCHEME, CLERK_RENDERER_SCHEME } from './clerk-config'
 import { provisionCliLinks } from './cli-provision'
 import { readClipboardImagePng } from './clipboard-image'
 import { registerClipboardTextIpc } from './clipboard-ipc'
@@ -17542,6 +17542,18 @@ function registerDeepLinkProtocol() {
   })
 }
 
+// Clerk registers the dev OAuth scheme itself, but without the app entry path —
+// on Windows that leaves the OS launching bare `electron.exe`, so the callback
+// never reaches the running window. Rewrite it with the same `execPath + argv[1]`
+// form as `hermes-dev://`. Packaged builds keep `unitalk-app` and their bundled
+// registration; macOS/Linux dev cannot route custom schemes to an unpackaged app.
+function registerClerkDevOAuthProtocol() {
+  registerDeepLinkProtocolWith({
+    app, protocol: CLERK_DEV_RENDERER_SCHEME, env: process.env, defaultApp: Boolean(process.defaultApp),
+    argv: process.argv, execPath: process.execPath, resolve: entry => path.resolve(entry), log: rememberLog
+  })
+}
+
 // macOS: register the deep link before the lock. Launch Services relaunches
 // the app when the default protocol client changes; if the lock is already
 // held, that relaunch flashes a second Dock icon and then app.exit(0)s.
@@ -17686,6 +17698,10 @@ app.whenReady().then(() => {
 
   if (!preReadyDockSteps.includes('register-deep-link')) {
     registerDeepLinkProtocol()
+  }
+
+  if (DEV_SERVER && IS_WINDOWS && CLERK_RUNTIME.enabled && process.env.HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION !== '1') {
+    registerClerkDevOAuthProtocol()
   }
 
   installPreviewGuestEscapeHatch()

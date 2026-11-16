@@ -1,4 +1,4 @@
-const publishableKey = (import.meta.env.VITE_CLERK_PUBLISHABLE_KEY ?? '').trim()
+const publishableKey = 'pk_live_Y2xlcmsudW5pdGFsay5haSQ'
 const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop?.clerk
 
 export const clerkPublishableKey = publishableKey

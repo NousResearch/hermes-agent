@@ -1426,7 +1426,7 @@ class TestMultiplexProfileWebhookAuthentication:
         seen = []
 
         async def _capture(request, route_config, route_name, profile, payload, prompt,
-                           event_type, delivery_id, now):
+                           event_type, delivery_id, now, origin_payload=None):
             seen.append((profile, prompt))
             return web.Response(status=202)
 

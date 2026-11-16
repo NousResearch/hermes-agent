@@ -487,7 +487,9 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
             usable = False
         if not usable:
             return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
-                        "directory, or unreadable). Choose another name, or move/remove that path and retry.")
+                        "directory, or unreadable). Choose another name, or move/remove that path and retry. "
+                        "If it is this skill's own folder missing its SKILL.md, restore it with "
+                        "action='write_file', file_path='SKILL.md'.")
     skill_md = skill_dir / "SKILL.md"
     if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
         with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
@@ -643,7 +645,8 @@ def _find_orphan_skill_dir(name: str) -> tuple[Optional[Path], Optional[str]]:
             if (candidate.is_dir() and not _is_path_redirect(candidate)
                     and not _is_path_redirect(candidate.parent)
                     and not _is_path_redirect(target) and not target.exists()
-                    and not is_excluded_skill_path(target) and candidate not in matches):
+                    and not is_excluded_skill_path(target) and candidate not in matches
+                    and not any(candidate.rglob("SKILL.md"))):  # holds skills = a category
                 matches.append(candidate)
     if len(matches) > 1:
         return None, f"Multiple orphan directories match '{name}'; use '<category>/<name>'."

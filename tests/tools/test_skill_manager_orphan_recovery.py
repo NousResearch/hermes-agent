@@ -1,8 +1,6 @@
 """Regression for NousResearch/hermes-agent#156511: explicit restoration of orphan skills."""
 
 import json
-from unittest.mock import patch
-
 import pytest
 
 from tools.skill_manager_tool import _create_skill, _find_skill, skill_manage
@@ -15,13 +13,12 @@ SKILL_MD = (
 
 
 @pytest.fixture
-def skills_root(tmp_path):
-    root = tmp_path / "skills"
-    root.mkdir()
-    with patch("tools.skill_manager_tool.SKILLS_DIR", root), \
-         patch("agent.skill_utils.get_all_skills_dirs", return_value=[root]), \
-         patch("agent.skill_utils.get_skill_create_dir", return_value=None):
-        yield root
+def skills_root(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    root = home / "skills"
+    root.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return root
 
 
 def test_orphan_skill_directory_recovers_through_write_file(skills_root):
@@ -35,6 +32,7 @@ def test_orphan_skill_directory_recovers_through_write_file(skills_root):
     # Preserve the create policy: an occupied directory is never adopted implicitly.
     refused = _create_skill("probe-skill", SKILL_MD, category="research")
     assert refused["success"] is False
+    assert "file_path='SKILL.md'" in refused["error"]
 
     blocked = json.loads(skill_manage(
         action="write_file", name="probe-skill",
@@ -64,5 +62,12 @@ def test_orphan_skill_recovery_requires_unambiguous_name(skills_root):
         file_path="SKILL.md", file_content=SKILL_MD))
     assert resolved["success"] is True, resolved
     assert not (skills_root / "development" / "probe-skill" / "SKILL.md").exists()
+
+    # A category folder holding skills is never an orphan: it must not become a skill itself.
+    category = json.loads(skill_manage(
+        action="write_file", name="research",
+        file_path="SKILL.md", file_content=SKILL_MD.replace("probe-skill", "research")))
+    assert category["success"] is False
+    assert not (skills_root / "research" / "SKILL.md").exists()
 
 

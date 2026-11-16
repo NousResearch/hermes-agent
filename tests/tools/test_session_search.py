@@ -413,7 +413,8 @@ class TestCompactionRecoveryPointersRecover:
     def test_the_demoted_tool_stub_call_recovers_the_tool_output(self, db):
         """Lean demotion stubs a CARRIED-TAIL tool result: the live copy is the stub (same message_uid) and the
         only full text is the superseded original (active=0, compacted=0), not a compacted=1 row."""
-        from agent.context_compressor import _lean_recovery_stub, _rewritten
+        from agent.context_compressor import _rewritten
+        from agent.context_compressor_tail import _lean_recovery_stub
 
         sid = self._compacted_session(db)
         db.append_message(sid, role="tool", content="deploy log\n" * 200 + "fatal: TAILMARK_3141",

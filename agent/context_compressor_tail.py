@@ -45,9 +45,9 @@ def is_demoted_stub(content: str) -> bool:
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
     """One-line replacement for a demoted tail tool result."""
-    # The public tool's query shape receives current_session_id from agent/inline_tool_executors.py. Passing
-    # session_id here would switch the tool to its bounded READ shape and ignore the query. Discovery
-    # defaults to user/assistant, so demoted tool output needs an explicit tool filter.
+    # The public tool's query shape receives current_session_id from agent/inline_tool_executors.py.
+    # Passing session_id here would switch the tool to its bounded READ shape and ignore the query.
+    # Discovery defaults to user/assistant, so demoted tool output needs an explicit tool filter.
     hint = " Recover with session_search(query=..., role_filter='tool', detail='full')" if session_id else ""
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "

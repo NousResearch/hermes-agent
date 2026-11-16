@@ -109,7 +109,7 @@ def file_cache_version(path: str | Path, st: os.stat_result | None = None, *,
     return (*sig, racy_content_digest(path, sig))
 
 
-def _preserve_file_mode(path: Path) -> int | None:
+def preserve_file_mode(path: Path) -> int | None:
     """Permission bits of *path* if it exists, else ``None``."""
     try:
         return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
@@ -117,7 +117,7 @@ def _preserve_file_mode(path: Path) -> int | None:
         return None
 
 
-def _preserve_file_owner(path: Path) -> tuple[int, int] | None:
+def preserve_file_owner(path: Path) -> tuple[int, int] | None:
     """Owning ``(uid, gid)`` of *path* on POSIX, else ``None``."""
     try:
         st = path.stat() if os.name == "posix" else None
@@ -161,11 +161,11 @@ def default_new_file_mode() -> int | None:
     return 0o666 & ~current
 
 
-def _restore_file_owner(path: Path, owner: tuple[int, int] | None) -> None:
+def restore_file_owner(path: Path, owner: tuple[int, int] | None) -> None:
     _restore_file_metadata(path, owner, None)
 
 
-def _restore_file_mode(path: Path, mode: int | None) -> None:
+def restore_file_mode(path: Path, mode: int | None) -> None:
     _restore_file_metadata(path, None, mode)
 
 
@@ -399,7 +399,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
-    original_owner = _preserve_file_owner(path) if preserve_owner else None
+    original_owner = preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
@@ -420,7 +420,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
 
 def _mode_for_write(path: Path, create_mode: int | None, preserve: bool = True) -> int | None:
     """Existing permission bits of *path* (when *preserve*), else *create_mode* for a new file."""
-    mode = _preserve_file_mode(path) if preserve else None
+    mode = preserve_file_mode(path) if preserve else None
     return mode if mode is not None or path.exists() else create_mode
 
 
@@ -445,7 +445,7 @@ def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".
     """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, binary=True, preserve_owner=False,
-                  mode=mode if mode is not None else _preserve_file_mode(path), fsync_dir=fsync_dir)
+                  mode=mode if mode is not None else preserve_file_mode(path), fsync_dir=fsync_dir)
 
 
 def _dump_json(data: Any, f, *, indent: int | None, ensure_ascii: bool, dump_kwargs: dict) -> None:
@@ -478,7 +478,7 @@ def atomic_json_write(
     """
     path = Path(path)
     _atomic_write(path, lambda f: _dump_json(data, f, indent=indent, ensure_ascii=ensure_ascii, dump_kwargs=dump_kwargs),
-                  prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
+                  prefix=f".{path.stem}_", mode=mode if mode is not None else preserve_file_mode(path),
                   fsync_dir=fsync_dir)
 
 
@@ -543,7 +543,7 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = 
         if extra_content:
             f.write(extra_content)
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
+    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=preserve_file_mode(path))
 
 
 def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:

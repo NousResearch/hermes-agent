@@ -1263,7 +1263,7 @@ class TestImportAtomicWrites:
 
         chown_calls: list[tuple[Path, int, int]] = []
         monkeypatch.setattr(
-            "hermes_cli.backup_restore._preserve_file_owner",
+            "hermes_cli.backup_restore.preserve_file_owner",
             lambda p: (123, 456) if Path(p).exists() else None,
         )
         monkeypatch.setattr(
@@ -1317,7 +1317,7 @@ class TestImportAtomicWrites:
     ):
         """An imported member must not inherit a privileged target's identity.
 
-        ``_preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve bits,
+        ``preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve bits,
         so a target sitting at 0o6755 hands setuid/setgid straight back to a
         file whose contents now come from the zip.  Whoever produced the
         archive would then get whatever that file executes as.  The other

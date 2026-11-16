@@ -14,6 +14,11 @@ ADMISSION_PREFIX = 'gateway.terminal_admission.v1.'
 IDENTITY_PREFIX = 'gateway.terminal_identity.v1.'
 WORKER_PREFIX = 'gateway.terminal_worker.v1.'
 
+# Outcomes whose terminal admission legitimately carries no stored result: an interruption or a
+# cancellation resolved the input without producing one. A reader must not turn that absence into
+# a storage fault; a retry that later produces a result amends it (``amend_terminal_result``).
+RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
+
 
 def compact_result(result, *, user_message=None):
     """Retain replay/accounting and current-turn API output, never cumulative history."""

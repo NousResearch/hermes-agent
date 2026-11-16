@@ -6,7 +6,14 @@ import pytest
 from gateway.session_api_turn import _settled_api_result
 from gateway.session_bot import _admission_outcome
 from gateway.session_results import _redacted, admission_result, finish_result, retain_result
-from hermes_state_runtime import _json, admit_session_input, claim_session_input, mutate_runtime_session
+from hermes_state_runtime import (
+    RuntimeStoreError,
+    _json,
+    admit_session_input,
+    claim_session_input,
+    mutate_runtime_session,
+    resolve_unknown_session_input,
+)
 from hermes_state_terminal import RESULT_PREFIX, compact_result, encode_result, load_result
 
 REPLY = 'x' * 2000
@@ -62,6 +69,34 @@ def test_every_reader_gets_the_exact_reply(owner):
                                  request_id='r1', payload={'text': 'question 1'})
     assert replay['admission_id'] == admission_id and replay['status'] == 'terminal'
     assert admission_result(owner.db, admission_id) == expected
+
+
+def test_a_terminal_admission_missing_its_result_reports_result_missing(owner):
+    """A terminal admission that is not an interruption/cancellation must carry a result. Reading
+    it back after the result row vanished is a data fault, not a storage outage (#153356)."""
+    owner.db.create_session('live', source='api_server')
+    row, _expected = _turn(owner, 'live', 1, [])
+    owner.db._execute_write(lambda conn: conn.execute(
+        'DELETE FROM state_meta WHERE key=?', (RESULT_PREFIX + row['admission_id'],)))
+    with pytest.raises(RuntimeStoreError, match='result_missing'):
+        finish_result(owner.db, epoch=owner.epoch, row=row, response='other', outcome='completed')
+
+
+def test_a_resultless_interrupted_admission_reads_back_without_a_storage_fault(owner):
+    """A resolution that produced no answer is not corruption: a late empty settlement returns
+    the terminal row instead of blaming storage (#153356)."""
+    owner.db.create_session('live', source='api_server')
+    admit_session_input(owner.db, epoch=owner.epoch, principal_id='human', session_id='live',
+                        request_id='discarded', payload={'text': 'work'})
+    row = claim_session_input(owner.db, epoch=owner.epoch, session_id='live')
+    owner.db._execute_write(lambda conn: conn.execute(
+        "UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],)))
+    resolve_unknown_session_input(owner.db, epoch=owner.epoch, admission_id=row['admission_id'],
+                                  generation=row['generation'])
+    settled, response = finish_result(owner.db, epoch=owner.epoch, row=row, response='',
+                                      outcome='interrupted')
+    assert (settled['status'], settled['outcome'], response) == ('terminal', 'interrupted', '')
+    assert admission_result(owner.db, row['admission_id']) is None
 
 
 def test_a_reply_that_differs_from_the_last_message_is_kept_verbatim(owner):

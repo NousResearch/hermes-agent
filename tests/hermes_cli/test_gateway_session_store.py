@@ -287,6 +287,34 @@ def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypa
     assert str(err.value) == "request_failed"
 
 
+def test_renaming_a_later_compression_segment_sends_that_rows_revision(store, tmp_path, monkeypatch):
+    """`/title` after a compression renames the live segment, but the owner answers its resume with the
+    conversation's root snapshot. The rename is fenced on the row it names, so the root's revision
+    was a revision_conflict on every try."""
+    db, client = store
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    from hermes_state import SessionDB
+    writer = SessionDB(db_path=tmp_path / "state.db")
+    writer.create_session("local-old", source="local")
+    writer.create_session("local-tip", source="local", parent_session_id="local-old")
+    with writer._lock:
+        writer._conn.execute("UPDATE sessions SET runtime_revision=7 WHERE id='local-tip'")
+        writer._conn.commit()
+    writer.close()
+    base = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.resume" and params["session_id"] == "local-tip":
+            client.calls.append((method, params))
+            return {**snapshot("local-tip"), "stored_session_id": "local-old"}
+        return await base(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    for title in ("First", "Second"):
+        db.set_session_title("local-tip", title)
+        method, params = client.calls[-1]
+        assert (method, params["session_id"], params["expected_revision"]) == ("session.mutate", "local-tip", 7)
+
+
 HISTORY = [{"role": "user", "content": "one", "row_id": 11}, {"role": "assistant", "content": "a1", "row_id": 12},
            {"role": "user", "content": "two", "row_id": 13}, {"role": "assistant", "content": "a2", "row_id": 14}]
 

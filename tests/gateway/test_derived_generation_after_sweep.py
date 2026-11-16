@@ -17,6 +17,8 @@ from tests.gateway import test_derived_session_after_delete as derived
 from tests.gateway.test_api_implicit_session_after_delete import _OPENING, _app, _content, _post
 from tests.gateway.test_derived_session_after_delete import _settle
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 served = chat.served  # the header-less chat fixture of the delete tests
 a2a = derived.a2a  # the A2A forward fixture of the delete tests
 

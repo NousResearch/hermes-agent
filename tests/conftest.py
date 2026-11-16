@@ -907,6 +907,29 @@ def authority_cwd_in_tmp(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _checkout_home_guard(monkeypatch):
+    """Fail a test that seeds a Hermes home inside the repo checkout. A symbolic ``profile_id``
+    ('owned', 'fixture', ...) bound as a home is a RELATIVE path: its first config load seeded
+    ``<cwd>/<id>/SOUL.md`` into the checkout, and such files got committed. The seed is skipped
+    (nothing lands in the tree) and the test fails at teardown, since the scoped reads that hit
+    this swallow their own errors. Fix: ``usefixtures('authority_cwd_in_tmp')``."""
+    from hermes_cli import config_home
+    original, root, hits = config_home.initialize_home, PROJECT_ROOT.resolve(), []
+
+    def guarded(home, *args, **kwargs):
+        if Path(home).resolve().is_relative_to(root):
+            hits.append(str(home))
+            return None
+        return original(home, *args, **kwargs)
+
+    monkeypatch.setattr(config_home, "initialize_home", guarded)
+    yield
+    if hits:
+        pytest.fail(f"test seeded a Hermes home inside the repo checkout {root}: {sorted(set(hits))}; "
+                    "a symbolic profile_id is a relative home, use usefixtures('authority_cwd_in_tmp')")
+
+
 @pytest.fixture()
 def mock_config():
     """Return a minimal hermes config dict suitable for unit tests."""

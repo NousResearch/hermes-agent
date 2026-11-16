@@ -13,6 +13,8 @@ import pytest
 
 from tests.gateway.test_session_follow_profile_config import _create, _owner, _route
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 MODELS = ('original', 'current', 'picked')
 
 

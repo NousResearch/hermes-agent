@@ -1,6 +1,8 @@
 """A removed workspace keeps a local chat readable and movable; only a turn refuses (N87)."""
 import pytest
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 
 @pytest.mark.asyncio
 async def test_removed_workspace_reads_and_moves_but_refuses_a_turn(tmp_path, monkeypatch):

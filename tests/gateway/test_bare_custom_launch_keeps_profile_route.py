@@ -1,6 +1,8 @@
 """A bare ``custom`` launch pick stays on the profile's own route whenever that route can serve it."""
 import pytest
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 LOCAL, RELAY = 'http://127.0.0.1:8000/v1', 'https://relay.example.com/v1'
 
 

@@ -194,6 +194,27 @@ def test_a_failed_archive_write_keeps_that_result_whole_and_compaction_still_com
         assert path.read_bytes() != failed[0].encode("utf-8")
 
 
+def test_a_large_result_the_prune_left_whole_is_archived_before_the_summary_replaces_it(home, summarizer):
+    """Live on Nous: a 44 KB read sat inside the summary window, the prune (tail-budget pass) left it
+    whole, and the summary replaced it with no copy on disk. The window's own results are saved first."""
+    big = json.dumps({"content": "1|" + "Q" * 44_000})
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "read it"}, *_round(0, big),
+            {"role": "assistant", "content": "read"}, {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "ok"}, {"role": "user", "content": "again"},
+            {"role": "assistant", "content": "again"}, {"role": "user", "content": "now"}]
+    c = _compressor()
+    c.protect_first_n, c.protect_last_n, c.tail_token_budget = 1, 2, 10_000  # the live run's tail budget
+    assert c._prune_boundary(msgs, c.protect_last_n, c.tail_token_budget) <= 3  # the prune spares the read
+
+    compressed = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
+
+    assert any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in compressed)
+    (prompt,) = summarizer
+    (path,) = _pointer_paths(prompt)
+    assert path.read_bytes() == big.encode("utf-8")
+    assert "Q" * 5_000 not in prompt
+
+
 def test_lean_tail_demotion_archives_the_demoted_originals(home):
     from agent.context_compressor_tail import demote_stale_tail_tools
 

@@ -27,7 +27,8 @@ included), under the same ``exclusive_maintenance`` reservation, so nothing here
 * Never taken from the archive: ``shared/nous_auth.json``, ``webapp/`` (the Webapp's sign-in
   state), ``install_id`` and lock files.
 * Replace, not merge: in the root home and in every profile the archive carries, a file the archive
-  lacks is removed, and the root's ``config.yaml``/``.env``/``auth.json`` keep only their host-owned
+  lacks is removed (except the root's ``workspace/``, ``home/`` and non-Hermes dot-entries: HOME's,
+  on Hermes Cloud), and the root's ``config.yaml``/``.env``/``auth.json`` keep only their host-owned
   part. Kept: databases (restored page by page, never unlinked under a live reader), logs and the
   host's runtime records. A profile only the destination has is left exactly as it is, except on
   an undo: the undo point lists the profiles the agent had, and one the transfer brought is removed.
@@ -59,6 +60,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.home_data_layout import HOME_ENV_FILES
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +95,12 @@ _RUNTIME_FILES = frozenset({("cron", "ticker_last_success"), ("cron", "ticker_he
 # other processes hold, never restored or removed.
 _CONTENT_TREES = frozenset({"skills", "plugins"})
 _ROOT_HOST_FILES = frozenset({("config.yaml",), (".env",), ("auth.json",)})
+# Hermes Cloud runs with HOME set to the Hermes home, so the agent's workspace and the container's
+# dotfiles (.ssh, .gitconfig, .config) sit in the root home, and no backup from another machine
+# carries them. A replace never removes these root entries; the archive's own copies still land.
+# Hermes' own root dot-files (credentials, CLI history) are agent files and are replaced as usual.
+_HOME_ENTRIES = frozenset({"workspace", "home"})
+_AGENT_DOTFILES = frozenset({*HOME_ENV_FILES, ".anthropic_oauth.json", ".hermes_history"})
 _DB_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db-journal")
 
 _UNDO_PREFIX = "pre-transfer-"
@@ -569,6 +577,8 @@ class KeepHostImport:
         """Whether a destination file the archive lacks goes."""
         from hermes_cli.backup import _import_skipped
         if parts[0] == "profiles" and (len(parts) < 3 or parts[1] not in self.profiles):
+            return False
+        if parts[0] in _HOME_ENTRIES or (parts[0].startswith(".") and parts[0] not in _AGENT_DOTFILES):
             return False
         home = _home_parts(parts)
         return not (parts in _ROOT_HOST_FILES or _is_auth_store(parts) or self.skips(parts)

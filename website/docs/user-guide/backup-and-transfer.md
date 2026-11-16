@@ -25,7 +25,7 @@ On a Webapp that Hermes Cloud itself serves, the section is called **Backup** an
 
 Hermes checks that the cloud agent can receive a transfer (one older than this feature says it needs a Hermes update), backs up this agent, copies the backup to the cloud agent a few megabytes at a time, and the cloud agent restores it with `hermes import --keep-host --messaging-off`. Once its gateway has finished what it was doing, and before it changes anything, the cloud agent backs itself up. That backup is the undo point. **Cancel** is there while backing up and copying; once the restore has started it cannot be stopped, so the button goes away.
 
-**What comes over:** memory, persona (SOUL.md), skills, conversations, scheduled jobs, every profile, settings, and your API keys and logins (other than Nous Portal). It replaces the agent: what the backup does not have is removed. A profile only the cloud agent has stays as it is.
+**What comes over:** memory, persona (SOUL.md), skills, conversations, scheduled jobs, every profile, settings, and your API keys and logins (other than Nous Portal). It replaces the agent: what the backup does not have is removed. A profile only the cloud agent has stays as it is. Never removed: the cloud agent's workspace and its own dotfiles (`.ssh`, `.gitconfig`, `.config`).
 
 **What the cloud agent keeps:** its Nous Portal sign-in, its model and provider, its Hermes Cloud tools (web, images, voice), its dashboard sign-in, and its scheduler settings. Hermes Cloud set these up, and they already work there.
 

@@ -1,5 +1,6 @@
 import { act, cleanup, render, waitFor } from '@testing-library/react'
-import { useLayoutEffect } from 'react'
+import { type ReactNode, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
@@ -233,6 +234,78 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     expect(takeSessionDraft('session-created').text).toBe('typed while booting')
     expect(takeSessionDraft(null).text).toBe('')
     expect(mockComposerApi.setText).toHaveBeenCalledWith('typed while booting')
+  })
+
+  it('puts the caret after the carried draft when the remounted composer adopts it, so later keystrokes append', async () => {
+    // The real editor renders through FloatingComposerSurface's portal host,
+    // which the PARENT attaches in its own layout effect — after the child
+    // hook has already painted the adopted draft into a still-detached editor.
+    function PortalSurface({ children }: { children: ReactNode }) {
+      const anchorRef = useRef<HTMLDivElement>(null)
+      const [host] = useState(() => document.createElement('div'))
+
+      useLayoutEffect(() => {
+        anchorRef.current?.appendChild(host)
+
+        return () => host.remove()
+      }, [host])
+
+      return (
+        <>
+          <div ref={anchorRef} />
+          {createPortal(children, host)}
+        </>
+      )
+    }
+
+    let editor: HTMLDivElement | null = null
+
+    function RestoredComposer() {
+      const draft = useComposerDraft({
+        activeQueueSessionKey: 'session-created',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: 'session-created'
+      })
+
+      return (
+        <div
+          contentEditable
+          data-slot="composer-rich-input"
+          ref={element => {
+            draft.editorRef.current = element
+            editor = element
+          }}
+          tabIndex={0}
+        />
+      )
+    }
+
+    // Typed on the fresh chat while booting; the cold-start resume then
+    // announces the restored id and remounts the composer on it.
+    stashSessionDraft(null, 'Hello, can y', [])
+    announceNewSessionDraftKey('session-created')
+    markActiveComposer('main')
+
+    render(
+      <PortalSurface>
+        <RestoredComposer />
+      </PortalSurface>
+    )
+
+    await waitFor(() => expect(document.activeElement).toBe(editor))
+
+    const selection = window.getSelection()!
+
+    expect(composerPlainText(editor!)).toBe('Hello, can y')
+    // Chromium collapses a selection-less contenteditable's caret to offset 0
+    // on focus, so the next keystrokes landed BEFORE the draft
+    // ("r me? ...Hello, can y"). The caret must sit inside the editor, at the end.
+    expect(selection.rangeCount).toBe(1)
+    expect(editor!.contains(selection.anchorNode)).toBe(true)
+    expect(selection.isCollapsed).toBe(true)
+    expect(caretOffsetInEditor(editor!)).toBe('Hello, can y'.length)
   })
 
   it('leaves the pre-session draft alone when a composer mounts on a session nobody announced', () => {

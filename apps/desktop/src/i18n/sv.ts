@@ -44,6 +44,23 @@ export const svOverrides: TranslationOverrides = {
     on: 'På',
     off: 'Av'
   },
+  catalog: {
+    toolsets: {
+      mostUsed: 'Mest använda',
+      mostUsedBlurb: 'De verktygsuppsättningar Hermes oftast använder i den här profilen.',
+      essentials: 'Grundläggande',
+      essentialsBlurb: 'Det som de flesta Hermes-uppgifter använder.',
+      toolCount: count => `${count} ${count === 1 ? 'verktyg' : 'verktyg'}`,
+      callCount: (count, calls) => `${count} ${calls === 1 ? 'anrop' : 'anrop'}`,
+      themes: {
+        work: { label: 'Bläddra, arbeta och automatisera', blurb: 'Styr webbläsaren och skrivbordet, redigera filer, kör kod och schemalägg arbete.' },
+        create: { label: 'Se, lyssna och skapa', blurb: 'Visa bilder och video, transkribera tal och skapa medier.' },
+        recall: { label: 'Minne och kunskap', blurb: 'Det Hermes minns samt skills och historik som kan sökas igenom.' },
+        connect: { label: 'Anslut och nå ut', blurb: 'Konton, andra agenter, det smarta hemmet och sökning utanför webben.' },
+        more: { label: 'Fler verktyg', blurb: 'Allt annat som den här profilen kan aktivera.' }
+      }
+    }
+  },
   fileMenu: {
     revealFinder: 'Visa i Finder',
     revealExplorer: 'Visa i Utforskaren',

@@ -122,7 +122,12 @@ def test_the_session_streams_are_the_first_two_yielded():
 
     asyncio.run(_drive())
 
-    assert passed["args"][:2] == (read, write)
+    # Both streams are handed over wrapped by the tool-listing guard, which
+    # forwards everything it doesn't intercept to the transport's streams.
+    guarded_read, guarded_write = passed["args"][:2]
+    assert guarded_read is not read and guarded_write is not write
+    assert guarded_read.last_context is read.last_context
+    assert guarded_write.last_context is write.last_context
 
 
 def test_the_seeded_protocol_header_matches_the_handshake_the_client_sends():

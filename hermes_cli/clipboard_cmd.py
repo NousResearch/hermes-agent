@@ -56,7 +56,7 @@ def extract_clipboard_image(dest: Path) -> tuple[int, dict]:
                 with staged.open("rb") as f:
                     written = {"ok": True, "path": str(dest), "mime": _mime(f.read(16)),
                                "bytes": staged.stat().st_size}
-                if os.path.exists(dest):  # keep an overwritten file's mode: a 0600 temp file stays private
+                if os.path.exists(dest) and not dest.is_symlink():  # links have no file mode to keep
                     os.chmod(staged, os.stat(dest).st_mode & 0o7777)
                 os.replace(staged, dest)
     except OSError as exc:

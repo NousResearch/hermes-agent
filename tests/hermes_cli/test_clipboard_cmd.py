@@ -226,3 +226,26 @@ def test_a_symlink_to_a_directory_is_write_failed(tmp_path, monkeypatch, capsys)
     assert (code, json.loads(out)["reason"]) == (4, "write_failed")
     assert dest.is_symlink()
     assert directory.is_dir() and not any(directory.iterdir())
+
+
+@pytest.mark.platforms("posix")
+def test_replacing_a_read_only_symlink_does_not_copy_target_mode(
+        tmp_path, monkeypatch, capsys):
+    """The new image must remain writable, not inherit the symlink target's 0444."""
+    monkeypatch.setattr(clipboard, "save_clipboard_image", _fake_save(_PNG))
+    target = tmp_path / "readonly.png"
+    target.write_bytes(b"untouched")
+    target.chmod(0o444)
+    dest = tmp_path / "out" / "paste.png"
+    dest.parent.mkdir()
+    dest.symlink_to(target)
+
+    code, out, _ = _run(capsys, "--out", str(dest), "--json")
+
+    assert code == 0
+    assert json.loads(out)["path"] == str(dest)
+    assert not dest.is_symlink()
+    assert dest.stat().st_mode & 0o200, "replacement must allow a subsequent paste"
+    assert dest.read_bytes() == _PNG
+    assert target.read_bytes() == b"untouched"
+    assert target.stat().st_mode & 0o777 == 0o444

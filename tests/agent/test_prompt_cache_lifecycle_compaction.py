@@ -1,5 +1,5 @@
-"""Step 2 of the prompt-cache lifecycle: once its warm budget is spent, an idle chat compacts while
-its 1h cache is still warm, never on a 5m window, never for a context under half the compaction
+"""Step 2 of the prompt-cache lifecycle: once its warm budget is over, an idle chat compacts on a
+window of 30 minutes or more (warm or not: the summary is a fresh request), never on a 5m window, never for a context under half the compaction
 threshold or a machine-paced session, and not again until it grew; a 1h cache write is billed at
 the 1h rate."""
 
@@ -54,7 +54,7 @@ def _spend_budget(agent, *, due_at=_SENT + 54 * 60):
     window = cache_window(agent)
     warmer = pcl.get_prompt_cache_warmer(agent)
     warmer._spent = pcl._Spent(due_at, window.guaranteed_until or 0.0, TTL_SECONDS.get(window.tier or "", 0),
-                               context_witness(agent), False)
+                               context_witness(agent))
     return agent
 
 
@@ -62,14 +62,14 @@ def cache_expiry_compaction_due(agent, *, now):
     return pcl.compaction_due(agent, now=now)
 
 
-def test_a_spent_budget_compacts_once_while_the_window_is_still_warm(monkeypatch):
+def test_a_spent_budget_compacts_once_per_idle_stretch(monkeypatch):
     agent = _idle_chat(monkeypatch)
     assert cache_expiry_compaction_due(agent, now=_SENT + 54 * 60) == (False, "budget_not_spent")
     _spend_budget(agent)
     assert cache_expiry_compaction_due(agent, now=_SENT + 53 * 60) == (False, "not_yet")
     assert cache_expiry_compaction_due(agent, now=_SENT + 54 * 60) == (True, "due")
-    # Past the deadline the cache is already cold: compacting now saves nothing.
-    assert cache_expiry_compaction_due(agent, now=_SENT + 61 * 60) == (False, "already_cold")
+    # Past the deadline still due: the summary never replays the cached prefix.
+    assert cache_expiry_compaction_due(agent, now=_SENT + 61 * 60) == (True, "due")
     # Claimed once: an attempt that committed nothing is not retried in the same idle stretch.
     assert pcl.claim_compaction(agent, now=_SENT + 54 * 60) is True
     assert cache_expiry_compaction_due(agent, now=_SENT + 55 * 60) == (False, "compacted_this_stretch")

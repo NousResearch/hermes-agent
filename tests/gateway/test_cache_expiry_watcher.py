@@ -67,7 +67,6 @@ def make_runner(monkeypatch):
     from gateway.run import GatewayRunner
 
     monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
-    monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
     runners = []
 
     def make(entries, keys, *, authority=False):

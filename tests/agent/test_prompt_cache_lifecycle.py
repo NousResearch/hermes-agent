@@ -1,7 +1,7 @@
 """The prompt-cache lifecycle loop (agent/prompt_cache_lifecycle.py): an idle human chat warms its
-cache up to three times, then compacts (on a window of 30 minutes or more), then warms the compacted
-chat up to three more times, then lets it expire. A miss ends warming at once; a machine session
-never warms idle; an unknown clock makes nothing act.
+cache up to three times per user message, then compacts (on a window of 30 minutes or more) and sends
+nothing more until the next user message, or expires and offloads. A miss ends warming at once and
+goes straight to that decision; a machine session never warms idle; an unknown clock makes nothing act.
 
 Timers never start: ``_fire`` runs the armed callback inline, so no test sleeps."""
 
@@ -118,34 +118,50 @@ def _warm_until_spent(agent):
     return sent
 
 
-def test_idle_chat_warms_three_times_compacts_then_warms_three_more_then_expires():
-    agent = _chat()
+def test_after_a_cache_edge_compaction_nothing_is_sent_until_the_next_user_message():
+    """Ruling A: no priming write, no post-compaction keep-alives; the next user message starts a budget."""
+    agent = _chat(_user_turn_count=1)
     warmer = pcl.get_prompt_cache_warmer(agent)
     assert _respond(agent, _request(), _WRITE_1H) is None
     pcl.end_turn_prompt_cache_warming(agent)  # the turn settled; a person may come back
     assert warmer._run is not None, "a human chat keeps warming while idle"
 
     assert _warm_until_spent(agent) == pcl.WARM_BUDGET
-    assert warmer.status["reason"] == "warm budget spent"
-    assert warmer._spent is not None
     due_at = warmer._spent.due_at
     assert pcl.compaction_due(agent, now=due_at - 1) == (False, "not_yet")
     assert pcl.claim_compaction(agent, now=due_at) is True
-    assert pcl.compaction_due(agent, now=due_at) == (False, "compacted_this_stretch")
+    agent.context_compressor.compression_count = 1  # the surface committed the compaction
+    assert warmer._run is None and not hasattr(warmer, "prime")
+    assert len(agent._anthropic_client.calls) == pcl.WARM_BUDGET  # nothing after the compaction
+    assert pcl.compaction_due(agent, now=due_at + 60) == (False, "compacted_this_stretch")
 
-    # The surface commits the compaction (a new prompt generation), then primes the smaller chat.
-    agent.context_compressor.compression_count = 1
-    calls_before = len(agent._anthropic_client.calls)
-    compacted = _request()
-    compacted["messages"][0]["content"][0]["text"] = "compacted handoff " * 20_000  # ~60k tokens
-    assert warmer.prime(compacted) is None
-    _fire(warmer)  # the priming write
-    assert len(agent._anthropic_client.calls) == calls_before + 1
-    assert _warm_until_spent(agent) == pcl.WARM_BUDGET
-    assert len(agent._anthropic_client.calls) == calls_before + 1 + pcl.WARM_BUDGET
-    # The fresh budget is spent: the cache expires; no second compaction this idle stretch.
-    assert pcl.compaction_due(agent, now=warmer._spent.due_at) == (False, "compacted_this_stretch")
-    assert pcl.claim_compaction(agent, now=warmer._spent.due_at) is False
+    agent._user_turn_count = 2  # the next user message: a fresh budget on the compacted chat
+    agent.session_api_calls += 1
+    assert _respond(agent, _request(), _WRITE_1H) is None and warmer._run.warm_count == 0
+
+
+def test_tool_rounds_inside_one_user_turn_share_one_budget():
+    """A budget restarts on a new user message only: a long tool run gets three keep-alives in total."""
+    agent = _chat(_user_turn_count=1)
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    for _round in range(5):  # five tool-round requests in the same turn, each long enough to warm once
+        agent.session_api_calls += 1
+        if _respond(agent, _request(), _WRITE_1H) is None:
+            _fire(warmer)
+    assert len(agent._anthropic_client.calls) == pcl.WARM_BUDGET
+    agent._user_turn_count = 2
+    agent.session_api_calls += 1
+    assert _respond(agent, _request(), _WRITE_1H) is None  # a new user message: a new budget
+
+
+def test_keep_alives_fire_at_five_sixths_of_the_ttl_and_compaction_decides_there():
+    assert [pcl.cache_warming_delay_s(t) for t in (300, 1800, 3600)] == [250, 1500, 3000]
+    assert pcl.cache_warming_delay_s(12) == 2  # the 10 s margin wins on a tiny TTL
+    agent = _chat()
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    _respond(agent, _request(), _WRITE_1H)
+    run = warmer._run
+    assert run.deadline_at - run.next_warm_at == pytest.approx(600, rel=0, abs=1e-6)
 
 
 def test_a_five_minute_window_warms_three_times_then_expires_without_compacting():
@@ -157,14 +173,57 @@ def test_a_five_minute_window_warms_three_times_then_expires_without_compacting(
     assert pcl.compaction_due(agent, now=warmer._spent.due_at) == (False, "short_window:300s")
 
 
-def test_a_keep_alive_that_misses_ends_warming_and_never_compacts():
+def test_a_keep_alive_that_misses_ends_warming():
     agent = _chat(client=_Client(read=0, write=119_950))
     warmer = pcl.get_prompt_cache_warmer(agent)
     assert _respond(agent, _request(), _WRITE_1H) is None
     _fire(warmer)
     assert warmer._run is None and warmer.status["reason"].startswith("cache refresh missed")
     assert len(agent._anthropic_client.calls) == 1
-    assert pcl.compaction_due(agent) == (False, "budget_not_spent")
+
+
+def test_a_miss_goes_straight_to_the_compact_or_offload_decision():
+    """Ruling B: the miss ends the budget, so step 2 decides now; a small chat goes to step 3 instead."""
+    agent = _chat(client=_Client(read=0, write=119_950))
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    _respond(agent, _request(), _WRITE_1H)
+    _fire(warmer)
+    assert warmer._spent is not None
+    assert pcl.compaction_due(agent, now=warmer._spent.due_at) == (True, "due")
+
+    small = _chat(client=_Client(read=0, write=119_950), tokens=50_000)
+    w2 = pcl.get_prompt_cache_warmer(small)
+    _respond(small, _request(), _WRITE_1H)
+    _fire(w2)
+    assert pcl.compaction_due(small, now=w2._spent.due_at) == (False, "small_context")
+    after_window = small._prompt_cache_clock.estimated_until + 1
+    assert pcl.offload_due(small, now=after_window) == (True, "due")
+
+
+def test_a_compaction_decision_needs_no_still_warm_cache():
+    """Ruling E: the summary is a fresh request; a budget spent past the window still compacts."""
+    agent = _chat()
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    _respond(agent, _request(), _WRITE_1H)
+    pcl.end_turn_prompt_cache_warming(agent)
+    _warm_until_spent(agent)
+    late = warmer._spent.deadline_at + 300  # the gateway's 300 s housekeeping, past the window
+    assert pcl.compaction_due(agent, now=late) == (True, "due")
+
+
+def test_an_idle_chat_past_its_window_is_offloaded_once_by_its_owner():
+    """Ruling F: the clock's window passed with no compaction: step 3 offloads now, once per stretch."""
+    agent = _chat(tokens=50_000)
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    _respond(agent, _request(), _WRITE_1H)
+    pcl.end_turn_prompt_cache_warming(agent)
+    _warm_until_spent(agent)
+    now = agent._prompt_cache_clock.estimated_until - 1
+    assert pcl.offload_due(agent, now=now) == (False, "not_cold")
+    now += 2
+    assert pcl.claim_offload(agent, now=now) is True
+    assert pcl.offload_due(agent, now=now) == (False, "offloaded_this_stretch")
+    assert warmer._run is None
 
 
 @pytest.mark.parametrize("over", [{"platform": "cron"}, {"platform": "api_server"}, {"_delegate_depth": 1},
@@ -209,36 +268,9 @@ def test_a_release_ends_a_live_budget_and_decides_step_two_then():
     assert pcl.release_compaction_due(small) == (False, "small_context")
 
 
-def test_a_one_hour_priming_write_with_no_tier_split_is_billed_at_the_one_hour_rate(monkeypatch):
-    """OpenRouter Claude honours the 1h marker but reports no 5m/1h split: the priming write (and a missed
-    replay) is priced at the tier the request declared, 2x input, as the loop prices its own responses."""
-    from agent.usage_pricing import PricingEntry
-
-    official = PricingEntry(input_cost_per_million=Decimal(5), output_cost_per_million=Decimal(25),
-                            cache_read_cost_per_million=Decimal("0.5"), cache_write_cost_per_million=Decimal("6.25"),
-                            source="official_docs_snapshot")  # the table's write rate is the 5m tier: 1.25x input
-    monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: official)
-
-    class _ChatClient:
-        def __init__(self):
-            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
-
-        def with_options(self, **kw):
-            return self
-
-        def _create(self, **kw):  # a 100k-token write, the OpenRouter usage shape (no cache_creation split)
-            return SimpleNamespace(usage=SimpleNamespace(
-                prompt_tokens=100_000, completion_tokens=1, cache_read_input_tokens=0,
-                cache_creation_input_tokens=100_000), choices=[])
-
-    agent = _chat(api_mode="chat_completions", provider="openrouter", base_url="https://openrouter.ai/api/v1",
-                  client=_ChatClient(), model="anthropic/claude-opus-4-7")
-    agent.client = agent._anthropic_client
-    warmer = pcl.get_prompt_cache_warmer(agent)
-    request = _request()
-    request["model"] = agent.model
-    request["messages"][0]["content"][0]["text"] = "compacted handoff " * 20_000
-    assert warmer.prime(request) is None
-    _fire(warmer)
-    one_hour_write = 100_000 * 2 * 5 / 1e6  # 2x the $5/M input rate
-    assert agent.session_estimated_cost_usd == pytest.approx(one_hour_write + 25 / 1e6, rel=0, abs=1e-9)
+def test_cheap_routes_warm_with_no_dollar_floor_but_never_below_the_cacheable_minimum():
+    """Ruling C: a read cheaper than the rewrite it prevents is worth sending, however few cents."""
+    cheap = SimpleNamespace(input_cost_per_million=0.09, output_cost_per_million=0.18,
+                            cache_read_cost_per_million=0.018, cache_write_cost_per_million=0.09)
+    assert pcl.evaluate_economics(cheap, 20_000).action == "warm"  # saves ~$0.0014
+    assert pcl.evaluate_economics(cheap, 900).action == "stop"  # no entry below 1,024 tokens

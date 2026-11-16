@@ -81,9 +81,10 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
             self._last_session_store_prune_ts = time.time()
 
     def _cache_expiry_due_keys(self, skip=()) -> list[tuple[str, object]]:
-        """Cached, idle, human-paced sessions whose warm cache window is about to close. *skip* (keys
-        with a compaction in flight) is excluded before the claim, which latches the window."""
-        from agent.prompt_cache_lifecycle import claim_compaction
+        """Cached, idle, human-paced sessions at the end of a keep-alive budget (compact) or past their
+        cache window (offload), as ``(key, agent)``; the claim tags ``agent._cache_edge_action``. *skip*
+        (keys with a job in flight) is excluded before the claim, which latches the stretch."""
+        from agent.prompt_cache_lifecycle import claim_compaction, claim_offload
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.run_agent_cache import _tuple_agent
         cache, lock = getattr(self, "_agent_cache", None), getattr(self, "_agent_cache_lock", None)
@@ -95,7 +96,9 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         for key, agent in entries:
             if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
                 continue
-            if claim_compaction(agent):
+            action = "compact" if claim_compaction(agent) else "offload" if claim_offload(agent) else None
+            if action:
+                agent._cache_edge_action = action
                 due.append((key, agent))
         return due
 
@@ -116,7 +119,6 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
     async def _compact_before_cache_expiry(self, key: str, live_agent, slots: asyncio.Semaphore) -> None:
         """Compact one idle chat through the manual ``/compress`` pipeline (temporary agent,
         compression lease, persist, evict) with an automatic trigger, in the chat's profile scope."""
-        from agent.prompt_cache_lifecycle import window_still_warm
         claimed_session = getattr(live_agent, "session_id", None)
         async with slots:
             try:
@@ -126,8 +128,6 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                 if entry is None or entry.origin is None or entry.session_id != claimed_session:
                     return
                 with self._profile_scope_for_source(entry.origin):
-                    if not window_still_warm(live_agent):  # waited for a slot past the window
-                        return
                     live = authority.sessions.get(owner) if authority is not None else None
                     # The FIFO claim waits on ``claim_gate`` (as behind ``/compress``): a message
                     # arriving mid-summary starts its turn on the compacted history, not the old one.
@@ -148,13 +148,21 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
 
     async def _compact_claimed_session(self, key: str, entry, live_agent) -> None:
         """The compaction runs on a temporary agent and evicts the cached one, so the next turn starts
-        on the compacted history with a cold cache (no priming here: nothing holds the new prefix)."""
+        on the compacted history with a cold cache; nothing is sent until that next user message. An
+        ``offload`` claim (the cache is over, nothing compacted it) instead runs the cold prune on the
+        stored transcript through the live agent, which commits it to the session store."""
         from agent.prompt_cache_lifecycle import TRIGGER
         from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest
         if self._is_session_running(key):
             return
         history = await self.async_session_store.load_transcript(entry.session_id)
         if len(history or ()) < MIN_MESSAGES or self._is_session_running(key):
+            return
+        if live_agent.__dict__.pop("_cache_edge_action", "compact") == "offload":
+            from agent.turn_proactive_prune import offload_cold_history
+            after = await asyncio.to_thread(offload_cold_history, live_agent, history, entry.session_id)
+            if after is not history:
+                logger.info("Cache-expiry offload: session=%s", key)
             return
         await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=TRIGGER)
         logger.info("Cache-expiry compaction: session=%s", key)
@@ -175,10 +183,15 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         return True
 
     def _decide_compact_then_release(self, key: str, agent) -> None:
-        from agent.prompt_cache_lifecycle import claim_compaction_at_release
+        from agent.prompt_cache_lifecycle import claim_compaction_at_release, claim_offload
         jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
         try:
-            due = key not in jobs and claim_compaction_at_release(agent)
+            # Compact if step 2 is due at release; else, past the window, offload before the release.
+            action = None if key in jobs else (
+                "compact" if claim_compaction_at_release(agent) else "offload" if claim_offload(agent) else None)
+            due = action is not None
+            if due:
+                agent._cache_edge_action = action
         except Exception:
             logger.debug("release-time compaction check failed for %s", key, exc_info=True)
             due = False

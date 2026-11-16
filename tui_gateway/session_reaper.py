@@ -596,14 +596,15 @@ def _schedule_startup_orphan_sweep() -> None:
     _reaper_daemon_timer(
         _WS_ORPHAN_REAP_GRACE_S, _sweep_orphaned_session_rows, "startup orphan session sweep failed", level="warning")
 
-# ── Cache-expiry compaction (step 2 of agent.prompt_cache_lifecycle) ──────
-# A daemon ticker compacts an idle TUI / Desktop session while its prompt cache is still warm, then
-# primes the compacted chat for one fresh budget of keep-alives. It runs the manual-compress choke point
+# ── Cache-edge compaction and offload (steps 2-3 of agent.prompt_cache_lifecycle) ──
+# A daemon ticker compacts an idle TUI / Desktop session at the end of its keep-alive budget (nothing is
+# sent after it until the next user message), or offloads old tool output once the cache is over (step 3).
+# It runs the manual-compress choke point
 # (busy claim, snapshot fence, lease) with an automatic trigger, so a prompt arriving meanwhile queues
 # behind it as it does behind ``/compress``, and a job still queued when its chat closes (``_closing``)
 # is refused at that claim. The idle reapers above release through :func:`_compact_then_close`: a budget
-# ends at its keep-alives or at the release, whichever comes first, so a due chat is compacted before it
-# is closed (and never primed).
+# ends at its keep-alives or at the release, whichever comes first, so a due chat is compacted (or, past its
+# window, offloaded) before it is closed.
 
 _cache_expiry_started = False
 _cache_expiry_lock = threading.Lock()
@@ -617,7 +618,9 @@ _cache_expiry_releasing: set[str] = set()
 
 
 def _cache_expiry_candidates() -> list[tuple[str, dict]]:
-    from agent.prompt_cache_lifecycle import claim_compaction
+    """Due sessions as ``(sid, session)``; each picked one is tagged ``_cache_edge_action`` (compact or
+    offload) by the claim that latched it."""
+    from agent.prompt_cache_lifecycle import claim_compaction, claim_offload
     with _sessions_lock:
         live = list(_sessions.items())
     with _cache_expiry_lock:
@@ -630,24 +633,41 @@ def _cache_expiry_candidates() -> list[tuple[str, dict]]:
         if _session_uses_compute_host(session):
             continue  # the compute host owns that transcript; it is not compacted from here
         with _session_profile_runtime_scope(session):
-            due = claim_compaction(agent)
-        if due:
+            action = "compact" if claim_compaction(agent) else "offload" if claim_offload(agent) else None
+        if action:
+            session["_cache_edge_action"] = action
             picked.append((sid, session))
     return picked
 
 
-def _compact_before_cache_expiry(sid: str, session: dict, *, prime: bool = True) -> None:
-    """Compact *session* while its window is still warm. ``prime`` writes the compacted prefix and grants
-    the fresh budget, and only after a compaction that committed: a no-op, aborted or refused summary left
-    the chat as large as it was, so it buys neither the priming call nor more keep-alives."""
-    from agent.conversation_compression import finalize_context_engine_compression_notification
-    from agent.conversation_compression_manual import summary_committed
-    from agent.manual_compression_feedback import summarize_manual_compression
-    from agent.prompt_cache_lifecycle import TRIGGER, prime_after_compaction, window_still_warm
+def _offload_expired_cache(sid: str, session: dict) -> None:
+    """Step 3: the cache is over and nothing compacted it, so old tool output goes to disk now (the cold
+    prune), under the same manual-compress claim as a compaction, so the person returns to a small chat."""
+    from agent.turn_proactive_prune import offload_cold_history
     agent = session["agent"]
-    with _session_profile_runtime_scope(session):
-        if not window_still_warm(agent):  # waited for a slot past the window
+    with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
+        with session["history_lock"]:
+            before, version = list(session.get("history", [])), int(session.get("history_version", 0))
+        after = offload_cold_history(agent, before, session.get("session_key") or sid)
+        if after is before:
             return
+        with session["history_lock"]:
+            if int(session.get("history_version", 0)) != version:
+                return  # history moved meanwhile: the next turn's at-return check covers it
+            session["history"], session["history_version"] = after, version + 1
+    logger.info("Cache-expiry offload: sid=%s", sid)
+
+
+def _compact_before_cache_expiry(sid: str, session: dict) -> None:
+    """Compact *session* at the end of its keep-alive budget. Nothing is sent afterwards: the next
+    user message starts the compacted chat's cache (and its keep-alives)."""
+    from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.manual_compression_feedback import summarize_manual_compression
+    from agent.prompt_cache_lifecycle import TRIGGER
+    agent = session["agent"]
+    if session.pop("_cache_edge_action", "compact") == "offload":
+        _offload_expired_cache(sid, session)
+        return
     with _session_profile_runtime_scope(session), _manual_compress_turn(sid, session):
         with session["history_lock"]:
             before, version = list(session.get("history", [])), int(session.get("history_version", 0))
@@ -663,17 +683,15 @@ def _compact_before_cache_expiry(sid: str, session: dict, *, prime: bool = True)
         finalize_context_engine_compression_notification(agent, committed=True)
         with session["history_lock"]:
             compacted = list(session.get("history", []))
-        outcome = summarize_manual_compression(before, compacted, 0, 0,
-                                               compression_state=getattr(agent, "context_compressor", None))
-        if prime and summary_committed(outcome):
-            prime_after_compaction(agent, compacted)
+        summarize_manual_compression(before, compacted, 0, 0,
+                                     compression_state=getattr(agent, "context_compressor", None))
     logger.info("Cache-expiry compaction: sid=%s removed=%d messages", sid, removed)
 
 
-def _cache_expiry_job(sid: str, session: dict, *, prime: bool = True) -> None:
+def _cache_expiry_job(sid: str, session: dict) -> None:
     try:
         with _cache_expiry_slots:
-            _compact_before_cache_expiry(sid, session, prime=prime)
+            _compact_before_cache_expiry(sid, session)
     except (CompressionBusy, SessionNotOwned):
         pass  # a turn, a close or another owner got there first: nothing to do this window
     except Exception:
@@ -709,7 +727,7 @@ def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=N
     is still reapable then and ``still_due()`` (the session cap: other closes may have brought it under)
     still holds. Returns that thread, or None when the caller closes the session now as before."""
     from agent.memory_provider import spawn_context_thread
-    from agent.prompt_cache_lifecycle import claim_compaction_at_release
+    from agent.prompt_cache_lifecycle import claim_compaction_at_release, claim_offload
     agent = session.get("agent")
     if agent is None or _session_uses_compute_host(session):
         return None
@@ -717,8 +735,11 @@ def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=N
         if sid in _cache_expiry_in_flight:
             return None
     with _session_profile_runtime_scope(session):
-        if not claim_compaction_at_release(agent):
-            return None
+        # Compact if step 2 is due at release; else, past the window, offload before the release.
+        action = "compact" if claim_compaction_at_release(agent) else "offload" if claim_offload(agent) else None
+    if action is None:
+        return None
+    session["_cache_edge_action"] = action
     with _cache_expiry_lock:
         _cache_expiry_in_flight.add(sid)
         _cache_expiry_releasing.add(sid)
@@ -730,7 +751,7 @@ def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=N
 
     def _job() -> None:
         try:
-            _cache_expiry_job(sid, session, prime=False)
+            _cache_expiry_job(sid, session)
         finally:
             if not _close_session_by_id(sid, end_reason=end_reason, predicate=_closable):
                 with _cache_expiry_lock:

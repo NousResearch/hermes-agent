@@ -21,7 +21,7 @@ included), under the same ``exclusive_maintenance`` reservation, so nothing here
 * A named profile's ``config.yaml`` and ``.env`` arrive whole: only the root home is the host's.
 * ``--messaging-off`` (the Desktop transfer passes it; an undo does not): every messaging bot the
   archive would run, in the root and in each profile, arrives with its ``platforms.<id>.enabled``
-  switch off (the flag Settings ▸ Messaging writes), its token and settings kept, so the source
+  switch off (the flag the Messaging page writes), its token and settings kept, so the source
   computer keeps answering until the user switches the bot over. Written into the same merged
   ``config.yaml`` the restore publishes.
 * Never taken from the archive: ``shared/nous_auth.json``, ``webapp/`` (the Webapp's sign-in
@@ -235,7 +235,7 @@ def messaging_off(cfg: dict[str, Any], env_text: str,
 
     A bot runs when a block sets ``enabled: true``, or when none sets ``enabled`` and ``env_text``
     holds its token (the gateway enables it from env). Off is ``platforms.<id>.enabled: false``, the
-    switch Settings ▸ Messaging writes, plus ``false`` in any other block that sets ``enabled``, so no
+    switch the Messaging page writes, plus ``false`` in any other block that sets ``enabled``, so no
     other spelling turns it back on. Tokens and every other setting are left as they are."""
     from utils import is_truthy_value
     bots = _bot_platforms() if bots is None else bots
@@ -485,7 +485,7 @@ class KeepHostImport:
             return
         print(f"{MESSAGING_OFF_LINE}{', '.join(names)}")
         for home, off in sorted(self.switched_off.items()):
-            print(f"  {home}: {', '.join(off)} (token and settings kept; turn on in Settings > Messaging)")
+            print(f"  {home}: {', '.join(off)} (token and settings kept; turn on on the Messaging page)")
 
     def finish(self, errors: list[str]) -> list[str]:
         """After a restore with no errors, clear what the archive lacks; return problems."""

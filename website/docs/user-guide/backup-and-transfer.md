@@ -29,7 +29,7 @@ Hermes checks that the cloud agent can receive a transfer (one older than this f
 
 **What the cloud agent keeps:** its Nous Portal sign-in, its model and provider, its Hermes Cloud tools (web, images, voice), its dashboard sign-in, and its scheduler settings. Hermes Cloud set these up, and they already work there.
 
-**Messaging bots** (Telegram, Discord, Slack…) come over with their tokens, allowlists and settings, but switched off on the cloud agent: a bot token can only be used by one running Hermes at a time, so this computer keeps answering. The done screen names the bots that came over switched off. When you're ready, turn each one off on this computer and on for the cloud agent in **Settings → Messaging**. Undo puts the cloud agent's own bots back as they were.
+**Messaging bots** (Telegram, Discord, Slack…) come over with their tokens, allowlists and settings, but switched off on the cloud agent: a bot token can only be used by one running Hermes at a time, so this computer keeps answering. The done screen names the bots that came over switched off. When you're ready, switch each one over on the **Messaging** page: off on this computer, on for the cloud agent. Undo puts the cloud agent's own bots back as they were.
 
 **Undo** on the done screen restores the cloud agent from its undo point, and removes what the transfer added. If a transfer fails part-way, the error screen offers **Undo** as well as **Retry**; Undo always uses the first undo point, taken before anything changed. **Start again** goes back to the agent list.
 

@@ -24,5 +24,5 @@ def build_import_cmd_parser(subparsers, *, cmd_import: Callable) -> None:
         "--messaging-off", action="store_true",
         help="With --keep-host: every messaging bot the backup runs (Telegram, Discord, ...) arrives "
         "switched off, token and settings kept, so the computer it came from keeps answering. Turn "
-        "each on in Settings > Messaging. The Desktop transfer passes it; an undo does not")
+        "each on on the Messaging page. The Desktop transfer passes it; an undo does not")
     import_parser.set_defaults(func=cmd_import)

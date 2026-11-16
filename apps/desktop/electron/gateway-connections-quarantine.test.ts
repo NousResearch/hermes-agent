@@ -8,7 +8,11 @@ import { promisify } from 'node:util'
 import { afterEach, test } from 'vitest'
 
 import { REGISTRY_QUARANTINE_CAP } from './connection-registry'
-import { createGatewayConnectionsStore, GATEWAY_CONNECTIONS_FILE, readLegacyUserDataRegistry } from './gateway-connections-store'
+import {
+  createGatewayConnectionsStore,
+  GATEWAY_CONNECTIONS_FILE,
+  readLegacyUserDataRegistry
+} from './gateway-connections-store'
 
 // Migration is lossless: a store and a Desktop list that each hold quarantined entries keep every
 // one of them, even past the normalizer's cap, through later writes on both sides.
@@ -23,7 +27,10 @@ afterEach(() => {
 })
 
 const broken = (who: string, n: number) =>
-  Array.from({ length: n }, (_, i) => ({ reason: 'entry-missing-url', entry: { kind: 'remote', label: `${who} ${i}` } }))
+  Array.from({ length: n }, (_, i) => ({
+    reason: 'entry-missing-url',
+    entry: { kind: 'remote', label: `${who} ${i}` }
+  }))
 
 test('every quarantined entry survives the import past the cap, and later writes keep them', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-gw-quar-'))
@@ -56,9 +63,7 @@ test('every quarantined entry survives the import past the cap, and later writes
   assert.ok(all.length > REGISTRY_QUARANTINE_CAP)
   store.read()
   assert.deepEqual(kept(), all)
-  assert.ok(
-    JSON.parse(fs.readFileSync(file, 'utf8')).importNotices.some((n: any) => n.field === 'quarantinedOverflow')
-  )
+  assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).importNotices.some((n: any) => n.field === 'quarantinedOverflow'))
 
   store.write({ ...store.read(), launchMode: 'last-used' })
   assert.deepEqual(kept(), all)

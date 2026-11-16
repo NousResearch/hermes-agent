@@ -85,14 +85,25 @@ function mount(request: (method: string, params: any) => Promise<unknown>) {
   }
 
   const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
-  const instance = renderSync(<Harness />, { patchConsole: false, stdin: new PassThrough() as any, stdout: stdout as any })
+  const instance = renderSync(<Harness />, {
+    patchConsole: false,
+    stdin: new PassThrough() as any,
+    stdout: stdout as any
+  })
 
   unmount = () => instance.unmount()
 
   const slash = createSlashHandler({
     slashFlightRef: { current: 0 },
     gateway: { gw, rpc: gw.request },
-    transcript: { page: vi.fn(), panel: vi.fn(), send, sys, setHistoryItems: vi.fn(), trimLastExchange: (i: unknown[]) => i },
+    transcript: {
+      page: vi.fn(),
+      panel: vi.fn(),
+      send,
+      sys,
+      setHistoryItems: vi.fn(),
+      trimLastExchange: (i: unknown[]) => i
+    },
     local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
     session: { newSession: vi.fn(), resumeById: vi.fn() },
     composer: {
@@ -117,7 +128,10 @@ describe('a browse paste still resolving belongs to the draft it was typed into'
     const releases: Array<() => void> = []
 
     vi.mocked(stageImagePath).mockImplementation(
-      () => new Promise(done => releases.push(() => done({ mime: 'image/png', name: 'shot.png', path: '/cache/shot.png' }) as any))
+      () =>
+        new Promise(done =>
+          releases.push(() => done({ mime: 'image/png', name: 'shot.png', path: '/cache/shot.png' }) as any)
+        )
     )
 
     return releases
@@ -322,7 +336,10 @@ describe('an armed edit through the real submit path', () => {
 
   it('Esc Esc while the edit is still sending: its refusal brings the draft back but never re-arms it', async () => {
     let refuse!: () => void
-    const { composer, submit } = await armWithChips(1, () => new Promise((_, reject) => (refuse = () => reject(busy()))))
+    const { composer, submit } = await armWithChips(
+      1,
+      () => new Promise((_, reject) => (refuse = () => reject(busy())))
+    )
     const display = composer().state.input
 
     submit().dispatchSubmission(display)
@@ -342,7 +359,10 @@ describe('an armed edit through the real submit path', () => {
 
   it('a transport error after a switch away never claims nothing was removed', async () => {
     let fail!: () => void
-    const { submit, sys } = await armWithChips(1, () => new Promise((_, reject) => (fail = () => reject(new Error('socket closed')))))
+    const { submit, sys } = await armWithChips(
+      1,
+      () => new Promise((_, reject) => (fail = () => reject(new Error('socket closed'))))
+    )
 
     submit().dispatchSubmission('edited')
     await flush()

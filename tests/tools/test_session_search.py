@@ -206,22 +206,15 @@ class TestBrowseShape:
 
     def test_derived_metadata_is_strictly_redacted_but_explicit_messages_are_not(self, db):
         secret = "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"  # split: push protection
-        db.create_session("s_secret", source="cli")
-        db._conn.execute(
-            "UPDATE sessions SET title = ? WHERE id = ?",
-            (f"Deploy credentials {secret}", "s_secret"),
-        )
-        db.append_message(
-            "s_secret", role="user", content=f"deployneedle uses {secret}"
-        )
-        db._conn.commit()
+        seed_session(db, "s_secret", "cli", title=f"Deploy credentials {secret}")
+        seed_messages(db, "s_secret", {"role": "user", "content": f"deployneedle uses {secret}"})
 
-        discovered = json.loads(session_search(query="deployneedle", db=db))["results"][0]
+        discovered = json.loads(session_search(query="deployneedle", db=db, persistence=db))["results"][0]
         browsed = next(
-            row for row in json.loads(session_search(db=db))["results"]
+            row for row in json.loads(session_search(db=db, persistence=db))["results"]
             if row["session_id"] == "s_secret"
         )
-        read = json.loads(session_search(session_id="s_secret", db=db))
+        read = json.loads(session_search(session_id="s_secret", db=db, persistence=db))
 
         assert secret not in discovered["title"]
         assert secret not in discovered["snippet"]

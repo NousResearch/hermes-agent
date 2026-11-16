@@ -42,11 +42,13 @@ from tools.approval_detection_lex import (
     _deobfuscate_shell_word_for_detection,
     _is_redirection_operator_char,
     _iter_command_substitution_bodies,
+    _quoted_heredoc_body_spans,  # re-exported: tools.approval_detection_shell_scope imports it from here
     _read_shell_word,
     _skip_shell_whitespace,
     _splice,
     _strip_shell_word_syntax,  # re-exported: tools.approval_wrappers imports it from here
 )
+from tools.approval_detection_assignments import eval_payloads, resolve_shell_assignment_variants
 from tools.approval_detection_awk import AWK_EXEC_DESCRIPTION, AWK_NAMES, awk_program_runs_shell
 
 logger = logging.getLogger("tools.approval")
@@ -1636,14 +1638,63 @@ def _command_detection_variants(
     (unless the string runs the written file); the hardline and deny floors (*floors*) also scan the
     raw command, as main does. python/osascript dropped copies are scanned
     IN ADDITION. Bodies a shell runs (`bash <<EOF`, `cat <<EOF | sh`, `ssh host <<EOF`) and
-    unterminated/mis-parsed `<<` stay.
+    unterminated/mis-parsed `<<` stay. Each source also gets the variants of its same-command
+    variable assignments (see `_resolved_detection_variants`).
     """
     seen: set[str] = set()
     for source in heredoc_scan_sources(command, _SHELL_NAMES_RE, floors=floors):
-        for variant in _single_command_detection_variants(source, eval_depth, capped, floors=floors):
+        for variant in _resolved_detection_variants(source, eval_depth, capped, floors=floors):
             if variant not in seen:
                 seen.add(variant)
                 yield variant
+
+
+def _resolved_detection_variants(
+        command: str, eval_depth: int = 0, capped: list[str] | None = None, *, floors: bool = False,
+        assign_depth: int = 0):
+    """Every detection view of *command*, then those views with variables assigned in the same
+    command substituted into each (per use; one form per possible value) and each result expanded
+    once more, so ``X="rm -rf /home"; $X`` is seen as ``rm -rf /home`` (see
+    approval_detection_assignments)."""
+    seen: set[str] = set()
+    for variant in _single_command_detection_variants(command, eval_depth, capped, floors=floors):
+        if variant is None:
+            continue
+        seen.add(variant)
+        yield variant
+    # `eval` re-parses its (expanded) arguments as a script: that script is a command of its own,
+    # like a `bash -c` payload. Payloads are expanded with the same-command values, so
+    # `X="rm -rf /home"; eval "$X"` is seen as `rm -rf /home`.
+    evaluated, _ = eval_payloads(command) if assign_depth < _MAX_EVAL_DEPTH else ([], True)
+    for payload in evaluated:
+        for variant in _resolved_detection_variants(payload, eval_depth, capped, floors=floors, assign_depth=assign_depth + 1):
+            if variant not in seen:
+                seen.add(variant)
+                yield variant
+    # Variants that differ from an earlier source only by whitespace (the command-start-marked
+    # forms insert newlines) resolve to the same command, so each is resolved and expanded once.
+    # Quoting is NOT folded: `"rm" -rf /` and `rm -rf /` expand to different variant sets.
+    done: set[str] = set()
+    for source in [command, *seen]:
+        key = _RESOLVE_DEDUP_RE.sub("", source)
+        if key in done:
+            continue
+        done.add(key)
+        for resolved in resolve_shell_assignment_variants(source):
+            resolved_key = _RESOLVE_DEDUP_RE.sub("", resolved)
+            if resolved_key in done:
+                continue
+            done.add(resolved_key)
+            for variant in _single_command_detection_variants(resolved, eval_depth, capped, floors=floors):
+                if variant is not None and variant not in seen:
+                    seen.add(variant)
+                    yield variant
+
+
+_RESOLVE_DEDUP_RE = re.compile(r"\s")
+# Nested `eval` payloads expanded for detection. Deeper nesting is refused in unattended approve
+# mode by approval_detection_assignments.uninspectable_reasons (same depth bound).
+_MAX_EVAL_DEPTH = 3
 
 
 def _substitution_body_variants(command: str, fresh):

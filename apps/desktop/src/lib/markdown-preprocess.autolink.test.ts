@@ -174,7 +174,12 @@ describe('preprocessMarkdown / CJK bare-URL boundaries', () => {
       '）',
       '「説明」',
       '『説明』',
-      '【说明】'
+      '【说明】',
+      '《说明》',
+      '〈注〉',
+      '〔注〕',
+      '“说明”…',
+      '…以及'
     ]
 
     for (const tail of tails) {

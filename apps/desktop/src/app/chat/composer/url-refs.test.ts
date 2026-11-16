@@ -148,6 +148,13 @@ describe('linkifyUrls', () => {
     )
   })
 
+  it('ends a chipped link at CJK and typographic punctuation, keeping CJK path text', () => {
+    expect(linkifyUrls('看这里：https://example.com/foo，还有')).toBe('看这里：@url:`https://example.com/foo`，还有')
+    expect(linkifyUrls('https://a.com、https://b.com！')).toBe('@url:`https://a.com`、@url:`https://b.com`！')
+    expect(linkifyUrls('“https://example.com/a”…')).toBe('“@url:`https://example.com/a`”…')
+    expect(linkifyUrls('见https://zh.wikipedia.org/wiki/人工智能。')).toBe('见@url:`https://zh.wikipedia.org/wiki/人工智能`。')
+  })
+
   it('leaves text without a scheme alone', () => {
     expect(linkifyUrls('example.dev/a and src/foo.ts')).toBe('example.dev/a and src/foo.ts')
   })

@@ -1,5 +1,6 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
 import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
+import { URL_PROSE_BOUNDARY } from '@/lib/url-boundary'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -33,7 +34,7 @@ const MAX_ARTIFACT_MESSAGE_PAGE_JSON_CHARS = 32_000_000
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const URL_RE = /https?:\/\/[^\s<>"')`]+/g
+const URL_RE = new RegExp(`https?:\\/\\/[^\\s<>"')\`${URL_PROSE_BOUNDARY}]+`, 'g')
 const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i

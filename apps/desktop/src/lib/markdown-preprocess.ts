@@ -7,6 +7,7 @@ import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 import { DIRECTIVE_WITH_BODY_RE } from '@/lib/transcript-directives'
+import { URL_PROSE_BOUNDARY } from '@/lib/url-boundary'
 
 // Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus desktop-only
 // `scratchpad`/`analysis`.
@@ -75,11 +76,12 @@ const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\
 // likewise strips trailing emphasis/punctuation — so dropping it here is safe
 // and keeps the emphasis run intact. Other trailing punctuation is still peeled
 // off by the final `[^\s<>"'`*.,;:!?]` class.
-// CJK sentence punctuation ends a bare URL even without a space. Name the
-// delimiters rather than excluding Unicode blocks: full-width letters, digits,
-// symbols and half-width katakana are valid internationalized URL content.
-const RAW_URL_RE =
-  /https?:\/\/[^\s<>"'`*、。，；：！？（）「」『』【】]+[^\s<>"'`*.,;:!?、。，；：！？（）「」『』【】]/g
+// CJK and typographic punctuation (URL_PROSE_BOUNDARY) ends a bare URL even
+// without a space; CJK letters and fullwidth alphanumerics stay in the link.
+const RAW_URL_RE = new RegExp(
+  `https?:\\/\\/[^\\s<>"'\`*${URL_PROSE_BOUNDARY}]+[^\\s<>"'\`*.,;:!?${URL_PROSE_BOUNDARY}]`,
+  'g'
+)
 
 const URL_TRAILING_PUNCTUATION = '.,;:!?'
 // Markdown that already owns the URLs inside it, which the bare-URL autolinker

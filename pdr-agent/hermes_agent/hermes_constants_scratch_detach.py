@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # decide what the child imports; it gets the launcher's own ``sys.path`` (repo root, PM/venv
 # site-packages), not ``hermes_bootstrap``, whose boot hook would schedule another prune.
 _CHILD = ("import sys; sys.path[:] = sys.argv[3:]; "
-          "import hermes_constants_scratch_detach as d; d.run(*sys.argv[1:3])")
+          "from hermes_agent import hermes_constants_scratch_detach as d; d.run(*sys.argv[1:3])")
 
 
 def spawn_prune(scratch: Path) -> None:

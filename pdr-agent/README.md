@@ -21,7 +21,7 @@ PDR 后端通过引擎的消息网关（`gateway/`，api_server 平台，默认�
 
 | 目录 | 内容 |
 |---|---|
-| `hermes_agent/` | 核心入口模块：`run_agent`（智能体对话循环入口）、`cli`、`model_tools`（工具编排）、`toolsets`、`hermes_constants`（路径与 profile）、`hermes_bootstrap` 等；`compat/` 为模块改名兼容层 |
+| `hermes_agent/` | 核心入口模块：`run_agent`（智能体对话循环入口）、`cli`、`model_tools`（工具编排）、`toolsets`、`hermes_constants`（路径与 profile）等；`state/` 为会话存储的主题模块；`compat/` 为模块改名兼容层 |
 | `agent/` | 对话回合、上下文压缩、提示词组装、模型与辅助模型解析、记忆、多语言 |
 | `tools/` | 内置工具：终端（本地 / Docker / SSH 等后端）、文件、浏览器、网页、视觉、代码执行、MCP、子任务委派 |
 | `skills/`、`optional-skills/` | 内置技能与可选技能库 |
@@ -45,10 +45,11 @@ PDR 后端通过引擎的消息网关（`gateway/`，api_server 平台，默认�
 - 项目名改为 `pdr-agent`（`pyproject.toml`、`package.json`）。
 - 移除与 PDR 无关的部分：桌面客户端（`apps/`）、网页仪表盘前端（`web/`）及对应的打包脚本、测试和 CI，还有贡献者名录、外语翻译、Nix 打包、独立安装脚本、上游评审机器人配置。
 - 文件归类：
-  - 根目录 20 个单文件模块移入 `hermes_agent/`，例如 `import run_agent` 改为 `from hermes_agent import run_agent`；
+  - 根目录 19 个单文件模块移入 `hermes_agent/`，例如 `import run_agent` 改为 `from hermes_agent import run_agent`；`hermes_bootstrap.py` 留在根目录：启动器以 `python -I` 在 `hermes_agent` 可导入之前就要先执行它；
   - 67 个 `hermes_state_*.py` 移入 `hermes_agent/state/`，例如 `import hermes_state_sessions` 改为 `import hermes_agent.state.sessions`；存储本体 `hermes_state.py` 留在根目录。`hermes_agent/state/` 刻意不加载存储本体，导入单个主题模块不会引起循环导入；
   - 说明文档移入 `docs/`，配置模板移入 `hermes_cli/data/`。
 - 旧模块名仍可导入：`hermes_agent/compat/moves.py` 登记了所有"旧名 → 新名"，运行时由兼容查找器指向同一个模块对象，第三方插件不受影响。仓库内代码一律使用新名，测试里的严格模式会拒绝旧名。
+- 根目录的 `cli.py`、`run_agent.py`、`model_tools.py`、`toolsets.py`、`hermes_constants.py`、`hermes_state_common.py` 是 `scripts/move/generate_shims.py` 生成的转发文件（不要手改）：新开的进程在兼容查找器装好之前就会按这些旧名导入（例如 `python cli.py`、已生成的启动器），它们把导入转到 `hermes_agent/` 下的新位置。移动模块后重新运行该脚本，`--check` 用于检查。
 
 ## 开发
 

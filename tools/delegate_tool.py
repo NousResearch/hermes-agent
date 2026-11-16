@@ -52,7 +52,8 @@ from tools.delegate_tool_tasks import (
 )
 from tools.delegate_tool_tuning import pin_child_service_tier
 from tools.delegate_tool_toolsets import (
-    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
+    DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _parent_has_effective_tool,
+    _resolve_child_toolsets, _strip_blocked_tools,
 )
 from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
@@ -224,8 +225,11 @@ def _build_child_agent(
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
     routing_cfg: Optional[dict[str, Any]] = None,
-    # Legacy; accepted for wire compat but ignored (capability is depth-derived).
+    # Legacy model-facing callers remain depth-derived. The host-owned lifecycle
+    # API marks its validated role and explicit toolset ceiling authoritative.
     role: str = "leaf",
+    role_is_authoritative: bool = False,
+    toolsets_are_ceiling: bool = False,
     # Per-task route from the delegation provider (tools/delegate_tool_routes.py): a reasoning
     # effort that beats delegation.reasoning_effort, and the profile home the child runs as.
     override_reasoning_effort: Any = None,
@@ -244,11 +248,20 @@ def _build_child_agent(
     from agent.delegation_context import delegated_child_context
     from tools.delegate_tool_resumable import endpoint_identity
     from tools.delegate_tool_routes import delegated_profile_scope
-    # Role is depth-derived: a child may delegate iff the kill switch is on and
-    # depth budget remains below max_spawn_depth. The `role` arg is ignored.
+    # Model-facing delegation stays depth-derived. A validated lifecycle role is
+    # authoritative, and an orchestrator request that global policy cannot admit
+    # is refused rather than silently degraded.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     max_spawn = _get_max_spawn_depth()
-    effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    can_orchestrate = _get_orchestrator_enabled() and child_depth < max_spawn
+    if role_is_authoritative and role == "orchestrator" and not can_orchestrate:
+        raise ValueError(
+            "Requested orchestrator role conflicts with delegation.orchestrator_enabled "
+            "or delegation.max_spawn_depth."
+        )
+    if role_is_authoritative and role == "orchestrator" and not _parent_has_effective_tool(parent_agent, "delegate_task"):
+        raise ValueError("Requested orchestrator role would broaden parent permissions: delegate_task is unavailable.")
+    effective_role = role if role_is_authoritative else ("orchestrator" if can_orchestrate else "leaf")
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
@@ -259,7 +272,9 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = _load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(
+        parent_agent, toolsets, effective_role, explicit_ceiling=toolsets_are_ceiling,
+    )
     child_prompt = _build_child_system_prompt(
         workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,

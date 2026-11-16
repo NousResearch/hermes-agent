@@ -13,6 +13,8 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from plugins.platforms.feishu import adapter as feishu_adapter
 from plugins.platforms.feishu import adapter_ws
 
@@ -405,3 +407,35 @@ def test_bootstrap_post_gets_a_budget_on_registered_threads(monkeypatch):
     (call,) = real_post.call_args_list
     # (connect, read): the open timeout bounds connecting, 30s bounds a stalled read.
     assert call.kwargs.get("timeout") == (5.0, 30.0)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "garbage",
+        0,
+        -1,
+        float("nan"),
+        float("inf"),
+        pytest.param(10**1000, id="conversion-overflow"),
+    ],
+)
+def test_invalid_ws_open_timeout_fails_before_it_disables_the_guard(value):
+    """An unusable explicit value must not coerce to None: that silently opts out
+    of both the connect override and the bootstrap POST budget (#156394 review)."""
+    with pytest.raises(ValueError, match=r"feishu\.ws_open_timeout"):
+        feishu_adapter.FeishuAdapter._load_settings({"ws_open_timeout": value})
+
+
+@pytest.mark.parametrize(
+    "extra, expected",
+    [
+        ({}, 10.0),
+        ({"ws_open_timeout": None}, None),
+        ({"ws_open_timeout": 7.5}, 7.5),
+        ({"ws_open_timeout": "7.5"}, 7.5),
+    ],
+)
+def test_ws_open_timeout_preserves_supported_settings(extra, expected):
+    settings = feishu_adapter.FeishuAdapter._load_settings(extra)
+    assert settings.ws_open_timeout == expected

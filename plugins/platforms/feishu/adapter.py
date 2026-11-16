@@ -446,20 +446,20 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _coerce_optional_float(value: Any, default: Optional[float] = None) -> Optional[float]:
-    """Coerce to a finite positive float; anything unusable falls back to ``default``.
+    """Coerce to a finite positive float; ``None`` keeps ``default``, unusable values raise.
 
-    Fractional values are preserved (tests use sub-second budgets) and only
-    ``None`` means "feature off", so a bad config never widens a timeout to
-    infinity by accident.
+    Fractional values are preserved (tests use sub-second budgets) and only ``None``
+    means "feature off", so a typo'd config can never silently widen a timeout to
+    infinity by accident - the invalid value fails loudly at settings load instead.
     """
     if value is None:
         return default
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
-        return default
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("feishu.ws_open_timeout must be a positive finite number or null") from exc
     if parsed != parsed or parsed in (float("inf"), float("-inf")) or parsed <= 0:  # NaN/guards
-        return default
+        raise ValueError("feishu.ws_open_timeout must be a positive finite number or null")
     return parsed
 
 

@@ -73,10 +73,9 @@ def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypa
     (tmp_path / "display").write_text("37", encoding="utf-8")
     live = {37: os.getpid()}  # :37 is owned by a running server (this very process stands in for it)
     monkeypatch.setattr(runtime, "_display_in_use", lambda num: num in live)
-    monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")
-    assert runtime._allocate_display() != 37
+    assert runtime._pick_display() != 37
     live.clear()
-    assert runtime._allocate_display() == 37, "a free recorded number is reclaimed"
+    assert runtime._pick_display() == 37, "a free recorded number is reclaimed"
 
 
 def test_live_server_without_its_lock_file_still_owns_the_display(tmp_path, monkeypatch):

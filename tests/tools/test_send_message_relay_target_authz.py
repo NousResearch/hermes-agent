@@ -101,7 +101,7 @@ def test_arbitrary_relay_chat_id_is_refused_and_never_egresses(relay_env):
         "error": (
             f"Refusing to send to unattested relay target 'discord:{ARBITRARY_CHAT}': "
             "this gateway has no record of that destination. Use "
-            "send_message(action='list') to see the targets it can reach."
+            "`hermes send --list` to see the targets it can reach."
         )
     }
     assert sent == []
@@ -179,25 +179,6 @@ def test_live_native_adapter_takes_precedence_over_the_relay_guard(
     assert result["success"] is True
     assert sent == [ARBITRARY_CHAT]
 
-
-def test_react_refuses_an_arbitrary_relay_target(relay_env):
-    """Reactions are outbound acts too — same floor, same refusal."""
-    result = json.loads(
-        send_message_tool(
-            {
-                "action": "react",
-                "target": f"discord:{ARBITRARY_CHAT}",
-                "emoji": "👍",
-            }
-        )
-    )
-    assert result == {
-        "error": (
-            f"Refusing to send to unattested relay target 'discord:{ARBITRARY_CHAT}': "
-            "this gateway has no record of that destination. Use "
-            "send_message(action='list') to see the targets it can reach."
-        )
-    }
 
 # ── B-1: the guard must authorize the RESOLVED destination ──────────────────
 #
@@ -315,7 +296,7 @@ def test_slack_user_target_resolving_to_unattested_dm_is_refused(slack_relay_env
         "error": (
             f"Refusing to send to unattested relay target 'slack:{unattested}': "
             "this gateway has no record of that destination. Use "
-            "send_message(action='list') to see the targets it can reach."
+            "`hermes send --list` to see the targets it can reach."
         )
     }
     assert sent == []

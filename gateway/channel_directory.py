@@ -1,7 +1,7 @@
 """Channel directory -- cached map of reachable channels/contacts per platform.
 
 Built on gateway startup, refreshed every 5 min, saved to ``<HERMES_HOME>/channel_directory.json``.
-send_message reads it for action="list" and to resolve friendly channel names to IDs.
+send_message reads it to resolve friendly channel names to IDs.
 """
 
 import asyncio
@@ -456,7 +456,7 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
         if ch.get("id") == raw:
             return ch["id"]
     query = _normalize_channel_query(name)
-    # 1. Exact name match, including the display labels shown by send_message(action="list")
+    # 1. Exact name match, including the display labels shown by `hermes send --list`
     for ch in channels:
         if query in (_normalize_channel_query(ch["name"]), _normalize_channel_query(_channel_target_name(platform_name, ch))):
             return ch["id"]

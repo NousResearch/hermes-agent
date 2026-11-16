@@ -113,6 +113,7 @@ def update_plugin(
 
     from hermes_cli import plugins_cmd as pc
     from hermes_cli.plugins_cmd_catalog import RepinConsentRequired, refuse_if_installed_removed
+    from hermes_cli.plugins_cmd_git import _refuse_foreign_checkout
     from pm.store import tree_digest
 
     target = target.resolve()
@@ -171,6 +172,7 @@ def update_plugin(
                 shutil.copytree(target, staged, symlinks=True, ignore=shutil.ignore_patterns("__pycache__"))
                 if feed_revision:
                     git = pc._resolve_git_executable()
+                    _refuse_foreign_checkout(git, target)
                     status = pc._git_or_raise(git, target, "status", "--porcelain", failure_prefix="Could not inspect plugin edits: ")
                     if status.stdout.strip():
                         raise pc.PluginOperationError("Pinned feed update has local changes; save them before updating.")

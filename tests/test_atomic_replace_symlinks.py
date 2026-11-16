@@ -205,7 +205,7 @@ def test_atomic_yaml_write_restores_owner_on_real_symlink_target(
     link.symlink_to(real)
 
     chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
+    monkeypatch.setattr("utils.preserve_file_owner", lambda _path: (123, 456))
     monkeypatch.setattr(
         "utils.os.chown",
         lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
@@ -230,7 +230,7 @@ def test_atomic_roundtrip_yaml_save_restores_owner(
     target.write_text("model:\n  provider: openrouter\n", encoding="utf-8")
 
     chown_calls: list[tuple[Path, int, int]] = []
-    monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (345, 678))
+    monkeypatch.setattr("utils.preserve_file_owner", lambda _path: (345, 678))
     monkeypatch.setattr(
         "utils.os.chown",
         lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
@@ -423,6 +423,39 @@ def test_contended_rename_retry_wins_keeps_write_atomic(
     assert calls["n"] == 3
     assert target.read_text(encoding="utf-8") == "new"
     assert not tmp.exists()
+
+
+@pytest.mark.platforms("windows")
+def test_contended_retries_wait_within_bounds_without_agent_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Contended renames recover with ``agent`` unimportable (the updater and
+    early boot run without it), and each retry waits within its bounds:
+    20/40/80/100 ms doubling from the base under the cap, plus up to 50%."""
+    monkeypatch.setitem(sys.modules, "agent.retry_utils", None)
+    target = tmp_path / "gateway_state.json"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def contended_until_last_retry(src: str, dst: str) -> None:
+        calls["n"] += 1
+        if calls["n"] <= 4:
+            raise _sharing_error(5)
+        real_replace(src, dst)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("utils.os.replace", contended_until_last_retry)
+    monkeypatch.setattr("utils.time.sleep", sleeps.append)
+
+    assert Path(atomic_replace(tmp, target)) == target
+    assert target.read_text(encoding="utf-8") == "new"
+    bounds = [(0.02, 0.03), (0.04, 0.06), (0.08, 0.12), (0.1, 0.15)]
+    assert len(sleeps) == len(bounds)
+    for slept, (low, high) in zip(sleeps, bounds):
+        assert low <= slept <= high + 1e-9  # float addition can land a hair over the cap
 
 
 @pytest.mark.platforms("windows")

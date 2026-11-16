@@ -15,7 +15,9 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
+from hermes_cli.plugins_idle_tasks import PluginIdleTaskCtxMixin
 from hermes_cli.plugins_ledger import PluginRegistration
+from hermes_cli.plugins_load_guard import _ignore_after_abandoned_load, ignore_registrars_after_abandoned_load
 from hermes_cli.plugins_loader import _serialized_replacement
 from hermes_cli.plugins_manifest import PluginManifest
 from hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
@@ -33,7 +35,7 @@ def _facade():
     return facade
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -666,10 +668,10 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
         ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
-        ``inherit_from`` names a built-in or already-registered auxiliary task whose effective
-        configuration becomes the base for this one; it is resolved at read time, so the task tracks
-        the base's current config instead of snapshotting it (precedence: inherited base, then
-        ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential
+        ``inherit_from`` names a picker task, ``background_review``, ``curator`` or a registered task;
+        its effective config becomes this one's base at read time (precedence: inherited base, then
+        ``defaults``, then user config in ``auxiliary.<key>``). A core base's route carries over only
+        with ``plugins.entries.<id>.llm.allow_task_override``. An unknown or self-referential
         ``inherit_from`` logs a warning and registers the task without inheritance.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
         from hermes_cli.plugins_aux_tasks import build_auxiliary_task_entry
@@ -694,6 +696,16 @@ class PluginContext(PluginCapabilityCtxMixin):
             return 0
         _facade().logger.debug("Plugin %s registered %d redaction pattern(s)", self.manifest.name, count)
         return count
+
+    def redact_text(self, text: str, *, force: bool = False) -> str:
+        """Return *text* with credentials replaced by Hermes's non-reusable sentinel (``«redacted:sk-…»``,
+        no key characters), credential assignments masked, and URL credentials (userinfo and
+        credential-named query params) removed, since a stored or uploaded link would otherwise still
+        work. Honours ``security.redact_secrets`` unless ``force``; use ``force=True`` for text that
+        leaves the machine."""
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=force, file_read=True, secret_file=True,
+                                     redact_url_credentials=True)
 
     def register_locale(
         self, lang: str, source: str | Path | Mapping[str, Any], *, endonym: Optional[str] = None,
@@ -875,27 +887,6 @@ class PluginContext(PluginCapabilityCtxMixin):
         return register_scoped_provider(self, "register_delegation_provider", provider)
 
 
-def _ignore_after_abandoned_load(method):
-    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
-    still be executing register(), and a late registration would land in registries that the failure
-    path already swept (#108139)."""
-    @_facade().wraps(method)
-    def wrapped(self, *args, **kwargs):
-        if getattr(self, "_load_abandoned", False):
-            _facade().logger.warning(
-                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
-                method.__name__,
-            )
-            return None
-        return method(self, *args, **kwargs)
-
-    return wrapped
-
-
-# Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the
-# guard cannot drift from the surface as registrars are added.
-for _name, _method in list(vars(PluginContext).items()):
-    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
-        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
-del _name, _method
+# Every mutating entry point plugins reach through ``ctx`` during register(), mixins included.
+ignore_registrars_after_abandoned_load(PluginContext)
 

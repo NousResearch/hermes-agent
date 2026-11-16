@@ -412,6 +412,29 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('Save image as…')).toBeTruthy()
   })
 
+  it('copies images via native bridge in Electron and via browser clipboard in Webapp', async () => {
+    const contextMenuCopyImage = vi.fn().mockResolvedValue(undefined)
+    installBridge({ contextMenuCopyImage: contextMenuCopyImage as unknown as Window['hermesDesktop']['contextMenuCopyImage'] })
+    mountMenu()
+    const host = attach('<img src="https://example.com/pic.png" alt="pic">')
+
+    fireEvent.contextMenu(host.querySelector('img')!)
+    fireEvent.click(await screen.findByText('Copy image'))
+
+    expect(contextMenuCopyImage).toHaveBeenCalledTimes(1)
+
+    // Webapp: no contextMenuCopyImage on bridge, falls back to copyImageFromUrl.
+    const browserImageCopy = await import('@/lib/browser-image-copy')
+    const copySpy = vi.spyOn(browserImageCopy, 'copyImageFromUrl').mockResolvedValue(true)
+    installBridge({ contextMenuCopyImage: undefined })
+
+    fireEvent.contextMenu(host.querySelector('img')!)
+    fireEvent.click(await screen.findByText('Copy image'))
+
+    await waitFor(() => expect(copySpy).toHaveBeenCalledWith('https://example.com/pic.png'))
+    copySpy.mockRestore()
+  })
+
   it('opens the edit menu in an editable and augments it with spellcheck', async () => {
     installBridge()
     mountMenu()

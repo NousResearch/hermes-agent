@@ -1,0 +1,43 @@
+name: butler-assistant
+title: Butler
+repo: https://github.com/haykguy/butler
+sha: "018a484d7d7e71489c1c5daf98948930a9a49722"
+version: "0.5.0"
+description: "Turns Hermes into a proactive personal assistant. You set your daily non-negotiables and Butler checks in until they are done or deferred; you tell it about a commitment and it follows up before it slips, with the model choosing whether and when to follow up inside owner-set limits (max unanswered nudges, minimum gap between messages). If you opt in, it can also ring your phone for urgent follow-ups or place calls you approve, through your own LiveKit SIP trunk. You choose its tone (Gentle to Strict), how persistent it is, quiet hours, time zone and a daily cap on check-ins, and can pause it in one click. A concierge-style Hermes Desktop page shows today's non-negotiables, upcoming commitments, recent activity and preferences, with a 4-step Quick Setup; the same controls are available to the agent as tools in chat. Disclosure — a background runner thread in the gateway process schedules check-ins, which run as normal turns in your admitted DM or local chat on your configured model, billed like any message; with background wakes enabled it sets allow_gateway_injection for this plugin; with system controls on it writes notification, display and nudge settings into your Hermes config.yaml (keys listed in the README, including agent.gateway_notify_interval, skills.creation_nudge_interval, gateway.message_timestamps.enabled, platforms.*.gateway_restart_notification and the top-level timezone once confirmed), replacing existing per-platform values for those keys; the agent can change Butler's own settings through butler_controls when asked, while DM capture, notification arming and every phone setting stay user-only; the optional prompt review writes to SOUL.md and a butler-capabilities skill only after you select and apply each change, keeping backups; the optional 'verify time zone via IP' action calls ipapi.co or worldtimeapi.org only when you ask; phone calling is off by default; once you enable it in Desktop and add your LiveKit credentials (read through Hermes secret_scope), Butler sends HTTPS requests to your LIVEKIT_URL to ring you within hourly/cooldown/quiet-hours limits, or to place third-party calls only after you approve the exact script (Desktop or CLI, never the agent; emergency and premium numbers blocked; calls open with an AI disclosure); if you also enable inbound screening, an AI answers inbound calls on your trunk and takes messages; an optional, user-started voice worker (pip extra 'voice') connects to LiveKit and OpenAI for live call audio and may run a local `hermes chat` subprocess to answer your questions on a call; call transcripts and summaries, including what the other party said, are stored locally and shown to your agent after the call; iMessage voice and image helpers run local ffmpeg/ffprobe and hand files to Hermes as MEDIA: reply attachments (Butler never reads Hermes runtime secrets or calls the Photon sidecar); watches read the local file path you ask it to watch; inbound DM event capture is off by default and needs two separate opt-ins; all state is stored in plaintext SQLite in the profile's plugin-data; no telemetry."
+maintainer: haykguy
+tier: community
+category: automation
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/haykguy/butler#readme
+image: https://raw.githubusercontent.com/haykguy/butler/018a484d7d7e71489c1c5daf98948930a9a49722/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/haykguy/butler/018a484d7d7e71489c1c5daf98948930a9a49722/docs/media/overview-full.jpg
+readme: true
+known_issues:
+  - "Hermes Desktop keeps a packaged plugin's page off until you enable it once: Capabilities → Plugins → Butler - Proactive Assistant."
+  - "The plugin's manifest name is `butler`; it cannot be installed alongside another plugin whose manifest name is also `butler`."
+  - "Message reactions and threaded replies (butler_expression / butler_imessage react, reply, edit, unsend) are disabled and fail closed until the gateway can bind a message ID to the active chat."
+  - "iMessage screen/bubble effects and polls are disabled and fail closed until Hermes adds send_effect/send_poll verbs to ctx.platform_actions (NousResearch/hermes-agent#154299); images and voice notes are sent as normal reply attachments."
+  - "Watches are polled local files; there is no webhook receiver."
+  - "Phone calling needs your own LiveKit SIP trunk and credentials, and live call audio needs the optional voice worker running (pip extra 'voice' plus OPENAI_API_KEY). The phone path is unit-tested but has not yet been exercised end to end against a real SIP trunk and carrier call."
+  - "Background check-ins bind only to a DM or local session; if your only recent sessions are group chats, DM Butler once before running Quick Setup."
+capabilities:
+  provides_tools:
+    - butler_create
+    - butler_manage
+    - butler_expression
+    - butler_imessage
+    - butler_phone
+    - butler_controls
+  provides_hooks:
+    - post_gateway_admission
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env:
+    - LIVEKIT_URL
+    - LIVEKIT_API_KEY
+    - LIVEKIT_API_SECRET
+    - LIVEKIT_SIP_TRUNK_ID
+    - LIVEKIT_CALLER_NUMBER
+    - OPENAI_API_KEY

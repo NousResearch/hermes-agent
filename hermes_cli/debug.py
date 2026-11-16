@@ -120,30 +120,29 @@ def _best_effort_sweep_expired_pastes() -> None:
 
 
 _PRIVACY_NOTICE = """\
-⚠️  This will upload system info + logs to a PUBLIC paste service.
+⚠️  This uploads a debug SUMMARY to a PUBLIC paste service (anyone with the
+    link can read it). The summary is built from an allowlist and contains:
+  • Hermes, Python and OS versions, and the install kind
+  • Names of connected platforms and configured built-in toolsets
+  • Which config.yaml keys are set (key names only, never values)
+  • Counts of warnings/errors by logger, exception class and HTTP status
 
-Cryptographic secrets (API keys, tokens, passwords) are redacted before
-upload, but the following personal data is NOT redacted and will be public:
-  • Your display name and persistent platform user ID
-  • Verbatim content of your recent messages (prompts, responses, tool output)
-  • Local filesystem paths
-  • Any other PII present in the logs
+It contains NO log lines, message text, user names/IDs, paths or config
+values. Full (secret-redacted) logs are never sent to the public paste: use
+`hermes debug share --nous` to send them to private Nous storage instead.
 
-The resulting URL is public to anyone who has the link. Pastes auto-delete
-after 6 hours, but may be archived by third parties in the meantime.
+Pastes auto-delete after 6 hours. If paste.rs is unreachable the upload
+falls back to dpaste.com, which keeps it for the --expire window
+(default: 1 day) and CANNOT be deleted with `hermes debug delete`.
 
-If paste.rs is unreachable, uploads fall back to dpaste.com: those pastes
-stay public for the --expire window (default: 1 day) and CANNOT be deleted
-with `hermes debug delete`.
-
-Use --local to view the report without uploading.
+Use --local to view everything on this machine without uploading.
 """
 
 _GATEWAY_PRIVACY_NOTICE = (
-    "⚠️ **Privacy notice:** This uploads system info + recent log tails "
-    "(may contain conversation fragments) to a public paste service. "
-    "Full logs are NOT included from the gateway — use `hermes debug share` "
-    "from the CLI for full log uploads.\n"
+    "⚠️ **Privacy notice:** This uploads an allowlisted debug summary (versions, platform and "
+    "toolset names, config key names, error counts) to a public paste service. It contains no "
+    "log lines or message text; full logs go only to private storage via "
+    "`hermes debug share --nous` from the CLI.\n"
     "Pastes auto-delete after 6 hours (dpaste.com fallback pastes: kept for "
     "1 day, cannot be deleted).")
 
@@ -469,41 +468,21 @@ class DebugShareResult:
 
 def build_debug_share(
         *, log_lines: int = 200, expiry: int = 1, redact: bool = True) -> DebugShareResult:
-    """Collect the debug report + full logs, upload each, return the URLs.
+    """Upload the allowlisted public summary and return its URL.
 
-    Shared by ``hermes debug share`` and the dashboard ``POST /api/ops/debug-share``. Blocking
-    network I/O — callers inside an event loop must run it in a worker thread.
+    Shared by ``hermes debug share`` and the dashboard ``POST /api/ops/debug-share``. The public
+    paste never carries log text (#46006), so ``redact`` has nothing to act on here and the result
+    always reports ``redacted=True``; full logs go only through ``--nous``. Blocking network I/O —
+    callers inside an event loop must run it in a worker thread.
     """
+    from hermes_cli.debug_summary import collect_public_summary
+    del redact  # the summary is allowlisted; there is no free text to redact or leave raw
     _best_effort_sweep_expired_pastes()
-    bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
-    if redact:
-        logger.info(
-            "hermes debug share: applied force-mode redaction to log snapshots before upload")
-    report = bundle["report"]
-    failures: list[str] = []
-    # The summary report is required (raises so callers can fall back); full logs are optional.
+    report = collect_public_summary(log_lines=log_lines)
+    # Required: raises so callers can fall back to --local.
     urls = {"Report": upload_to_pastebin(report, expiry_days=expiry)}
-    # Full logs to upload (the source of this list is checked by tests to ensure
-    # new logs aren't silently skipped).
-    for label in (
-        "agent.log",
-        "gateway.log",
-        "gui.log",
-        "desktop.log",
-        # Update-failure diagnostics: the only files holding the root cause
-        # of a failed update/Desktop rebuild (#100874).
-        "update.log",
-        "desktop-update-handoff.log",
-    ):
-        content = bundle.get(label)
-        if not content:
-            continue
-        try:
-            urls[label] = upload_to_pastebin(content, expiry_days=expiry)
-        except Exception as exc:
-            failures.append(f"{label}: {redact_debug_support_text(exc)}")
     _schedule_auto_delete(list(urls.values()))
-    return DebugShareResult(urls=urls, failures=failures, redacted=redact,
+    return DebugShareResult(urls=urls, failures=[], redacted=True,
                             auto_delete_seconds=_AUTO_DELETE_SECONDS, report=report)
 
 
@@ -557,9 +536,11 @@ def run_debug_share(args):
     if getattr(args, "nous", False):
         return _run_debug_share_nous(args, log_lines=log_lines, redact=redact)
     print(_PRIVACY_NOTICE)
+    if not redact:
+        print("Note: --no-redact only affects --nous; the public summary never carries log text.\n")
     if not _confirm_upload(args):
         return
-    print("Collecting debug report...\nUploading...")
+    print("Collecting debug summary...\nUploading...")
     try:
         result = build_debug_share(log_lines=log_lines, expiry=expiry, redact=redact)
     except RuntimeError as exc:
@@ -567,7 +548,7 @@ def run_debug_share(args):
         print("\nRun `hermes debug share --local` to print the report instead.\n")
         sys.exit(1)
     label_width = max(len(k) for k in result.urls)
-    print("\nDebug report uploaded:")
+    print("\nDebug summary uploaded:")
     for label, url in result.urls.items():
         print(f"  {label:<{label_width}}  {url}")
     if result.failures:
@@ -580,10 +561,16 @@ def run_debug_share(args):
               f"dpaste.com: those pastes stay public for {expiry} day(s) and CANNOT be "
               "deleted with `hermes debug delete`.\n"
               "\nShare these links with the Hermes team for support.")
+        print(_FULL_LOGS_HINT)
     else:
         print(f"\n⏱  Pastes will auto-delete in {result.auto_delete_seconds // 3600} hours.\n"
               "To delete now:  hermes debug delete <url>\n"
               "\nShare these links with the Hermes team for support.")
+        print(_FULL_LOGS_HINT)
+
+
+_FULL_LOGS_HINT = ("If support needs the full logs, run `hermes debug share --nous` "
+                   "(private Nous storage, not a public paste).")
 
 
 _NOUS_PRIVACY_NOTICE = """\
@@ -601,6 +588,28 @@ _NOUS_PRIVACY_NOTICE = """\
   • It is NOT a public paste — there is no public URL to the contents.
   • It auto-deletes after 14 days.
 """
+
+
+def run_debug_slash(cmd_original: str = "") -> None:
+    """The classic CLI / TUI ``/debug [upload|nous [upload]|local]``: uploads only on ``upload``.
+
+    Bare ``/debug`` / ``/debug nous`` print the privacy notice and upload nothing; adding
+    ``upload`` sends to the public paste (or Nous-internal storage with ``nous``); ``local``
+    renders to stdout and wins over everything else (never touches the network).
+    """
+    words = {w.lower() for w in cmd_original.split()[1:]}
+    local = "local" in words
+    nous = "nous" in words and not local
+    if not local and ("upload" not in words or words - {"upload", "nous"}):
+        # The notice must come BEFORE anything leaves the machine: a bare /debug is a request
+        # for the report, not consent to publish it (#94876). Only `upload` [+ `nous`] consents,
+        # so a refusal that contains the word (`/debug do not upload`) is not consent.
+        print(_NOUS_PRIVACY_NOTICE if nous else _PRIVACY_NOTICE)
+        print(f"Nothing was uploaded. Run `/debug {'nous upload' if nous else 'upload'}` to upload, "
+              "or `/debug local` to view the report without uploading.")
+        return
+    # The explicit `upload` word is the consent (yes=True); input() would hang in prompt_toolkit.
+    run_debug_share(SimpleNamespace(lines=200, expire=1, local=local, nous=nous, yes=True))
 
 
 def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
@@ -681,16 +690,16 @@ _DEBUG_USAGE = """\
 Usage: hermes debug <command>
 
 Commands:
-  share    Upload debug report to a paste service and print URL
+  share    Upload an allowlisted debug summary to a public paste (full logs: --nous)
   delete   Delete a previously uploaded paste
 
 Options (share):
-  --lines N    Number of log lines to include (default: 200)
+  --lines N    Log lines per file in the --nous / --local report (default: 200)
   --expire N   dpaste.com fallback retention in days (default: 1)
   --local      Print report locally instead of uploading
   --nous       Upload to Nous-internal storage (private, staff-only,
                auto-deletes in 14 days) instead of a public paste
-  --no-redact  Disable upload-time secret redaction (default: redact)
+  --no-redact  Disable secret redaction of --nous / --local logs (default: redact)
 
 Options (delete):
   <url> ...    One or more paste URLs to delete"""

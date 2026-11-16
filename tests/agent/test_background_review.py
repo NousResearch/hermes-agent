@@ -996,3 +996,31 @@ def test_turn_exit_log_carries_fork_origin_tag():
     assert len(records) == 2
     assert "origin=" not in records[0], records[0]
     assert "origin=background_review" in records[1], records[1]
+
+
+def test_background_review_failure_debug_does_not_leak_exception(monkeypatch, caplog):
+    """The new DEBUG diagnostic must not expose arbitrary exception contents."""
+    import logging
+    from types import SimpleNamespace
+
+    from agent import background_review as br
+
+    secret = "synthetic_secret_abc123"
+
+    def boom(*_args, **_kwargs):
+        raise FileNotFoundError(secret)
+
+    monkeypatch.setattr(br, "_run_review_fork", boom)
+    failures = []
+    agent = SimpleNamespace(
+        client=None, _emit_auxiliary_failure=lambda label, exc: failures.append((label, exc)),
+    )
+    with caplog.at_level(logging.DEBUG, logger="agent.background_review"):
+        br._run_review_in_thread(agent, [], "Review the conversation.")
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "review failed" in r.getMessage()]
+    assert warnings, caplog.text
+    diagnostics = [r for r in caplog.records if r.levelno == logging.DEBUG and "Background memory/skill review" in r.getMessage()]
+    assert diagnostics
+    for record in diagnostics:
+        assert secret not in logging.Formatter().format(record)
+    assert failures and failures[0][0] == "background review"

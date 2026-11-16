@@ -268,4 +268,5 @@ def test_the_childs_pin_survives_the_real_terminal_config_bridge(monkeypatch):
     finally:
         config_mod.apply_terminal_config_to_env = original_bridge
         config_path.unlink(missing_ok=True)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
         clear_session_cwd()

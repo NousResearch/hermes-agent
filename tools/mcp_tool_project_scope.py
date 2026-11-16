@@ -360,8 +360,11 @@ def pop_clones(keys: Optional[set]) -> list:
     # ``_shutdown`` pops ``_core._servers`` only later, on the MCP loop, and a clone connect
     # completing in that window would pass the insert gate's ``is baseline`` re-check and strand
     # its live child with no owner (review finding 1). Cleared in ``clear_selected_status`` once
-    # the deferred pop has landed.
-    _torn_down_baselines.update(_core._servers.keys() if keys is None else keys)
+    # the deferred pop has landed. Only keys with a live baseline are tombstoned — the gate's
+    # ``is baseline`` check already refuses an absent baseline, and a tombstone for a key nothing
+    # registered would never be cleared (a re-registered same-named server must be able to grow
+    # clones again).
+    _torn_down_baselines.update(set(_core._servers) if keys is None else keys & set(_core._servers))
     for clone_key in popped:
         _scoped_connect_locks.pop(clone_key, None)
         # The clone's per-project bookkeeping goes with it (design section "Lock cleanup": pop the

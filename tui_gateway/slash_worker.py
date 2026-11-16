@@ -168,20 +168,28 @@ def _pin_session_cwd(session_cwd: str) -> None:
     bridge — so the wrapper below guards the ONE seam they all funnel through."""
     if not session_cwd:
         return
+    global _PINNED_SESSION_CWD
     os.environ["TERMINAL_CWD"] = session_cwd
+    _PINNED_SESSION_CWD = session_cwd
     from agent.runtime_cwd import set_session_cwd
     set_session_cwd(session_cwd)
-    _keep_pin_through_terminal_bridges(session_cwd)
+    _keep_pin_through_terminal_bridges()
 
 
-def _keep_pin_through_terminal_bridges(session_cwd: str) -> None:
+_PINNED_SESSION_CWD: str = ""
+
+
+def _keep_pin_through_terminal_bridges() -> None:
     """Keep the session's ``TERMINAL_CWD`` pin alive across every later terminal-config bridge
     call. ``apply_terminal_config_to_env`` is the single shared bridge — the dotenv reload's
     re-assert, terminal_tool's launcher bridge and the TUI/dashboard launchers all funnel
     through it, and all its consumers late-import the module attribute — so wrapping it here
     re-asserts the pin after every one of them instead of chasing clobber sites. The bridge
     still writes its other ``terminal.*`` keys; only ``cwd`` is re-asserted (this process was
-    explicitly launched for one session's project)."""
+    explicitly launched for one session's project). The re-assert reads the module-level pin,
+    so a later ``_pin_session_cwd`` call (not a production shape: session cwd moves restart
+    this process) retargets the existing wrapper instead of leaving it re-asserting the old
+    project."""
     import functools
 
     import hermes_cli.config as config_mod
@@ -191,12 +199,14 @@ def _keep_pin_through_terminal_bridges(session_cwd: str) -> None:
 
     @functools.wraps(real_bridge)
     def _bridge_keeps_pin(*args, **kwargs):
-        result = real_bridge(*args, **kwargs)
-        if os.environ.get("TERMINAL_CWD") != session_cwd:
-            os.environ["TERMINAL_CWD"] = session_cwd
-        return result
+        try:
+            return real_bridge(*args, **kwargs)
+        finally:
+            # In a finally: a bridge that writes the env and then raises must not leak the clobber.
+            if _PINNED_SESSION_CWD and os.environ.get("TERMINAL_CWD") != _PINNED_SESSION_CWD:
+                os.environ["TERMINAL_CWD"] = _PINNED_SESSION_CWD
 
-    _bridge_keeps_pin._keeps_session_cwd_pin = True  # type: ignore[attr-defined]  # functools.wraps target has no attrs
+    _bridge_keeps_pin._keeps_session_cwd_pin = True  # type: ignore[attr-defined]  # undeclared attr on the wrapped function
     config_mod.apply_terminal_config_to_env = _bridge_keeps_pin
 
 

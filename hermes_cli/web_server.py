@@ -798,6 +798,7 @@ from hermes_cli.web_routers import (
     cron as _cron_routes,
     mcp as _mcp_routes,
     ops as _ops_routes,
+    transfer as _transfer_routes,
     skills as _skills_routes,
     tools as _tools_routes,
     analytics as _analytics_routes,
@@ -846,6 +847,7 @@ app.include_router(_status_routes.logs_router)
 app.include_router(_cron_routes.router)
 app.include_router(_mcp_routes.router)
 app.include_router(_ops_routes.router)
+app.include_router(_transfer_routes.router)
 app.include_router(_skills_routes.hub_router)
 app.include_router(_profiles_routes.router)
 app.include_router(_skills_routes.router)

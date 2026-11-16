@@ -382,6 +382,25 @@ def _completed_exit_code(
     return None
 
 
+def _import_undo_archive(log_path: Path, pid: Optional[int]) -> Optional[str]:
+    """The undo point a keep-host import named in its own section of the action log (the one this
+    dashboard spawned as *pid*), so a client has it as soon as it exists, also when the import fails."""
+    from hermes_cli.backup_keep_host import UNDO_POINT_LINE
+    from hermes_cli.web_server_gateway import _ACTION_LOG_STARTS
+    start = _ACTION_LOG_STARTS.get("import")
+    if start is None or start[0] != pid:
+        return None
+    try:
+        with log_path.open("rb") as log:
+            log.seek(start[1])
+            section = log.read(_ACTION_LOG_TAIL_MAX_BYTES).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    body = section.lstrip("\n").split("\n=== import started", 1)[0]
+    return next((line[len(UNDO_POINT_LINE):].strip() for line in body.splitlines()
+                 if line.startswith(UNDO_POINT_LINE)), None)
+
+
 @status_router.get("/api/actions/{name}/status")
 async def get_action_status(name: str, lines: int = 200):
     """Tail an action log and report whether the process is still running."""
@@ -437,6 +456,8 @@ async def get_action_status(name: str, lines: int = 200):
             _finish_action(name, exit_code, pid)
 
     response = {"name": name, "running": running, "exit_code": exit_code, "pid": pid, "lines": tail}
+    if name == "import":
+        response["undo_archive"] = _import_undo_archive(log_dir / log_file_name, pid)
     if durable_update_action_id:
         response["action_id"] = durable_update_action_id
     if update_receipt_summary is not None:

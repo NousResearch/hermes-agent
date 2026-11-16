@@ -4101,8 +4101,11 @@ export const svOverrides: TranslationOverrides = {
     exported: 'Profil exporterad',
     failedImport: 'Kunde inte importera profil',
     failedExport: 'Kunde inte exportera profil',
+    exportNeedsHost: name =>
+      `Webbläsaren kan inte spara ett profilarkiv. Kör följande på Hermes-värden: hermes profile export ${name}`,
     allProfiles: 'Alla profiler',
     showAllProfiles: 'Visa alla profiler',
+    notServedHere: 'Betjänas inte här',
     switchToProfile: name => `Växla till ${name}`,
     switchToConnection: name => `Växla till ${name}`,
     switchConnectionFailed: name => `Kunde inte ansluta till ${name}`,
@@ -4158,6 +4161,12 @@ export const svOverrides: TranslationOverrides = {
     actions: 'Åtgärder',
     color: 'Färg…',
     colorFor: 'Färg',
+    openInNewWindow: 'Öppna i nytt fönster',
+    setAsDefault: 'Ange som standard',
+    defaultProfile: 'Standardprofil',
+    defaultSet: name => `${name} är nu standardprofil`,
+    defaultDescription: 'Används när Hermes öppnas och för nya chattar. Befintliga sessioner stannar i sina profiler.',
+    failedSetDefault: 'Det gick inte att ange standardprofilen',
     setColor: color => `Ange färg ${color}`,
     autoColor: 'Automatisk',
     noProfiles: 'Inga profiler ännu.',
@@ -4178,6 +4187,8 @@ export const svOverrides: TranslationOverrides = {
     skillsLabel: 'Skills',
     notSet: 'Inte angivet',
     soulDesc: 'Systemprompten och personainstruktionerna som är inbyggda i denna profil.',
+    soulMissing:
+      'Det finns ingen SOUL.md-fil för den här profilen ännu. Lägg till instruktioner nedan och spara för att skapa en. Personlighetsförval i config.yaml hanteras separat.',
     soulOptional: 'valfri',
     soulPlaceholder: mode =>
       `Systemprompten/personan för denna profil.\nLämna tomt för att behålla standardvärdet för ${mode}.`,

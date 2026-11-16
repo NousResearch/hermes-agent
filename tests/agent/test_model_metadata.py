@@ -801,6 +801,10 @@ class TestCodexOAuthContextLength:
         ("gpt-5.5-900k",                  False, 272_000, "gpt-5.5-900k"),
         # arbitrary future family descendants are not auto-eligible
         ("gpt-5.6-nova-900k",             False, 272_000, "gpt-5.6-nova-900k"),
+        # the 6.1 tier is exact-slug eligible: Sol and Terra publish the same
+        # 500K/872K pair on the Codex catalog, so both opt in by name.
+        ("gpt-6.1-sol-900k",              True,  900_000, "gpt-6.1-sol"),
+        ("gpt-6.1-terra-900k",            True,  900_000, "gpt-6.1-terra"),
     ]
 
     @pytest.mark.parametrize("model_id,valid,expected_ctx,wire", _900K_TABLE)

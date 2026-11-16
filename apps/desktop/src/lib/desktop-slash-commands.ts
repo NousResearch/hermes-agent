@@ -236,10 +236,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     name: '/profile',
     // A profile is per-session: this points the NEXT new chat at `name` (the backend
     // completes the names). Saying "switch" here promised a mid-thread swap that
-    // use-prompt-actions/slash.ts deliberately refuses.
+    // use-prompt-actions/slash.ts deliberately refuses. No local argumentMode: the
+    // names and the arg stage both come from the connected gateway's catalog, so an
+    // older peer (or a gateway that is down) closes the popover instead of opening
+    // an empty one.
     description: 'Choose the profile new chats open in',
-    surface: action('profile'),
-    argumentMode: 'options'
+    surface: action('profile')
   },
   {
     name: '/skin',

@@ -325,7 +325,7 @@ class GatewaySlashCommandsMixin(
                 display = display_hermes_home()
 
         # Shared executor resolves process-level fallbacks; the multiplexed per-source overrides
-        # (when any) ride in via options. An argument selects the roster (``list``) or one
+        # (when any) ride in via options. An argument selects the roster (``--list``/``-l``) or one
         # profile's details, so its text replaces the two-line active-profile block. The roster
         # names every profile and the details carry its home path, so under slash gating that
         # stays admin-only: a non-admin keeps the bare two-line answer they already had.

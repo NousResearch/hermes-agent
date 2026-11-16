@@ -56,7 +56,7 @@ def _exec_egress(ctx: CommandContext) -> CommandReply:
 
 
 def _profiles_for_display() -> list[Any]:
-    """Every profile for ``/profile list`` / ``/profile <name>``, name-only if a config won't load."""
+    """Every profile for ``/profile --list`` / ``/profile <name>``, name-only if a config won't load."""
     from hermes_cli.profiles import list_profile_names, list_profiles
     try:
         return list_profiles(lazy_skill_count=True)
@@ -66,7 +66,7 @@ def _profiles_for_display() -> list[Any]:
 
 
 def _profile_roster(active: str) -> CommandReply:
-    """``/profile list`` — every profile, the active one marked, plus how a profile is entered."""
+    """``/profile --list`` — every profile, the active one marked, plus how a profile is entered."""
     rows = _profiles_for_display()
     if not rows:
         return CommandReply("No profiles found.", data={"profiles": [], "active": active})
@@ -119,8 +119,8 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
 
     Bare: active profile name + home directory. A multiplexed gateway may pre-resolve the
     per-source profile/home via ``options`` (``profile_name`` / ``home_display``); otherwise
-    process-level values are used. ``list`` reads the roster, a name reads that profile —
-    ``/profile`` cannot switch, because the profile is bound when the process starts.
+    process-level values are used. ``--list``/``-l`` reads the roster, a name reads that
+    profile — ``/profile`` cannot switch, because the profile is bound when the process starts.
     """
     from hermes_cli.profiles import get_active_profile_name
     from hermes_constants import display_hermes_home

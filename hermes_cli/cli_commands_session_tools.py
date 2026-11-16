@@ -302,7 +302,7 @@ class CLICommandsSessionToolsMixin:
         _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
 
     def _handle_profile_command(self, cmd: str):
-        """/profile [list|<name>] — the active profile, the roster, or one profile's details."""
+        """/profile [--list | <name>] — the active profile, the roster, or one profile's details."""
         from hermes_cli.slash_exec import CommandContext, execute_command
         args = _command_arg(cmd)
         reply = execute_command("profile", CommandContext(surface="cli", args=args))

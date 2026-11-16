@@ -102,7 +102,7 @@ def test_profile_registry_keeps_the_arg_stage_open():
 
 # ---------------------------------------------------------------------------
 # Execution: /profile <arg>. The argument used to be ignored, so a name the popover
-# offered was a dead end. Bare /profile keeps its old text; `list` and a name now read.
+# offered was a dead end. Bare /profile keeps its old text; `--list` and a name now read.
 # ---------------------------------------------------------------------------
 
 def _run(arg: str, *, active: str = "default", surface: str = "cli"):

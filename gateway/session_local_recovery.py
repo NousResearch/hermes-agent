@@ -473,9 +473,18 @@ def local_receipt_ids(authority):
             _BOOT_RECEIPTS_SQL, (POLICY_PREFIX + '%', start, CLOSE_PREFIX, start))]
 
 
-def recover_local_sessions(authority, *, schedule=False):
+async def recover_local_sessions(authority, *, schedule=False):
+    """Restore the boot receipts, giving the event loop a turn between them.
+
+    One restore takes several SQLite reads under locks; with ``journal_mode=DELETE`` a read waits on
+    a live writer, so a cold boot with hundreds of receipts blocked the owner loop for minutes and
+    the out-of-loop liveness watchdog hard-exited the process (KeepAlive restarted it into the same
+    wedge). Yielding per receipt keeps the loop dispatching its probes; the restored set, order and
+    error handling are unchanged.
+    """
     orphans = []
     for sid in local_receipt_ids(authority):
+        await asyncio.sleep(0)
         try:
             ref = restore_local_session(authority, sid)
             pending = list_session_admissions(authority.db, session_id=sid)

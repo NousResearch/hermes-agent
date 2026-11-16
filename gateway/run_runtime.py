@@ -473,7 +473,7 @@ async def serve_profile_runtime(runner, name, home):
         with owner_scope(authority):
             _drop_retired_local_adapter(authority)
             await recover_bot_mailbox(authority)
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions(authority, schedule=True)
             await recover_webhook_finalizations(authority)
             _recover_published_api_turns(runner, authority)
         if getattr(runner, 'session_control_server', None) is not None:
@@ -665,7 +665,7 @@ async def recover_gateway_native_sessions(runner):
     results = {}
     for authority in authorities:
         with owner_scope(authority):
-            recover_local_sessions(authority, schedule=True)
+            await recover_local_sessions(authority, schedule=True)
             await recover_webhook_finalizations(authority)
         results.update(await recover_profile_native_sessions(runner, authority))
     return results

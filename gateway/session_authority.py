@@ -1472,8 +1472,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     """
     if db is None:
         db = getattr(runner._session_db, '_db', runner._session_db)
-    # Resolved off-loop before any state is published: the rest of the bring-up runs without
-    # yielding, so no other task observes a half-registered authority.
+    # Resolved off-loop before any state is published. The recovery below yields between receipts
+    # (``recover_local_sessions``), so publication waits for it: no other task observes a
+    # half-registered authority either way.
     from pathlib import Path
     db_key = await asyncio.to_thread(Path(db.db_path).resolve)
     epoch = await asyncio.to_thread(begin_runtime_epoch, db, instance_id=instance_id)
@@ -1493,20 +1494,29 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     # authority is published, so the recovery below only reads.
     from gateway.session_local_adoption import adopt_local_compressions
     await adopt_local_compressions(authority)
+    # Only referenced here; creating an empty epoch map publishes nothing observable.
+    store = runner.session_store
+    epochs = getattr(store, '_local_authority_epochs', None)
+    if epochs is None:
+        epochs = store._local_authority_epochs = {}
+    # Wired before the recovery: route announcements carry the authority lookup inside the callback,
+    # so registering only makes the store announce — it publishes nothing itself, and wiring it first
+    # means a route written while the recovery yields is still announced.
+    from gateway.session_detached import watch_routes
+    watch_routes(runner, store)
+    from gateway.session_local_recovery import recover_local_sessions
+    # The loop breathes between receipts (a cold boot's reads must not stall the liveness
+    # watchdog), so nothing may be published until the last receipt is restored: a task that
+    # wakes on those yields would otherwise see an authority whose sessions are half recovered.
+    await recover_local_sessions(authority)
+    # Publication, now that the authority is whole: the launch lookup, the cron owner (deliveries
+    # restore their chat themselves, but they must not observe a boot still in progress), the
+    # store's epoch fence (a local reset writes the owning profile's store) and its keyed map.
     if register:
         runner.session_authority = authority
     from gateway.session_cron import bind_owner
     bind_owner(authority)
-    store = runner.session_store
     if register:
         store._local_authority_epoch = epoch
-    # Local resets write the owning profile's store; the epoch fence must be that store's.
-    epochs = getattr(store, '_local_authority_epochs', None)
-    if epochs is None:
-        epochs = store._local_authority_epochs = {}
     epochs[db_key] = epoch
-    from gateway.session_detached import watch_routes
-    watch_routes(runner, store)
-    from gateway.session_local_recovery import recover_local_sessions
-    recover_local_sessions(authority)
     return authority

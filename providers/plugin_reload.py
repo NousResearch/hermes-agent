@@ -77,31 +77,57 @@ def tree_fingerprint(plugin_dir: Path) -> str:
 
 def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     """Import *plugin_dir* into the layer being scanned unless that exact tree is already live there; an
-    updated tree replaces the live one only once it imported completely."""
-    # One import+publish at a time: a second thread scanning the same home would find the module already in
-    # ``sys.modules`` (still executing on the first thread, registering into the first thread's staging layer)
-    # and publish its own empty staging layer over the first one's registrations.
-    with _import_lock:
-        _import_into_layer(plugin_dir, source, base_name)
+    updated tree replaces the live one only once it imported completely.
 
-
-# Re-entrant: a plugin whose import lists providers re-enters the scan of its own home on the same thread.
-_import_lock = threading.RLock()
-
-
-def _import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
+    One thread imports a given tree; a second thread scanning the same home meanwhile must not import it too
+    (it would find the module already in ``sys.modules``, still executing into the first thread's staging
+    layer, and publish its own EMPTY staging layer over those registrations), so it waits for that import
+    instead. The wait is bounded and no lock is held while plugin code runs: the importing thread may block
+    on a module lock the waiting thread holds (a plugin importing ``hermes_cli.auth`` while the waiter is
+    mid-``import hermes_cli.auth``, whose import lists providers), a cycle the import system cannot see.
+    A waiter that gives up publishes nothing, so the importer's registrations still land when it completes.
+    """
     import providers as P
 
     layer = P._REGISTRATION_TARGET.get()
     fingerprint = tree_fingerprint(plugin_dir)
-    live = layer.trees.get(base_name)
-    if live is not None and live[0] == fingerprint:
-        return
     module_name = f"{base_name}_{fingerprint}"
-    if module_name in sys.modules:
-        # This exact tree is mid-import further up this thread's stack (the re-entrant scan above): that
-        # import publishes its registrations when it completes; an empty staging layer here would erase them.
+    with _in_flight_lock:  # guards the table only; never held across an import or a wait
+        live = layer.trees.get(base_name)
+        if live is not None and live[0] == fingerprint:
+            return  # read under the table lock: an importer publishes before it leaves the table
+        in_flight = _in_flight.get(module_name)
+        if in_flight is None:
+            done = threading.Event()
+            _in_flight[module_name] = (done, threading.get_ident())
+    if in_flight is not None:
+        done, importer = in_flight
+        # The importer is this thread when the plugin's own import re-enters the scan of its home: that
+        # outer import publishes on completion.
+        if importer != threading.get_ident() and not done.wait(_IMPORT_WAIT_SECONDS):
+            logger.warning("Provider plugin %s is still importing on another thread after %ss; continuing "
+                           "without it for this lookup", plugin_dir.name, _IMPORT_WAIT_SECONDS)
         return
+    try:
+        _import_and_publish(layer, plugin_dir, source, base_name, module_name, fingerprint, live)
+    finally:
+        with _in_flight_lock:
+            del _in_flight[module_name]
+        done.set()
+
+
+# Versioned module name (per home, plugin and tree) -> (set when its import finished, importing thread).
+_in_flight: dict[str, tuple[threading.Event, int]] = {}
+_in_flight_lock = threading.Lock()
+# How long a scan waits for another thread's import of the same tree. Plugin imports take well under a
+# second; the bound only matters in the lock-order cycle described in :func:`import_into_layer`.
+_IMPORT_WAIT_SECONDS = 10.0
+
+
+def _import_and_publish(layer, plugin_dir: Path, source: str, base_name: str, module_name: str,
+                        fingerprint: str, live: tuple[str, str] | None) -> None:
+    import providers as P
+
     staging = P._HomeLayer()
     token = P._REGISTRATION_TARGET.set(staging)
     try:

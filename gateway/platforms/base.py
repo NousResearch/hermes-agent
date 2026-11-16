@@ -1187,7 +1187,7 @@ HTML_IMAGE_TAG_PATTERN = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s
 _IMAGE_URL_MARKERS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery')
 
 MEDIA_TAG_CLEANUP_RE = re.compile(
-    r'''[`"'*_]{0,3}MEDIA:\s*'''
+    r'''[`"'*_]{0,3}MEDIA[*_]{0,3}:\s*[*_]{0,3}'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
     r'''(?:(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?|'''
@@ -1218,7 +1218,7 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
 # progressively extended forward across single spaces — bounded, stopping at newline / the next ``MEDIA:``
 # keyword — and the first extension that validates on disk wins.
 MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
-    r'''[`"'*_]{0,3}MEDIA:\s*'''
+    r'''[`"'*_]{0,3}MEDIA[*_]{0,3}:\s*[*_]{0,3}'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
     r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$)'''

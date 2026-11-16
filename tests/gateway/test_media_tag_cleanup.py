@@ -96,3 +96,45 @@ class TestMediaTagCjkTerminators:
         assert m is not None and m.group("path") == "/tmp/Caddyfile"
 
 
+class TestMediaTagMarkdownEmphasis:
+    """LLM output frequently wraps the MEDIA directive in markdown emphasis
+    (``**MEDIA:**/path``, ``MEDIA:**/path``). The directive must still be
+    recognised so the path is extracted and delivered as a MEDIA attachment
+    instead of being silently dropped and left behind as literal reply text."""
+
+    def test_bold_directive_is_recognised(self):
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+
+        text = "**MEDIA:**/home/sparky/Loreto_Normanhurst_\u5165\u5b78\u6e96\u5099\u624b\u518a_enriched.docx"
+        m = MEDIA_TAG_CLEANUP_RE.search(text)
+        assert m is not None, text
+        assert m.group("path").endswith(".docx")
+        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
+        assert "MEDIA:" not in stripped
+        assert ".docx" not in stripped
+
+    def test_emphasis_variants(self):
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+
+        for text in (
+            "**MEDIA**:/tmp/a.pdf",
+            "MEDIA:**/tmp/a.pdf",
+            "__MEDIA:__/tmp/a.pdf",
+            "*MEDIA:*/tmp/a.pdf",
+        ):
+            m = MEDIA_TAG_CLEANUP_RE.search(text)
+            assert m is not None, text
+            assert m.group("path") == "/tmp/a.pdf", text
+
+    def test_extensionless_bold_path(self):
+        from gateway.platforms.base import MEDIA_EXTENSIONLESS_TAG_RE
+
+        m = MEDIA_EXTENSIONLESS_TAG_RE.search("**MEDIA:**/home/sparky/Caddyfile")
+        assert m is not None
+        assert m.group("path") == "/home/sparky/Caddyfile"
+
+    def test_plain_and_quoted_paths_unchanged(self):
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+
+        assert MEDIA_TAG_CLEANUP_RE.search("MEDIA:/tmp/report.pdf").group("path") == "/tmp/report.pdf"
+        assert MEDIA_TAG_CLEANUP_RE.search('MEDIA:"/path with space.pdf"').group("path") == '"/path with space.pdf"'

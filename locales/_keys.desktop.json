@@ -5307,6 +5307,8 @@
     "statusStack.showStack",
     "statusStack.stop",
     "statusStack.subagents",
+    "statusStack.todoPhases",
+    "statusStack.todoSubtasks",
     "statusStack.todos",
     "tips.close",
     "tips.items.artifacts.text",

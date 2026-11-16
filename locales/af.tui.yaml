@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} gereedskap"
 chatBits.thinking.toolsOther: "{0} gereedskap"
 chatBits.todo.incompleteOne: "· onvolledig · {0} nog hangend"
 chatBits.todo.incompleteOther: "· onvolledig · {0} nog hangend/in_progress"
+chatBits.todo.phases: "Fases {0}/{1}"
+chatBits.todo.subtasks: "Subtake {0}/{1}"
 chatBits.todo.title: "Takelys"
 
 common.cancel: "kanselleer"

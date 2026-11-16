@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} инструмент"
 chatBits.thinking.toolsOther: "{0} инструментов"
 chatBits.todo.incompleteOne: "· не завершено · осталось {0} в ожидании"
 chatBits.todo.incompleteOther: "· не завершено · осталось {0} в ожидании/в работе"
+chatBits.todo.phases: "Этапы {0}/{1}"
+chatBits.todo.subtasks: "Подзадачи {0}/{1}"
 chatBits.todo.title: "Задачи"
 
 common.cancel: "отмена"

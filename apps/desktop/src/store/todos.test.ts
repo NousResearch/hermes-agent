@@ -4,6 +4,7 @@ import type { TodoItem } from '@/lib/todos'
 
 import {
   $retainedTodosBySession,
+  $todoProgressBySession,
   $todoRevisionsBySession,
   $todosBySession,
   clearActiveSessionTodos,
@@ -179,5 +180,24 @@ describe('revisioned snapshots', () => {
 
     setSessionTodos('s1', [todo('a', 'in_progress')])
     expect($todosBySession.get().s1?.[0]?.id).toBe('a')
+  })
+})
+
+describe('hierarchical sidebar progress', () => {
+  afterEach(() => clearSessionTodos('nested'))
+
+  it('keeps an unaccepted phase unfinished after every child check passes', () => {
+    setSessionTodos('nested', [todo('phase', 'in_progress'), { ...todo('check', 'completed'), parent: 'phase' }], 2)
+    expect($todoProgressBySession.get().nested).toBe('0/1')
+    restoreSessionTodosFromSnapshot(
+      'nested',
+      {
+        revision: 3,
+        todos: [todo('phase', 'completed'), { ...todo('check', 'pending'), parent: 'phase' }]
+      },
+      true
+    )
+    expect($todoProgressBySession.get().nested).toBe('0/1')
+    expect($todosBySession.get().nested?.find(item => item.id === 'check')?.status).toBe('pending')
   })
 })

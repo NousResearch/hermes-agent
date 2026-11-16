@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} Tool"
 chatBits.thinking.toolsOther: "{0} Tools"
 chatBits.todo.incompleteOne: "· unvollständig · {0} noch offen"
 chatBits.todo.incompleteOther: "· unvollständig · {0} noch offen/in Arbeit"
+chatBits.todo.phases: "Phasen {0}/{1}"
+chatBits.todo.subtasks: "Teilaufgaben {0}/{1}"
 chatBits.todo.title: "Todo"
 
 common.cancel: "abbrechen"

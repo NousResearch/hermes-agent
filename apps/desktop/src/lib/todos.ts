@@ -1,3 +1,5 @@
+import { type ProgressTodo, todoProgress } from '@hermes/shared/todo-progress'
+
 export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
 export interface TodoItem {
@@ -319,4 +321,21 @@ export function latestSessionTodos(messages: readonly { parts?: unknown }[]): nu
   }
 
   return null
+}
+
+/** Flat plans retain their familiar label; a hierarchy reports phase acceptance separately. */
+export function todoProgressLabel(
+  todos: readonly ProgressTodo[],
+  labels: {
+    todos: (done: number, total: number) => string
+    todoPhases: (done: number, total: number) => string
+    todoSubtasks: (done: number, total: number) => string
+  }
+): string {
+  const progress = todoProgress(todos)
+  const { phases, subtasks } = progress
+
+  return subtasks.total > 0
+    ? `${labels.todoPhases(phases.completed, phases.total)} · ${labels.todoSubtasks(subtasks.completed, subtasks.total)}`
+    : labels.todos(phases.completed, phases.total)
 }

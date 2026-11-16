@@ -82,6 +82,8 @@ export const chatBitsEn = {
     },
     todo: {
       title: 'Todo',
+      phases: (done: number, total: number) => `Phases ${done}/${total}`,
+      subtasks: (done: number, total: number) => `Subtasks ${done}/${total}`,
       incompleteOne: (pending: number) => `· incomplete · ${pending} still pending`,
       incompleteOther: (pending: number) => `· incomplete · ${pending} still pending/in_progress`
     },

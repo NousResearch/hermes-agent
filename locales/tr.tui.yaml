@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} araç"
 chatBits.thinking.toolsOther: "{0} araç"
 chatBits.todo.incompleteOne: "· tamamlanmadı · {0} hâlâ bekliyor"
 chatBits.todo.incompleteOther: "· tamamlanmadı · {0} hâlâ bekliyor/sürüyor"
+chatBits.todo.phases: "Aşamalar {0}/{1}"
+chatBits.todo.subtasks: "Alt görevler {0}/{1}"
 chatBits.todo.title: "Yapılacaklar"
 
 common.cancel: "iptal"

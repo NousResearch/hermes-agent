@@ -1,3 +1,4 @@
+import { todoProgress as summarizeTodoProgress } from '@hermes/shared/todo-progress'
 import { atom, computed } from 'nanostores'
 
 import { keyedTimeouts } from '@/lib/keyed-timeouts'
@@ -38,13 +39,14 @@ export const $todoProgressBySession = computed(
     const next: Record<string, string> = {}
 
     for (const [runtimeId, todos] of Object.entries(todosMap)) {
-      const counted = todos.filter(t => t.status !== 'cancelled')
+      const { phases, subtasks } = summarizeTodoProgress(todos)
+      const counted = phases.total > 0 ? phases : subtasks
 
-      if (counted.length === 0) {
+      if (counted.total === 0) {
         continue
       }
 
-      const progress = `${counted.filter(t => t.status === 'completed').length}/${counted.length}`
+      const progress = `${counted.completed}/${counted.total}`
 
       for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
         next[alias] = progress

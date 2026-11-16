@@ -206,6 +206,8 @@ export const arChat = {
     subagents: count => `${count} ${count === 1 ? 'وكيل فرعي' : 'وكيل فرعي'}`,
     todos: (done, total) => `المهام ${done}/${total}`,
     previousTodos: (done, total) => `المهام السابقة ${done}/${total}`,
+    todoPhases: (done, total) => `المراحل ${done}/${total}`,
+    todoSubtasks: (done, total) => `المهام الفرعية ${done}/${total}`,
     running: 'قيد التشغيل',
     stop: 'إيقاف',
     dismiss: 'تجاهل',

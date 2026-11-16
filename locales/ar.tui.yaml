@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} أداة"
 chatBits.thinking.toolsOther: "{0} من الأدوات"
 chatBits.todo.incompleteOne: "· غير مكتمل · {0} لا يزال معلّقًا"
 chatBits.todo.incompleteOther: "· غير مكتمل · {0} لا تزال معلّقة/قيد التنفيذ"
+chatBits.todo.phases: "المراحل {0}/{1}"
+chatBits.todo.subtasks: "المهام الفرعية {0}/{1}"
 chatBits.todo.title: "المهام"
 
 common.cancel: "إلغاء"

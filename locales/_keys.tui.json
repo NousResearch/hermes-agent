@@ -211,6 +211,8 @@
   "chatBits.thinking.toolsOther",
   "chatBits.todo.incompleteOne",
   "chatBits.todo.incompleteOther",
+  "chatBits.todo.phases",
+  "chatBits.todo.subtasks",
   "chatBits.todo.title",
   "common.cancel",
   "common.no",

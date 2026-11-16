@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} eszköz"
 chatBits.thinking.toolsOther: "{0} eszköz"
 chatBits.todo.incompleteOne: "· befejezetlen · {0} még függőben"
 chatBits.todo.incompleteOther: "· befejezetlen · {0} még függőben/in_progress"
+chatBits.todo.phases: "Szakaszok {0}/{1}"
+chatBits.todo.subtasks: "Részfeladatok {0}/{1}"
 chatBits.todo.title: "Teendők"
 
 common.cancel: "mégse"

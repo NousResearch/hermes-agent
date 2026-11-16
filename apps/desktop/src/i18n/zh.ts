@@ -3468,6 +3468,8 @@ export const zhOverrides = {
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
     previousTodos: (done, total) => `以往任务 ${done}/${total}`,
+    todoPhases: (done, total) => `阶段 ${done}/${total}`,
+    todoSubtasks: (done, total) => `子任务 ${done}/${total}`,
     running: '运行中',
     stop: '停止',
     dismiss: '关闭',

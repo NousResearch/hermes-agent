@@ -848,6 +848,71 @@ class TestEnvironmentHints:
         for leaked in ("User:", "Home:", "Working directory:", "alice", "/srv/secret"):
             assert leaked not in hint
 
+    def test_remote_backend_hint_names_the_declared_session_workspace(self, monkeypatch):
+        """The session's declared workspace is backend-side config, not probe-observed identity:
+        the hint must name it so the model anchors file/shell work on the repo the session opened
+        in instead of guessing it from prompt priors (#45893-class wrong-repo routing)."""
+        import agent.prompt_builder as _pb
+        from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: "  OS: Darwin 27.0")
+        token = set_session_cwd("/Users/dev/ABR/direct/MOBILE-3634")
+        try:
+            hint = _pb._remote_backend_hint("ssh")
+        finally:
+            reset_session_cwd(token)
+        assert "OS: Darwin 27.0" in hint
+        assert "Session workspace: /Users/dev/ABR/direct/MOBILE-3634" in hint
+        # With the cwd named, the block no longer claims the working directory is unknown.
+        assert "and working directory are not listed" not in hint
+
+    def test_remote_backend_hint_without_session_workspace_keeps_pwd_probe(self, monkeypatch):
+        """No declared cwd (CLI/multiplexed turns): the block stays exactly as before — the
+        model is told to probe, and nothing resembling a workspace line is rendered."""
+        import agent.prompt_builder as _pb
+        from agent.runtime_cwd import clear_session_cwd
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: "  OS: Linux 6.8.0")
+        clear_session_cwd()
+        hint = _pb._remote_backend_hint("ssh")
+        assert "Session workspace" not in hint
+        assert "current user, $HOME, and working directory are not listed here" in hint
+
+    def test_remote_backend_hint_renders_declared_workspace_without_probe(self, monkeypatch):
+        """Probe down, workspace declared: the fallback block still anchors the model on the
+        session workspace (the anchor matters most when the probe could not describe the box)."""
+        import agent.prompt_builder as _pb
+        from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
+        token = set_session_cwd("/srv/work/monorepo")
+        try:
+            hint = _pb._remote_backend_hint("ssh")
+        finally:
+            reset_session_cwd(token)
+        assert "Session workspace: /srv/work/monorepo" in hint
+
+    def test_remote_backend_hint_drops_placeholder_session_cwd(self, monkeypatch):
+        """Placeholder cwds (the terminal-scope defaults) name no project — render nothing."""
+        import agent.prompt_builder as _pb
+        from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: "  OS: Linux 6.8.0")
+        for placeholder in (".", "~", "auto", "cwd", "   "):
+            token = set_session_cwd(placeholder)
+            try:
+                assert "Session workspace" not in _pb._remote_backend_hint("ssh")
+            finally:
+                reset_session_cwd(token)
+
     def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
         """THE BUG: the probe leaked a second, permanently idle sandbox.
 

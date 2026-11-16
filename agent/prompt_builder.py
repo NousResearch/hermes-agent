@@ -977,16 +977,46 @@ def _bot_screen_hint() -> str:
         return ""
 
 
+def _declared_session_workspace() -> str:
+    """The session's backend-side workspace path as declared by the runtime ("" when unset).
+
+    This is the ONE cwd a remote-backend hint may name. The #117262 privacy contract suppresses
+    probe-OBSERVED sandbox user/$HOME/cwd — identity metadata nothing consumes, probed out of the
+    box. The session workspace is the opposite: a runtime-declared value the gateway froze into the
+    session policy at session open (never probed, never a Hermes-host path — a host path is exactly
+    what the remote hint must keep out). Without it the model has no anchor for "which project am I
+    in": it guesses the repo from prompt text and memory priors, and a wrong guess silently sends
+    file/shell work into the wrong repository (#45893-class failure). Read through
+    ``scoped_session_cwd`` so no host-side path validation drops remote/container paths.
+    """
+    try:
+        from agent.runtime_cwd import scoped_session_cwd
+        cwd = (scoped_session_cwd() or "").strip()
+    except Exception:
+        return ""
+    return cwd if cwd and cwd not in {".", "~", "auto", "cwd"} else ""
+
+
 def _remote_backend_hint(backend: str) -> str:
-    """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
+    """Backend-only block for remote/sandbox backends (host info deliberately suppressed;
+    the session's declared workspace is the one exception — see _declared_session_workspace)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
             f"`search_files` tools all operate inside ")
     probe = _probe_remote_backend(backend)
+    workspace = _declared_session_workspace()
+    workspace_line = (
+        f"\n  Session workspace: {workspace} — the directory this session was opened in on the backend. "
+        f"Treat it as the project root: start file and shell work there unless the request names another path."
+    ) if workspace else ""
+    # With the workspace named, only user/$HOME remain unlisted; without it the working directory
+    # stays unknown too and the model keeps the pwd-probe instruction.
+    unknown = "current user and $HOME" if workspace else "current user, $HOME, and working directory"
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "
-            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}\n"
-            f"  The sandbox's current user, $HOME, and working directory are not listed here; if you need them, "
+            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}"
+            f"{workspace_line}\n"
+            f"  The sandbox's {unknown} are not listed here; if you need them, "
             f"probe directly with a terminal call like `whoami && pwd`."
         )
     description = (
@@ -996,8 +1026,9 @@ def _remote_backend_hint(backend: str) -> str:
     )
     return lead + (
         f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
-        f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
+        f"prompt-build time, so the sandbox's OS, {unknown} are unknown from here. "
         f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
+        f"{workspace_line}"
     )
 
 

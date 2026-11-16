@@ -22,7 +22,7 @@ from agent.models_dev import (
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import (
-    _extra_headers_from_config, _saved_entry_on_other_origin, list_authenticated_providers)
+    _extra_headers_from_config, _saved_entry_on_other_origin, alias_credential_on_disk, list_authenticated_providers)
 
 
 logger = logging.getLogger(__name__)
@@ -1825,8 +1825,7 @@ def switch_model(
     return _build_switch_result(st)
 
 
-def model_selection_config_updates(
-        result: ModelSwitchResult, current_model_cfg: Any, alias_credential: Optional[dict] = None) -> dict[str, Any]:
+def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg: Any, alias_credential: Optional[dict] = None) -> dict[str, Any]:
     """The ONE config.yaml shape a persisted model selection produces, as ``model.<key>`` -> value
     (``None`` = clear). ``current_model_cfg`` is the on-disk ``model:`` block (raw).
 
@@ -1843,9 +1842,8 @@ def model_selection_config_updates(
     route changed: left behind it routes the NEW provider's requests to the OLD endpoint's env
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
-    (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``).
-    ``alias_credential`` is the picked user alias's own credential field as written on disk (see
-    :func:`_alias_credential_on_disk`); it is applied last, over the stale-key clears."""
+    (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``). ``alias_credential``
+    (the picked alias's own on-disk key field, ``alias_credential_on_disk``) is applied last, over the clears."""
     from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, should_clear_context_pin
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
@@ -1865,38 +1863,8 @@ def model_selection_config_updates(
     for key in stale:
         if key in model_cfg:
             updates[key] = None
-    if target.startswith("custom"):
-        updates.update(alias_credential or {})
+    updates.update((alias_credential or {}) if target.startswith("custom") else {})
     return updates
-
-
-def _alias_credential_on_disk(raw_cfg: Any, result: ModelSwitchResult) -> dict[str, str]:
-    """``{"api_key": ...}`` or ``{"key_env": ...}`` from the picked user alias's on-disk entry.
-
-    A URL-bearing alias session authenticates with the alias's own credential; persisting the route
-    without it makes the next launch resolve that endpoint with no key. Only when the persisted
-    ``base_url`` IS the alias's endpoint: an alias without one keeps the session's original host,
-    and its secret must never be persisted against that foreign endpoint. Read from the raw file,
-    never from the loaded alias, whose ``api_key: "${VAR}"`` is already expanded — persisting that
-    would write the secret itself. Same lookup and precedence as :func:`_load_direct_aliases` /
-    :func:`direct_alias_api_key`."""
-    from hermes_cli.route_identity import normalize_route_base_url
-    name = _clean(getattr(result, "resolved_via_alias", "")).lower()
-    if not name or not isinstance(raw_cfg, dict):
-        return {}
-    model_cfg = raw_cfg.get("model")
-    sections = [raw_cfg.get("model_aliases"), model_cfg.get("aliases") if isinstance(model_cfg, dict) else None]
-    for section in sections:
-        if not isinstance(section, dict):
-            continue
-        entry = next((v for k, v in section.items() if str(k).strip().lower() == name), None)
-        if isinstance(entry, dict) and _clean(entry.get("model")):
-            alias_url = normalize_route_base_url(_clean(entry.get("base_url")))
-            if not alias_url or alias_url != normalize_route_base_url(result.base_url):
-                return {}
-            field = next((f for f in ("api_key", "key_env") if _clean(entry.get(f))), None)
-            return {field: _clean(entry[field])} if field else {}
-    return {}
 
 
 def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
@@ -1917,11 +1885,7 @@ def apply_model_selection(model_cfg: Any, result: ModelSwitchResult, *, mask_cle
     a removal only drops the profile override, so an upper level's old-endpoint ``api_key`` /
     ``key_env`` / ``context_length`` would still apply at the new endpoint (contract §5.4: a
     stored null is "no value"). The same rule :func:`persist_model_selection` applies."""
-    from hermes_cli.config import read_user_config_raw
-    # The caller's document is env-expanded (load_config), so the alias credential comes from the
-    # active profile's raw file, as in persist_model_selection.
-    alias_credential = _alias_credential_on_disk(read_user_config_raw(), result)
-    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg, alias_credential),
+    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg, alias_credential_on_disk(None, result)),
                                     mask_cleared=mask_cleared)
 
 
@@ -1976,9 +1940,8 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     from hermes_cli.config_backend import supports_file_tooling, write_config_keys
     path = Path(config_path) if config_path else get_config_path()
-    raw_cfg = read_user_config_raw(path)
-    planned_from = raw_cfg.get("model")
-    alias_credential = _alias_credential_on_disk(raw_cfg, result)
+    planned_from = (raw_cfg := read_user_config_raw(path)).get("model")
+    alias_credential = alias_credential_on_disk(raw_cfg, result)
     updates = model_selection_config_updates(result, planned_from, alias_credential)
     if not supports_file_tooling():
         # No config file (Remote Config): one keyed write, so a lock on any key refuses the whole

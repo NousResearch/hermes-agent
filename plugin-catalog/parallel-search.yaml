@@ -1,16 +1,16 @@
 name: parallel-search
 repo: https://github.com/parallel-web/search-mcp
-sha: "12f721b2b7ad29e63315884c008b5d77c2a4d7e4"
+sha: "872e6c95da3a668dd44081da3ec587daeacf7270"
 description: >-
-  Free web search and page fetching through Parallel's hosted MCP, with a setup
-  skill bundled. No account or API key required. Queries and requested URLs are
-  sent to Parallel. Adds direct MCP tools alongside Hermes's native web providers.
+  Free web search, page fetching, and other web tools through Parallel's hosted
+  MCP, with a setup skill bundled. No account or API key required. Tool inputs
+  are sent to Parallel. Adds direct MCP tools alongside Hermes's native web providers.
 maintainer: georgeatparallel
 tier: community
 category: web
 requires_hermes: ">=0.20.1"
 docs_url: https://github.com/parallel-web/search-mcp#hermes-agent
-version: "0.1.2"
+version: "0.1.3"
 platforms: []
 capabilities:
   provides_tools: []

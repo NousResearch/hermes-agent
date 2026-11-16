@@ -194,6 +194,14 @@ export const svOverrides: TranslationOverrides = {
     off: 'Av'
   },
   catalog: {
+    developer: {
+      heading: 'Utvecklarläge',
+      title: 'Bygg för Hermes',
+      pitch: 'Har du byggt ett verktyg, en anslutning, ett insticksprogram eller en mod?',
+      pitchFollowUp: 'Vill du, men vet inte hur?',
+      submit: 'Skicka in mod',
+      docs: 'Utvecklardokumentation'
+    },
     toolsets: {
       mostUsed: 'Mest använda',
       mostUsedBlurb: 'De verktygsuppsättningar Hermes oftast använder i den här profilen.',

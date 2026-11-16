@@ -108,6 +108,19 @@ def test_a_session_without_a_worker_does_not_spawn_one(live_session):
     assert restarts == []
 
 
+def test_a_remote_backend_move_never_restarts_the_worker(live_session, monkeypatch):
+    """On main the restart decision compared _local_session_process_cwd twice (both None on a
+    remote backend, so it never restarted); the raw-cwd compare (review finding 8a) made every
+    remote move restart a worker that was never cwd-pinned. Gate the restart on the backend: the
+    remote worker runs in the gateway's launch dir whatever its remote cwd says (T00018 residual 3)."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "ssh")
+    session, restarts, tmp_path = live_session
+    _set_cwd(tmp_path / "new")
+
+    assert restarts == [], "a remote-backend move restarted a worker that was never cwd-pinned"
+    assert session["cwd"] == str(tmp_path / "new")  # the move itself still lands
+
+
 def test_a_project_move_persists_the_cwd_exactly_once(live_session, monkeypatch, tmp_path):
     """The pre-move process-cwd read must not route through the healing display getter: on a dead
     cwd it persisted the healed fallback + scheduled a git-meta probe BEFORE the real set, so one

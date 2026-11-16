@@ -453,10 +453,13 @@ def _move_session_cwd(sid: str, session: dict, cwd: str) -> str:
     no worker yet gets one on the new cwd at first use; a path that only normalised changes nothing.
     The move decision compares the RAW stored cwds — the healing display getter persists a dead
     cwd's fallback, and reading it here would write the DB once more than the move itself
-    (review finding 8a)."""
+    (review finding 8a). A remote-backend session's worker was never cwd-pinned (its spawn cwd is
+    None), so its move restarts nothing — the pre-8a compare pinned both sides to None here and the
+    raw compare would have restarted it for nothing (review finding 8c residual)."""
     before = session.get("cwd")
     resolved = _set_session_cwd(session, cwd)
-    if session.get("slash_worker") is not None and session.get("cwd") != before:
+    if (session.get("slash_worker") is not None and session.get("cwd") != before
+            and _session_is_local_backend(session)):
         _restart_slash_worker(sid, session)
     return resolved
 

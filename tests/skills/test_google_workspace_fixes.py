@@ -252,3 +252,30 @@ def test_docs_append_rejects_empty_text(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as e:
         api.docs_append(types.SimpleNamespace(doc_id="D", text="\n\n", tab=None))
     assert e.value.code == 1 and not calls
+
+
+def test_drive_download_does_not_follow_default_name_symlink(monkeypatch, tmp_path):
+    """An untrusted Drive name must not overwrite a file through a cwd symlink."""
+    api = _load("google_api", monkeypatch, tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    try:
+        (work / "report.txt").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this host")
+
+    fake = _FakeDrive("report.txt")
+    fake.get_media = lambda **_kw: object()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(api, "build_service", lambda *_a, **_kw: fake)
+    http = types.ModuleType("googleapiclient.http")
+    http.MediaIoBaseDownload = lambda *_a, **_kw: pytest.fail("must refuse before download")
+    monkeypatch.setitem(sys.modules, "googleapiclient", types.ModuleType("googleapiclient"))
+    monkeypatch.setitem(sys.modules, "googleapiclient.http", http)
+
+    with pytest.raises(SystemExit) as exc:
+        api.drive_download(types.SimpleNamespace(file_id="F1", output=None, export_mime=None))
+    assert exc.value.code == 1
+    assert outside.read_text(encoding="utf-8") == "keep"

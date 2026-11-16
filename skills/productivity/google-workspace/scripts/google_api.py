@@ -762,7 +762,13 @@ def drive_download(args):
         request = service.files().get_media(fileId=args.file_id)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = io.FileIO(str(out_path), "wb")
+    # Without --output the Drive-supplied name must not overwrite local files
+    # or follow an existing symlink outside the working directory.
+    try:
+        fh = io.FileIO(str(out_path), "wb" if args.output else "xb")
+    except FileExistsError:
+        print(f"ERROR: {out_path} already exists; pass --output to overwrite.", file=sys.stderr)
+        sys.exit(1)
     downloader = MediaIoBaseDownload(fh, request)
     done = False
     while not done:

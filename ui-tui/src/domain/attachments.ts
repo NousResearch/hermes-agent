@@ -18,8 +18,9 @@ import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 export const imageToken = (index: number) => t('libText.attachments.imageToken', index)
 
 export const imageAttachments = (value: string, tokens: ComposerToken[]): ImageAttachment[] =>
-  tokens.flatMap(token => token.kind === 'image' && token.mime && value.includes(token.label)
-    ? [{ path: token.path, mime: token.mime }] : [])
+  tokens.flatMap(token =>
+    token.kind === 'image' && token.mime && value.includes(token.label) ? [{ path: token.path, mime: token.mime }] : []
+  )
 
 /** Highest image token index handed out so far, so a new one never collides. */
 export const nextImageIndex = (tokens: ComposerToken[]) =>

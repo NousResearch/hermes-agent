@@ -8,8 +8,16 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 5))
 
 // The owner's session-cumulative counters (`gateway/session_usage.py::usage_stats`).
 const STATS = {
-  api_calls: 11, compression_count: 1, context_length: 128000, context_source: 'provider_usage', input_tokens: 1100,
-  last_prompt_tokens: 900, model: 'reads-model', output_tokens: 134, prompt_tokens: 1100, total_tokens: 1234
+  api_calls: 11,
+  compression_count: 1,
+  context_length: 128000,
+  context_source: 'provider_usage',
+  input_tokens: 1100,
+  last_prompt_tokens: 900,
+  model: 'reads-model',
+  output_tokens: 134,
+  prompt_tokens: 1100,
+  total_tokens: 1234
 }
 
 beforeEach(() => {

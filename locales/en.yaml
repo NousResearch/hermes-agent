@@ -2689,6 +2689,7 @@ cli:
     save_ok: "(^_^)v Conversation saved to: {path} ({label})"
     save_resume_hint: "Resume the live session with: hermes --resume {session_id}"
     save_failed: "(x_x) Failed to save: {error}"
+    save_gateway_unreachable: "(._.) Gateway unreachable — saving this machine's copy of the session instead."
     retry_no_messages: "(._.) No messages to retry."
     retry_no_user_message: "(._.) No user message found to retry."
     retry_unsafe: "(._.) Cannot retry that message safely: {error}"

@@ -140,23 +140,37 @@ def _print_save_refusal(error) -> None:
     print(t("cli.session.save_nothing") if str(error) == "not_found" else t("cli.session.save_failed", error=error))
 
 
+# ``_export_on_gateway``'s third outcome: the owner could not be reached at all, as distinct from
+# answering with an export or with a refusal. An unreachable owner must not make ``/save`` impossible -
+# the session's rows are still readable from here - so the caller writes a local snapshot instead of
+# reporting a failure. ``None`` keeps its meaning: the owner answered, or handled the save itself.
+_GATEWAY_UNREACHABLE = object()
+
+
 def _export_on_gateway(connection, session_id, fmt, filename, redact):
     """The owner's ``/save`` rendering of its stored row (``session.export``: the snapshot ``hermes
     sessions export`` writes, with title, metadata and archived rows), never this process's
     in-memory history. Nothing is written on the gateway host, so a remote owner's disk is never
-    taken for this machine's. None when refused (printed), and also None when an older gateway
-    without ``session.export`` was handed to ``_save_on_older_gateway`` (which may save on the
-    gateway host and prints its own outcome)."""
+    taken for this machine's. None when the owner refused (printed), and also None when an older
+    gateway without ``session.export`` was handed to ``_save_on_older_gateway`` (which may save on the
+    gateway host and prints its own outcome). ``_GATEWAY_UNREACHABLE`` when no owner answered at all."""
     from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
     try:
         content = (connection.call("session.export", session_id=session_id, format=fmt,
                                    redact=redact) or {}).get("content")
-    except GatewayClientError as e:
-        if not (isinstance(e, GatewayRPCError) and (e.code == -32601 or str(e) == "unknown_method")):
+    except GatewayRPCError as e:
+        if e.code == -32601 or str(e) == "unknown_method":
+            # An owner too old to know ``session.export``: its own ``session.save`` writes on the
+            # gateway host, so this machine writes nothing.
+            _save_on_older_gateway(connection, session_id, fmt, filename, redact)
+        else:
+            # A refusal is an answer, not a reason to write a different file locally.
             _print_save_refusal(e)
-            return None
-        _save_on_older_gateway(connection, session_id, fmt, filename, redact)
         return None
+    except GatewayClientError:
+        # No answer at all: the connection is down (a restart drops it), which says nothing about
+        # whether this session has rows to save.
+        return _GATEWAY_UNREACHABLE
     if not isinstance(content, str):
         print(t("cli.session.save_failed", error="the gateway returned no export"))
         return None
@@ -723,9 +737,14 @@ class CLISessionMixin:
                 print(t("cli.session.save_nothing"))
                 return
             content = _export_on_gateway(store.connection, self.session_id, fmt, filename, redact)
-            if content is not None:
-                _write_save(self.session_id, fmt, filename, lambda: content)
-            return
+            if content is _GATEWAY_UNREACHABLE:
+                # The owner is gone, but this session's rows are still readable here: write the snapshot
+                # from them rather than losing the conversation to a dropped connection.
+                print(t("cli.session.save_gateway_unreachable"))
+            else:
+                if content is not None:
+                    _write_save(self.session_id, fmt, filename, lambda: content)
+                return
 
         # Prefer the durable DB row (metadata + tool calls); fall back to in-memory history.
         # getattr: test doubles may not carry _session_db / session_id.

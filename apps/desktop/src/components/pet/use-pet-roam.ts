@@ -5,10 +5,12 @@ import { $petMotion, $petRoamDir, type PetState } from '@/store/pet'
 
 import { chooseMove, dwellMs, PAUSE_DWELL, pickStrollTarget } from './roam-behavior'
 import {
+  blockerLift,
   GROUND_EPS,
   groundTop,
+  hopPlan,
+  hopReachable,
   type Ledge,
-  overlapsX,
   overlayLedge,
   resolveLedge,
   snapshotLedges
@@ -126,9 +128,13 @@ export function usePetRoam({
     let targetLedge: Ledge | null = null
     // When set, the current walk is the approach run before a hop to this ledge.
     let pendingHop: Ledge | null = null
+    // Where that hop lands (a step across two adjacent ledges also travels in x).
+    let pendingHopX: number | null = null
     // Fall / jump integrators.
     let fallVel = 0
     let jumpFromY = 0
+    let jumpFromX = cur.x
+    let jumpToX = cur.x
     let jumpElapsed = 0
 
     const applyDom = () => {
@@ -216,16 +222,21 @@ export function usePetRoam({
       beginPause(now)
     }
 
-    const beginVertical = (ledge: Ledge) => {
+    const beginVertical = (ledge: Ledge, landX: number | null = null) => {
       targetLedge = ledge
+      jumpFromX = cur.x
+      jumpToX = landX ?? cur.x
 
-      if (restY(ledge) < cur.y - 1) {
-        // Up onto a higher ledge: a quick spring.
+      // A step that crosses in x (floor ↔ the top of an obstacle standing on it)
+      // is always a spring, even downhill: gravity alone would drop the pet
+      // straight down and leave it short of the far ledge.
+      if (Math.abs(jumpToX - jumpFromX) > 0.5 || restY(ledge) < cur.y - 1) {
+        // Up and/or across: a quick spring.
         phase = 'jump'
         jumpFromY = cur.y
         jumpElapsed = 0
       } else {
-        // Down off a ledge: let gravity take it.
+        // Straight down off a ledge: let gravity take it.
         phase = 'fall'
         fallVel = 0
       }
@@ -238,6 +249,21 @@ export function usePetRoam({
       // patrols along it; closing it restores the normal surfaces (and the pet
       // drops to whatever's below).
       const ledges = overlayOpen ? [overlayLedge(petW)] : snapshotLedges(petW, petH)
+
+      // Never stand in front of the composer: if its body is over the input box
+      // (a saved position from before this rule, a resize, or the composer
+      // growing upward), climb the box's top edge and carry on from there.
+      const lift = overlayOpen ? null : blockerLift(petW, petH, cur.x, cur.y)
+
+      if (lift) {
+        cur.x = Math.min(Math.max(cur.x, lift.left), lift.right)
+        applyDom()
+        curLedge = lift
+        beginVertical(lift)
+
+        return
+      }
+
       curLedge = resolveLedge(ledges, cur.x, cur.y, petH)
 
       if (Math.abs(cur.y - restY(curLedge)) > GROUND_EPS) {
@@ -247,7 +273,7 @@ export function usePetRoam({
         return
       }
 
-      const reachable = ledges.filter(ledge => ledge !== curLedge && overlapsX(curLedge!, ledge))
+      const reachable = ledges.filter(ledge => ledge !== curLedge && hopReachable(curLedge!, ledge, petW))
       const move = chooseMove(reachable.length > 0)
 
       if (move === 'rest') {
@@ -259,10 +285,11 @@ export function usePetRoam({
 
       if (move === 'hop') {
         const next = reachable[Math.floor(Math.random() * reachable.length)]!
-        const lo = Math.max(curLedge.left, next.left)
-        const hi = Math.min(curLedge.right, next.right)
+        const { land, launch } = hopPlan(curLedge, next)
+
         pendingHop = next
-        walkTargetX = lo + Math.random() * (hi - lo)
+        pendingHopX = land
+        walkTargetX = launch
       } else {
         pendingHop = null
         walkTargetX = pickStrollTarget(curLedge, cur.x)
@@ -293,6 +320,7 @@ export function usePetRoam({
         cur.y = live.top
         phase = 'pause'
         pendingHop = null
+        pendingHopX = null
         // Short settle so the pet falls right after you drop it, not seconds later.
         pauseUntil = now + DROP_SETTLE_MS
         signal(null, 0)
@@ -320,8 +348,10 @@ export function usePetRoam({
 
             if (pendingHop) {
               const next = pendingHop
+              const landX = pendingHopX
               pendingHop = null
-              beginVertical(next)
+              pendingHopX = null
+              beginVertical(next, landX)
             } else {
               beginPause(now)
             }
@@ -361,9 +391,17 @@ export function usePetRoam({
 
           jumpElapsed += dt * 1000
           const t = Math.min(1, jumpElapsed / JUMP_DUR_MS)
-          cur.y = jumpFromY + (restY(targetLedge) - jumpFromY) * easeOutCubic(t)
+          const eased = easeOutCubic(t)
+          cur.y = jumpFromY + (restY(targetLedge) - jumpFromY) * eased
+
+          // A step across two adjacent ledges also travels in x, so the pet
+          // arcs over the corner instead of springing in place.
+          if (jumpToX !== jumpFromX) {
+            cur.x = jumpFromX + (jumpToX - jumpFromX) * eased
+          }
 
           if (t >= 1) {
+            cur.x = jumpToX
             settleOn(targetLedge, now)
           } else {
             applyDom()

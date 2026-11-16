@@ -1,0 +1,25 @@
+name: pele
+repo: https://github.com/JasonSwindle/hermes-mermaid-pele
+sha: 7b293e3d44ce97537484b6802e86b794865b49e5
+description: "Mermaid diagrams in Hermes Desktop replies, rendered by Pele, the same engine Obsidian ships. Disclosure — the diagram text is stored on your gateway under $HERMES_HOME/cache/pele-sources and read back by the Desktop half over the plugin's own route; no network request, no third-party endpoint, no telemetry, no file or shell access."
+maintainer: JasonSwindle
+tier: community
+category: desktop
+docs_url: https://github.com/JasonSwindle/hermes-mermaid-pele#readme
+version: "1.0.0"
+title: "Hermes Pele"
+image: https://raw.githubusercontent.com/JasonSwindle/hermes-mermaid-pele/7b293e3d44ce97537484b6802e86b794865b49e5/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/JasonSwindle/hermes-mermaid-pele/7b293e3d44ce97537484b6802e86b794865b49e5/docs/example.png
+platforms: []
+known_issues:
+  - "Drawing needs the Desktop half, which ships in the same repo; it installs itself when the app and the gateway share a machine, and a native Desktop pointed at a remote gateway installs it from Capabilities → Plugins. Keep the render_fences toggle off until it is present, or a reply shows a raw ::mermaid{id=…} directive instead of a diagram."
+  - "The install-time scan rates the bundled renderer caution (165 findings, dominated by obfuscation on a minified vendor bundle and two documented byte heuristics); a catalog install at this pin accepts that verdict without a prompt, a URL install needs --force."
+  - "Diagram sources are cached, not pruned, so the cache grows by a few kilobytes per distinct diagram. Deleting it only affects diagrams written before the deletion, which then say so in the transcript."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.22.0"

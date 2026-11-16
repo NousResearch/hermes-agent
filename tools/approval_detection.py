@@ -38,12 +38,15 @@ from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_S
 from tools.approval_wmic import WmicShadowDeleteMatcher
 from tools.approval_detection_lex import (
     _blank_nested_substitutions,
+    _blank_shell_redirections,
     _deobfuscate_shell_word_for_detection,
+    _is_redirection_operator_char,
     _iter_command_substitution_bodies,
     _quoted_heredoc_body_spans,
     _read_shell_word,
     _skip_shell_whitespace,
     _splice,
+    _strip_shell_word_syntax,  # re-exported: tools.approval_wrappers imports it from here
 )
 from tools.approval_detection_awk import AWK_EXEC_DESCRIPTION, AWK_NAMES, awk_program_runs_shell
 
@@ -1148,55 +1151,6 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
         return list(lexer)
     except ValueError:
         return None
-
-
-def _is_redirection_operator_char(text: str, i: int, previous) -> bool:
-    """Whether the unquoted ``&`` / ``|`` at *i* belongs to a redirection operator (``>&``, ``<&``,
-    ``&>``, ``&>>``, ``>|``) rather than separating commands. *previous* is the prior ``_scan_shell``
-    step; only an unquoted plain ``<`` / ``>`` char there can own the ``&`` / ``|``. Treating the
-    ``&`` in ``bash 2>&1 -c 'reboot'`` as a separator cut the command before ``-c``."""
-    before = text[previous[1]] if previous and previous[0] == "char" and previous[3] is None else ""
-    if text[i] == "|":
-        return before == ">"
-    if text[i] != "&":
-        return False
-    return before in ("<", ">") or (text.startswith(">", i + 1) and before not in ("&", "|"))
-
-
-_REDIRECTION_OPERATOR_RE = re.compile(r"&>>?|<<<|<<-?|<>|>>|>&|<&|>\||[<>]")
-_REDIRECTION_FD_PREFIX_RE = re.compile(r"(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$")
-
-
-def _blank_shell_redirections(text: str, start: int) -> str:
-    """Replace every unquoted redirection (optional fd / ``{var}`` prefix, operator, target word) in
-    ``text[start:]`` with spaces, keeping offsets. Redirections may appear anywhere in a simple
-    command, and ``bash 2>/dev/null -c 'reboot'`` otherwise leaves ``2 > /dev/null`` in argv where
-    option parsing stops at the first non-option before ``-c``. Substitutions are skipped as units
-    and process substitutions ``<(...)`` / ``>(...)`` are words, not redirections."""
-    edits, skip_to, previous = [], start, None
-    for step in _scan_shell(text, start, subst="uq"):
-        kind, i, _, quote = step
-        if i < skip_to:
-            continue
-        match = None
-        if kind == "char" and quote is None and not text.startswith(("<(", ">("), i):
-            match = _REDIRECTION_OPERATOR_RE.match(text, i)
-            if match and match.group().startswith("&") and previous and previous[0] == "char" \
-                    and previous[3] is None and text[previous[1]] in "&|":
-                match = None  # `&&>x` / `|&>x`: the `&` is a separator, the `>` is matched next
-        if match is None:
-            previous = step
-            continue
-        op_start = i
-        if not match.group().startswith("&"):
-            # Bounded lookback for an fd (`2>`) or `{var}>` prefix that forms its own word.
-            prefix = _REDIRECTION_FD_PREFIX_RE.search(text, max(start, i - 64), i)
-            if prefix and (prefix.start() == start or text[prefix.start() - 1].isspace()):
-                op_start = prefix.start()
-        _, target_end, _ = _read_shell_word(text, match.end())
-        edits.append((op_start, target_end, " " * (target_end - op_start)))
-        skip_to, previous = target_end, None
-    return _splice(text, edits) if edits else text
 
 
 def _top_level_shell_segments(command: str, subst: str) -> tuple[list[str], bool]:

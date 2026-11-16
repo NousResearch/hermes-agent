@@ -336,6 +336,22 @@ def test_cp1252_env_bytes_survive_a_normalizing_sanitize(tmp_path, monkeypatch):
     assert os.getenv("LATIN1_VALUE") == "café"
 
 
+def test_save_env_value_keeps_non_utf8_bytes_of_other_lines(tmp_path, monkeypatch):
+    """A cp1252 .env (the loader reads it as latin-1) must come back byte-identical apart from
+    the saved key; decoding it with errors=replace wrote U+FFFD over every non-UTF-8 byte."""
+    from hermes_cli.config import save_env_value
+
+    original = b"EMAIL_PASSWORD=Stra\xdfe-g\xe9heim-42\nOPENROUTER_API_KEY=sk-or-FAKE\n"
+    env_path = tmp_path / ".env"
+    env_path.write_bytes(original)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    save_env_value("TELEGRAM_HOME_CHANNEL", "12345")
+
+    # Per line, so the text-mode writer's native terminator (CRLF on Windows) does not matter.
+    assert env_path.read_bytes().splitlines() == (original + b"TELEGRAM_HOME_CHANNEL=12345\n").splitlines()
+
+
 # ---------------------------------------------------------------------------
 # Profile .env isolation: inherited known-key cleanup
 # ---------------------------------------------------------------------------

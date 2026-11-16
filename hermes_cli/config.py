@@ -2382,9 +2382,8 @@ def sanitize_env_file() -> int:
 
 
 def _read_env_lines(env_path: Path) -> list:
-    """Read ``.env`` lines, normalized. Explicit UTF-8 (Windows defaults to cp1252) with BOM
-    tolerance (Notepad adds one). ``surrogateescape`` + ``_write_env_lines`` round-trip bytes that
-    are not UTF-8 (a cp1252 file the loader reads as latin-1), so a rewrite never corrupts other lines."""
+    """Read ``.env`` lines, normalized: explicit UTF-8 (Windows defaults to cp1252), BOM-tolerant (Notepad adds one);
+    ``surrogateescape`` lets ``_write_env_lines`` write bytes that are not UTF-8 (a cp1252 file) back unchanged."""
     with open(env_path, encoding="utf-8-sig", errors="surrogateescape") as f:
         return _sanitize_env_lines(f.readlines())
 

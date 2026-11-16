@@ -2761,6 +2761,19 @@ export const svOverrides: TranslationOverrides = {
       copyQuery: 'Kopiera fråga',
       copyFile: 'Kopiera fil',
       copyPath: 'Kopiera sökväg',
+      failedCalls: count => `${count} verktygsanrop misslyckades`,
+      skillActivity: {
+        loading: 'Läser in skill',
+        loaded: 'Skill inläst',
+        loadFailed: 'Det gick inte att läsa in skill',
+        readingResource: 'Läser skill-resurs',
+        readResource: 'Läste skill-resurs',
+        resourceFailed: 'Det gick inte att läsa skill-resursen',
+        listing: 'Listar skills',
+        listed: 'Listade skills',
+        listFailed: 'Det gick inte att lista skills',
+        unavailable: 'Skill-resultatet är inte tillgängligt'
+      },
       outputAlt: 'Verktygsutdata',
       rawResponse: 'Rått svar',
       copyActivity: 'Kopiera aktivitet',
@@ -2772,6 +2785,8 @@ export const svOverrides: TranslationOverrides = {
       statusError: 'Fel',
       statusRecovered: 'Återhämtad',
       statusDone: 'Klar',
+      resultUnavailable: 'Resultatet är inte tillgängligt',
+      resultInterrupted: 'Avbrutet',
       memoryWriteNoted: 'Minnesändring noterad',
       actions: {
         read: 'Läste',

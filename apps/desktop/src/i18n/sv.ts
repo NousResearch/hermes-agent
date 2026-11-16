@@ -4026,6 +4026,8 @@ export const svOverrides: TranslationOverrides = {
       options: 'Alternativ',
       thinking: 'Resonemang',
       fast: 'Snabb',
+      ultrafast: 'Ultrasnabb',
+      useStandardSpeed: 'Använd standardhastighet',
       effort: 'Insats',
       minimal: 'Minimal',
       low: 'Låg',
@@ -4034,8 +4036,11 @@ export const svOverrides: TranslationOverrides = {
       xhigh: 'Extra hög',
       max: 'Max',
       ultra: 'Ultra',
+      sendsOnRoute: level => `skickar ${level} på den här rutten`,
       updateFailed: 'Uppdateringen av modellalternativ misslyckades',
-      fastFailed: 'Uppdateringen av snabbläge misslyckades'
+      fastFailed: 'Uppdateringen av snabbläge misslyckades',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Uppdateringen av Daybreak misslyckades'
     },
     gatewayMenu: {
       gateway: 'Gateway',

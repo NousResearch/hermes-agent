@@ -279,6 +279,20 @@ describe('host.composer draft facade', () => {
     expect(seen).toEqual(['insert:inline:tile:sess-1', 'insert:block:main', 'focus:tile:sess-1', 'focus:main'])
   })
 
+  it("forwards focus's `caret: 'end'` option to the addressed surface, and only that option", async () => {
+    const seen: unknown[] = []
+    const onFocus = (event: Event) => seen.push((event as CustomEvent).detail.caret)
+
+    window.addEventListener('hermes:composer-focus', onFocus)
+    host.composer.focus('sess-1', { caret: 'end' })
+    host.composer.focus('sess-1')
+    host.composer.focus('sess-1', { caret: 'start' as 'end' })
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    window.removeEventListener('hermes:composer-focus', onFocus)
+
+    expect(seen).toEqual(['end', undefined, undefined])
+  })
+
   it("addresses 'new' to the session-less primary composer only, never to the active one", async () => {
     const seen: string[] = []
 

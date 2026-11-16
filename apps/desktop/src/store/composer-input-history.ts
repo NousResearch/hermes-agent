@@ -150,6 +150,17 @@ export function resetBrowseState(sessionId: string | null | undefined) {
   $perSessionBrowse.set(all)
 }
 
+/** The history entry the browse cursor sits on, or null when not browsing. */
+export function browsedEntry(sessionId: string | null | undefined, history: readonly string[]): string | null {
+  if (!valid(sessionId)) {
+    return null
+  }
+
+  const s = $perSessionBrowse.get()[sessionId]
+
+  return s && s.cursor >= 0 ? (history[s.cursor] ?? null) : null
+}
+
 /** True if the user is currently browsing history for this session. */
 export function isBrowsingHistory(sessionId: string | null | undefined): boolean {
   if (!valid(sessionId)) {

@@ -1,3 +1,4 @@
+import { claimFloatingComposerForTarget } from '@/app/chat/composer/floating-target'
 import {
   type ComposerInsertMode,
   type ComposerTarget,
@@ -133,12 +134,21 @@ export const composerHost = {
    *  keybind that "goes to the input") that plugins used to reach with a
    *  hand-built `hermes:composer-focus` CustomEvent. Fail-closed like the
    *  rest: an absent tile drops the request instead of focusing whatever
-   *  the primary happens to show. */
-  focus: (sessionId: null | string = null): void => {
+   *  the primary happens to show. `{ caret: 'end' }` lands the caret after
+   *  the existing draft instead of wherever the editor's focus puts it
+   *  (the start of a non-empty draft) — for keyboard session switching that
+   *  resumes typing; a range the user has selected is left alone. */
+  focus: (sessionId: null | string = null, opts?: { caret?: 'end' }): void => {
     const { target } = resolveComposerAddress(sessionId)
 
     if (target !== null) {
-      requestComposerFocus(target)
+      // The caret follows the floating-composer owner (the pointer's last
+      // pick); claim this surface first so the request isn't redirected away.
+      if (target !== 'active') {
+        claimFloatingComposerForTarget(target)
+      }
+
+      requestComposerFocus(target, { caret: opts?.caret === 'end' ? 'end' : undefined })
     }
   }
 }

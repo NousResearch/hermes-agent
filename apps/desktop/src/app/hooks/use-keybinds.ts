@@ -8,6 +8,7 @@ import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { appViewForPath, isOverlayView } from '@/app/routes'
 import {
+  $newSessionRedirect,
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
   isPaneVisible,
@@ -317,6 +318,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
     'session.new': () => {
+      // A tiling plugin may open the new chat as its own tile instead of
+      // replacing the focused one (`host.layout.redirectNewSession`).
+      if ($newSessionRedirect.get()?.()) {
+        return
+      }
+
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create
       // selection from a prior action.

@@ -191,7 +191,9 @@ export function useComposerDraft({
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
   queueEditStateRef.current = queueEditRef.current
 
-  const [focusRequestId, setFocusRequestId] = useState(0)
+  // `caretEnd` rides with the token: a plugin `host.composer.focus(id,
+  // { caret: 'end' })` request; plain requests reset it.
+  const [focusRequest, setFocusRequest] = useState({ caretEnd: false, id: 0 })
 
   const focusInput = useCallback(() => {
     const editor = editorRef.current
@@ -205,7 +207,7 @@ export function useComposerDraft({
   }, [target])
 
   const requestMainFocus = useCallback(() => {
-    setFocusRequestId(id => id + 1)
+    setFocusRequest(({ id }) => ({ caretEnd: false, id: id + 1 }))
   }, [])
 
   // The single write path for programmatic draft mutations: mirror → AUI state →
@@ -300,19 +302,43 @@ export function useComposerDraft({
     }
   }, [floating, focusInput, focusKey, inputDisabled, paneVisible, target])
 
-  const previousFocusRequest = useRef(focusRequestId)
+  const previousFocusRequest = useRef(focusRequest.id)
   // eslint-disable-next-line no-restricted-syntax -- handled request token, not a mirrored atom
   useEffect(() => {
-    if (previousFocusRequest.current === focusRequestId) {
+    if (previousFocusRequest.current === focusRequest.id) {
       return
     }
 
-    previousFocusRequest.current = focusRequestId
+    previousFocusRequest.current = focusRequest.id
 
     if (!inputDisabled && paneVisible) {
       focusInput()
+
+      if (focusRequest.caretEnd) {
+        // focusComposerInput retries on the next frame and macrotask (the
+        // editor can mount/reveal after this commit); follow each retry and
+        // move the caret only once this editor actually holds focus. A
+        // selected range is the user's — leave it alone.
+        const toEnd = () => {
+          const editor = editorRef.current
+          const selection = window.getSelection()
+
+          if (
+            editor &&
+            document.activeElement === editor &&
+            selection?.isCollapsed &&
+            editor.contains(selection.anchorNode)
+          ) {
+            placeCaretEnd(editor)
+          }
+        }
+
+        toEnd()
+        window.requestAnimationFrame(toEnd)
+        window.setTimeout(toEnd, 0)
+      }
     }
-  }, [focusInput, focusRequestId, inputDisabled, paneVisible])
+  }, [focusInput, focusRequest, inputDisabled, paneVisible])
 
   // The mirror of the `markActiveComposer` above: give the key back when this
   // composer goes away (a session tile closing, a pane unmounting). Covers both
@@ -328,7 +354,7 @@ export function useComposerDraft({
       return undefined
     }
 
-    const offFocus = onComposerFocusRequest(({ target: requested, typeChar }) => {
+    const offFocus = onComposerFocusRequest(({ caret, target: requested, typeChar }) => {
       if (requested !== target) {
         return
       }
@@ -341,7 +367,7 @@ export function useComposerDraft({
         return
       }
 
-      setFocusRequestId(id => id + 1)
+      setFocusRequest(({ id }) => ({ caretEnd: caret === 'end', id: id + 1 }))
     })
 
     const offInsert = onComposerInsertRequest(({ mode, target: requested, text, token }) => {

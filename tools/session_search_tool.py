@@ -223,6 +223,27 @@ def _get_message_storage_state(db, message_id) -> Optional[dict[str, Any]]:
     return dict(row) if row else None
 
 
+_RECALL_TOOL_NAMES = frozenset({"session_search", "tool_search", "tool_call"})
+
+
+def _is_search_echo(db, message_id) -> bool:
+    """True for a text-less assistant row whose tool calls are only recall lookups: it holds
+    the query words because an earlier agent *searched* for them, not because it did the work."""
+    def _lookup():
+        with db._lock:
+            return db._conn.execute(
+                "SELECT content, tool_calls FROM messages WHERE id = ?", (message_id,)).fetchone()
+    row = message_id and _quiet(_lookup, None, "search-echo lookup failed for %s", message_id)
+    if not row or (row["content"] or "").strip() or not row["tool_calls"]:
+        return False
+    try:
+        calls = json.loads(row["tool_calls"])
+    except (TypeError, ValueError):
+        return False
+    names = {((c or {}).get("function") or {}).get("name") for c in calls} if isinstance(calls, list) else set()
+    return bool(names) and names <= _RECALL_TOOL_NAMES
+
+
 def _is_compacted_state(state: Optional[dict[str, Any]]) -> bool:
     """Compaction archives are ``active=0, compacted=1``; rewind/undo rows are
     ``active=0, compacted=0`` and must stay hidden."""
@@ -518,6 +539,8 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
                                                 "last_activity": _format_timestamp(meta.get("last_activity_at"))}
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+            continue
+        if _is_search_echo(db, r.get("id")):
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     # The asking session's own rows (its prompt, the query it just wrote) often hold the only

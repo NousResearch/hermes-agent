@@ -5242,7 +5242,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         dying in ``int()`` as a generic send failure."""
         if isinstance(channel_id, str):
             channel_id = discord_channel_id_from_link(channel_id.strip()) or channel_id.strip()
-            if not channel_id.isdigit():
+            if not (channel_id.isascii() and channel_id.isdigit()):
                 raise ValueError(f"Discord target {channel_id!r} is not a channel ID (digits only); check "
                                  "DISCORD_HOME_CHANNEL or the deliver target")
         channel = self._client.get_channel(int(channel_id))

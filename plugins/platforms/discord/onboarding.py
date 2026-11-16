@@ -145,10 +145,10 @@ def _prompt_home_channel_id(prompt) -> Optional[str]:
     for _attempt in range(2):
         answer = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
         channel_id = discord_channel_id_from_link(answer) or answer
-        if not channel_id or channel_id.isdigit():
+        if not channel_id or (channel_id.isascii() and channel_id.isdigit()):
             return channel_id
         last = channel_id.rstrip("/").rsplit("/", 1)[-1]
-        hint = f" The channel ID is the last number of a copied path: {last}" if last.isdigit() else ""
+        hint = f" The channel ID is the last number of a copied path: {last}" if last.isascii() and last.isdigit() else ""
         print_error(f"{answer!r} is not a channel ID: use the digits from Copy Channel ID.{hint}")
     return None
 

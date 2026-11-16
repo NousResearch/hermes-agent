@@ -42,3 +42,21 @@ def reset_review_attended(token: contextvars.Token[bool]) -> None:
 
 def is_unattended_review() -> bool:
     return is_background_review() and not _review_attended.get()
+
+
+# Entry trigger for a background-review fork, stamped from spawn_background_review_thread's entry
+# classification (not from attendedness: a focus-only fork is unattended yet not automatic):
+# ``"automatic"``, ``"focus_only"``, or ``"refine"``; ``None`` outside a review fork.
+_review_trigger: contextvars.ContextVar[str | None] = contextvars.ContextVar("review_trigger", default=None)
+
+
+def set_review_trigger(trigger: str | None) -> contextvars.Token[str | None]:
+    return _review_trigger.set(trigger or None)
+
+
+def reset_review_trigger(token: contextvars.Token[str | None]) -> None:
+    _review_trigger.reset(token)
+
+
+def get_review_trigger() -> str | None:
+    return _review_trigger.get()

@@ -1234,8 +1234,9 @@ def build_turn_context(
     # warning and a needless first-turn prefix cache miss. (Issue #45499.)
     set_session_context(agent.session_id)
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
-    from tools.skill_provenance import set_review_attended
+    from tools.skill_provenance import set_review_attended, set_review_trigger
     set_review_attended(getattr(agent, "_review_attended", False))
+    set_review_trigger(getattr(agent, "_review_trigger", None))
     agent._restore_primary_runtime()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)

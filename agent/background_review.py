@@ -1272,9 +1272,11 @@ def _run_review_fork(
     so the caller's error path still sees usage and the fork to clean up. ``explicit`` (/refine)
     keeps the ``background_review`` origin (curator/skill guards still apply) but marks the fork
     attended, so the unattended-only memory delete gate leaves the full operation set available."""
+    from tools.skill_provenance import get_review_trigger
     st.review_agent, _rt, _routed = build_cache_parity_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
     st.review_agent._review_attended = explicit
+    st.review_agent._review_trigger = get_review_trigger()
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
@@ -1456,6 +1458,7 @@ def spawn_background_review_thread(
     # before the worker starts, so every path that reaches the fork is covered exactly once.
     entry = "explicit" if explicit else ("focus_only" if has_focus else "automatic")
     gate = "bypassed" if (explicit or has_focus) else "passed"
+    review_trigger = "refine" if entry == "explicit" else entry
 
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
         logger.info(
@@ -1464,9 +1467,14 @@ def spawn_background_review_thread(
             getattr(agent, "session_id", None) or "none", entry, gate, bool(focus),
             review_memory, review_skills,
         )
-        _run_review_in_thread(
-            agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
-            review_memory=review_memory, explicit=explicit)
+        from tools.skill_provenance import reset_review_trigger, set_review_trigger
+        trigger_token = set_review_trigger(review_trigger)
+        try:
+            _run_review_in_thread(
+                agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
+                review_memory=review_memory, explicit=explicit)
+        finally:
+            reset_review_trigger(trigger_token)
 
     return _target, prompt
 

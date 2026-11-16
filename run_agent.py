@@ -125,6 +125,7 @@ from agent.reasoning_params import ReasoningParamsMixin
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.session_activity import ActivityProvenance
 from agent.process_transport import implicit_non_stream_stale_timeout
+from agent.provider_route_hooks import model_forces_max_completion_tokens
 from agent.message_sanitization import (
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     deterministic_call_id as _codex_deterministic_call_id,
@@ -137,7 +138,7 @@ from agent.codex_responses_adapter import (
 )
 from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
 from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
-from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
+from utils import base_url_host_matches, base_url_hostname, env_float
 
 
 _MAX_TOOL_WORKERS = 8

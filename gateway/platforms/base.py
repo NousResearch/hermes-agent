@@ -21,6 +21,8 @@ from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
+from gateway.platforms.base_chunking import (
+    is_partial_delivery, partial_tail_uncertain, send_never_landed, split_send_failed, with_partial_send)
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.platforms.base_kanban_media import _kanban_attachment_roots, _kanban_board_db_paths
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
@@ -3513,7 +3515,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
 
         result = await _send(content)
-        if result.success or self._send_retry_is_final(result) or self._partial_tail_uncertain(result):
+        if result.success or self._send_retry_is_final(result) or partial_tail_uncertain(result, self._RESUMABLE_PARTIAL_KEYS):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: back off (honoring the server's retry_after) rather
@@ -3562,7 +3564,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                if self._send_retry_is_final(result) or self._partial_tail_uncertain(result):
+                if self._send_retry_is_final(result) or partial_tail_uncertain(result, self._RESUMABLE_PARTIAL_KEYS):
                     return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
@@ -3620,76 +3622,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         fallback can fix it (a structured auth/target refusal). Default: never."""
         return False
 
-    @staticmethod
-    def _is_partial_delivery(result: SendResult) -> bool:
-        """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
-        contract split-sending adapters set via :meth:`_with_partial_send` and the stream consumer reads): the visible
-        head must never be sent again."""
-        raw = getattr(result, "raw_response", None)
-        return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
-
-    # Raw-response keys naming a tail this adapter's ``_resume_partial_send`` can still deliver.
-    _RESUMABLE_PARTIAL_KEYS: tuple[str, ...] = ("undelivered_chunks",)
-
-    def _partial_tail_uncertain(self, result: SendResult) -> bool:
-        """A partial delivery with no tail this adapter can resume: no retry can finish it and the
-        plain-text fallback would repeat the head, so it is returned as-is instead of backing off."""
-        raw = result.raw_response
-        return self._is_partial_delivery(result) and not any(raw.get(k) for k in self._RESUMABLE_PARTIAL_KEYS)
-
-    @staticmethod
-    def _with_partial_send(
-        result: SendResult, undelivered: list[str], delivered: list[str], *, tail_certain: bool = True) -> SendResult:
-        """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
-        ``_edit_overflow_split`` sets and the stream consumer reads; every split-sending adapter shares it), so
-        no caller re-sends the visible head; ``undelivered`` (for :meth:`_resume_partial_send`) is attached
-        only when ``tail_certain``. An uncertain failure reports ``unattempted_chunks``: the messages after
-        the one in flight, which never left."""
-        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
-        if not tail_certain and len(undelivered) > 1:
-            raw["unattempted_chunks"] = tuple(undelivered[1:])
-        if delivered:
-            raw.update({
-                "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
-                "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
-            if tail_certain and undelivered:
-                raw["undelivered_chunks"], raw["delivered_message_ids"] = tuple(undelivered), tuple(delivered)
-        result.raw_response = raw or result.raw_response
-        return result
-
-    @staticmethod
-    def _send_never_landed(exc: Optional[BaseException] = None, status: Optional[int] = None) -> bool:
-        """True only when a failed send certainly created nothing: HTTP 429 (refused before processing) or a
-        failed connect (the request never left), also when an SDK wraps it. A 5xx, a timeout or a dropped
-        response may have posted it."""
-        connect_errors = (ConnectionRefusedError,) + tuple(
-            cls for cls in (getattr(sys.modules.get("aiohttp"), "ClientConnectorError", None),
-                            getattr(sys.modules.get("httpx"), "ConnectError", None)) if isinstance(cls, type))
-        for _ in range(4):  # the exception and the SDK wrappers above it
-            if exc is None:
-                break
-            if isinstance(exc, connect_errors):
-                return True
-            status = status or next((s for s in (
-                getattr(getattr(exc, "response", None), "status_code", None),  # httpx, slack_sdk
-                getattr(exc, "http_status", None),  # mautrix
-                getattr(getattr(exc, "resp", None), "status", None),  # googleapiclient
-            ) if isinstance(s, int)), None)
-            exc = exc.__cause__
-        return status == 429
-
-    @classmethod
-    def _split_send_failed(
-        cls, result: SendResult, undelivered: list[str], delivered: list[Any], *, unsent: bool) -> SendResult:
-        """``result`` for a split send whose chunk after ``delivered`` failed (``unsent``: it certainly never
-        landed, see :meth:`_send_never_landed`). Once a chunk landed, the tail is kept for
-        :meth:`_resume_partial_send` only when ``unsent``, and only then is it retryable: a whole-payload
-        redelivery would repeat the visible head."""
-        if not delivered:
-            return result
-        result = cls._with_partial_send(result, undelivered, delivered, tail_certain=unsent)
-        result.retryable = unsent
-        return result
+    _RESUMABLE_PARTIAL_KEYS: tuple[str, ...] = ("undelivered_chunks",)  # tails _resume_partial_send can deliver
+    _is_partial_delivery = staticmethod(is_partial_delivery)
+    _with_partial_send = staticmethod(with_partial_send)
+    _send_never_landed = staticmethod(send_never_landed)
+    _split_send_failed = staticmethod(split_send_failed)
 
     async def _resume_partial_send(
         self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Any) -> Optional[SendResult]:

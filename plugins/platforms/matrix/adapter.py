@@ -1268,7 +1268,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", event_id, chat_id)
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
                 if not (self._encryption and getattr(self._client, "crypto", None)):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
                     return self._split_send_failed(
@@ -1278,7 +1278,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     await self._client.crypto.share_keys()
                     event_id = await self._send_room_message(chat_id, msg_content)
                     logger.info("Matrix: sent event %s to %s (after key share)", event_id, chat_id)
-                except Exception as retry_exc:
+                except Exception as retry_exc:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return self._split_send_failed(
                         SendResult(success=False, error=str(retry_exc)), chunks[i:], delivered,

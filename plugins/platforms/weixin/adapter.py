@@ -1079,7 +1079,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             client_id = f"hermes-weixin-{uuid.uuid4().hex}"
             try:
                 await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
-            except Exception as exc:  # the text may echo the proxy URL
+            except Exception as exc:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads; the text may echo the proxy URL
                 shown = describe_proxy_error(exc, env_proxy_for_redaction(
                     self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc)
                 logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), shown)

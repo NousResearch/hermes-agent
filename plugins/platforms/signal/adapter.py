@@ -714,7 +714,7 @@ class SignalAdapter(BasePlatformAdapter):
         """Run a ``send`` RPC, validate and track it; ``(result, None)`` or ``(None, failed SendResult)``."""
         try:
             result = await self._rpc("send", params, raise_transport=True)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
             if self._send_never_landed(exc):
                 return None, SendResult(success=False, error=f"{fail_error}: {exc!r}", retryable=True)
             # The request left but its response was lost: signal-cli may have sent it, so neither a retry

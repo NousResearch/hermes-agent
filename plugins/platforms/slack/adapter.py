@@ -2286,7 +2286,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         prior = len(delivered)
         try:
             last_result = await self._post_chunks(target, team_id, "", undelivered, thread_ts, delivered)
-        except Exception as e:
+        except Exception as e:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
             logger.error("[Slack] Resuming split send failed: %s", e)
             return self._send_failure_result(
                 e, undelivered[len(delivered) - prior:], delivered, target, team_id, thread_ts)

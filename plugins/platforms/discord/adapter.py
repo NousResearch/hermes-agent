@@ -3265,7 +3265,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         try:
             await self._send_chunks(
                 channel, undelivered, delivered, self._reply_reference_for_send(reply_to, channel), reply_to)
-        except Exception as e:
+        except Exception as e:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
             logger.error("[%s] Resuming split send failed after %d/%d chunks: %s",
                          self.name, len(delivered), prior + len(undelivered), e)
             resumed = self._partial_send_result(e, undelivered[len(delivered) - prior:], delivered, channel)

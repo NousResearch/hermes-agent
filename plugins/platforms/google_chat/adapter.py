@@ -1121,7 +1121,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                         self._typing_messages[chat_id] = _TYPING_CONSUMED_SENTINEL
                 else:
                     result = await self._create_message(chat_id, body)
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
                 failed = self._split_send_failed(
                     self._send_failure_result(chat_id, exc), chunks[i:], delivered, unsent=self._send_never_landed(exc))
                 if self._is_partial_delivery(failed):

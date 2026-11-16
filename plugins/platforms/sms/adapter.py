@@ -188,7 +188,7 @@ class SmsAdapter(BasePlatformAdapter):
                                 SendResult(success=False, error=f"Twilio {resp.status}: {error_msg}"),
                                 chunks[i:], delivered, unsent=self._send_never_landed(status=resp.status))
                         delivered.append(body.get("sid", ""))
-                except Exception as e:
+                except Exception as e:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
                     logger.error("[sms] send error to %s: %s", redact_phone(chat_id), e)
                     return self._split_send_failed(
                         SendResult(success=False, error=str(e)), chunks[i:], delivered,

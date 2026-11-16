@@ -748,13 +748,13 @@ class TeamsAdapter(BasePlatformAdapter):
                 if reply_to and reply_to.isdigit() and reply_to != "0":
                     try:
                         result = await self._app.reply(chat_id, reply_to, chunk)
-                    except Exception as reply_err:
+                    except Exception as reply_err:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
                         # Group chats 400 on threaded sends; the SDK has no typed HTTP errors → fall back on any.
                         logger.debug("Teams reply() failed, falling back to flat send: %s", reply_err)
                         result = await self._app.send(chat_id, chunk)
                 else:
                     result = await self._app.send(chat_id, chunk)
-            except Exception as e:  # the SDK's httpx client reads HTTPS_PROXY: the text may echo it
+            except Exception as e:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads; the SDK's httpx client reads HTTPS_PROXY: the text may echo it
                 error = describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS)) or str(e)
                 return self._split_send_failed(
                     SendResult(success=False, error=error, retryable=True), chunks[i:], delivered,

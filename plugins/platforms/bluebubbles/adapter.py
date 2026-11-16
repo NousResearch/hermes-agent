@@ -407,7 +407,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
             try:
                 data = (await self._api_post("/api/v1/message/text", payload)).get("data") or {}
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- any send error becomes the SendResult the split-send/retry contract reads
                 return self._split_send_failed(
                     SendResult(success=False, error=_safe_error(exc, self.server_url)), chunks[i:], delivered,
                     unsent=self._send_never_landed(exc))

@@ -3502,7 +3502,13 @@ export const svOverrides: TranslationOverrides = {
       gatewayUnreachable: gateway => `${gateway} · kan inte nås`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
       switchTo: (name, gateway) => `Växla till ${name} på ${gateway}`,
-      deleteOn: gateway => ` på ${gateway}`
+      deleteOn: gateway => ` på ${gateway}`,
+      localDevice: 'Den här datorn (lokal serverdel – installerar Hermes om det saknas, annars öppnas en ny session)',
+      installDeviceTitle: 'Installera Hermes på den här datorn?',
+      installDeviceDesc:
+        'Det installerar Hermes lokalt och öppnar sedan en ny session på den här datorn. Ingenting installeras förrän du bekräftar.',
+      installDeviceConfirm: 'Installera lokalt',
+      connectExistingInstead: 'Anslut till befintlig i stället'
     },
     remoteOverride: {
       menuItem: 'Anslut till en fjärrvärd…',

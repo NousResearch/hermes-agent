@@ -74,6 +74,12 @@ def submission_turn_scope(admission_id, submission_id):
         _submission_turn.reset(token)
 
 
+def current_admission_id():
+    """The executing admission, captured by background producers before their turn ends."""
+    bound = _submission_turn.get()
+    return bound[0] if bound is not None else ''
+
+
 def admission_submission(event):
     """``{'submission_id': ...}`` for the admission ``event`` executes, ``{}`` for any other event."""
     bound = _submission_turn.get()

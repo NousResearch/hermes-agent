@@ -50,7 +50,7 @@ def routes_through_lead(discussion: _ValidatedEvent, room: DiscussionRoom, event
     from gateway.hosted_room_context import scheduled_post_kind
     from gateway.hosted_room_discussion import _MENTION_RE
 
-    if scheduled_post_kind(discussion.actor) is not None:
+    if discussion.actor.get("kind") != "user" or scheduled_post_kind(discussion.actor) is not None:
         return False
     handles = {member.handle.casefold() for member in room.members} | {"all", "everyone"}
     if any(match.group(1).casefold() in handles for match in _MENTION_RE.finditer(str(discussion.payload["text"]))):

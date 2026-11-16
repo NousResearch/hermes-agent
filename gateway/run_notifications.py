@@ -142,6 +142,8 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
     automation identities, and the local async-result card."""
     metadata: dict[str, Any] = {"notification_origin": "process_registry_synthetic"}
+    if evt.get('origin_admission_id'):
+        metadata['origin_admission_id'] = evt['origin_admission_id']
     session_key = str(evt.get("session_key") or "").strip()
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
@@ -178,7 +180,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
     _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
-    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
+    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", "origin_admission_id",
+                              *_COMPLETION_BATCH_KEY_FIELDS[1:])
 
     @dataclasses.dataclass
     class _CompletionClaim:
@@ -1470,7 +1473,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # A route key alone is not ownership: /new can leave old and new pins
         # in the same queue. Never settle one pin on another pin's acceptance.
         key = self._event_route_key(
-            evt, (*self._COMPLETION_BATCH_KEY_FIELDS, "parent_session_id", "origin_session_id"),
+            evt, (*self._COMPLETION_BATCH_KEY_FIELDS, "parent_session_id", "origin_session_id", "origin_admission_id"),
         )
         future = asyncio.get_running_loop().create_future()
         self._completion_notification_batches.setdefault(key, []).append((synth_text, evt, future))
@@ -1771,6 +1774,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         return {
             "type": "completion",
             "session_id": session_id,
+            "origin_admission_id": getattr(session, 'origin_admission_id', ''),
             **{k: watcher.get(k, "") for k in _WATCHER_ROUTE_FIELDS},
             "owner_task_id": getattr(session, "owner_task_id", "") or "",
             "task_id": getattr(session, "task_id", "") or "",

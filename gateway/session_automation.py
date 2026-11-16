@@ -141,6 +141,8 @@ def _waiting_completion(authority, evt, event):
     if [identity[0] for identity in _identities([tail['request_id']])] != ['completion']:
         return None
     descriptor = _descriptor(tail['payload'])
+    if descriptor.get('origin_admission_id') != event.metadata.get('origin_admission_id'):
+        return None
     if (descriptor.get('notification_category', 'result') != event.metadata.get('notification_category', 'result')
             or descriptor.get('display_kind') != event.metadata.get('display_kind')):
         return None
@@ -429,7 +431,7 @@ def automation_display_metadata(metadata):
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
     'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
-    'completion_wakes_parent', 'completion_resumes_parent', 'requester_user_id'})
+    'completion_wakes_parent', 'completion_resumes_parent', 'requester_user_id', 'origin_admission_id'})
 
 
 def admission_display(payload):
@@ -634,6 +636,8 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     ref, _live = _local_automation_owner(authority, adapter, event, entry)
     descriptor = {'identity': identity, 'owner': ref.session_id,
                   'route': entry.session_key, 'target': entry.session_id}
+    if event.metadata.get('origin_admission_id'):
+        descriptor['origin_admission_id'] = event.metadata['origin_admission_id']
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
     descriptor.update(_tick_metadata(event.metadata))

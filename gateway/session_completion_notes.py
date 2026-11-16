@@ -110,8 +110,17 @@ async def note_if_unviewed(authority, ref, row):
         return None
     from gateway.session_runtime_workers import tracked_write
     descriptor = row['payload']['local_automation_v1']
-    if (live is None or (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED)
-            or _wakes_unviewed_parent(authority, ref.session_id, live, descriptor)):
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, live.source) if live is not None else None
+    room_revoked = False
+    if policy is not None and policy.source == 'bot_room':
+        from gateway.session_hosted_completions import room_origin, completion_allowed
+        if room_origin(authority, ref.session_id, row) is not None:
+            import asyncio
+            room_revoked = not await asyncio.to_thread(completion_allowed, authority, ref, row)
+    if live is None or (not room_revoked and (
+            (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED)
+            or _wakes_unviewed_parent(authority, ref.session_id, live, descriptor))):
         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
         await reopen_for_turn(authority, ref)
         return None

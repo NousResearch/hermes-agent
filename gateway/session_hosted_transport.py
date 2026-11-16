@@ -23,7 +23,7 @@ from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
-_OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history', 'results',
+_OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history', 'results', 'completions',
                          'info', 'interrupt', 'discard', 'approve'})
 # One chunk per private-socket exchange. The response is a single JSON line capped at
 # gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
@@ -204,7 +204,7 @@ def install_hosted_transport(server, authority, loop, *, attest):
         selected, params = select(envelope)
         if set(params) != {'selector', 'operation', 'params'}:
             raise RuntimeStoreError('invalid_params')
-        if params['operation'] not in _OPERATIONS | {'execute', 'attachment'}:
+        if params['operation'] not in _OPERATIONS | {'execute', 'attachment', 'completion'}:
             raise RuntimeStoreError('invalid_params')
         callback = attest if selected is authority else getattr(
             getattr(selected, 'hosted_room_service', None), 'attest', None)

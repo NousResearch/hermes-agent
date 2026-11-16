@@ -47,6 +47,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
         super().__init__(None, db_path=authority.db.db_path)
+        self.runtime.prepare_room = self._prepare_with_reports
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They
@@ -91,6 +92,10 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         if target_home is None or claimed != str(target_home):
             raise RuntimeStoreError('permission_denied')
         result = {'owner': owner, 'target_home': str(target_home)}
+        if operation == 'completion':
+            from gateway.session_hosted_completions import _current_report
+            with self.authority.db._read_ctx() as conn:
+                return {**result, 'allowed': _current_report(conn, room_id, selector, params) is not None}
         if operation == 'execute':
             # The exact attempt is over (deferred, finished, or retried as a newer generation): its
             # queued input can never run. Say so with the committed input, so the target still
@@ -146,6 +151,11 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
     def _turn_lock(self, profile):
         return nullcontext()
+
+    def _prepare_with_reports(self, binding):
+        from gateway.session_hosted_completions import sweep_reports
+        sweep_reports(self, binding)
+        self._prepare_tracked(binding)
 
     def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
         """Check (or, with ``create``, claim) room ownership. A ``conn`` runs the claim inside

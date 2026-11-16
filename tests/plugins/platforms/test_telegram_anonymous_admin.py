@@ -39,12 +39,18 @@ def test_missing_author_is_not_a_peer_bot():
     assert _is_peer_bot_user(None) is False
 
 
-def test_anonymous_admin_survives_bot_mention_gate_in_free_response_group():
+def test_anonymous_admin_survives_bot_mention_gate_in_free_response_group(monkeypatch):
     """#156228: a group admin must bypass the *earlier* bot-to-bot trigger guard too.
 
     The source/event-level fix alone still drops an unmentioned anonymous admin when the
     supported bots_require_mention option is enabled in an otherwise free-response group.
     """
+    # These gates read the env rung before config.extra, so a developer machine with a real
+    # Telegram allowlist would otherwise judge this synthetic chat as not allowlisted.
+    for var in ("TELEGRAM_ALLOWED_CHATS", "TELEGRAM_GROUP_ALLOWED_CHATS", "TELEGRAM_REQUIRE_MENTION",
+                "TELEGRAM_BOTS_REQUIRE_MENTION", "TELEGRAM_FREE_RESPONSE_CHATS",
+                "TELEGRAM_EXCLUSIVE_BOT_MENTIONS"):
+        monkeypatch.delenv(var, raising=False)
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(

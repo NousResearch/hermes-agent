@@ -187,7 +187,8 @@ describe('revalidateRemoteConnection', () => {
       expect.objectContaining({ baseUrl: 'https://gateway.example.com/' }),
       '/api/status',
       {
-        timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+        timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS,
+        freshConnection: true
       }
     )
     expect(test.resetConnection).not.toHaveBeenCalled()
@@ -286,7 +287,8 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     ).resolves.toBe(healthy)
 
     expect(probe).toHaveBeenCalledWith(healthy, '/api/health', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
+      freshConnection: true
     })
     expect(retire).not.toHaveBeenCalled()
     expect(reconnect).not.toHaveBeenCalled()
@@ -325,10 +327,38 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     ).resolves.toBe(replacement)
 
     expect(probe).toHaveBeenCalledWith(stale, '/api/health', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
+      freshConnection: true
     })
     expect(retire).toHaveBeenCalledOnce()
     expect(reconnect).toHaveBeenCalledOnce()
+  })
+
+  it('shares the dispatch budget with the legacy fallback', async () => {
+    let now = 0
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const connectionPromise = Promise.resolve({ baseUrl: 'http://legacy' })
+    const probe = vi.fn(async (_connection, path) => {
+      if (path === '/api/health') {
+        now = 4000
+        throw new Error('404: Not Found')
+      }
+    })
+    try {
+      await ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => connectionPromise,
+        probe,
+        reconnect: vi.fn(),
+        retire: vi.fn()
+      })
+      expect(probe).toHaveBeenLastCalledWith(await connectionPromise, '/api/status', {
+        timeoutMs: 6000,
+        freshConnection: true
+      })
+    } finally {
+      clock.mockRestore()
+    }
   })
 
   it('falls back to /api/status when /api/health returns 404 on older backends', async () => {
@@ -355,7 +385,8 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     ).resolves.toBe(legacy)
 
     expect(probe).toHaveBeenCalledWith(legacy, '/api/status', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      timeoutMs: expect.any(Number),
+      freshConnection: true
     })
     expect(retire).not.toHaveBeenCalled()
     expect(reconnect).not.toHaveBeenCalled()
@@ -419,7 +450,7 @@ describe('revalidatePooledRemoteBackends', () => {
     expect(pool.probe).toHaveBeenCalledWith(
       expect.objectContaining({ remoteBaseUrl: 'https://remote.example.com' }),
       '/api/status',
-      { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS }
+      { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS, freshConnection: true }
     )
     expect(pool.stopBackend).not.toHaveBeenCalled()
   })
@@ -436,7 +467,8 @@ describe('revalidatePooledRemoteBackends', () => {
     await pool.run(new RemoteLivenessTracker())
 
     expect(pool.probe).toHaveBeenCalledWith(expect.objectContaining({ authMode: 'oauth' }), '/api/status', {
-      timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+      timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS,
+      freshConnection: true
     })
     expect(pool.stopBackend).not.toHaveBeenCalled()
   })

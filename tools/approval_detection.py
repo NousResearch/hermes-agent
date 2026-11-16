@@ -42,7 +42,6 @@ from tools.approval_detection_lex import (
     _deobfuscate_shell_word_for_detection,
     _is_redirection_operator_char,
     _iter_command_substitution_bodies,
-    _quoted_heredoc_body_spans,
     _read_shell_word,
     _skip_shell_whitespace,
     _splice,
@@ -316,9 +315,9 @@ class _PipeRemoteToShellMatcher:
         if _PIPE_FETCH_RE.search(text) is None:
             return None
         # Substitution bodies are scanned as independent variants in their own quote context.
-        # Do not also interpret their text (or a quoted heredoc's literal body) in the outer one.
-        literal = _quoted_heredoc_body_spans(text) if "<<" in text else []
-        text = _splice(text, [(s, e, re.sub(r"[^\n]", " ", text[s:e])) for s, e in literal])
+        # Do not also interpret their text in the outer one. A quoted heredoc body is not blanked
+        # here: a shell may run it (`bash <<'EOF'`, `cat <<'EOF' | sh`), and the provably inert
+        # (cat-read) bodies are already dropped before the variants reach this matcher.
         text, _ = _blank_nested_substitutions(text)
         fetch = _PIPE_FETCH_RE.search(text)
         if fetch is None:

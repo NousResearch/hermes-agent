@@ -137,17 +137,26 @@ def _quoted_heredoc_body_spans(text: str) -> list[tuple[int, int]]:
             break
         pos = body_start
         for word, strip in pending:  # bodies follow the line in operator order
+            quoted = any(ch in word for ch in "'\"\\")
             delimiter, start = _strip_shell_word_syntax(word), pos
+            line, line_start = "", pos
             while pos < n:
                 newline = text.find("\n", pos)
                 line_end = n if newline < 0 else newline
-                line = text[pos:line_end]
-                end, pos = pos, line_end + 1
+                line += text[pos:line_end]
+                pos = line_end + 1
+                # In an expanding body bash joins a backslash-newline before it compares the line
+                # with the delimiter: `a\` then `D` is the line `aD`, not the end of a `<<D` body.
+                if not quoted and line_end < n and (len(line) - len(line.rstrip("\\"))) % 2:
+                    line = line[:-1]
+                    continue
                 if (line.lstrip("\t") if strip else line) == delimiter:
+                    end = line_start
                     break
+                line, line_start = "", pos
             else:
                 end = n
-            if any(ch in word for ch in "'\"\\"):
+            if quoted:
                 spans.append((start, end))
     return spans
 

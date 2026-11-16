@@ -127,3 +127,9 @@ with a name allows that one name only.
 | `agent.file_safety` | `get_write_denied_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `hermes_yaml` | `safe_load` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `hermes_yaml` | `safe_dump` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `hermes_cli.web_models` | `MCPEnabledToggle` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |
+| `hermes_cli.web_models` | `MCPServerCreate` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |
+| `hermes_cli.web_routers.mcp` | `add_mcp_server` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |
+| `hermes_cli.web_routers.mcp` | `list_mcp_servers` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |
+| `hermes_cli.web_routers.mcp` | `remove_mcp_server` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |
+| `hermes_cli.web_routers.mcp` | `set_mcp_server_enabled` | dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses |

@@ -1,0 +1,41 @@
+# Pipedream Apps (Desktop plugin)
+
+Adds an **Apps** tab at the end of **Capabilities**. It is a runtime plugin —
+copy the folder, no app rebuild for the plugin itself:
+
+```powershell
+Copy-Item -Recurse desktop-plugins\pipedream-apps $HOME\.hermes\desktop-plugins\pipedream-apps
+```
+
+The tab needs the Desktop core build that includes the `capabilities.tabs`
+contribution area, and the `pipedream-apps` Python backend
+(`plugins/pipedream-apps/dashboard/`) mounted by the gateway.
+
+## Configuration
+
+Set these in the gateway environment / `~/.hermes/.env`:
+
+```sh
+PIPEDREAM_CLIENT_ID=...
+PIPEDREAM_CLIENT_SECRET=...
+PIPEDREAM_PROJECT_ID=proj_...
+PIPEDREAM_ENVIRONMENT=production
+```
+
+Optional `PIPEDREAM_MCP_BASE` (or `PIPEDREAM_APP_URL` / `NEXT_PUBLIC_APP_URL`)
+enables MCP server configuration after a successful connect.
+
+## Behaviour
+
+- Browses Pipedream Connect apps with search, category filters and cursor pagination.
+- Connect opens the Pipedream Connect Link in the system browser and polls until the
+  account appears.
+- Lists connected accounts, shows health/errors, reconnects or disconnects.
+- Uses the Clerk user id as `external_user_id` (persisted UUID fallback when Clerk is
+  unavailable).
+- After a connect, calls the plugin backend (`POST /mcp/enable`), which configures
+  `pipedream_<slug>` through the Dashboard MCP API when an MCP proxy base is configured.
+  Disconnecting the last account for an app disables the entry instead of deleting it.
+  There is no live reload; tools become available in a new chat/session.
+
+Enable/disable it in **Capabilities → Plugins**; it ships on by default.

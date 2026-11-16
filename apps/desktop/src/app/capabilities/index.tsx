@@ -5,10 +5,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { CAPABILITIES_TABS_AREA } from '@/sdk/areas'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 
@@ -32,8 +35,6 @@ import { ToolsetsTab } from './toolsets/toolsets-tab'
 // Skills Hub browsing lives inside the Skills tab. Legacy `?tab=hub`
 // links fall back to 'skills' via useRouteEnumParam.
 const CAPABILITY_MODES = ['skills', 'plugins', 'connectors', 'toolsets'] as const
-
-type CapabilityMode = (typeof CAPABILITY_MODES)[number]
 
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -66,11 +67,24 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
+  // Plugin-contributed tabs are appended after the built-ins; the built-in
+  // order, labels and behaviour are untouched. A contribution without a render
+  // is not a tab, so it is ignored here.
+  const tabContributions = useContributions(CAPABILITIES_TABS_AREA)
+
+  const pluginTabs = useMemo(
+    () => tabContributions.filter(contribution => typeof contribution.render === 'function'),
+    [tabContributions]
+  )
+
+  const modes = useMemo(() => [...CAPABILITY_MODES, ...pluginTabs.map(tab => tab.id)], [pluginTabs])
+
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
-  const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
-  const localTab = useState<CapabilityMode>('skills')
+  const routeTab = useRouteEnumParam('tab', modes, 'skills')
+  const localTab = useState<string>('skills')
   const [mode, setMode] = embedded ? localTab : routeTab
+  const pluginTab = pluginTabs.find(tab => tab.id === mode) ?? null
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
 
   const [query, setQuery] = useState('')
@@ -127,64 +141,90 @@ export function CapabilitiesView({
     <PageLoader label={t.skills.loading} />
   )
 
-  const tabContent = {
-    // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
-    // ACTIVE gateway's socket — for a scope pinned to a different backend that
-    // (config edits still apply on that backend's next session).
-    connectors: () => (
-      <ConnectorsTab
-        gateway={scope.crossBackend ? null : gateway}
-        key={`connectors-${scope.key}`}
-        profile={scope.profile}
-      />
-    ),
-    // Agent plugins for the scoped profile and app-level desktop plugins.
-    plugins: () => (
-      <PluginsTab
-        key={`plugins-${scope.key}`}
-        onQueryChange={setQuery}
-        profile={scope.profile}
-        query={query}
-        scopeLabel={scope.label}
-        scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
-      />
-    ),
-    skills: () => (
-      <SkillsTab
-        installedError={skillsError}
-        installedPending={!skills || skillsFailed}
-        key={`skills-${scope.key}`}
-        onQueryChange={setQuery}
-        onRefresh={() => void refreshCapabilities()}
-        profile={scope.profile}
-        query={query}
-        skills={skills ?? []}
-      />
-    ),
-    toolsets: () => (
-      <ToolsetsTab hints={toolsetHints} key={`toolsets-${scope.key}`} onQueryChange={setQuery} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
-    )
-  } satisfies Record<CapabilityMode, () => React.ReactNode>
+  const renderBuiltinTab = (): React.ReactNode => {
+    switch (mode) {
+      // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
+      // ACTIVE gateway's socket — for a scope pinned to a different backend that
+      // (config edits still apply on that backend's next session).
+      case 'connectors':
+        return (
+          <ConnectorsTab
+            gateway={scope.crossBackend ? null : gateway}
+            key={`connectors-${scope.key}`}
+            profile={scope.profile}
+          />
+        )
+
+      // Agent plugins for the scoped profile and app-level desktop plugins.
+      case 'plugins':
+        return (
+          <PluginsTab
+            key={`plugins-${scope.key}`}
+            onQueryChange={setQuery}
+            profile={scope.profile}
+            query={query}
+            scopeLabel={scope.label}
+            scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
+          />
+        )
+
+      case 'skills':
+        return (
+          <SkillsTab
+            installedError={skillsError}
+            installedPending={!skills || skillsFailed}
+            key={`skills-${scope.key}`}
+            onQueryChange={setQuery}
+            onRefresh={() => void refreshCapabilities()}
+            profile={scope.profile}
+            query={query}
+            skills={skills ?? []}
+          />
+        )
+
+      case 'toolsets':
+        return (
+          <ToolsetsTab hints={toolsetHints} key={`toolsets-${scope.key}`} onQueryChange={setQuery} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
+        )
+
+      default:
+        return null
+    }
+  }
+
+  const renderActiveTab = (): React.ReactNode => {
+    if (pluginTab?.render) {
+      return (
+        <ContribBoundary id={pluginTab.id}>
+          <ContribRender render={pluginTab.render} />
+        </ContribBoundary>
+      )
+    }
+
+    return renderBuiltinTab()
+  }
 
   return (
     <PageSearchShell
       {...props}
       activeTab={mode}
-      onTabChange={id => setMode(id as CapabilityMode)}
+      onTabChange={id => setMode(id)}
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
       // The profile picker shares the tab row. Plugins scopes only its Agent
-      // half, so its picker lives in that column instead.
-      searchTrailingAction={mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
+      // half, so its picker lives in that column instead. A plugin-contributed
+      // tab owns its own scope, so the profile picker stays off it.
+      searchTrailingAction={mode !== 'plugins' && pluginTab === null && <CapabilityScopeSelector scope={scope} />}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'plugins', label: t.skills.tabPlugins },
         { id: 'connectors', label: t.connectorsPage.title },
-        { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
+        { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
+        ...pluginTabs.map(tab => ({ id: tab.id, label: tab.title ?? tab.id }))
       ]}
       tabsAlign="start"
     >
-      <div className="flex h-full flex-col">{loadGate ?? tabContent[mode]()}</div>
+      <div className="flex h-full flex-col">{loadGate ?? renderActiveTab()}</div>
     </PageSearchShell>
   )
 }

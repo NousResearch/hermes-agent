@@ -5,8 +5,10 @@ import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
 import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
+import { CAPABILITIES_TABS_AREA } from '@/sdk/areas'
 import type * as HubActions from '@/store/hub-actions'
 
 import { parseCatalog } from './catalog/catalog-data'
@@ -608,6 +610,49 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       expect(installHubSkill).not.toHaveBeenCalled()
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('appends a plugin-contributed tab after the built-in tabs and renders it', async () => {
+    const dispose = registry.register({
+      area: CAPABILITIES_TABS_AREA,
+      id: 'test-plugin:apps',
+      render: () => <div>apps-tab-body</div>,
+      title: 'Apps'
+    })
+
+    try {
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/capabilities']}>
+              <CapabilitiesView embedded />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      const tabsRegion = screen
+        .getAllByText('Skills')
+        .map(node => node.closest('[data-tour="page-tabs"]'))
+        .find(Boolean)
+
+      expect(tabsRegion).not.toBeNull()
+
+      const labels = within(tabsRegion as HTMLElement)
+        .getAllByRole('button')
+        .map(button => button.textContent ?? '')
+
+      expect(labels.some(label => label.includes('Apps'))).toBe(true)
+      expect(labels.findIndex(label => label.includes('Apps'))).toBeGreaterThan(
+        labels.findIndex(label => label.includes('Tools'))
+      )
+
+      fireEvent.click(screen.getAllByRole('button', { name: 'Apps' })[0])
+
+      expect(await screen.findByText('apps-tab-body')).toBeTruthy()
+    } finally {
+      dispose()
     }
   })
 })

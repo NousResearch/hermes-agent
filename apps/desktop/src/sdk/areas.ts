@@ -3,6 +3,12 @@
 // lives in core but has no other public door.
 
 export const PANES_AREA = 'panes'
+/** Extra tabs appended to the Capabilities page, after the built-in Skills,
+ *  Plugins, Connectors and Tools tabs. A contribution's `title` is the tab
+ *  label and `render` is the tab body; `order` sorts among contributed tabs.
+ *  Contributed tabs are always last, so a plugin can never reorder or replace
+ *  a built-in tab. The tab id is namespaced by the plugin context. */
+export const CAPABILITIES_TABS_AREA = 'capabilities.tabs'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
 /** Titlebar slots are PERMANENT mount points: a component registered here
  *  stays mounted across chat ↔ page navigation, so `useEffect` setup/cleanup

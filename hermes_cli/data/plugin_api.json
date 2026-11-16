@@ -165,6 +165,17 @@
         "hermes_yaml:safe_load",
         "hermes_yaml:safe_dump"
       ]
+    },
+    {
+      "source": "dashboard plugin MCP lifecycle (plugins/pipedream-apps backend): the same routes the Dashboard MCP page uses",
+      "entries": [
+        "hermes_cli.web_models:MCPEnabledToggle",
+        "hermes_cli.web_models:MCPServerCreate",
+        "hermes_cli.web_routers.mcp:add_mcp_server",
+        "hermes_cli.web_routers.mcp:list_mcp_servers",
+        "hermes_cli.web_routers.mcp:remove_mcp_server",
+        "hermes_cli.web_routers.mcp:set_mcp_server_enabled"
+      ]
     }
   ]
 }

@@ -1,6 +1,7 @@
-"""Markdown-aware message chunking behind ``BasePlatformAdapter.truncate_message``."""
+"""Markdown-aware message chunking behind ``BasePlatformAdapter.truncate_message``, and the partial-delivery
+contract a split send reports when only some of its chunks landed."""
 
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from gateway.platforms.helpers import (
     fence_state_after, table_header_to_repeat, table_rollback_point, table_row_start)
@@ -133,3 +134,30 @@ def chunk_markdown_message(content: str, max_length: int = 4096,
     if len(chunks) > 1:
         chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
     return chunks
+
+
+def is_partial_delivery(result: Any) -> bool:
+    """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
+    contract split-sending adapters set via :func:`with_partial_send` and the stream consumer reads): the visible
+    head must never be sent again."""
+    raw = getattr(result, "raw_response", None)
+    return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
+
+
+def with_partial_send(result: Any, undelivered: list[str], delivered: list[str], *, tail_certain: bool = True) -> Any:
+    """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
+    ``_edit_overflow_split`` sets and the stream consumer reads; every split-sending adapter shares it), so
+    no caller re-sends the visible head; ``undelivered`` (for ``_resume_partial_send``) is attached
+    only when ``tail_certain``. An uncertain failure reports ``unattempted_chunks``: the messages after
+    the one in flight, which never left."""
+    raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+    if not tail_certain and len(undelivered) > 1:
+        raw["unattempted_chunks"] = tuple(undelivered[1:])
+    if delivered:
+        raw.update({
+            "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
+            "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
+        if tail_certain and undelivered:
+            raw["undelivered_chunks"], raw["delivered_message_ids"] = tuple(undelivered), tuple(delivered)
+    result.raw_response = raw or result.raw_response
+    return result

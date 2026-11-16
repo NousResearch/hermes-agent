@@ -103,7 +103,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             # Admins of the approval's own chat scope (``extra``), as ``/approve``: never the DM-only
             # ``admin_user_ids``, which stays this view's own require_admin click gate.
             if requester := approval_refusal(self.session_key, getattr(interaction.user, "id", ""),
-                                             extra=self.approval_extra or {}, request_id=self.request_id):
+                                             extra=self.approval_extra or {}, request_id=self.request_id, choice=choice):
                 return await interaction.response.send_message(refusal_text(requester), ephemeral=True)
             label = t(label_key)
             self.resolved = True
@@ -117,7 +117,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                     extra=self.approval_extra or {})
                 logger.info(
                     "Discord button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, self.session_key, choice, interaction.user.display_name,
+                    count, self.session_key, choice, getattr(interaction.user, "id", "?"),
                 )
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc, exc_info=True)

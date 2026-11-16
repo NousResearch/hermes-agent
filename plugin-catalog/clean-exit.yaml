@@ -1,0 +1,29 @@
+name: clean-exit
+title: Clean Exit
+repo: https://github.com/ladyFaye1998/hermes-clean-exit
+sha: 1df8501113e5a195fef3794e660ac3839900987f
+description: >-
+  Review the new files one Hermes run wrote to a local project folder. Keep the
+  deliverable, move selected working files into a project archive, and restore
+  any archived file to its original path from the same workspace. Clean Exit
+  observes successful native write_file calls after the user starts tracking and
+  stores paths, sizes, file identities, and hashes in a local profile ledger.
+maintainer: ladyFaye1998
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/ladyFaye1998/hermes-clean-exit#readme
+version: "0.1.0"
+readme: true
+platforms: [windows]
+screenshots:
+  - https://raw.githubusercontent.com/ladyFaye1998/hermes-clean-exit/1df8501113e5a195fef3794e660ac3839900987f/docs/restore.png
+known_issues:
+  - Requires Hermes Desktop with a local Windows profile.
+  - Tracks new files written through native write_file with absolute paths. Shell-created files are outside this scope.
+  - Archives selected files individually. Review the resulting file list if a batch is interrupted.
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env: []

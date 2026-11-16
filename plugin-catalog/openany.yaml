@@ -1,9 +1,9 @@
 name: openany
 title: OpenAny
 repo: https://github.com/openanysi/openany-mcp
-sha: "701970438d5d2b06cef5ad74757983ca7e50f7c1"
+sha: "5cb7cb164fa21059c16db5f9a9a8ad46d3681c2e"
 subdir: plugins/openany
-description: "Marketplace for agents. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/) that connects Hermes to OpenAny's hosted MCP server over Streamable HTTP at https://mcp.openany.si/mcp-lite. Hermes discovers search_apis, get_api, and run_api from that server. Auth is OPENANY_API_KEY via the Hermes config_schema secret, sent as Authorization Bearer. The server is marked trust: untrusted. Declares Python dependency mcp==2.3.0. No local Python entrypoint, hooks, middleware, self-updater, or telemetry. Disclosure — connects to OpenAny's hosted MCP server (mcp.openany.si, Alephant AI LLC) with your OPENANY_API_KEY; every tool call and its inputs go there, and `run_api` forwards them to the third-party API you pick and can charge your prepaid OpenAny balance. The package marks the server `trust: untrusted`, so calls that are not read-only ask first and are refused in unattended runs. The tool list is served by the remote server and can change without a new pin."
+description: "OpenAny is the B2A (business to agent) marketplace. Add one MCP endpoint, https://mcp.openany.si, and your agent can find and use 3,200+ APIs and 168+ AI models. Searching and checking prices is free with no key. You only need an OpenAny API key to run a call, and you pay per call. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/) that connects Hermes to OpenAny's hosted MCP server over Streamable HTTP at https://mcp.openany.si. Hermes discovers openany_overview, search_apis, get_api, and run_api from that server. Auth is OPENANY_API_KEY via the Hermes config_schema secret, sent as Authorization Bearer. The server is marked trust: untrusted. Declares Python dependency mcp==2.3.0. No local Python entrypoint, hooks, middleware, self-updater, or telemetry. Disclosure — connects to OpenAny's hosted MCP server (mcp.openany.si, Alephant AI LLC) with your OPENANY_API_KEY; every tool call and its inputs go there, and run_api forwards them to the third-party API you pick and can incur a pay-per-call charge. The package marks the server `trust: untrusted`, so calls that are not read-only ask first and are refused in unattended runs. The tool list is served by the remote server and can change without a new pin."
 maintainer: Alephant AI LLC
 tier: community
 category: tools
@@ -15,8 +15,9 @@ platforms: []
 known_issues:
   - Hermes does not connect this server until OPENANY_API_KEY is set in the profile secret scope.
   - A config.yaml mcp_servers.openany entry skips this package server. Remove it.
-  - The default URL is /mcp-lite. The full /mcp endpoint is truncated by Hermes 0.23.0 after 50 pages.
+  - The default URL is https://mcp.openany.si. The full /mcp endpoint is truncated by Hermes 0.23.0 after 50 pages.
   - "Verified on /mcp-lite 2026-11-09: Hermes called search_apis, get_api, then run_api (coingecko_get_api_v3_simple_price), request 362c623f-599e-472f-8c8b-6e2c79dd9ea9, tool cost 0, total run 2613 microUSD."
+  - "Verified on https://mcp.openany.si (root, no API key) 2026-11-14: POST JSON-RPC initialize then tools/list (Accept: application/json, text/event-stream) returned HTTP 200 and the four tools openany_overview, search_apis, get_api, and run_api in one page, with no nextCursor. Server name OpenAny Lite, protocolVersion 2025-03-26."
 capabilities:
   provides_tools: []
   provides_hooks: []

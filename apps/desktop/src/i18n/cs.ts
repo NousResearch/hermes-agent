@@ -979,7 +979,9 @@ export const csOverrides = {
       billing: 'Fakturace',
       notifications: 'Oznámení',
       vault: 'Hesla a přihlášení',
-      plugins: 'Pluginy'
+      plugins: 'Pluginy',
+      backup: 'Záloha a přenos',
+      backupOnly: 'Záloha'
     },
     plugins: {
       title: 'Pluginy pro Desktop',
@@ -1760,7 +1762,10 @@ export const csOverrides = {
       showOptions: 'Zobrazit možnosti',
       keepAwakeOff: 'Vypnuto',
       keepAwakeWhileWorking: 'Během práce',
-      keepAwakeAlways: 'Vždy'
+      keepAwakeAlways: 'Vždy',
+      desktopReadAloudTitle: 'Číst odpovědi nahlas v této aplikaci',
+      desktopReadAloudDesc:
+        'Každou dokončenou odpověď v Desktopu přečte nahlas. Je to stejný přepínač jako tlačítko ve poli pro psaní; platí pro všechna otevřená okna a vypnutím se čtení zastaví i uprostřed věty. Volba „Číst odpovědi nahlas“ níže platí pro zprávy a CLI.'
     },
     hudModifier: {
       title: 'Klepnutím vyvolat HUD',
@@ -3033,6 +3038,77 @@ export const csOverrides = {
       agentSettings: 'Nastavení agenta',
       pageCount: n => (n === 1 ? '1 stránka' : n >= 2 && n <= 4 ? `${n} stránky` : `${n} stránek`),
       missing: 'Tento plugin nemá stránku nastavení. Může být vypnutý nebo odinstalovaný.'
+    },
+    backup: {
+      intro: 'Uložte tohoto agenta do souboru, nebo ho přeneste do agenta v Hermes Cloud.',
+      backupCommand: 'Zálohovat tohoto agenta',
+      transferCommand: 'Přenést do Hermes Cloud',
+      backupTitle: 'Zálohovat tohoto agenta',
+      backupHelp:
+        'Jeden soubor se vším: všechny profily, nastavení, paměť, dovednosti, plány, historie konverzací a klíče. Uchovejte ho v soukromí.',
+      backup: 'Zálohovat',
+      backupRunning: 'Zálohuji…',
+      backupSaved: 'Uloženo.',
+      backupKept: path => `Ponecháno na agentovi v ${path}`,
+      backupFailed: 'Zálohu se nepodařilo dokončit',
+      transferTitle: 'Přenést do Hermes Cloud',
+      transferHelp: 'Nahradí agenta v Hermes Cloud tímto agentem. Na tomto počítači se nic nemění.',
+      signInTitle: 'Přihlaste se do Hermes Cloud',
+      signInHelp: 'Použijte účet Nous, ke kterému vaši cloudoví agenti patří.',
+      signIn: 'Přihlásit se',
+      signInWebappHelp: 'Přihlaste se do Nous Portal v Nastavení ▸ Poskytovatelé a vraťte se sem.',
+      openProviders: 'Otevřít poskytovatele',
+      pickOrg: 'Vyberte tým',
+      chooseAgent: 'Vyberte cloudového agenta, kterého chcete nahradit',
+      provisioning: 'Nastavuji…',
+      down: 'Nedostupný',
+      noAgentsTitle: 'Zatím žádní cloudoví agenti',
+      noAgentsHelp: 'Vytvořte jednoho v Nous Portal a vraťte se sem.',
+      openPortal: 'Otevřít portál',
+      newAgentTitle: 'Nový cloudový agent',
+      newAgentHelp: 'Vytvořte ho v Nous Portal a vraťte se sem.',
+      confirmTitle: agent => `Nahradit ${agent} tímto agentem?`,
+      replacesTitle: 'Na cloudovém agentovi bude nahrazeno',
+      replaces: [
+        'Paměť',
+        'Osobnost',
+        'Dovednosti',
+        'Konverzace',
+        'Naplánované úlohy',
+        'Nastavení',
+        'API klíče a přihlášení'
+      ],
+      keepsTitle: 'Cloudový agent si ponechá',
+      keeps: [
+        'Přihlášení do Nous Portal',
+        'Svůj model a poskytovatele',
+        'Nástroje Hermes Cloud',
+        'Nastavení plánovače'
+      ],
+      botNote: agent =>
+        `Komunikační boti (Telegram, Discord…) se na ${agent} přesunou vypnutí, takže na tomto počítači dál odpovídají. Až budete chtít, přepněte je na stránce Zprávy.`,
+      undoNote: agent => `Nejprve se vytvoří záloha ${agent}, takže akci můžete vrátit.`,
+      acknowledge: agent => `Rozumím, že tohle nahradí ${agent}`,
+      replace: agent => `Nahradit ${agent}`,
+      cancel: 'Zrušit',
+      stepBackup: 'Zálohuji tohoto agenta',
+      stepUpload: 'Nahrávám',
+      stepRestore: agent => `Obnovuji na ${agent}`,
+      doneTitle: 'Přeneseno',
+      doneHelp: agent => `${agent} je teď tento agent.`,
+      botsOff: (bots, agent) =>
+        `${bots} se na ${agent} přesunuli vypnutí. Až budete chtít, přepněte je na stránce Zprávy: tady vypnout, tam zapnout.`,
+      gatewayDown: agent =>
+        `Soubory dorazily, ale ${agent} se znovu nespustil, takže jeho boti a naplánované úlohy neběží. Restartujte ho v portálu Hermes Cloud nebo na něm spusťte \`hermes gateway start\`.`,
+      undo: 'Vrátit zpět',
+      undoing: 'Vracím zpět…',
+      openAgent: 'Otevřít agenta',
+      undoneTitle: 'Vráceno zpět',
+      undoneHelp: agent => `${agent} je zpět ve stavu, v jakém byl.`,
+      startAgain: 'Začít znovu',
+      errorTitle: 'Přenos se zastavil',
+      partialHelp: agent => `${agent} může být částečně nahrazen. Vrácení zpět ho vrátí do stavu před přenosem.`,
+      retry: 'Zkusit znovu'
     }
   },
   skills: {
@@ -3584,7 +3660,10 @@ export const csOverrides = {
       actionStarted: name => `${name} bylo spuštěno — načítání protokolu…`,
       actionFailed: name => `${name} selhalo spuštění`,
       running: 'Probíhá…',
-      viewLog: 'Záznam akcí'
+      viewLog: 'Záznam akcí',
+      debugShareConfirm: 'Nahrát diagnostickou zprávu na veřejné úložiště?',
+      debugShareConfirmDesc:
+        'Nahraje souhrn na veřejnou službu pro sdílení textu: verze Hermese, Pythonu a operačního systému, názvy připojených platforem a sad nástrojů, názvy konfiguračních klíčů (bez hodnot) a počty varování a chyb. Neobsahuje žádné řádky protokolů ani text zpráv. Sdílené texty se po 6 hodinách samy smažou; pokud je paste.rs nedostupný, záložní dpaste.com je nechá veřejné 1 den a nelze je smazat dřív.'
     }
   },
   messaging: {
@@ -3921,6 +4000,15 @@ export const csOverrides = {
       slack: 'Slack',
       email: 'E-mail',
       github_comment: 'GitHub komentář'
+    },
+    fieldSignature: 'Podpis',
+    fieldSignatureHint:
+      'Jediné schéma podpisu, které tato trasa přijímá. Dodávky z GitHubu, GitLabu a Linearu potřebují vlastní nastavení.',
+    signatureOptions: {
+      generic: 'Obecné (s časovým razítkem)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
     }
   },
   profiles: {

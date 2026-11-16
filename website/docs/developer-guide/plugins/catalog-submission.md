@@ -81,7 +81,10 @@ the gallery. There is no separate listing to maintain.
    self-updater lets an installed copy move to a commit nobody reviewed.
    Updates reach users only through a SHA-bump PR here plus
    `hermes plugins update <name>`. Keep the updater in the standalone
-   distribution if you want one; strip it from the catalog build.
+   distribution if you want one; strip it from the catalog build. Downloading
+   a separate third-party tool pinned by checksum is not a self-updater; a
+   maintainer allows such a file by repo, pinned sha and file hash in
+   `scripts/ci/catalog_self_updater_allowlist.json`.
 4. **SHA bumps are new PRs.** Updating an entry's pin is a new PR whose diff
    (old SHA → new SHA) is re-reviewed like any other change — reviewers are
    expected to look at the upstream commit range being adopted.
@@ -227,6 +230,21 @@ the gallery. There is no separate listing to maintain.
    record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
    `--allow-removed`, project and pip installs are refused, and no setting
    relaxes it.
+19. **No plugins built to reach infringing content.** A plugin whose main
+   purpose is to find, stream or download copyrighted films, shows, music, books,
+   games or software from sources that are not licensed to distribute them
+   (piracy aggregators, unofficial mirrors, cracked-release indexes) is declined,
+   however clean its code. A general-purpose tool such as a browser, downloader
+   or media player is fine; one that ships with those sources built in, or whose
+   description points users at them, is not.
+20. **No coin or token promotion.** A plugin built around one coin, token or
+   NFT collection that is not a broadly adopted asset (its price, trading,
+   launch, airdrop, holder rewards or promotion), and a plugin used to promote
+   its maker's own token, is declined. Memecoin boards, coin launchpads and
+   airdrop or free-mint farming tools fall under this rule. Fine: stablecoins
+   such as USDC, payments (x402 and similar), multi-coin wallets, exchanges and
+   markets, price tickers, safety and scam checks, and broadly adopted assets
+   such as Bitcoin, Ethereum and Solana.
 <!-- admission-rules:end -->
 
 ## Updating your entry
@@ -252,6 +270,11 @@ changed or removed, open a PR on its file. Owners keep control of their entries.
   fixed. When a new rule affects plugins that are already listed, their
   authors get an issue on their repository explaining the change and time to
   update before anything is removed.
+- **Dead entries are delisted automatically.** If your repository is deleted,
+  or the commit your entry pins disappears (a force-push that drops it), a
+  weekly check opens a PR deleting the entry, since it can no longer be
+  installed. Keep the pinned commit reachable; to come back, resubmit with a
+  live repository and pin.
 - **Removal** adds the plugin to
   [`removed.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md#removedyaml--the-blocklist),
   which is reserved for security and policy incidents. Installers refuse

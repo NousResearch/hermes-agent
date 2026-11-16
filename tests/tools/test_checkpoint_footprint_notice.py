@@ -21,8 +21,6 @@ def _write_config(enabled: bool, cap_mb: int) -> None:
         yaml.safe_dump({"checkpoints": {"enabled": enabled, "max_total_size_mb": cap_mb}}), encoding="utf-8")
 
 def test_notice_only_when_enabled_and_over_cap(tmp_path, monkeypatch):
-    base = get_hermes_home() / "checkpoints"
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
     work = tmp_path / "proj"
     work.mkdir()
     (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))  # incompressible → store > 1 MB

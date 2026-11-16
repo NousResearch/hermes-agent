@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_api_turn import admit_api_turn, api_execution
+from tests.gateway.session_claims import claim
 
 
 def test_declared_key_is_durable_and_cannot_rebind(api, owner):
@@ -48,7 +49,7 @@ async def test_structured_content_bypasses_text_parser_without_losing_parts(api,
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'
     owner.runner._handle_message = handle
-    assert await execute_admission(owner, ref, row) == 'ok'
+    assert await execute_admission(owner, ref, claim(owner, ref, row)) == 'ok'
 
 
 def test_api_author_is_admission_scoped_not_session_identity(api, owner):
@@ -173,6 +174,6 @@ async def test_a_turn_queued_with_browser_control_recovers_and_runs_without_it(a
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'
     owner.runner._handle_message = handle
-    assert await execute_admission(owner, ref, legacy) == 'ok'
+    assert await execute_admission(owner, ref, claim(owner, ref, legacy)) == 'ok'
     [(text, execution)] = seen
     assert text == 'hello' and 'browser_control' not in execution

@@ -37,7 +37,7 @@ from urllib.parse import quote as _urlquote
 
 from agent.i18n import t
 from gateway.platforms._shared import (
-    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+    get_scoped_secret as _get_scoped_secret, secrets_match, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
@@ -144,8 +144,7 @@ def verify_line_signature(body: bytes, signature: str, channel_secret: str) -> b
         expected = base64.b64encode(digest).decode("utf-8")
     except Exception:
         return False
-    # Bytes: compare_digest raises TypeError on non-ASCII str, and the header is raw.
-    return hmac.compare_digest(expected.encode(), signature.encode())
+    return secrets_match(signature, expected)
 
 
 class State(enum.Enum):
@@ -160,6 +159,7 @@ class State(enum.Enum):
 @dataclass
 class _CacheEntry:
     state: State
+    chat_id: str
     payload: Any = None
 
 
@@ -174,7 +174,7 @@ class RequestCache:
 
     def register_pending(self, chat_id: str) -> str:
         rid = str(uuid.uuid4())
-        self._entries[rid] = _CacheEntry(state=State.PENDING)
+        self._entries[rid] = _CacheEntry(state=State.PENDING, chat_id=chat_id)
         return rid
 
     def get(self, request_id: str) -> Optional[_CacheEntry]:
@@ -585,6 +585,10 @@ class LineAdapter(BasePlatformAdapter):
             return
         request_id = parsed.get("request_id", "") if parsed.get("action") == "show_response" else ""
         entry = self._cache.get(request_id) if request_id else None
+        if entry is not None and entry.chat_id != chat_id:
+            # A request id is a routing handle, not a capability: another chat
+            # holding it gets the same answer as for an unknown id (SECURITY.md §2.6).
+            entry = None
         if not self._client or not reply_token:
             return
         if entry is None:

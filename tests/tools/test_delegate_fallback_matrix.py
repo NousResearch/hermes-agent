@@ -50,7 +50,7 @@ def test_child_fallback_chain_matrix(pinned, declared, expected):
 
 def _spawn_kwargs(parent, cfg, **overrides):
     model = overrides.pop("model", None)
-    with patch("tools.delegate_tool._load_config", return_value=cfg), patch("run_agent.AIAgent") as MockAgent:
+    with patch("tools.delegate_tool_config._load_config", return_value=cfg), patch("run_agent.AIAgent") as MockAgent:
         MockAgent.return_value = MagicMock()
         _build_child_agent(task_index=0, goal="matrix wiring", context=None, toolsets=None, model=model,
                            max_iterations=10, parent_agent=parent, task_count=1, **overrides)

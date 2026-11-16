@@ -81,6 +81,7 @@ import {
   $sessionResumeRequest,
   $sessions,
   forgetSessionOwnerHintsForSession,
+  ownerLookupSessionRows,
   requestSessionResume,
   sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
@@ -988,7 +989,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       return
     }
 
-    const session = $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))
+    const session = ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))
     const pinId = session ? sessionPinId(session) : sessionId
 
     if ($pinnedSessionIds.get().includes(pinId)) {
@@ -1078,9 +1079,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
     // The sidebar row menu reuses this verb in the Archived view too, where the
     // row is already archived — dispatch by state so the verb restores there
-    // instead of re-archiving (#98813).
+    // instead of re-archiving (#98813), across every slice (#126732).
     onArchiveSession: sessionId => {
-      const listed = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
+      const listed = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, sessionId))
 
       const isArchived =
         listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))

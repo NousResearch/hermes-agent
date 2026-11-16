@@ -170,6 +170,9 @@ gateway:
     share_hint: 'Sdílejte tyto odkazy s týmem Hermes pro podporu.'
     report_label: 'Hlášení'
     local_refused: '`/debug local` nechává zprávu na počítači, kde Hermes běží, takže z chatu není dostupný. Pošlete `/debug`, ať se souhrnná zpráva nahraje.'
+    upload_hint: 'Nic se nenahrálo. Pošlete `/debug upload`, ať se souhrnná zpráva nahraje.'
+    upload_hint_local: 'Nic se nenahrálo. Pošlete `/debug upload`, ať se souhrnná zpráva nahraje, nebo `/debug local`, ať si ji prohlédnete tady.'
+    nous_refused: 'Nic se nenahrálo. Soukromé nahrávání do Nous odsud není dostupné: spusťte `hermes debug share --nous` v terminálu nebo použijte Odeslat diagnostiku v desktopové aplikaci. `/debug upload` místo toho nahraje souhrn na veřejné úložiště.'
   deny:
     stale: '❌ Příkaz zamítnut (schválení bylo zastaralé).'
     no_pending: 'Žádný čekající příkaz k odmítnutí.'
@@ -330,6 +333,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — relace byla zahájena bez názvu."
     title_empty_untitled: "\n⚠️ Název je po vyčištění prázdný – relace byla zahájena bez názvu."
     tip: "\n✦ Tip: {tip}"
+    paused_left: "\n⚠️ {count} zpráv, které jste poslali, když byla předchozí konverzace pozastavená, je uloženo v předchozí konverzaci a nejsou zodpovězené. Spustíte je takto: /resume {session_id}, potom {discard}."
   restart:
     in_progress: '⏳ Restart brány již probíhá...'
     restarting: '♻ Restartování brány. Pokud nebudete upozorněni do 60 sekund, restartujte z konzole pomocí `hermes gateway restart`.'
@@ -429,6 +433,17 @@ gateway:
       provider_usage_plus_estimate: 'využití poskytovatele + odhadované nové zprávy'
     source_line: 'Zdroj: {source}; počty kategorií jsou místní odhady.'
     hint_all: 'Použijte /context all pro náklady jednotlivých dovedností a sad nástrojů.'
+    cache_warm: 'Mezipaměť promptu: teplá do {until} (zbývá {remaining}; {ttl}, {confidence}).'
+    cache_expired: 'Mezipaměť promptu: vypršela před {ago} ({ttl}, {confidence}); další zpráva zpracuje celý prompt znovu.'
+    cache_maybe_warm: 'Mezipaměť promptu: může být ještě teplá do {until} (nejvýše dalších {remaining}; {ttl}, {confidence}).'
+    cache_unknown_moved: 'Mezipaměť promptu: neznámá (trasa, relace nebo kontext se od posledního ukládaného požadavku změnily).'
+    cache_unknown_route: 'Mezipaměť promptu: neznámá (tento poskytovatel nezveřejňuje, jak dlouho mezipaměť uchovává).'
+    cache_unknown_runtime: 'Mezipaměť promptu: neznámá (toto běhové prostředí si nastavuje vlastní volby mezipaměti, které Hermes nevidí).'
+    cache_unknown_storage: 'Mezipaměť promptu: neznámá (úložiště relací se nepodařilo přečíst).'
+    cache_confidence:
+      proven: 'ověřená'
+      declared: 'deklarovaná'
+      assumed: 'předpokládaná'
   status:
     header: '📊 **Stav Hermes Gateway**'
     matrix_scope_header: '**Rozsah v Matrixu:**'
@@ -524,6 +539,7 @@ gateway:
     last_lines: "{msg}\n\nPoslední řádky:\n```\n{tail}\n```"
     managed_action: 'aktualizovat Hermes Agent'
     not_applicable: "✗ `hermes update` nelze použít pro tuto instalaci ({method}).\nAktualizujte pomocí: {command}"
+    already_running: '⏳ Aktualizace už běží; její výzvy reagují jen na toho, kdo ji spustil. Počkejte, až skončí, a zkuste /update znovu.'
   usage:
     rate_limits: '⏱️ **Omezení počtu požadavků:** {state}'
     header_session: '📊 **Použití tokenu relace**'
@@ -608,6 +624,7 @@ gateway:
     none_marker: '(žádné)'
     none_value: 'žádné'
     unknown_value: 'neznámé'
+    fallback_model_suffix: ' — záložní model pro `{primary}`'
   exec_approval:
     header: 'Hermes chce spustit příkaz, který vyžaduje vaše schválení'
     reason_label: 'Důvod označení'
@@ -643,8 +660,6 @@ gateway:
     media_delivery_failed_with_name: '⚠️ Nepodařilo se doručit přílohu ({kind}, {file_name}).'
     delivery_failed_retry: '⚠️ Doručení zprávy po několika pokusech selhalo. Zkuste to znovu — váš požadavek byl zpracován, ale odpověď se nepodařilo odeslat.'
     plain_fallback_prefix: "(Formátování odpovědi selhalo, prostý text:)\n\n{content}"
-    turn_error_no_details: 'nejsou k dispozici žádné podrobnosti'
-    turn_error_detailed: "Omlouvám se, došlo k chybě ({error_type}).\n{error_detail}\nZkuste to znovu nebo použijte /reset pro novou relaci."
     turn_error: 'Omlouvám se, došlo k chybě.'
     context_injection_refused: 'Vložení kontextu bylo odmítnuto.'
     no_home_channel: "📬 Pro {platform} není nastaven domovský kanál. Domovský kanál je místo, kam Hermes doručuje výsledky úloh cron a zprávy mezi platformami.\n\nNapište {sethome_cmd}, aby se tento chat stal vaším domovským kanálem, nebo tuto zprávu ignorujte."
@@ -753,6 +768,8 @@ gateway:
     unknown_mode: 'Neznámý režim `{arg}`. Použijte `/busy queue`, `/busy steer` nebo `/busy interrupt`.'
     save_failed: 'Režim vstupu při zaneprázdnění se nepodařilo uložit do konfigurace. Režim zůstal nezměněn.'
     set: "Režim vstupu při zaneprázdnění nastaven na **`{mode}`** (uloženo).\n_{behavior}_"
+    setup_timeout: '⏳ Příprava tahu se zasekla bez jakékoli aktivity agenta a byla zrušena. Pošlete zprávu prosím znovu.'
+    setup_waiting: '⏳ Tah se stále spouští ({minutes} min, agent zatím nic nedělá). Vaše zpráva je ve frontě. Pomocí /stop zrušíte ji i všechno ostatní ve frontě.'
   pause:
     resumed: '▶️ Obnoveno — nová práce je opět přijímána.'
     not_paused: 'Hermes nebyl pozastaven.'
@@ -801,6 +818,7 @@ gateway:
     ack_generate: 'Generuji AGENTS.md na základě průzkumu projektu…'
   moa:
     prepare_failed: 'Nepodařilo se připravit tah MoA.'
+    managed_session: '/moa v této relaci není dostupné: relace v bezpečném režimu, bez konfigurace, kanban a spravovaní pracovníci spouštějí každý tah na vlastním modelu. Pošlete prompt bez /moa.'
   quick_command:
     no_output: 'Příkaz nevrátil žádný výstup.'
     timed_out: 'Rychlý příkaz vypršel (30 s).'
@@ -991,6 +1009,17 @@ platform:
       video_failed: '⚠️ Nepodařilo se doručit přílohu s videem.'
       file_failed: '⚠️ Nepodařilo se doručit přílohu se souborem ({name}).'
       attachment_failed: '⚠️ Přílohu se nepodařilo doručit.'
+    vault_code:
+      title: '🔐 Ověřovací kód pro {site}'
+      body: '{site} žádá jednorázový kód (SMS nebo e-mailem). Stiskněte tlačítko a napište ho do formuláře, který se otevře: kód jde přímo do stránky a nikdy se sem neposílá.'
+      button: 'Zadat kód'
+      modal_title: 'Kód pro {site}'
+      input_label: 'Jednorázový kód'
+      submitted: 'Kód odeslán; vkládám ho do stránky.'
+      ended: 'Tento požadavek na kód skončil; nic se nezadalo.'
+      not_author: 'Kód může zadat jen ten, kdo tento požadavek spustil.'
+      submitted_footer: '✓ Kód odeslán'
+    response_as_file: '📎 Dlouhá odpověď: plný text je v příloze.'
   weixin:
     voice_as_attachment: '[hlasová zpráva jako příloha]'
   signal:
@@ -1169,8 +1198,6 @@ platform:
         unknown: 'Neznámá dovednost: `{name}`. Začněte psát a zobrazí se návrhy automatického doplňování.'
       auto_args_description: 'Argumenty: {args_hint}'
       auto_description_fallback: 'Spustit /{name}'
-    limits:
-      response_truncated: '⚠️ **Odpověď byla zkrácena** — překročila limit doručení (počet zpráv: {max_messages}). Počet nedoručených znaků: {dropped_chars}; úplná odpověď je v protokolech relace.'
     forum:
       default_title: 'Nový příspěvek'
     voice:
@@ -1258,6 +1285,11 @@ platform:
       update_answered: 'Výzva aktualizace zodpovězena: {answer}'
       affirm_word: 'Ano'
       negate_word: 'Ne'
+      multi_hint: 'Vyberte jednu nebo více možností a klepněte na Odeslat.'
+      send: '✅ Odeslat'
+      selected_count: 'Vybráno: {count}'
+      select_one: 'Nejprve vyberte alespoň jednu možnost.'
+      toggle_failed: 'Výběr se nepodařilo změnit — klepněte znovu.'
     media:
       download_failed: '⚠️ Nepodařilo se stáhnout položku. Typ: {kind}{name} ({error}). Zkuste odeslání zopakovat.'
       named_suffix: ' ({name})'
@@ -1287,6 +1319,9 @@ platform:
       appended_by: '— {user}: {label}'
     user_fallback: 'Uživatel'
     install_hint: 'Nainstalujte podporu Telegramu příkazem `hermes setup`.'
+    vault_code:
+      body: 'Odpovězte na tuto zprávu kódem. Hermes vaši odpověď hned smaže a kód vloží do stránky; model ho nikdy neuvidí.'
+      delete_failed: 'Vaši odpověď se tu nepodařilo smazat. Smažte ji prosím sami.'
   slack:
     approval:
       fallback_text: '⚠️ Vyžadováno schválení příkazu: {command}'
@@ -3386,6 +3421,10 @@ cli:
     sweep_archived_removed: 'archivováno + odstraněno → {ref}'
     clean_up_manually: 'Ruční vyčištění: git worktree remove --force {path}'
     cleaned_up: '✓ Pracovní strom vyčištěn: {path}'
+  gateway_restart:
+    waiting: 'Hermes se restartuje, aby dokončil aktualizaci nebo restart; čekám, až se vrátí…'
+    timed_out: 'Hermes se z restartu včas nevrátil. Zkontrolujte `hermes gateway status` a pak znovu spusťte `hermes`.'
+    stopped: 'Čekání na restart Hermese bylo ukončeno; nic se nespustilo.'
 display:
   verb:
     web_search: 'Prohledávám web'

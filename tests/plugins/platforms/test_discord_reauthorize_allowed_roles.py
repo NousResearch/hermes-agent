@@ -3,8 +3,8 @@
 Ingress reads the gate through ``DiscordAdapter._gate_raw``: scoped env first, then the Discord
 ``PlatformConfig.extra`` that ``load_gateway_config()`` builds from every YAML spelling. Recovery
 applies that same resolution to the config as it stands now. The loader's YAML->env copy of
-``allowed_roles`` (first writer wins) is part of that resolution: outside multiplex a role removed
-from YAML stays granted until restart, exactly as for ingress; a multiplexed profile skips the copy.
+``allowed_roles`` is part of that resolution and is refreshed by each load, so a role removed from
+YAML loses access at once, as for ingress; a multiplexed profile skips the copy.
 """
 
 import asyncio
@@ -104,22 +104,24 @@ def _multiplexed_profile(home):
         reset_multiplex_context(token)
 
 
-@pytest.mark.parametrize("multiplexed, granted_after_removal", [(True, False), (False, True)])
+@pytest.mark.parametrize("multiplexed, granted_after_removal", [(True, False), (False, False)])
 def test_role_removed_from_yaml_after_the_first_reauthorization(_home, multiplexed, granted_after_removal):
     """Both loads go through the real ``load_gateway_config()``. A multiplexed profile's load never
     copies YAML into process env, so the current YAML (not the connect-time extra) revokes at once.
-    A single-profile load copies ``allowed_roles`` into ``DISCORD_ALLOWED_ROLES`` the first time and
-    that env value keeps precedence, so the removal takes effect at restart (unchanged from main)."""
+    A single-profile load copies ``allowed_roles`` into ``DISCORD_ALLOWED_ROLES``; the next load
+    refreshes that bridge-owned copy from the edited YAML, so the removal revokes at once too."""
     connect_extra = {"allowed_roles": "2"}
     _write_config(_home, {"platforms": {"discord": {"enabled": True, "allowed_roles": ["2"]}}})
     with _multiplexed_profile(_home) if multiplexed else contextlib.nullcontext():
         assert _reauthorize(_adapter(2, connect_extra)) is True
         _write_config(_home, {"platforms": {"discord": {"enabled": True, "allowed_roles": ["9"]}}})
         assert _reauthorize(_adapter(2, connect_extra)) is granted_after_removal
-    assert os.environ.get("DISCORD_ALLOWED_ROLES") == (None if multiplexed else "2")
+    assert os.environ.get("DISCORD_ALLOWED_ROLES") == (None if multiplexed else "9")
 
 
 def test_scoped_env_allowlist_wins_over_config(_home, monkeypatch):
     _write_config(_home, {"platforms": {"discord": {"enabled": True, "allowed_roles": ["2"]}}})
+    from hermes_cli import env_loader
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", {"DISCORD_ALLOWED_ROLES"})  # set in .env
     monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "9")
     assert _reauthorize(_adapter(2)) is False

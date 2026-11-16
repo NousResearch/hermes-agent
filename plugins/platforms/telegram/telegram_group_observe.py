@@ -32,6 +32,19 @@ def apply_group_observe_attribution(adapter, event: MessageEvent) -> MessageEven
         source=adapter._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
 
 
+# video_analyze is in the opt-in ``video`` toolset, so its hint keeps a fallback the default bundle has.
+_OBSERVED_MEDIA_TOOL = {"image": "vision_analyze with this path as image_url",
+                        "video": "video_analyze with this path as video_url when that tool is available, "
+                                 "otherwise your file tools"}
+
+
+def observed_media_note(cached) -> str:
+    """Observed context is text-only (no image tokens on every addressed turn), so a later turn
+    never carries the file inline: the note says so and how to open the cached file on demand."""
+    how = _OBSERVED_MEDIA_TOOL.get(cached.kind, "your file tools on this path")
+    return f"{cached.context_note()} (not attached inline; to look at it use {how})"
+
+
 def shared_sender_suffix(event: MessageEvent) -> str:
     """Batch-key suffix naming the sender: two members addressing the bot inside one batch window
     are two requests with two actors, never one merged turn under the first sender. Observed-group

@@ -1,0 +1,30 @@
+name: tmux-live
+repo: https://github.com/maksymhs/hermes-tmux-live
+sha: deae4ff6511f52cd5b04789ae2671bae8e8295c2
+description: >-
+  Live tmux tab for the Hermes web dashboard: pick a pane, watch it in ANSI
+  colour, type into it when needed, and terminate the process, pane or session.
+  Disclosure: calls the local tmux binary with argv lists (capture-pane,
+  send-keys, kill-pane, kill-session), can signal the pane's foreground process
+  group, and probes /proc/<pid>/root/tmp for the tmux socket when the dashboard
+  runs under systemd PrivateTmp. No network access, credentials, telemetry or
+  self-updater. English and Spanish UI.
+maintainer: maksymhs
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.2.3"
+docs_url: https://github.com/maksymhs/hermes-tmux-live#readme
+readme: true
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/maksymhs/hermes-tmux-live/deae4ff6511f52cd5b04789ae2671bae8e8295c2/docs/tmux-live-picker.png
+  - https://raw.githubusercontent.com/maksymhs/hermes-tmux-live/deae4ff6511f52cd5b04789ae2671bae8e8295c2/docs/tmux-live-pane.png
+known_issues:
+  - The view is a one-second mirror, not a PTY attachment, so typed characters appear on the next poll.
+  - Only panes belonging to the same user and host as the dashboard are visible.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

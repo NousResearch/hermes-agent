@@ -24,6 +24,7 @@ from tools.checkpoint_manager import (
 from tools.checkpoint_maintenance import (
     clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
 )
+from hermes_constants import get_hermes_home
 
 
 # =========================================================================
@@ -40,9 +41,9 @@ def work_dir(tmp_path):
 
 
 @pytest.fixture()
-def checkpoint_base(tmp_path):
-    """Isolated checkpoint base — never writes to ~/.hermes/."""
-    return tmp_path / "checkpoints"
+def checkpoint_base():
+    """The active profile's checkpoint base (conftest isolates HERMES_HOME per test)."""
+    return get_hermes_home() / "checkpoints"
 
 
 @pytest.fixture()
@@ -60,13 +61,11 @@ def fake_home(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def mgr(work_dir, checkpoint_base, monkeypatch):
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
     return CheckpointManager(enabled=True, max_snapshots=50)
 
 
 @pytest.fixture()
 def disabled_mgr(checkpoint_base, monkeypatch):
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
     return CheckpointManager(enabled=False)
 
 
@@ -91,7 +90,6 @@ class TestStorePath:
 
 class TestStoreInit:
     def test_creates_git_store(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         store = _store_path(checkpoint_base)
         err = _init_store(store, str(work_dir))
         assert err is None
@@ -221,7 +219,6 @@ class TestListCheckpoints:
 
 class TestRealPruning:
     def test_max_snapshots_trims_history(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         # Tiny cap to test enforcement.
         m = CheckpointManager(enabled=True, max_snapshots=3)
 
@@ -241,7 +238,6 @@ class TestRealPruning:
         self, tmp_path, checkpoint_base, monkeypatch,
     ):
         """An over-cap file is excluded before Git invokes its clean filter."""
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         wd = tmp_path / "proj"
         wd.mkdir()
         (wd / "small.py").write_text("tiny\n")
@@ -276,7 +272,6 @@ class TestRealPruning:
         self, tmp_path, checkpoint_base, monkeypatch,
     ):
         """A prior small blob must not survive after its worktree file grows."""
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         wd = tmp_path / "proj"
         wd.mkdir()
         weights = wd / "weights.bin"
@@ -374,7 +369,6 @@ class TestRestore:
     def test_tilde_path_supports_diff_and_restore_flow(
         self, checkpoint_base, fake_home, monkeypatch,
     ):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         m = CheckpointManager(enabled=True, max_snapshots=50)
         project = fake_home / "project"
         project.mkdir()
@@ -516,7 +510,6 @@ class TestSafeRestore:
 
     @staticmethod
     def _capped_mgr(checkpoint_base, monkeypatch, cap_mb=1):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         return CheckpointManager(enabled=True, max_snapshots=50, max_file_size_mb=cap_mb)
 
     def test_safe_restore_keeps_an_oversize_file_the_cap_excluded(
@@ -681,7 +674,6 @@ class TestSafeRestore:
         assert (work_dir / "README.md").read_text() == "# Project\n"
 
     def test_record_agent_write_disabled_manager_noop(self, checkpoint_base, work_dir, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         m = CheckpointManager(enabled=False)
         m.record_agent_write(str(work_dir / "main.py"))  # must not raise
         assert not (checkpoint_base / "store").exists()
@@ -954,7 +946,6 @@ class TestGpgIsolation:
     def test_init_disables_commit_and_tag_signing(
         self, work_dir, checkpoint_base, monkeypatch,
     ):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         store = _store_path(checkpoint_base)
         _init_store(store, str(work_dir))
         for key in ("commit.gpgsign", "tag.gpgSign"):
@@ -968,7 +959,6 @@ class TestGpgIsolation:
     def test_checkpoint_works_with_global_gpgsign_and_broken_gpg(
         self, work_dir, checkpoint_base, monkeypatch, tmp_path,
     ):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         fake_home = tmp_path / "fake_home"
         fake_home.mkdir()
         (fake_home / ".gitconfig").write_text(
@@ -1049,8 +1039,7 @@ class TestPruneCheckpointsV2:
     """v2 pruning walks the shared store's projects/ metadata."""
 
     def test_deletes_orphan_project_entry(self, tmp_path, monkeypatch):
-        base = tmp_path / "checkpoints"
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        base = get_hermes_home() / "checkpoints"
 
         alive = tmp_path / "alive"
         alive.mkdir()
@@ -1080,8 +1069,7 @@ class TestPruneCheckpointsV2:
     def test_retention_prunes_stale_projects_and_legacy_archives(
         self, tmp_path, monkeypatch,
     ):
-        base = tmp_path / "checkpoints"
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        base = get_hermes_home() / "checkpoints"
 
         fresh = tmp_path / "fresh"
         fresh.mkdir()
@@ -1131,8 +1119,7 @@ class TestPruneCheckpointsOrphanAllowlist:
     """
 
     def test_v2_allowlist_restricts_deletion_to_approved_hash(self, tmp_path, monkeypatch):
-        base = tmp_path / "checkpoints"
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        base = get_hermes_home() / "checkpoints"
 
         previewed = tmp_path / "previewed-gone"
         previewed.mkdir()
@@ -1185,8 +1172,7 @@ class TestPruneCheckpointsOrphanAllowlist:
         """
         import hermes_cli.checkpoints as checkpoints_cli
 
-        base = tmp_path / "checkpoints"
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        base = get_hermes_home() / "checkpoints"
 
         previewed_work = tmp_path / "was-deleted-before-preview"
         still_alive_work = tmp_path / "still-alive-during-preview"
@@ -1221,7 +1207,6 @@ class TestPruneSweepsTmpPackDebris:
 
     def test_sweeps_debris_even_when_no_ref_moved(self, checkpoint_base, tmp_path, monkeypatch):
         import tools.checkpoint_manager as cm
-        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
         monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
         work = tmp_path / "proj"
         work.mkdir()
@@ -1274,8 +1259,7 @@ class TestMaybeAutoPruneCheckpoints:
 
 class TestStoreStatus:
     def test_reports_projects_and_legacy(self, tmp_path, monkeypatch, work_dir):
-        base = tmp_path / "checkpoints"
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        base = get_hermes_home() / "checkpoints"
 
         m = CheckpointManager(enabled=True)
         m.ensure_checkpoint(str(work_dir), "initial")
@@ -1296,8 +1280,7 @@ class TestStoreStatus:
 
 class TestClearFunctions:
     def test_clear_all_wipes_base_then_is_a_noop(self, tmp_path, monkeypatch, work_dir):
-        base = tmp_path / "checkpoints"
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        base = get_hermes_home() / "checkpoints"
         m = CheckpointManager(enabled=True)
         m.ensure_checkpoint(str(work_dir), "initial")
         assert base.exists()
@@ -1315,8 +1298,7 @@ class TestClearFunctions:
     def test_clear_legacy_only_removes_legacy_dirs(
         self, tmp_path, monkeypatch, work_dir,
     ):
-        base = tmp_path / "checkpoints"
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        base = get_hermes_home() / "checkpoints"
         m = CheckpointManager(enabled=True)
         m.ensure_checkpoint(str(work_dir), "initial")
 
@@ -1348,9 +1330,6 @@ class TestOrphanPruneRequiresObservableDeletion:
     """
 
     def _project_with_history(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr(
-            "tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base
-        )
         m = CheckpointManager(enabled=True, max_snapshots=10)
         m.ensure_checkpoint(str(work_dir), "initial")
         return m

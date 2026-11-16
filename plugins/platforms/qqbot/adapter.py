@@ -701,8 +701,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return
             try:
                 from tools.approval import resolve_gateway_approval_card  # lazy: keep adapter light
-                count = resolve_gateway_approval_card(  # refuses approve on Deny-only
-                    session_key, choice, approval_button_request_id(button_data))
+                count = resolve_gateway_approval_card(  # refuses approve on Deny-only and a refused clicker
+                    session_key, choice, approval_button_request_id(button_data),
+                    actor_id=event.operator_openid, extra=self.config.extra)
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s (choice=%s, operator=%s)",
                     self._log_tag, count, session_key, choice, event.operator_openid)
@@ -744,17 +745,20 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         attachments_raw = d.get("attachments")
         logger.info(
-            "[%s] C2C message: id=%s content=%r attachments=%s",
-            self._log_tag, msg_id, content[:50] if content else "",
+            "[%s] C2C message: id=%s content_len=%d attachments=%s",
+            self._log_tag, msg_id, len(content or ""),
             f"{len(attachments_raw) if isinstance(attachments_raw, list) else 0} items" if attachments_raw else "None",
         )
         if attachments_raw and isinstance(attachments_raw, list):
             for _i, _att in enumerate(attachments_raw):
                 if isinstance(_att, dict):
                     logger.info(
-                        "[%s] attachment[%d]: content_type=%s url=%s filename=%s",
+                        "[%s] attachment[%d]: content_type=%s url_len=%d filename_len=%d",
                         self._log_tag, _i, _att.get("content_type", ""),
-                        str(_att.get("url", ""))[:80], _att.get("filename", ""))
+                        len(str(_att.get("url") or "")), len(str(_att.get("filename") or "")))
+                    logger.debug(
+                        "[%s] attachment[%d]: url=%s filename=%s",
+                        self._log_tag, _i, _att.get("url", ""), _att.get("filename", ""))
 
         await self._ingest(
             d, msg_id, content, attachments_raw, timestamp, verbose=True,
@@ -941,7 +945,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     voice_transcripts.append(f"[Voice] {transcript}")
                     logger.debug("[%s] Voice transcript: %s", self._log_tag, transcript)
                 else:
-                    logger.warning("[%s] Voice STT failed for %s", self._log_tag, url[:60])
+                    logger.warning("[%s] Voice STT failed (url_len=%d)", self._log_tag, len(url))
+                    logger.debug("[%s] Voice STT failed for %s", self._log_tag, url[:60])
                     voice_transcripts.append("[Voice] [语音识别失败]")
                 continue
 
@@ -1073,7 +1078,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 logger.warning("[%s] STT: ASR returned empty transcript", self._log_tag)
             return transcript
         except (OSError, httpx.HTTPStatusError, httpx.TransportError) as exc:
-            logger.warning("[%s] STT failed for voice attachment: %s: %s", self._log_tag, type(exc).__name__, exc)
+            # httpx puts the full download URL (signed query included) in the exception text.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning("[%s] STT failed for voice attachment: %s (status=%s)", self._log_tag, type(exc).__name__, status)
+            logger.debug("[%s] STT failure detail: %s", self._log_tag, exc)
             return None
 
     @staticmethod

@@ -43,7 +43,6 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 from html import escape as _html_escape
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
@@ -71,13 +70,16 @@ except ImportError:
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
+from gateway.approval_actor import approval_refusal, picker_refusal, refusal_text
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, transcode_to_ogg_opus,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.platforms.helpers import ThreadParticipationTracker, hash_for_log
+from plugins.platforms.matrix.media_download import MatrixMediaTooLarge, download_mxc_capped, read_body_capped
+from plugins.platforms.matrix.adapter_html import _latex_to_tokens, _pre_sanitize_matrix_markdown, _sanitize_matrix_html
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
@@ -257,74 +259,6 @@ def _split_reply_fallback(body: str) -> tuple[str, str]:
         idx += 1  # the blank line separating the quote from the reply belongs to the quote
     head = "\n".join(lines[:idx])
     return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
-
-
-class _MatrixHtmlSanitizer(HTMLParser):
-    """Allowlist sanitizer for Matrix-compatible formatted HTML."""
-
-    _ALLOWED_TAGS = {
-        "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol",
-        "p", "pre", "s", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
-    _VOID_TAGS = {"br", "hr"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=False)
-        self._parts: list[str] = []
-        self._skip_depth = 0
-
-    @staticmethod
-    def _safe_url(value: str) -> str:
-        stripped = re.sub(r"[\x00-\x1f\x7f]+", "", value or "").strip()
-        match = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", stripped)
-        scheme = match.group(1).lower() if match else ""
-        if scheme and scheme not in {"http", "https", "matrix", "mailto"}:
-            return ""
-        return stripped
-
-    def _safe_attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
-        safe: list[str] = []
-        for key, value in attrs:
-            attr = str(key or "").lower()
-            raw_value = "" if value is None else str(value)
-            if tag == "a" and attr == "href":
-                href = self._safe_url(raw_value)
-                if href:
-                    safe.append(f' href="{_html_escape(href, quote=True)}"')
-            elif tag == "code" and attr == "class" and re.fullmatch(r"language-[A-Za-z0-9_+.-]{1,64}", raw_value):
-                safe.append(f' class="{_html_escape(raw_value, quote=True)}"')
-        return "".join(safe)
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style"}:
-            self._skip_depth += 1
-        elif not self._skip_depth and tag in self._ALLOWED_TAGS:
-            self._parts.append(f"<{tag}>" if tag in self._VOID_TAGS else f"<{tag}{self._safe_attrs(tag, attrs)}>")
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style"} and self._skip_depth:
-            self._skip_depth -= 1
-            return
-        if self._skip_depth or tag not in self._ALLOWED_TAGS or tag in self._VOID_TAGS:
-            return
-        self._parts.append(f"</{tag}>")
-
-    def _emit(self, text: str) -> None:
-        if not self._skip_depth:
-            self._parts.append(text)
-
-    def handle_data(self, data: str) -> None:
-        self._emit(_html_escape(data))
-
-    def handle_entityref(self, name: str) -> None:
-        self._emit(f"&{name};")
-
-    def handle_charref(self, name: str) -> None:
-        self._emit(f"&#{name};")
-
-    def get_html(self) -> str:
-        return "".join(self._parts)
 
 
 @dataclass(frozen=True)
@@ -634,68 +568,6 @@ def _scoped_recovery_key() -> str:
     return _get_scoped_secret("MATRIX_RECOVERY_KEY", "").strip()
 
 
-# --- LaTeX math ($...$, $$...$$) -> Element data-mx-maths markup ---
-# Element (feature_latex_maths) typesets <div|span data-mx-maths="TEX"> at display time.
-# Our sanitizer allowlists tags/attrs, so data-mx-maths cannot pass through HTML
-# sanitization directly. Instead, math is swapped for opaque sentinel tokens before
-# Markdown conversion (protecting TeX from escaping) and expanded back to math
-# markup after sanitization. Tokens are plain printable text with no special
-# HTML/Markdown meaning, so both the Markdown converter and the sanitizer
-# pass them through verbatim.
-_TEX_TOKEN_RE = re.compile(r"HERMESTEX(?:DISPLAY|INLINE)(\d+)HERMESTEXEND")
-_TEX_DISPLAY_TOKEN = "HERMESTEXDISPLAY%dHERMESTEXEND"
-_TEX_INLINE_TOKEN = "HERMESTEXINLINE%dHERMESTEXEND"
-
-
-def _latex_to_tokens(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """Replace ``$$...$$``/``$...$`` with sentinel tokens.
-
-    Returns the tokenized text plus an ordered ``(tag, tex)`` store, where tag
-    is ``div`` for display math and ``span`` for inline math. Dollars that do
-    not form a pair (prices, literals) are left untouched.
-    """
-    if not text or "$" not in text:
-        return text, []
-    store: list[tuple[str, str]] = []
-
-    def _sub_display(match: re.Match[str]) -> str:
-        store.append(("div", match.group(1).strip()))
-        return _TEX_DISPLAY_TOKEN % (len(store) - 1)
-
-    def _sub_inline(match: re.Match[str]) -> str:
-        store.append(("span", match.group(1).strip()))
-        return _TEX_INLINE_TOKEN % (len(store) - 1)
-
-    text = re.sub(r"\$\$([^\n$]+?)\$\$", _sub_display, text)
-    text = re.sub(r"(?<![\\$\w])\$([^\n$]+?)\$(?!\w)", _sub_inline, text)
-    return text, store
-
-
-def _tokens_to_mx_maths(html: str, store: list[tuple[str, str]]) -> str:
-    """Expand sentinel tokens into ``data-mx-maths`` markup (TeX HTML-escaped)."""
-
-    def _expand(match: re.Match[str]) -> str:
-        idx = int(match.group(1))
-        if idx >= len(store):
-            # Not one of our tokens (user-typed text that collides with the
-            # sentinel format) — leave it verbatim.
-            return match.group(0)
-        tag, tex = store[idx]
-        escaped = _html_escape(tex, quote=True)
-        return f'<{tag} data-mx-maths="{escaped}">{escaped}</{tag}>'
-
-    return _TEX_TOKEN_RE.sub(_expand, html)
-
-def _sanitize_matrix_html(html: str) -> str:
-    sanitizer = _MatrixHtmlSanitizer()
-    try:
-        sanitizer.feed(html or "")
-        sanitizer.close()
-        return sanitizer.get_html()
-    except Exception:
-        return _html_escape(html or "")
-
-
 def _redact_url_for_log(url: str) -> str:
     """Strip query/fragment from URLs before logging signed media links."""
     try:
@@ -705,15 +577,6 @@ def _redact_url_for_log(url: str) -> str:
         return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
     except Exception:
         return "<url>"
-
-
-def _pre_sanitize_matrix_markdown(text: str) -> str:
-    """Remove unsafe raw HTML before Markdown conversion can escape it."""
-    result = re.sub(r"(?is)<\s*(script|style)\b[^>]*>.*?<\s*/\s*\1\s*>", "", text or "")
-    result = re.sub(r"""(?is)\s+on[a-z0-9_-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)""", "", result)
-    return re.sub(
-        r"""(?is)\s+(href|src)\s*=\s*("[^"]*(?:javascript|data|vbscript):[^"]*"|'[^']*(?:javascript|data|vbscript):[^']*'|[^\s>]*(?:javascript|data|vbscript):[^\s>]*)""",
-        "", result)
 
 
 def matrix_deps_present() -> bool:
@@ -1522,23 +1385,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
         async def _read_capped(resp, chunks, content_type) -> tuple[bytes, str]:
             """Enforce Content-Length + streamed size caps, then require an image/* type."""
-            try:
-                size = int(resp.headers.get("Content-Length") or resp.headers.get("content-length"))
-            except Exception:
-                size = None
-            if size is not None and size > self._max_media_bytes:
-                raise ValueError(f"media exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
-            parts: list[bytes] = []
-            total = 0
-            async for chunk in chunks:
-                total += len(chunk)
-                if total > self._max_media_bytes:
-                    raise ValueError(f"media exceeds Matrix limit (> {self._max_media_bytes} bytes)")
-                parts.append(bytes(chunk))
+            data = await read_body_capped(resp.headers, chunks, self._max_media_bytes)
             content_type = str(content_type or "").split(";", 1)[0].strip().lower()
             if not content_type.startswith("image/"):
                 raise ValueError("external media is not an image")
-            return b"".join(parts), content_type
+            return data, content_type
         fname = url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
         try:
             import aiohttp as _aiohttp
@@ -2128,10 +1979,15 @@ class MatrixAdapter(BasePlatformAdapter):
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
+        # m.notice is the bot msgtype convention: flag it for the loop guard and no-pairing rule.
+        # Any sender can pick the msgtype, so it must never widen access: Matrix declares no
+        # allow_bots_env and a notice sender still needs a human rung (#143370).
+        is_bot = source_content.get("msgtype") == "m.notice"
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
-            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+            guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id,
+            is_bot=is_bot)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
@@ -2260,6 +2116,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 cached_path = await self._download_and_cache_media(
                     url, event_id, file_content if is_encrypted_media else None, msg_type, media_type,
                     is_voice_message, body)
+            except MatrixMediaTooLarge as e:
+                logger.warning("[Matrix] Rejecting oversized inbound media %s: %s", event_id, e)
+                return
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
         # Unencrypted media may fall back to the HTTP download URL when caching failed.
@@ -2288,9 +2147,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self, url: str, event_id: str, encrypted_file: Optional[dict], msg_type: MessageType, media_type: str,
         is_voice_message: bool, body: str) -> Optional[str]:
         """Download (and decrypt, when *encrypted_file* is given) media into the local cache."""
-        file_bytes = await self._client.download_media(ContentURI(url))
-        if file_bytes is None:
-            return None
+        file_bytes = await download_mxc_capped(self._client, url, self._max_media_bytes)
         if encrypted_file is not None:
             from mautrix.crypto.attachments import decrypt_attachment
             hashes_value, key_value = encrypted_file.get("hashes"), encrypted_file.get("key")
@@ -2512,7 +2369,7 @@ class MatrixAdapter(BasePlatformAdapter):
         elif hasattr(relates_to, "event_id"):
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
-        logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
+        logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, hash_for_log(room_id))
         for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
                         self._handle_choice_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):
@@ -2550,8 +2407,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if prompt.offered and choice not in prompt.offered:  # a hand-added ✅ on a Deny-only card: keep it live
             await self._send_invalid_reaction_feedback(room_id, reacts_to, t("platform.matrix.approval.invalid_reaction"))
             return True
-        from gateway.approval_actor import approval_refusal, refusal_text
-        if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id):
+        if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id,
+                                         choice=choice):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
             return True
         try:
@@ -2620,8 +2477,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if getattr(self, "_authorization_check", None) is not None:
             return self._is_sender_authorized(user_id, chat_id=room_id) is True
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
-        return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
-            self._allowed_user_ids and user_id in self._allowed_user_ids)
+        return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(
         self, room_id: str, target_event_id: str, sender: str, prompt: Any, prompt_label: str) -> bool:
@@ -2629,13 +2485,14 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.info("Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
             await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
             return False
-        requester = getattr(prompt, "requester_user_id", None)
-        # getattr: object.__new__-built test doubles may lack the attribute.
-        if getattr(self, "_approval_require_sender", True) and requester and sender != requester:
+        # getattr: object.__new__-built test doubles may lack the attributes.
+        if getattr(self, "_approval_require_sender", True) and (requester := getattr(prompt, "requester_user_id", None)) and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
             await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
             return False
-        return True
+        if opener := picker_refusal(getattr(prompt, "on_selected", None), sender, extra=getattr(getattr(self, "config", None), "extra", None)):
+            await self._send_invalid_reaction_feedback(room_id, target_event_id, refusal_text(opener))
+        return opener is None
 
     async def _send_invalid_reaction_feedback(self, room_id: str, target_event_id: str, text: str) -> None:
         try:
@@ -3033,8 +2890,8 @@ class MatrixAdapter(BasePlatformAdapter):
             md.reset()
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
-            return _tokens_to_mx_maths(_sanitize_matrix_html(html), tex_store)
-        return _tokens_to_mx_maths(_sanitize_matrix_html(self._markdown_to_html_fallback(text)), tex_store)
+            return _sanitize_matrix_html(html, tex_store)
+        return _sanitize_matrix_html(self._markdown_to_html_fallback(text), tex_store)
 
     @staticmethod
     def _sanitize_link_url(url: str) -> str:
@@ -3172,8 +3029,9 @@ def _standalone_payloads(message: str) -> list[dict[str, Any]]:
         if _md is not None:
             tokenized, tex_store = _latex_to_tokens(chunk)
             html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
-            formatted = {"format": "org.matrix.custom.html", "formatted_body": _tokens_to_mx_maths(
-                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)}
+            # Same allowlist as the adapter path: Markdown passes raw HTML and any link scheme through.
+            html = _sanitize_matrix_html(re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
+            formatted = {"format": "org.matrix.custom.html", "formatted_body": html}
             if _content_bytes({**payload, **formatted}) <= _MAX_CONTENT_BYTES:
                 payload.update(formatted)
         payloads.append(payload)

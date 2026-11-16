@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from agent.credential_pool_errors import _normalize_error_context, redact_error_text
+from agent.credential_pool_selection import CredentialPoolSelectionMixin
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
 import logging
 import os
-import random
 import threading
 import time
 import uuid
@@ -21,7 +22,6 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
-from agent.retry_utils import reset_delay_from_message
 from hermes_cli.auth_plugin_providers import plugin_refresh_hook
 from agent.credential_pool_plugin import apply_plugin_refresh_result, plugin_row_is_expiring, recover_failed_plugin_refresh
 from agent.credential_persistence import (
@@ -413,30 +413,6 @@ def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     if state_ts is None:
         return False
     return state_ts < entry_ts
-
-
-def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[str, Any]:
-    if not isinstance(error_context, dict):
-        return {}
-    normalized: dict[str, Any] = {}
-    for key in ("reason", "message"):
-        value = error_context.get(key)
-        if isinstance(value, str) and value.strip():
-            normalized[key] = value.strip()
-    reset_at = (
-        error_context.get("reset_at")
-        or error_context.get("resets_at")
-        or error_context.get("retry_until")
-    )
-    parsed_reset_at = _parse_absolute_timestamp(reset_at)
-    message = error_context.get("message")
-    if parsed_reset_at is None and isinstance(message, str):
-        retry_delay_seconds = reset_delay_from_message(message)
-        if retry_delay_seconds is not None:
-            parsed_reset_at = time.time() + retry_delay_seconds
-    if parsed_reset_at is not None:
-        normalized["reset_at"] = parsed_reset_at
-    return normalized
 
 
 def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
@@ -963,7 +939,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -1189,7 +1165,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         persist: bool = True,
         failure_reason: Optional[str] = None,
     ) -> PooledCredential:
-        normalized_error = _normalize_error_context(error_context)
+        normalized_error = _normalize_error_context(error_context, (entry.access_token, entry.refresh_token, entry.agent_key))
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
         # fails immediately until the user removes it (#32849); a row whose
@@ -1848,7 +1824,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 last_status_at=time.time(),
                 last_error_code=None,
                 last_error_reason=str(getattr(exc, "code", None) or "invalid_grant"),
-                last_error_message=str(exc),
+                last_error_message=redact_error_text(str(exc), (current.access_token, current.refresh_token, current.agent_key)),
             )
 
     def _clear_terminal_tokens_state(self, entry: PooledCredential, exc: Exception) -> None:
@@ -1956,21 +1932,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         return False
 
     # ---- selection ---------------------------------------------------------
-
-    def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
-        entry, pending_refresh = self._select_under_lock(model=model)
-        if pending_refresh:
-            self._refresh_pending_entries(pending_refresh)
-            # Re-select now that the refreshed entries are back in the pool.
-            if entry is None:
-                entry, _ = self._select_under_lock(model=model)
-        if entry is not None:
-            self._unmatched_rotation_streak = 0
-        return entry
-
-    def _select_under_lock(self, *, model: Optional[str] = None) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
-        with self._lock:
-            return self._select_unlocked(model=model)
 
     def _refresh_pending_entries(self, pending: list[PooledCredential]) -> None:
         """Refresh deferred single-use-token entries OUTSIDE the pool lock.
@@ -2121,52 +2082,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return
         self._last_no_entries_log_at = now
         logger.info("credential pool %s: no available entries (all exhausted or empty)", self.provider)
-
-    def _select_unlocked(
-        self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
-    ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
-        """Select the best available entry; returns ``(entry, pending_refresh)``.
-
-        ``count=False`` skips the ``request_count`` bump for selections that are
-        not going to serve a request (a forced-refresh target lookup).
-        """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
-        if not available:
-            self._current_id = None
-            self._log_no_available_entries()
-            return None, pending_refresh
-
-        # The pool recovered; re-arm the throttle so a later re-exhaustion
-        # logs immediately.
-        self._last_no_entries_log_at = None
-
-        if self._strategy == STRATEGY_RANDOM:
-            entry = random.choice(available)
-        elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
-            entry = min(available, key=lambda e: e.request_count)
-        else:
-            entry = available[0]
-        # Count the selection under every strategy. The counter is ``least_used``'s
-        # baseline and reaches auth.json on the next persist (exhaustion, rotation,
-        # refresh); it used to move only while ``least_used`` was active.
-        if count:
-            entry = self._adopt(entry, persist=False, request_count=entry.request_count + 1)
-        if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
-            rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
-            rotated.append(replace(entry, priority=len(self._entries) - 1))
-            self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
-            self._persist()
-            entry = self._find(lambda candidate: candidate.id == entry.id) or entry
-        self._current_id = entry.id
-        return entry, pending_refresh
-
-    def peek(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
-        with self._lock:  # the current entry, else the first available; with ``model``: the current one if available
-            current = self._current_unlocked()
-            if current is not None and model is None:
-                return current
-            available = self._available_entries(model=model)[0]
-            return next((e for e in available if current and e.id == current.id), next(iter(available), None))
 
     def reclaim(self, credential_id: str, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         """Entry *credential_id* once its cooldown has lifted (cleared and token-refreshed the way

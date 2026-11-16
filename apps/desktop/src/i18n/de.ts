@@ -773,6 +773,8 @@ export const deOverrides = {
       mcp: 'MCP',
       archivedChats: 'Archivierte Chats',
       sessions: 'Sessions',
+      backup: 'Sicherung & Übertragung',
+      backupOnly: 'Sicherung',
       about: 'Über',
       billing: 'Abrechnung',
       notifications: 'Benachrichtigungen',

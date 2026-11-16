@@ -2,6 +2,7 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
+import { enBackupTransfer } from './en_backup_transfer'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalog } from './en_catalog'
@@ -767,6 +768,8 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       sessions: 'Sessions',
+      backup: 'Backup & Transfer',
+      backupOnly: 'Backup',
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
@@ -1116,6 +1119,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    backup: enBackupTransfer,
     memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',

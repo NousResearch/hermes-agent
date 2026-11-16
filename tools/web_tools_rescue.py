@@ -53,7 +53,13 @@ def _is_private_backend(provider) -> bool:
     """
     try:
         from plugins.web.keyless_mcp import _KEYLESS_RING
-        return getattr(provider, "name", "") not in _KEYLESS_RING
+        name = getattr(provider, "name", "")
+        if name == "firecrawl":
+            # A direct Firecrawl instance is private even though the vendor is in the cloud ring.
+            from plugins.web.firecrawl.provider import _env, is_managed_route
+            if _env("FIRECRAWL_API_URL") and not is_managed_route():
+                return True
+        return name not in _KEYLESS_RING
     except Exception:
         logger.debug("private-backend check failed", exc_info=True)
         return False
@@ -140,10 +146,9 @@ def _rescue_eligible(provider) -> bool:
     if not _keyless_rescue_enabled() or provider is None:
         return False
     try:
-        from plugins.web.keyless_mcp import _KEYLESS_RING
         name = getattr(provider, "name", "")
-        if name not in _KEYLESS_RING:
-            # Private backend: fail closed unless explicitly opted in (#155838).
+        if _is_private_backend(provider):
+            # Private backend (including direct self-hosted Firecrawl): opt-in only.
             return _local_rescue_enabled()
         return not _ring_vendor_keyless(name)
     except Exception as exc:

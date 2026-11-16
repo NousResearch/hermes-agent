@@ -337,6 +337,31 @@ class TestLocalRescueRefusalSurfaced:
         assert all("web.local_rescue" in r.get("error", "") for r in results)
         ring.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_self_hosted_firecrawl_extract_does_not_cloud_rescue(self, monkeypatch):
+        # FIRECRAWL_API_URL selects the direct SDK against a private server; the
+        # vendor name "firecrawl" alone must not authorize a cloud ring fallback.
+        import tools.web_tools_extract as wte
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
+        monkeypatch.setattr(
+            "plugins.web.firecrawl.provider._env",
+            lambda name: "http://127.0.0.1:3002" if name == "FIRECRAWL_API_URL" else "",
+        )
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.read_web_capability_selection",
+            lambda capability=None: "firecrawl",
+        )
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            results, rescued = await wte._fetch_with_rescue(
+                _GatewayFirecrawlBoomProvider(), ["https://example.com/page"], None
+            )
+
+        assert rescued is False
+        assert "HTTP 500 upstream exploded" in results[0]["error"]
+        assert "web.local_rescue" in results[0]["error"]
+        ring.assert_not_called()
+
     def test_keyed_vendor_failure_not_annotated(self, monkeypatch):
         # Ring vendors keep the documented rescue: no hint, ring called.
         with patch.object(

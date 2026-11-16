@@ -418,6 +418,7 @@ platforms:
 | Problem | Solution |
 |---------|----------|
 | **QR code not scanning** | Ensure terminal is wide enough (60+ columns). Try a different terminal. Make sure you're scanning from the correct WhatsApp account (bot number, not personal). |
+| **Pairing stops with "WhatsApp closed the connection before linking (405 …)"** | WhatsApp refused the connection before showing a QR (405 usually means it rejected this WhatsApp Web build). Run `hermes whatsapp` again; if it repeats, run `hermes update` and retry. |
 | **QR code expires** | QR codes refresh every ~20 seconds. If it times out, restart `hermes whatsapp`. |
 | **Session not persisting** | Check that `~/.hermes/platforms/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
 | **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |

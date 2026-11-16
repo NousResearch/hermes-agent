@@ -1,7 +1,7 @@
 name: iacg-board
 repo: https://github.com/RajaRenga/iacgenius-ce
 subdir: profiles/iacgenius/dashboard-plugins/iacg-board
-sha: 946266497a1131d70d5e7d8c51366225f60cfa2a
+sha: 89bd5723804943867ebbf1ef81b81420325b5516
 version: "0.1.0"
 title: IaCGenius Board — mission evidence dashboard tab
 description: >-
@@ -14,10 +14,10 @@ description: >-
 maintainer: RajaRenga
 tier: community
 category: desktop
-docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/946266497a1131d70d5e7d8c51366225f60cfa2a/profiles/iacgenius/dashboard-plugins/iacg-board#readme
-image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/946266497a1131d70d5e7d8c51366225f60cfa2a/docs/media/marketplace-banner.png
+docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/89bd5723804943867ebbf1ef81b81420325b5516/profiles/iacgenius/dashboard-plugins/iacg-board#readme
+image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/89bd5723804943867ebbf1ef81b81420325b5516/docs/media/marketplace-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/946266497a1131d70d5e7d8c51366225f60cfa2a/docs/media/screens/01-board.png
+  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/89bd5723804943867ebbf1ef81b81420325b5516/docs/media/screens/01-board.png
 requires_hermes: ">=0.23.1"
 platforms: [linux]
 known_issues:

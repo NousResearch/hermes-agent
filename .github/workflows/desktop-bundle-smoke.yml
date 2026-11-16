@@ -61,6 +61,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   validate:
     name: Require a supported native smoke target

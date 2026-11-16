@@ -83,6 +83,10 @@ env:
   # A stable run is on the default branch, so GITHUB_SHA is not the commit under test.
   HERMES_TESTED_COMMIT: ${{ inputs.commit || github.sha }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   # ---- arm 1: script installs (the shared OS-agnostic driver) --------------
   e2e:

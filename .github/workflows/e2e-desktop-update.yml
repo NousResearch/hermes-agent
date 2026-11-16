@@ -29,6 +29,10 @@ concurrency:
   # A stable run is on the default branch. It must not queue behind or cancel a push.
   cancel-in-progress: ${{ inputs.commit == '' }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   update:
     name: Desktop install/update E2E (Linux, ${{ matrix.cell }})
@@ -82,7 +86,7 @@ jobs:
           command: just js-install
 
       - name: Run the update suite under xvfb
-        working-directory: apps/desktop
+        working-directory: hermes-agent/apps/desktop
         run: |
           git --version
           # Resource trail in the log, so a runner that dies mid-run leaves its last state behind.

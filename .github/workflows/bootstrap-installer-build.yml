@@ -39,6 +39,10 @@ env:
   CARGO_INCREMENTAL: '0'
   SCCACHE_DISABLE: '1'
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   windows-x64:
     name: Hermes-Setup.exe (windows x64, signed)

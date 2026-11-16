@@ -9,6 +9,10 @@ on:
         type: string
         default: ''
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   check:
     name: JS & TS checks

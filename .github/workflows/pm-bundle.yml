@@ -33,16 +33,16 @@ on:
         default: ''
   pull_request:
     paths:
-      - 'pm/**'
-      - '!pm/**/*.md'
-      - 'scripts/bundles/**'
-      - 'scripts/ci/desktop_build_cache.py'
+      - 'hermes-agent/pm/**'
+      - '!hermes-agent/pm/**/*.md'
+      - 'hermes-agent/scripts/bundles/**'
+      - 'hermes-agent/scripts/ci/desktop_build_cache.py'
       - '.github/actions/desktop-build-cache/**'
-      - 'scripts/windows-build-deps.ps1'
-      - 'scripts/build/windows-deps.ps1'
+      - 'hermes-agent/scripts/windows-build-deps.ps1'
+      - 'hermes-agent/scripts/build/windows-deps.ps1'
       - '.github/actions/setup-windows-build-deps/**'
-      - 'uv.lock'
-      - 'pyproject.toml'
+      - 'hermes-agent/uv.lock'
+      - 'hermes-agent/pyproject.toml'
       - '.github/workflows/pm-bundle.yml'
 
 permissions:
@@ -53,6 +53,10 @@ permissions:
 concurrency:
   group: pm-bundle-${{ inputs.release == true && github.run_id || github.ref }}
   cancel-in-progress: ${{ inputs.release != true }}
+
+defaults:
+  run:
+    working-directory: hermes-agent
 
 jobs:
   bundle:

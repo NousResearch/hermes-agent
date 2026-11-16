@@ -4,17 +4,17 @@ on:
   push:
     branches: [main]
     paths:
-      - 'scripts/termux/**'
-      - 'pm/**'
-      - '!pm/**/*.md'
-      - 'tests/scripts/test_termux*'
+      - 'hermes-agent/scripts/termux/**'
+      - 'hermes-agent/pm/**'
+      - '!hermes-agent/pm/**/*.md'
+      - 'hermes-agent/tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   pull_request:
     paths:
-      - 'scripts/termux/**'
-      - 'pm/**'
-      - '!pm/**/*.md'
-      - 'tests/scripts/test_termux*'
+      - 'hermes-agent/scripts/termux/**'
+      - 'hermes-agent/pm/**'
+      - '!hermes-agent/pm/**/*.md'
+      - 'hermes-agent/tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   workflow_dispatch:
   workflow_call:
@@ -38,6 +38,10 @@ permissions:
 concurrency:
   group: termux-verify-${{ inputs.release == true && github.run_id || github.ref }}
   cancel-in-progress: ${{ inputs.release != true }}
+
+defaults:
+  run:
+    working-directory: hermes-agent
 
 jobs:
   contracts:

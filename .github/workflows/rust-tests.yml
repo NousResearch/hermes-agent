@@ -29,6 +29,10 @@ concurrency:
   group: rust-tests-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   bootstrap-installer:
     name: cargo test (bootstrap installer)
@@ -39,7 +43,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: apps/bootstrap-installer/src-tauri
+        working-directory: hermes-agent/apps/bootstrap-installer/src-tauri
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -48,7 +52,7 @@ jobs:
       # Tauri links against the system webkit2gtk on Linux, so the crate does
       # not compile without these even for `cargo test --lib`.
       - name: Install Tauri system dependencies
-        working-directory: .
+        working-directory: hermes-agent
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \

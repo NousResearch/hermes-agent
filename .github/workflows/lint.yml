@@ -37,6 +37,10 @@ concurrency:
   group: lint-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   lint:
     name: Python lints

@@ -46,6 +46,10 @@ concurrency:
   # A stable run is on the default branch. It must not queue behind or cancel a push.
   cancel-in-progress: ${{ inputs.commit == '' }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   install-update:
     name: Windows install.ps1 + hermes update E2E

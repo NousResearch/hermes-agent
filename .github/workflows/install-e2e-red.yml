@@ -36,6 +36,10 @@ concurrency:
   group: install-e2e-red-tracker
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   track:
     name: Update the install-e2e-red tracker

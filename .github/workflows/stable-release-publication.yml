@@ -25,6 +25,10 @@ permissions:
   contents: write
   actions: write
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   reconcile:
     if: >-

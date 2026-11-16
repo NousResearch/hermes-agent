@@ -8,12 +8,16 @@ on:
   push:
     branches: [main]
     paths:
-      - "scripts/build_skills_index.py"
+      - "hermes-agent/scripts/build_skills_index.py"
       - ".github/workflows/skills-index.yml"
 
 permissions:
   contents: read
   actions: write # to trigger deploy-site.yml on schedule
+
+defaults:
+  run:
+    working-directory: hermes-agent
 
 jobs:
   build-index:

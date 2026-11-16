@@ -17,8 +17,8 @@ name: Sandbox desktop image
 on:
   pull_request:
     paths:
-      - docker/sandbox-desktop.Dockerfile
-      - docker/sandbox-desktop-smoke.sh
+      - hermes-agent/docker/sandbox-desktop.Dockerfile
+      - hermes-agent/docker/sandbox-desktop-smoke.sh
       - .github/workflows/sandbox-image.yml
   # Not `release: published`: release automation creates releases with
   # GITHUB_TOKEN, which starts no workflows, so it has not fired since v0.21.7.
@@ -46,6 +46,10 @@ concurrency:
 
 env:
   IMAGE_NAME: nousresearch/hermes-sandbox
+
+defaults:
+  run:
+    working-directory: hermes-agent
 
 jobs:
   # PR code: secret-free build + smoke per arch.

@@ -38,6 +38,10 @@ concurrency:
   group: ci-review-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   comment:
     name: CI review comment (live)

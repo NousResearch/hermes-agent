@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   docs-site-checks:
     runs-on: blacksmith-4vcpu-ubuntu-2404

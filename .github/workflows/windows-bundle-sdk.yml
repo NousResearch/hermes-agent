@@ -5,14 +5,14 @@ name: Windows bundle SDK
 on:
   pull_request:
     paths:
-      - 'apps/desktop/scripts/windows-bundle-tools.mjs'
-      - 'apps/desktop/scripts/windows-bundle-tools.test.mjs'
-      - 'scripts/msix-shared.mjs'
-      - 'apps/desktop/scripts/msix-shared.test.mjs'
-      - 'apps/desktop/scripts/sign-msix.mjs'
-      - 'apps/desktop/scripts/sign-msix.test.mjs'
-      - 'apps/desktop/scripts/batch-sign-binaries.mjs'
-      - 'apps/desktop/scripts/batch-sign-binaries.test.mjs'
+      - 'hermes-agent/apps/desktop/scripts/windows-bundle-tools.mjs'
+      - 'hermes-agent/apps/desktop/scripts/windows-bundle-tools.test.mjs'
+      - 'hermes-agent/scripts/msix-shared.mjs'
+      - 'hermes-agent/apps/desktop/scripts/msix-shared.test.mjs'
+      - 'hermes-agent/apps/desktop/scripts/sign-msix.mjs'
+      - 'hermes-agent/apps/desktop/scripts/sign-msix.test.mjs'
+      - 'hermes-agent/apps/desktop/scripts/batch-sign-binaries.mjs'
+      - 'hermes-agent/apps/desktop/scripts/batch-sign-binaries.test.mjs'
       - '.github/workflows/windows-bundle-sdk.yml'
   workflow_dispatch:
 permissions:
@@ -20,6 +20,10 @@ permissions:
 concurrency:
   group: windows-bundle-sdk-${{ github.ref }}
   cancel-in-progress: true
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   windows-bundle-tools:
     name: Cold Windows SDK (${{ matrix.runner }})
@@ -43,5 +47,5 @@ jobs:
       - name: Install the locked bundle tooling without native postinstalls
         run: pnpm install --frozen-lockfile --filter "{./apps/desktop}..." --filter "{./tests-js}..." --ignore-scripts
       - name: Provision from an empty cache and execute the SDK
-        working-directory: apps/desktop
+        working-directory: hermes-agent/apps/desktop
         run: pnpm exec vitest run --project electron scripts/windows-bundle-tools.test.mjs scripts/msix-shared.test.mjs scripts/sign-msix.test.mjs scripts/batch-sign-binaries.test.mjs

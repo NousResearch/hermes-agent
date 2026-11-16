@@ -47,6 +47,10 @@ env:
   # A stable run is on the default branch, so GITHUB_SHA is not the candidate.
   CANDIDATE_COMMIT: ${{ inputs.commit || github.sha }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   # A `paths:` filter cannot gate this workflow: a push to main must run it
   # whatever changed, because the flake packages the product and nine of the

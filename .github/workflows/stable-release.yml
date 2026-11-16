@@ -30,6 +30,10 @@ concurrency:
   group: stable-release
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   admit:
     name: Admit the claim

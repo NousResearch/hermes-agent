@@ -39,6 +39,10 @@ concurrency:
   group: windows-venv-e2e-${{ inputs.release == true && github.run_id || github.ref }}
   cancel-in-progress: ${{ inputs.release != true }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   venv-holder-e2e:
     name: venv-holder live E2E (windows-latest)

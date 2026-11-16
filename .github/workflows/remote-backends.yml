@@ -33,6 +33,10 @@ env:
   # by digest so a tag move cannot change what the lane tests.
   HERMES_TEST_IMAGE_REF: debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   real-backends:
     name: SSH + Docker backends (real sshd, real daemon)

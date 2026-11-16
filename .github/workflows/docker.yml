@@ -66,6 +66,10 @@ env:
   # A stable run is on the default branch, so GITHUB_SHA is not the candidate.
   CANDIDATE_COMMIT: ${{ inputs.commit || github.sha }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   # Resolve the release phase, then (outside release phases) classify the PR's
   # changed files. Release modes run only via workflow_call from the parent

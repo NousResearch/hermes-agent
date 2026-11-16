@@ -20,6 +20,10 @@ permissions:
   contents: read
   issues: write
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   check-freshness:
     if: github.repository == 'NousResearch/hermes-agent'

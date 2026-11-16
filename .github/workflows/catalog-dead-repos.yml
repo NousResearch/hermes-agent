@@ -20,6 +20,10 @@ concurrency:
   group: catalog-dead-repos
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   delist:
     if: github.repository == 'NousResearch/hermes-agent'

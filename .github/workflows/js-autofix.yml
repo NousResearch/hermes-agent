@@ -38,13 +38,13 @@ on:
   push:
     branches: [main]
     paths:
-      - '**/*.js'
-      - '**/*.cjs'
-      - '**/*.mjs'
-      - '**/*.ts'
-      - '**/*.tsx'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
+      - 'hermes-agent/**/*.js'
+      - 'hermes-agent/**/*.cjs'
+      - 'hermes-agent/**/*.mjs'
+      - 'hermes-agent/**/*.ts'
+      - 'hermes-agent/**/*.tsx'
+      - 'hermes-agent/package.json'
+      - 'hermes-agent/pnpm-lock.yaml'
   workflow_dispatch:
 
 permissions:
@@ -53,6 +53,10 @@ permissions:
 concurrency:
   group: ts-autofix-${{ github.ref }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: hermes-agent
 
 jobs:
   generate-patch:

@@ -35,6 +35,10 @@ concurrency:
   group: tests-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   test:
     # Three 32-core slices instead of one box: on one runner the suite is ~10 min of

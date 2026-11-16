@@ -24,6 +24,10 @@ concurrency:
   group: canary-release
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   tag:
     name: Tag, draft, and start the canary build

@@ -30,6 +30,10 @@ concurrency:
   group: live-providers-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   live:
     name: Live provider canaries

@@ -62,6 +62,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   guards:
     name: Repository guards

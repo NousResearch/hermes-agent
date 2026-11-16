@@ -82,6 +82,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   e2e:
     name: install & update

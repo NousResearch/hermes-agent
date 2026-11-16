@@ -34,6 +34,10 @@ permissions:
   contents: read
   security-events: write
 
+defaults:
+  run:
+    working-directory: hermes-agent
+
 jobs:
   scan:
     name: Scan lockfiles

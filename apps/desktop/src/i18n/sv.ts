@@ -2360,8 +2360,8 @@ export const svOverrides: TranslationOverrides = {
       downloadPausedLabel: 'Pausad',
       downloadPauseAction: 'Pausa',
       downloadResumeAction: 'Återuppta',
-      downloadPauseFailed: 'Kunde inte pausa hämtningen',
-      downloadResumeFailed: 'Kunde inte återuppta hämtningen',
+      downloadPauseFailed: model => `Kunde inte pausa hämtningen av ${model}`,
+      downloadResumeFailed: model => `Kunde inte återuppta hämtningen av ${model}`,
       downloadDoneToast: model => `${model} är klar.`,
       installDoneToast: 'Lokal körmiljö är installerad och klar.',
       quickstartTitle: 'Kör en modell på denna dator',
@@ -3016,15 +3016,15 @@ export const svOverrides: TranslationOverrides = {
       },
       folderAccess: {
         title: 'Mappåtkomst',
-        hint: 'Tillåt ett skrivbordsinsticksprogram att använda en skyddad mapp först när du väljer den här.',
-        pickerTitle: 'Välj en mapp',
+        hint: name => `${name} får använda en skyddad mapp först när du väljer den här.`,
+        pickerTitle: name => `Välj en mapp för ${name}`,
         pickerButton: 'Välj mapp',
-        loadFailed: 'Kunde inte läsa in mappåtkomst',
+        loadFailed: name => `Kunde inte läsa in mappåtkomsten för ${name}`,
         revoke: 'Återkalla åtkomst',
         revokeLabel: path => `Återkalla åtkomst till ${path}`,
-        revokeFailed: 'Kunde inte återkalla mappåtkomsten',
-        revoked: 'Mappåtkomsten återkallades.',
-        refusedProtected: 'Den här skyddade platsen kan inte väljas.'
+        revokeFailed: name => `Kunde inte återkalla mappåtkomsten för ${name}`,
+        revoked: (name, path) => `Mappåtkomsten för ${name} till ${path} återkallades.`,
+        refusedProtected: name => `Den skyddade platsen kan inte väljas för ${name}.`
       },
       previewScriptPromptTitle: plugin => `Tillåta att ${plugin} kör skript på den här sidan?`,
       previewScriptPromptBody: (plugin, origin) =>
@@ -6045,7 +6045,7 @@ export const svOverrides: TranslationOverrides = {
     notExpressible: 'den här ordningen är sammankopplad (vindkvarn) — kan ännu inte uttryckas som nästlade delningar',
     zoneCount: count => `${count} zoner`,
     tabCount: count => `${count} flikar`,
-    zoneMenuLabel: 'Zonmeny',
+    zoneMenuLabel: title => `Zonalternativ för ${title}`,
     tabActions: title => `Åtgärder för ${title}`
   },
   tips: {

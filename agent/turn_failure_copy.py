@@ -262,6 +262,11 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
         "the proxy/WAF rules, or switch providers with /model."
     ),
+    FailoverReason.region_blocked.value: (
+        "{label} doesn't serve requests from the region this one came from, so '{model}' can't "
+        "be reached from here; your key is fine. Switch to a provider that serves your region "
+        "with /model (or route through one that does)."
+    ),
     FailoverReason.guardrail_blocked.value: (
         "{label}'s prompt-injection guardrail rejected this request before it reached any model, so "
         "the key is fine — a scanner judged the request payload (tool output is scanned too, not "
@@ -306,6 +311,7 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.auth.value: "the AI model service rejected the sign-in",
     FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
     FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
+    FailoverReason.region_blocked.value: "the AI model service does not serve requests from this region",
     FailoverReason.guardrail_blocked.value: "the AI model service's prompt-injection guardrail rejected the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",

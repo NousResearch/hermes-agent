@@ -627,6 +627,21 @@ export const svOverrides: TranslationOverrides = {
         model: 'Modell',
         connectors: 'Anslutningar',
         included: 'Ingår'
+      },
+      autoReload: {
+        threshold: 'Tröskelvärde',
+        thresholdAria: 'Tröskelvärde för automatisk påfyllning',
+        reloadTo: 'Fyll på till',
+        reloadToAria: 'Belopp för automatisk påfyllning',
+        turnOffConfirm: 'Stänga av automatisk påfyllning?',
+        turnOff: 'Stäng av',
+        disable: 'Inaktivera',
+        updated: 'Automatisk påfyllning uppdaterad.',
+        turnedOff: 'Automatisk påfyllning avstängd.',
+        manage: 'Hantera',
+        save: 'Spara',
+        saving: 'Sparar…',
+        cancel: 'Avbryt'
       }
     },
     hudModifier: {

@@ -128,10 +128,13 @@ def _build_fork(parent: Any, capture: Optional[SideQuestionCapture] = None) -> A
 
 
 def _send(fork: Any, history: list[dict[str, Any]], prompt: str, audit: _Audit, *, turn_id: str,
-          aux_task: str = PLUGIN_SIDE_QUESTION_TASK, max_output_tokens: Optional[int] = None) -> Any:
+          aux_task: str = PLUGIN_SIDE_QUESTION_TASK, max_output_tokens: Optional[int] = None,
+          unmarked_tail: int = 0) -> Any:
     """Assemble, build and perform ONE request on the fork (``history`` + ``prompt`` as the last
     user message); the normalized reply, or None on refusal / a cancelled call.
-    ``max_output_tokens`` caps this request only (not part of any provider's cache key)."""
+    ``max_output_tokens`` caps this request only (not part of any provider's cache key).
+    ``unmarked_tail`` > 0 keeps the cache breakpoints where the request without its last
+    ``unmarked_tail`` messages had them, so those messages are read uncached and never written."""
     from agent import relay_llm
     from agent.auxiliary_hooks import finish_aux_call_hooks, start_aux_call_hooks
     from agent.side_question import trim_snapshot_for_fork
@@ -155,6 +158,7 @@ def _send(fork: Any, history: list[dict[str, Any]], prompt: str, audit: _Audit, 
     fork._current_turn_id, fork._current_task_id, fork._current_api_request_id = turn_id, task_id, api_request_id
     fork._disable_streaming = True
     fork._ephemeral_max_output_tokens = max_output_tokens
+    fork._cache_unmarked_tail = unmarked_tail
 
     messages = trim_snapshot_for_fork(history) + [{"role": "user", "content": prompt}]
     assembled = assemble_api_request(
@@ -336,7 +340,7 @@ def ask_on_live_prefix(
         spawn_context_thread(lambda: _interrupt_on_cancel(fork, cancel_check, done), name="warm-prefix-cancel").start()
     try:
         reply = _send(fork, history, prompt, audit, turn_id=str(getattr(agent, "_current_turn_id", None) or task),
-                      aux_task=task, max_output_tokens=max_output_tokens)
+                      aux_task=task, max_output_tokens=max_output_tokens, unmarked_tail=2)
         audit.outcome = "ok" if reply is not None else audit.outcome
     finally:
         done.set()

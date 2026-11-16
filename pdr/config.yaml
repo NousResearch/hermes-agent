@@ -19,14 +19,50 @@ app:
   host: 127.0.0.1
   #: 后端端口｜FastAPI 服务端口｜范围:1-65535｜生效:重启
   port: 8600
-  #: 前端端口｜Vue 开发服务器（或静态服务）端口｜范围:1-65535｜生效:重启
-  web_port: 5173
   #: 数据目录｜上传原件、派生文件、各租户 hermes profile 的根目录；相对路径以本文件所在目录为基准｜范围:路径｜生效:重启
   data_dir: ./.pdr/data
   #: 默认语言｜界面语言，当前仅提供中文｜范围:zh-CN｜生效:热加载
   locale: zh-CN
   #: 时区｜日志、分区日期 travel_date 与看板统计使用的时区｜范围:IANA 时区名｜生效:重启
   timezone: Asia/Shanghai
+
+# 两套独立前端：管理端与用户端是两个工程、两个端口（生产为两个域名），互不链接。
+# 令牌带受众 aud=admin / aud=portal，后端 /api/admin/* 与 /api/portal/* 分别校验，交叉使用一律 401。
+admin_web:
+  #: 管理端端口｜管理端前端（按登录者角色权限显示菜单与功能）的端口｜范围:1-65535｜生效:重启
+  port: 5173
+  #: 管理端访问地址｜生产环境的管理端域名，用于跨域白名单与令牌受众校验｜范围:URL｜生效:重启
+  public_url: http://127.0.0.1:5173
+  #: 管理端页面标题｜浏览器标签与登录页显示的名称｜范围:字符串｜生效:热加载
+  title: PDR 管理端
+
+portal_web:
+  #: 用户端端口｜用户端前端（只有问答界面）的端口｜范围:1-65535｜生效:重启
+  port: 5174
+  #: 用户端访问地址｜生产环境的用户端域名，用于跨域白名单与令牌受众校验｜范围:URL｜生效:重启
+  public_url: http://127.0.0.1:5174
+  #: 用户端页面标题｜为空时显示“租户名称 · 智能问答”｜范围:字符串｜生效:热加载
+  title: ""
+  #: 推荐问题数｜问答首页展示的推荐问题个数（由租户在管理端维护）｜范围:0-8｜生效:热加载
+  suggested_question_qty: 4
+  #: 允许临时附件｜用户端提问时可上传仅对本次对话有效的附件（不进入内容流水线）｜范围:true/false｜生效:热加载
+  allow_attachment: true
+  #: 单条问题字数上限｜用户端输入框的最大字数｜范围:50-4000｜生效:热加载
+  max_question_chars: 500
+
+install:
+  #: 镜像选择策略｜安装依赖时选择下载源：fastest-并发测速选最快 first-按顺序选第一个可用 fixed-固定使用指定源｜范围:fastest|first|fixed｜生效:重启
+  strategy: fastest
+  #: 测速超时｜每个候选源的测速超时秒数｜范围:1-30｜生效:重启
+  probe_timeout_seconds: 3
+  #: Python 包源｜strategy=fixed 时使用；其余情况作为候选首位｜范围:URL｜生效:重启
+  pip_index: ""
+  #: Python 包候选源｜参与测速的 PyPI 镜像｜范围:URL 列表｜生效:重启
+  pip_candidates: [https://pypi.org/simple, https://pypi.tuna.tsinghua.edu.cn/simple, https://mirrors.aliyun.com/pypi/simple, https://mirrors.cloud.tencent.com/pypi/simple]
+  #: 前端包源｜strategy=fixed 时使用｜范围:URL｜生效:重启
+  npm_registry: ""
+  #: 前端包候选源｜参与测速的 npm 镜像｜范围:URL 列表｜生效:重启
+  npm_candidates: [https://registry.npmjs.org, https://registry.npmmirror.com]
 
 database:
   #: 主库类型｜业务与数仓主库；mysql 仅用于兼容部署（无行级安全与向量检索）｜范围:postgres|mysql｜生效:重启

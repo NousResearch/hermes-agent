@@ -1,0 +1,46 @@
+# PDR 基础服务：由根目录 start_run.py 调用，端口与密码来自 pdr/config.yaml 与 pdr/.env
+name: pdr
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: pdr
+      POSTGRES_PASSWORD: ${PDR_PG_SUPER_PASSWORD}
+      TZ: Asia/Shanghai
+    ports: ["${PDR_PG_PORT:-5432}:5432"]
+    volumes: [pdr_pg:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pdr"]
+      interval: 3s
+      retries: 40
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${PDR_REDIS_PASSWORD}"]
+    ports: ["${PDR_REDIS_PORT:-6379}:6379"]
+    volumes: [pdr_redis:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${PDR_REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 3s
+      retries: 40
+    environment:
+      PDR_REDIS_PASSWORD: ${PDR_REDIS_PASSWORD}
+
+  mysql:
+    image: mysql:8.4
+    profiles: [mysql]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${PDR_MYSQL_ROOT_PASSWORD}
+      TZ: Asia/Shanghai
+    ports: ["${PDR_MYSQL_PORT:-3306}:3306"]
+    volumes: [pdr_mysql:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 3s
+      retries: 60
+
+volumes:
+  pdr_pg:
+  pdr_redis:
+  pdr_mysql:

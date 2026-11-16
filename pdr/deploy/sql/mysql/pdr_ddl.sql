@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS src.src_cus_user_f (
   `password_hash` varchar(256) NOT NULL COMMENT '密码哈希（argon2id）',
   `email_addr` varchar(128) COMMENT '电子邮箱地址',
   `mobile_no` varchar(32) COMMENT '手机号码',
-  `user_type` smallint NOT NULL COMMENT '用户类型：0-平台超级管理员 1-租户管理员 2-普通用户 3-API 账号',
+  `user_type` smallint NOT NULL COMMENT '用户类型：0-平台超级管理员 1-租户管理员 2-管理端普通用户 3-API 账号 4-用户端问答用户（只能登录用户端，0~2 只能登录管理端）',
   `user_status` smallint NOT NULL COMMENT '用户状态：0-正常 1-锁定 2-停用',
   `last_login_time` datetime(3) COMMENT '最近登录时间',
   `record_status` smallint NOT NULL DEFAULT 0 COMMENT '记录状态：0-正常 1-已删除（逻辑删除）',
@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS src.src_cus_permission_f (
   `tenant_code` varchar(32) NOT NULL COMMENT '租户编码（SaaS 租户隔离）',
   `permission_code` varchar(128) NOT NULL COMMENT '权限点编码，形如 content:review:submit',
   `permission_name` varchar(128) NOT NULL COMMENT '权限点名称',
+  `client_type` varchar(16) NOT NULL COMMENT '所属端：admin-管理端 portal-用户端（两端权限点互不相通）',
   `permission_type` smallint NOT NULL COMMENT '权限点类型：1-菜单 2-按钮 3-接口',
   `parent_permission_code` varchar(128) NOT NULL DEFAULT '' COMMENT '上级权限点编码',
   `api_method_name` varchar(16) COMMENT '接口 HTTP 方法（类型为接口时）：GET/POST/PUT/PATCH/DELETE',
@@ -202,6 +203,7 @@ CREATE TABLE IF NOT EXISTS src.src_cus_operate_log_di (
   `tenant_code` varchar(32) NOT NULL COMMENT '租户编码（SaaS 租户隔离）',
   `region_code` varchar(32) NOT NULL DEFAULT '' COMMENT '区域编码（区域权限隔离单元，关联 dim.dim_cus_region_f）',
   `user_code` varchar(64) NOT NULL COMMENT '操作人用户编码',
+  `client_type` varchar(16) NOT NULL COMMENT '请求来源端：admin-管理端 portal-用户端 api-API 令牌',
   `operate_type` varchar(64) NOT NULL COMMENT '操作类型，开放取值，与权限点编码一致，如 config:update / content:review:submit / role:grant',
   `resource_type` varchar(64) COMMENT '操作对象资源类型：content_asset-内容资产 knowledge-知识库 config-配置 user-用户 role-角色 tenant-租户 business_extract-业务回填数据',
   `resource_no` varchar(128) COMMENT '操作对象编号',
@@ -563,6 +565,48 @@ CREATE TABLE IF NOT EXISTS src.src_opr_content_application_f (
   UNIQUE KEY uk_src_opr_content_application_f_0 (tenant_code, asset_no, apply_type, target_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='内容应用记录表（入库内容被投放到哪些应用）';
 
+CREATE TABLE IF NOT EXISTS src.src_opr_portal_suggest_question_f (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '自增主键',
+  `tenant_code` varchar(32) NOT NULL COMMENT '租户编码（SaaS 租户隔离）',
+  `region_code` varchar(32) NOT NULL DEFAULT '' COMMENT '区域编码（区域权限隔离单元，关联 dim.dim_cus_region_f）',
+  `question_text` varchar(500) NOT NULL COMMENT '推荐问题文本',
+  `category_name` varchar(64) COMMENT '问题下方显示的资料类别标签，如 产品资料 / 服务规范',
+  `kb_code` varchar(64) COMMENT '点击后限定检索的知识库编码，为空表示全部可用资料',
+  `sort_qty` int NOT NULL DEFAULT 0 COMMENT '排序号，越小越靠前',
+  `show_status` smallint NOT NULL DEFAULT 0 COMMENT '展示状态：0-展示 1-隐藏',
+  `record_status` smallint NOT NULL DEFAULT 0 COMMENT '记录状态：0-正常 1-已删除（逻辑删除）',
+  `create_user_code` varchar(64) NOT NULL DEFAULT 'system' COMMENT '创建人用户编码，系统任务为 system',
+  `create_time` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+  `update_user_code` varchar(64) NOT NULL DEFAULT 'system' COMMENT '最后更新人用户编码',
+  `update_time` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '最后更新时间',
+  PRIMARY KEY (id),
+  KEY idx_src_opr_portal_suggest_question_f_0 (tenant_code, show_status, sort_qty)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户端推荐问题（管理端维护，展示在问答首页）';
+
+CREATE TABLE IF NOT EXISTS src.src_opr_portal_feedback_di (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '自增主键',
+  `tenant_code` varchar(32) NOT NULL COMMENT '租户编码（SaaS 租户隔离）',
+  `region_code` varchar(32) NOT NULL DEFAULT '' COMMENT '区域编码（区域权限隔离单元，关联 dim.dim_cus_region_f）',
+  `session_code` varchar(128) NOT NULL COMMENT 'hermes 会话 ID',
+  `message_code` varchar(128) NOT NULL COMMENT '被评价的回答消息 ID',
+  `user_code` varchar(64) NOT NULL COMMENT '反馈用户编码（用户端问答用户）',
+  `feedback_type` smallint NOT NULL COMMENT '反馈类型：1-有帮助 2-没帮助',
+  `feedback_text` varchar(1000) COMMENT '补充说明',
+  `question_text` longtext COMMENT '对应的问题原文（便于审计检索）',
+  `cite_asset_no_list` varchar(1024) COMMENT '回答引用的资产编号，逗号分隔',
+  `handle_status` smallint NOT NULL DEFAULT 0 COMMENT '处理状态：0-待处理 1-已处理 2-已忽略',
+  `feedback_time` datetime(3) NOT NULL COMMENT '反馈时间',
+  `travel_date` char(8) NOT NULL COMMENT '分区日期，格式YYYYMMDD',
+  `record_status` smallint NOT NULL DEFAULT 0 COMMENT '记录状态：0-正常 1-已删除（逻辑删除）',
+  `create_user_code` varchar(64) NOT NULL DEFAULT 'system' COMMENT '创建人用户编码，系统任务为 system',
+  `create_time` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+  `update_user_code` varchar(64) NOT NULL DEFAULT 'system' COMMENT '最后更新人用户编码',
+  `update_time` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '最后更新时间',
+  PRIMARY KEY (id, travel_date),
+  KEY idx_src_opr_portal_feedback_di_0 (tenant_code, handle_status, feedback_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户端问答反馈（有帮助/没帮助，供管理端问答会话审计，天增量）'
+PARTITION BY RANGE COLUMNS(travel_date) (PARTITION p_max VALUES LESS THAN (MAXVALUE));
+
 -- ======================================================================
 -- ods
 -- ======================================================================
@@ -826,7 +870,7 @@ CREATE TABLE IF NOT EXISTS dwd.dwd_cus_user_zip (
   `tenant_code` varchar(32) NOT NULL COMMENT '租户编码（SaaS 租户隔离）',
   `region_code` varchar(32) NOT NULL DEFAULT '' COMMENT '区域编码（区域权限隔离单元，关联 dim.dim_cus_region_f）',
   `user_code` varchar(64) NOT NULL COMMENT '用户编码',
-  `user_type` smallint NOT NULL COMMENT '用户类型：0-平台超级管理员 1-租户管理员 2-普通用户 3-API 账号',
+  `user_type` smallint NOT NULL COMMENT '用户类型：0-平台超级管理员 1-租户管理员 2-管理端普通用户 3-API 账号 4-用户端问答用户（只能登录用户端，0~2 只能登录管理端）',
   `user_status` smallint NOT NULL COMMENT '用户状态：0-正常 1-锁定 2-停用',
   `role_code_list` varchar(1024) COMMENT '当时拥有的角色编码，逗号分隔',
   `start_date` date NOT NULL COMMENT '拉链开始日期（含）',

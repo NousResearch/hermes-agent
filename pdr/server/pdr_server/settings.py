@@ -1,4 +1,4 @@
-"""PDR 配置加载：唯一入口是仓库根目录的 config.yaml（可用 PDR_CONFIG 指向其它文件）。"""
+"""PDR 配置加载：唯一入口是 pdr/config.yaml（可用 PDR_CONFIG 指向其它文件）。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+PDR_ROOT = Path(__file__).resolve().parents[2]  # pdr/
 
 
 class Cfg(dict):
@@ -24,7 +24,7 @@ class Cfg(dict):
 
 
 def config_path() -> Path:
-    return Path(os.environ.get("PDR_CONFIG") or REPO_ROOT / "config.yaml").resolve()
+    return Path(os.environ.get("PDR_CONFIG") or PDR_ROOT / "config.yaml").resolve()
 
 
 def resolve_path(raw: str) -> Path:

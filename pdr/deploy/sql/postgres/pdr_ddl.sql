@@ -84,7 +84,7 @@ COMMENT ON COLUMN src.src_cus_user_f.user_name IS '用户姓名';
 COMMENT ON COLUMN src.src_cus_user_f.password_hash IS '密码哈希（argon2id）';
 COMMENT ON COLUMN src.src_cus_user_f.email_addr IS '电子邮箱地址';
 COMMENT ON COLUMN src.src_cus_user_f.mobile_no IS '手机号码';
-COMMENT ON COLUMN src.src_cus_user_f.user_type IS '用户类型：0-平台超级管理员 1-租户管理员 2-普通用户 3-API 账号';
+COMMENT ON COLUMN src.src_cus_user_f.user_type IS '用户类型：0-平台超级管理员 1-租户管理员 2-管理端普通用户 3-API 账号 4-用户端问答用户（只能登录用户端，0~2 只能登录管理端）';
 COMMENT ON COLUMN src.src_cus_user_f.user_status IS '用户状态：0-正常 1-锁定 2-停用';
 COMMENT ON COLUMN src.src_cus_user_f.last_login_time IS '最近登录时间';
 COMMENT ON COLUMN src.src_cus_user_f.record_status IS '记录状态：0-正常 1-已删除（逻辑删除）';
@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS src.src_cus_permission_f (
   tenant_code varchar(32) NOT NULL,
   permission_code varchar(128) NOT NULL,
   permission_name varchar(128) NOT NULL,
+  client_type varchar(16) NOT NULL,
   permission_type smallint NOT NULL,
   parent_permission_code varchar(128) NOT NULL DEFAULT '',
   api_method_name varchar(16),
@@ -156,6 +157,7 @@ COMMENT ON COLUMN src.src_cus_permission_f.id IS '自增主键';
 COMMENT ON COLUMN src.src_cus_permission_f.tenant_code IS '租户编码（SaaS 租户隔离）';
 COMMENT ON COLUMN src.src_cus_permission_f.permission_code IS '权限点编码，形如 content:review:submit';
 COMMENT ON COLUMN src.src_cus_permission_f.permission_name IS '权限点名称';
+COMMENT ON COLUMN src.src_cus_permission_f.client_type IS '所属端：admin-管理端 portal-用户端（两端权限点互不相通）';
 COMMENT ON COLUMN src.src_cus_permission_f.permission_type IS '权限点类型：1-菜单 2-按钮 3-接口';
 COMMENT ON COLUMN src.src_cus_permission_f.parent_permission_code IS '上级权限点编码';
 COMMENT ON COLUMN src.src_cus_permission_f.api_method_name IS '接口 HTTP 方法（类型为接口时）：GET/POST/PUT/PATCH/DELETE';
@@ -412,6 +414,7 @@ CREATE TABLE IF NOT EXISTS src.src_cus_operate_log_di (
   tenant_code varchar(32) NOT NULL,
   region_code varchar(32) NOT NULL DEFAULT '',
   user_code varchar(64) NOT NULL,
+  client_type varchar(16) NOT NULL,
   operate_type varchar(64) NOT NULL,
   resource_type varchar(64),
   resource_no varchar(128),
@@ -434,6 +437,7 @@ COMMENT ON COLUMN src.src_cus_operate_log_di.id IS '自增主键';
 COMMENT ON COLUMN src.src_cus_operate_log_di.tenant_code IS '租户编码（SaaS 租户隔离）';
 COMMENT ON COLUMN src.src_cus_operate_log_di.region_code IS '区域编码（区域权限隔离单元，关联 dim.dim_cus_region_f）';
 COMMENT ON COLUMN src.src_cus_operate_log_di.user_code IS '操作人用户编码';
+COMMENT ON COLUMN src.src_cus_operate_log_di.client_type IS '请求来源端：admin-管理端 portal-用户端 api-API 令牌';
 COMMENT ON COLUMN src.src_cus_operate_log_di.operate_type IS '操作类型，开放取值，与权限点编码一致，如 config:update / content:review:submit / role:grant';
 COMMENT ON COLUMN src.src_cus_operate_log_di.resource_type IS '操作对象资源类型：content_asset-内容资产 knowledge-知识库 config-配置 user-用户 role-角色 tenant-租户 business_extract-业务回填数据';
 COMMENT ON COLUMN src.src_cus_operate_log_di.resource_no IS '操作对象编号';
@@ -1162,6 +1166,93 @@ CREATE POLICY p_tenant_read ON src.src_opr_content_application_f FOR SELECT USIN
 DROP POLICY IF EXISTS p_tenant_write ON src.src_opr_content_application_f;
 CREATE POLICY p_tenant_write ON src.src_opr_content_application_f FOR ALL USING (tenant_code = current_setting('pdr.tenant_code', true) AND (current_setting('pdr.region_all', true) = '1' OR region_code = '' OR region_code = ANY (string_to_array(current_setting('pdr.region_codes', true), ',')))) WITH CHECK (tenant_code = current_setting('pdr.tenant_code', true) AND (current_setting('pdr.region_all', true) = '1' OR region_code = '' OR region_code = ANY (string_to_array(current_setting('pdr.region_codes', true), ','))));
 
+CREATE TABLE IF NOT EXISTS src.src_opr_portal_suggest_question_f (
+  id bigserial NOT NULL,
+  tenant_code varchar(32) NOT NULL,
+  region_code varchar(32) NOT NULL DEFAULT '',
+  question_text varchar(500) NOT NULL,
+  category_name varchar(64),
+  kb_code varchar(64),
+  sort_qty int NOT NULL DEFAULT 0,
+  show_status smallint NOT NULL DEFAULT 0,
+  record_status smallint NOT NULL DEFAULT 0,
+  create_user_code varchar(64) NOT NULL DEFAULT 'system',
+  create_time timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_user_code varchar(64) NOT NULL DEFAULT 'system',
+  update_time timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id)
+);
+COMMENT ON TABLE src.src_opr_portal_suggest_question_f IS '用户端推荐问题（管理端维护，展示在问答首页）';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.id IS '自增主键';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.tenant_code IS '租户编码（SaaS 租户隔离）';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.region_code IS '区域编码（区域权限隔离单元，关联 dim.dim_cus_region_f）';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.question_text IS '推荐问题文本';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.category_name IS '问题下方显示的资料类别标签，如 产品资料 / 服务规范';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.kb_code IS '点击后限定检索的知识库编码，为空表示全部可用资料';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.sort_qty IS '排序号，越小越靠前';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.show_status IS '展示状态：0-展示 1-隐藏';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.record_status IS '记录状态：0-正常 1-已删除（逻辑删除）';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.create_user_code IS '创建人用户编码，系统任务为 system';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.create_time IS '创建时间';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.update_user_code IS '最后更新人用户编码';
+COMMENT ON COLUMN src.src_opr_portal_suggest_question_f.update_time IS '最后更新时间';
+CREATE INDEX IF NOT EXISTS idx_src_opr_portal_suggest_question_f_0 ON src.src_opr_portal_suggest_question_f (tenant_code, show_status, sort_qty);
+ALTER TABLE src.src_opr_portal_suggest_question_f ENABLE ROW LEVEL SECURITY;
+ALTER TABLE src.src_opr_portal_suggest_question_f FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS p_tenant_read ON src.src_opr_portal_suggest_question_f;
+CREATE POLICY p_tenant_read ON src.src_opr_portal_suggest_question_f FOR SELECT USING ((tenant_code = current_setting('pdr.tenant_code', true) AND (current_setting('pdr.region_all', true) = '1' OR region_code = '' OR region_code = ANY (string_to_array(current_setting('pdr.region_codes', true), ',')))) OR tenant_code = 'platform');
+DROP POLICY IF EXISTS p_tenant_write ON src.src_opr_portal_suggest_question_f;
+CREATE POLICY p_tenant_write ON src.src_opr_portal_suggest_question_f FOR ALL USING (tenant_code = current_setting('pdr.tenant_code', true) AND (current_setting('pdr.region_all', true) = '1' OR region_code = '' OR region_code = ANY (string_to_array(current_setting('pdr.region_codes', true), ',')))) WITH CHECK (tenant_code = current_setting('pdr.tenant_code', true) AND (current_setting('pdr.region_all', true) = '1' OR region_code = '' OR region_code = ANY (string_to_array(current_setting('pdr.region_codes', true), ','))));
+
+CREATE TABLE IF NOT EXISTS src.src_opr_portal_feedback_di (
+  id bigserial NOT NULL,
+  tenant_code varchar(32) NOT NULL,
+  region_code varchar(32) NOT NULL DEFAULT '',
+  session_code varchar(128) NOT NULL,
+  message_code varchar(128) NOT NULL,
+  user_code varchar(64) NOT NULL,
+  feedback_type smallint NOT NULL,
+  feedback_text varchar(1000),
+  question_text text,
+  cite_asset_no_list varchar(1024),
+  handle_status smallint NOT NULL DEFAULT 0,
+  feedback_time timestamp(3) NOT NULL,
+  travel_date char(8) NOT NULL,
+  record_status smallint NOT NULL DEFAULT 0,
+  create_user_code varchar(64) NOT NULL DEFAULT 'system',
+  create_time timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_user_code varchar(64) NOT NULL DEFAULT 'system',
+  update_time timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id, travel_date)
+) PARTITION BY RANGE (travel_date);
+CREATE TABLE IF NOT EXISTS src.src_opr_portal_feedback_di_pdefault PARTITION OF src.src_opr_portal_feedback_di DEFAULT;
+COMMENT ON TABLE src.src_opr_portal_feedback_di IS '用户端问答反馈（有帮助/没帮助，供管理端问答会话审计，天增量）';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.id IS '自增主键';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.tenant_code IS '租户编码（SaaS 租户隔离）';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.region_code IS '区域编码（区域权限隔离单元，关联 dim.dim_cus_region_f）';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.session_code IS 'hermes 会话 ID';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.message_code IS '被评价的回答消息 ID';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.user_code IS '反馈用户编码（用户端问答用户）';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.feedback_type IS '反馈类型：1-有帮助 2-没帮助';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.feedback_text IS '补充说明';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.question_text IS '对应的问题原文（便于审计检索）';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.cite_asset_no_list IS '回答引用的资产编号，逗号分隔';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.handle_status IS '处理状态：0-待处理 1-已处理 2-已忽略';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.feedback_time IS '反馈时间';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.travel_date IS '分区日期，格式YYYYMMDD';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.record_status IS '记录状态：0-正常 1-已删除（逻辑删除）';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.create_user_code IS '创建人用户编码，系统任务为 system';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.create_time IS '创建时间';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.update_user_code IS '最后更新人用户编码';
+COMMENT ON COLUMN src.src_opr_portal_feedback_di.update_time IS '最后更新时间';
+CREATE INDEX IF NOT EXISTS idx_src_opr_portal_feedback_di_0 ON src.src_opr_portal_feedback_di (tenant_code, handle_status, feedback_time);
+ALTER TABLE src.src_opr_portal_feedback_di ENABLE ROW LEVEL SECURITY;
+ALTER TABLE src.src_opr_portal_feedback_di FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS p_tenant_read ON src.src_opr_portal_feedback_di;
+CREATE POLICY p_tenant_read ON src.src_opr_portal_feedback_di FOR SELECT USING ((tenant_code = current_setting('pdr.tenant_code', true) AND (current_setting('pdr.region_all', true) = '1' OR region_code = '' OR region_code = ANY (string_to_array(current_setting('pdr.region_codes', true), ',')))) OR tenant_code = 'platform');
+DROP POLICY IF EXISTS p_tenant_write ON src.src_opr_portal_feedback_di;
+CREATE POLICY p_tenant_write ON src.src_opr_portal_feedback_di FOR ALL USING (tenant_code = current_setting('pdr.tenant_code', true) AND (current_setting('pdr.region_all', true) = '1' OR region_code = '' OR region_code = ANY (string_to_array(current_setting('pdr.region_codes', true), ',')))) WITH CHECK (tenant_code = current_setting('pdr.tenant_code', true) AND (current_setting('pdr.region_all', true) = '1' OR region_code = '' OR region_code = ANY (string_to_array(current_setting('pdr.region_codes', true), ','))));
+
 -- ======================================================================
 -- ods
 -- ======================================================================
@@ -1702,7 +1793,7 @@ COMMENT ON COLUMN dwd.dwd_cus_user_zip.id IS '自增主键';
 COMMENT ON COLUMN dwd.dwd_cus_user_zip.tenant_code IS '租户编码（SaaS 租户隔离）';
 COMMENT ON COLUMN dwd.dwd_cus_user_zip.region_code IS '区域编码（区域权限隔离单元，关联 dim.dim_cus_region_f）';
 COMMENT ON COLUMN dwd.dwd_cus_user_zip.user_code IS '用户编码';
-COMMENT ON COLUMN dwd.dwd_cus_user_zip.user_type IS '用户类型：0-平台超级管理员 1-租户管理员 2-普通用户 3-API 账号';
+COMMENT ON COLUMN dwd.dwd_cus_user_zip.user_type IS '用户类型：0-平台超级管理员 1-租户管理员 2-管理端普通用户 3-API 账号 4-用户端问答用户（只能登录用户端，0~2 只能登录管理端）';
 COMMENT ON COLUMN dwd.dwd_cus_user_zip.user_status IS '用户状态：0-正常 1-锁定 2-停用';
 COMMENT ON COLUMN dwd.dwd_cus_user_zip.role_code_list IS '当时拥有的角色编码，逗号分隔';
 COMMENT ON COLUMN dwd.dwd_cus_user_zip.start_date IS '拉链开始日期（含）';

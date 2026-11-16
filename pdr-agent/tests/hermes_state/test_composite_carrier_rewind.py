@@ -13,7 +13,7 @@ from agent.context_compressor import (
     _SUMMARY_END_MARKER,
 )
 from hermes_state import SessionCompressionInProgressError, SessionDB
-from hermes_state.errors import CompressionSessionClosedError, SessionTurnLeaseLostError
+from hermes_agent.state.errors import CompressionSessionClosedError, SessionTurnLeaseLostError
 
 
 def _carrier(ask: str = "REAL ASK") -> str:

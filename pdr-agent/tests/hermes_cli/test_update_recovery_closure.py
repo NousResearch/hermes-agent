@@ -26,7 +26,7 @@ from hermes_cli import _launchers
 
 SOURCE = Path(__file__).resolve().parents[2]
 # What a minted launcher imports before the application entry.
-BOOT = ("hermes_agent/hermes_bootstrap.py", "hermes_agent/hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
+BOOT = ("hermes_bootstrap.py", "hermes_agent/hermes_constants.py", "hermes_cli/__init__.py", "hermes_cli/_launchers.py",
         "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py", "hermes_agent/compat/finder.py",
         "hermes_agent/compat/moves.py",
         "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py", "hermes_cli/runtime_state.py",
@@ -108,12 +108,12 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize(("rel", "torn", "published"), [
-    ("hermes_agent/hermes_bootstrap.py", False, True),
+    ("hermes_bootstrap.py", False, True),
     ("hermes_cli/_early_recovery.py", True, True),
     ("hermes_cli/__init__.py", True, True),
     ("hermes_cli/update_lock.py", True, True),
     # An updater that predates publication: the launcher reads the same files from git's objects.
-    ("hermes_agent/hermes_bootstrap.py", True, False),
+    ("hermes_bootstrap.py", True, False),
 ])
 def test_a_launch_repairs_a_move_killed_while_writing_the_repairs_own_code(tmp_path, rel, torn, published):
     root, env, original, launcher = _killed_mid_write(tmp_path, rel)
@@ -131,7 +131,7 @@ def test_a_launch_repairs_a_move_killed_while_writing_the_repairs_own_code(tmp_p
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("published", [True, False])
 def test_the_published_repair_leaves_the_tree_to_a_live_writer_holding_the_checkout(tmp_path, published):
-    root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_agent/hermes_bootstrap.py")
+    root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py")
     if not published:
         # The closure comes from git's objects, and no git was recorded: the launcher's git is an
         # absolute PATH entry's, never a ``git`` in the current directory an empty entry names (m4).
@@ -151,7 +151,7 @@ def test_the_published_repair_leaves_the_tree_to_a_live_writer_holding_the_check
         assert launch.returncode != 0 and "Not repairing the checkout now" in launch.stderr, launch.stderr
         # One reason, not a "repairing it" banner followed by the import's traceback (m3).
         assert "Traceback" not in launch.stderr and "repairing it" not in launch.stderr, launch.stderr
-        assert not (root / "hermes_agent/hermes_bootstrap.py").exists(), "repaired under a live writer"
+        assert not (root / "hermes_bootstrap.py").exists(), "repaired under a live writer"
         assert (root / ".git/hermes-update-pull").exists()
         assert not (tmp_path / "CWD_GIT_RAN").exists()
         assert (root / ".git/hermes-update-recovery").is_dir(), "closure not rebuilt from git's objects"
@@ -161,7 +161,7 @@ def test_the_published_repair_leaves_the_tree_to_a_live_writer_holding_the_check
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=60, check=False)
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
-    assert (root / "hermes_agent/hermes_bootstrap.py").read_bytes() == original
+    assert (root / "hermes_bootstrap.py").read_bytes() == original
 
 
 
@@ -170,7 +170,7 @@ def test_the_published_repair_leaves_the_tree_to_a_live_writer_holding_the_check
 def test_a_damaged_published_closure_is_rebuilt_from_git_objects_not_trusted(tmp_path, damage):
     """A power loss can leave the published closure with bytes git never had: they never run, and the
     launch rebuilds the closure from ``pre``'s objects before repairing (M1)."""
-    root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_agent/hermes_bootstrap.py")
+    root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py")
     (closure,) = (root / ".git/hermes-update-recovery").iterdir()
     module = closure / "hermes_cli/_early_recovery.py"
     module.write_bytes(b"" if damage == "truncated" else
@@ -179,7 +179,7 @@ def test_a_damaged_published_closure_is_rebuilt_from_git_objects_not_trusted(tmp
                             errors="replace", timeout=60, check=False)
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
     assert "NOT_PRE_CODE_RAN" not in launch.stderr, launch.stderr
-    assert (root / "hermes_agent/hermes_bootstrap.py").read_bytes() == original
+    assert (root / "hermes_bootstrap.py").read_bytes() == original
     assert not (root / ".git/hermes-update-pull").exists()
 
 
@@ -189,7 +189,7 @@ def test_git_object_bytes_that_do_not_hash_to_pres_blob_never_run(tmp_path, corr
     """No published closure, and ``pre``'s loose object of the repair inflates to other bytes: they
     never run and nothing is published; the marker stays for a later launch or update (N02)."""
     ran = tmp_path / "FOREIGN_RAN"
-    root, env, _original, launcher = _killed_mid_write(tmp_path, "hermes_agent/hermes_bootstrap.py")
+    root, env, _original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py")
     (closure,) = (root / ".git/hermes-update-recovery").iterdir()  # named for ``pre``
     shutil.rmtree(closure.parent)
     if corrupt:
@@ -203,7 +203,7 @@ def test_git_object_bytes_that_do_not_hash_to_pres_blob_never_run(tmp_path, corr
                             errors="replace", timeout=60, check=False)
     assert not ran.exists(), launch.stderr
     assert (launch.returncode == 0) is not corrupt, launch.stderr
-    assert (root / "hermes_agent/hermes_bootstrap.py").exists() is not corrupt
+    assert (root / "hermes_bootstrap.py").exists() is not corrupt
     assert (root / ".git/hermes-update-pull").exists() is corrupt
     assert not (corrupt and (root / ".git/hermes-update-recovery").exists()), "published foreign bytes"
 
@@ -215,12 +215,12 @@ def test_a_stdlib_named_file_in_the_tree_never_runs_before_the_repair(tmp_path, 
     imported in its place, and the torn tree is still repaired (N03)."""
     ran = tmp_path / "SHADOW_RAN"
     shadow = {"shutil.py": f"open({str(ran)!r}, 'w').close()\nraise ImportError('shadow')\n"} if shadowed else {}
-    root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_agent/hermes_bootstrap.py", shadow)
+    root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py", shadow)
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=60, check=False)
     assert not ran.exists(), launch.stderr
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
-    assert (root / "hermes_agent/hermes_bootstrap.py").read_bytes() == original
+    assert (root / "hermes_bootstrap.py").read_bytes() == original
     assert not (root / ".git/hermes-update-pull").exists()
 
 

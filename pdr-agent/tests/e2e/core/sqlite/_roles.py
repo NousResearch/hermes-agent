@@ -11,7 +11,7 @@ Tokens are single FTS words (``TK`` + alnum) so the test can look every acknowle
 through ``messages`` and through the FTS indexes.
 
 Journal-mode seam: with ``HERMES_E2E_SQLITE_VERSION_PIN`` set, the production version probe
-``hermes_state.wal.is_sqlite_wal_reset_vulnerable()`` reports that SQLite version instead of the linked one;
+``hermes_agent.state.wal.is_sqlite_wal_reset_vulnerable()`` reports that SQLite version instead of the linked one;
 the real range predicate and ``apply_wal_with_fallback`` then decide the journal mode as they would there.
 """
 
@@ -60,20 +60,20 @@ def _apply_sqlite_version_pin() -> None:
     pin = os.environ.get("HERMES_E2E_SQLITE_VERSION_PIN")
     if not pin:
         return
-    import hermes_state.wal
+    import hermes_agent.state.wal
 
     pinned = tuple(int(p) for p in pin.split("."))
-    probe = hermes_state.wal.is_sqlite_wal_reset_vulnerable
+    probe = hermes_agent.state.wal.is_sqlite_wal_reset_vulnerable
 
     def is_sqlite_wal_reset_vulnerable(version_info=None):
         return probe(pinned if version_info is None else version_info)
 
-    hermes_state.wal.is_sqlite_wal_reset_vulnerable = is_sqlite_wal_reset_vulnerable
+    hermes_agent.state.wal.is_sqlite_wal_reset_vulnerable = is_sqlite_wal_reset_vulnerable
 
 
 def _patient(a: dict, out: Out, op: str, fn, *, deadline: float = 90.0):
     """Run ``fn()``; in the DELETE arm (``busy_ok``) a SQLITE_BUSY refusal is reported as a ``busy`` event and
-    retried. DELETE mode is documented to block readers on writes (hermes_state.wal), so a busy read/open is an
+    retried. DELETE mode is documented to block readers on writes (hermes_agent.state.wal), so a busy read/open is an
     availability event there, never an integrity one. In the WAL arm it propagates and fails the role."""
     end = time.monotonic() + deadline
     while True:
@@ -289,7 +289,7 @@ def role_fts(a: dict, out: Out) -> int:
 
 def role_repair(a: dict, out: Out) -> int:
     """`repair_state_db_schema` as the CLI/doctor/startup recovery calls it."""
-    from hermes_state.repair import repair_state_db_schema
+    from hermes_agent.state.repair import repair_state_db_schema
 
     db_path = Path(a["db"])
     try:

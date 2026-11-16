@@ -214,7 +214,7 @@ async def test_a_submit_only_delivery_never_moves_the_api_bot_chat(headless):
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
     from gateway.session_contract import SessionActor
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
     db = headless.authority.db
     old = _api_bot_chat(db)
     actor = SessionActor('uid:1000', headless.authority.profile_id,

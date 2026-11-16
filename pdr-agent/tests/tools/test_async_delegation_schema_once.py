@@ -31,16 +31,16 @@ def home(tmp_path):
 
 @pytest.fixture
 def reconcile_calls(monkeypatch):
-    import hermes_state.schema
+    import hermes_agent.state.schema
 
     calls = []
-    real = hermes_state.schema.reconcile_state_schema
+    real = hermes_agent.state.schema.reconcile_state_schema
 
     def counting(conn):
         calls.append(1)
         return real(conn)
 
-    monkeypatch.setattr(hermes_state.schema, "reconcile_state_schema", counting)
+    monkeypatch.setattr(hermes_agent.state.schema, "reconcile_state_schema", counting)
     return calls
 
 
@@ -167,17 +167,17 @@ def test_replacement_between_stat_and_open_reconciles(home, same_version_replace
 @pytest.mark.platforms("posix")
 def test_replacement_during_reconcile_is_not_marked_ready(home, same_version_replacement, monkeypatch):
     """The opened connection still refers to the old inode when its path is replaced."""
-    import hermes_state.schema
+    import hermes_agent.state.schema
 
     ad._SCHEMA_READY.clear()
-    real_reconcile = hermes_state.schema.reconcile_state_schema
+    real_reconcile = hermes_agent.state.schema.reconcile_state_schema
 
     def replacing_reconcile(conn):
         real_reconcile(conn)
         os.replace(same_version_replacement, home / "state.db")
 
     with monkeypatch.context() as patch:
-        patch.setattr(hermes_state.schema, "reconcile_state_schema", replacing_reconcile)
+        patch.setattr(hermes_agent.state.schema, "reconcile_state_schema", replacing_reconcile)
         ad._connect().close()
     _assert_dispatch_persisted()
 

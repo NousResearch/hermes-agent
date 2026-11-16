@@ -13,7 +13,7 @@ import pytest
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from hermes_state import SessionDB
-from hermes_state.rewind import RewindTargetUnavailableError
+from hermes_agent.state.rewind import RewindTargetUnavailableError
 
 SURFACES = ("cli", "gateway", "tui")
 

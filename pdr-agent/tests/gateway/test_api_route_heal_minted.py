@@ -7,8 +7,8 @@ import pytest
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_api import bind_api_session
-from hermes_state.local import API_BINDING_PREFIX
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.local import API_BINDING_PREFIX
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 def _mint_on_route(owner, caller):

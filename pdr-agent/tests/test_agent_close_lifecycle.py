@@ -27,7 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_agent import hermes_bootstrap
+import hermes_bootstrap
 
 
 class RecordingAgent:

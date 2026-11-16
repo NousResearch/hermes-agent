@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from gateway.session_envelope import restore_native_source
-from hermes_state.runtime import RuntimeStoreError, latest_session_admission
+from hermes_agent.state.runtime import RuntimeStoreError, latest_session_admission
 
 logger = logging.getLogger(__name__)
 

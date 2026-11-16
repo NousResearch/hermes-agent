@@ -18,7 +18,7 @@ from unittest.mock import ANY, patch
 import pytest
 
 import hermes_state
-import hermes_state.wal
+import hermes_agent.state.wal
 from hermes_state import DeletedWalGenerationError, SessionDB
 
 
@@ -26,11 +26,11 @@ from hermes_state import DeletedWalGenerationError, SessionDB
 def force_wal(monkeypatch):
     """Pin WAL so this host's vulnerable SQLite still matches production topology."""
     monkeypatch.setattr(
-        hermes_state.wal,
+        hermes_agent.state.wal,
         "is_sqlite_wal_reset_vulnerable",
         lambda version_info=None: False,
     )
-    monkeypatch.setattr(hermes_state.wal, "resolve_journal_mode", lambda: "wal")
+    monkeypatch.setattr(hermes_agent.state.wal, "resolve_journal_mode", lambda: "wal")
 
 
 def _make_db(path: Path, session_id: str, content: str) -> SessionDB:

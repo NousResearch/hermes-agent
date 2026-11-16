@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_policy import build_policy, rebind_launch_key
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 _CFG = {'platform_toolsets': {'cli': ['terminal']}}
 
@@ -124,7 +124,7 @@ async def test_the_frame_carries_the_field_and_the_gateway_logs_it(tmp_path, cap
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
 
     detail = "unknown or invalid toolset name: 'gone_plugin'"
     db = SessionDB(db_path=tmp_path / 'state.db')
@@ -157,7 +157,7 @@ async def test_a_bare_refusal_does_not_warn(tmp_path, caplog):
     from gateway.session_authority import SessionAuthority
     from gateway.session_controls import AuthorityConnection
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
 
     db = SessionDB(db_path=tmp_path / 'state.db')
     try:

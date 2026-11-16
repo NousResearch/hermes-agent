@@ -20,7 +20,7 @@ async def _typed_turn_in_cron_session(owner, monkeypatch):
     from gateway.session import SessionSource
     from gateway.session_contract import SessionRef
     from gateway.session_local import LocalSessionAdapter
-    from hermes_state.runtime import admit_session_input, claim_session_input
+    from hermes_agent.state.runtime import admit_session_input, claim_session_input
 
     session_id = 'cron-session'
     owner.db.create_session(session_id, source='local')

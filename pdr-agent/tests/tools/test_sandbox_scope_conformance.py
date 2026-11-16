@@ -61,7 +61,7 @@ def test_conformance(name, provider, host_dir):
 
 
 def test_identity_is_tenant_and_agent_only():
-    turn = A.for_turn("session-1", "turn-1", fence=__import__("hermes_agent.hermes_scope").Fence(1, 1))
+    turn = A.for_turn("session-1", "turn-1", fence=__import__("importlib").import_module("hermes_agent.hermes_scope").Fence(1, 1))
     assert sandbox_identity(turn) == sandbox_identity(A) == SandboxIdentity("acme", "agent-a")
     assert sandbox_identity(OTHER_TENANT_A).key != sandbox_identity(A).key
     # Percent-quoting keeps the key injective across tenant/agent boundaries.

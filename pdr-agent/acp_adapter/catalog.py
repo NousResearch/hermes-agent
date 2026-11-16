@@ -24,7 +24,7 @@ def _local_owners(db):
     """Physical id -> retained logical owner, from each private local creation receipt's lineage.
     A canonical reset or compression advances the receipt's physical target but keeps policy/FIFO
     on the creation id. Legacy reset histories have no receipt and stay independent chats."""
-    from hermes_state.local import POLICY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX
     owners = {}
     with db._read_ctx() as conn:
         rows = conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)).fetchall()

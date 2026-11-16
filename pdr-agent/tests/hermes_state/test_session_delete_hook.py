@@ -6,7 +6,7 @@ also proves dispatch ran AFTER the commit, never before.
 
 import pytest
 
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 from hermes_cli.plugins import get_plugin_manager
 from hermes_state import SessionDB
 

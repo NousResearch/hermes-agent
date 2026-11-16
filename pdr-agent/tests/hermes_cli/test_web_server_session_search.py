@@ -255,7 +255,7 @@ class _DeepLineageSessionDB(_FakeSessionDB):
         # starts far from the tip. Resolving from the MATCHED id keeps the
         # remaining distance under the cap; the raised bound lets even a
         # root-started walk terminate at the live tip (#125041).
-        from hermes_state.compression import _CHAIN_CAP
+        from hermes_agent.state.compression import _CHAIN_CAP
 
         idx = int(session_id[1:])
         return f"s{min(idx + _CHAIN_CAP, self.DEPTH - 1):03d}"

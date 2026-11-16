@@ -10,8 +10,8 @@ import sqlite3
 
 import pytest
 
-import hermes_state.wal
-from hermes_state.wal import _detect_network_fs, apply_wal_with_fallback
+import hermes_agent.state.wal
+from hermes_agent.state.wal import _detect_network_fs, apply_wal_with_fallback
 
 
 def _mountinfo(tmp_path, lines):
@@ -57,10 +57,10 @@ class TestNetworkFsExistingWalWarn:
     def _isolate(self, monkeypatch):
         # Same isolation as the cross-VM suite: pin the WAL-reset gate and the config reader, keep the
         # cross-VM class out of the picture, and clear the network once-per-process dedupe set.
-        monkeypatch.setattr(hermes_state.wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
-        monkeypatch.setattr(hermes_state.wal, "resolve_journal_mode", lambda: "wal")
-        monkeypatch.setattr(hermes_state.wal, "_path_on_cross_vm_fs", lambda p: False)
-        hermes_state.wal._network_fs_warned_paths.clear()
+        monkeypatch.setattr(hermes_agent.state.wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
+        monkeypatch.setattr(hermes_agent.state.wal, "resolve_journal_mode", lambda: "wal")
+        monkeypatch.setattr(hermes_agent.state.wal, "_path_on_cross_vm_fs", lambda p: False)
+        hermes_agent.state.wal._network_fs_warned_paths.clear()
 
     @pytest.mark.parametrize("wal_reset_vulnerable", [False, True])
     def test_existing_wal_db_on_network_fs_warns_once_at_warning(
@@ -68,7 +68,7 @@ class TestNetworkFsExistingWalWarn:
     ):
         # Both already-WAL early-return paths (regular and WAL-reset-vulnerable) must warn, never at ERROR:
         # single-writer NFS is a working shape, so this is a risk signal, not an active-corruption alarm.
-        monkeypatch.setattr(hermes_state.wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: wal_reset_vulnerable)
+        monkeypatch.setattr(hermes_agent.state.wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: wal_reset_vulnerable)
         db = tmp_path / "already-wal.db"
         seed = sqlite3.connect(str(db))
         if str(seed.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() != "wal":
@@ -77,8 +77,8 @@ class TestNetworkFsExistingWalWarn:
         seed.execute("CREATE TABLE t (x)")
         seed.commit()
         seed.close()
-        monkeypatch.setattr(hermes_state.wal, "_path_on_network_fs", lambda p: True)
-        with caplog.at_level(logging.WARNING, logger=hermes_state.wal.logger.name):
+        monkeypatch.setattr(hermes_agent.state.wal, "_path_on_network_fs", lambda p: True)
+        with caplog.at_level(logging.WARNING, logger=hermes_agent.state.wal.logger.name):
             for _ in range(2):
                 conn = sqlite3.connect(str(db))
                 assert apply_wal_with_fallback(conn, db_label="state.db") == "wal"
@@ -92,11 +92,11 @@ class TestNetworkFsExistingWalWarn:
         # Policy changed by the field report on NFS WAL stalls: a brand-new database on a network filesystem now
         # starts in DELETE (an unset database.journal_mode), with one WARNING naming the `wal` override. The
         # override itself is pinned in test_network_fs_journal_default.py.
-        monkeypatch.setattr(hermes_state.wal, "_path_on_network_fs", lambda p: True)
-        monkeypatch.setattr(hermes_state.wal, "_journal_mode_explicitly_configured", lambda: False)
-        hermes_state.wal._network_fs_new_store_warned_paths.clear()
+        monkeypatch.setattr(hermes_agent.state.wal, "_path_on_network_fs", lambda p: True)
+        monkeypatch.setattr(hermes_agent.state.wal, "_journal_mode_explicitly_configured", lambda: False)
+        hermes_agent.state.wal._network_fs_new_store_warned_paths.clear()
         conn = sqlite3.connect(str(tmp_path / "fresh.db"))
-        with caplog.at_level(logging.WARNING, logger=hermes_state.wal.logger.name):
+        with caplog.at_level(logging.WARNING, logger=hermes_agent.state.wal.logger.name):
             mode = apply_wal_with_fallback(conn, db_label="fresh.db")
         conn.close()
         assert mode == "delete"

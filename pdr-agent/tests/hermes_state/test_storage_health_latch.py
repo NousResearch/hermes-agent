@@ -3,7 +3,7 @@
 Before this, a damaged store showed up as an empty Desktop sidebar (200 + an ``errors`` row),
 a 500 from ``/api/sessions``, ``components.storage: ok`` on ``/api/status`` and green
 readiness. Each surface guessed; none said the store was damaged, so it read as deleted
-history. ``hermes_state.health`` is now the one latch: readers, writers and the readiness
+history. ``hermes_agent.state.health`` is now the one latch: readers, writers and the readiness
 probe publish into it, and every surface below reads it.
 """
 
@@ -12,8 +12,8 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB, StateDbCorruptError
-from hermes_state.errors import classify_persistence_error
-from hermes_state.health import (
+from hermes_agent.state.errors import classify_persistence_error
+from hermes_agent.state.health import (
     is_structural_corruption_error,
     note_storage_error,
     reset_storage_state,

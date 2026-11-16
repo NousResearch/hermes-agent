@@ -22,7 +22,7 @@ def test_loop_guard_attributes_storage_calls_to_external_caller(tmp_path, alias_
             pytest.skip(f"Directory symlinks unavailable: {exc}")
         root = alias
     spec = importlib.util.spec_from_file_location(
-        "loop_guard_attribution_probe", root / "hermes_state/loop_guard.py"
+        "loop_guard_attribution_probe", root / "hermes_agent/state/loop_guard.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -32,8 +32,8 @@ def test_loop_guard_attributes_storage_calls_to_external_caller(tmp_path, alias_
         caller = FrameSummary(str(root / "gateway/session_authority.py"), 100, function)
         stack = [
             caller,
-            FrameSummary(str(root / "hermes_state/__init__.py"), 300, "_read_ctx"),
-            FrameSummary(str(root / "hermes_state/loop_guard.py"), 90, "wrapped"),
+            FrameSummary(str(root / "hermes_state.py"), 300, "_read_ctx"),
+            FrameSummary(str(root / "hermes_agent/state/loop_guard.py"), 90, "wrapped"),
         ]
         assert module._caller(stack) is caller
         callers.append(module._caller(stack).name)
@@ -46,9 +46,9 @@ def test_loop_guard_attributes_storage_calls_to_external_caller(tmp_path, alias_
 def test_startup_watchdog_failure_retains_gateway_logger(monkeypatch, caplog):
     from gateway import shutdown_watchdog
     from gateway.run_startup_liveness import start_loop_liveness_guards
-    import hermes_state.loop_guard
+    import hermes_agent.state.loop_guard
 
-    monkeypatch.setattr(hermes_state.loop_guard, "install_from_config", lambda cfg: None)
+    monkeypatch.setattr(hermes_agent.state.loop_guard, "install_from_config", lambda cfg: None)
 
     def fail_start(*args, **kwargs):
         raise RuntimeError("synthetic watchdog startup failure")

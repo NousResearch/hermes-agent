@@ -58,7 +58,7 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     else:
         pin = f"sys.{PIN_DEFAULT_HOME_FLAG} = True; "
         settle = ("os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', "
-                  "str(__import__('hermes_agent.hermes_constants').get_default_hermes_root())); ")
+                  "str(__import__('importlib').import_module('hermes_agent.hermes_constants').get_default_hermes_root())); ")
     bootstrap = (
         "import os, sys, runpy; "
         "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "

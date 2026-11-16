@@ -21,7 +21,7 @@ _RUNTIME_SCHEMA_MARKER = "CREATE TABLE IF NOT EXISTS session_admissions"
 # Where a tree keeps its state-store modules: the root today, the package once they move into it.
 # Literal per-location patterns serve as git pathspecs, fnmatch patterns and Path.glob patterns alike;
 # a ``:(glob)**`` pathspec would also match tests/ and is not honoured by ``rev-list --objects``.
-STATE_MODULES = ("hermes_state/*.py", "hermes_state*.py", "hermes_agent/hermes_state*.py", "hermes_agent/hermes_state/*.py")
+STATE_MODULES = ("hermes_agent/state/*.py", "hermes_state*.py", "hermes_agent/hermes_state*.py", "hermes_agent/hermes_state/*.py")
 _LEDGER_PROBE = ("SELECT EXISTS(SELECT 1 FROM session_admissions) "
                  "OR EXISTS(SELECT 1 FROM worker_executions)")
 _DOCS = "https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release"
@@ -71,7 +71,7 @@ def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
 def _has_ledger_rows(db_path: Path) -> bool:
     if not db_path.is_file():
         return False
-    from hermes_state.holders import read_only_db_uri
+    from hermes_agent.state.holders import read_only_db_uri
     try:
         from hermes_cli.sqlite_safe_read import connect_tracked
 
@@ -85,7 +85,7 @@ def _has_ledger_rows(db_path: Path) -> bool:
 def _pre_runtime_snapshot(home: Path) -> str | None:
     """Newest quick snapshot of ``home`` holding a state.db from before the runtime ledger."""
     from hermes_cli.backup import _quick_snapshot_root
-    from hermes_state.holders import read_only_db_uri
+    from hermes_agent.state.holders import read_only_db_uri
     root = _quick_snapshot_root(home)
     for snap in sorted(root.iterdir(), reverse=True) if root.is_dir() else ():
         db = snap / "state.db"

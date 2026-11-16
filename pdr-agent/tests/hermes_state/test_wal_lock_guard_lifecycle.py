@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-import hermes_state.lockguard as lg
+import hermes_agent.state.lockguard as lg
 from hermes_state import SessionDB
 from tests.hermes_state._wal_generation_harness import make_db, pin_wal, require_wal
 

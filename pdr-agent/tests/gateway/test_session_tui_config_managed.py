@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from hermes_agent import hermes_yaml as yaml
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 from gateway.session_tui_config import _set_display, _write_profile_config
 

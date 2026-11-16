@@ -8,7 +8,7 @@ import hashlib
 import hmac
 import json
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 _callback: ContextVar[tuple | None] = ContextVar('native_ingress_callback', default=None)
 _relay_callback: ContextVar[tuple | None] = ContextVar('relay_ingress_callback', default=None)

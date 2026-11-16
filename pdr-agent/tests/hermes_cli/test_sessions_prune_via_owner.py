@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from hermes_cli import sessions_cmd

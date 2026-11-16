@@ -273,10 +273,10 @@ def test_session_search_reads_no_host_history():
 
 
 def test_recall_never_opens_the_profile_state_db(monkeypatch):
-    import hermes_state.registry
+    import hermes_agent.state.registry
     from hermes_agent.run_agent import AIAgent
     opened = []
-    monkeypatch.setattr(hermes_state.registry, "acquire", lambda *a, **k: opened.append(1) or object())
+    monkeypatch.setattr(hermes_agent.state.registry, "acquire", lambda *a, **k: opened.append(1) or object())
     agent = SimpleNamespace(_persist_disabled=False, _session_db=None)
     with bind_state(A):
         assert AIAgent._get_session_db_for_recall(agent) is None

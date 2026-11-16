@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 from hermes_cli import update_downgrade_guard as guard
 from hermes_state import SessionDB
 
@@ -29,11 +29,11 @@ def repo(tmp_path):
     _git(root, "init", "-b", "main")
     _git(root, "config", "user.email", "t@example.invalid")
     _git(root, "config", "user.name", "T")
-    (root / "hermes_state/common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id TEXT)'\n")
+    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id TEXT)'\n")
     _git(root, "add", ".")
     _git(root, "commit", "-m", "release before the cutover")
     _git(root, "tag", "old-release")
-    (root / "hermes_state/common.py").write_text(
+    (root / "hermes_state_common.py").write_text(
         "SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)'''\n")
     _git(root, "commit", "-am", "gateway runtime")
     return root
@@ -141,7 +141,7 @@ def test_a_runtime_target_whose_state_modules_moved_into_the_package_is_not_refu
     _git(repo, "checkout", "-q", "-b", "moved", "HEAD~1")
     package = repo / "hermes_agent" / "hermes_state"
     package.mkdir(parents=True)
-    _git(repo, "mv", "hermes_state/common.py", str(package / "common.py"))
+    _git(repo, "mv", "hermes_state_common.py", str(package / "common.py"))
     (package / "common.py").write_text(
         "SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER)'''\n")
     _git(repo, "commit", "-qam", "state store inside the package")
@@ -162,7 +162,7 @@ def test_a_runtime_target_whose_state_modules_moved_into_the_package_is_not_refu
 
 
 def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
-    from hermes_state.common import SCHEMA_SQL
+    from hermes_agent.state.common import SCHEMA_SQL
 
     assert guard.defines_runtime([SCHEMA_SQL])
 
@@ -181,7 +181,7 @@ def test_present_commit_with_missing_schema_blobs_uses_remote_without_git_writes
     _git(repo, "commit", "-qm", "release version bump")
     target = _git(repo, "rev-parse", "HEAD")
     _git(repo, "checkout", "-q", "main")
-    (repo / "hermes_state/common.py").write_text(
+    (repo / "hermes_state_common.py").write_text(
         "SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER, extra TEXT)'''\n",
         encoding="utf-8")
     _git(repo, "commit", "-qam", "newer runtime schema")
@@ -201,7 +201,7 @@ def test_present_commit_with_missing_schema_blobs_uses_remote_without_git_writes
 
     before = {p.relative_to(clone): p.read_bytes() for p in (clone / ".git").rglob("*") if p.is_file()}
     assert git("cat-file", "-e", f"{target}^{{commit}}") == 0
-    assert git("cat-file", "-e", f"{target}:hermes_state/common.py") != 0
+    assert git("cat-file", "-e", f"{target}:hermes_state_common.py") != 0
     grep = probe("grep", "-q", "-F", guard._RUNTIME_SCHEMA_MARKER, target, "--", *guard.STATE_MODULES)
     assert grep.returncode != 0 and grep.stderr
     remote = None if remote_result == "no-reader" else Mock(return_value=remote_result)

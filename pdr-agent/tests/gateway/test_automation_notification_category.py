@@ -8,7 +8,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
 from gateway.session_contract import SessionActor
-from hermes_state.runtime import RuntimeStoreError, get_session_admission, list_session_admissions
+from hermes_agent.state.runtime import RuntimeStoreError, get_session_admission, list_session_admissions
 
 
 async def _authority(tmp_path, monkeypatch):

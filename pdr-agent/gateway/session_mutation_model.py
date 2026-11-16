@@ -6,7 +6,7 @@ from dataclasses import asdict, replace
 from typing import NamedTuple
 
 from gateway.session_route_identity import ROUTE_BOUND_KEYS
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 

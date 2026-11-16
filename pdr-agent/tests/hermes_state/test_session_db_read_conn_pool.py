@@ -35,7 +35,7 @@ holds POSIX locks on that inode, so raw descriptor counts lag the real
 connection count and make such assertions flaky.
 """
 
-import hermes_state.readpool
+import hermes_agent.state.readpool
 import queue
 import sqlite3
 import threading
@@ -478,7 +478,7 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
 def test_peak_is_bounded_across_many_database_files(tmp_path):
     """Read connections must be capped for the PROCESS, not just per file."""
     from hermes_state import SessionDB, _READ_POOL_MAX
-    from hermes_state.readpool import _READ_POOL_PROCESS_MAX
+    from hermes_agent.state.readpool import _READ_POOL_PROCESS_MAX
 
     n_files = (_READ_POOL_PROCESS_MAX // _READ_POOL_MAX) + 2
     dbs = []
@@ -518,17 +518,17 @@ def test_peak_is_bounded_across_many_database_files(tmp_path):
     finally:
         for d in dbs:
             d.close()
-        assert hermes_state.readpool._process_read_permits.acquire(blocking=False), (
+        assert hermes_agent.state.readpool._process_read_permits.acquire(blocking=False), (
             "close() stranded a process permit"
         )
-        hermes_state.readpool._process_read_permits.release()
+        hermes_agent.state.readpool._process_read_permits.release()
 
 
 @pytest.mark.requires_wal
 def test_idle_connections_are_reclaimed_across_database_files(tmp_path):
     """A quiet profile's idle connections must not starve the busy one."""
     from hermes_state import SessionDB, _READ_POOL_MAX
-    from hermes_state.readpool import _READ_POOL_PROCESS_MAX
+    from hermes_agent.state.readpool import _READ_POOL_PROCESS_MAX
 
     quiet = []
     try:
@@ -562,7 +562,7 @@ def test_no_read_connection_is_opened_without_descriptor_headroom(db, monkeypatc
     subprocess pipes, and EMFILE lands on whoever asks next -- which in the
     report was terminal_tool, not SQLite.
     """
-    import hermes_state.readpool as readpool
+    import hermes_agent.state.readpool as readpool
 
     # Drain the pool so the next read must OPEN rather than reuse.
     while True:
@@ -591,7 +591,7 @@ def test_no_read_connection_is_opened_without_descriptor_headroom(db, monkeypatc
 
 def test_fd_headroom_guard_fails_open_where_it_cannot_measure(monkeypatch):
     """No RLIMIT_NOFILE (Windows) means unmeasurable, not tight."""
-    import hermes_state.readpool as readpool
+    import hermes_agent.state.readpool as readpool
 
     monkeypatch.setattr(readpool, "_fd_soft_limit", lambda: None)
     assert readpool._fd_headroom_ok() is True
@@ -612,8 +612,8 @@ def test_fd_soft_limit_fails_open_for_importable_resource_stub(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "resource", types.ModuleType("resource"))
 
-    assert hermes_state.readpool._fd_soft_limit() is None
-    assert hermes_state.readpool._fd_headroom_ok() is True
+    assert hermes_agent.state.readpool._fd_soft_limit() is None
+    assert hermes_agent.state.readpool._fd_headroom_ok() is True
 
 
 @pytest.mark.requires_wal
@@ -623,7 +623,7 @@ def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     import re
 
     from hermes_state import SessionDB
-    from hermes_state.readpool import _HANDLES_PER_PATH_WARN
+    from hermes_agent.state.readpool import _HANDLES_PER_PATH_WARN
 
     def open_extra_handle():
         return SessionDB(db_path=db.db_path)
@@ -664,7 +664,7 @@ def test_read_only_handles_do_not_count_toward_the_duplicate_writer_warning(db, 
     import logging
 
     from hermes_state import SessionDB
-    from hermes_state.readpool import _HANDLES_PER_PATH_WARN
+    from hermes_agent.state.readpool import _HANDLES_PER_PATH_WARN
 
     extra = []
     try:
@@ -724,7 +724,7 @@ def test_closed_handles_do_not_count_toward_duplicate_writer_warning(db, caplog)
     """Closing a writer releases its duplicate-writer diagnostic membership."""
     import logging
 
-    from hermes_state.readpool import _HANDLES_PER_PATH_WARN
+    from hermes_agent.state.readpool import _HANDLES_PER_PATH_WARN
 
     closed = [SessionDB(db_path=db.db_path) for _ in range(_HANDLES_PER_PATH_WARN - 1)]
     for handle in closed:
@@ -743,7 +743,7 @@ def test_closed_handles_do_not_count_toward_duplicate_writer_warning(db, caplog)
 
 def test_failed_initialization_does_not_register_duplicate_writer_handle(db, monkeypatch):
     """A constructor that raises before opening must never join the handle budget."""
-    budget = hermes_state.readpool._read_budget_for(db.db_path)
+    budget = hermes_agent.state.readpool._read_budget_for(db.db_path)
     registered = []
     original_register = budget.register
 

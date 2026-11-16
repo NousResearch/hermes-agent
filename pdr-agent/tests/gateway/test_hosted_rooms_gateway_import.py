@@ -106,7 +106,7 @@ def test_gateway_startup_takes_over_the_standalone_rooms(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from gateway import session_hosted_service, session_hosted_transport
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
 
     source = tmp_path / "shared-state.db"
     _standalone_room(source, "old-room")

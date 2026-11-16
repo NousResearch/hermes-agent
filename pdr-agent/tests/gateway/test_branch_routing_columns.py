@@ -125,7 +125,7 @@ class TestBranchRoutingColumns:
         assert row["chat_type"] == "dm"
         assert row["thread_id"] == "544520"
         # user_id and session_key are also required for the fallback lookup
-        # path (hermes_state/__init__.py:1994-2009) when session_key-based lookup fails
+        # path (hermes_state.py:1994-2009) when session_key-based lookup fails
         assert row["user_id"] == "170829464", (
             "branched session lost user_id — fallback peer-tuple lookup "
             "in find_latest_gateway_session_for_peer can never match"

@@ -14,7 +14,7 @@ from gateway.config import Platform
 from gateway.session import SessionEntry
 from gateway.session_authority import SessionAuthority
 from hermes_state import SessionDB
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 from tests.gateway.test_unknown_resolution_physical_worker import _local_reset
 

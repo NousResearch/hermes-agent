@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import shutil
 
-import hermes_state.registry as registry
+import hermes_agent.state.registry as registry
 
 
 def _seed(path):

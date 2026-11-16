@@ -12,7 +12,7 @@ import pytest
 from gateway.session_authority import SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from gateway.session_local import create_local_session
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 
 
 @pytest.mark.asyncio

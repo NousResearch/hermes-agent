@@ -3,7 +3,7 @@ import pytest
 
 from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError
 from hermes_state import SessionDB
-from hermes_state.runtime import (
+from hermes_agent.state.runtime import (
     RuntimeStoreError, begin_runtime_epoch, mutate_worker_execution, register_worker_execution,
 )
 

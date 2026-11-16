@@ -99,7 +99,7 @@ async def _submit(connection, sid, input_id, text, **extra):
 
 
 def _rows(authority, sid):
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     return list_session_admissions(authority.db, session_id=sid, pending_only=False)
 
 

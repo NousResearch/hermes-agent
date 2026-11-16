@@ -7,7 +7,7 @@ the real install root through ``hermes_constants`` and exits the process when th
 Importing it once here, before any window opens, keeps boot out of the mocked import.
 """
 
-from hermes_agent import hermes_bootstrap
+import hermes_bootstrap
 
 import threading
 import time

@@ -1,6 +1,6 @@
 """close_all_under releases the cached header-probe fds of the homes it sweeps.
 
-hermes_state.dbfile keeps one O_RDONLY fd per state.db for lock-safe header reads. Without
+hermes_agent.state.dbfile keeps one O_RDONLY fd per state.db for lock-safe header reads. Without
 this release a multiplexed gateway keeps one such fd for every profile it has unserved, until
 the process exits. The fd may only close once nothing else in the process has the inode open,
 because closing any descriptor on the file cancels the process's POSIX locks on it.
@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state.dbfile as dbfile
-import hermes_state.registry as registry
+import hermes_agent.state.dbfile as dbfile
+import hermes_agent.state.registry as registry
 
 
 @pytest.fixture(autouse=True)

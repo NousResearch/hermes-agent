@@ -126,14 +126,14 @@ async def test_a_prepared_branch_stamps_its_secret_reference_with_the_childs_ask
     """The prepared fork's durable config-secret reference hashes the policy the child is stored with
     (``ask``), never the parent's Don't Ask."""
     from dataclasses import asdict
-    import hermes_state.local
+    import hermes_agent.state.local
     from gateway import session_local_mcp, session_policy_credentials as creds
     from gateway.session_policy import build_policy
     parent = replace(build_policy({'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture'}, {}),
                      edit_approval_policy='session', editor_mcp_json='{"scope": "p"}',
                      config_secret_ref=creds.PREFIX + '{}')
     saved = {'policy': asdict(parent), 'profile_id': 'owned', 'principal_id': 'human'}
-    monkeypatch.setattr(hermes_state.local, 'local_receipt', lambda db, sid: saved)
+    monkeypatch.setattr(hermes_agent.state.local, 'local_receipt', lambda db, sid: saved)
     monkeypatch.setattr(session_local_mcp, 'rebind_editor_mcp', lambda a, child, policy, servers: (policy, False))
     monkeypatch.setattr(creds, 'recover_config_secrets', lambda *a, **k: {})
     hashed = []

@@ -302,7 +302,7 @@ class SessionManager:
         this process is the session end: the client that drove the
         conversation is gone. Without this writer, source='acp' rows keep
         ``ended_at`` NULL forever and the ended-session guard shared by
-        prune/archive (``hermes_state.maintenance``) can never reach them.
+        prune/archive (``hermes_agent.state.maintenance``) can never reach them.
         A later load/resume reopens the row (see ``_restore``), the same
         contract the TUI gateway's resume path uses. Best-effort: teardown
         must never raise. Returns the number of sessions ended.
@@ -345,7 +345,7 @@ class SessionManager:
         acquire, so the ACP server holds ONE writer on state.db instead of two (#100896)."""
         if self._db_instance is None:
             try:
-                from hermes_state.registry import acquire
+                from hermes_agent.state.registry import acquire
                 self._db_instance = acquire(get_hermes_home() / "state.db")
             except Exception:
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)

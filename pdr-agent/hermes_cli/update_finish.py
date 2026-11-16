@@ -106,7 +106,7 @@ def main(context: Path, result: Path) -> int:
         # selected store Python. Bootstrap must run before any app imports;
         # its ordinary currency check is now a no-op, not another update.
         sys.argv = list(request["argv"]) if restarting else [str(root / "hermes"), "update"]
-        from hermes_agent import hermes_bootstrap
+        import hermes_bootstrap
         # Import failures are update failures too: keep the original receipt
         # open before importing the application graph from the new checkout.
         from hermes_cli import main as cli

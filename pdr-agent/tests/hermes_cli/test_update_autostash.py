@@ -124,7 +124,7 @@ def test_restore_validates_real_stash_and_each_import(probe_root, monkeypatch, c
     (tmp_path / 'first.py').write_text("raise RuntimeError('missing local config')\n", encoding='utf-8')
     source = tmp_path / 'consumer.py'
     source.write_text('VALUE = 1\n', encoding='utf-8')
-    git(tmp_path, 'add', 'first.py', 'consumer.py', 'hermes_agent/hermes_bootstrap.py')
+    git(tmp_path, 'add', 'first.py', 'consumer.py', 'hermes_bootstrap.py')
     git(tmp_path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         '-c', 'commit.gpgsign=false', 'commit', '-qm', 'base')
     source.write_text(body, encoding='utf-8')

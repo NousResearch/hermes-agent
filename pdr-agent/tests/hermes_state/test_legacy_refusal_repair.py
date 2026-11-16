@@ -11,7 +11,7 @@ import json
 
 from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
 from hermes_state import SessionDB
-from hermes_state.legacy_refusal import LEGACY_REFUSAL_REPAIR_DONE
+from hermes_agent.state.legacy_refusal import LEGACY_REFUSAL_REPAIR_DONE
 
 _REFUSAL_CARD = {
     "error": "content_policy_blocked: model declined (content_filter)",

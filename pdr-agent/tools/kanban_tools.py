@@ -1189,7 +1189,7 @@ def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
         except Exception:
             db_path = None
     try:
-        from hermes_state.registry import acquire, release_or_close
+        from hermes_agent.state.registry import acquire, release_or_close
         db = acquire(db_path)
         try:
             return db.resolve_resume_session_id(session_key) or session_key

@@ -148,7 +148,7 @@ def private_import_findings(plugin_dir: Path) -> list[str]:
 # facade + sibling files. Calling one of their private methods (``db._execute_write(...)``,
 # ``runner._evict_cached_agent(...)``) couples the plugin to core internals exactly like a private
 # import, but no import names it, so the import pass above cannot see it.
-_CORE_HANDLE_SOURCES = ("hermes_state/__init__.py", "hermes_state/*.py", "hermes_agent/run_agent.py", "agent/turn_*.py",
+_CORE_HANDLE_SOURCES = ("hermes_state.py", "hermes_agent/state/*.py", "hermes_agent/run_agent.py", "agent/turn_*.py",
                         "gateway/run.py", "gateway/run_*.py", "hermes_cli/plugins.py")
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.repair import _db_opens_cleanly, repair_state_db_schema
+from hermes_agent.state.repair import _db_opens_cleanly, repair_state_db_schema
 
 
 def _build_db_with_trigram(db_path: Path) -> str:

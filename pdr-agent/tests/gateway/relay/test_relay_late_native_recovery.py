@@ -93,7 +93,7 @@ def _admissions_db(statuses):
     import contextlib
     import sqlite3
 
-    from hermes_state.common import SCHEMA_SQL
+    from hermes_agent.state.common import SCHEMA_SQL
 
     conn = sqlite3.connect(':memory:')
     conn.row_factory = sqlite3.Row
@@ -108,7 +108,7 @@ def _admissions_db(statuses):
 
 
 def _vm_steps(conn, db, accept):
-    from hermes_state.runtime import latest_session_admission
+    from hermes_agent.state.runtime import latest_session_admission
 
     steps = [0]
 
@@ -124,7 +124,7 @@ def _vm_steps(conn, db, accept):
 def test_latest_session_admission_reads_only_the_newest_rows():
     """A restored lane reads its newest native envelope with work that does not grow with the
     session's history, across every admission status, and closes its cursors."""
-    from hermes_state.runtime import latest_session_admission
+    from hermes_agent.state.runtime import latest_session_admission
 
     def native(payload):
         return 'native_text_v1' in payload

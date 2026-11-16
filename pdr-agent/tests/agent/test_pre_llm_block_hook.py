@@ -137,7 +137,7 @@ def test_retry_and_undo_after_a_block_resubmit_the_typed_text(provider_url, tmp_
     """/retry (CLI, TUI, gateway, ACP, Desktop) and /undo read a rewind's live view or receipt: both carry
     what the user typed, so the hook re-decides on it (0 model calls, blocked again), never the placeholder."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
 
     typed = f"look up {SECRET}"
     for name in ("receipt", "rewind"):

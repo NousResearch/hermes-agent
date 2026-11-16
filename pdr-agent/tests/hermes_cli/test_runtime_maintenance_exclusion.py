@@ -179,7 +179,7 @@ def test_recovery_output_exemption_excludes_canonical_activation(tmp_path):
     from gateway.runtime_ownership import ProfileOwnership
     from hermes_cli.session_recovery import recover_session_database, SessionRecoverySafetyError
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch, admit_session_input
+    from hermes_agent.state.runtime import begin_runtime_epoch, admit_session_input
 
     source_home, target_home = tmp_path / 'source', tmp_path / 'target'
     source_home.mkdir()

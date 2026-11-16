@@ -611,7 +611,7 @@ def extract_profiles_main(path: str, module_name: str) -> int:
     import json
     reader, writer = _take_protocol_streams()
     del reader
-    from hermes_agent import hermes_bootstrap
+    import hermes_bootstrap
     try:
         payload = {"profiles": [_extraction_entry(p) for p in capture_profiles(path, module_name)]}
     except Exception as exc:
@@ -623,7 +623,7 @@ def extract_profiles_main(path: str, module_name: str) -> int:
 
 def main() -> int:
     reader, writer = _take_protocol_streams()
-    from hermes_agent import hermes_bootstrap
+    import hermes_bootstrap
     from hermes_agent.hermes_logging import DisplayNameFormatter
     stderr_handler = logging.StreamHandler(sys.stderr)
     stderr_handler.setFormatter(DisplayNameFormatter("%(levelname)s %(name)s: %(message)s"))

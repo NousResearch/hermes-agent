@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_contract import SessionRef
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 ROWS = {
     'cron_job1_20261001_120000': ('cron', {}),

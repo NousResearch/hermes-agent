@@ -4,7 +4,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.session_contract import SessionActor, SessionRef, Submission
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 def test_private_api_binding_restores_exact_route(owner):

@@ -13,7 +13,7 @@ import pytest
 
 import hermes_state
 from hermes_state import SessionDB
-from hermes_state.common import FTS_STORAGE_VERSION, SCHEMA_VERSION
+from hermes_agent.state.common import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from hermes_cli import session_recovery
 from hermes_cli.session_recovery import (
     SessionRecoverySafetyError,

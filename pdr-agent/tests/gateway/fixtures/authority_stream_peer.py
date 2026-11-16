@@ -109,7 +109,7 @@ async def probe(peer, target):
     from gateway.session import SessionSource
     from gateway.session_authority import initialize_session_authority
     from hermes_cli import web_server
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     from hermes_agent.run_agent import AIAgent
 
     class NativeAdapter(BasePlatformAdapter):

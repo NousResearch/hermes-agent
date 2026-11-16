@@ -99,7 +99,7 @@ def _plugin_tool_ownership() -> dict[str, list[str]]:
     that never connected or cached its tools owns nothing yet). A name two packages list belongs
     to neither."""
     plugins_mod = _tools_mod("hermes_cli.plugins")
-    toolsets = _tools_mod("toolsets")
+    toolsets = _tools_mod("hermes_agent.toolsets")
     plugins_mod.discover_plugins()
     manager = plugins_mod.get_plugin_manager()
     native = _tools_mod("hermes_cli.config").load_config().get("mcp_servers")

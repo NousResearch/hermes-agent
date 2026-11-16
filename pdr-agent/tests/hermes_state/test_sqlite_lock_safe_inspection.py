@@ -305,7 +305,7 @@ def test_repair_connections_are_tracked_for_byte_probe_safety(tmp_path, clean_re
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_state import SessionDB
-    from hermes_state.repair import _connect_repair_durable, _repair_conn
+    from hermes_agent.state.repair import _connect_repair_durable, _repair_conn
 
     db_path = tmp_path / "state.db"
     seed = SessionDB(db_path=db_path)
@@ -336,7 +336,7 @@ def test_byte_probe_never_cancels_the_repair_exclusion(tmp_path, clean_registry)
     the exclusion keeps holding; if the probe were allowed through, its ``close()``
     would cancel the lock and the intruder would commit into the file mid-repair.
     """
-    import hermes_state.repair as repair
+    import hermes_agent.state.repair as repair
 
     db_path = tmp_path / "state.db"
     _make_db(db_path, "DELETE")

@@ -279,7 +279,7 @@ def test_deferred_scan_skips_a_rollback_journal_store(tmp_path: Path, monkeypatc
 
 
 def test_deferred_scan_skips_when_the_journal_mode_is_undeterminable(tmp_path: Path, monkeypatch) -> None:
-    import hermes_state.wal
+    import hermes_agent.state.wal
 
     _make_state_db(tmp_path, corrupt=False, journal_mode="wal")
     calls = _spy_on_scan(monkeypatch)
@@ -287,7 +287,7 @@ def test_deferred_scan_skips_when_the_journal_mode_is_undeterminable(tmp_path: P
     def _unreadable(conn):
         raise sqlite3.DatabaseError("file is not a database")
 
-    monkeypatch.setattr(hermes_state.wal, "_on_disk_journal_mode", _unreadable)
+    monkeypatch.setattr(hermes_agent.state.wal, "_on_disk_journal_mode", _unreadable)
 
     verdict = run_deferred_integrity_check({"prior_pid": _DEAD_PID}, home=tmp_path, deadline_s=60.0)
 

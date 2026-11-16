@@ -4,9 +4,9 @@ import binascii
 import hashlib
 import json
 
-from hermes_state.local_migration import client_history_row, validate_legacy_row
-from hermes_state.mutation_binding import authorize_history
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.local_migration import client_history_row, validate_legacy_row
+from hermes_agent.state.mutation_binding import authorize_history
+from hermes_agent.state.runtime import RuntimeStoreError
 
 from gateway.owner_identity import same_owner
 from gateway.session_route_recovery import _messaging_platform, mountable
@@ -60,7 +60,7 @@ def _excluded_sources():
     """Main's picker listed every source but the internal ones; the API transport has its own restore.
     Plugin platforms are ``Platform`` pseudo-members enum iteration never yields, so the query
     excludes rather than enumerates, and each messaging row is judged by the cold mount's own check."""
-    from hermes_state.sessions import INTERNAL_LISTING_SOURCES
+    from hermes_agent.state.sessions import INTERNAL_LISTING_SOURCES
     return [*INTERNAL_LISTING_SOURCES, 'api_server']
 
 
@@ -193,7 +193,7 @@ def _stored_closed(authority, actor, owner):
     The stored receipt is judged by the checks a restore runs on it (``restorable_receipt``); the
     restore's live route check (another session on its route) stays the restore's."""
     from gateway.session_local_recovery import restorable_receipt
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     if actor.profile_id != authority.profile_id or 'session:read' not in actor.capabilities:
         return False
     try:

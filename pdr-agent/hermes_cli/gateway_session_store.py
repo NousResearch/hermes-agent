@@ -42,7 +42,7 @@ _GATEWAY_OWNED = frozenset({
     "update_session_model", "patch_session_model_config", "maybe_auto_archive",
     "maybe_auto_prune_and_vacuum", "set_meta", "update_token_counts", "close",
 })
-# Mutations the owner refuses without the execution generation they were read at (hermes_state.runtime).
+# Mutations the owner refuses without the execution generation they were read at (hermes_agent.state.runtime).
 _GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress", "workspace"})
 _COUNTED_REPAIRS = frozenset({"prune_empty_ghost_sessions", "finalize_orphaned_compression_sessions"})
 # Launch options main's ``cli.main`` takes that are creation policy on the gateway session.
@@ -269,7 +269,7 @@ class GatewaySessionStore:
         from agent.context_compressor import history_before_user_originated_turn, retryable_user_text
         from agent.message_content import flatten_message_text
         from agent.session_persistence import _is_ephemeral_scaffolding
-        from hermes_state.rewind import (
+        from hermes_agent.state.rewind import (
             _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
         snapshot = self.call("session.resume", session_id=session_id)
         durable = [m for m in snapshot.get("messages") or [] if not m.get("archived")]  # the live rows

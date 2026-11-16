@@ -41,7 +41,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
             try:
                 count = repair()
             # Every SessionDB refusal: sqlite/IO, RuntimeStoreError (ValueError), and the
-            # hermes_state.errors busy/replaced family (RuntimeError).
+            # hermes_agent.state.errors busy/replaced family (RuntimeError).
             except (sqlite3.Error, OSError, ValueError, RuntimeError) as _exc:
                 # Latched below regardless: a repair this store refuses (live ledger work,
                 # locked file) must surface once, not retry silently on every start.

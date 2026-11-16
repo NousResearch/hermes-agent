@@ -71,7 +71,7 @@ async def _admitted_before_crash(runner, adapter, *, started, **event_fields):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_ingress_context import native_callback
     from hermes_agent.hermes_constants import get_hermes_home
-    from hermes_state.runtime import claim_session_input
+    from hermes_agent.state.runtime import claim_session_input
     source = adapter.build_source(chat_id='42', chat_type='dm', user_id='42', thread_id='T1')
     first = await initialize_session_authority(runner, profile_id=str(get_hermes_home()), instance_id='before-crash')
     first._schedule = lambda ref: None  # the crash: its drain never ran
@@ -98,7 +98,7 @@ async def _restart(runner):
 @pytest.mark.parametrize('rehydrated', [False, True], ids=['arrival-time', 'arrival-time-and-thread-context'])
 async def test_redelivery_after_restart_is_answered_once_not_refused(tmp_path, monkeypatch, rehydrated):
     from gateway.platforms.event import MessageEvent
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     runner, adapter, sent, calls = await _gateway(tmp_path, monkeypatch)
     source, receipt = await _admitted_before_crash(runner, adapter, started=False)
     try:
@@ -123,7 +123,7 @@ async def test_redelivery_of_a_turn_lost_mid_run_tells_the_chat_it_is_paused(tmp
     """Killed mid-turn: the turn is ``unknown`` and never replayed (GW-10). The redelivery is that
     admission, so the chat gets the pause notice naming the way out, not a generic refusal."""
     from gateway.platforms.event import MessageEvent
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     runner, adapter, sent, calls = await _gateway(tmp_path, monkeypatch)
     source, receipt = await _admitted_before_crash(runner, adapter, started=True)
     try:
@@ -143,7 +143,7 @@ async def test_changed_content_under_an_admitted_id_still_conflicts_and_says_so(
     """Exactly-once is unchanged: other user content under the same provider id is not this
     admission. It is still refused, and the chat is told why instead of a generic turn error."""
     from gateway.platforms.event import MessageEvent
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     runner, adapter, sent, calls = await _gateway(tmp_path, monkeypatch)
     source, receipt = await _admitted_before_crash(runner, adapter, started=False)
     try:

@@ -117,17 +117,17 @@ def test_plugin_db_wal_goes_through_the_shared_fallback(monkeypatch, tmp_path):
     """A raw ``PRAGMA journal_mode=WAL`` bypasses the network-FS fallback and the WAL-reset-bug gate;
     plugin databases must obey the same rules as every core store."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_state.wal
+    import hermes_agent.state.wal
     from plugins import plugin_storage
 
     seen = []
-    real = hermes_state.wal.apply_wal_with_fallback
+    real = hermes_agent.state.wal.apply_wal_with_fallback
 
     def spy(conn, **kwargs):
         seen.append(kwargs["db_label"])
         return real(conn, **kwargs)
 
-    monkeypatch.setattr(hermes_state.wal, "apply_wal_with_fallback", spy)
+    monkeypatch.setattr(hermes_agent.state.wal, "apply_wal_with_fallback", spy)
     conn = plugin_storage.plugin_db("board")
     try:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1

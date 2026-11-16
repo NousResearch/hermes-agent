@@ -634,7 +634,7 @@ def test_claim_fence_reads_the_claimed_admission(tmp_path):
     """The fence a turn binds is the one the claim stamped on its admission row."""
     from contextlib import closing
 
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     from hermes_state import SessionDB
     from tests.hermes_state.test_target_advance_fence import _local_session
 

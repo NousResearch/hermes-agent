@@ -264,7 +264,7 @@ class TestSessionDbCacheAfterProfileDelete:
         import shutil
 
         import hermes_state
-        import hermes_state.registry as registry
+        import hermes_agent.state.registry as registry
         from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.goals import GoalState, _get_session_db, load_goal, save_goal
 
@@ -940,7 +940,7 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     minting a bare ``SessionDB()``: a second writer per profile carries its own token-writer
     thread and close-time checkpoint beside the gateway's handle (the #90837 corruption shape)."""
     from hermes_cli import goals
-    import hermes_state.registry as registry
+    import hermes_agent.state.registry as registry
 
     db = goals._get_session_db()
     assert db is not None

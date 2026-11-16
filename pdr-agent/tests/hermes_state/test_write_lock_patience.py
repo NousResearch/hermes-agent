@@ -210,7 +210,7 @@ def test_open_waits_out_lock_lost_inside_fts_constructor(tmp_path, monkeypatch, 
 def test_lock_lost_inside_fts_constructor_classifies_as_busy(tmp_path):
     """When patience does run out, the same error must read as "busy" (HTTP 503, "locked"
     guidance), not as an internal error: SQLite keeps SQLITE_BUSY but not the wording."""
-    from hermes_state.errors import classify_persistence_error, is_transient_sqlite_error
+    from hermes_agent.state.errors import classify_persistence_error, is_transient_sqlite_error
 
     db_path = tmp_path / "fts.db"
     setup = sqlite3.connect(str(db_path))

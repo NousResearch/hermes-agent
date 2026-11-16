@@ -13,7 +13,7 @@ import json
 import os
 import subprocess
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 TIMEOUT_SECONDS = 30
 _LOCAL_BACKENDS = frozenset({'', 'local'})

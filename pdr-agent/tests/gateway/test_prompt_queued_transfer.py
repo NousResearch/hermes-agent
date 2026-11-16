@@ -12,7 +12,7 @@ import pytest
 from agent.interrupt_control import InterruptControlMixin
 from gateway import session_finite, session_queued_controls
 from gateway.session_contract import SessionRef
-from hermes_state.runtime import (
+from hermes_agent.state.runtime import (
     begin_runtime_epoch, claim_session_input, find_session_admission, get_session_admission,
     recover_session_inputs,
 )
@@ -365,7 +365,7 @@ async def test_a_turn_that_ends_between_the_steer_commit_and_delivery_gets_its_p
 
 def test_an_owner_restart_mid_transfer_settles_the_steered_admission_interrupted(tmp_path, monkeypatch):
     """Committed but not confirmed consumed when the owner died: interrupted, never auto-replayed."""
-    from hermes_state.runtime import admit_session_input
+    from hermes_agent.state.runtime import admit_session_input
     db, authority = _authority(tmp_path, monkeypatch)
     with db:
         for request_id in ('running', 'follow-up'):

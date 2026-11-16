@@ -158,7 +158,7 @@ def test_flush_adopts_exactly_once_no_retry_loop(tmp_path: Path, monkeypatch) ->
     """Adoption budget: the tip lookup runs at most once per flush, and a
     second closed-parent write after adoption fails closed instead of looping.
     """
-    from hermes_state.errors import CompressionSessionClosedError
+    from hermes_agent.state.errors import CompressionSessionClosedError
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -197,7 +197,7 @@ def test_flush_adopts_exactly_once_no_retry_loop(tmp_path: Path, monkeypatch) ->
 
 def test_compression_closed_error_classifies_as_compression_closed() -> None:
     from hermes_state import classify_persistence_error
-    from hermes_state.errors import CompressionSessionClosedError, PERSISTENCE_ERROR_CAUSES
+    from hermes_agent.state.errors import CompressionSessionClosedError, PERSISTENCE_ERROR_CAUSES
 
     cause = classify_persistence_error(CompressionSessionClosedError("session-abc"))
     assert cause == "compression_closed"

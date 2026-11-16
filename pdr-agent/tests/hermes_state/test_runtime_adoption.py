@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 
 
 def append(db, *, epoch, sequence, content, **assignment):

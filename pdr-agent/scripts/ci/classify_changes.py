@@ -309,7 +309,7 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_restart_env.py",  # the fleet restart watcher's env
     "hermes_cli/gateway_runtime_start.py",  # supervisor-marker strip for the watcher and the pause replay
     "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
-    "hermes_agent/hermes_bootstrap.py",  # every launch's prepare_launch
+    "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_agent/hermes_constants.py",  # root home = update marker location
     "hermes_agent/hermes_dir_acl.py",  # update restores the Windows user ACL on the home after elevation
     "gateway/status.py",  # code_sha stamp the fleet verify reads
@@ -434,7 +434,7 @@ _SHARED_HUBS = frozenset({
     "hermes_cli/profiles.py",
     "hermes_cli/version_info.py",
     "hermes_agent/utils.py",
-    "hermes_state/__init__.py",
+    "hermes_state.py",
     "agent/__init__.py",
     "cron/jobs.py",
     "tools/environments/local.py",
@@ -474,9 +474,9 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/_update_",
         "hermes_cli/old_updater",
         # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
-        "hermes_state/holders.py",
+        "hermes_agent/state/holders.py",
         # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
-        "hermes_state/fts.py",
+        "hermes_agent/state/fts.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",

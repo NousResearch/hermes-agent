@@ -28,8 +28,8 @@ from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
 from hermes_state import is_malformed_db_error
-from hermes_state.errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
-from hermes_state.health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_agent.state.errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
+from hermes_agent.state.health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 list_router = APIRouter()
 search_router = APIRouter()
@@ -815,7 +815,7 @@ async def get_session_timeline(
     ``next_cursor`` is a stable logical first-row id; pass it as ``after_row_id``.
     Entry ``row_id`` addresses the current representative for /messages/around.
     """
-    from hermes_state.timeline import get_session_timeline as read_timeline
+    from hermes_agent.state.timeline import get_session_timeline as read_timeline
 
     owner = _serving_profile(profile)
 
@@ -833,7 +833,7 @@ async def get_session_messages_around(
     limit: int = Query(120, ge=1, le=120),
 ):
     """Bounded display page starting at a timeline prompt; no intervening payloads."""
-    from hermes_state.timeline import get_session_messages_around as read_around
+    from hermes_agent.state.timeline import get_session_messages_around as read_around
 
     owner = _serving_profile(profile)
 

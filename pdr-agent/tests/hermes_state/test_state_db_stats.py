@@ -1,10 +1,10 @@
 """Tests for state.db health/stats collection (hermes doctor section).
 
 Covers:
-- ``hermes_state.dbfile.collect_state_db_stats``: read-only, best-effort stats
+- ``hermes_agent.state.dbfile.collect_state_db_stats``: read-only, best-effort stats
   (page_count, freelist, WAL size, journal mode, row counts, FTS presence,
   pending v23 FTS-rebuild bookkeeping).
-- ``hermes_state.dbfile.count_db_holders``: best-effort probe for how many processes
+- ``hermes_agent.state.dbfile.count_db_holders``: best-effort probe for how many processes
   hold the DB file open (/proc on Linux, libproc on macOS; None elsewhere/on error).
 - ``hermes_cli.doctor_state._render_state_db_stats``: formatting/threshold helper
   the doctor state.db section prints from.
@@ -16,7 +16,7 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.dbfile import collect_state_db_stats, count_db_holders
+from hermes_agent.state.dbfile import collect_state_db_stats, count_db_holders
 
 
 @pytest.fixture()

@@ -89,8 +89,8 @@ async def test_bot_chat_stamped_with_another_principal_stays_refused(tmp_path, m
 
 def test_legacy_validation_names_the_subject_it_adopts_for(tmp_path):
     from hermes_state import SessionDB
-    from hermes_state.local_migration import validate_legacy_row
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.local_migration import validate_legacy_row
+    from hermes_agent.state.runtime import RuntimeStoreError
     db = SessionDB(db_path=tmp_path / 'state.db')
     try:
         db.create_session('own', source='cli', user_id=_OWN)

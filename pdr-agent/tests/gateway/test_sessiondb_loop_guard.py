@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-import hermes_state.loop_guard as guard
+import hermes_agent.state.loop_guard as guard
 
 # Loop-side reads that stay on the loop on purpose (``(module, function)`` of the caller), each because
 # it is paired, in one loop step, with loop-only state:
@@ -37,7 +37,7 @@ KEPT_ON_LOOP = {
 # turn). Their direct reads (the innermost caller of the store) must never be on the loop again.
 MOVED_OFF_LOOP = {('gateway/session_cron.py', 'operation'), ('gateway/session_cron.py', '_read_admission'),
                   ('gateway/session_authority.py', '_claim_next'), ('gateway/session_results.py', 'admission_result')}
-HOT_READS = {('hermes_state/runtime.py', 'get_session_admission'), ('hermes_state/runtime.py', 'list_session_admissions'),
+HOT_READS = {('hermes_agent/state/runtime.py', 'get_session_admission'), ('hermes_agent/state/runtime.py', 'list_session_admissions'),
              ('gateway/session_results.py', 'admission_result')}
 
 

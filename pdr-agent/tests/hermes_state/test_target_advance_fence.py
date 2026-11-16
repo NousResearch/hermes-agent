@@ -9,11 +9,11 @@ from dataclasses import asdict
 import pytest
 
 from hermes_state import SessionDB
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 
 
 def _local_session(db, epoch, cwd):
-    from hermes_state.local import commit_local_session
+    from hermes_agent.state.local import commit_local_session
     from gateway.config import Platform
     from gateway.session import SessionEntry, SessionSource
     from gateway.session_lifecycle import _now

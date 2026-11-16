@@ -58,11 +58,11 @@ def make_store(tmp_path):
 @pytest.fixture
 def boot_db(monkeypatch):
     """Make boot recovery's default state.db the given handle."""
-    import hermes_state.registry
+    import hermes_agent.state.registry
 
     def use(db):
-        monkeypatch.setattr(hermes_state.registry, "acquire", lambda: db)
-        monkeypatch.setattr(hermes_state.registry, "release_or_close", lambda _db: None)
+        monkeypatch.setattr(hermes_agent.state.registry, "acquire", lambda: db)
+        monkeypatch.setattr(hermes_agent.state.registry, "release_or_close", lambda _db: None)
 
     return use
 

@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 
 from gateway.session_contract import SessionActor
-from hermes_state.runtime import list_session_admissions
+from hermes_agent.state.runtime import list_session_admissions
 
 KEY = 'c' * 32
 

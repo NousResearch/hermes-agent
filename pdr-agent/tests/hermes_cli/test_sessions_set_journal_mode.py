@@ -79,7 +79,7 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(
     assert db.read_bytes()[18:20] == b"\x02\x02", "a refused switch must leave the file untouched"
 
     # A failed scan (pid <= 0 sentinel) is refused too, and is the ONLY thing --force waives.
-    monkeypatch.setattr("hermes_state.holders.foreign_state_db_holders", lambda path: [(-1, "scan failed")])
+    monkeypatch.setattr("hermes_agent.state.holders.foreign_state_db_holders", lambda path: [(-1, "scan failed")])
     assert cmd_sessions(_args("delete", force=force)) == (0 if force else 1)
     assert db.read_bytes()[18:20] == (b"\x01\x01" if force else b"\x02\x02")
     assert ("scan: scan failed" in capsys.readouterr().out) is not force

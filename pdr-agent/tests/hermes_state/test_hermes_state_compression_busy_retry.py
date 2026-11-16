@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.errors import CompressionSessionBusyError
+from hermes_agent.state.errors import CompressionSessionBusyError
 
 
 @pytest.fixture

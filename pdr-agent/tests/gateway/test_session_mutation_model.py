@@ -157,7 +157,7 @@ def test_desktop_pick_resolves_a_provider_added_after_the_session_and_freezes_on
     ``key_env`` key, the receipt freezes only that one entry plus the pointer (never the key
     value), nothing else in the frozen config moves, and another profile's same-named provider
     is never read."""
-    from hermes_state.local import POLICY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)
@@ -261,7 +261,7 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import model_switch
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='switched', target_provider='custom', base_url='http://127.0.0.1:9/v1'))
@@ -444,7 +444,7 @@ async def test_picked_legacy_custom_provider_survives_a_profile_reorder_on_cold_
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
     from hermes_state import SessionDB
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
     from hermes_cli import model_switch
 
     other = '  - name: other\n    base_url: https://other.example.invalid/v1\n    api_key: sk-other\n'
@@ -494,7 +494,7 @@ async def test_probe_rename_keep_url_key(tmp_path, monkeypatch):
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, restore_policy
     from hermes_state import SessionDB
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
     from hermes_cli import model_switch
 
     other = '  - name: other\n    base_url: https://other.example.invalid/v1\n    api_key: sk-other\n'
@@ -638,7 +638,7 @@ async def test_guarded_model_target_commits_only_with_its_confirmation_token(tmp
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import model_cost_guard, model_switch
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
@@ -706,7 +706,7 @@ async def test_large_context_guard_reads_the_persisted_anchor_with_no_resident_a
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import model_selection_guards, model_switch
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_selection_guards, '_context_cache_threshold', lambda: 1000)
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(

@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-import hermes_state.readpool
+import hermes_agent.state.readpool
 from hermes_state import SessionDB
 
 
@@ -30,8 +30,8 @@ def _exhaust(monkeypatch, db):
 def test_pool_exhaustion_warns_once_per_window_with_a_count(db, monkeypatch, caplog):
     _exhaust(monkeypatch, db)
     clock = [1000.0]
-    monkeypatch.setattr(hermes_state.readpool.time, "monotonic", lambda: clock[0], raising=False)
-    getattr(hermes_state.readpool, "_pool_exhaustion_warned_at", {}).clear()
+    monkeypatch.setattr(hermes_agent.state.readpool.time, "monotonic", lambda: clock[0], raising=False)
+    getattr(hermes_agent.state.readpool, "_pool_exhaustion_warned_at", {}).clear()
     with caplog.at_level(logging.WARNING, logger="hermes_state"):
         for _ in range(5):
             assert db._get_read_conn() is None
@@ -48,7 +48,7 @@ def test_pool_exhaustion_warns_once_per_window_with_a_count(db, monkeypatch, cap
 
 
 def test_pool_exhaustion_count_is_per_database(tmp_path, monkeypatch, caplog):
-    getattr(hermes_state.readpool, "_pool_exhaustion_warned_at", {}).clear()
+    getattr(hermes_agent.state.readpool, "_pool_exhaustion_warned_at", {}).clear()
     a, b = SessionDB(tmp_path / "a" / "state.db"), SessionDB(tmp_path / "b" / "state.db")
     try:
         for handle in (a, b):

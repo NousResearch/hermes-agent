@@ -13,7 +13,7 @@ from gateway import session_policy
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_controls import AuthorityConnection
 from hermes_state import SessionDB
-from hermes_state.runtime import begin_runtime_epoch
+from hermes_agent.state.runtime import begin_runtime_epoch
 
 
 @pytest.fixture

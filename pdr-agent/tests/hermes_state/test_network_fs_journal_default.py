@@ -19,9 +19,9 @@ import sqlite3
 
 import pytest
 
-import hermes_state.wal
+import hermes_agent.state.wal
 from hermes_agent import hermes_yaml as yaml
-from hermes_state.wal import apply_wal_with_fallback
+from hermes_agent.state.wal import apply_wal_with_fallback
 
 
 @pytest.fixture(autouse=True)
@@ -29,13 +29,13 @@ def _isolate(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(hermes_state.wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
-    monkeypatch.setattr(hermes_state.wal, "_path_on_cross_vm_fs", lambda p: False)
+    monkeypatch.setattr(hermes_agent.state.wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
+    monkeypatch.setattr(hermes_agent.state.wal, "_path_on_cross_vm_fs", lambda p: False)
     for name in ("_network_fs_warned_paths", "_network_fs_new_store_warned_paths",
                  "_journal_upgrade_warned_paths", "_delete_overridden_warned_paths"):
-        if hasattr(hermes_state.wal, name):
-            getattr(hermes_state.wal, name).clear()
-    getattr(hermes_state.wal, "_network_fs_cache", {}).clear()
+        if hasattr(hermes_agent.state.wal, name):
+            getattr(hermes_agent.state.wal, name).clear()
+    getattr(hermes_agent.state.wal, "_network_fs_cache", {}).clear()
     return home
 
 
@@ -45,7 +45,7 @@ def _configure(home, journal_mode):
 
 
 def _on_network_fs(monkeypatch, value=True):
-    monkeypatch.setattr(hermes_state.wal, "_detect_network_fs", lambda directory, *a, **k: value, raising=False)
+    monkeypatch.setattr(hermes_agent.state.wal, "_detect_network_fs", lambda directory, *a, **k: value, raising=False)
 
 
 def _open(path):
@@ -69,7 +69,7 @@ def _seed(path, mode):
 
 def test_fresh_store_on_network_fs_starts_in_delete_and_warns_once(tmp_path, monkeypatch, caplog):
     _on_network_fs(monkeypatch)
-    with caplog.at_level(logging.WARNING, logger=hermes_state.wal.logger.name):
+    with caplog.at_level(logging.WARNING, logger=hermes_agent.state.wal.logger.name):
         assert _open(tmp_path / "state.db") == ("delete", "delete")
         assert _open(tmp_path / "state.db") == ("delete", "delete")
     lines = [r for r in caplog.records if "network filesystem" in r.getMessage()]
@@ -91,7 +91,7 @@ def test_explicit_wal_config_wins_on_network_fs(tmp_path, monkeypatch, _isolate)
     if _open(tmp_path / "control.db")[0] != "wal":  # gate the skip on the ENVIRONMENT, never on the result
         pytest.skip("environment refuses WAL for unrelated reasons")
     _on_network_fs(monkeypatch)
-    hermes_state.wal._network_fs_cache.clear()
+    hermes_agent.state.wal._network_fs_cache.clear()
     assert _open(tmp_path / "state.db") == ("wal", "wal")
 
 
@@ -105,7 +105,7 @@ def test_existing_delete_store_on_network_fs_is_not_upgraded_to_wal(tmp_path, mo
     db = tmp_path / "kanban.db"
     _seed(db, "DELETE")
     _on_network_fs(monkeypatch)
-    with caplog.at_level(logging.WARNING, logger=hermes_state.wal.logger.name):
+    with caplog.at_level(logging.WARNING, logger=hermes_agent.state.wal.logger.name):
         assert _open(db) == ("delete", "delete")
     assert not [r for r in caplog.records if "switched to WAL" in r.getMessage()]
 
@@ -114,7 +114,7 @@ def test_existing_wal_store_on_network_fs_keeps_wal_and_names_the_offline_remedy
     db = tmp_path / "state.db"
     _seed(db, "WAL")
     _on_network_fs(monkeypatch)
-    with caplog.at_level(logging.WARNING, logger=hermes_state.wal.logger.name):
+    with caplog.at_level(logging.WARNING, logger=hermes_agent.state.wal.logger.name):
         for _ in range(2):
             assert _open(db) == ("wal", "wal")  # never live-downgraded
     lines = [r for r in caplog.records if "network filesystem" in r.getMessage()]
@@ -131,5 +131,5 @@ def test_network_fstypes_cover_nfs_and_smb_variants(tmp_path):
     mi = tmp_path / "mountinfo"
     mi.write_text("\n".join(rows) + "\n", encoding="utf-8")
     for fs in ("nfs", "nfs4", "cifs", "smb3", "fuse_sshfs"):
-        assert hermes_state.wal._detect_network_fs(f"/mnt/{fs}/home", mountinfo_path=str(mi)) is True
-    assert hermes_state.wal._detect_network_fs("/home/user/.hermes", mountinfo_path=str(mi)) is False
+        assert hermes_agent.state.wal._detect_network_fs(f"/mnt/{fs}/home", mountinfo_path=str(mi)) is True
+    assert hermes_agent.state.wal._detect_network_fs("/home/user/.hermes", mountinfo_path=str(mi)) is False

@@ -16,18 +16,18 @@ import time
 import psutil
 import pytest
 
-import hermes_state.common
-import hermes_state.pidns
+import hermes_agent.state.common
+import hermes_agent.state.pidns
 from agent.conversation_compression import _compression_lock_holder
 from hermes_state import SessionDB
-from hermes_state.pidns import LocalPidNamespace
+from hermes_agent.state.pidns import LocalPidNamespace
 
 _OURS, _SIBLING = "111", "222"
 
 
 @pytest.fixture(autouse=True)
 def _pinned_namespace(monkeypatch):
-    monkeypatch.setattr(hermes_state.pidns, "_LOCAL_PID_NS", LocalPidNamespace(_OURS, True))
+    monkeypatch.setattr(hermes_agent.state.pidns, "_LOCAL_PID_NS", LocalPidNamespace(_OURS, True))
 
 
 def _dead_pid() -> int:
@@ -61,12 +61,12 @@ def test_turn_lease_of_sibling_namespace_is_not_stolen(tmp_path) -> None:
 
 def test_flock_holder_record_qualifies_pid_namespaces(monkeypatch, tmp_path) -> None:
     dead = _dead_pid()
-    provably_dead = hermes_state.common._lock_holder_provably_dead
+    provably_dead = hermes_agent.state.common._lock_holder_provably_dead
 
     # Writers stamp our namespace: the flock record and the compression holder.
     with open(tmp_path / "lock", "w+b") as handle:
-        hermes_state.common._write_lock_holder_record(handle)
-        assert hermes_state.common._read_lock_holder_record(handle)["pidns"] == _OURS
+        hermes_agent.state.common._write_lock_holder_record(handle)
+        assert hermes_agent.state.common._read_lock_holder_record(handle)["pidns"] == _OURS
     assert f":pidns={_OURS}:" in _compression_lock_holder(object())
 
     # Same namespace + provably gone: break the orphaned lock (unchanged).
@@ -79,11 +79,11 @@ def test_flock_holder_record_qualifies_pid_namespaces(monkeypatch, tmp_path) -> 
 
     # Our own namespace lookup failed: a stamped record is unverifiable, but an
     # unstamped one still breaks (#100108 orphan-lock cleanup must not regress).
-    monkeypatch.setattr(hermes_state.pidns, "_LOCAL_PID_NS", None)
-    monkeypatch.setattr(hermes_state.pidns, "_resolve_local_pid_namespace", lambda: LocalPidNamespace(None, True))
+    monkeypatch.setattr(hermes_agent.state.pidns, "_LOCAL_PID_NS", None)
+    monkeypatch.setattr(hermes_agent.state.pidns, "_resolve_local_pid_namespace", lambda: LocalPidNamespace(None, True))
     assert provably_dead({"pid": dead, "pidns": _OURS, "start_ticks": 1, "acquired_at": 0.0}) is False
     assert provably_dead({"pid": dead, "start_ticks": 1, "acquired_at": 0.0}) is True
 
     # The failed lookup was not cached: once it resolves, a stamped record breaks.
-    monkeypatch.setattr(hermes_state.pidns, "_resolve_local_pid_namespace", lambda: LocalPidNamespace(_OURS, True))
+    monkeypatch.setattr(hermes_agent.state.pidns, "_resolve_local_pid_namespace", lambda: LocalPidNamespace(_OURS, True))
     assert provably_dead({"pid": dead, "pidns": _OURS, "start_ticks": 1, "acquired_at": 0.0}) is True

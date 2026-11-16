@@ -22,7 +22,7 @@ import pytest_asyncio
 
 from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
-from hermes_state.runtime import list_session_admissions
+from hermes_agent.state.runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
 AUTHOR = {'id': 'bot:alpha', 'name': 'alpha', 'is_bot': True}

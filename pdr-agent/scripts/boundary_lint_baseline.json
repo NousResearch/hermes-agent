@@ -400,7 +400,7 @@
     "plugins/platforms/discord/onboarding.py tools.discord_tool._FLAGS_GUILD_MEMBERS": 1,
     "plugins/platforms/discord/onboarding.py tools.discord_tool._FLAGS_MESSAGE_CONTENT": 1,
     "plugins/platforms/discord/onboarding.py tools.discord_tool._discord_request": 1,
-    "plugins/platforms/discord/recovery.py hermes_state.wal.apply_wal_with_fallback": 1,
+    "plugins/platforms/discord/recovery.py hermes_agent.state.wal.apply_wal_with_fallback": 1,
     "plugins/platforms/discord/send_targets.py gateway.platforms.send_targets.StandaloneSendPolicy": 1,
     "plugins/platforms/discord/send_targets.py gateway.platforms.send_targets.regex_groups_parser": 1,
     "plugins/platforms/email/adapter.py agent.async_utils.safe_schedule_threadsafe": 1,

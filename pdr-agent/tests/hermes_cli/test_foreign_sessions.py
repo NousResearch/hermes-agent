@@ -101,7 +101,7 @@ def _write_codex_fixture(tmp_path, extra_lines=None):
 def _route_store(monkeypatch, mutate):
     """Answer the importer's gateway calls with *mutate* (``session.mutate`` params -> receipt)."""
     from hermes_cli.gateway_client import GatewayClientError
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
     calls = []
 
     def call(method, **params):
@@ -122,7 +122,7 @@ def gateway(tmp_path, monkeypatch):
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_mutations import mutate_session
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
 
     db = SessionDB(db_path=tmp_path / "state.db")
     authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="p", instance_id="owner",
@@ -300,7 +300,7 @@ def test_import_rejects_bad_input(tmp_path, gateway):
 def test_import_is_written_by_the_gateway_not_this_process(tmp_path, gateway, monkeypatch):
     """The gateway is the only state.db writer (#106742): the importer only sends ``session.mutate``."""
     from hermes_state import SessionDB
-    from hermes_state.mutation_binding import history_binding
+    from hermes_agent.state.mutation_binding import history_binding
 
     def refused(*_a, **_k):
         raise AssertionError("the importer wrote state.db itself")

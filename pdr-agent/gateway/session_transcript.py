@@ -306,7 +306,7 @@ class SessionTranscriptMixin:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
                 from hermes_state import StateDbCorruptError, StateDbReplacedError
-                from hermes_state.errors import CompressionSessionClosedError
+                from hermes_agent.state.errors import CompressionSessionClosedError
                 if isinstance(exc, (StateDbReplacedError, StateDbCorruptError)):
                     self._divert_transcript_after_db_replaced(session_id, queue_session_id, exc)
                     return
@@ -689,7 +689,7 @@ class SessionTranscriptMixin:
         db = self._db_for_session_id(session_id)
         if not db:
             return None
-        from hermes_state.rewind import RewindTargetUnavailableError
+        from hermes_agent.state.rewind import RewindTargetUnavailableError
         with self._get_transcript_drain_lock():
             try:
                 outcome = db.rewind_user_turn(

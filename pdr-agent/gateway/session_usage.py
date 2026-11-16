@@ -263,7 +263,7 @@ async def account_usage(connection, ref, params):
 
 async def stats(connection, ref, params):
     """``session.stats {session_id}``: the same dict ``session.usage`` carries."""
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
     if set(params) - {"session_id", "profile"}:
         raise RuntimeStoreError("invalid_params")
     await connection.authority.resolve(connection.actor, ref)

@@ -4,8 +4,8 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.common import SCHEMA_VERSION
-import hermes_state.runtime as rt
+from hermes_agent.state.common import SCHEMA_VERSION
+import hermes_agent.state.runtime as rt
 
 
 def test_schema_reconciles_existing_sessions_without_losing_history(tmp_path):

@@ -4,7 +4,7 @@ the same way, live or already reaped, or the next bot click resolves the archive
 "Waking up" (#139779)."""
 import pytest
 
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 from hermes_state import SessionDB
 
 

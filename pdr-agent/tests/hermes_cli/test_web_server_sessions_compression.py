@@ -86,7 +86,7 @@ class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
         from hermes_cli.web_server import app
         from hermes_agent.hermes_constants import get_hermes_home
         from hermes_state import SessionDB
-        from hermes_state.runtime import begin_runtime_epoch
+        from hermes_agent.state.runtime import begin_runtime_epoch
 
         db = SessionDB()
         try:

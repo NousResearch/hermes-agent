@@ -60,7 +60,7 @@ async def test_finished_process_resumes_the_parent_with_no_viewer(tmp_path, monk
 async def test_row_ended_without_the_user_reopens_for_the_result(tmp_path, monkeypatch, reason):
     """The orphan reaper ends the row of a viewer that vanished (a sleeping laptop): that is not the
     user's close, so the result reopens the row and runs as the turn."""
-    from hermes_state.local import end_idle_local_session
+    from hermes_agent.state.local import end_idle_local_session
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)

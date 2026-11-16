@@ -47,7 +47,7 @@ async def test_shell_exec_refusal_names_a_sandboxed_terminal_backend(tmp_path, m
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_controls import AuthorityConnection
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
 
     work = tmp_path / 'work'
     work.mkdir()

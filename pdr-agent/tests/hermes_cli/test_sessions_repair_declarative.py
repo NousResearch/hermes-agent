@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.common import SCHEMA_VERSION
+from hermes_agent.state.common import SCHEMA_VERSION
 from hermes_cli import sessions_cmd
 from hermes_cli.web_server_sessions import _open_session_db_at_path
 
@@ -14,7 +14,7 @@ from hermes_cli.web_server_sessions import _open_session_db_at_path
 @pytest.fixture(autouse=True)
 def _volume_headroom(monkeypatch):
     """The backup/snapshot guards reserve 2% of the volume: hermetic on a nearly full dev disk."""
-    import hermes_state.repair as repair
+    import hermes_agent.state.repair as repair
     monkeypatch.setattr(repair, '_REPAIR_BACKUP_FREE_FRACTION', 0.0)
     # The holder scan sees every process on the host: a developer's running Hermes would hold a
     # real state.db and refuse these tmp_path repairs. Same stub as test_state_db_repair_non_destructive.
@@ -50,8 +50,8 @@ def test_check_only_reports_drift_without_mutation(tmp_path, monkeypatch):
 @pytest.mark.parametrize('blocker', ['owner', 'ddl', 'incomplete', 'backup'])
 def test_refused_reconciliation_preserves_original(tmp_path, monkeypatch, blocker):
     from gateway.runtime_ownership import ProfileOwnership
-    import hermes_state.repair as repair
-    import hermes_state.schema as schema
+    import hermes_agent.state.repair as repair
+    import hermes_agent.state.schema as schema
 
     path = _legacy_store(tmp_path, monkeypatch)
     before = path.read_bytes()
@@ -90,7 +90,7 @@ def test_canonical_store_is_unchanged(tmp_path, monkeypatch, with_history):
 
 @pytest.mark.parametrize('missing', ['sessions', 'messages'])
 def test_missing_history_table_is_not_recreated_as_empty(tmp_path, monkeypatch, missing):
-    from hermes_state.reconcile import repair_declarative_schema
+    from hermes_agent.state.reconcile import repair_declarative_schema
     path = tmp_path / 'state.db'
     kept = 'messages' if missing == 'sessions' else 'sessions'
     with closing(sqlite3.connect(path)) as conn:
@@ -105,8 +105,8 @@ def test_missing_history_table_is_not_recreated_as_empty(tmp_path, monkeypatch, 
 
 
 def test_snapshot_history_loss_is_not_promoted(tmp_path, monkeypatch):
-    import hermes_state.repair as repair
-    from hermes_state.reconcile import repair_declarative_schema
+    import hermes_agent.state.repair as repair
+    from hermes_agent.state.reconcile import repair_declarative_schema
     path = _legacy_store(tmp_path, monkeypatch)
     before = path.read_bytes()
     copy = repair._copy_database_snapshot

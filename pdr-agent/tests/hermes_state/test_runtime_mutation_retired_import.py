@@ -1,7 +1,7 @@
 """A retired physical ID cannot be assigned to a different imported transcript."""
 import pytest
 from hermes_state import SessionDB
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 
 
 def test_import_cannot_reuse_a_deleted_receipt_identity(tmp_path):

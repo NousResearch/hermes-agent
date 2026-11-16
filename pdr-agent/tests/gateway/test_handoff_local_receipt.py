@@ -50,9 +50,9 @@ async def _handoff(runner, authority, sid, source):
 
 def _as_an_older_build(monkeypatch):
     """An older build's repoint: the row's routing identity moves, its local receipt stays."""
-    import hermes_state.local
+    import hermes_agent.state.local
     for name in ('hand_off_conversations', 'release_receipts'):
-        monkeypatch.setattr(hermes_state.local, name, lambda *_args: None, raising=False)
+        monkeypatch.setattr(hermes_agent.state.local, name, lambda *_args: None, raising=False)
 
 
 @pytest.mark.asyncio
@@ -69,8 +69,8 @@ async def test_a_handed_off_bot_chat_opens_on_its_lane_after_a_restart(tmp_path,
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import transcript_target
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state.local import POLICY_PREFIX, local_receipt
-    from hermes_state.local_migration import LEGACY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX, local_receipt
+    from hermes_agent.state.local_migration import LEGACY_PREFIX
 
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
@@ -135,7 +135,7 @@ async def test_a_receipt_whose_current_segment_is_still_local_is_never_released(
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state.local import local_receipt
+    from hermes_agent.state.local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
@@ -357,7 +357,7 @@ async def test_a_platform_resume_of_a_local_conversation_continues_its_current_h
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state.local import local_receipt
+    from hermes_agent.state.local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
@@ -395,7 +395,7 @@ async def test_a_moved_conversation_stays_writable_once_its_lane_is_taken_over(t
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_local import create_local_session
-    from hermes_state.local import local_receipt
+    from hermes_agent.state.local import local_receipt
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control',
@@ -554,7 +554,7 @@ async def test_a_moved_receipt_with_a_malformed_lineage_never_stops_the_boot(tmp
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
-    from hermes_state.local import POLICY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX
     runner = _Runner(tmp_path)
     warm = await initialize_session_authority(runner, profile_id='fixture', instance_id='warm')
     owner = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
@@ -626,8 +626,8 @@ async def test_a_named_profiles_handed_off_bot_chat_opens_on_its_lane_after_a_re
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import transcript_target
     from gateway.session_local_title import resolve_titled_session
-    from hermes_state.local import POLICY_PREFIX
-    from hermes_state.local_migration import LEGACY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX
+    from hermes_agent.state.local_migration import LEGACY_PREFIX
 
     root, bot = _serve(tmp_path, monkeypatch)
     process_ownership.reserve([root, bot])

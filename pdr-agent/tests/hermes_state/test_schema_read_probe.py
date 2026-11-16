@@ -13,8 +13,8 @@ import sqlite3
 
 import pytest
 
-from hermes_state.common import DEFERRED_INDEX_SQL, SCHEMA_SQL
-from hermes_state.schema import SessionSchemaMixin, schema_read_probe_statements
+from hermes_agent.state.common import DEFERRED_INDEX_SQL, SCHEMA_SQL
+from hermes_agent.state.schema import SessionSchemaMixin, schema_read_probe_statements
 
 def _fresh_schema_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")

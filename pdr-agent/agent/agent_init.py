@@ -46,7 +46,7 @@ from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_agent.hermes_constants import get_hermes_home
-from hermes_state.ids import new_session_id
+from hermes_agent.state.ids import new_session_id
 from hermes_agent.utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.

@@ -10,7 +10,7 @@ import pytest
 from agent.prompt_cache_scope import conversation_id
 from agent.runtime_session_store import RuntimeSessionStore
 from hermes_state import SessionDB
-from hermes_state.runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
+from hermes_agent.state.runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
 from hermes_agent.run_agent import AIAgent
 
 PLUGIN = '''

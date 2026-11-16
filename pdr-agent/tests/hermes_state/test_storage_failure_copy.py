@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from hermes_state.user_copy import describe_storage_failure, storage_failure_details
+from hermes_agent.state.user_copy import describe_storage_failure, storage_failure_details
 
 
 @pytest.mark.parametrize(

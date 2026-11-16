@@ -2,7 +2,7 @@
 import sqlite3
 import pytest
 from hermes_state import SessionDB
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 
 
 def test_import_rolls_back_rows_with_receipt_failure(tmp_path):

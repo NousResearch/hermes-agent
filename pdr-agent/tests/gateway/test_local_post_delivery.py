@@ -36,7 +36,7 @@ def _viewer():
 async def test_local_turn_runs_its_post_delivery_callbacks_after_settling(tmp_path, monkeypatch):
     from gateway.session_contract import Submission
     from gateway.session_local import create_local_session
-    from hermes_state.runtime import get_session_admission
+    from hermes_agent.state.runtime import get_session_admission
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     fired = []

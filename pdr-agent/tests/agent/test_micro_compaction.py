@@ -827,7 +827,7 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
     timeline) may also paint the merged row. The model view still holds each input exactly once."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from hermes_state import SessionDB
-    from hermes_state.timeline import get_session_timeline
+    from hermes_agent.state.timeline import get_session_timeline
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("s", source="cli")

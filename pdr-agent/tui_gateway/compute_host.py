@@ -7,7 +7,7 @@ from __future__ import annotations
 # Only as ``python -m``: tests import this module, and the bootstrap's TMPDIR/scratch exports
 # must not fire in a library importer.
 if __name__ == "__main__":
-    from hermes_agent import hermes_bootstrap
+    import hermes_bootstrap
 
 import argparse
 import concurrent.futures
@@ -355,7 +355,7 @@ class ComputeHost:
                 from hermes_agent.hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
                 from hermes_cli.env_loader import hydrate_profile_secret_sources
-                from hermes_state.registry import acquire
+                from hermes_agent.state.registry import acquire
                 home_token = set_hermes_home_override(profile_home)
                 # External sources first (1Password / Bitwarden / secrets.command): this isolated
                 # turn process never ran the launch dotenv path for the routed profile, so without
@@ -383,7 +383,7 @@ class ComputeHost:
         finally:
             if owns_db and session_db is not None:
                 with contextlib.suppress(Exception):
-                    from hermes_state.registry import release_or_close
+                    from hermes_agent.state.registry import release_or_close
                     release_or_close(session_db)
             if home_token is not None:
                 with contextlib.suppress(Exception):

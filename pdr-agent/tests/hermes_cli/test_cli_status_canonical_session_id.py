@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 from hermes_cli.cli_session_mixin import CLISessionMixin
 from hermes_state import SessionDB
-from hermes_state.keys import local_identity
+from hermes_agent.state.keys import local_identity
 
 
 def _status_text(session_db, session_id: str) -> str:

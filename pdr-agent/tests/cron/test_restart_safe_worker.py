@@ -849,7 +849,7 @@ def test_booted_worker_drops_the_marker_before_any_job_child(monkeypatch):
     later inherit this environment and would otherwise re-run the worker dependency boot."""
     from cron import worker_bootstrap
 
-    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_bootstrap", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "hermes_bootstrap", SimpleNamespace())
     monkeypatch.setenv(worker_bootstrap.WORKER_MARKER, "1")
     worker_bootstrap.finish_worker_boot()
     assert worker_bootstrap.WORKER_MARKER not in os.environ

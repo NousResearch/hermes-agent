@@ -9,9 +9,9 @@ from contextlib import closing
 
 import pytest
 
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 from hermes_state import SessionDB
-from hermes_state.errors import classify_persistence_error
+from hermes_agent.state.errors import classify_persistence_error
 
 
 def _settled(db, epoch, sid):

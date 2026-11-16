@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_state import SessionDB, StateDbCorruptError
-from hermes_state.health import mark_storage_corrupt, reset_storage_state
+from hermes_agent.state.health import mark_storage_corrupt, reset_storage_state
 from hermes_agent.run_agent import AIAgent
 
 

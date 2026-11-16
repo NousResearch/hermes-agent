@@ -108,7 +108,7 @@ def _replies(outgoing, chat_id):
 
 
 def _requests(authority):
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     rows = []
     for sid in list(authority.sessions):
         rows += list_session_admissions(authority.db, session_id=sid, pending_only=False)
@@ -178,7 +178,7 @@ async def test_multiplexed_gateway_admits_a_connector_stamped_profile_into_its_o
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
     from gateway.session_envelope import restore_native
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
 
     root, homes = _reserve_homes(tmp_path, monkeypatch, names=('work',))
     work = homes[1][1]

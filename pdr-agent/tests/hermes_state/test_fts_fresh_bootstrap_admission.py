@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hermes_state.common
+import hermes_agent.state.common
 from hermes_state import SessionDB
 
 
@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from hermes_state.common import fts_rebuild_admission
+from hermes_agent.state.common import fts_rebuild_admission
 
 with fts_rebuild_admission(Path(sys.argv[1]), timeout_seconds=0) as acquired:
     assert acquired
@@ -46,7 +46,7 @@ def test_fresh_fts_bootstrap_does_not_publish_schema_without_admission(tmp_path,
     try:
         assert proc.stdout is not None
         assert proc.stdout.readline().strip() == "locked"
-        monkeypatch.setattr(hermes_state.common, "_FTS_REBUILD_LOCK_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr(hermes_agent.state.common, "_FTS_REBUILD_LOCK_TIMEOUT_SECONDS", 0.1)
 
         deferred = SessionDB(db_path=db_path)
         try:

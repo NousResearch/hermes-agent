@@ -11,7 +11,7 @@ through delegate-child or compression-continuation hops. Anything else is ``avai
 import asyncio
 
 from gateway.session_busy_controls import authorize
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 def unavailable(session_id, subagent_id, running):

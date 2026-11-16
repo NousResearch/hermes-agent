@@ -7,7 +7,7 @@ import pytest
 
 from gateway.session_controls import AuthorityConnection
 from hermes_state import SessionDB
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 class RoomService:

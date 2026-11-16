@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from hermes_state.holders import foreign_state_db_holders, held_store_refusal
+from hermes_agent.state.holders import foreign_state_db_holders, held_store_refusal
 
 pytestmark = pytest.mark.platforms("windows")
 

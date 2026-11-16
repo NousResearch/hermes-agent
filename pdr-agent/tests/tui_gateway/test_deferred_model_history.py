@@ -60,7 +60,7 @@ def test_deferred_resume_preserves_model_history_and_db_ownership(tmp_path, monk
     monkeypatch.setattr(db, "close", close)
     monkeypatch.setattr(db, "get_resume_conversations", read_display)
     monkeypatch.setattr(db, "get_ancestor_display_prefix", read_prefix)
-    monkeypatch.setattr("hermes_state.registry.acquire", acquire)
+    monkeypatch.setattr("hermes_agent.state.registry.acquire", acquire)
     monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))

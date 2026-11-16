@@ -3,7 +3,7 @@ import sys
 
 # Stop a ``utils/``-style package in the launch directory from shadowing Hermes's own
 # top-level modules; ``hermes_bootstrap``'s name can't collide, so importing it first is safe.
-from hermes_agent import hermes_bootstrap
+import hermes_bootstrap
 
 hermes_bootstrap.harden_import_path()
 

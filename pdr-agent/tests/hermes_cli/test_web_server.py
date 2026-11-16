@@ -229,7 +229,7 @@ def mutation_owner(monkeypatch, _isolate_hermes_home):
     from hermes_agent.hermes_constants import get_hermes_home
     from hermes_cli.web_server import app
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
 
     home = get_hermes_home()
     db = SessionDB(db_path=home / 'state.db')
@@ -4167,7 +4167,7 @@ class TestDeleteSessionEndpoint:
         from hermes_cli import profiles as profiles_mod
         from hermes_cli.web_server import app
         from hermes_state import SessionDB
-        from hermes_state.runtime import begin_runtime_epoch
+        from hermes_agent.state.runtime import begin_runtime_epoch
 
         profile_home = profiles_mod.get_profile_dir("worker")
         profile_home.mkdir(parents=True)

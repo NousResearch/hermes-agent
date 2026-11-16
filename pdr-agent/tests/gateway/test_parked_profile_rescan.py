@@ -111,7 +111,7 @@ async def test_api_work_queued_before_the_park_is_recovered_by_the_rescan(multip
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.session_api import bind_api_session
     from gateway.session_authority import SessionAuthority
-    from hermes_state.runtime import admit_session_input
+    from hermes_agent.state.runtime import admit_session_input
     runner, beta = multiplexed
     api = SimpleNamespace(gateway_runner=runner)
     runner.adapters[Platform.API_SERVER] = api  # the launch API adapter is already published

@@ -3,7 +3,7 @@
 import os
 import pytest
 from hermes_state import SessionDB
-from hermes_state.errors import SessionActiveWriteGuardError
+from hermes_agent.state.errors import SessionActiveWriteGuardError
 
 
 def test_delete_session_refuses_when_write_guard_active(tmp_path):

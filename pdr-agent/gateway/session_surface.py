@@ -8,7 +8,7 @@ persisted user row stays the words the user typed and the frozen system prefix i
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 SURFACES = frozenset({'hud', 'voice-live'})
 _VOICE_CONTEXT_LIMIT = 6000

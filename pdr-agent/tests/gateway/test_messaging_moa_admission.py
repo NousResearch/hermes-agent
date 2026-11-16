@@ -13,7 +13,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session_results import execution_result
-from hermes_state.runtime import list_session_admissions
+from hermes_agent.state.runtime import list_session_admissions
 from tests.gateway.test_shared_busy_receive_loop import Adapter
 from tests.waiting import async_wait_until
 

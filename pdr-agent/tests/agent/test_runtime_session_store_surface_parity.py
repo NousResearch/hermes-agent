@@ -12,7 +12,7 @@ import pytest
 from hermes_agent.compat.paths import current_path
 from agent.runtime_session_store import RuntimeSessionStore
 from hermes_state import SessionDB
-from hermes_state.runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
+from hermes_agent.state.runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
 
 ROOT = Path(__file__).resolve().parents[2]
 # The agent core: everything a worker's AIAgent runs (tools open their own handles, or refuse).

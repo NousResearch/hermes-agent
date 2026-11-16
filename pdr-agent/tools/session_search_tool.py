@@ -16,7 +16,7 @@ from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
 from agent.redact import redact_derived_text
-from hermes_state.common import _BOUNDARY_END_REASONS, _PREVIEW_MAX_CHARS
+from hermes_agent.state.common import _BOUNDARY_END_REASONS, _PREVIEW_MAX_CHARS
 from hermes_agent.hermes_time import safe_strftime
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
@@ -760,7 +760,7 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int |
     new parameters are appended after ``detail``."""
     from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB, format_session_db_unavailable
-    from hermes_state.registry import release_or_close
+    from hermes_agent.state.registry import release_or_close
     owned_dbs: list[Any] = []
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
     # split on it and adopt the embedded profile only when none was passed.

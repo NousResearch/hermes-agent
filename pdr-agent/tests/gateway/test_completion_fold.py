@@ -5,7 +5,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
-from hermes_state.runtime import list_session_admissions
+from hermes_agent.state.runtime import list_session_admissions
 
 
 async def _discord_session(tmp_path, monkeypatch):

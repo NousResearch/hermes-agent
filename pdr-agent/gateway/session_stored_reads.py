@@ -36,7 +36,7 @@ from gateway.session_busy_controls import authorize
 from gateway.session_transcript_rows import (
     ROW_KIND_COMPACTION, ROW_KIND_MESSAGE, page_handoffs, project_entries, shown_occurrences,
 )
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 MAX_PAGE_ROWS = 500
 # Projected JSON per page: well under the gateway clients' 8 MiB frame (hermes_cli/gateway_client.py),

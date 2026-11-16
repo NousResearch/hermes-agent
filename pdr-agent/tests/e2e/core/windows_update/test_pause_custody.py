@@ -50,7 +50,7 @@ _DRIVER = """
 import inspect, json, os, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from hermes_agent import hermes_bootstrap  # as every launch does: re-enters the managed interpreter with its dependencies
+import hermes_bootstrap  # as every launch does: re-enters the managed interpreter with its dependencies
 from hermes_cli import update_pause_record as r
 
 def stop_at(fn, texts, action, flag=None):

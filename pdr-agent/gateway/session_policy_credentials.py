@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from agent.credential_persistence import fingerprint_secret_value
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 PREFIX = 'profile-config-v1:'

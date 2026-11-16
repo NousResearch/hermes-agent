@@ -80,7 +80,7 @@ async def test_prompt_admitted_while_the_close_runs_is_never_stranded(tmp_path, 
     ``rescan`` and start claiming, before the lifecycle returns): the turn runs and the session
     stays, whichever point of the claim the lifecycle returns at."""
     from gateway.session_contract import Submission
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
 
     runner, authority, db = await _owner(tmp_path, monkeypatch)
     claim_started, release_claim = asyncio.Event(), asyncio.Event()

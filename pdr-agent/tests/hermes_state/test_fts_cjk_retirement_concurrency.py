@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state.repair as repair
+import hermes_agent.state.repair as repair
 from hermes_state import SessionDB
-from hermes_state.fts import drop_retired_cjk_index
+from hermes_agent.state.fts import drop_retired_cjk_index
 from tests.hermes_state import test_fts_cjk_index_retirement as retirement
 from tests.hermes_state.test_fts_cjk_index_retirement import (
     _cjk_residue,
@@ -265,9 +265,9 @@ def test_retirement_succeeds_beside_an_index_whose_tokenizer_is_missing(cjk_db):
 @pytest.mark.parametrize("mode", [0o400, 0o000], ids=["read-only", "unopenable"])
 def test_a_copy_failing_its_final_scan_is_not_reported_as_damage(cjk_db, monkeypatch, mode):
     """Copy and retirement succeed; the copy then turns read-only or unopenable, so only its own scan fails."""
-    import hermes_state.fts
+    import hermes_agent.state.fts
 
-    retire = hermes_state.fts.drop_retired_cjk_index
+    retire = hermes_agent.state.fts.drop_retired_cjk_index
     frozen = []
 
     def retire_then_freeze(cursor):
@@ -280,7 +280,7 @@ def test_a_copy_failing_its_final_scan_is_not_reported_as_damage(cjk_db, monkeyp
             frozen.append(path.parent)
         return removed
 
-    monkeypatch.setattr(hermes_state.fts, "drop_retired_cjk_index", retire_then_freeze)
+    monkeypatch.setattr(hermes_agent.state.fts, "drop_retired_cjk_index", retire_then_freeze)
     try:
         reason = repair._db_opens_cleanly(cjk_db)
     finally:

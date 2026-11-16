@@ -4,7 +4,7 @@ SQLite guards a WAL generation with per-PROCESS POSIX locks, so any raw ``open()
 ``state.db`` or ``-shm`` inside the holder (howtocorrupt.html §2.2) silently drops them; the next
 last-connection close anywhere then checkpoints and unlinks ``-wal``/``-shm`` and the holder
 sticky-halts with ``DeletedWalGenerationError`` (#109727, #110042, #110276, Desktop "chat fails
-after update"). ``hermes_state.lockguard`` re-holds the same ranges as OFD locks that a stray
+after update"). ``hermes_agent.state.lockguard`` re-holds the same ranges as OFD locks that a stray
 close cannot cancel. Linux-only: the scenario needs ``/proc``-visible POSIX lock semantics.
 """
 

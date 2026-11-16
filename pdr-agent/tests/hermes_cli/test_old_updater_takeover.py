@@ -97,7 +97,7 @@ def test_shipped_post_swap_argv_enters_takeover_before_current_cli(tmp_path):
         "import hermes_bootstrap\nraise AssertionError('current CLI parsed a legacy continuation')\n",
         encoding="utf-8",
     )
-    for relative in ("hermes_agent/hermes_bootstrap.py", "hermes_cli/update_handoff.py", "hermes_cli/_old_updater.py"):
+    for relative in ("hermes_bootstrap.py", "hermes_cli/update_handoff.py", "hermes_cli/_old_updater.py"):
         shutil.copy2(source / relative, root / relative)
     shutil.copytree(source / "hermes_agent", root / "hermes_agent", ignore=shutil.ignore_patterns("__pycache__"))
     (package / "_update_takeover.py").write_text(

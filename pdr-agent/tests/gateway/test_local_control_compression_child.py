@@ -43,7 +43,7 @@ async def test_a_segment_rewind_keeps_the_owner_busy_gate(tmp_path, monkeypatch,
     """Owner authorization is for metadata only: a rewind by a compression segment's id must not
     run while the conversation's FIFO holds queued input (the ledger keys admissions by owner id),
     so it is refused exactly like the same rewind by the conversation id (review of #140971)."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     from gateway.session_controls import AuthorityConnection
     compressed = await _compressed(tmp_path, monkeypatch)
     authority = compressed.warm

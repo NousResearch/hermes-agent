@@ -64,9 +64,9 @@ def test_doctor_collects_structural_fts_upgrade_status(
 ):
     """Real read-only collection must ignore forged or lagging version markers."""
     from hermes_cli import doctor_state
-    from hermes_state.dbfile import collect_state_db_stats
-    from hermes_state.fts import _expected_vtable_sql
-    from hermes_state.common import FTS_SQL, FTS_TRIGRAM_SQL
+    from hermes_agent.state.dbfile import collect_state_db_stats
+    from hermes_agent.state.fts import _expected_vtable_sql
+    from hermes_agent.state.common import FTS_SQL, FTS_TRIGRAM_SQL
 
     db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:
@@ -104,9 +104,9 @@ def test_doctor_collects_structural_fts_upgrade_status(
 @pytest.mark.parametrize("progress, pending", [(0, True), (10, False)])
 def test_doctor_collects_pending_rebuild_with_settled_layout(tmp_path, monkeypatch, progress, pending):
     from hermes_cli import doctor_state
-    from hermes_state.dbfile import collect_state_db_stats
-    from hermes_state.fts import _expected_vtable_sql
-    from hermes_state.common import FTS_SQL, FTS_TRIGRAM_SQL
+    from hermes_agent.state.dbfile import collect_state_db_stats
+    from hermes_agent.state.fts import _expected_vtable_sql
+    from hermes_agent.state.common import FTS_SQL, FTS_TRIGRAM_SQL
 
     db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:

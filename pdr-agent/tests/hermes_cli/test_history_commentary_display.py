@@ -131,7 +131,7 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
 ):
     from hermes_cli import config as config_mod
     from hermes_cli.web_routers import sessions
-    import hermes_state.timeline
+    import hermes_agent.state.timeline
 
     row = _row()
     homes = {name: tmp_path / name for name in ("visible", "hidden")}
@@ -164,7 +164,7 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
     )
     monkeypatch.setattr(sessions, "_timeline_session_id", lambda db, sid, owner: sid)
     monkeypatch.setattr(
-        hermes_state.timeline,
+        hermes_agent.state.timeline,
         "get_session_messages_around",
         lambda *args, **kwargs: {"messages": [row], "pagination": {}},
     )
@@ -196,7 +196,7 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
     from hermes_cli import config as config_mod
     from hermes_cli.web_routers import sessions
     from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    import hermes_state.timeline
+    import hermes_agent.state.timeline
 
     custom, default = tmp_path / "custom", tmp_path / "default"
     monkeypatch.setattr(
@@ -228,7 +228,7 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
     )
     monkeypatch.setattr(sessions, "_timeline_session_id", lambda db, sid, owner: sid)
     monkeypatch.setattr(
-        hermes_state.timeline,
+        hermes_agent.state.timeline,
         "get_session_messages_around",
         lambda *args, **kwargs: {"messages": [row], "pagination": {}},
     )

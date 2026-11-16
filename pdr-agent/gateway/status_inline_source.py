@@ -26,12 +26,12 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
     SEPARATE operand, so a naive "first non-option token ends the block" walk mistakes that operand
     for the end of the block and never reaches the ``-c`` behind it (``python -X utf8 -c <src> …``
     was still read as a live gateway). The operand sets are the canonical ones in
-    ``hermes_state.holders``, not a second hand-rolled copy.
+    ``hermes_agent.state.holders``, not a second hand-rolled copy.
 
     *tokens* must be CASE-PRESERVING: the operand-taking ``-Q``/``-W``/``-X`` differ from the
     operand-less ``-q``/``-b``, so a lowercased argv would skip the token after a plain ``-q``.
     """
-    from hermes_state.holders import (
+    from hermes_agent.state.holders import (
         _PYTHON_LONG_OPTIONS_WITH_OPERANDS,
         _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
     )

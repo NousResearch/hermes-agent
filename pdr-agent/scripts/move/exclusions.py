@@ -29,7 +29,7 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("hermes_cli/_launchers.py", '_CLOSURE_REPAIR = """\\', PERSISTED),
     ("hermes_cli/_launchers.py", "return (\n        # The repair's own stdlib", PERSISTED),
     ("hermes_cli/_launchers.py", "def print_runtime_command(", PERSISTED),
-    ("hermes_agent/hermes_bootstrap.py", "def _settle_interrupted_update(", TORN_UPDATE),
+    ("hermes_bootstrap.py", "def _settle_interrupted_update(", TORN_UPDATE),
     (".github/actions/plugin-validate/action.yml", '"$_VALIDATOR_PYTHON" -I -m hermes_cli.main plugins validate "$_PLUGIN_PATH"', SHIPPED),
     ("apps/bootstrap-installer/src-tauri/src/update.rs", 'if install_root.join("hermes_cli/_launchers.py").is_file() {', SHIPPED),
     ("apps/desktop/electron/desktop-uninstall.ts", "return ['-m', 'hermes_cli.uninstall', '--mode', mode]", SHIPPED),
@@ -81,7 +81,7 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("hermes_cli/update_owning_install.py", 'owner = venv.parent if (venv.parent / "hermes_cli" / "main.py").is_file() else _pm_environment_owner(venv)', SHIPPED),
     ("hermes_cli/update_owning_install.py", 'if install_key(owner) != state.name or not (owner / "hermes_cli" / "main.py").is_file():', SHIPPED),
     ("hermes_cli/update_owning_install.py", 'code = subprocess.call([sys.executable, "-m", "hermes_cli.main", *sys.argv[1:]], cwd=owner, env=env)', SHIPPED),
-    ("hermes_state/holders.py", "def _argv_scoped_to_other_home(", IDENTITY),
+    ("hermes_agent/state/holders.py", "def _argv_scoped_to_other_home(", IDENTITY),
     ("scripts/code_health/py_rules.py", "def argv_identity(", IDENTITY),
     ("scripts/desktop-update/posix.sh", 'UPDATE_INVOKE=("$bin/python" -m hermes_cli.main)', SHIPPED),
     ("scripts/desktop-update/posix.sh", 'if [ -f "$INSTALL_ROOT/hermes_cli/_launchers.py" ]; then', SHIPPED),
@@ -97,7 +97,7 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("tools/bot_desktop/runtime.py", 'Path(project_root_str()), module="tools.bot_desktop.idle_watch")),', SHIPPED),
     ("tools/mcp_tool_lifecycle.py", '"tui_gateway.slash_worker", "tui_gateway.entry",', IDENTITY),
     ("tui_gateway/host_supervisor.py", 'return "tui_gateway.compute_host" in _pid_command(pid)', IDENTITY),
-    ("scripts/build/launcher_wrapper.py", 'importlib.import_module("hermes_agent.hermes_bootstrap")', PERSISTED),
+    ("scripts/build/launcher_wrapper.py", 'importlib.import_module("hermes_bootstrap")', PERSISTED),
 )
 
 BY_HAND: tuple[tuple[str, str], ...] = (
@@ -111,7 +111,7 @@ BY_HAND: tuple[tuple[str, str], ...] = (
     ("hermes_cli/update_cmd_windows.py", "def _is_entry("),
     ("hermes_cli/update_receipt.py", 'if (parent / "hermes_cli" / "main.py").is_file():'),
     ("hermes_cli/windows_ssh_runtime.py", 'launches_module = logical_argv[1:3] == ["-m", "hermes_cli.main"]'),
-    ("hermes_state/holders.py", "_HERMES_PYTHON_MODULES = frozenset({"),
+    ("hermes_agent/state/holders.py", "_HERMES_PYTHON_MODULES = frozenset({"),
     ("tools/skill_lock.py", 'if verb == "hermes" or (verb.startswith("python") and "hermes_cli.main" in args):'),
 )
 

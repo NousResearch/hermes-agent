@@ -9,7 +9,7 @@ holder scan falls back to ``/proc/<pid>/cmdline`` + ``_looks_like_hermes``.
 The demo process's argv matches the Hermes patterns exactly, so the fallback
 flagged it as an uninspectable holder of the MAIN instance's state.db even
 though ``lsof`` proved zero open handles on it.  Consequence: the stale-FTS
-rebuild in ``hermes_state.schema._recover_stale_fts`` was deferred 42 times
+rebuild in ``hermes_agent.state.schema._recover_stale_fts`` was deferred 42 times
 across 6 gateway restarts, the ``fts_stale`` breadcrumb never cleared, and
 FTS self-repair stayed permanently disabled.
 
@@ -28,7 +28,7 @@ import os
 
 import pytest
 
-import hermes_state.holders
+import hermes_agent.state.holders
 
 # Capture the pristine stdlib functions at import time: monkeypatched calls
 # re-enter these closures, and re-capturing ``os.listdir`` after a previous
@@ -73,7 +73,7 @@ def _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(), fd_pids=()):
         (proc_root / str(pid) / "fd").mkdir(exist_ok=True)
         (proc_root / str(pid) / "fd" / "3").touch(exist_ok=True)
 
-    monkeypatch.setattr(hermes_state.holders.os, "getpid", lambda: 111)
+    monkeypatch.setattr(hermes_agent.state.holders.os, "getpid", lambda: 111)
 
     def _listdir(path):
         if isinstance(path, str):
@@ -83,14 +83,14 @@ def _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(), fd_pids=()):
             path = path.replace("/proc", str(proc_root))
         return _REAL_LISTDIR(path)
 
-    monkeypatch.setattr(hermes_state.holders.os, "listdir", _listdir)
+    monkeypatch.setattr(hermes_agent.state.holders.os, "listdir", _listdir)
 
     def _readlink(path):
         if "222/fd/3" in str(path):
             raise PermissionError(errno_value("EACCES"), str(path))
         return _REAL_READLINK(str(path).replace("/proc", str(proc_root)))
 
-    monkeypatch.setattr(hermes_state.holders.os, "readlink", _readlink)
+    monkeypatch.setattr(hermes_agent.state.holders.os, "readlink", _readlink)
 
 
 def errno_value(name):
@@ -101,7 +101,7 @@ def errno_value(name):
 
 def _install_fake_argv(monkeypatch, argv_by_pid):
     monkeypatch.setattr(
-        hermes_state.holders,
+        hermes_agent.state.holders,
         "_read_proc_argv",
         lambda pid: list(argv_by_pid.get(pid)) if pid in argv_by_pid else None,
     )
@@ -118,7 +118,7 @@ class TestUninspectableHolderInstanceScope:
         _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
         _install_fake_argv(monkeypatch, {222: DEMO_HOME_ARGV})
 
-        holders = hermes_state.holders.foreign_state_db_holders(db_path)
+        holders = hermes_agent.state.holders.foreign_state_db_holders(db_path)
         assert holders == []
 
     def test_argv_referencing_our_db_stays_flagged(self, tmp_path, monkeypatch):
@@ -132,11 +132,11 @@ class TestUninspectableHolderInstanceScope:
             ["hermes", "checkpoint", f"{db_path}-wal"],
             ["hermes", "--home", our_home, "gateway"],
         ):
-            assert hermes_state.holders._looks_like_hermes(argv) or argv[0] == "hermes"
+            assert hermes_agent.state.holders._looks_like_hermes(argv) or argv[0] == "hermes"
             _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
             _install_fake_argv(monkeypatch, {222: argv})
 
-            holders = hermes_state.holders.foreign_state_db_holders(db_path)
+            holders = hermes_agent.state.holders.foreign_state_db_holders(db_path)
             assert [pid for pid, _ in holders] == [222], argv
             assert holders[0][1].startswith("uninspectable holder:"), argv
 
@@ -152,11 +152,11 @@ class TestUninspectableHolderInstanceScope:
 
         _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
         _install_fake_argv(monkeypatch, {222: multiplexer})
-        assert [pid for pid, _ in hermes_state.holders.foreign_state_db_holders(db_path)] == [222]
+        assert [pid for pid, _ in hermes_agent.state.holders.foreign_state_db_holders(db_path)] == [222]
 
         _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
         _install_fake_argv(monkeypatch, {222: other_install})
-        assert hermes_state.holders.foreign_state_db_holders(db_path) == []
+        assert hermes_agent.state.holders.foreign_state_db_holders(db_path) == []
 
     def test_shared_binary_plus_another_profile_selection_is_dismissed(self, tmp_path, monkeypatch):
         """argv[0] is the SHARED install binary, so it cannot prove a hold of profile b's store.
@@ -181,7 +181,7 @@ class TestUninspectableHolderInstanceScope:
         ):
             _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
             _install_fake_argv(monkeypatch, {222: argv})
-            holders = hermes_state.holders.foreign_state_db_holders(db_path)
+            holders = hermes_agent.state.holders.foreign_state_db_holders(db_path)
             assert [pid for pid, _ in holders] == expected, argv
 
     def test_token_naming_another_profiles_store_is_dismissal_evidence(self, tmp_path, monkeypatch):
@@ -201,7 +201,7 @@ class TestUninspectableHolderInstanceScope:
         ):
             _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
             _install_fake_argv(monkeypatch, {222: argv})
-            assert hermes_state.holders.foreign_state_db_holders(db_path) == [], argv
+            assert hermes_agent.state.holders.foreign_state_db_holders(db_path) == [], argv
 
     def test_unrelated_install_under_a_non_hermes_profiles_tree_stays_dismissed(
         self, tmp_path, monkeypatch
@@ -222,7 +222,7 @@ class TestUninspectableHolderInstanceScope:
         _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
         _install_fake_argv(
             monkeypatch, {222: ["hermes", "--hermes-home", str(unrelated_home), "gateway", "run"]})
-        assert hermes_state.holders.foreign_state_db_holders(db_path) == []
+        assert hermes_agent.state.holders.foreign_state_db_holders(db_path) == []
 
     def test_custom_home_is_not_dismissed_by_the_install_location(self, tmp_path, monkeypatch):
         """A store at a custom HERMES_HOME is SERVED BY the binary under ``~/.hermes``.
@@ -236,5 +236,5 @@ class TestUninspectableHolderInstanceScope:
         _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
         _install_fake_argv(
             monkeypatch, {222: ["/home/u/.hermes/venv/bin/hermes", "gateway", "run"]})
-        holders = hermes_state.holders.foreign_state_db_holders(db_path)
+        holders = hermes_agent.state.holders.foreign_state_db_holders(db_path)
         assert [pid for pid, _ in holders] == [222]

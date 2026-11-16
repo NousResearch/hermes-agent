@@ -348,7 +348,7 @@ def _(rid, params: dict, service) -> dict:
 
     @contextlib.contextmanager
     def publication():
-        from hermes_state.runtime import RuntimeStoreError
+        from hermes_agent.state.runtime import RuntimeStoreError
         try:
             with route_publication_lock(service):
                 yield

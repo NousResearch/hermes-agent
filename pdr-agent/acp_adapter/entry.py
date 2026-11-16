@@ -9,9 +9,9 @@ Usage::
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
-# on Windows.  No-op on POSIX.  See hermes_agent/hermes_bootstrap.py for full rationale.
+# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
 try:
-    from hermes_agent import hermes_bootstrap
+    import hermes_bootstrap
 except ModuleNotFoundError as exc:
     # Partial ``hermes update`` (git-reset landed, ``uv pip install -e .`` did not).
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):

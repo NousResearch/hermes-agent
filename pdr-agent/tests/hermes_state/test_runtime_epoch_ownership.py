@@ -62,7 +62,7 @@ def _epoch_of(db) -> int | None:
 
 def test_a_stranger_cannot_bump_the_epoch_of_a_live_owners_store(tmp_path, hold_profile):
     """The reported failure: a process that does not own the profile must not fence the owner out."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -81,7 +81,7 @@ def test_a_stranger_cannot_bump_the_epoch_of_a_live_owners_store(tmp_path, hold_
 
 def test_an_unpublished_holder_still_fences_the_bump(tmp_path, hold_profile):
     """The flock decides, not the record: a holder whose record is torn/unreadable still owns it."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -99,7 +99,7 @@ def test_an_unpublished_holder_still_fences_the_bump(tmp_path, hold_profile):
 
 def test_a_record_naming_this_pid_in_another_pid_namespace_is_not_ours(tmp_path, hold_profile):
     """Same pid number, other PID namespace (a containerised holder): the flock decides, not the pid."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     from gateway.status import _build_pid_record
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -120,7 +120,7 @@ def test_a_record_naming_this_pid_in_another_pid_namespace_is_not_ours(tmp_path,
 def test_our_released_reservations_record_does_not_grant_the_bump(tmp_path, hold_profile):
     """A record naming this process outlives our release: a foreign holder that took the flock
     since but has not rewritten it yet must still fence the bump."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     from gateway.runtime_ownership import ProfileOwnership
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -145,7 +145,7 @@ def test_our_released_reservations_record_does_not_grant_the_bump(tmp_path, hold
 @pytest.mark.platforms("any")
 def test_the_owner_itself_may_bump_the_epoch(tmp_path):
     """The holder of the profile lock is the one taking the store over - it must be allowed."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     from gateway.runtime_ownership import ProfileOwnership
 
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -165,7 +165,7 @@ def test_the_verdict_is_per_profile(tmp_path, hold_profile):
 
     The epoch row is a singleton of ITS store, so the refusal is about the profile that was
     asked - a second profile's own store is still free to be taken over."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
 
     owned = tmp_path / "owned"
     free = tmp_path / "free"
@@ -190,7 +190,7 @@ def test_the_verdict_is_per_profile(tmp_path, hold_profile):
 
 def test_an_unowned_store_can_be_taken_over(tmp_path):
     """No live owner: the bump IS the takeover (the gateway's own boot, and every test store)."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -204,7 +204,7 @@ def test_an_unowned_store_can_be_taken_over(tmp_path):
 
 def test_a_dead_owners_record_does_not_fence_the_bump(tmp_path):
     """A stale lock record (the gateway died, the flock went with it): the store can be taken over."""
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     from gateway.status import _build_pid_record
 
     db = SessionDB(db_path=tmp_path / "state.db")

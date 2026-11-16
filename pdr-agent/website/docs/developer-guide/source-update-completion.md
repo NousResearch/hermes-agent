@@ -123,7 +123,7 @@ writing without exclusion. An updater that already imported healthy code can
 still hold and write the checkout even when its on-disk modules are damaged.
 Wait for any running update to finish.
 
-The repair code lives in the tree a killed move tears (`hermes_agent/hermes_bootstrap.py`,
+The repair code lives in the tree a killed move tears (`hermes_bootstrap.py`,
 `hermes_cli/__init__.py`, `_early_recovery.py`, `update_lock.py`,
 `update_custody.py`). Before git writes, every tree move publishes those
 recovery/lock/custody modules, as committed at the move's starting commit, to

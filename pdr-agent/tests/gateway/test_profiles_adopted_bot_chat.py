@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from gateway.session_contract import SessionActor
 from gateway.session_group_controls import _profiles
 from hermes_state import SessionDB
-from hermes_state.local_migration import bind_legacy_target
+from hermes_agent.state.local_migration import bind_legacy_target
 
 
 def test_adopted_hidden_bot_chat_is_canonical_but_not_recent(tmp_path, monkeypatch):

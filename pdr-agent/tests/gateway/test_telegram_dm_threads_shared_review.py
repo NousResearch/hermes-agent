@@ -36,7 +36,7 @@ def test_shared_dm_text_batches_stay_per_thread(tmp_path, monkeypatch):
 def test_topic_mode_read_from_the_routed_profiles_store(tmp_path, monkeypatch):
     """A primary bot routed to profile ``work`` keys before the runner enters that scope: /topic on
     in ``work`` (not in the launch profile) must still keep each topic its own session."""
-    from hermes_state.registry import acquire
+    from hermes_agent.state.registry import acquire
     adapter, _ = _adapter(tmp_path, monkeypatch)
     work = tmp_path / "profiles" / "work"
     work.mkdir(parents=True)

@@ -11,7 +11,7 @@ import pytest
 
 from hermes_cli.process_identity import worker_birth
 from hermes_state import SessionDB
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 
 
 def hello(process):
@@ -22,8 +22,8 @@ def hello(process):
 def _local_reset(db, epoch, logical, child):
     """Publish a local policy receipt and a reset child so the physical transcript
     differs from the logical owner (the managed-worker layout after ``/new``)."""
-    from hermes_state.local import commit_local_session
-    from hermes_state.local_lineage import reset_local_target
+    from hermes_agent.state.local import commit_local_session
+    from hermes_agent.state.local_lineage import reset_local_target
     from gateway.config import Platform
     from gateway.session import SessionEntry, SessionSource
     from gateway.session_lifecycle import _now

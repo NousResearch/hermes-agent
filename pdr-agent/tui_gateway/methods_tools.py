@@ -232,7 +232,7 @@ def _session_toolsets(session) -> tuple:
 
 
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
-    toolsets = _tools_mod("toolsets")
+    toolsets = _tools_mod("hermes_agent.toolsets")
     session = _sessions.get(params.get("session_id", ""))
     enabled = set(_session_toolsets(session)[0] or [])
     items = []

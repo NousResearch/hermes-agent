@@ -56,7 +56,7 @@ async def _deliver(adapter, event):
 
 
 def _rows(authority):
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     return [row for sid in authority.sessions
             for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
 
@@ -65,7 +65,7 @@ def _rows(authority):
 @pytest.mark.parametrize('change', ['identical', 'display-name', 'content'])
 async def test_slack_answered_root_restart_replay_preserves_identity(tmp_path, monkeypatch, change):
     from gateway.session_ingress import ALREADY_ADMITTED_REPLY
-    from hermes_state.runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
+    from hermes_agent.state.runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
 
     original = {'type': 'message', 'channel': DM, 'channel_type': 'im', 'team': TEAM,
                 'user': USER, 'text': TEXT, 'ts': TS, 'event_ts': TS, 'client_msg_id': 'fixture'}
@@ -127,7 +127,7 @@ async def test_slack_name_reconcile_does_not_erase_sender_ids(tmp_path, monkeypa
     retry). Pin the existing principal here to exercise the payload digest guard.
     """
     from copy import deepcopy
-    from hermes_state.runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
+    from hermes_agent.state.runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError
 
     runner, adapter, authority, _sent, calls = await _slack_gateway(tmp_path, monkeypatch, 'Before', 'first')
     try:

@@ -11,7 +11,7 @@ from pathlib import Path
 import shlex
 
 from gateway.session_cron_commands import cron_read
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 

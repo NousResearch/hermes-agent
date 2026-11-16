@@ -11,7 +11,7 @@ from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import SessionActor, SessionRef, Submission
 from gateway.config import Platform
 from hermes_state import SessionDB
-from hermes_state.runtime import (
+from hermes_agent.state.runtime import (
     admit_session_input,
     begin_runtime_epoch,
     claim_session_input,

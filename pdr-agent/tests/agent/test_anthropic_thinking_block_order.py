@@ -67,7 +67,7 @@ def _stored_assistant_message(normalized) -> dict:
 
     hermes_agent/run_agent.py persists assistant turns as separate fields: content,
     reasoning_details (from provider_data), and tool_calls.  See
-    hermes_agent/run_agent.py L1513-1516 and hermes_state/__init__.py.
+    hermes_agent/run_agent.py L1513-1516 and hermes_state.py.
     """
     provider_data = normalized.provider_data or {}
     tool_calls = []

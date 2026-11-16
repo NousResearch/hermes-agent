@@ -46,7 +46,7 @@ def test_sessions_delete_with_unfinished_turn_points_to_discard(tmp_path, monkey
     with what to do), not an uncaught RuntimeStoreError traceback."""
     import hermes_cli.main as main_mod
     import hermes_state
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     from hermes_state import SessionDB
 
     db = SessionDB(tmp_path / 'state.db')

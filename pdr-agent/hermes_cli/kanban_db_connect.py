@@ -641,8 +641,8 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
         conn.text_factory = _kb._lossy_text
         with _INIT_LOCK:
             # WAL doesn't work on network filesystems; the helper falls back to
-            # DELETE with one ERROR log (see hermes_state.wal._WAL_INCOMPAT_MARKERS).
-            from hermes_state.wal import apply_wal_with_fallback
+            # DELETE with one ERROR log (see hermes_agent.state.wal._WAL_INCOMPAT_MARKERS).
+            from hermes_agent.state.wal import apply_wal_with_fallback
             apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
             # FULL (not NORMAL): fsync before each checkpoint to narrow the
             # crash window that can leave a b-tree page header torn.

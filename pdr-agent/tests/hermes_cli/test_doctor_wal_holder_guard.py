@@ -57,12 +57,12 @@ def test_doctor_names_retired_wal_holders_instead_of_healthy_state_db(tmp_path, 
     health probe is another opener) nor checkpoint under --fix."""
     from hermes_cli import doctor
     from hermes_cli import doctor_state
-    import hermes_state.dbfile
+    import hermes_agent.state.dbfile
 
     db = tmp_path / "state.db"
     db.write_bytes(b"")
     monkeypatch.setattr(doctor, "HERMES_HOME", tmp_path)
-    monkeypatch.setattr(hermes_state.dbfile, "iter_deleted_sqlite_sidecar_holders",
+    monkeypatch.setattr(hermes_agent.state.dbfile, "iter_deleted_sqlite_sidecar_holders",
                         lambda path: [(4242, f"{path}-wal"), (4242, f"{path}-shm")])
     probed = []
     monkeypatch.setattr(doctor_state, "_state_db_health", lambda *a, **k: probed.append(a))

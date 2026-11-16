@@ -207,7 +207,7 @@ CASES = {
     # The Windows desktop-update hand-off is a PowerShell integration surface:
     # its tests spawn the real script and poll its loopback server. They run
     # when the script, the Electron side that launches it, or their own test
-    # files change — not on every hermes_state/__init__.py PR. The script runs a real
+    # files change — not on every hermes_state.py PR. The script runs a real
     # `hermes update`, and the Windows crash cells that kill it mid-run live in
     # the install + update journey, so it starts e2e_upgrade as well.
     "windows.ps1 → desktop_updater": (
@@ -386,7 +386,7 @@ CASES = {
         ["tests/e2e/core/sqlite/test_torture.py"],
         _lanes(python=True, python_prod=False, scan=True, e2e=True),
     ),
-    "state db → e2e": (["hermes_state/wal.py"], _lanes(python=True, scan=True, e2e=True)),
+    "state db → e2e": (["hermes_agent/state/wal.py"], _lanes(python=True, scan=True, e2e=True)),
     "upgrade suite → e2e_upgrade, not e2e": (
         ["tests/e2e/core/upgrade/pm/test_pm_lifecycle.py"],
         _lanes(python=True, python_prod=False, scan=True, e2e_upgrade=True),
@@ -516,7 +516,7 @@ def test_every_slow_lane_path_matches_a_tracked_file():
 # tables of the updater audit's cli-update and desktop-update code maps). A
 # PR that edits only one of these must start the real-update suite that would
 # catch the regression; before, main.py / _early_recovery.py / relaunch.py /
-# gateway/ / hermes_agent/hermes_bootstrap.py skipped both the Linux and Windows journeys.
+# gateway/ / hermes_bootstrap.py skipped both the Linux and Windows journeys.
 _UPDATE_PATH_FILES = (
     "hermes_cli/main.py",
     "hermes_cli/main_dashboard.py",
@@ -540,7 +540,7 @@ _UPDATE_PATH_FILES = (
     "hermes_cli/gateway_windows.py",
     "hermes_cli/gateway_migrate.py",
     "hermes_cli/desktop_update_verify.py",
-    "hermes_agent/hermes_bootstrap.py",
+    "hermes_bootstrap.py",
     "hermes_agent/hermes_constants.py",
     "gateway/status.py",
     "gateway/control_socket.py",
@@ -581,7 +581,7 @@ _REPO = Path(__file__).resolve().parents[2]
 
 
 def _yaml(rel: str) -> dict:
-    yaml = pytest.importorskip("hermes_yaml")
+    yaml = pytest.importorskip("hermes_agent.hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
 
 

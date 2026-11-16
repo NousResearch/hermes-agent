@@ -50,7 +50,7 @@ def _recent_cli_ids(db: SessionDB) -> tuple[list[str], list[str]]:
     """Ids from the shared listing helper and from ``/sessions`` / ``/resume`` (limit 10)."""
     from hermes_cli.cli_session_mixin import CLISessionMixin
     from hermes_cli.session_listing import query_session_listing
-    from hermes_state.sessions import INTERNAL_LISTING_SOURCES
+    from hermes_agent.state.sessions import INTERNAL_LISTING_SOURCES
 
     reader = SurfaceLabelReader(db)
     listed = query_session_listing(

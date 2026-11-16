@@ -182,7 +182,7 @@ def test_a_failing_profile_does_not_strand_the_profiles_after_it(two_homes, monk
     running) ended the per-profile loop before B, on every tick. Serve defers each served
     profile's sweep to this loop, so B had no archiver at all.
     """
-    import hermes_state.registry as registry
+    import hermes_agent.state.registry as registry
     from agent.secret_scope import set_multiplex_active
     from hermes_agent.hermes_constants import get_hermes_home
     from hermes_state import SessionDB

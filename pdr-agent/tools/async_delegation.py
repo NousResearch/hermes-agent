@@ -162,8 +162,8 @@ def _db_identity(path) -> tuple[int, int] | None:
 
 
 def _initialize_schema(conn: sqlite3.Connection, *, identity: tuple[int, int] | None = None) -> None:
-    from hermes_state.repair import apply_durability_barriers
-    from hermes_state.schema import reconcile_state_schema
+    from hermes_agent.state.repair import apply_durability_barriers
+    from hermes_agent.state.schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)

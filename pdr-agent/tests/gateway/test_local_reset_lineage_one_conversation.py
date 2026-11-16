@@ -60,7 +60,7 @@ async def test_reset_lineage_lists_once_and_deleting_the_listed_row_deletes_it(r
 
 @pytest.mark.asyncio
 async def test_legacy_delete_of_either_segment_retires_the_whole_lineage(reset_lineage):
-    from hermes_state.local import POLICY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX
     t = reset_lineage
     db = t.authority.db
     assert db.delete_session(t.s0, exclude_active_write_guards=True)

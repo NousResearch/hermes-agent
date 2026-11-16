@@ -8,7 +8,7 @@
 
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
-    from hermes_agent import hermes_bootstrap
+    import hermes_bootstrap
 except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -299,7 +299,7 @@ class AIAgent(
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_state.registry import acquire
+            from hermes_agent.state.registry import acquire
 
             self._session_db = acquire()
             self._owns_session_db = True  # we opened it, so close() must release it
@@ -1042,7 +1042,7 @@ class AIAgent(
             self._owns_session_db = False
             # Shared instances no-op on close(); release the refcount so the registry closes on the last caller.
             # See #90837.
-            from hermes_state.registry import release_or_close
+            from hermes_agent.state.registry import release_or_close
             release_or_close(session_db)
 
     def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:

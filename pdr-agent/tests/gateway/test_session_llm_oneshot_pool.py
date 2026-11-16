@@ -14,7 +14,7 @@ import weakref
 import pytest
 
 from gateway import session_llm_oneshot as oneshot
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 from tests.waiting import async_wait_until
 
 

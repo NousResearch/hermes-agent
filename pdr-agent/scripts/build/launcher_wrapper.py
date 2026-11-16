@@ -120,7 +120,7 @@ def main(argv=None):
     argv = list(sys.argv if argv is None else argv)
     here = launcher_dir(argv[0] if argv else sys.argv[0])
     configure(here)
-    importlib.import_module("hermes_agent.hermes_bootstrap")
+    importlib.import_module("hermes_bootstrap")
     module = importlib.import_module(HERMES_ENTRY_MODULE)
     target = getattr(module, HERMES_ENTRY_FUNC)
     # main() reads sys.argv; hand it the real argv (argv[0] stays the

@@ -7,7 +7,7 @@ installs get their steward's update command (#75153).
 
 from unittest.mock import patch
 
-import hermes_state.wal as hermes_state
+import hermes_agent.state.wal as hermes_state
 
 
 def _hint_for(method):

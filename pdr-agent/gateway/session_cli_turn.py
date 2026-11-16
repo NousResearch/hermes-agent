@@ -10,7 +10,7 @@ admission's execution only, never for a later turn.
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 _SUBMIT_FIELDS = ('turn_author', 'api_text', 'model_override', 'clarify_batch')
 _API_TEXT_LIMIT = 1_000_000

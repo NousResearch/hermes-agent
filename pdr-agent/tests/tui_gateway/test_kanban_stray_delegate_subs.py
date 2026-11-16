@@ -12,7 +12,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_state import SessionDB
-from hermes_state.delegate_children import delegate_descendant_ids
+from hermes_agent.state.delegate_children import delegate_descendant_ids
 from tui_gateway import server
 
 

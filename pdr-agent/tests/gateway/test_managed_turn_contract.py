@@ -153,7 +153,7 @@ async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, 
         def interrupt(self):
             self.stop.set()
         async def next_frame(self, *args, **kwargs):
-            from hermes_state.runtime import RuntimeStoreError
+            from hermes_agent.state.runtime import RuntimeStoreError
             assert self.stop.is_set(), 'pending Stop was not adopted'
             raise RuntimeStoreError('managed_worker_stopped')
         def close(self): pass

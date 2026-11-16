@@ -6,7 +6,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import hermes_state.repair
+import hermes_agent.state.repair
 from hermes_cli.doctor_report import Finding
 from hermes_cli.doctor_state import _state_db_wal
 
@@ -37,13 +37,13 @@ def test_doctor_checkpoint_runs_only_on_the_exclusive_repair_guard(tmp_path, mon
 
     monkeypatch.setattr(sqlite3, "connect", _spy)
     guard_connects: list[Path] = []
-    real_durable = hermes_state.repair._connect_repair_durable
+    real_durable = hermes_agent.state.repair._connect_repair_durable
 
     def _durable(path, **kwargs):
         guard_connects.append(Path(path))
         return real_durable(path, **kwargs)
 
-    monkeypatch.setattr(hermes_state.repair, "_connect_repair_durable", _durable)
+    monkeypatch.setattr(hermes_agent.state.repair, "_connect_repair_durable", _durable)
 
     finding = Finding()
     _state_db_wal(finding, True, db)
@@ -74,9 +74,9 @@ def test_large_wal_warning_under_a_live_writer_never_suggests_a_bare_fix(tmp_pat
     """`hermes doctor` (no --fix) on a large WAL while Desktop/gateway hold the DB must say it is normal and
     order "stop" before any `--fix` — the bare "run 'hermes doctor --fix'" nudge is how users became the
     second writer (#110054)."""
-    import hermes_state.holders
+    import hermes_agent.state.holders
 
-    monkeypatch.setattr(hermes_state.holders, "live_writer_holds_db", lambda *a, **k: True)
+    monkeypatch.setattr(hermes_agent.state.holders, "live_writer_holds_db", lambda *a, **k: True)
     finding = Finding()
     _state_db_wal(finding, False, _large_wal_db(tmp_path))
     assert len(finding.issues) == 1 and not finding.fixed
@@ -84,9 +84,9 @@ def test_large_wal_warning_under_a_live_writer_never_suggests_a_bare_fix(tmp_pat
 
 
 def test_large_wal_warning_without_a_holder_still_orders_stop_before_fix(tmp_path, monkeypatch):
-    import hermes_state.holders
+    import hermes_agent.state.holders
 
-    monkeypatch.setattr(hermes_state.holders, "live_writer_holds_db", lambda *a, **k: False)
+    monkeypatch.setattr(hermes_agent.state.holders, "live_writer_holds_db", lambda *a, **k: False)
     finding = Finding()
     _state_db_wal(finding, False, _large_wal_db(tmp_path))
     assert len(finding.issues) == 1 and not finding.fixed

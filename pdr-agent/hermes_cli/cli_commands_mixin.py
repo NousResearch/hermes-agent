@@ -27,7 +27,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_agent.hermes_constants import display_hermes_home
-from hermes_state.ids import new_session_id as mint_session_id
+from hermes_agent.state.ids import new_session_id as mint_session_id
 from agent.i18n import t
 from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
@@ -700,7 +700,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _cp(f"  {_t('shared.agent_busy', command='/handoff')}")
         if not self._session_db:
             with suppress(Exception):
-                from hermes_state.registry import acquire
+                from hermes_agent.state.registry import acquire
                 self._session_db = acquire()
         if not self._session_db:
             return _cp(_db_unavailable_line())
@@ -1294,7 +1294,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe). ``ack``
         paints first on the turn's own channel (_cprint), so the turn's `────` never overtakes it."""
         if ack:
-            __import__("hermes_agent.cli")._cli_visible_print("\n" + ack)
+            __import__("importlib").import_module("hermes_agent.cli")._cli_visible_print("\n" + ack)
         if hasattr(self, "_pending_input"):
             self._pending_input.put(msg)
         else:  # pragma: no cover - defensive (no live input loop)

@@ -12,7 +12,7 @@ import pytest
 
 import hermes_state
 from hermes_state import SessionDB
-from hermes_state.errors import SessionTurnLeaseLostError
+from hermes_agent.state.errors import SessionTurnLeaseLostError
 
 
 def test_turn_lease_serializes_separate_session_db_instances(tmp_path):
@@ -446,7 +446,7 @@ def test_non_expired_turn_lease_from_dead_pid_is_reclaimed(
     db = SessionDB(tmp_path / "state.db")
     db.create_session("shared", source="test")
 
-    from hermes_state.pidns import holder_namespace_token
+    from hermes_agent.state.pidns import holder_namespace_token
     dead_holder = f"pid=424242{holder_namespace_token()}:turn=dead:platform=test"
     assert db.try_acquire_session_turn_lease(
         "shared", dead_holder, ttl_seconds=300

@@ -22,7 +22,7 @@ from gateway.session_controls import AuthorityConnection
 from gateway.session_group_peers import room_link
 from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state import SessionDB
-from hermes_state.runtime import begin_runtime_epoch
+from hermes_agent.state.runtime import begin_runtime_epoch
 from tui_gateway.contracts import groups_bot_relay as contract
 from tui_gateway.contracts.registry import CANONICAL_METHODS
 

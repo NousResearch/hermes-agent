@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from hermes_state.local import API_BINDING_PREFIX
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.local import API_BINDING_PREFIX
+from hermes_agent.state.runtime import RuntimeStoreError
 from tests.gateway.test_session_authorities_multiplex import _reserve_homes, _runner
 
 

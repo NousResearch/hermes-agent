@@ -13,9 +13,9 @@ from threading import Event, Thread
 import pytest
 
 from hermes_cli import config
-from hermes_state.wal import apply_wal_with_fallback
+from hermes_agent.state.wal import apply_wal_with_fallback
 from hermes_agent.utils import atomic_yaml_write
-import hermes_state.wal as wal
+import hermes_agent.state.wal as wal
 
 
 def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
@@ -29,7 +29,7 @@ def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
         import os, sqlite3
 
         import providers
-        import hermes_state.wal as wal
+        import hermes_agent.state.wal as wal
 
         listed = []
         providers.list_providers = lambda: listed.append(1) or []

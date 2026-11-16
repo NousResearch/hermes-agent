@@ -41,7 +41,7 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 ┌───────────────────┐              ┌──────────────────────┐
 │ Session Storage   │              │ Tool Backends         │
 │ (SQLite + FTS5)   │              │ Terminal (7 backends) │
-│ hermes_state/__init__.py   │              │ Browser (5 backends)  │
+│ hermes_state.py   │              │ Browser (5 backends)  │
 │ gateway/session.py│              │ Web (4 backends)      │
 └───────────────────┘              │ MCP (dynamic)         │
                                    │ File, Vision, etc.    │
@@ -56,7 +56,7 @@ hermes-agent/
 ├── hermes_agent/cli.py                    # HermesCLI — 交互式终端 UI（大文件）
 ├── hermes_agent/model_tools.py            # 工具发现、schema 收集、分发
 ├── hermes_agent/toolsets.py               # 工具分组与平台预设
-├── hermes_state/__init__.py           # 带 FTS5 的 SQLite 会话/状态数据库
+├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 ├── hermes_agent/hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── hermes_agent/batch_runner.py           # 批量轨迹生成
 │

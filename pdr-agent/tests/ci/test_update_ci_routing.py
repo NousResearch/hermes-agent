@@ -88,7 +88,7 @@ def _real_classifier(paths: list[str]) -> dict[str, bool]:
 
 @cache
 def _yaml(rel: str) -> dict:
-    yaml = pytest.importorskip("hermes_yaml")
+    yaml = pytest.importorskip("hermes_agent.hermes_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
 
 

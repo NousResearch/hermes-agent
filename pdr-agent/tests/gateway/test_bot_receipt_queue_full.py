@@ -5,7 +5,7 @@ import contextlib
 import pytest
 
 from gateway.session_contract import SessionActor, SessionRef
-from hermes_state.runtime import (ADMISSION_QUEUE_MAX, RuntimeStoreError, admit_session_input,
+from hermes_agent.state.runtime import (ADMISSION_QUEUE_MAX, RuntimeStoreError, admit_session_input,
                                   list_session_admissions)
 
 pytest_plugins = ['tests.gateway.test_session_bot_retry']

@@ -10,7 +10,7 @@ hermes-agent/
 ├── hermes_agent/model_tools.py        # Tool discovery and dispatch
 ├── hermes_agent/toolsets.py           # Toolset definitions
 ├── hermes_agent/cli.py                # Interactive CLI (HermesCLI)
-├── hermes_state/__init__.py       # SQLite session store
+├── hermes_state.py       # SQLite session store
 ├── agent/                # Prompt builder, context compression, memory, model routing, credential pooling, skill dispatch
 ├── hermes_cli/           # CLI subcommands, config, setup, commands
 │   ├── commands.py       # Slash command registry (CommandDef)

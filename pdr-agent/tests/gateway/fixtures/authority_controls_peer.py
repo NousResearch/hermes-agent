@@ -57,7 +57,7 @@ async def probe(peer, target):
     from hermes_cli import web_server
     from gateway.run_api import start_gateway_api, stop_gateway_api
     from tools.approval import list_gateway_approvals, resolve_gateway_approval
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     from hermes_agent.run_agent import AIAgent
 
     class NativeAdapter(BasePlatformAdapter):

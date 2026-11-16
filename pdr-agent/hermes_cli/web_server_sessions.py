@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_state.common import _RESET_CHILD_SQL, _sql_json_extract
+from hermes_agent.state.common import _RESET_CHILD_SQL, _sql_json_extract
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -158,7 +158,7 @@ def _mutate_offline_store(profile, actor, params):
     second writer beside it); revision/generation/idle guards are the gateway's own.
     """
     from fastapi import HTTPException
-    from hermes_state.runtime import begin_runtime_epoch, mutate_runtime_session
+    from hermes_agent.state.runtime import begin_runtime_epoch, mutate_runtime_session
 
     def run():
         db = _open_session_db_for_profile(profile, read_only=False)
@@ -169,7 +169,7 @@ def _mutate_offline_store(profile, actor, params):
                 if errors:
                     raise HTTPException(status_code=400, detail={'errors': errors})
                 from functools import partial
-                from hermes_state.mutation_binding import import_history_control
+                from hermes_agent.state.mutation_binding import import_history_control
                 write_guard = partial(import_history_control, actor=actor,
                                       session_ids=tuple(item['session']['id'] for item in normalized))
             with db._read_ctx() as conn:
@@ -276,8 +276,8 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     from gateway.session_contract import SessionRef
     from gateway.session_mutations import mutate_session
     from hermes_cli.gateway_client import GatewayClientError
-    from hermes_state.mutation_guards import MUTATION_GUARD_REFUSALS
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.mutation_guards import MUTATION_GUARD_REFUSALS
+    from hermes_agent.state.runtime import RuntimeStoreError
 
     authority, actor = _session_mutation_context(request, profile)
     if operation == 'import' and authority is not None:
@@ -338,7 +338,7 @@ def _with_session_maintenance(profile, operation, *args):
 
 def _session_db_read_probe_statements() -> tuple:
     """Probe the declared schema without reconciling it on a browsing request."""
-    from hermes_state.schema import schema_read_probe_statements
+    from hermes_agent.state.schema import schema_read_probe_statements
 
     return schema_read_probe_statements()
 
@@ -356,8 +356,8 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
 
     from fastapi import HTTPException
     from hermes_state import SessionDB
-    from hermes_state.errors import is_transient_sqlite_error
-    from hermes_state.registry import acquire
+    from hermes_agent.state.errors import is_transient_sqlite_error
+    from hermes_agent.state.registry import acquire
 
     if not read_only:
         return acquire(db_path)
@@ -371,7 +371,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             status_code=503,
             detail="Session store is not initialized. Start this profile's gateway to initialize it.")
 
-    from hermes_state.reconcile import (
+    from hermes_agent.state.reconcile import (
         DeclarativeDriftError, is_declarative_drift_error, reconcile_drift_for_browse,
     )
 
@@ -403,7 +403,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
                 raise HTTPException(status_code=503, detail=str(drift)) from exc
             return _open_probed()
     except (sqlite3.DatabaseError, UnicodeDecodeError) as exc:
-        from hermes_state.errors import is_malformed_db_error
+        from hermes_agent.state.errors import is_malformed_db_error
         if isinstance(exc, sqlite3.DatabaseError) and is_malformed_db_error(exc):
             # Same structured 503 the analytics routers publish (``corrupt_store_as_status``): a
             # corrupt image names the repair (`hermes doctor`), never a generic "schema unavailable".

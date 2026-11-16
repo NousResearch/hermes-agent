@@ -124,14 +124,14 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
         tip_id = _try(lambda: db.get_compression_tip(session_id), None) or session_id
         tip = (_try(lambda: db.get_session(tip_id), None) or row) if tip_id != session_id else row
         from hermes_state import SessionDB
-        from hermes_state.registry import acquire
+        from hermes_agent.state.registry import acquire
         if (tip.get("end_reason") or "") not in SessionDB.RECOVERABLE_END_REASONS:
             return False
         wdb = acquire(Path(profile_path) / "state.db")
         try:
             return bool(wdb.unarchive_recoverable_session(session_id))
         finally:
-            _best_effort(lambda: _lazy("hermes_state.registry", "release_or_close")(wdb))
+            _best_effort(lambda: _lazy("hermes_agent.state.registry", "release_or_close")(wdb))
     except Exception:
         return False
 

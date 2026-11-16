@@ -57,7 +57,7 @@ async def _served_authority(tmp_path, monkeypatch, instance_id, db=None):
 def _age_receipt_origins(db, sid, mutate):
     """Rewrite every persisted origin copy of *sid*'s receipt through *mutate* (a dict -> dict
     function), the way an older build's on-disk spelling differs from the recomputed source."""
-    from hermes_state.local import POLICY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX
     with db._read_ctx() as conn:
         row = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchone()
     receipt = json.loads(row[0])
@@ -82,7 +82,7 @@ def _age_receipt_origins(db, sid, mutate):
 
 def _store_receipt(db, sid, mutate):
     """Rewrite *sid*'s stored receipt text through *mutate* (a str -> str function)."""
-    from hermes_state.local import POLICY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX
     with db._read_ctx() as conn:
         stored = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchone()[0]
     db._write_sql('UPDATE state_meta SET value=? WHERE key=?', (mutate(stored), POLICY_PREFIX + sid))
@@ -126,7 +126,7 @@ async def test_a_refused_receipt_names_its_failing_check_in_the_log(tmp_path, mo
     from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
 
     served, db, secondary = await _served_authority(tmp_path, monkeypatch, 'first')
     actor = SessionActor('owner', str(secondary), frozenset({'session:create', 'session:read'}), 'socket')

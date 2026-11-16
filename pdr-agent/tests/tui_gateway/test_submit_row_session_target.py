@@ -51,7 +51,7 @@ def _rotate_to_compression_child(db, parent, agent, *, reopen_parent):
     the ``_ended_by_compression`` guard refuses the submit append outright and the row is silently
     dropped; reopened, the stale key is writable and the turn's rows split across both sessions.
     """
-    from hermes_state.ids import new_session_id
+    from hermes_agent.state.ids import new_session_id
 
     child = new_session_id()
     db.publish_compression_child(

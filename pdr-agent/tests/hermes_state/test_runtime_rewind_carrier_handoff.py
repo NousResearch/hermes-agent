@@ -1,7 +1,7 @@
 """An owner ``rewind`` of a composite compaction carrier keeps its handoff (main parity)."""
 from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
 from hermes_state import SessionDB
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 
 
 def _rewind(db, target, request_id, **extra):

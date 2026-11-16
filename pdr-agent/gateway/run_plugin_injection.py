@@ -92,7 +92,7 @@ def wake_background_wait(authority, ref, *, person_input=False):
 
 def _wake_if_person_queued(authority, ref, wait):
     from gateway.session_unattended_unknown import is_unattended
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     if any(row["status"] == "queued" and not is_unattended(row)
            for row in list_session_admissions(authority.db, session_id=ref.session_id)):
         wait.set()
@@ -283,7 +283,7 @@ class GatewayPluginInjectionMixin:
         profile = self._served_profile_for_home(plugin_home)
         owner = profile
         if profile is not None and getattr(getattr(self, "config", None), "multiplex_profiles", False) is True:
-            from hermes_state.keys import profile_from_session_key
+            from hermes_agent.state.keys import profile_from_session_key
             owner = profile_from_session_key(session_key)
         if profile is not None and owner == profile:
             return True
@@ -499,7 +499,7 @@ class GatewayPluginInjectionMixin:
             return None
         import json
         import uuid
-        from hermes_state.runtime import RuntimeStoreError
+        from hermes_agent.state.runtime import RuntimeStoreError
         identity = json.dumps([_PLUGIN_PRODUCER, plugin_id, session_key, uuid.uuid4().hex], separators=(",", ":"))
         event = MessageEvent(
             text=content, message_type=MessageType.TEXT, source=source, internal=True,

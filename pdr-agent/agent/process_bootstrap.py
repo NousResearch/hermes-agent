@@ -15,7 +15,7 @@ import sys
 import threading
 from typing import Any, Optional
 
-from hermes_agent.hermes_bootstrap import _happy_eyeballs_create_connection
+from hermes_bootstrap import _happy_eyeballs_create_connection
 from hermes_agent.utils import base_url_hostname, normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
 from agent.thread_scoped_output import _ThreadRoutingStream

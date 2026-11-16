@@ -27,7 +27,7 @@ PDR 后端通过引擎的消息网关（`gateway/`，api_server 平台，默认�
 | `skills/`、`optional-skills/` | 内置技能与可选技能库 |
 | `gateway/` | 消息网关：api_server（PDR 接入点）、会话、流式输出、通知；各消息平台适配器在 `plugins/platforms/` |
 | `plugins/`、`plugin-catalog/` | 插件（消息平台、记忆提供方、看板等）与插件目录 |
-| `hermes_state/` | 会话存储（SQLite）：会话、消息、全文检索、压缩、修复 |
+| `hermes_state.py`、`hermes_agent/state/` | 会话存储（SQLite）：存储本体与会话、消息、全文检索、压缩、修复等主题模块 |
 | `hermes_cli/` | `hermes` 命令行：配置系统、profile、网关与定时任务管理、模型与提供商设置、插件 |
 | `cron/` | 定时任务与看板调度 |
 | `providers/` | 模型提供商注册表 |
@@ -46,7 +46,7 @@ PDR 后端通过引擎的消息网关（`gateway/`，api_server 平台，默认�
 - 移除与 PDR 无关的部分：桌面客户端（`apps/`）、网页仪表盘前端（`web/`）及对应的打包脚本、测试和 CI，还有贡献者名录、外语翻译、Nix 打包、独立安装脚本、上游评审机器人配置。
 - 文件归类：
   - 根目录 20 个单文件模块移入 `hermes_agent/`，例如 `import run_agent` 改为 `from hermes_agent import run_agent`；
-  - 67 个 `hermes_state_*.py` 移入 `hermes_state/` 包，例如 `import hermes_state.sessions`；
+  - 67 个 `hermes_state_*.py` 移入 `hermes_agent/state/`，例如 `import hermes_state_sessions` 改为 `import hermes_agent.state.sessions`；存储本体 `hermes_state.py` 留在根目录。`hermes_agent/state/` 刻意不加载存储本体，导入单个主题模块不会引起循环导入；
   - 说明文档移入 `docs/`，配置模板移入 `hermes_cli/data/`。
 - 旧模块名仍可导入：`hermes_agent/compat/moves.py` 登记了所有"旧名 → 新名"，运行时由兼容查找器指向同一个模块对象，第三方插件不受影响。仓库内代码一律使用新名，测试里的严格模式会拒绝旧名。
 

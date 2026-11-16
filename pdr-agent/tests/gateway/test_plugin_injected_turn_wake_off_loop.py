@@ -15,7 +15,7 @@ _PERSON_QUEUED = {"status": "queued", "principal_id": "messaging:42", "payload":
 
 
 def _waiting_session(monkeypatch):
-    import hermes_state.runtime
+    import hermes_agent.state.runtime
     from gateway.session_contract import SessionRef
 
     readers = []
@@ -24,7 +24,7 @@ def _waiting_session(monkeypatch):
         readers.append(threading.current_thread())
         return [_PERSON_QUEUED]
 
-    monkeypatch.setattr(hermes_state.runtime, "list_session_admissions", list_session_admissions)
+    monkeypatch.setattr(hermes_agent.state.runtime, "list_session_admissions", list_session_admissions)
     live = SimpleNamespace(background_wait=threading.Event())
     authority = SimpleNamespace(sessions={"sid": live}, db=object())
     return authority, SessionRef("default", "sid"), live.background_wait, readers

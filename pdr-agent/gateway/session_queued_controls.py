@@ -14,7 +14,7 @@ import asyncio
 from dataclasses import asdict
 from functools import partial
 
-from hermes_state.runtime import (
+from hermes_agent.state.runtime import (
     STEERING, RuntimeStoreError, check_replaced_input, find_session_admission, get_session_admission,
     replacement_binding, retire_replaced_input, revert_steer_input, steer_replayed, steer_session_input,
 )
@@ -24,7 +24,7 @@ from hermes_state.runtime import (
 _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
-# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state.local_migration).
+# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_agent.state.local_migration).
 # cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they
 # do not name, so a transfer or replacement would strand them: never offered, refused by name.
 _INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})

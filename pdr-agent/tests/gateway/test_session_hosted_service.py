@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.runtime import begin_runtime_epoch, RuntimeStoreError
+from hermes_agent.state.runtime import begin_runtime_epoch, RuntimeStoreError
 
 
 @pytest.mark.asyncio

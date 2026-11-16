@@ -10,8 +10,8 @@ leave the parent's journal pending and refuse every later write of its turn.
 import secrets
 from functools import partial
 
-from hermes_state.runtime import RuntimeStoreError, apply_worker_receipt
-from hermes_state.runtime_workers import CHILD_SEPARATOR, descendant_range
+from hermes_agent.state.runtime import RuntimeStoreError, apply_worker_receipt
+from hermes_agent.state.runtime_workers import CHILD_SEPARATOR, descendant_range
 
 _DEFAULTS = {'max_concurrent_children': 10, 'max_spawn_depth': 1}
 
@@ -40,10 +40,10 @@ def delegation_limits(authority, execution_id, session_id):
 
 
 def reserve_child_execution(db, conn, session_id, payload, *, epoch, execution_id, identity, principal, limits, refused):
-    from hermes_state.ids import new_session_id
-    from hermes_state.keys import admission_fingerprint
-    from hermes_state.runtime import _secret_digest
-    from hermes_state.worker_lifecycle import insert_session_row_in_transaction
+    from hermes_agent.state.ids import new_session_id
+    from hermes_agent.state.keys import admission_fingerprint
+    from hermes_agent.state.runtime import _secret_digest
+    from hermes_agent.state.worker_lifecycle import insert_session_row_in_transaction
     secret = payload.get('secret') if isinstance(payload, dict) else None
     if set(payload) != {'secret'} or not isinstance(secret, str) or not 16 <= len(secret) <= 256:
         raise RuntimeStoreError('invalid_params')

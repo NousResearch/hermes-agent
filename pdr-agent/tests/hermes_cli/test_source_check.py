@@ -606,15 +606,15 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(
     sibling = tmp_path / "sibling"
     monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [("sibling", sibling)])
     git("checkout", "-q", "-b", "release-line", base)
-    (root / "hermes_state/common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
-    git("add", "hermes_state/common.py")
+    (root / "hermes_agent/state/common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
+    git("add", "hermes_agent/state/common.py")
     git("commit", "-q", "-m", "release from the older line")
     release = git("rev-parse", "HEAD")
     git("checkout", "-q", "main")
     if not divergent:
         git("merge", "--no-ff", "-qm", "release on main's history", "release-line")
-    (root / "hermes_state/common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
-    git("add", "hermes_state/common.py")
+    (root / "hermes_agent/state/common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
+    git("add", "hermes_agent/state/common.py")
     git("commit", "-q", "-m", "gateway runtime")
     bare = tmp_path / "origin.git"
     git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
@@ -684,9 +684,9 @@ def test_an_unfetched_release_is_judged_from_github(installation, tmp_path, monk
     responses[f"{api}/commits/v1.2.3"] = (200, {"sha": release})
     responses[f"{api}/compare/{git('rev-parse', 'HEAD')}...{release}"] = (200, {"status": "diverged"})
     responses[f"{api}/git/trees/{release}"] = (200, {"truncated": False, "tree": [
-        {"path": "hermes_state/__init__.py", "type": "blob"}, {"path": "hermes_state/common.py", "type": "blob"},
+        {"path": "hermes_state.py", "type": "blob"}, {"path": "hermes_agent/state/common.py", "type": "blob"},
         {"path": "hermes_agent/run_agent.py", "type": "blob"}]})
-    responses[f"/NousResearch/hermes-agent/{release}/hermes_state/__init__.py"] = (200, "from hermes_state.common import *\n")
+    responses[f"/NousResearch/hermes-agent/{release}/hermes_state/__init__.py"] = (200, "from hermes_agent.state.common import *\n")
     responses[f"/NousResearch/hermes-agent/{release}/hermes_state/common.py"] = (
         200, "SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
     if ledgered:
@@ -766,10 +766,10 @@ def test_a_release_with_the_state_store_inside_the_package_is_judged_by_its_pack
     """After the state store moves under ``hermes_agent/`` a root compat shell stays behind. The
     verdict must come from the package's modules, which a top-level tree listing does not show."""
     from hermes_cli import source_check
-    from hermes_state.common import SCHEMA_SQL
+    from hermes_agent.state.common import SCHEMA_SQL
 
     _root, _linked, home, _base, sha, responses, requests, _git = installation
-    shell, store = "hermes_state/__init__.py", "hermes_agent/hermes_state/common.py"
+    shell, store = "hermes_state.py", "hermes_agent/hermes_state/common.py"
     trees = "/repos/fixture/fork/git/trees"
     # A tree listing is one directory, as GitHub answers without ``recursive``; a release's full
     # recursive listing is several MiB, beyond what the reader takes in one response.
@@ -795,8 +795,8 @@ def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installat
     monkeypatch.setattr(source_check.time, "time", lambda: clock[0])
     tree = f"/repos/fixture/fork/git/trees/{sha}"
     module = f"/fixture/fork/{sha}/hermes_state/common.py"
-    responses[tree] = (200, {"tree": [{"path": "hermes_state/common.py", "type": "blob"}]})
-    from hermes_state.common import SCHEMA_SQL
+    responses[tree] = (200, {"tree": [{"path": "hermes_agent/state/common.py", "type": "blob"}]})
+    from hermes_agent.state.common import SCHEMA_SQL
     responses[module] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
     failed_path = tree if failure == "tree" else module
     good = responses[failed_path]

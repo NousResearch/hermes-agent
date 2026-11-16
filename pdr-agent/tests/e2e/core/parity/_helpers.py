@@ -108,7 +108,7 @@ class ParityHome:
             "PARITY_TREE_TAG": self.tag,
             # The child's HOME is the fixture home, so its ``~/.hermes/state.db`` IS
             # the tmp HERMES_HOME's db; under a pytest ancestor the live-DB guard
-            # (hermes_state.guard) would refuse it. This is the guard's documented
+            # (hermes_agent.state.guard) would refuse it. This is the guard's documented
             # child-process escape hatch; the path is tmp_path by construction.
             "HERMES_STATE_DB_GUARD_BYPASS": "1",
         })

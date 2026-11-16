@@ -446,7 +446,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     # publishes into), never by the bare name resolved in the caller's context.
     if (_core._server_registry_scope(key) or '').startswith('editor-session:'):
         import json
-        from hermes_state.runtime import RuntimeStoreError
+        from hermes_agent.state.runtime import RuntimeStoreError
         manifest = json.dumps({c.registry_name: c.schema for c in candidates}, sort_keys=True)
         frozen = getattr(server, '_editor_frozen_manifest', manifest)
         if manifest != frozen:

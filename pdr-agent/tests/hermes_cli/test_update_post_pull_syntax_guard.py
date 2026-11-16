@@ -195,7 +195,7 @@ def test_a_python_bump_is_judged_by_an_interpreter_the_target_admits(tmp_path, m
 
 
 def test_the_critical_inventory_covers_every_module_the_entry_paths_import_first():
-    """``hermes_agent/hermes_bootstrap.py`` was absent from the inventory, so a target that broke only the
+    """``hermes_bootstrap.py`` was absent from the inventory, so a target that broke only the
     bootstrap passed preflight and the post-pull guard and failed at the first import (review G3).
     Derived from the real launcher text, ``hermes_bootstrap``'s imports and the recovery closure."""
     import ast
@@ -221,9 +221,9 @@ def test_the_critical_inventory_covers_every_module_the_entry_paths_import_first
         return found
 
     launcher = _launchers._launcher_script("hermes", root, None)
-    entry = files(launcher) | files((root / "hermes_agent/hermes_bootstrap.py").read_text(encoding="utf-8"))
-    entry |= {"hermes_agent/hermes_bootstrap.py", *RECOVERY_CLOSURE}
-    assert "hermes_agent/hermes_bootstrap.py" in entry and "hermes_cli/main.py" in entry
+    entry = files(launcher) | files((root / "hermes_bootstrap.py").read_text(encoding="utf-8"))
+    entry |= {"hermes_bootstrap.py", *RECOVERY_CLOSURE}
+    assert "hermes_bootstrap.py" in entry and "hermes_cli/main.py" in entry
     declared, _ = update_cmd_commit.startup_files((root / "pyproject.toml").read_bytes(), ())
     assert entry <= set(declared), sorted(entry - set(declared))
 
@@ -238,12 +238,12 @@ def test_a_malformed_bootstrap_is_refused_before_the_move(tmp_path):
     git("init", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "Test")
-    (tmp_path / "hermes_agent/hermes_bootstrap.py").write_text("def broken(:\n", encoding="utf-8")
+    (tmp_path / "hermes_bootstrap.py").write_text("def broken(:\n", encoding="utf-8")
     (tmp_path / "hermes_agent/hermes_constants.py").write_text("ok = 1\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "broken bootstrap")
     refused = commit.target_syntax_error(["git"], tmp_path, "HEAD", update_cmd._UPDATE_CRITICAL_FILES)
-    assert refused is not None and refused[0] == "hermes_agent/hermes_bootstrap.py"
+    assert refused is not None and refused[0] == "hermes_bootstrap.py"
 
 
 def test_the_preflight_reads_every_critical_file_in_one_git_spawn(tmp_path, monkeypatch):

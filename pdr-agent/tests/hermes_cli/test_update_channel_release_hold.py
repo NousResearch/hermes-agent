@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 from hermes_cli import main, source_releases, update_cmd
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.update_channel import set_install_channel
@@ -42,7 +42,7 @@ def source(tmp_path, monkeypatch):
     git(origin, "config", "user.name", "Channel Fixture")
     git(origin, "config", "user.email", "fixture@example.invalid")
     git(origin, "config", "commit.gpgsign", "false")
-    (origin / "hermes_state/common.py").write_text(_PRE_RUNTIME)
+    (origin / "hermes_agent/state/common.py").write_text(_PRE_RUNTIME)
     git(origin, "add", ".")
     git(origin, "commit", "-m", "before the cutover")
     git(origin, "checkout", "-q", "-b", "release")
@@ -51,7 +51,7 @@ def source(tmp_path, monkeypatch):
     git(origin, "commit", "-m", "stable release cut beside main")
     release = git(origin, "rev-parse", "HEAD")
     git(origin, "checkout", "-q", "main")
-    (origin / "hermes_state/common.py").write_text(_RUNTIME)
+    (origin / "hermes_agent/state/common.py").write_text(_RUNTIME)
     git(origin, "commit", "-am", "gateway runtime")
     installed = git(origin, "rev-parse", "HEAD")
     git(tmp_path, "clone", "-q", str(origin), str(checkout))

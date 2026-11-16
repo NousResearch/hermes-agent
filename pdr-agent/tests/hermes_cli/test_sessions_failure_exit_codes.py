@@ -39,7 +39,7 @@ def _garbage_store(db_path):
 
 
 def _legacy_inline_fts_store(db_path):
-    from hermes_state.common import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL
+    from hermes_agent.state.common import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL
 
     raw = sqlite3.connect(str(db_path))
     with raw:

@@ -38,7 +38,7 @@ from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name,
 )
 from hermes_cli.web_server_sessions import _open_session_db_at_path
-from hermes_state.health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_agent.state.health import STORAGE_CORRUPT, note_storage_error, storage_state
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
@@ -233,7 +233,7 @@ def _read_profile_db(name: str, home, errors: Optional[list[dict[str, str]]],
 
 def _corrupt_profile_stores(targets) -> dict[str, str]:
     """``{profile: "corrupt"}`` for every scanned profile whose state.db this process has latched
-    as structurally corrupt (``hermes_state.health``). Lets Desktop tell an empty or partial list
+    as structurally corrupt (``hermes_agent.state.health``). Lets Desktop tell an empty or partial list
     from a damaged store, including when some reads still succeed (#72046)."""
     return {name: STORAGE_CORRUPT for name, home in targets
             if storage_state(Path(home) / "state.db") == STORAGE_CORRUPT}

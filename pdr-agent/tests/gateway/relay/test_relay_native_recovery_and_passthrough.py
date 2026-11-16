@@ -78,7 +78,7 @@ def _stub_turns(runner, monkeypatch, turns):
 
 
 def _rows(authority):
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     return [r for sid in list(authority.sessions)
             for r in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
 
@@ -87,7 +87,7 @@ def _rows(authority):
 async def test_relay_admission_queued_across_a_restart_runs_and_replies_with_egress_routing(tmp_path, monkeypatch):
     from gateway.run_runtime import recover_gateway_native_sessions
     from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
 
     connector = _Connector('discord')
     raw = {'text': 'queued before restart', 'message_id': 'm-1', 'source': {

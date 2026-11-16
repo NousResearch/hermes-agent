@@ -170,7 +170,7 @@ def test_readonly_resume_after_restart_retires_marked_row_without_reopen(
 
         home = tmp_path / "home"
         home.mkdir(exist_ok=True)
-        monkeypatch.setattr("hermes_state.registry.acquire", lambda db_path=None, **kwargs: db)
+        monkeypatch.setattr("hermes_agent.state.registry.acquire", lambda db_path=None, **kwargs: db)
         monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
         monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
         monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))

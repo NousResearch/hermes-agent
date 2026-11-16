@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 import uuid
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 def validate_editor(source, editor):

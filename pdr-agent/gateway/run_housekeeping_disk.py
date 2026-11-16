@@ -80,7 +80,7 @@ async def publish_local_auto_prune_notice(authority, ref) -> None:
     from gateway.config import Platform
     from gateway.session_policy import policy_for_source
     from hermes_cli import prune_advisor
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
 
     live = authority.sessions.get(ref.session_id)
     source = getattr(live, "source", None)

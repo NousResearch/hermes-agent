@@ -402,7 +402,7 @@ async def test_a_person_arriving_while_an_injected_turn_waits_does_not_inherit_i
 
 
 def _queued(probe, count):
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
 
     authority = probe.adapter.gateway_runner.session_authority
     sid = authority.logical_owner(authority.runner.session_store.lookup_by_session_key(probe.session_key).session_id)

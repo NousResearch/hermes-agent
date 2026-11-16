@@ -14,7 +14,7 @@ import sys
 
 from agent.i18n import t
 from hermes_agent.hermes_constants import get_hermes_home
-from hermes_state.ids import new_session_id
+from hermes_agent.state.ids import new_session_id
 from pathlib import Path
 from rich.console import Console
 from rich.markup import escape as _escape
@@ -379,7 +379,7 @@ class CLISessionMixin:
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
-            from hermes_state.sessions import INTERNAL_LISTING_SOURCES
+            from hermes_agent.state.sessions import INTERNAL_LISTING_SOURCES
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,

@@ -3,7 +3,7 @@ from copy import deepcopy
 import hashlib
 import json
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 def route_digest(adapter, chat_id):

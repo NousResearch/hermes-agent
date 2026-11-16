@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.common import SCHEMA_VERSION
+from hermes_agent.state.common import SCHEMA_VERSION
 
 @pytest.fixture
 def db(tmp_path):

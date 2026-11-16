@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.errors import CompressionSessionBusyError
+from hermes_agent.state.errors import CompressionSessionBusyError
 
 
 def _setup_db(tmp_path):

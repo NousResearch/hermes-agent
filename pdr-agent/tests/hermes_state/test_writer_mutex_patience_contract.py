@@ -18,7 +18,7 @@ import time
 import pytest
 
 from hermes_state import SessionDB, classify_persistence_error
-from hermes_state.errors import is_sqlite_lock_error
+from hermes_agent.state.errors import is_sqlite_lock_error
 from tests.waiting import wait_until
 
 
@@ -46,7 +46,7 @@ def _hold_writer_mutex(db, hold_s):
 
 
 def test_refused_within_patience_and_classified_as_in_process_contention(db):
-    from hermes_state.write import WriterMutexTimeout
+    from hermes_agent.state.write import WriterMutexTimeout
 
     holder, release = _hold_writer_mutex(db, hold_s=5)
     try:
@@ -70,7 +70,7 @@ def test_refused_within_patience_and_classified_as_in_process_contention(db):
 
 
 def test_refusal_names_the_in_process_holder_without_sql_or_values(db, caplog):
-    from hermes_state.write import WriterMutexTimeout
+    from hermes_agent.state.write import WriterMutexTimeout
 
     holder, release = _hold_writer_mutex(db, hold_s=5)
     try:

@@ -548,7 +548,7 @@ def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tm
     from types import SimpleNamespace
     from gateway.session_authority import LiveSession, SessionAuthority
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
 
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
     with SessionDB(db_path=tmp_path / "state.db") as db:

@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from hermes_state.runtime import RuntimeStoreError, list_session_admissions
+from hermes_agent.state.runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 
 

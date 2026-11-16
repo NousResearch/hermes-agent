@@ -10,7 +10,7 @@ import sqlite3
 
 import pytest
 
-import hermes_state.wal
+import hermes_agent.state.wal
 
 
 @pytest.fixture()
@@ -18,11 +18,11 @@ def network_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / "cron").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(hermes_state.wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
-    monkeypatch.setattr(hermes_state.wal, "_path_on_cross_vm_fs", lambda p: False)
-    monkeypatch.setattr(hermes_state.wal, "_detect_network_fs", lambda directory, *a, **k: True, raising=False)
-    getattr(hermes_state.wal, "_network_fs_cache", {}).clear()
-    getattr(hermes_state.wal, "_network_fs_new_store_warned_paths", set()).clear()
+    monkeypatch.setattr(hermes_agent.state.wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
+    monkeypatch.setattr(hermes_agent.state.wal, "_path_on_cross_vm_fs", lambda p: False)
+    monkeypatch.setattr(hermes_agent.state.wal, "_detect_network_fs", lambda directory, *a, **k: True, raising=False)
+    getattr(hermes_agent.state.wal, "_network_fs_cache", {}).clear()
+    getattr(hermes_agent.state.wal, "_network_fs_new_store_warned_paths", set()).clear()
     return home
 
 

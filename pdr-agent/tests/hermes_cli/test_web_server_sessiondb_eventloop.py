@@ -124,7 +124,7 @@ def test_session_rename_runs_writer_open_and_update_off_event_loop(monkeypatch, 
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionActor
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
 
     def _open_db(*_args, **_kwargs):
         raise AssertionError("rename must not open its own SessionDB writer")

@@ -247,7 +247,7 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
     agent._touch_activity = lambda desc: touches.append(time.time())
 
     agent._execute_tool_calls_concurrent = (
-        __import__("hermes_agent.run_agent").AIAgent._execute_tool_calls_concurrent.__get__(agent)
+        __import__("importlib").import_module("hermes_agent.run_agent").AIAgent._execute_tool_calls_concurrent.__get__(agent)
     )
 
     class _FakeToolCall:

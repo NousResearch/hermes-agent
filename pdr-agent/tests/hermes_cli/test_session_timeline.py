@@ -174,7 +174,7 @@ def test_exact_owner_lineage_validation_and_bounded_jump(timeline_store):
 def test_timeline_sql_never_reads_tool_columns_or_writes(timeline_store, monkeypatch):
     import sqlite3
     from contextlib import contextmanager
-    from hermes_state.timeline import get_session_timeline
+    from hermes_agent.state.timeline import get_session_timeline
 
     db, _, home = timeline_store
     db.append_messages_batch("timeline-root", [

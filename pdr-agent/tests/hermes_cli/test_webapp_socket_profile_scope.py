@@ -55,7 +55,7 @@ def gateway(tmp_path, monkeypatch):
     from gateway.session_authority import SessionAuthority
     from hermes_cli import auth, nous_account, nous_billing
     from hermes_state import SessionDB
-    from hermes_state.runtime import begin_runtime_epoch
+    from hermes_agent.state.runtime import begin_runtime_epoch
     from tui_gateway import launch_profile_policy, server
 
     launch, b = tmp_path / "launch", tmp_path / "launch" / "profiles" / "b"

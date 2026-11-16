@@ -104,7 +104,7 @@ async def test_legacy_provider_respelling_picks_new_endpoint(tmp_path, monkeypat
 @pytest.mark.asyncio
 @pytest.mark.parametrize('bypass', ['ignore_user_config', 'safe_mode'])
 async def test_config_only_pick_does_not_import_profile_provider(tmp_path, monkeypatch, bypass):
-    from hermes_state.runtime import RuntimeStoreError
+    from hermes_agent.state.runtime import RuntimeStoreError
     with peers() as (_a, au, b, bu):
         before = {'model': {'provider':'custom', 'base_url':au,'default':'original'}}
         after = {**before, 'providers': {'reviewprovider':{'base_url':bu,'api_key':'profile-only-key'}}}

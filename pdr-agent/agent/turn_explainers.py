@@ -255,7 +255,7 @@ class TurnExplainersMixin:
             body = t(key, model=model or t("explainer.shared.the_model"))
         elif reason == "session_persistence_failed":
             from hermes_agent.hermes_constants import display_hermes_home, profile_cli_selector
-            from hermes_state.errors import STORAGE_RECOVERY_DOCS_URL
+            from hermes_agent.state.errors import STORAGE_RECOVERY_DOCS_URL
 
             # Copy-pasteable, so pin every `hermes` command to the profile whose store failed:
             # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT the

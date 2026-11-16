@@ -10,7 +10,7 @@ Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|erro
 # ``hermes_bootstrap`` lives at the repo root, so importing it is safe before the guard runs (its name won't
 # collide with a user package), and it owns the canonical path-hardening logic shared with the other entry
 # points — #51693 added the guard to ``entry.py``/``acp_adapter/entry.py`` but missed this child.
-from hermes_agent import hermes_bootstrap
+import hermes_bootstrap
 
 hermes_bootstrap.harden_import_path()
 

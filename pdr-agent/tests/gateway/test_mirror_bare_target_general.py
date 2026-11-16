@@ -47,8 +47,8 @@ def db(tmp_path):
 @pytest.fixture()
 def wired(db, tmp_path):
     """Point mirror's lookups at the tmp SessionDB; the sessions.json fallback stays absent."""
-    with patch("hermes_state.registry.acquire", return_value=db), \
-         patch("hermes_state.registry.release_or_close"), \
+    with patch("hermes_agent.state.registry.acquire", return_value=db), \
+         patch("hermes_agent.state.registry.release_or_close"), \
          patch.object(mirror_mod, "_SESSIONS_INDEX", tmp_path / "sessions" / "sessions.json"):
         yield db
 
@@ -115,8 +115,8 @@ def test_sessions_json_fallback_prefers_thread1(tmp_path):
     }), encoding="utf-8")
     no_rows = type("NoRows", (), {"find_session_by_origin": staticmethod(lambda **kw: None)})()
 
-    with patch("hermes_state.registry.acquire", return_value=no_rows), \
-         patch("hermes_state.registry.release_or_close"), \
+    with patch("hermes_agent.state.registry.acquire", return_value=no_rows), \
+         patch("hermes_agent.state.registry.release_or_close"), \
          patch.object(mirror_mod, "_SESSIONS_INDEX", index):
         assert _find_session_id("telegram", CHAT) == "sess-general"
 

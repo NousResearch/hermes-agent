@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state.repair
+import hermes_agent.state.repair
 from hermes_state import SessionDB
 from hermes_cli.backup import (
     _safe_copy_db,
@@ -192,13 +192,13 @@ def test_live_writer_probe_detects_real_holder(tmp_path):
     """The shared guard primitive must see a real holder (#88235, #90806)."""
     db = _make_state_db(tmp_path)
     _require_wal(db)
-    assert hermes_state.repair._live_writer_holds_db(db) is False
+    assert hermes_agent.state.repair._live_writer_holds_db(db) is False
     with _LiveWriter(db):
-        assert hermes_state.repair._live_writer_holds_db(db) is True, (
+        assert hermes_agent.state.repair._live_writer_holds_db(db) is True, (
             "guard failed to detect a live write transaction — every "
             "registered op relying on it is now unguarded"
         )
-    assert hermes_state.repair._live_writer_holds_db(db) is False
+    assert hermes_agent.state.repair._live_writer_holds_db(db) is False
 
 
 # ---------------------------------------------------------------------------

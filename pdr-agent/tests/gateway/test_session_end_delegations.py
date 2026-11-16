@@ -232,7 +232,7 @@ async def _deliver(runner, authority, ref, producer):
 
 
 def _admissions(authority, ref):
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     return [r for r in list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
             if r['principal_id'].startswith('automation:')]
 
@@ -309,7 +309,7 @@ async def test_messaging_completion_still_starts_its_turn(tmp_path, monkeypatch)
     from gateway.session_authority import SessionAuthority, initialize_session_authority
     from gateway.session_ingress_context import native_callback
     from hermes_agent.hermes_constants import get_hermes_home
-    from hermes_state.runtime import list_session_admissions
+    from hermes_agent.state.runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tests.gateway.test_completion_admission import pending
 

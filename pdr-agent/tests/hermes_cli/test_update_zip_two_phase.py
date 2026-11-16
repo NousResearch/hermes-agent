@@ -406,16 +406,16 @@ def test_root_files_never_go_missing_mid_swap(tmp_path, monkeypatch, hardlinks):
     for side, text in ((live, "old"), (new, "new")):
         (side / "hermes_cli").mkdir(parents=True)
         (side / "hermes_cli" / "main.py").write_text(text, encoding="utf-8")
-        for name in ("hermes_agent/hermes_constants.py", "hermes_agent/hermes_bootstrap.py"):
+        for name in ("hermes_agent/hermes_constants.py", "hermes_bootstrap.py"):
             (side / name).write_text(text, encoding="utf-8")
-    names = ("hermes_agent/hermes_constants.py", "hermes_cli", "hermes_agent/hermes_bootstrap.py")
+    names = ("hermes_agent/hermes_constants.py", "hermes_cli", "hermes_bootstrap.py")
     staged = [(update_cmd._stage_replacement(str(new / n), str(live / n)), str(live / n)) for n in names]
     missing: list[str] = []
 
     def probing(real):
         def step(src, dst):
             real(src, dst)
-            missing.extend(n for n in ("hermes_agent/hermes_constants.py", "hermes_agent/hermes_bootstrap.py") if not (live / n).is_file())
+            missing.extend(n for n in ("hermes_agent/hermes_constants.py", "hermes_bootstrap.py") if not (live / n).is_file())
         return step
 
     monkeypatch.setattr(update_cmd.os, "rename", probing(os.rename))
@@ -423,8 +423,8 @@ def test_root_files_never_go_missing_mid_swap(tmp_path, monkeypatch, hardlinks):
     update_cmd._commit_staged_replacements(staged)
     monkeypatch.undo()
     assert not missing, f"root modules absent mid-swap: {missing}"
-    assert {n: (live / n).read_text(encoding="utf-8-sig") for n in ("hermes_agent/hermes_constants.py", "hermes_agent/hermes_bootstrap.py")} == {
-        "hermes_agent/hermes_constants.py": "new", "hermes_agent/hermes_bootstrap.py": "new"}
+    assert {n: (live / n).read_text(encoding="utf-8-sig") for n in ("hermes_agent/hermes_constants.py", "hermes_bootstrap.py")} == {
+        "hermes_agent/hermes_constants.py": "new", "hermes_bootstrap.py": "new"}
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
 
 

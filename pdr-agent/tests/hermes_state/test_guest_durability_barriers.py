@@ -12,7 +12,7 @@ import sqlite3
 import pytest
 
 import hermes_state
-from hermes_state.repair import apply_durability_barriers
+from hermes_agent.state.repair import apply_durability_barriers
 
 
 def _config(monkeypatch, database_section):

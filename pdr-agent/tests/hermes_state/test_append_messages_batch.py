@@ -12,7 +12,7 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state.errors import CompressionSessionClosedError
+from hermes_agent.state.errors import CompressionSessionClosedError
 
 
 @pytest.fixture()

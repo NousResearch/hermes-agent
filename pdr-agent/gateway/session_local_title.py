@@ -6,7 +6,7 @@ applies the classic CLI rule (``hermes_cli.main._resolve_session_by_name_or_id``
 """
 from __future__ import annotations
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 def resolve_titled_session(authority, actor, name, *, missing_ok=False):

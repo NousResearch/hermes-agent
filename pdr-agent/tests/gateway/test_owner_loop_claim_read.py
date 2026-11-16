@@ -18,7 +18,7 @@ SLOW_S = 2.0
 
 @pytest.mark.asyncio
 async def test_claim_pending_read_keeps_the_owner_loop_ticking(tmp_path, monkeypatch):
-    import hermes_state.runtime as rt
+    import hermes_agent.state.runtime as rt
     from gateway import session_authority
     from gateway.session_authority import LiveSession, SessionAuthority
     from gateway.session_contract import SessionRef

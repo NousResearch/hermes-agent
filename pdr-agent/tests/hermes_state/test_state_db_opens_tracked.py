@@ -95,7 +95,7 @@ def test_spillover_reference_scan_is_tracked(state_db, tracked):
 
 def test_doctor_session_count_and_damage_check_are_tracked(state_db, tracked):
     from hermes_cli.doctor_state import _session_count
-    from hermes_state.repair import state_db_has_structural_damage
+    from hermes_agent.state.repair import state_db_has_structural_damage
     assert _session_count(state_db) == 1
     state_db_has_structural_damage(state_db)
     assert tracked.count(_key(state_db)) >= 2

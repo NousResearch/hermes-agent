@@ -22,7 +22,7 @@ async def _api_turn(authority, owner, tmp_path, api):
     from gateway.session_api_turn import admit_api_turn_async
     _, ref, row = await admit_api_turn_async(api, session_id='api', user_message='hi', conversation_history=[])
     await authority._drain(ref)
-    from hermes_state.runtime import get_session_admission
+    from hermes_agent.state.runtime import get_session_admission
     assert get_session_admission(authority.db, admission_id=row['admission_id'])['status'] == 'terminal'
 
 
@@ -60,7 +60,7 @@ async def _handle(event):
 
 @pytest.mark.asyncio
 async def test_session_create_commit_never_runs_on_the_owner_loop_thread(tmp_path, monkeypatch):
-    from hermes_state.local import POLICY_PREFIX
+    from hermes_agent.state.local import POLICY_PREFIX
     store, authority, owner = _owner(tmp_path, monkeypatch, _handle)
     threads = _record(monkeypatch, POLICY_PREFIX)
     try:

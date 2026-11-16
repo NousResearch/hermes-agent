@@ -3,7 +3,7 @@ import asyncio
 from functools import partial
 from pathlib import Path
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 def handlers(connection):

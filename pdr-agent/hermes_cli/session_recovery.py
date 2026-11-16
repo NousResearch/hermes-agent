@@ -18,8 +18,8 @@ from typing import Any, Callable, Iterator, Optional
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state import SessionDB
-from hermes_state.common import FTS_STORAGE_VERSION, SCHEMA_VERSION
-from hermes_state.repair import _db_opens_cleanly
+from hermes_agent.state.common import FTS_STORAGE_VERSION, SCHEMA_VERSION
+from hermes_agent.state.repair import _db_opens_cleanly
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -191,7 +191,7 @@ def _copy_source_bundle(source: Path, snapshot_dir: Path) -> tuple[Path, list[st
 
     The whole copy runs inside ``offline_file_access`` (holds the connection-lifecycle lock). Recovery
     normally runs as its own CLI process against an offline file, so the refusal should never fire; the
-    guard keeps this path consistent with ``hermes_state.repair._backup_db_file``.
+    guard keeps this path consistent with ``hermes_agent.state.repair._backup_db_file``.
 
     Checking for a live connection and *then* copying would be a check/use race: a connection could open in
     that window, and the copy's ``close()`` would cancel its POSIX advisory locks -- the failure class
@@ -932,7 +932,7 @@ def _sanitize_session_model_config(destination: sqlite3.Connection) -> int:
     ``integrity_check`` validates b-tree structure, never column *contents*: a row whose
     JSON was truncated by the damage verifies clean, and the recovered store then raises
     ``OperationalError: malformed JSON`` the first time ``reopen_session`` rewrites the
-    reset-child markers with ``json_set`` (``hermes_state/sessions.py::reopen_session``) —
+    reset-child markers with ``json_set`` (``hermes_agent/state/sessions.py::reopen_session``) —
     i.e. on the first resume of a parent session. Read paths are already guarded
     (``_sql_json_extract`` wraps every extract in ``CASE WHEN json_valid``), so this is
     about the write path. The blob is unrecoverable either way, so neutralise it at the

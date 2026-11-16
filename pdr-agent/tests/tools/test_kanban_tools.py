@@ -1249,7 +1249,7 @@ def test_live_tui_session_key_uses_profile_store(monkeypatch, tmp_path):
 def test_live_tui_session_key_fails_open_to_original_key(monkeypatch):
     """Store unavailability must degrade to current behaviour (subscribe to the inherited
     key), never fail the kanban_create call."""
-    import hermes_state.registry as registry
+    import hermes_agent.state.registry as registry
     from tools import kanban_tools as kt
 
     def _boom(db_path=None):

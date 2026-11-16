@@ -29,7 +29,7 @@ from gateway.session import SessionSource
 from gateway.session_ingress_context import (
     capture_provenance, native_callback, register_transport_home)
 
-from hermes_state.runtime import RuntimeStoreError
+from hermes_agent.state.runtime import RuntimeStoreError
 
 
 class _FakeAdapter:

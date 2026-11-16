@@ -160,9 +160,9 @@ def test_recover_closes_owned_db_when_unexpected_exception_escapes(
             raise KeyboardInterrupt
 
     db = InterruptingDB()
-    monkeypatch.setattr("hermes_state.registry.acquire", lambda: db)
+    monkeypatch.setattr("hermes_agent.state.registry.acquire", lambda: db)
     monkeypatch.setattr(
-        "hermes_state.registry.release_or_close", lambda _: setattr(db, "released", True)
+        "hermes_agent.state.registry.release_or_close", lambda _: setattr(db, "released", True)
     )
 
     with pytest.raises(KeyboardInterrupt):

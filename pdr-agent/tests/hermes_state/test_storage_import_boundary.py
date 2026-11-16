@@ -4,15 +4,15 @@ import sys
 
 
 def test_runtime_storage_modules_import_without_loading_gateway():
-    probe = ("import sys, hermes_state, hermes_state.runtime, hermes_state.local, hermes_state.local_lineage, "
-             "hermes_state.mutation_branch, hermes_state.mutations, hermes_state.worker_compression; "
+    probe = ("import sys, hermes_state, hermes_agent.state.runtime, hermes_agent.state.local, hermes_agent.state.local_lineage, "
+             "hermes_agent.state.mutation_branch, hermes_agent.state.mutations, hermes_agent.state.worker_compression; "
              "print(sorted(m for m in sys.modules if m == 'gateway' or m.startswith('gateway.')))")
     out = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == '[]', out.stdout
 
 
 def test_gateway_names_are_the_storage_definitions():
-    import hermes_state.keys as keys
+    import hermes_agent.state.keys as keys
     from gateway.session import SessionStore, profile_from_session_key_namespace
     from gateway.session_admission import admission_fingerprint
     from gateway.session_local_recovery import local_identity

@@ -9,7 +9,7 @@ leaves the model read, but the user's own message stays VISIBLE in the display p
 """
 from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
 from hermes_state import SessionDB
-from hermes_state.rewind import retain_refused_turn_for_display
+from hermes_agent.state.rewind import retain_refused_turn_for_display
 
 _NOTICE = "This message was refused by the model's safety filter — try a different query."
 

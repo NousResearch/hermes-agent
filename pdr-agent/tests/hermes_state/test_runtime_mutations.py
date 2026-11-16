@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from hermes_state import SessionDB
-import hermes_state.runtime as rt
+import hermes_agent.state.runtime as rt
 
 
 @pytest.mark.parametrize('operation,payload', [('rename', {'title': ' New  name '}), ('rename', {'title': 'a' + chr(0xD800) + 'b'}), ('archive', {'archived': True})])

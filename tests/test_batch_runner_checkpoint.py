@@ -154,3 +154,4 @@ class TestBatchWorkerResumeBehavior:
 
         assert filtered_entries == [], "discarded prompt was rescheduled on resume"
         assert skipped_indices == [0]
+

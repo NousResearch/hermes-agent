@@ -1867,11 +1867,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         last_output_len = 0
         completion_attempts = 0
         retry_interval = interval
+        last_session = None
         while True:
             await asyncio.sleep(retry_interval)
-            session = process_registry.get(session_id)
+            # A pruned session reads as None here (the disk fallback needs a session id this task lacks): keep the one seen.
+            session = process_registry.get(session_id) or last_session
             if session is None:
+                logger.warning("Process watcher: %s vanished from the registry before it was seen", session_id)
                 break
+            last_session = session
             surface = should_surface_notification({
                 "owner_task_id": getattr(session, "owner_task_id", ""),
                 "task_id": getattr(session, "task_id", ""),

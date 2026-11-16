@@ -2539,12 +2539,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     # ----- Cleanup / Pruning -----
 
     def _prune_if_needed(self):
-        """Drop expired, then oldest-over-cap finished sessions (hold _lock); keep pending scope stops and unpublished notices."""
+        """Drop expired (aged from the exit, not the spawn), then oldest-over-cap finished sessions (hold _lock); keep pending scope stops and unpublished notices."""
         from tools.process_registry_awaiting import retained_for_delivery
         now = time.time()
         prunable = {sid: s for sid, s in self._finished.items()
                     if not getattr(s, "_scope_stop_pending", False) and not retained_for_delivery(s)}
-        expired = [sid for sid, s in prunable.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
+        expired = [sid for sid, s in prunable.items() if (now - (getattr(s, "exited_at", 0.0) or s.started_at)) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
         if over_cap and (survivors := [sid for sid in prunable if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))

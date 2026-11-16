@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "Anbieter-Nutzung + geschätzte neue Nachrichten"
     source_line: "Quelle: {source}; Kategoriewerte sind lokale Schätzungen."
     hint_all: "Verwenden Sie /context all für Kosten pro Skill und pro Toolset."
+    cache_warm: "Prompt-Cache: warm bis {until} (noch {remaining}; {ttl}, {confidence})."
+    cache_expired: "Prompt-Cache: vor {ago} abgelaufen ({ttl}, {confidence}); die nächste Nachricht verarbeitet den gesamten Prompt neu."
+    cache_maybe_warm: "Prompt-Cache: möglicherweise noch warm bis {until} (höchstens noch {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Prompt-Cache: unbekannt (Route, Sitzung oder Kontext haben sich seit der letzten gecachten Anfrage geändert)."
+    cache_unknown_route: "Prompt-Cache: unbekannt (dieser Anbieter veröffentlicht seine Cache-Aufbewahrung nicht)."
+    cache_unknown_runtime: "Prompt-Cache: unbekannt (diese Laufzeit setzt eigene Cache-Optionen, die Hermes nicht sehen kann)."
+    cache_unknown_storage: "Prompt-Cache: unbekannt (der Sitzungsspeicher konnte nicht gelesen werden)."
+    cache_confidence:
+      proven: "belegt"
+      declared: "angefordert"
+      assumed: "angenommen"
   status:
     header: "📊 **Hermes-Gateway-Status**"
     matrix_scope_header: "**Matrix-Geltungsbereich:**"

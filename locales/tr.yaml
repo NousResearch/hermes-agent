@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "sağlayıcı kullanımı + tahmini yeni mesajlar"
     source_line: "Kaynak: {source}; kategori sayıları yerel tahminlerdir."
     hint_all: "Skill ve araç seti başına maliyetler için /context all kullanın."
+    cache_warm: "İstem önbelleği: {until} saatine kadar etkin ({remaining} kaldı; {ttl}, {confidence})."
+    cache_expired: "İstem önbelleği: {ago} önce sona erdi ({ttl}, {confidence}); sonraki mesaj tüm istemi yeniden işler."
+    cache_maybe_warm: "İstem önbelleği: {until} saatine kadar hâlâ sıcak olabilir (en fazla {remaining} daha; {ttl}, {confidence})."
+    cache_unknown_moved: "İstem önbelleği: bilinmiyor (son önbelleğe alınmış istekten beri rota, oturum veya bağlam değişti)."
+    cache_unknown_route: "İstem önbelleği: bilinmiyor (bu sağlayıcı önbellek saklama süresini yayımlamıyor)."
+    cache_unknown_runtime: "İstem önbelleği: bilinmiyor (bu çalışma ortamı kendi önbellek seçeneklerini belirliyor ve Hermes bunları göremiyor)."
+    cache_unknown_storage: "İstem önbelleği: bilinmiyor (oturum deposu okunamadı)."
+    cache_confidence:
+      proven: "kanıtlandı"
+      declared: "beyan edildi"
+      assumed: "varsayıldı"
   status:
     header: "📊 **Hermes Gateway Durumu**"
     matrix_scope_header: "**Matrix kapsamı:**"

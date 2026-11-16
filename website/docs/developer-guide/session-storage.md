@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
     -- ... additional gateway/workspace/handoff/compression columns ...
+    prompt_cache_clock TEXT,  -- JSON of the latest prompt-cache event (agent/prompt_cache_clock.py)
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -223,6 +224,20 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
     ON sessions(title) WHERE title IS NOT NULL;
 ```
+
+`prompt_cache_clock` is nullable JSON: the route (provider, normalized base URL, model), requested
+and granted cache tiers, one coverage deadline per tier, the guaranteed and estimated ends,
+confidence, send time, and the session's context generation when the last request read or wrote
+the provider's prompt cache. It rides the same queued token-count batch as the usage counters (no
+extra write on the turn loop). The context generation is the number of rows a compaction or prune
+archived (`active = 0, compacted = 1`): it only grows, so a saved clock recorded before an in-place
+compaction no longer validates after a restart; for a managed worker the owner stamps that count
+onto the clock inside the usage receipt that carries it. A resumed agent restores the clock before its first
+response is recorded, and the agentless `session.context_breakdown` reads it too, checked against
+the row's persisted model and `model_config` provider/base URL so a `/model` switch reports
+`unknown`. Every clock read is advisory: a failed store read reports `unknown` and never fails the
+turn. Sessions stored
+before the column fall back to the newest assistant row's timestamp (`assumed`, never guaranteed).
 
 `user_id` is the principal on the other end of the session: messaging adapters
 store the platform sender id, and `desktop` / dashboard sessions opened through

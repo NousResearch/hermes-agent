@@ -630,7 +630,7 @@ def _compute_git_bash_bin_dirs() -> list[str]:
         return []
     parent = os.path.dirname(os.path.dirname(bash))  # bash in <root>\bin or <root>\usr\bin (MinGit)
     root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
-    subs = ("mingw64/bin", "mingw32/bin", "usr/local/bin", "usr/bin", "bin")
+    subs = ("ucrt64/bin", "clangarm64/bin", "mingw64/bin", "mingw32/bin", "usr/local/bin", "usr/bin", "bin")
     dirs = (os.path.join(root, *sub.split("/")) for sub in subs)
     return list(dict.fromkeys(d for d in dirs if os.path.isdir(d)))
 
@@ -1182,6 +1182,24 @@ class LocalEnvironment(BaseEnvironment):
     def _quote_shell_path(self, path: str) -> str:
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
+
+    def _usable_cwd(self, cwd: str) -> tuple[str, dict | None]:
+        """The directory ``execute`` embeds in the wrapper's ``cd``: ``cwd`` if enterable, else
+        what ``_resolve_safe_cwd`` picks. Recovering only ``self.cwd`` (inside ``_run_bash``)
+        came too late — the script was already built and exited 126 at ``cd`` on every call —
+        and missed the explicit cwd the terminal tool passes from the session record. A real
+        fallback (not a benign MSYS→Windows normalization) is returned for ``execute`` to report,
+        because relative paths now resolve somewhere the model did not ask for.
+
+        A relative or ``~`` cwd is checked where bash's ``cd`` resolves it (``self.cwd``, the
+        Popen cwd; ``$HOME``), not against this process's cwd, and kept as written when usable."""
+        resolved = os.path.expanduser(cwd)
+        if resolved and not os.path.isabs(_msys_to_windows_path(resolved)):
+            resolved = os.path.join(self.cwd, resolved)
+        safe_cwd = _resolve_safe_cwd(resolved)
+        if safe_cwd == resolved or safe_cwd == _msys_to_windows_path(resolved):
+            return (cwd if resolved != cwd else safe_cwd), None
+        return safe_cwd, {"requested": cwd, "used": safe_cwd}
 
     def _recover_cwd(self) -> None:
         """Swap ``self.cwd`` for a usable directory if it vanished or is inaccessible

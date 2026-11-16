@@ -302,7 +302,8 @@ class A2AAdapter(BasePlatformAdapter):
         self._scope_ctx = contextvars.copy_context()
         self._agents = self._load_served_agents(extra)
         self._httpd: Optional[ThreadingHTTPServer] = None
-        self._server_thread = self._watchdog_thread = None  # type: Optional[threading.Thread]
+        self._server_thread: Optional[threading.Thread] = None
+        self._watchdog_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._watchdog_stop = threading.Event()
         # Per-adapter protocol state (not module-global).

@@ -197,11 +197,11 @@ termux-payload payload +packages:
 lock:
     scripts/relock.sh
 
-# Pre-commit: the pinned ruff with ruff.pre-commit.toml on the given files
+# Pre-commit: the pinned ruff with ruff.toml on the given files
 [group('hooks')]
 [positional-arguments]
 ruff +files:
-    scripts/hermes-python -m scripts.code_health.ruff_runner check --config ruff.pre-commit.toml "$@"
+    scripts/hermes-python -m scripts.code_health.ruff_runner check "$@"
 
 # Pre-commit: eslint on the given files, from the calling workspace
 [group('hooks')]

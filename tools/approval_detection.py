@@ -6,6 +6,7 @@ prompting live here.
 
 import bisect
 import fnmatch
+import functools
 import logging
 import os
 import re
@@ -13,8 +14,22 @@ import shlex
 import tempfile
 import unicodedata
 
+from agent.file_safety import SHELL_RC_FILES
+from tools import approval_parser_budget as _parser_budget
+from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
+from tools.approval_git_options import _GIT, _GIT_PUSH, _GIT_PUSH_ARGS, _join_escaped_word_chars
+from tools.approval_config_set import _HERMES_CONFIG_SET_APPROVAL_POLICY
+from tools.approval_env_split import _env_split_payload
+from tools.approval_grep_spans import _grep_safe_detection_variant, _quoted_grep_pattern_spans  # re-exported
+from tools.approval_hermes_store import _HERMES_HOME_BARE, _HERMES_STORE_FILE, _HERMES_STORE_PATH, _HERMES_STORE_ROOT
 from tools.approval_home_fold import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
+from tools.approval_shell_tokens import _shell_tokens_with_spans
+from tools.approval_windows_hardline import whatif_preview_is_real, windows_hardline_patterns, windows_whatif_strict_patterns
+from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_RISKY_DESCRIPTION, classify_osascript
+from tools.approval_quoted_newlines import _mask_quoted_newlines
+from tools.approval_pipe_launchers import _PIPE_PATH_PREFIX_RE, _PIPE_WRAPPERS_RE
+from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_SELECTOR_RE
 
 logger = logging.getLogger("tools.approval")
 
@@ -35,9 +50,9 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     _HERMES_HOME_DIR + r'config\.yaml\b'
 )
-_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
+_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
+_SHELL_RC_FILES = rf"(?:~|\$home|\$\{{home\}})/(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES)})\b"
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 _HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
 _SECRET_FILE = (
@@ -49,20 +64,6 @@ _SECRET_VAR = r'\$\{?\w*(?:key|token|secret|passwd|password|credential)\w*\}?'
 # Flags whose argument becomes a request body / uploaded file. Case-sensitive: curl -D dumps headers, -f fails.
 _UPLOAD_FLAG = (r'(?<!\S)(?:(?-i:-[a-zA-Z]*[dFT])|--data(?:-binary|-raw|-urlencode|-ascii)?|--form(?:-string)?'
                 r'|--upload-file|--json|--post-(?:data|file)|--body-(?:data|file))')
-_EMOJI_RANGE = r'\U0001F000-\U0001FAFF\u2600-\u27BF'
-# Code points that take VS15/VS16 for text/emoji presentation: the two emoji blocks above plus the BMP
-# singletons with the Unicode Emoji property (© ™ ℹ, arrows, ⌚ ▶ ⬅ ⭐ 〰 ㊗ …), as in #114843. Digits,
-# ``#`` and ``*`` are deliberately absent: a selector after a letter or digit is the hiding signal.
-_EMOJI_PRESENTATION_BASES = (
-    r'\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u2199\u21a9\u21aa\u231a\u231b\u2328\u23cf'
-    r'\u23e9-\u23f3\u23f8-\u23fa\u24c2\u25aa\u25ab\u25b6\u25c0\u25fb-\u25fe\u2934\u2935'
-    r'\u2b05-\u2b07\u2b1b\u2b1c\u2b50\u2b55\u3030\u303d\u3297\u3299' + _EMOJI_RANGE
-)
-# Matched on the RAW command: detection variants are NFKC-folded, which turns ℹ + VS16 into ``i`` + VS16.
-# A keycap emoji (digit, ``#`` or ``*`` + VS16 + U+20E3) is exempt only as that exact sequence, so a
-# selector after a digit with no keycap mark is still flagged.
-_HIDDEN_VARIATION_SELECTOR_RE = re.compile(
-    rf'(?<![{_EMOJI_PRESENTATION_BASES}])(?!(?<=[0-9#*])\ufe0f\u20e3)[\ufe00-\ufe0f\U000e0100-\U000e01ef]')
 _INVISIBLE_UNICODE_DESCRIPTION = "invisible or bidirectional Unicode control character (possible obfuscation)"
 _CREDENTIAL_UPLOAD_DESCRIPTION = "upload a secret or credential file via curl/wget (possible exfiltration)"
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
@@ -85,6 +86,17 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
 )
 _USER_SENSITIVE_WRITE_TARGET = rf'(?:{_SSH_SENSITIVE_PATH}|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES})'
+# touch/mkdir/ln: the home-side targets only; /etc is out of their scope (#85321) and admin commands
+# like `mkdir -p /etc/apt/keyrings` would be mislabelled as credential/SSH/shell-rc writes.
+_HOME_SENSITIVE_WRITE_TARGET = rf'(?:{_USER_SENSITIVE_WRITE_TARGET}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
+# Same set for touch/mkdir/ln, but a named FILE must end the shell word: `ln -s a ~/.bashrc.bak` /
+# `touch ~/.bashrc.d/x` name a sibling, not the startup or credential file (`~/.ssh/` is a directory: any entry;
+# a bare `~/.ssh` operand anywhere in the command names the directory itself, `~/.sshx` does not).
+# A glued redirect (`touch ~/.bashrc>/dev/null`) ends the word too; the ln rule also allows trailing redirects.
+_HOME_SENSITIVE_CREATE_TARGET = (
+    rf'(?:{_SSH_SENSITIVE_PATH}|(?:{_HOME_PREFIX}\.ssh|{_SHELL_RC_FILES}|{_CREDENTIAL_FILES}|{_HERMES_ENV_PATH}|{_HERMES_CONFIG_PATH})'
+    r'(?=["\'\s;&|)`<>]|$))'
+)
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 # cp/mv/install: the sensitive path is a write target only as the LAST argument (destination), so
 # `cp config.yaml backup.yaml` (config.yaml as SOURCE) stays out.
@@ -106,60 +118,60 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
 # 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+# The verb is argv[1] for multi-call binaries; options before it are not applet selection (busybox --help reboot).
+# A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. A segment never crosses the `)`
+# closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data. Every run is possessive so a failed
+# match never re-splits a whitespace / path / busybox run (cubic on blank-line runs; re.search holds the GIL), and only
+# the last newline of a whitespace run starts a match (earlier ones reach the same word, rescanning once per newline).
+# A segment holds no `=` / `<` / `>`: `HERMES_HOME=/tmp/x hermes` and `socat>/tmp/log` are not program paths.
+_CMD_PATH = r'(?:/?+(?:[^\s/)=<>]++/)*+)?+'
+_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s++)?+'
+
+# Every run is possessive: a failed command-name match must not re-split a whitespace run between the
+# leading and trailing \s (cubic on a long blank-line run, and re.search holds the GIL while it runs).
+# Only the last newline of a whitespace run starts a match: an earlier one consumes the same run and
+# reaches the same command word, so trying each would rescan the run once per newline.
 _CMDPOS = (
-    r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+    r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+'  # start position, optional whitespace
+    r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
+    + _MULTI_CALL_PREFIX  # other wrappers (nice, timeout, command ...) are peeled by tools.approval_wrappers
+    + _CMD_PATH
 )
-
-# Top-level `hermes` flags that consume a SEPARATE word (`--profile work`): the value-taking subset
-# of `hermes_cli._parser.top_level_value_flag_sets`, so `hermes --profile work config set ...` does
-# not read "work" as the subcommand. Any other flag is a bare token (`--json`, `--flag=value`).
-_HERMES_TOP_LEVEL_VALUE_FLAGS = (
-    r'(?:--profile|-p|--config|--model|-m|--provider|--reasoning|--toolsets|-t'
-    r'|--resume|-r|--skills|-s|--oneshot|-z|--usage-file|--in|--cpu-profile)'
-)
-
-# `-p`/`--profile` is stripped from ANYWHERE before `--` (`_parser.scan_profile_flag`), so it can sit
-# between `config` and `set` or before the key too. A `VAR=value` word may be quoted (`NOTE='a b'`).
-_HERMES_PROFILE_OPTION = r'(?:(?:-p|--profile)[ \t]+[^\s]++|--profile=[^\s]++)'
-_SHELL_WORD = r'''(?:[^\s'"]++|'[^']*+'|"[^"]*+")*+'''
-
-# `hermes config set|unset <key>` — the invocations that rewrite the agent's own approval
-# policy. Anchored to the INVOCATION (program word, `config set|unset`, policy key), so a read of
-# the text (`grep -r 'hermes config set' docs`) stays ungated. Option runs are ATOMIC/possessive:
-# nested `(?:\s+...)*` backtracked exponentially on long flag runs (0.34s at 30 flags).
-_HERMES_CONFIG_SET_APPROVAL_POLICY = (
-    # The program: the `hermes` binary (or the macOS `ai.hermes`), or the module form
-    # `python -m hermes_cli.main` that the updater and the cron lifecycle guard invoke.
-    # Optional leading `VAR=value` assignments (`HERMES_HOME=... hermes config set ...`).
-    r'(?>(?:\w++=' + _SHELL_WORD + r'[ \t]+)*)'
-    r'(?:(?:(?:[a-z]:)?[^\s:]*?/)?(?:ai\.)?hermes(?:\.exe)?\b'
-    r'|(?:(?:[a-z]:)?[^\s:]*?/)?python[0-9.]*(?:\.exe)?\b[ \t]+(?:-[^\s]+[ \t]+)*?-m[ \t]*hermes_cli\.main\b)'
-    r'(?>(?:[ \t]+(?:' + _HERMES_TOP_LEVEL_VALUE_FLAGS + r'[ \t]+[^\s]++'
-    r'|--?[\w-]++(?:=[^\s]++)?))*)'  # global options before the subcommand
-    r'[ \t]+config(?>(?:[ \t]+' + _HERMES_PROFILE_OPTION + r')*)'  # `-p` also parses after a subcommand
-    r'[ \t]+(?:set|unset)\b[ \t]*'  # the `config set` / `config unset` subcommand
-    r'(?>(?:(?:' + _HERMES_PROFILE_OPTION + r'|--?[\w-]++)[ \t]+)*)'  # `--force`, `-p work`
-    r'["\']?(?:approvals(?:\.[\w.-]++)*|command_allowlist)\b'  # the approval-policy key, maybe quoted
-)
-
 
 # Destructive-path matcher for the rm hardline rules: accept the path fully wrapped in a matching
 # quote pair (`rm -rf "/"`, `rm -rf "$HOME"`) OR bare with a terminator (whitespace, end, or
 # `) ` ; | &` so `$(rm -rf /)` is caught). A bare-token-only anchor lets quoted spellings slip past the floor.
+# A quoted path must end its shell word too, past root-collapse components (`"C:/"./`, `"$HOME"/*`):
+# `"$HOME"/build` and `"C:/"Users/me/build` name a subdirectory, not the protected root. The components
+# may be quoted too (`"$HOME"'/'`, `"/"'./'"/"*`), but a quoted `*` is a literal name, not a glob.
+# Every repeat is possessive: each piece ends at `/` or a quote, so the scan stays linear. Bare dots may
+# also end at a quote whose segment starts the slash (`"/"..'/'` is `/../`), never one that adds dots (`...`).
+_RM_COLLAPSE_SEG = r'(?:(?:\.\.?)?/)*+(?:\.\.?)?'
+_RM_ROOT_COLLAPSE_TAIL = (rf'(?:(?:\.\.?)?/|\.\.?(?=["\']/)|"{_RM_COLLAPSE_SEG}"|\'{_RM_COLLAPSE_SEG}\')*+'
+                          r'(?:\.\.?)?\**+(?=\s|$|[)`;|&])')
+
+
 def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
-    return rf'(?:["\'](?:{path_alt})["\']|(?:{path_alt}){tail})'
+    return rf'(?:["\'](?:{path_alt})["\']{_RM_ROOT_COLLAPSE_TAIL}|(?:{path_alt}){tail})'
 
 
 # Protected system roots whose recursive deletion has no recovery path.
-_HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|'
-                         r'/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*')
+# A trailing slash names the same dir (`/etc/`, dequoted `"/etc"/`); `.`/`..` before the glob climb (`/etc/../*` is `/*`).
+_HARDLINE_SYSTEM_DIRS = r'(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)(?:/++(?:\.\.?+/++)*+\*?)?+'
+# A quoted root glued to a system dir name is one shell word: `rm -rf "/"etc` deletes /etc, and so do
+# `"/""etc"` / `"/"e"tc"` (quotes in the name are removed). One closing quote: the tail owns `""` pairs (a run was quadratic).
+_QUOTED_ROOT_SYSTEM_DIR = (r'["\']/+["\']["\']*(?:' + '|'.join(r'["\']*'.join(name) for name in (
+    'home', 'root', 'etc', 'usr', 'var', 'bin', 'sbin', 'boot', 'lib')) + r')["\']?' + _RM_ROOT_COLLAPSE_TAIL)
 
 # `rm` plus flag group, shared by the rm hardline rules (plain concatenation, not f-string:
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
-# must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
-_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+# must be an actual command word (Git Bash's `rm.exe` too) — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
+_RM_FLAG_PREFIX = _CMDPOS + r'rm(?:\.exe)?\s+(-[^\s]*\s+)*'
+# Vetoes the drive-root rules when THIS PowerShell delete carries a literal -Include that narrows it (`*.tmp`):
+# not after cmd `/s` or GNU `--` (a file name there), not inside quotes/comments, not `*`/`*.*`/a list/`$x`,
+# and never past a `)` that closes rm's own `$(...)`/subshell (`echo $(rm -rf C:/) -Include x` is echo's flag).
+_PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\r\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\r\n;&|#"\'`)]|"[^"\n]*"|\'[^\'\n]*\')*[^\S\r\n]-inc[a-z]*(?::|\s+)["\']?(?=[^\s,;&|"\'$`(){}@]*[^\s,;&|"\'$`(){}@*?.])[^\s,;&|"\'$`(){}@]+["\']?(?!\s*,)(?:[\s;&|)]|$))'
 # Package-manager global options, each optionally taking ONE non-dash operand.
 _PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
@@ -169,7 +181,15 @@ HARDLINE_PATTERNS = [
     # or "..", so "/tmp", "/.ssh", even "/..." are literal dirs that fall through to the softer
     # DANGEROUS rules. The "/ \*" alt covers `rm -rf / *` (two args: "/" plus the glob).
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
-    (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
+    # Drive-letter root (`C:/`, `c:/*`; `C:\` reaches here as `C:/` via the Windows-path variant): same floor as "/".
+    # A quoted bare `"C:"` counts only when the next quoted/bare segment starts the root slash (`"C:"'/'`).
+    # PowerShell's `rm` alias with a literal narrowing `-Include` (`rm -r C:/* -Include *.tmp`) deletes only matches.
+    # Caveat: Hermes runs the bare command through bash, where GNU rm rejects `-Include` unless POSIXLY_CORRECT is
+    # set; then getopt stops at the root operand and `-Include` is a file name, so that delete only prompts.
+    (_CMDPOS + r'rm\s+' + _PS_INCLUDE_NARROWS + r'(-[^\s]*\s+)*' + _hardline_rm_path(r'[a-z]:/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|[a-z]:/ \*|[a-z]:(?=["\']["\']?/)'),
+     "recursive delete of drive root"),
+    (_RM_FLAG_PREFIX + '(?:' + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS) + '|' + _QUOTED_ROOT_SYSTEM_DIR + ')',
+     "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
@@ -192,10 +212,11 @@ HARDLINE_PATTERNS = [
     # Kill every process on the system — anchor the command-name token so `echo "kill -1 sends SIGHUP to
     # everything"` doesn't trip (#93392).
     (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b(?!-|\.(?!exe\b))', "system shutdown/reboot"),
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    *windows_hardline_patterns(_CMDPOS),
 ]
 
 # Pre-compiled at module load so the hot-path matcher never pays the cold re.compile fan-out
@@ -205,6 +226,11 @@ _RE_FLAGS = re.IGNORECASE | re.DOTALL
 _QUOTE_MASKED_HARDLINE_DESCRIPTIONS = frozenset({"redirect to raw block device", "fork bomb"})
 HARDLINE_PATTERNS_COMPILED = [
     (re.compile(p, _RE_FLAGS), d, d in _QUOTE_MASKED_HARDLINE_DESCRIPTIONS) for p, d in HARDLINE_PATTERNS
+]
+_WHATIF_STRICT = windows_whatif_strict_patterns(_CMDPOS)
+_HARDLINE_PATTERNS_NO_WHATIF = [
+    (re.compile(_WHATIF_STRICT[d], _RE_FLAGS), d, q) if d in _WHATIF_STRICT else (r, d, q)
+    for r, d, q in HARDLINE_PATTERNS_COMPILED
 ]
 # Commands that hand a quoted argument to another shell to EXECUTE: quoted text is code, not
 # prose, so quote-masked hardline rules scan the raw string.
@@ -225,42 +251,6 @@ _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
 # groups, so each token has one parse and the scan stays linear; `sudo -u bash cat` reads `bash`
 # as the user, not the shell.
 _PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh", "ash"))
-_PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
-# Launchers that run their trailing words as a command, with the short/long options that take a
-# SEPARATE value word. One shared table made a bare flag (`time -p`, `exec -a x`) swallow the shell
-# name as its value; per-launcher rows let `-p` be bare for time/command and valued for sudo.
-_PIPE_LAUNCHER_VALUE_FLAGS = {
-    "sudo": ("ugUCDhpRrtT", ("user", "group", "other-user", "close-from", "chdir", "host", "prompt",
-                             "role", "type", "command-timeout", "chroot")),
-    "doas": ("uC", ()),
-    # `-S STRING` is the command itself (split into words), never a swallowed value.
-    "env": ("uCa", ("unset", "chdir", "argv0")),
-    "exec": ("a", ()),
-    "command": ("", ()),
-    "nohup": ("", ()),
-    "nice": ("n", ("adjustment",)),
-    "time": ("fo", ("format", "output")),
-    "timeout": ("sk", ("signal", "kill-after")),
-    "stdbuf": ("ioe", ("input", "output", "error")),
-    "busybox": ("", ()),
-    "setsid": ("", ()),
-    "ionice": ("cnpPu", ("class", "classdata", "pid", "pgid", "uid")),
-}
-
-
-def _pipe_launcher_re(name: str, short: str, long_opts: tuple) -> str:
-    valued = [rf"(?-i:-[^\W{short}\d-]*+[{short}])\s++[^\s|;&<>]++"] if short else []
-    valued += [rf"--(?:{'|'.join(long_opts)})\s++[^\s|;&<>]++"] if long_opts else []
-    duration = r"(?:infinity|\d++(?:\.\d++)?(?:e\d++)?|\.\d++)[smhd]?(?=\s)"
-    args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", duration])
-    return rf"{name}(?:\s++(?>{args}))*+"
-
-
-_PIPE_WRAPPERS_RE = (
-    rf"(?>{_PIPE_PATH_PREFIX_RE}(?:"
-    + "|".join(_pipe_launcher_re(n, *f) for n, f in _PIPE_LAUNCHER_VALUE_FLAGS.items())
-    + r")\s++)*+"
-)
 _PIPE_SHELL_TOKEN_RE = (
     rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
 )
@@ -425,7 +415,64 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
 
 
 def detect_hardline_command(command: str) -> tuple:
-    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description)."""
+    """Check hardline patterns (NEVER bypassable, even in YOLO) -> (is_hardline, description). The size
+    and real-nesting limits refuse. A scan that runs out of its step budget refuses only when the
+    linear :func:`_hardline_fallback` matches a rule; otherwise it returns (False, None) and
+    :func:`detect_dangerous_command` reports it as a finding only a human may approve, once."""
+    complete = True
+    try:
+        with _parser_budget.parser_budget(command):
+            verdict = _detect_hardline_command(command)
+    except RecursionError:
+        verdict = (True, _PARSER_LIMIT_DESCRIPTION)
+    except _parser_budget.ParserBudgetExceeded:
+        fallback = _hardline_fallback(command)
+        verdict, complete = ((True, fallback + _FALLBACK_MATCH_SUFFIX) if fallback else (False, None)), False
+    _parser_budget.record_scan(command, complete)
+    return verdict
+
+
+# Where a command may start, for the fallback below: separators, grouping, substitution openers,
+# quotes (so `sh -c "mkfs …"` exposes its payload) and the compound-command keywords. The
+# quote-free variant keeps quotes out (they are deleted) and `${` intact, so `rm -rf ${HOME}` holds.
+_FALLBACK_COMMAND_START_RE = re.compile(
+    r"\$\(|[;&|(){}`'\"\n]|(?<![\w./-])(?:if|then|else|elif|do|while|until|!)(?=\s)")
+_FALLBACK_UNQUOTED_START_RE = re.compile(
+    r"\$\(|[;&|()`\n]|(?<!\$)\{|\}|(?<![\w./-])(?:if|then|else|elif|do|while|until|!)(?=\s)")
+
+
+def _hardline_fallback(command: str) -> str | None:
+    """The hardline rule a budget-tripped command may hold, from a linear over-approximation.
+
+    The full scan finds command positions with a quote-aware walk; when it runs out of budget, a
+    verb it never reached (`true; reboot`, `(reboot)`, `sudo reboot`, `bash -c 'rm -rf /'` after a
+    few hundred benign lines) must still refuse, not become an approvable prompt. Every rule runs
+    over the raw, the `$'…'`-expanded and the normalized text, each as is and with every possible
+    command start turned into a line break, and again with quote characters deleted (so `r$'m'`,
+    `"of=/dev/sda"` and `${HOME}` read as the shell reads them). That treats quoted prose as code
+    (false refusals) and adds no super-linear pattern. It is not complete: what it misses gets the
+    human-only once/deny prompt."""
+    for text in (command, expand_ansi_c_quotes(command), _normalize_command_for_detection(command)):
+        lowered = text.lower()
+        unquoted = lowered.replace("'", "").replace('"', "")
+        for variant in (lowered, _FALLBACK_COMMAND_START_RE.sub("\n", lowered),
+                        unquoted, _FALLBACK_UNQUOTED_START_RE.sub("\n", unquoted)):
+            for pattern_re, description, _quote_masked in HARDLINE_PATTERNS_COMPILED:
+                if pattern_re.search(variant):
+                    return description
+    return None
+
+
+def hardline_scan_incomplete(command: str) -> bool:
+    """True when the hardline scan of *command* ran out of budget before reading all of it."""
+    complete = _parser_budget.recorded_scan(command)
+    if complete is None:
+        detect_hardline_command(command)
+        complete = _parser_budget.recorded_scan(command)
+    return complete is False
+
+
+def _detect_hardline_command(command: str) -> tuple:
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
     # The malformed-quoting verdict needs the author's quote state. Normalization strips escapes
@@ -435,10 +482,18 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
-    for command_variant in _command_detection_variants(command):
+    from tools.approval_wrappers import hardline_detection_variants
+
+    # The -WhatIf preview exemption holds only when every guarded statement previews on its own (judged on the raw
+    # command: masking a quoted newline joins statements); otherwise those rules apply without it.
+    patterns = HARDLINE_PATTERNS_COMPILED
+    if "whatif" in command.lower() and not whatif_preview_is_real(command):
+        patterns = _HARDLINE_PATTERNS_NO_WHATIF
+    capped: list[str] = []
+    for command_variant in hardline_detection_variants(command, capped=capped):
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
-        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+        for pattern_re, description, quote_masked in patterns:
             if quote_masked and masked_lower is None:
                 # Positionless rules see quoted prose as DATA, except under shell carriers
                 # (sh -c, eval, source) whose quoted argument is code — those scan raw. bash -c
@@ -449,7 +504,8 @@ def detect_hardline_command(command: str) -> tuple:
                 )
             if pattern_re.search(masked_lower if quote_masked else variant_lower):
                 return (True, description)
-    return (False, None)
+    # eval code nested past _MAX_EVAL_NESTING was not inspected: fail closed like the other parser limits.
+    return (True, _PARSER_LIMIT_DESCRIPTION) if capped else (False, None)
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
@@ -464,43 +520,28 @@ _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
 # powershell/pwsh as the program a command runs: line start, a shell separator, or a launcher
 # (sudo -u bob, env FOO=1, timeout 5, xargs, wsl, cmd /c, ssh -p 22 <host>; option tokens may carry
 # one value; ssh and cmd /c may quote the remote command), with an optional directory prefix (`C:\\...\\powershell.exe`). The prefix excludes
-# `(){}` and backticks so a run of them is not re-scanned from every position (quadratic).
+# `(){}` and backticks so a run of them is not re-scanned from every position (quadratic). Likewise
+# for blank-line runs: the whitespace before the program is possessive (the prefix class excludes
+# whitespace, so nothing is lost) and, as in _CMDPOS, only the last newline of a run starts a match.
 _PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|=-][^\s=]*(?!\S))?|\s+\w+=\S*)*"
 _PS_EXE_AT_COMMAND_POSITION = (
-    r"(?:^|[;&|({`\n]"
-    r"|(?:^|[;&|({`\n])\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
+    r"(?:^|[;&|({`]|\n(?![^\S\n]*+\n)"
+    r"|(?:^|[;&|({`]|\n(?![^\S\n]*+\n))\s*+(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
     + _PS_LAUNCHER_OPTIONS + r"\s"
     r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?"
-    r"|(?:^|[;&|({`\n])[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
-    r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
+    r"|(?:^|[;&|({`]|\n(?![^\S\n]*+\n))[^\S\n]*+ssh(?:[^\S\n]+-[^\s;&|]+(?:[^\S\n]+[^\s;&|-][^\s;&|]*)?)*[^\S\n]+[^\s;&|-][^\s;&|]*[^\S\n]+[\"']?)"
+    r"\s*+(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
-# `git` plus the global options that may sit before the subcommand (`git -C <dir> reset --hard`).
-# Value-taking options consume their separate value word; any other option is a single dash token.
-# A word may contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`), which the shell passes as
-# one argument. Each option is an atomic group with the value-taking form tried first: the two
-# alternatives overlap (`-c x` is also two dash-or-word tokens), so a non-atomic run of option-like
-# tokens (`git -c -c -c ... x`) is re-split exponentially on a failed match. The run is capped:
-# every later `git` word starts a new search, and an uncapped run made `git -c git -c ... x` quadratic.
-_GIT_WORD = r'''(?:"[^"]*"|'[^']*'|[^\s;|&"'])+'''
-_GIT = (r'\bgit(?>\s+(?:(?:-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env'
-        rf'|--attr-source)\s+{_GIT_WORD}|-{_GIT_WORD})){{0,64}}\s+')
-_GIT_PUSH = rf'{_GIT}push\b'
-# The push's own arguments, bounded to ONE command segment: a later command's flag is never the
-# push's (`git push -q origin main && grep -f patterns.txt log` is not a force push). A quoted
-# string is one atom, so a quoted `;`/`&`/`|` (`-o 'ci;skip'`) does not end the segment, and a
-# flag inside quotes is not seen; a redirection's `&`/`|` (`2>&1`, `&>`, `>|`) stays inside too.
-# Every alternative starts on a different character (or lookaround), so a failed match scans a
-# run once instead of re-splitting it exponentially (`>&>&>&...`, `'a' 'a' 'a' ...`). The scan
-# stops at a nested push, whose own search covers the rest, so `git push git push ...` is linear.
-_GIT_PUSH_ARGS = (r'''(?:(?>'[^']*'|"(?:[^"\\]|\\[\s\S])*")|'(?![^']*')|"(?![^"]*")'''
-                  r'''|\\[\s\S]|(?!''' + _GIT_PUSH + r''')[^;&|\n'"\\]|(?<=[<>])&|(?<![<>])&(?=>)|(?<=>)\|)*''')
 # An argument may open with a quote the shell strips (`"-f"`, `'+main'`, `"--force"`).
 _GIT_PUSH_ARG_START = r'''\s["']?'''
 _DEV_TCP_REDIRECT_DESCRIPTION = "reverse shell via /dev/tcp or /dev/udp redirect"
+# PowerShell verbs/aliases that write a registry key when given a provider path.
+_REG_WRITE_VERB = r'(?:sp|si|ni|set-item|new-item|md|mkdir)'
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    # A drive letter is a root too (`rm X:/f`; `X:\f` arrives as `X:/f` via the Windows-path variant).
+    (r'\brm\s+(-[^\s]*\s+)*["\']?(?:[a-z]:)?/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     # GNU rm permutes options, so flags may FOLLOW operands (`rm build/ -rf`). The operand run
@@ -572,6 +613,17 @@ DANGEROUS_PATTERNS = [
     # Registry deletion with force flag.
     (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
     (r'\bremove-itemproperty\b[^\n]*\s' + _PS_FORCE, "registry value delete (Remove-ItemProperty -Force)"),
+    # Registry writes persist past the session (Run keys, HKCU\Environment, policies), so they prompt
+    # like the deletes above; the read verbs (`reg query`/`export`, Get-ItemProperty) stay quiet.
+    # `\s+` after setx keeps a shell assignment (`setx=1`) out.
+    (r'\breg(?:\.exe)?\s+(?:add|import|copy|restore|load|unload)\b', "registry write (reg add/import/copy/restore/load/unload)"),
+    (r'\bregedit(?:\.exe)?\s+[/-]s\b', "registry write (regedit /s silent .reg import)"),
+    # The short aliases are common words, so they only count when aimed at a registry provider path,
+    # which may sit after any other parameter (`-Force`, `-Name`, `-LiteralPath`, `-Path:`) within the
+    # same segment. The scan stops at the next verb token so a run of `si si si ...` stays linear.
+    (r'(?<![\w.])' + _REG_WRITE_VERB + r'\s(?:(?!(?<![\w.])' + _REG_WRITE_VERB + r'\s)[^\n;|&])*?(?:hk(?:cu|lm|cr|u|cc):|registry::)', "registry write (sp/ni/Set-Item/New-Item on a registry path)"),
+    (r'\bsetx(?:\.exe)?\s+[^\s;&|]', "registry write (setx persistent environment variable)"),
+    (r'\b(?:set|new)-itemproperty\b', "registry value write (Set-ItemProperty / New-ItemProperty)"),
     # Windows service/system stop — analogue of systemctl stop.
     (r'\bstop-service\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force stop service (Stop-Service -Force)"),
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),
@@ -741,6 +793,30 @@ DANGEROUS_PATTERNS = [
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # touch/mkdir create, and ln plants a pointer at, the same destinations without a gated write verb
+    # (`mkdir -p ~/.ssh && touch ~/.ssh/x`, `ln -sf evil ~/.bashrc`), pairing the write_file deny (#85321).
+    # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
+    # counts, but for ln only the destination (last operand) does, so linking OUT of these paths stays safe.
+    # `touch -r REF` / `--reference REF` only reads REF (its timestamps), so that operand is not a create target.
+    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?(?:(?<!\s-r\s)(?<!\s--reference\s)|(?<=\s--\s-r\s)|(?<=\s--\s--reference\s))["\']?{_HOME_SENSITIVE_CREATE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
+    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_HOME_SENSITIVE_CREATE_TARGET}[^\s"\'<>;&|)`]*+["\']?(?:\s*+\d*+[<>]++&?\s*+[^\s<>;&|)`]*+)*+\s*+(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
+    # Hermes home / session-store floor (#109367): delete, wipe, move, or overwrite of the home or a
+    # protected store. cp/install/rsync only as the destination, so `cp ~/.hermes/state.db /tmp/bak` stays clean.
+    (_CMDPOS + rf'(?:rm|unlink|shred|truncate)\b[^;|&\n]*\s["\']?{_HERMES_STORE_PATH}', "delete/move/wipe Hermes home or session store"),
+    # mv: a store at any operand (moved away or overwritten), the bare home only as a SOURCE, so
+    # moving something INTO the home (`mv /tmp/skill ~/.hermes/`) stays clean.
+    (_CMDPOS + rf'mv\b[^;|&\n]*\s["\']?(?:{_HERMES_STORE_FILE}|{_HERMES_HOME_BARE}(?=\s+[^\s;|&<>]))',
+     "delete/move/wipe Hermes home or session store"),
+    (_CMDPOS + rf'(?:cp|install|rsync)\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}(?=\s*(?:$|[;&|#<>\n]|\d+[<>]))', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'dd\b[^;|&\n]*\bof=["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (_CMDPOS + rf'tee\b[^;|&\n]*\s["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    (rf'>[>|]?\s*["\']?{_HERMES_STORE_ROOT}', "overwrite Hermes session/credential store"),
+    # sqlite3 writing a Hermes store is keyed on the write verb, not on a missing WHERE (`where 1=1`
+    # deletes the same rows), and any heredoc into a store prompts (its SQL sits past the newline).
+    (_CMDPOS + rf'sqlite3\b(?=[^\n]*{_HERMES_STORE_FILE})(?=[^\n]*(?:\b(?:delete\s+from|drop\s+\w+'
+     r'|update\s+(?:or\s+\w+\s+)?\S+\s+(?:as\s+\S+\s+)?set|insert\s+(?:or\s+\w+\s+)?into|replace\s+into'
+     r'|alter\s+table|vacuum(?!\s+(?:\w+\s+)?into))\b|\.restore\b|(?<!<)<<(?!<)))',
+     "modify Hermes session store via sqlite3"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
@@ -859,6 +935,12 @@ _CONTENT_RULE_DESCRIPTIONS = frozenset({
     "invisible or bidirectional Unicode control character (possible obfuscation)",
 })
 
+# Descriptions whose blast radius is the OPERATOR's own work rather than anything the session
+# owns, so an auxiliary-LLM APPROVE is not consent for them: smart mode asks the human instead of
+# consulting the guardian, and the answer covers that one command (no session/always grant).
+# Keep this list to actions that destroy state the agent did not create and cannot recreate.
+SMART_MANUAL_ONLY_DESCRIPTIONS = frozenset({OSASCRIPT_RISKY_DESCRIPTION, OSASCRIPT_OPAQUE_DESCRIPTION})
+
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
     "script execution via -e/-c flag": "(python[23]?|perl|ruby|node)\\s+-[ec]\\s+",
@@ -873,11 +955,16 @@ for _canonical_key, _legacy_key in [
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
-# Scoping the force-delete flag to (?-i:-D) changed this pattern's regex-derived legacy key;
-# keep the pre-change spelling resolvable so approvals stored under it still match.
-_old_branch_key = r"git\s+branch\s+-D"
-_PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branch_key)
-_PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
+# Regex edits change a pattern's regex-derived legacy key; keep each pre-change spelling resolvable so
+# approvals stored under it still match: (?-i:-D) scoping, the optional drive letter (#38964), and
+# `git reset --hard` accepting abbreviated `--h`/`--ha`/`--har`.
+for _canonical_key, _old_key in [
+    ("git branch force delete", r"git\s+branch\s+-D"),
+    ("delete in root path", r"rm\s+(-[^\s]*\s+)*/"),
+    ("git reset --hard (destroys uncommitted changes)", r"git\s+reset\s+--hard"),
+]:
+    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).add(_old_key)
+    _PATTERN_KEY_ALIASES.setdefault(_old_key, set()).add(_canonical_key)
 
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:
@@ -944,7 +1031,10 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
     "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
+    # sudo's list / validate / remove-timestamp modes take no command (`sudo -k cmd` does run it).
+    "sudo": {"-l", "--list", "-v", "--validate", "-K", "--remove-timestamp"},
 }
+
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
 _SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
@@ -1014,8 +1104,19 @@ _GREP_SHORT_OPTIONS_WITH_ARG = {"A", "B", "C", "D", "d", "e", "f", "m"}
 _BASH_OPTIONS_WITH_ARG = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
 _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
+_MAX_SUBSTITUTION_DEPTH = 32
+# A backslash-newline that an even run of backslashes precedes (so the backslash is not itself escaped).
+_LINE_CONTINUATION_RE = re.compile(r"(?<!\\)((?:\\\\)*+)\\\r?\n")
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
+# Each nested eval re-parses the rest of the command, so every level is a full rescan.
+_MAX_EVAL_NESTING = 8
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
+# A scan that ran out of its step budget: approval, never remembered (a session or always grant
+# would wave every later unscanned command through), and not a hardline refusal.
+_SCAN_INCOMPLETE_DESCRIPTION = "command too complex to scan fully; review before running"
+# A refusal from the budget-trip fallback, which also reads quoted text as code: say so, so the block
+# message can point at splitting the command instead of claiming the operation was seen.
+_FALLBACK_MATCH_SUFFIX = " (a quick re-read of a command too complex to scan fully; quoted text can match)"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
 
 
@@ -1028,145 +1129,19 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     # Long separator-free input has no compound-command utility and makes every regex inspect one giant token.
     if len(command) > _MAX_SEPARATOR_FREE_COMMAND_CHARS and not any(char in command for char in ";&|\n"):
         return True
+    # Every nested `$(` level adds a command word whose literal-substitution pass rescans the rest of
+    # the nesting, so detection cost grows ~cubically with depth (306 chars at depth 100 took ~4 s,
+    # depth 240 ~50 s). No real command nests this deep; crossing the ceiling fails closed. Measured
+    # on the author's quoting after NFKC (fullwidth `$（` folds to `$(`), with and without line
+    # continuations (`$\<newline>(` is `$(` to bash, but not in a quoted heredoc body); comments and
+    # quoted-heredoc bodies are data. Nesting that only the escape strip mints (`\$\(`, `\")\"`) is
+    # not nesting in bash: the scan budget bounds it, and a trip asks for approval (`$''(` nests
+    # too, but its scan stays linear).
+    folded = unicodedata.normalize("NFKC", command)
+    if max(_parser_budget.substitution_depth(text) for text in {folded, _LINE_CONTINUATION_RE.sub(r"\1", folded)}) \
+            > _MAX_SUBSTITUTION_DEPTH:
+        return True
     return sum(command.count(char) for char in ";&|\n") >= _MAX_DETECTION_SEGMENTS
-
-
-def _backtick_end_from(segment: str, i: int) -> int | None:
-    """Index of the backtick closing the one opened at ``i``, or None when none follows."""
-    j = segment.find("`", i + 1)
-    while j != -1 and segment[j - 1] == "\\":
-        j = segment.find("`", j + 1)
-    return None if j == -1 else j
-
-
-def _shell_tokens_with_spans(segment: str, start: int):
-    """Return shell words as ``(value, start, end, quoted)`` or ``None`` on malformed quoting.
-    Deliberately small lexer that never expands shell syntax; it exists to keep source spans (which
-    ``shlex`` does not expose) for deciding which quoted grep operand is data, not another command.
-
-    Lexing stops at the end of the simple command that begins at *start*: an unquoted ``;``, ``|``,
-    ``&`` or newline, or the ``)`` / backtick that closes the substitution the command sits inside.
-    Without that, a grep nested as ``"$(grep … | cut …)"`` was lexed together with the enclosing
-    command's closing quote, read as unbalanced quoting, and reported as a hardline block (546
-    blocked turns in one run, every one a false positive; ``sed -n "$(grep -n X f | cut -d: -f1),+3p" f``
-    is the canonical shape)."""
-    tokens, value, token_start, quote = [], [], None, None
-    depth = 0  # $(...) nesting opened AFTER start; a closer at depth 0 ends the enclosing substitution
-    # A backtick opened AFTER start is an operand substitution (``grep -e `cmd` f``); the matching
-    # closer belongs to it, not to an enclosing backtick the command might sit inside.
-    in_backtick = False
-
-    def flush(end: int) -> None:
-        raw = segment[token_start:end]
-        # Only a wholly single-quoted operand is inert shell data. Double quotes still execute $()
-        # and backticks; unquoted substitutions do too.
-        inert = (raw.startswith("'") and raw.endswith("'")) or ("='" in raw and raw.endswith("'"))
-        tokens.append(("".join(value), token_start, end, inert))
-
-    end_at = len(segment)
-    for kind, i, _, _ in _scan_shell(segment, start):
-        ch = segment[i]
-        if kind == "char" and not quote:
-            if ch.isspace() and ch != "\n":
-                if token_start is not None:
-                    flush(i)
-                    value, token_start = [], None
-                continue
-            if segment.startswith("$(", i):
-                depth += 1
-            elif ch == "`":
-                if in_backtick:
-                    in_backtick = False
-                elif depth == 0 and _backtick_end_from(segment, i) is None:
-                    end_at = i  # unmatched: it closes the substitution this command sits inside
-                    break
-                else:
-                    in_backtick = True
-            elif ch == ")":
-                if depth == 0:
-                    end_at = i
-                    break
-                depth -= 1
-            elif ch in ";|&\n":
-                end_at = i
-                break
-        if token_start is None:
-            token_start = i
-        if kind == "quote":
-            quote = None if quote else ch
-        elif kind == "esc":
-            value.append(segment[i + 1])
-        elif ch == "\\" and not quote:
-            return None  # dangling backslash
-        else:
-            value.append(ch)
-    if quote:
-        return None
-    if token_start is not None:
-        flush(end_at)
-    return tokens
-
-
-def _quoted_grep_pattern_spans(command: str) -> tuple[list[tuple[int, int]], bool]:
-    """Structurally locate quoted grep PCRE operands -> (spans, malformed). On an ambiguous or
-    malformed grep parse callers fail closed and use the original command: no text is hidden on
-    an uncertain parse."""
-    spans: list[tuple[int, int]] = []
-    offset = 0
-    for segment in _iter_top_level_shell_segments(command):
-        segment_at = command.find(segment, offset)
-        offset = segment_at + len(segment)
-        for start, _, word in _iter_shell_command_word_spans(segment):
-            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() not in {"grep", "egrep"}:
-                continue
-            tokens = _shell_tokens_with_spans(segment, start)
-            if tokens is None:
-                return [], True
-            args, pattern_indexes = tokens[1:], []
-            pcre = explicit_patterns = False
-            operand_index, i, options = None, 0, True
-            while i < len(args):
-                token = args[i][0]
-                if options and token == "--":
-                    options = False
-                elif options and token.startswith("--"):
-                    option, equals, _ = token.partition("=")
-                    pcre = pcre or option == "--perl-regexp"
-                    explicit_patterns = explicit_patterns or option in {"--regexp", "--file"}
-                    takes_next = option in _GREP_OPTIONS_WITH_ARG and not equals
-                    if takes_next and i + 1 >= len(args):
-                        return [], True
-                    if option == "--regexp":
-                        pattern_indexes.append(i + 1 if takes_next else i)
-                    i += 1 if takes_next else 0
-                elif options and token.startswith("-") and token != "-":
-                    chars = token[1:]
-                    for j, char in enumerate(chars):
-                        pcre = pcre or char == "P"
-                        explicit_patterns = explicit_patterns or char in {"e", "f"}
-                        if char in _GREP_SHORT_OPTIONS_WITH_ARG:
-                            # The first argument-taking short option owns the rest of the bundle,
-                            # or the next token when it comes last.
-                            attached = j + 1 < len(chars)
-                            if not attached and i + 1 >= len(args):
-                                return [], True
-                            if char == "e":
-                                pattern_indexes.append(i if attached else i + 1)
-                            i += 0 if attached else 1
-                            break
-                elif operand_index is None:
-                    operand_index = i
-                i += 1
-            if not explicit_patterns:
-                if operand_index is None:
-                    return [], pcre
-                pattern_indexes.append(operand_index)
-            if pcre:
-                spans.extend(
-                    (segment_at + token_start, segment_at + token_end)
-                    for _, token_start, token_end, quoted in map(args.__getitem__, pattern_indexes) if quoted
-                )
-    return spans, False
 
 
 def _splice(command: str, edits) -> str:
@@ -1177,13 +1152,6 @@ def _splice(command: str, edits) -> str:
         parts.extend((command[previous:start], text))
         previous = end
     return "".join(parts) + command[previous:]
-
-
-def _grep_safe_detection_variant(command: str) -> tuple[str, bool]:
-    spans, malformed = _quoted_grep_pattern_spans(command)
-    if malformed or not spans:
-        return command, malformed
-    return _splice(command, [(start, end, " " * (end - start)) for start, end in spans]), False
 
 
 def _interpreter_family(executable: str) -> str | None:
@@ -1310,6 +1278,23 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
+def _powershell_command_payload(args: list[str]) -> str | None:
+    """The script text ``-Command``/``-c`` runs (every remaining argument, joined as PowerShell does),
+    so commands after its first one reach the command-position rules. ``-File`` runs a path."""
+    skip_value = False
+    for index, token in enumerate(args):
+        if skip_value:
+            skip_value = False
+            continue
+        option = token.lower()
+        if option in ("-command", "-c"):
+            return " ".join(args[index + 1:]) or None
+        if option in ("-file", "-f") or not option.startswith("-"):
+            return None
+        skip_value = option in _INTERPRETER_WITH_ARG["powershell"]
+    return None
+
+
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
@@ -1326,7 +1311,8 @@ def _execution_flag_findings(command: str):
                 continue
             args = tokens[1:]
             if family and _interpreter_exec_flag(family, args):
-                yield ("script execution via -e/-c flag", None)
+                yield ("script execution via -e/-c flag",
+                       _powershell_command_payload(args) if family == "powershell" else None)
             elif family and any(token.startswith("<<") for token in args):
                 yield ("script execution via heredoc", None)
             else:
@@ -1340,76 +1326,48 @@ def _execution_flag_findings(command: str):
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
 
 
+def _eval_payload(args: list[str]) -> str | None:
+    """Return the shell code eval would run: its arguments joined by spaces."""
+    # eval takes no options: only an explicit ``--`` is consumed. A first word such
+    # as ``-x`` is code (zsh reports it missing and runs the rest of the list).
+    if args and args[0] == "--":
+        args = args[1:]
+    return " ".join(args) or None
+
+
+def _eval_payloads(command: str):
+    """Yield the code each ``eval`` in *command* hands back to the shell, like a ``-c`` payload.
+    Kept out of _execution_flag_findings: eval is not itself a dangerous mechanism, only its code is."""
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "eval":
+                continue
+            # Bound to eval's own command: a `$(eval …)` / backtick nested in an outer command ends at
+            # its closing `)`/`` ` ``, so the outer command's arguments are not eval code.
+            tokens = _shell_segment_tokens(_shell_command_segment(segment, start), 0)
+            payload = _eval_payload(tokens[1:]) if tokens else None
+            if payload:
+                yield payload
+
+
+def _nested_payloads(source: str, eval_depth: int, capped: list[str] | None):
+    """Yield ``(payload, eval_depth)`` for each program-bearing option and eval in *source*. eval code is
+    one level deeper; past _MAX_EVAL_NESTING it is not surfaced (`eval eval … ls` made detection
+    quadratic) and *source* is recorded in *capped* so the caller can fail closed."""
+    for _, payload in _execution_flag_findings(source):
+        if payload:
+            yield payload, eval_depth
+    if eval_depth < _MAX_EVAL_NESTING:
+        for payload in _eval_payloads(source):
+            yield payload, eval_depth + 1
+    elif capped is not None and next(_eval_payloads(source), None):
+        capped.append(source)
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
     return pos
-
-
-def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str = "",
-                brace: bool = False, stop_unterminated: bool = False, naive_backtick: bool = False,
-                comments: bool = False):
-    """Yield ``(kind, i, j, quote)`` lexical steps over ``text[start:end]`` without expanding.
-
-    The single quote/escape state machine behind every detection scanner. ``kind`` is ``"char"``
-    (one char), ``"esc"`` (backslash + the char it escapes; never inside single quotes), ``"quote"``
-    (an opening/closing quote char) or ``"subst"`` (a ``$(...)`` / backtick / ``${...}`` span);
-    With *comments*, ``"comment"`` spans are skipped without interpreting their quote syntax.
-    ``quote`` is the state the step was read in (``None``, ``'`` or ``"``). Substitutions are
-    recognized unquoted when ``"u"`` is in *subst*, inside double quotes when ``"q"`` is; *brace*
-    adds unquoted ``${...}``. An unterminated substitution falls through as plain chars unless
-    *stop_unterminated*, which yields ``("subst", i, None, quote)`` and ends the scan (the caller
-    descends to *end* itself). *naive_backtick* closes a backtick at the next backtick even if
-    escaped (the quoted-prose masker's historical behavior)."""
-    n = len(text) if end is None else end
-    quote: str | None = None
-    i = start
-    while i < n:
-        ch = text[i]
-        kind, j = "char", i + 1
-        if comments and quote is None and _is_shell_comment_start(text, i):
-            kind, j = "comment", text.find("\n", i, n)
-            if j < 0:
-                j = n
-        elif quote != "'" and ch == "\\" and i + 1 < n:
-            kind, j = "esc", i + 2
-        elif ch == quote or (quote is None and ch in "'\""):
-            kind = "quote"
-        elif quote != "'" and ("q" if quote else "u") in subst and (
-            ch == "`" or text.startswith("$(", i) or (brace and not quote and text.startswith("${", i))
-        ):
-            if ch == "`":
-                close = text.find("`", i + 1) + 1 or None if naive_backtick else _scan_backtick_end(text, i)
-            elif text[i + 1] == "(":
-                close = _scan_dollar_paren_end(text, i)
-            else:
-                close = text.find("}", i + 2) + 1 or None
-            if close is not None:
-                kind, j = "subst", close
-            elif stop_unterminated:
-                yield ("subst", i, None, quote)
-                return
-        yield (kind, i, j, quote)
-        if kind == "quote":
-            quote = None if quote else ch
-        i = j
-
-
-def _scan_dollar_paren_end(command: str, start: int) -> int | None:
-    """Return the offset after a balanced ``$(...)`` command substitution."""
-    depth = 1
-    for kind, i, _, quote in _scan_shell(command, start + 2):
-        if kind == "char" and not quote:
-            depth += command.startswith("$(", i) - (command[i] == ")")
-            if depth == 0:
-                return i + 1
-    return None
-
-
-def _scan_backtick_end(command: str, start: int) -> int | None:
-    # Backticks have no quote awareness: only a backslash escapes the next char.
-    match = re.compile(r"(?:\\.|[^`\\])*`", re.DOTALL).match(command, start + 1)
-    return match.end() if match else None
 
 
 def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
@@ -1424,6 +1382,7 @@ def _read_shell_word(command: str, pos: int) -> tuple[int, int, str]:
 
 def _literal_command_substitution_output(script: str) -> str | None:
     """Resolve tiny literal command substitutions without executing a shell."""
+    _parser_budget.charge(len(script))
     try:
         tokens = shlex.split(script, posix=True)
     except ValueError:
@@ -1473,6 +1432,11 @@ def _strip_shell_word_syntax(word: str) -> str:
 def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word: collapses quoting/escaping plus
     simple literal command substitutions in the word itself. Intentionally narrow and non-executing."""
+    # Pure, and the word walkers ask for the same words once per command start: memoize per call.
+    return _parser_budget.memo(_deobfuscate_shell_word, word)
+
+
+def _deobfuscate_shell_word(word: str) -> str:
     for _ in range(2):
         previous = word
         word = _strip_shell_word_syntax(_replace_simple_shell_expansions(word))
@@ -1507,8 +1471,13 @@ def _iter_shell_command_starts(command: str):
 
     scan(0, len(command))
     seen = set()
+    run_from = run_to = -1
     for start in starts:
-        start = _skip_shell_whitespace(command, start)
+        # Each newline of a blank-line run is a start that skips to the same word: reuse the last skip
+        # when the start falls inside the run it covered instead of rescanning the run per newline.
+        if not run_from <= start <= run_to:
+            run_from, run_to = start, _skip_shell_whitespace(command, start)
+        start = run_to
         if start >= len(command) or start in seen or _is_shell_comment_start(command, start):
             continue
         seen.add(start)
@@ -1518,53 +1487,21 @@ def _iter_shell_command_starts(command: str):
             starts.append(end)
 
 
-def _mark_command_starts(command: str, marker: str = "\n") -> str:
+def _mark_command_starts(command: str, marker: str = "\n", skip=()) -> str:
     """Insert *marker* (a newline) before each real (quote-aware) command start.
     ``\\n`` is already a ``_CMDPOS`` separator, so this exposes subshell ``(cmd)`` and brace-group
     ``{ cmd; }`` openers — which the flat pattern class omits — to the anchored patterns WITHOUT the
     quoted-prose false positives that adding ``(`` / ``{`` to ``_CMDPOS`` would cause: starts inside
     quotes are never produced, so ``--title "block (reboot)"`` is left as-is."""
-    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0)
+    skip_starts = [a for a, _ in skip]  # sorted, non-overlapping spans
+    offsets = sorted(o for o in _iter_shell_command_starts(command) if o > 0 and not (
+        (k := bisect.bisect_right(skip_starts, o) - 1) >= 0 and o < skip[k][1]))
     return _splice(command, [(o, o, marker) for o in offsets]) if offsets else command
-
-
-def _mask_quoted_newlines(command: str) -> str:
-    """Replace raw newlines inside single/double quotes with a space (detection-only).
-    A quoted newline is DATA to the shell, yet the flat ``_CMDPOS`` class treats every raw ``\\n``
-    as a command start, so multi-line quoted arguments (commit messages, heredoc text) tripped the
-    hardline blocklist when a data line began with e.g. ``sudo reboot``. Quote tracking mirrors
-    ``_iter_shell_command_starts``. Unquoted newlines pass through and ``_mark_command_starts``
-    still re-inserts newlines at genuine starts; an unclosed quote absorbs following newlines
-    exactly as the shell would, so masking them cannot hide a runnable command."""
-    if "\n" not in command:
-        return command
-    return _mask_quoted_newlines_span(command, 0, len(command))
-
-
-def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
-    """``_mask_quoted_newlines`` over ``command[start:end]``. A ``$(...)`` / backtick substitution
-    inside double quotes is EXECUTABLE, not data: its body is re-scanned with a fresh quote state so a
-    newline that separates commands inside it survives as a command boundary. Masking it as quoted
-    data turned ``"$(grep x f\nreboot)"`` into ``... f reboot)``, which no later stage can tell from an
-    operand; the pre-fix scanner only caught it by refusing the whole command as malformed."""
-    out: list[str] = []
-    for kind, i, j, quote in _scan_shell(command, start, end, subst="q"):
-        if kind == "subst":
-            # j is the index just past the closer; keep the opener and closer, recurse into the body.
-            body_start = i + (2 if command.startswith("$(", i) else 1)
-            body_end = j - 1
-            out.append(command[i:body_start])
-            out.append(_mask_quoted_newlines_span(command, body_start, body_end))
-            out.append(command[body_end:j])
-        elif quote and kind == "char" and command[i] == "\n":
-            out.append(" ")
-        else:
-            out.append(command[i:j])
-    return "".join(out)
 
 
 def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
+    from tools.approval_wrappers import _is_query_option
     for pos in _iter_shell_command_starts(command):
         wrapper, positionals = None, 0
         options, skip_arg = True, False
@@ -1593,7 +1530,8 @@ def _iter_shell_command_word_spans(command: str):
                     break
                 queries = _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS.get(wrapper, set())
                 if option in queries or (wrapper == "command" and not option.startswith("--")
-                                         and set(option[1:]) & {"v", "V"}):
+                                         and set(option[1:]) & {"v", "V"}) or (
+                        wrapper == "sudo" and _is_query_option("sudo", option)):  # `-nl`, not `-ul`
                     break
                 skip_arg = "=" not in deobfuscated and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
                 continue
@@ -1610,92 +1548,25 @@ def _iter_shell_command_word_spans(command: str):
 
 
 def _shell_command_segment(command: str, start: int) -> str:
-    """Bound a candidate to its command, preserving quoted argument bytes."""
+    """Bound a candidate to its command, preserving quoted argument bytes. The ``&``/``|`` of a ``2>&1``,
+    ``<&3``, ``>|`` or ``&>`` redirection is part of the command, not a separator."""
     end = len(command)
-    for kind, i, _, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
+    redirect_end = -1  # end of an unquoted, unescaped `<`/`>` (a quoted or escaped one is a literal)
+    for kind, i, j, quote in _scan_shell(command, start, subst="uq", brace=True, comments=True):
+        if kind == "char" and quote is None and ((command[i] == "&" and (redirect_end == i or command.startswith(">", j))) or (command[i] == "|" and redirect_end == i and command[i - 1] == ">")):
+            continue
+        redirect_end = j if kind == "char" and quote is None and command[i] in "<>" else -1
         if kind == "comment" or (kind == "char" and quote is None and command[i] in ";&|\n)`"):
             end = i
             break
     return command[start:end].strip()
 
 
-def _split_env_string(payload: str) -> list[str] | None:
-    r"""Project GNU env -S literal argv, not POSIX shell words.
-
-    Dynamic ${NAME} expansion is deliberately not evaluated: the execution
-    backend's environment need not be this process's environment.
-    """
-    escapes = {"f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
-               "#": "#", "$": "$", "\"": "\"", "'": "'", "\\": "\\"}
-    args, word = [], []
-    quote, started, index = None, False, 0
-    while index < len(payload):
-        char = payload[index]
-        index += 1
-        if char == "\\":
-            if index == len(payload):
-                return None
-            escaped = payload[index]
-            if quote == "'" and escaped not in ("'", "\\"):
-                word.append(char)
-                started = True
-                continue
-            index += 1
-            if escaped == "c":
-                if quote:
-                    return None
-                break
-            if escaped == "_" and quote is None:
-                if started:
-                    args.append("".join(word))
-                word, started = [], False
-                continue
-            if escaped not in escapes and escaped != "_":
-                return None
-            word.append(" " if escaped == "_" else escapes[escaped])
-            started = True
-            continue
-        if char in ("'", '"') and (quote is None or char == quote):
-            quote = char if quote is None else None
-            started = True
-            continue
-        if quote is None and char in " \t\n\r\v\f":
-            if started:
-                args.append("".join(word))
-            word, started = [], False
-            continue
-        if quote is None and char == "#" and not started:
-            break
-        if char == "$" and quote != "'":
-            return None
-        word.append(char)
-        started = True
-    if quote:
-        return None
-    if started:
-        args.append("".join(word))
-    return args
-
-
-def _env_split_payload(tokens: list[str]) -> str | None:
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--" or not token.startswith("-"):
-            return None
-        option, equals, value = token.partition("=")
-        if option == "--split-string" or token.startswith("-S"):
-            attached = equals if option == "--split-string" else len(token) > 2
-            if not attached:
-                index += 1
-            payload = (value if option == "--split-string" else token[2:]) if attached else (
-                tokens[index] if index < len(tokens) else "")
-            args = _split_env_string(payload)
-            # Protect literal separators when reusing command-position detection;
-            # only a real shell -c carrier may turn these argv bytes into code.
-            return shlex.join(args + tokens[index + 1:]) if args is not None else None
-        index += 2 if not equals and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"] else 1
-    return None
+def _dequoted_escape(char: str, quote: str | None) -> str:
+    """What a backslash escape leaves after shell quote removal."""
+    if char == "\n":
+        return ""
+    return char if quote is None or char in '$`"\\' else "\\" + char
 
 
 def _deny_command_variants(command: str):
@@ -1717,17 +1588,24 @@ def _deny_command_variants(command: str):
             executable = _deobfuscate_shell_word_for_detection(word)
             tail = segment[end - start:]
             # Collapse only unquoted inter-word whitespace; quoted prose is data.
-            parts = []
+            parts, bare = [], []
             for kind, i, j, quote in _scan_shell(tail):
                 if kind == "char" and quote is None and tail[i].isspace():
                     if not parts or parts[-1] != " ":
                         parts.append(" ")
+                        bare.append(" ")
                 else:
                     parts.append(tail[i:j])
+                    # Quote removal as the shell performs it, so `git "status"` meets a `git status` rule.
+                    if kind == "esc":
+                        bare.append(_dequoted_escape(tail[i + 1], quote))
+                    elif kind != "quote":
+                        bare.append(tail[i:j])
             tail = "".join(parts)
             for name in dict.fromkeys((executable, os.path.basename(executable))):
                 candidate = name + tail
                 yield candidate
+                yield name + "".join(bare)
                 # Apply the existing text matching semantics only AFTER locating
                 # executable positions; never parse its rewritten quotes again.
                 yield _normalize_command_for_detection(candidate)
@@ -1742,7 +1620,8 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
-def _command_detection_variants(command: str):
+def _command_detection_variants(command: str, eval_depth: int = 0, capped: list[str] | None = None):
+    from tools.approval_wrappers import literal_heredoc_bodies
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state
@@ -1766,15 +1645,23 @@ def _command_detection_variants(command: str):
     # path, also yield a variant with backslashes flattened to `/` BEFORE normalization. Gated on a real path shape so
     # POSIX escape semantics (`echo a\"b`) are untouched elsewhere.
     # See #69472.
+    pending = [(normalized, eval_depth)]
     if re.search(r"(?:[A-Za-z]:|\\\\)[\\\\]", command) or re.search(r"[A-Za-z]:\\", command):
         win_variant = _normalize_command_for_detection(_mask_quoted_newlines(command.replace("\\", "/")))
         if fresh(win_variant):
             yield win_variant
+            # Its payloads too: from the normalized text `pwsh -c "ls; ri -r C:\\"` loses the root's slash.
+            pending.append((win_variant, eval_depth))
+        # Its command starts (`a; rd /s /q C:\`): marked on the RAW command (faithful quote state), then flattened.
+        marked_win = _normalize_command_for_detection(
+            _mark_command_starts(_mask_quoted_newlines(command), marker=" \n").replace("\\", "/"))
+        if fresh(marked_win):
+            yield marked_win
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
-    pending = [normalized]
     while pending:
-        for _, payload in _execution_flag_findings(pending.pop()):
+        source, depth = pending.pop()
+        for payload, payload_depth in _nested_payloads(source, depth, capped):
             if fresh(payload):
                 yield payload
                 # A payload may start with an option-looking program and then invoke a hardline command
@@ -1782,13 +1669,15 @@ def _command_detection_variants(command: str):
                 marked_payload = _mark_command_starts(payload)
                 if marked_payload != payload and fresh(marked_payload):
                     yield marked_payload
-                pending.append(payload)
+                pending.append((payload, payload_depth))
+    if capped:  # the caller fails closed; the passes below would only rescan the chain
+        return
     # Payloads parsed from NORMALIZED text lost their escapes before their own quote expansion ran
     # (`bash -c "$'\\x72\\x6d' -rf /"` reached the patterns as `$'x72x6d'`). Parse the raw argument
-    # too and treat it as new shell input; each payload is a strict substring, so recursion ends.
-    for _, payload in _execution_flag_findings(_mask_quoted_newlines(command)):
-        if payload and payload != command:
-            for variant in _command_detection_variants(payload):
+    # too and treat it as new shell input; each payload is shorter than its source, so recursion ends.
+    for payload, payload_depth in _nested_payloads(_mask_quoted_newlines(command), eval_depth, capped):
+        if payload != command:
+            for variant in _command_detection_variants(payload, payload_depth, capped):
                 if fresh(variant):
                     yield variant
     # Subshell `(cmd)` / brace-group `{ cmd; }` openers put `cmd` at a real command position the flat `_CMDPOS`
@@ -1807,7 +1696,8 @@ def _command_detection_variants(command: str):
         yield faithful
     # An escaped separator is literal text inside its word (`git push -o ci\;skip -f`), but
     # normalization strips the backslash and leaves a real `;` that ends a segment-bounded match.
-    joined = re.sub(r'\\(.)', lambda m: '_' if m.group(1) in ';&|' else m.group(0), command)
+    # The same holds for an escaped space or quote inside an option value (`git -C my\\ repo push -f`).
+    joined = _join_escaped_word_chars(command)
     if joined != command and fresh(variant := _normalize_command_for_detection(_mask_quoted_newlines(joined))):
         yield variant
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
@@ -1832,8 +1722,9 @@ def _command_detection_variants(command: str):
                 applied.append(span)
                 cursor = span[1]
         variant = _splice(normalized, applied)
-        if fresh(variant):
-            yield variant
+        # A dequoted verb after a separator (`ls; "reboot"`) reaches _CMDPOS only once its start is marked; not inside
+        # a quoted-delimiter heredoc fed to a non-shell (that body is literal data).
+        yield from filter(fresh, (variant, _mark_command_starts(variant, skip=literal_heredoc_bodies(variant))))
         pending = carry
 
 
@@ -1969,10 +1860,15 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         return
     if _is_verification_artifact_cleanup(command):
         return
+    if only is None:
+        # First, on the raw command: the osascript keys are manual-only, so they must lead the findings
+        # (`do shell script "rm ..."` would otherwise surface as a guardian-reviewable rm rule).
+        yield from sorted(classify_osascript(unicodedata.normalize("NFKC", command.replace("\x00", ""))))
     patterns = DANGEROUS_PATTERNS_COMPILED if only is None else [
         (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
     ]
-    for command_variant in _command_detection_variants(command):
+    capped: list[str] = []
+    for command_variant in _command_detection_variants(command, capped=capped):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in patterns:
@@ -1993,6 +1889,8 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                     yield description
             elif pattern_re.search(command_lower):
                 yield description
+    if capped and only is None:
+        yield _PARSER_LIMIT_DESCRIPTION
     if only is not None:
         # The variation-selector check is a content rule too, so the content-only scan keeps it.
         if _INVISIBLE_UNICODE_DESCRIPTION in only and _HIDDEN_VARIATION_SELECTOR_RE.search(command):
@@ -2009,7 +1907,15 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
 
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description) for the first match."""
-    description = next(_iter_dangerous_descriptions(command), None)
+    try:
+        with _parser_budget.parser_budget(command):
+            description = next(_iter_dangerous_descriptions(command), None)
+    except _parser_budget.ParserBudgetExceeded:
+        description = _SCAN_INCOMPLETE_DESCRIPTION
+    except RecursionError:
+        description = _PARSER_LIMIT_DESCRIPTION
+    if description is None and hardline_scan_incomplete(command):
+        description = _SCAN_INCOMPLETE_DESCRIPTION
     if description is None:
         return (False, None, None)
     return (True, description, description)
@@ -2019,4 +1925,10 @@ def detect_content_rule_keys(command: str) -> list[str]:
     """Pattern keys of every content-level rule (``_CONTENT_RULE_DESCRIPTIONS``) the command matches,
     wherever they fall in detection order. The approval gates require consent for these on top of
     the first match, so an approved pipe-to-shell cannot wave through a credential upload."""
-    return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))
+    try:
+        with _parser_budget.parser_budget(command):
+            return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))
+    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+        # Safe only because the hardline scan walks every variant under an equal budget, so it ran
+        # out too, and the gates then require a one-shot approval for the whole command (pinned).
+        return []

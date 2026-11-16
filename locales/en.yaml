@@ -439,6 +439,17 @@ gateway:
       provider_usage_plus_estimate: "provider usage + estimated new messages"
     source_line: "Source: {source}; category counts are local estimates."
     hint_all: "Use /context all for per-skill and per-toolset costs."
+    cache_warm: "Prompt cache: warm until {until} ({remaining} left; {ttl}, {confidence})."
+    cache_expired: "Prompt cache: expired {ago} ago ({ttl}, {confidence}); the next message re-processes the full prompt."
+    cache_maybe_warm: "Prompt cache: may still be warm until {until} (at most {remaining} more; {ttl}, {confidence})."
+    cache_unknown_moved: "Prompt cache: unknown (the route, session or context changed since the last cached request)."
+    cache_unknown_route: "Prompt cache: unknown (this provider does not publish its cache retention)."
+    cache_unknown_runtime: "Prompt cache: unknown (this runtime sets its own cache options, which Hermes cannot observe)."
+    cache_unknown_storage: "Prompt cache: unknown (the session store could not be read)."
+    cache_confidence:
+      proven: "proven"
+      declared: "declared"
+      assumed: "assumed"
   status:
     header: "📊 **Hermes Gateway Status**"
     matrix_scope_header: "**Matrix scope:**"

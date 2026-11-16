@@ -1078,12 +1078,25 @@ export const svOverrides: TranslationOverrides = {
           description: 'Ett skrivbordsinsticksprogram skickade en avisering medan Hermes var i bakgrunden.'
         }
       },
+      browserPermission: {
+        title: 'Webbläsaraviseringar',
+        allow: 'Tillåt',
+        states: {
+          default: 'Visa aviseringar från webbläsaren när fliken är i bakgrunden. Tills du tillåter det blinkar bara flikens titel.',
+          granted: 'Tillåtet. Aviseringar visas när fliken är i bakgrunden och flikens titel blinkar också.',
+          denied: 'Blockerat i webbläsarens webbplatsinställningar. Flikens titel blinkar fortfarande.',
+          insecure: 'Kräver HTTPS, till exempel Tailscale Serve. Med vanlig HTTP blinkar bara flikens titel.',
+          unsupported: 'Den här webbläsaren kan inte visa aviseringar. Flikens titel blinkar fortfarande.'
+        }
+      },
       test: 'Skicka testavisering',
       testTitle: 'Hermes',
       testBody: 'Aviseringarna fungerar.',
       testSent:
         'Testet skickades. Om inget visas, kontrollera operativsystemets aviseringsbehörigheter och Fokus/Stör ej.',
       testUnsupported: 'Detta system stöder inte inbyggda aviseringar.',
+      muteSoundsTitle: 'Stäng av gränssnittsljud',
+      muteSoundsDesc: 'Stänger av automatiska ljud för färdiga körningar, väckningsord och resonemang, haptisk återkoppling samt systemaviseringar. Ljudförhandsvisningar och upplästa svar spelas fortfarande upp.',
       completionSoundTitle: 'Slutförandeljud',
       completionSoundDesc: 'Spelas upp när en agenttur avslutas. Välj en förinställning och förhandsgranska den här.',
       completionSoundPreview: 'Förhandsgranska'

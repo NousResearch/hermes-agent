@@ -127,10 +127,8 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 try:
                     await asyncio.to_thread(touch_execution_progress, request_id)
                 except sqlite3.OperationalError as exc:
-                    # Informational only: another writer holding the ledger past its busy timeout
-                    # must not cost a live run its supervision. The next owner stamp retries.
-                    if 'locked' not in str(exc):
-                        raise
+                    # This stamp is informational even if the ledger cannot be opened or written.
+                    # Keep observing the owner; terminal ledger writes still report their errors.
                     logger.warning('Cron %s progress stamp skipped: %s', job['id'], exc)
             if state['status'] == 'terminal':
                 job.update(state.get('job_flags') or {})

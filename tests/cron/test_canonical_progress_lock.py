@@ -1,13 +1,12 @@
 """A busy cron ledger on the firer's informational progress stamp must not cost a live run its
 supervision: the run completes, the job is not paused and the owner gets no failure notice."""
 import asyncio
-import functools
 import sqlite3
 from contextlib import asynccontextmanager
 
 from cron import executions, jobs, scheduler
 from cron.scheduler_worker_failure import record_unknown_worker_outcome
-from hermes_cli import gateway_client, sqlite_util
+from hermes_cli import gateway_client
 
 
 def _fire(tmp_path, monkeypatch, status):
@@ -16,9 +15,6 @@ def _fire(tmp_path, monkeypatch, status):
     execution row, the status poll count and the owner failure notices the dispatcher sent."""
     db = tmp_path / 'executions.db'
     monkeypatch.setattr(executions, 'EXECUTIONS_FILE', db)
-    # The ledger's 5 s busy timeout, shortened so a held lock fails fast.
-    monkeypatch.setattr(sqlite_util, 'open_db',
-                        functools.partial(sqlite_util.open_db, busy_timeout_ms=50))
     polls = []
 
     class Peer:
@@ -94,3 +90,28 @@ def test_owner_lost_mid_run_still_pauses_and_notifies(tmp_path, monkeypatch):
     assert job['state'] == 'paused'
     assert row['status'] == 'unknown'
     assert len(notices) == 1 and 'Gateway disconnected' in notices[0]
+
+
+def test_transient_database_open_error_on_progress_stamp_does_not_pause_run(
+        tmp_path, monkeypatch, caplog):
+    """A non-lock SQLite failure in an informational stamp cannot cost a live run."""
+    stamped = []
+
+    def touch(execution_id):
+        stamped.append(execution_id)
+        raise sqlite3.OperationalError('unable to open database file')
+
+    def status(n, db):
+        if n == 1:
+            return {'status': 'started', 'progress_at': 'p1'}
+        return {'status': 'terminal', 'result': [True, 'document', 'answer', None]}
+
+    monkeypatch.setattr(executions, 'touch_execution_progress', touch)
+    ok, job, row, polls, notices = _fire(tmp_path, monkeypatch, status)
+    assert len(stamped) == 1
+    assert ok is True
+    assert polls == 2
+    assert job['state'] != 'paused'
+    assert row['status'] == 'completed'
+    assert notices == []
+    assert 'progress stamp skipped: unable to open database file' in caplog.text

@@ -715,21 +715,26 @@ def _cron_spend_outliers() -> dict[str, str]:
     Reads ``cron/usage_audit.jsonl`` (one line per fire, written by the scheduler). A runaway
     fire otherwise shows only as a bill: it succeeds, delivers, and every other check is clean.
     """
+    from collections import deque
     from statistics import median
     from cron.jobs import CRON_DIR
-    fires: dict[str, list[int]] = {}
+    # Only the last 11 measured fires per job matter; the audit file grows forever, so stream it.
+    fires: dict[str, deque] = {}
     try:
-        lines = (CRON_DIR / "usage_audit.jsonl").read_text(encoding="utf-8-sig").splitlines()
+        with open(CRON_DIR / "usage_audit.jsonl", encoding="utf-8-sig") as audit:
+            for line in audit:
+                try:
+                    rec = json.loads(line)
+                    # null = the run failed before usage was known, not a zero-token fire.
+                    if rec.get("total_tokens") is not None:
+                        fires.setdefault(str(rec["job_id"]), deque(maxlen=11)).append(int(rec["total_tokens"]))
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
     except OSError:
         return {}
-    for line in lines:
-        try:
-            rec = json.loads(line)
-            fires.setdefault(str(rec["job_id"]), []).append(int(rec.get("total_tokens") or 0))
-        except (ValueError, KeyError, TypeError):
-            continue
     outliers = {}
-    for job_id, tokens in fires.items():
+    for job_id, history in fires.items():
+        tokens = list(history)
         usual = median(tokens[-11:-1]) if len(tokens) >= 4 else 0
         last = tokens[-1]
         if usual and last >= _SPEND_OUTLIER_MIN_TOKENS and last > _SPEND_OUTLIER_RATIO * usual:

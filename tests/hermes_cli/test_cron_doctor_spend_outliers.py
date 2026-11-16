@@ -15,7 +15,8 @@ def _audit(tmp_path, monkeypatch, fires):
 
 
 def test_last_fire_far_above_the_usual_is_reported(tmp_path, monkeypatch):
-    usual = [("runaway", 10_000_000)] * 5 + [("steady", 10_000_000)] * 6 + [("tiny", 50_000)] * 5
+    # total_tokens=null = a run that failed before usage was known: out of the baseline, not zero.
+    usual = [("runaway", 10_000_000)] * 4 + [("runaway", None)] * 6 + [("steady", 10_000_000)] * 6 + [("tiny", 50_000)] * 5
     _audit(tmp_path, monkeypatch, usual + [("runaway", 84_000_000), ("tiny", 400_000)])
 
     outliers = cron._cron_spend_outliers()

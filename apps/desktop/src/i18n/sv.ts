@@ -1966,7 +1966,20 @@ export const svOverrides: TranslationOverrides = {
           optional: 'valfritt',
           errors: { required: 'Krävs', spaces: 'Inga mellanslag', duplicate: 'En annan rutt använder redan det här namnet' },
           saveRoute: 'Spara rutt',
-          createRoute: 'Lägg till rutt'
+          createRoute: 'Lägg till rutt',
+          profileRoutesTitle: 'Profiler som underagenter kan köras som',
+          profileRoutesHint: 'Varje markerad profil bidrar med egen modell, skills, personlighet och nycklar.',
+          profileDescriptionPlaceholder: 'När den ska användas (valfritt)',
+          profileDefault: 'Standard',
+          profileEmpty: 'Det finns inga andra profiler ännu. Skapa en från profillisten.',
+          profileMissing: name => `${name} (profilen finns inte längre)`,
+          inactiveTitle: 'Används inte i det här läget',
+          inactiveModelMap: route => `Modellrutter väljer varje underagents modell. Underagenter som inte väljer en rutt använder ”${route}”.`,
+          inactiveProfiles: profile => `Profilrutter väljer varje underagents profil. Underagenter som inte väljer en profil körs som ”${profile}”.`,
+          inactiveModelMapNoDefault: 'Modellrutter väljer varje underagents modell. Underagenter som inte väljer en rutt använder huvudagentens modell.',
+          inactiveProfilesNoDefault: 'Profilrutter väljer varje underagents profil. Underagenter som inte väljer en profil använder huvudagentens modell.',
+          inactivePlugin: label => `${label} avgör varje underagents modell, så den här inställningen gäller inte.`,
+          useDefault: 'Byt till standard'
         }
       }
     },

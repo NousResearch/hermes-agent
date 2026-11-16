@@ -208,3 +208,164 @@ class TestDiscretionary:
         assert is_discretionary({"id": "zzz", "name": "explore"}, cfg)
         assert not is_discretionary({"id": "zzz", "name": "release-watch"}, cfg)
         assert not is_discretionary({"id": "zzz", "name": "x", "discretionary": "yes"}, cfg)
+
+
+# ── alerts ────────────────────────────────────────────────────────────────
+
+from agent.cost_budget import Alert, pending_alerts, send_once, watch  # noqa: E402
+
+
+@pytest.fixture()
+def sent(monkeypatch):
+    """Record deliveries made through the cron delivery path."""
+    import cron.scheduler as scheduler
+
+    calls = []
+
+    def fake_deliver(job, content, adapters=None, loop=None):
+        calls.append({"job": job, "content": content, "adapters": adapters, "loop": loop})
+        return None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", fake_deliver)
+    return calls
+
+
+def _alerts(cfg, snap):
+    return pending_alerts(budget_status(cfg, snap))
+
+
+class TestPendingAlerts:
+    def test_under_first_threshold_no_alert(self):
+        assert _alerts(_cfg(), _snap(day=4, month=40)) == []
+
+    def test_single_alert_for_multiple_crossings(self):
+        alerts = _alerts(_cfg(), _snap(day=11, month=40))
+        assert [a.key for a in alerts] == ["daily:2026-11-16:1"]
+        assert alerts[0].loud
+        assert set(alerts[0].covers) == {"daily:2026-11-16:0.5", "daily:2026-11-16:0.8"}
+        assert "$11.00" in alerts[0].text and "$10.00" in alerts[0].text
+        assert "Discretionary jobs are skipped" in alerts[0].text
+
+    def test_monthly_threshold_not_loud_below_one(self):
+        alerts = _alerts(_cfg(), _snap(day=1, month=85))
+        assert [(a.key, a.loud) for a in alerts] == [("monthly:2026-11:0.8", False)]
+
+    def test_run_overspend(self):
+        run = cost_budget.RunSpend(root_id="cron_j1_20261116_080000", job_id="j1",
+                                   started_at=NOW.timestamp(), cost_usd=2.5, unpriced_tokens=0)
+        cheap = cost_budget.RunSpend(root_id="cron_j1_20261116_090000", job_id="j1",
+                                     started_at=NOW.timestamp(), cost_usd=0.5, unpriced_tokens=0)
+        alerts = _alerts(_cfg(per_run_usd=2), _snap(day=3, month=3, runs=(run, cheap)))
+        assert [a.key for a in alerts] == ["run:cron_j1_20261116_080000"]
+        assert "$2.50" in alerts[0].text and "j1" in alerts[0].text
+
+    def test_unpriced_alert(self):
+        alerts = _alerts(_cfg(), _snap(day=1, month=1, day_unpriced_tokens=5000,
+                                       month_unpriced_tokens=5000, unpriced_models=("m1",)))
+        assert [a.key for a in alerts] == ["unpriced:2026-11-16"]
+        assert "pricing.overrides" in alerts[0].text and "m1" in alerts[0].text
+
+    def test_threshold_alert_marks_spend_as_lower_bound(self):
+        alerts = _alerts(_cfg(), _snap(day=6, month=6, day_unpriced_tokens=10,
+                                       month_unpriced_tokens=10))
+        daily = next(a for a in alerts if a.key.startswith("daily:"))
+        assert "at least" in daily.text
+
+
+class TestSendOnce:
+    def test_delivers_through_cron_path_with_callers_adapters(self, home, sent):
+        adapters, loop = {"slack": object()}, object()
+        n = send_once([Alert(key="k1", text="hello")], _cfg(), adapters=adapters, loop=loop)
+        assert n == 1
+        assert sent[0]["job"]["deliver"] == "slack:C1"
+        assert sent[0]["adapters"] is adapters and sent[0]["loop"] is loop
+        assert sent[0]["content"] == "hello"
+
+    def test_not_resent(self, home, sent):
+        send_once([Alert(key="k1", text="a")], _cfg())
+        assert send_once([Alert(key="k1", text="a")], _cfg()) == 0
+        assert len(sent) == 1
+
+    def test_covers_marked(self, home, sent):
+        send_once([Alert(key="d:1", text="a", covers=("d:0.5",))], _cfg())
+        assert send_once([Alert(key="d:0.5", text="b")], _cfg()) == 0
+
+    def test_new_period_alerts_again(self, home, sent):
+        cfg = _cfg()
+        send_once(_alerts(cfg, _snap(day=11)), cfg)
+        send_once(_alerts(cfg, _snap(day=11, day_key="2026-11-17")), cfg)
+        assert len(sent) == 2
+
+    def test_delivery_failure_not_recorded(self, home, monkeypatch):
+        import cron.scheduler as scheduler
+
+        results = iter(["boom", None])
+        monkeypatch.setattr(scheduler, "_deliver_result", lambda *a, **k: next(results))
+        assert send_once([Alert(key="k1", text="a")], _cfg()) == 0
+        assert send_once([Alert(key="k1", text="a")], _cfg()) == 1
+
+    def test_delivery_exception_not_recorded(self, home, monkeypatch):
+        import cron.scheduler as scheduler
+
+        def boom(*a, **k):
+            raise RuntimeError("adapter gone")
+
+        monkeypatch.setattr(scheduler, "_deliver_result", boom)
+        assert send_once([Alert(key="k1", text="a")], _cfg()) == 0
+
+    def test_loud_alert_gets_mention(self, home, sent):
+        cfg = _cfg(alert_mention="<!subteam^S1>")
+        send_once([Alert(key="q", text="quiet"), Alert(key="l", text="loud", loud=True)], cfg)
+        assert [c["content"] for c in sent] == ["quiet", "<!subteam^S1> loud"]
+
+    def test_no_alert_channel_logs_only(self, home, sent, caplog):
+        cfg = _cfg(alert_channel=None)
+        with caplog.at_level("WARNING", logger="agent.cost_budget"):
+            assert send_once([Alert(key="k1", text="over!")], cfg) == 0
+        assert sent == []
+        assert "over!" in caplog.text
+        assert not (home / "cost_budget").exists()
+
+    def test_state_is_per_home(self, tmp_path, monkeypatch, sent):
+        for name in ("a", "b"):
+            h = tmp_path / name
+            h.mkdir()
+            monkeypatch.setenv("HERMES_HOME", str(h))
+            assert send_once([Alert(key="k1", text="a")], _cfg()) == 1
+        assert len(sent) == 2
+
+
+class TestWatch:
+    def test_without_block_touches_nothing(self, home, monkeypatch, sent):
+        monkeypatch.setattr(cost_budget, "compute_spend", lambda *a, **k: pytest.fail("queried"))
+        watch(adapters={}, loop=None)
+        assert sent == []
+        assert not (home / "cost_budget").exists()
+
+    def test_sends_threshold_alert(self, home, sent):
+        (home / "config.yaml").write_text(
+            "cost_budget:\n  daily_usd: 1\n  alert_channel: slack:C1\n", encoding="utf-8")
+        _seed(home, "s1", started_at=datetime.now(timezone.utc) - timedelta(minutes=1), cost=2.0)
+        adapters = {"slack": object()}
+        watch(adapters=adapters, loop=None)
+        assert len(sent) == 1 and sent[0]["adapters"] is adapters
+        assert "Daily spend" in sent[0]["content"]
+
+    def test_throttled(self, home, monkeypatch, sent):
+        (home / "config.yaml").write_text("cost_budget:\n  daily_usd: 1\n", encoding="utf-8")
+        calls = []
+        real = cost_budget.compute_spend
+        monkeypatch.setattr(cost_budget, "compute_spend", lambda *a, **k: calls.append(1) or real(*a, **k))
+        watch()
+        cost_budget._spend_cache.clear()
+        watch()
+        assert len(calls) == 1
+
+    def test_never_raises(self, home, monkeypatch):
+        (home / "config.yaml").write_text("cost_budget:\n  daily_usd: 1\n", encoding="utf-8")
+
+        def boom(*a, **k):
+            raise RuntimeError("store exploded")
+
+        monkeypatch.setattr(cost_budget, "compute_spend", boom)
+        watch()

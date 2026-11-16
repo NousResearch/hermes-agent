@@ -24,11 +24,14 @@ Design: docs/superpowers/specs/2026-11-16-product-education-teammate-design.md
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
+import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
@@ -274,6 +277,205 @@ def budget_status(cfg: BudgetConfig, snap: SpendSnapshot) -> BudgetStatus:
     )
 
 
+
+
+# ── alerts ────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Alert:
+    key: str
+    text: str
+    loud: bool = False
+    # Keys marked sent together with this one: the lower thresholds of the
+    # same period, so a jump from 40% to 110% sends one alert, not three.
+    covers: Tuple[str, ...] = ()
+
+
+_STATE_RETENTION_SECONDS = 40 * 86400
+
+
+def _fmt_threshold(t: float) -> str:
+    return f"{t:g}"
+
+
+def _money(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def _threshold_alert(status: BudgetStatus, *, period: str) -> Optional[Alert]:
+    cfg, snap = status.cfg, status.snap
+    if period == "daily":
+        fraction, spent, budget, key = status.day_fraction, snap.day_usd, cfg.daily_usd, snap.day_key
+        label, resets, unpriced = "Daily", "tomorrow", snap.day_unpriced_tokens
+    else:
+        fraction, spent, budget, key = status.month_fraction, snap.month_usd, cfg.monthly_usd, snap.month_key
+        label, resets, unpriced = "Monthly", "next month", snap.month_unpriced_tokens
+    if fraction is None:
+        return None
+    crossed = [t for t in cfg.alert_at if fraction >= t]
+    if not crossed:
+        return None
+    top = max(crossed)
+    keys = [f"{period}:{key}:{_fmt_threshold(t)}" for t in crossed]
+    amount = f"at least {_money(spent)}" if unpriced else _money(spent)
+    text = (f"{label} spend is {amount}, {fraction:.0%} of the {_money(budget)} "
+            f"{period} budget ({key}).")
+    if unpriced:
+        text += f" {unpriced:,} tokens have no price, so the real figure is higher."
+    loud = top >= 1.0
+    if loud:
+        text = (f"🚨 Over budget. {text} Discretionary jobs are skipped until {resets}; "
+                "release (non-discretionary) work keeps running.")
+    return Alert(key=keys[-1], text=text, loud=loud, covers=tuple(keys[:-1]))
+
+
+def pending_alerts(status: BudgetStatus) -> List[Alert]:
+    """Every alert the current spend warrants; ``send_once`` drops those already sent."""
+    cfg, snap = status.cfg, status.snap
+    alerts = [a for a in (_threshold_alert(status, period="daily"),
+                          _threshold_alert(status, period="monthly")) if a]
+    if cfg.per_run_usd:
+        for run in snap.runs:
+            if run.cost_usd >= cfg.per_run_usd:
+                alerts.append(Alert(
+                    key=f"run:{run.root_id}",
+                    text=(f"A cron run of job `{run.job_id}` cost {_money(run.cost_usd)}, over the "
+                          f"{_money(cfg.per_run_usd)} per-run limit (session `{run.root_id}`)."),
+                ))
+    if snap.day_unpriced_tokens:
+        models = ", ".join(snap.unpriced_models) or "unknown model"
+        alerts.append(Alert(
+            key=f"unpriced:{snap.day_key}",
+            text=(f"{snap.day_unpriced_tokens:,} tokens today have no price ({models}), so budget "
+                  "spend is understated. Add per-million rates under pricing.overrides in "
+                  "config.yaml, then run `hermes costs --reprice`."),
+        ))
+    return alerts
+
+
+_state_lock = threading.RLock()
+_logged_without_channel: set = set()
+
+
+def _state_path() -> Path:
+    return get_hermes_home() / "cost_budget" / "alerts.json"
+
+
+def _load_sent(path: Path) -> Dict[str, float]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        logger.warning("cost_budget: unreadable alert state %s — starting fresh", path)
+        return {}
+    sent = data.get("sent") if isinstance(data, dict) else None
+    return {str(k): float(v) for k, v in sent.items()} if isinstance(sent, dict) else {}
+
+
+def _save_sent(path: Path, sent: Dict[str, float]) -> None:
+    cutoff = time.time() - _STATE_RETENTION_SECONDS
+    sent = {k: v for k, v in sent.items() if v >= cutoff}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".alerts-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"sent": sent}, fh, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _deliver(target: str, text: str, *, adapters=None, loop=None) -> Optional[str]:
+    """Send through the cron delivery path; None on success, else the error."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from cron.scheduler import _deliver_result
+
+    token = set_secret_scope(build_profile_secret_scope(get_hermes_home()))
+    try:
+        return _deliver_result({"id": "cost_budget", "name": "Cost budget", "deliver": target},
+                               text, adapters=adapters, loop=loop)
+    except Exception as exc:  # an adapter error must not escape into cron
+        return f"{type(exc).__name__}: {exc}"
+    finally:
+        reset_secret_scope(token)
+
+
+def send_once(alerts: List[Alert], cfg: BudgetConfig, *, adapters=None, loop=None) -> int:
+    """Deliver each alert whose key was never sent from this profile; return how many went out.
+
+    A key is recorded only after a successful delivery, so an alert raised
+    while the adapter is down goes out on a later check.
+    """
+    if not alerts:
+        return 0
+    path = _state_path()
+    with _state_lock:
+        sent = _load_sent(path)
+        fresh = [a for a in alerts if a.key not in sent]
+        if not fresh:
+            return 0
+        if not cfg.alert_channel:
+            for alert in fresh:
+                marker = (str(path), alert.key)
+                if marker not in _logged_without_channel:
+                    _logged_without_channel.add(marker)
+                    logger.warning("cost_budget alert (no cost_budget.alert_channel set): %s", alert.text)
+            return 0
+        delivered = 0
+        for alert in fresh:
+            if alert.key in sent:
+                continue  # covered by an alert sent earlier in this batch
+            text = f"{cfg.alert_mention} {alert.text}" if alert.loud and cfg.alert_mention else alert.text
+            error = _deliver(cfg.alert_channel, text, adapters=adapters, loop=loop)
+            if error is not None:
+                logger.warning("cost_budget: alert %s not delivered to %s: %s",
+                               alert.key, cfg.alert_channel, error)
+                continue
+            stamp = time.time()
+            for key in (alert.key, *alert.covers):
+                sent[key] = stamp
+            delivered += 1
+        if delivered:
+            _save_sent(path, sent)
+        return delivered
+
+
+_watch_lock = threading.Lock()
+_last_watch: Dict[str, float] = {}
+
+
+def watch(*, adapters=None, loop=None) -> None:
+    """Check the current profile's spend and send due alerts. Called from every cron tick.
+
+    Returns before any I/O beyond the cached config read when the profile has
+    no ``cost_budget:`` block; otherwise throttled to ``cache_seconds`` per home.
+    Never raises.
+    """
+    try:
+        cfg = load_budget_config()
+        if cfg is None:
+            return
+        key = _home_key()
+        now_m = time.monotonic()
+        with _watch_lock:
+            last = _last_watch.get(key)
+            if last is not None and now_m - last < cfg.cache_seconds:
+                return
+            _last_watch[key] = now_m
+        status = budget_status(cfg, get_spend(cfg))
+        send_once(pending_alerts(status), cfg, adapters=adapters, loop=loop)
+    except Exception:
+        logger.warning("cost_budget: budget watch failed", exc_info=True)
+
+
 def _reset_for_tests() -> None:
     with _cache_lock:
         _spend_cache.clear()
+    with _watch_lock:
+        _last_watch.clear()
+    _logged_without_channel.clear()

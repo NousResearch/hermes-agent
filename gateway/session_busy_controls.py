@@ -212,7 +212,13 @@ async def correct(connection, ref, params, *, verb):
         method = getattr(agent, verb, None)
         if not callable(method):
             raise RuntimeStoreError('execution_not_ready')
-        accepted = method(params['text'])
+        # A redirect with no model request to cancel (between two requests) takes the claim's steer
+        # boundary, answered like session.steer; either verb landing there also reaches the
+        # subagents the turn waits on (#141973).
+        from agent.interrupt_control import correct_live_turn
+        accepted = correct_live_turn(agent, verb, params['text'])
+        if accepted == 'steer':
+            verb = 'steer'
         return {'status': ({'steer': 'queued', 'redirect': 'redirected'}[verb] if accepted else 'rejected'),
                 'text': params['text'], 'execution_generation': generation,
                 'authority_epoch': authority.epoch}

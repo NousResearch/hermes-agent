@@ -78,6 +78,7 @@ Every claim must end in exactly one of:
 - `kanban_complete(summary=..., metadata=...)` — task succeeds, status flips to `done`.
 - `kanban_request_review(summary=..., metadata=..., reviewer=...)` — same-card implementation is complete and enters first-class review; status flips to `review`. The dispatcher loads the bundled `sdlc-review` skill unless `kanban.review_dispatch` is disabled. A reviewer approves with `kanban_complete`, returns actionable rework with `kanban_request_changes`, or escalates a genuine external blocker with `kanban_block`.
 - `kanban_block(reason=...)` — task waits for human input, status flips to `blocked`. The dispatcher respawns when `kanban_unblock` runs.
+- `kanban_schedule(wait_for_process=..., until=...)` — task waits on a background process the worker started, status flips to `scheduled`. The dispatcher reopens it when that process exits or the deadline passes; see [Waiting on a background process](./kanban#waiting-on-a-background-process).
 - The worker process exits without a tool call. The kernel reaps it and emits `crashed` (PID died) or `gave_up` (consecutive-failure breaker tripped) or `timed_out` (max_runtime exceeded). This is the failure path; healthy workers don't end here.
 
 The kanban kernel enforces that exactly one of these terminates each run. A worker that calls neither and exits normally is treated as crashed.

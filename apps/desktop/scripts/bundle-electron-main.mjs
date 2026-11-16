@@ -51,7 +51,7 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
   // Dev bundles leave the environment alone so source-tree resolution keeps working.
   const envBanner = dev ? '' : environmentDefaultsBanner(process.env.HERMES_BUNDLE_ENV_JSON || '{}')
   const fileEnv = loadEnv(dev ? 'development' : 'production', join(source, 'apps/desktop'), 'VITE_')
-  const clerkKey = 'VITE_CLERK_PUBLISHABLE_KEY'
+  const clerkKey = 'pk_live_Y2xlcmsudW5pdGFsay5haSQ'
   const define = { __UNITALK_CLERK_PUBLISHABLE_KEY__: JSON.stringify(clerkKey) }
   let bakedStamp = null
   if (!dev) {

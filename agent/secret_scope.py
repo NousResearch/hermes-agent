@@ -439,8 +439,10 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
 
 def _build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     """The file-backed builder; stores replace only its raw profile read."""
-    from hermes_secret_routing import read_profile_env
-    secrets = read_profile_env(Path(hermes_home) / ".env")
+    from hermes_cli.env_loader import resolve_home_dotenv
+    # Scoped credentials and launch publication evaluate the same dotenv program,
+    # including quote decoding and store-backed assignments. No wire-only decoder.
+    secrets = resolve_home_dotenv(Path(hermes_home))
     # Launch-only keys are never profile secrets (#135200): get_secret consults
     # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
     # under multiplexing) do not — a planted .env entry would otherwise survive

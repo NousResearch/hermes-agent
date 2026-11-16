@@ -103,8 +103,7 @@ def reset_for_tests() -> None:
         _PROVIDERS.clear()
         _BOOTSTRAP_GENERATIONS.clear()
     with _PUBLISH_LOCK:
-        _PUBLISHED.clear()
-        _PUBLISHED_VERSIONS.clear()
+        _PUBLICATIONS.clear()
         _PUBLISHED_NAMES.clear()
 
 
@@ -249,8 +248,7 @@ def env_file_exists(env_path: Path) -> bool:
     return True  # an authoritative empty profile still occupies the dotenv layer
 
 
-_PUBLISHED: dict[str, dict[str, str]] = {}   # home key -> the view boot published into os.environ
-_PUBLISHED_VERSIONS: dict[str, int] = {}
+_PUBLICATIONS: dict[str, tuple[int, dict[str, str]]] = {}
 _PUBLISHED_NAMES: dict[str, set[str]] = {}
 
 
@@ -271,12 +269,13 @@ def boot_secret_store(home: Path) -> Optional[dict[str, str]]:
     pinned = _PROFILE_SNAPSHOT.get()
     if pinned is None or pinned[0] != Path(home):
         provider.boot(Path(home))
-    return dict(provider.current_snapshot(home).env)
+    return dict((pinned[1] if pinned is not None and pinned[0] == Path(home)
+                 else provider.current_snapshot(home)).env)
 
 
 def load_profile_dotenv(loader, **kwargs):
     """Serialize the ordinary loader against snapshot publication, not a second loader."""
-    from hermes_constants import get_process_hermes_home, hermes_home_key, get_hermes_home, get_hermes_home_override
+    from hermes_constants import get_process_hermes_home, get_hermes_home, get_hermes_home_override
     from agent.secret_scope import is_multiplex_active
     from agent.safe_worker_policy import worker_config_snapshot
     home = Path(kwargs.get("hermes_home") or get_process_hermes_home())
@@ -295,49 +294,48 @@ def load_profile_dotenv(loader, **kwargs):
     if _PROFILE_SNAPSHOT.get() is not None:
         return loader(**kwargs)
     provider.boot(home)
-    with _PUBLISH_LOCK:
-        snapshot = provider.current_snapshot(home)
-        with profile_snapshot(home, snapshot):
-            result = loader(**kwargs)
-            raw = read_profile_env(home / ENV_FILENAME)
-            key = hermes_home_key(home)
-            _PUBLISHED[key] = {name: os.environ[name] for name in raw
-                               if not stays_local(provider, name) and name in os.environ}
-            _PUBLISHED_VERSIONS[key] = snapshot.version
-            _PUBLISHED_NAMES.setdefault(key, set()).update(_PUBLISHED[key])
-        return result
+    return publish(provider.current_snapshot(home), home=home, loader=loader, **kwargs)
 
 
-def view_changed(home: Path, old_env=None, new_env=None) -> None:
-    """A version fence surrounds the SAME dotenv loader used by explicit reloads."""
-    from agent.secret_scope import is_multiplex_active, invalidate_env_file_cache
-    from hermes_constants import hermes_home_key
-    from hermes_cli.env_loader import load_hermes_dotenv, resolve_home_dotenv
-    from tui_gateway.launch_profile_policy import move_launch_env
-    provider = routed_provider()
-    if provider is None:
-        return
-    snapshot = provider.current_snapshot(home)
-    key = hermes_home_key(home)
-    invalidate_env_file_cache()
-    with _PUBLISH_LOCK:
-        old = _PUBLISHED.get(key)
-        if old is None or snapshot.version <= _PUBLISHED_VERSIONS.get(key, 0):
-            return
-        # Read again under the publication fence: callbacks may arrive out of order.
-        snapshot = provider.current_snapshot(home)
-        with profile_snapshot(home, snapshot):
+def publish(snapshot, *, home, consumer=None, loader=None, **kwargs):
+    """Derive every consumer from this captured immutable snapshot, never a later read."""
+    with profile_snapshot(home, snapshot):
+        if consumer is not None:
+            return consumer(snapshot)
+        from hermes_cli.env_loader import _load_hermes_dotenv, resolve_home_dotenv
+        from hermes_constants import hermes_home_key
+        from agent.secret_scope import is_multiplex_active
+        from tui_gateway.launch_profile_policy import move_launch_env
+        provider = routed_provider()
+        key = hermes_home_key(home)
+        with _PUBLISH_LOCK:
+            cell = _PUBLICATIONS.get(key)
+            if cell is None and loader is None:
+                return None
+            if cell is not None and (snapshot.version < cell[0]
+                                     or (snapshot.version == cell[0] and loader is None)):
+                return None
+            old = cell[1] if cell is not None else {}
             new = resolve_home_dotenv(Path(home))
-            if is_multiplex_active():
+            if is_multiplex_active() and loader is None:
                 move_launch_env(old, new)
+                result = None
             else:
                 for name, value in old.items():
                     if name not in new and os.environ.get(name) == value:
                         os.environ.pop(name, None)
-                load_hermes_dotenv(hermes_home=home)
-            _PUBLISHED[key] = {k: v for k, v in new.items() if not stays_local(provider, k)}
-            _PUBLISHED_VERSIONS[key] = snapshot.version
-            _PUBLISHED_NAMES.setdefault(key, set()).update(_PUBLISHED[key])
+                result = (loader or _load_hermes_dotenv)(**(kwargs or {"hermes_home": home}))
+            values = {k: v for k, v in new.items() if not stays_local(provider, k)}
+            _PUBLICATIONS[key] = (snapshot.version, values)
+            _PUBLISHED_NAMES.setdefault(key, set()).update(values)
+            return result
+
+
+def view_changed(home: Path, old_env=None, new_env=None) -> None:
+    """Notifications and explicit reloads publish the same captured snapshot."""
+    provider = routed_provider()
+    if provider is not None:
+        publish(provider.current_snapshot(home), home=home)
 
 
 def route_env_write(env_path: Path, key: str, value: Optional[str]) -> Optional[bool]:

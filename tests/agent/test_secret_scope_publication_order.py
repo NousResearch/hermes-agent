@@ -46,6 +46,6 @@ def test_late_snapshot_cannot_revert_process_env(store, monkeypatch):
         late.join(10)
     assert not errors and not late.is_alive()
     assert os.environ["PUBLISH_KEY"] == "third-marker"
-    assert routing._PUBLISHED[provider._key(home)]["PUBLISH_KEY"] == "third-marker"
+    assert routing._PUBLICATIONS[provider._key(home)][1]["PUBLISH_KEY"] == "third-marker"
     routing.view_changed(home)
     assert os.environ["PUBLISH_KEY"] == "third-marker"

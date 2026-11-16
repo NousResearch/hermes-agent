@@ -518,25 +518,48 @@ class LiveSecretScope(Mapping[str, str]):
         scope = cls((), profile_home=Path(home))
         scope.provider = provider
         scope.builder = builder
-        scope.version = None
+        scope._cell = (None, {})
+        scope._builds = set()
+        scope._condition = threading.Condition()
         scope.refresh()
         return scope
 
-    def refresh(self):
-        snapshot = self.provider.current_snapshot(self.profile_home)
+    @property
+    def version(self):
+        return self._cell[0]
+
+    def _install_snapshot(self, snapshot):
         from hermes_secret_routing import bootstrap_generation
         version = (snapshot.version, bootstrap_generation(self.profile_home))
-        if self.version != version:
-            # The raw reader is pinned while the ordinary builder composes all its layers.
-            from hermes_secret_routing import profile_snapshot
-            with profile_snapshot(self.profile_home, snapshot):
-                values = self.builder(self.profile_home)
-            self.layers = (self.layers[0], values)
-            self.version = version
+        with self._condition:
+            while version in self._builds:
+                self._condition.wait()
+            if self.version is not None and version <= self.version:
+                return
+            self._builds.add(version)
+        try:
+            values = self.builder(self.profile_home)
+            with self._condition:
+                if self.version is None or version > self.version:
+                    self._cell = (version, values)
+        finally:
+            with self._condition:
+                self._builds.remove(version)
+                self._condition.notify_all()
+
+    def refresh(self):
+        from hermes_secret_routing import publish, bootstrap_generation
+        while True:
+            snapshot = self.provider.current_snapshot(self.profile_home)
+            publish(snapshot, home=self.profile_home, consumer=self._install_snapshot)
+            current = self.provider.current_snapshot(self.profile_home)
+            if self.version >= (current.version, bootstrap_generation(self.profile_home)):
+                return
 
     def _maps(self):
         if self.profile_home is not None:
             self.refresh()
+            return iter((self.layers[0], self._cell[1]))
         return (layer() if callable(layer) else layer for layer in self.layers)
 
     def __getitem__(self, name):
@@ -605,7 +628,8 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
             if not isinstance(layer, LiveSecretScope):
                 return
             if layer.profile_home == hermes_home:
-                layer.version = None
+                from hermes_secret_routing import live_bootstrap_env
+                live_bootstrap_env(hermes_home, layer.provider)
                 layer.refresh()
             else:
                 for child in layer.layers:

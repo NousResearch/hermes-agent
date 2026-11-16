@@ -85,6 +85,7 @@ SESSION_RECORD_DEFAULTS: dict[str, Any] = {
     "model_config_json": None,
     "origin_json": None,
     "tool_names": None,
+    "prompt_cache_clock": None,
 }
 
 

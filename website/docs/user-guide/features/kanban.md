@@ -325,6 +325,13 @@ kanban:
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
                                    # for human-only review boards.
+  # review_max_rounds: 3           # default: how many times a reviewer may return
+                                   # the same card with request_changes before it
+                                   # blocks needs_input for a human. Each round is
+                                   # a full implement -> review -> send-back cycle.
+                                   # request_changes bypasses block-loop accounting,
+                                   # so without this a ping-pong review has no
+                                   # circuit breaker. 0 disables the cap.
   # dispatch_profiles: [sage]       # unset (key omitted): this home may claim
                                    # cards for any existing profile. Set to a
                                    # list (or comma-separated string) of profile

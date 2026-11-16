@@ -395,8 +395,13 @@ _RETIRING = frozenset({"idle_exit", "replaced"})
 
 def _observe_replacing_stale(home: Path, deadline: float, replaced: set[Path]) -> GatewayDiscovery:
     """Discovery, except that a gateway an older Hermes left on this home is stopped once (like
-    ``hermes gateway stop``) and reported as retiring; a refusal keeps ``incompatible`` + its remedy."""
+    ``hermes gateway stop``) and reported as retiring; a refusal keeps ``incompatible`` + its remedy.
+    A profile a plugin runs elsewhere is refused before discovery, so ``ensure`` neither starts it
+    nor attaches to a host gateway that has not dropped it yet."""
     from hermes_cli.gateway_runtime_service import remaining
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    if (elsewhere := run_elsewhere_for_home(home)) is not None:
+        return GatewayDiscovery("inaccessible", reason_code="profile_runs_elsewhere", detail=elsewhere.message()[:500])
     observed = discover_gateway_endpoint(home, timeout=remaining(deadline))
     if observed.state != "incompatible" or observed.reason_code != "runtime_protocol":
         return observed
@@ -423,7 +428,8 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float | None = 
     this install's own home (``incompatible``/``runtime_protocol``, the upgrade case): it is stopped
     the way ``hermes gateway stop`` stops it, once, and the current one started like any absent
     owner. Another install's or a newer Hermes's gateway stays refused, with the reason in ``detail``
-    (``hermes_cli.gateway_runtime_replace``).
+    (``hermes_cli.gateway_runtime_replace``). A profile a plugin runs elsewhere is never started or
+    attached to (``inaccessible``/``profile_runs_elsewhere``, the profile and plugin in ``detail``).
 
     A successful service command or Popen is not session readiness. After an
     owner/start request is observed this invocation never launches another.

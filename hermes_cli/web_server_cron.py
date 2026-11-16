@@ -173,7 +173,8 @@ def _cron_default_profile() -> str:
 
 
 def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
-    """Resolve a profile query value to (profile_name, HERMES_HOME)."""
+    """Resolve a profile query value to (profile_name, HERMES_HOME). A profile a plugin runs
+    elsewhere answers 409: this host neither reads nor runs its jobs, sessions or files."""
     from hermes_cli import profiles as profiles_mod
     raw = (profile or _cron_default_profile()).strip() or "default"
     try:
@@ -183,6 +184,9 @@ def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
         raise HTTPException(status_code=400, detail=str(e))
     if not profiles_mod.profile_exists(canon):
         raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere
+    if (elsewhere := run_elsewhere(canon)) is not None:
+        raise HTTPException(status_code=409, detail=elsewhere.message())
     return canon, profiles_mod.get_profile_dir(canon)
 
 

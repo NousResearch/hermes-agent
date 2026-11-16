@@ -694,9 +694,10 @@ def last_workspace(parent_agent: Any, sid: str) -> Optional[dict[str, Any]]:
 
 
 # ── worktree sweep pin ─────────────────────────────────────────────────────
-def _profile_dbs() -> list[Path]:
+def _profile_dbs(*, include_run_elsewhere: bool = False) -> list[Path]:
     from hermes_cli.profiles import profiles_to_serve
-    homes = [home for _name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
+    homes = [home for _name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True,
+                                                       include_run_elsewhere=include_run_elsewhere)]
     return [Path(home) / "state.db" for home in homes if (Path(home) / "state.db").is_file()]
 
 
@@ -743,7 +744,8 @@ def pinned_worktrees(now: Optional[float] = None) -> dict[str, str]:
     The startup sweep's only view of the records."""
     now = now or time.time()
     pins: dict[str, str] = {}
-    for db in _profile_dbs():
+    # A profile a plugin runs elsewhere still pins its trees; this only reads its records.
+    for db in _profile_dbs(include_run_elsewhere=True):
         for sid, record in _read_pins(db, now):
             until = time.strftime("%Y-%m-%d %H:%M", time.localtime(record["expires_at"])) if record.get(
                 "expires_at") else "?"

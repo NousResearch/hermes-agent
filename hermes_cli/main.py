@@ -2697,6 +2697,8 @@ def _prepare_agent_startup(args) -> None:
 
     if not (args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)):
         return
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
+    exit_if_profile_runs_elsewhere(args.command)  # before any banner, TUI or gateway contact
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
     if not (_is_tui_chat_launch(args) or _chat_runs_at_gateway(args)):
@@ -2709,10 +2711,7 @@ def _prepare_agent_startup(args) -> None:
             # which joins this thread first (incl. model_tools at import time).
             start_background_plugin_discovery()
         except Exception:
-            logger.warning(
-                "plugin discovery failed at CLI startup",
-                exc_info=True,
-            )
+            logger.warning("plugin discovery failed at CLI startup", exc_info=True)
     # -t/--toolsets narrows which configured MCP servers get spawned, on
     # every discovery path (background thread, TUI/desktop
     # deferred start). Built-in toolset names never match a server key, so

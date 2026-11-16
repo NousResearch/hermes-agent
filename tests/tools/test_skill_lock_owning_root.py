@@ -23,24 +23,41 @@ def _profile(home: Path, shared: Path) -> Path:
     return home
 
 
-@pytest.fixture
-def fleet(tmp_path, monkeypatch):
+def _make_fleet(tmp_path, monkeypatch):
     """Two profiles (a, b) that both list one shared external skills root holding ``shared-skill``;
     this process runs as profile b."""
     shared = tmp_path / "shared"
     (shared / "shared-skill").mkdir(parents=True)
     (shared / "shared-skill" / "SKILL.md").write_text(SKILL, encoding="utf-8")
-    a, b = _profile(tmp_path / "a", shared), _profile(tmp_path / "b", shared)
+    root = tmp_path / "hermes"  # one Hermes install: <root>/profiles/<name>
+    a, b = _profile(root / "profiles" / "a", shared), _profile(root / "profiles" / "b", shared)
     monkeypatch.setenv("HERMES_HOME", str(b))
     from agent import skill_utils
     monkeypatch.setattr(skill_utils, "_EXTERNAL_DIRS_CACHE", {}, raising=False)
-    return {"shared": shared, "a": a, "b": b}
+    return {"shared": shared, "a": a, "b": b, "root": root}
+
+
+@pytest.fixture
+def fleet(tmp_path, monkeypatch):
+    return _make_fleet(tmp_path, monkeypatch)
 
 
 def _lock(root: Path, name: str) -> Path:
     """The per-skill lock file a writer of *name* takes under *root* (digest of the basename)."""
     import hashlib
     return root / ".locks" / (hashlib.sha256(name.encode("utf-8")).hexdigest() + ".lock")
+
+
+def _folder(fleet, folder: Path) -> Path:
+    """The folder lock of skill folder *folder*: in the install's .skill_locks/, named by a digest of
+    the folder's real path."""
+    import hashlib
+    key = os.path.normcase(os.path.realpath(folder))
+    return fleet["root"] / ".skill_locks" / (hashlib.sha256(key.encode("utf-8")).hexdigest() + ".lock")
+
+
+def _no_lock_in(tree: Path) -> bool:
+    return not any(p.name == ".locks" for p in tree.rglob("*"))
 
 
 def _patch(old, new):
@@ -132,9 +149,10 @@ def test_a_display_name_with_a_slash_locks_the_skill_it_names(fleet, tmp_path):
     assert "Step 1: Team." in (actual / "SKILL.md").read_text(encoding="utf-8")
 
 
-def test_a_shared_skills_lock_lives_in_its_own_root(fleet):
+def test_a_shared_skills_lock_is_its_folder_lock_outside_the_shared_tree(fleet):
     assert _patch("Step 1: Do the thing.", "Step 1: Do it well.")["success"] is True
-    assert _lock(fleet["shared"], "shared-skill").exists(), "no lock file in the shared root"
+    assert _folder(fleet, fleet["shared"] / "shared-skill").exists(), "no folder lock for the shared skill"
+    assert _no_lock_in(fleet["shared"]), "a lock was written into the shared skills tree"
     assert _lock(fleet["b"] / "skills", "shared-skill").exists(), "the profile's own lock is still taken"
 
 
@@ -225,7 +243,7 @@ def _folder_lock_module():
     """The folder-lock helpers. Without them (main, the earlier design) a write takes one lock only,
     so a lock file reached by two spellings cannot arise and these hazards do not exist."""
     locks = pytest.importorskip("tools.skill_manager_locks")
-    if not hasattr(locks, "_target_root_lock"):
+    if not hasattr(locks, "_target_folder_lock"):
         pytest.skip("no folder lock in this code: the two-spellings hazard does not exist")
     return locks
 
@@ -235,7 +253,7 @@ def _spelled_twice(tmp_path, fleet, monkeypatch, locks, of):
     symlinked spelling of the profile's skills dir."""
     link = tmp_path / "skills-link"
     link.symlink_to(fleet["b"] / "skills", target_is_directory=True)
-    monkeypatch.setattr(locks, "_target_root_lock", lambda name: link / ".locks" / locks._skill_lock_path(of).name)
+    monkeypatch.setattr(locks, "_target_folder_lock", lambda name, *_: link / ".locks" / locks._skill_lock_path(of).name)
 
 
 def _finishes(fn, timeout=10):
@@ -272,6 +290,15 @@ def test_an_operation_inside_its_batch_does_not_retake_a_held_lock_under_another
     assert result["success"] is True, result
 
 
+def _locks_module():
+    """The lock module this change adds; asserted (not imported blindly) so that on a tree without it
+    the test fails on an assertion rather than an import error."""
+    import importlib
+    import importlib.util
+    assert importlib.util.find_spec("tools.skill_manager_locks") is not None, "tools.skill_manager_locks is missing"
+    return importlib.import_module("tools.skill_manager_locks")
+
+
 NESTED = textwrap.dedent("""
     import sys, time, pathlib
     import tools.skill_manager_locks as locks
@@ -284,7 +311,7 @@ NESTED = textwrap.dedent("""
         while not go.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         try:
-            with _skill_mutation_lock("team/foo"):  # what a lifecycle hook's write of team/foo does
+            with _skill_mutation_lock("team/actual-skill"):  # a lifecycle hook's write of team/actual-skill
                 out.write_text("acquired")
         except TimeoutError:
             out.write_text("busy")
@@ -293,13 +320,18 @@ NESTED = textwrap.dedent("""
 
 @pytest.mark.skipif(sys.platform == "win32", reason="probes with fcntl")
 def test_a_nested_write_needing_a_lock_out_of_order_fails_instead_of_deadlocking(fleet, tmp_path):
-    """One profile; local folder actual-skill has display name team/foo. Process A writes actual-skill
-    (its folder lock). This process writes team/foo: it takes foo's own lock, then waits for A. A's
-    lifecycle hook now writes team/foo from inside A's lock and needs foo's own lock, which sorts
+    """Local skill actual-skill; shared folder other-skill has display name team/actual-skill (so its
+    writes take the profile's own lock of actual-skill too, keyed by basename). Process A writes
+    actual-skill (holds that own lock). This process writes team/actual-skill: it takes other-skill's
+    folder lock (folder locks sort first), then waits for the own lock A holds. A's lifecycle hook
+    now writes team/actual-skill from inside A's lock and needs other-skill's folder lock, which sorts
     BEFORE the one A holds. Waiting would deadlock both; the nested write must give up instead."""
     actual = fleet["b"] / "skills" / "actual-skill"
     actual.mkdir()
-    (actual / "SKILL.md").write_text(SKILL.replace("name: shared-skill", "name: team/foo"), encoding="utf-8")
+    (actual / "SKILL.md").write_text(SKILL.replace("shared-skill", "actual-skill"), encoding="utf-8")
+    other = fleet["shared"] / "other-skill"
+    other.mkdir()
+    (other / "SKILL.md").write_text(SKILL.replace("name: shared-skill", "name: team/actual-skill"), encoding="utf-8")
     ready, go, out = tmp_path / "ready", tmp_path / "go", tmp_path / "out"
     env = {**os.environ, "HERMES_HOME": str(fleet["b"]), "PYTHONPATH": str(REPO)}
     holder = subprocess.Popen([sys.executable, "-c", NESTED, str(ready), str(go), str(out)], cwd=REPO, env=env)
@@ -308,14 +340,15 @@ def test_a_nested_write_needing_a_lock_out_of_order_fails_instead_of_deadlocking
         _wait_for(ready, holder)
         from tools.skill_manager_tool import _skill_mutation_lock
 
-        def write_team_foo():
-            with _skill_mutation_lock("team/foo"):
+        def write_team_actual():
+            with _skill_mutation_lock("team/actual-skill"):
                 box["done"] = True
-        writer = threading.Thread(target=write_team_foo, daemon=True)
+        writer = threading.Thread(target=write_team_actual, daemon=True)
         writer.start()
-        own_foo = _lock(fleet["b"] / "skills", "foo")
-        for _ in range(250):  # until this process holds foo's own lock and waits for A
-            probe = subprocess.run([sys.executable, "-c", PROBE, str(own_foo)], capture_output=True, text=True,
+        other_lock = _folder(fleet, other)
+        assert str(other_lock) < str(_lock(fleet["b"] / "skills", "actual-skill")), "folder locks sort first"
+        for _ in range(250):  # until this process holds other-skill's folder lock and waits for A
+            probe = subprocess.run([sys.executable, "-c", PROBE, str(other_lock)], capture_output=True, text=True,
                                    check=True)
             if probe.stdout.split() == ["held"]:
                 break
@@ -345,7 +378,7 @@ def test_a_free_lock_taken_out_of_order_is_held_reentered_and_released(fleet, mo
     """The nested (out-of-order) path when the lock is free: it is really held (another process sees
     it), the same thread can re-enter it at once, and it is released and forgotten afterwards, on a
     normal exit and on an exception, so a later acquisition takes it for real."""
-    import tools.skill_manager_locks as locks
+    locks = _locks_module()
     from tools.skill_manager_tool import _skill_mutation_lock
     monkeypatch.setattr(locks, "_OUT_OF_ORDER_WAIT", 1.0)
     skills = fleet["b"] / "skills"
@@ -374,20 +407,21 @@ def test_a_local_skill_keeps_its_lock_in_the_local_root(fleet):
     assert json.loads(skill_manage(action="patch", name="local-skill", old_string="Step 1: Do the thing.",
                                    new_string="Step 1: Local."))["success"] is True
     assert _lock(fleet["b"] / "skills", "local-skill").exists()
-    assert not _lock(fleet["shared"], "local-skill").exists()
+    assert _folder(fleet, fleet["b"] / "skills" / "local-skill").exists()
+    assert _no_lock_in(fleet["shared"])
 
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions, non-root")
-def test_a_read_only_shared_root_falls_back_to_the_local_lock(fleet):
-    """A root whose top level cannot hold .locks/ (the skill dir itself is still writable) still
-    gets its writes, locked in the profile's own root as before."""
+def test_a_read_only_shared_root_still_gets_its_folder_lock(fleet):
+    """Nothing is written into the shared root, so a root whose top level is read-only (the skill
+    dir itself still writable) keeps cross-profile exclusion."""
     fleet["shared"].chmod(0o555)
     try:
         result = _patch("Step 1: Do the thing.", "Step 1: Read-only root.")
     finally:
         fleet["shared"].chmod(0o755)
     assert result["success"] is True, result
-    assert not (fleet["shared"] / ".locks").exists()
+    assert _folder(fleet, fleet["shared"] / "shared-skill").exists()
     assert _lock(fleet["b"] / "skills", "shared-skill").exists()
 
 
@@ -400,16 +434,16 @@ def test_a_create_in_a_shared_create_dir_locks_in_that_root(fleet, tmp_path):
         "shared-skill", "brain-skill")))
     assert created["success"] is True, created
     assert (brain / "brain-skill" / "SKILL.md").exists()
-    assert _lock(brain, "brain-skill").exists()
+    assert _folder(fleet, brain / "brain-skill").exists() and _no_lock_in(brain)
     assert _lock(fleet["b"] / "skills", "brain-skill").exists(), "the profile's own lock is still taken"
 
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions, non-root")
 def test_a_lock_file_another_user_owns_falls_back_to_the_local_lock(fleet):
-    """On a root shared by several OS users, a lock file this user cannot open for writing must not
-    turn every write to that skill into an error; the write is locked in the local root instead."""
-    lock = _lock(fleet["shared"], "shared-skill")
-    lock.parent.mkdir()
+    """A folder lock file this user cannot open for writing must not turn every write to that skill
+    into an error; the write keeps the profile's own lock instead."""
+    lock = _folder(fleet, fleet["shared"] / "shared-skill")
+    lock.parent.mkdir(parents=True)
     lock.write_text(" ", encoding="utf-8")
     lock.chmod(0o444)
     try:
@@ -421,8 +455,8 @@ def test_a_lock_file_another_user_owns_falls_back_to_the_local_lock(fleet):
 
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions, non-root")
-def test_an_unwritable_locks_folder_in_the_shared_root_falls_back_to_the_local_lock(fleet):
-    locks = fleet["shared"] / ".locks"
+def test_an_unwritable_folder_lock_directory_falls_back_to_the_local_lock(fleet):
+    locks = fleet["root"] / ".skill_locks"
     locks.mkdir()
     locks.chmod(0o555)
     try:
@@ -434,23 +468,23 @@ def test_an_unwritable_locks_folder_in_the_shared_root_falls_back_to_the_local_l
 
 
 def test_a_failed_root_lookup_falls_back_to_the_local_lock(fleet, monkeypatch):
-    import tools.skill_manager_guards as guards
+    locks = _locks_module()
 
-    def broken(_path):
-        raise RuntimeError("root lookup failed")
+    def broken(*_args):
+        raise RuntimeError("lock target lookup failed")
 
-    monkeypatch.setattr(guards, "_containing_skills_root", broken)
+    monkeypatch.setattr(locks, "_lock_target", broken, raising=False)  # absent before the lock moved to the parent
     assert _patch("Step 1: Do the thing.", "Step 1: Lookup failed.")["success"] is True
     assert _lock(fleet["b"] / "skills", "shared-skill").exists()
-    assert not (fleet["shared"] / ".locks").exists()
+    assert not (fleet["root"] / ".skill_locks").exists()
 
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions, non-root")
 def test_a_write_only_lock_file_falls_back_to_the_local_lock(fleet):
     """The lock is opened for reading and writing ("a+"); a lock file this user may write but not read
     (another user's 0622 file) must fall back, not fail the write when the lock is taken."""
-    lock = _lock(fleet["shared"], "shared-skill")
-    lock.parent.mkdir()
+    lock = _folder(fleet, fleet["shared"] / "shared-skill")
+    lock.parent.mkdir(parents=True)
     lock.write_text(" ", encoding="utf-8")
     lock.chmod(0o222)
     try:
@@ -461,7 +495,7 @@ def test_a_write_only_lock_file_falls_back_to_the_local_lock(fleet):
     assert _lock(fleet["b"] / "skills", "shared-skill").exists()
 
 
-def test_a_batch_across_roots_locks_each_skill_in_its_root(fleet):
+def test_a_batch_across_roots_takes_each_skills_folder_lock(fleet):
     from tools.skill_manager_tool import skill_manage
     assert json.loads(skill_manage(action="create", name="local-skill", content=SKILL.replace(
         "shared-skill", "local-skill")))["success"] is True
@@ -469,14 +503,19 @@ def test_a_batch_across_roots_locks_each_skill_in_its_root(fleet):
         {"action": "patch", "name": "local-skill", "old_string": "Step 1: Do the thing.", "new_string": "L."},
         {"action": "patch", "name": "shared-skill", "old_string": "Step 1: Do the thing.", "new_string": "S."}]))
     assert result["success"] is True, result
-    assert _lock(fleet["shared"], "shared-skill").exists()
-    assert _lock(fleet["b"] / "skills", "local-skill").exists()
+    assert _folder(fleet, fleet["shared"] / "shared-skill").exists()
+    assert _folder(fleet, fleet["b"] / "skills" / "local-skill").exists()
 
 
 PROBE = textwrap.dedent("""
     import fcntl, sys
     for path in sys.argv[1:]:
-        with open(path, "a+") as fd:
+        try:
+            fd = open(path, "a+")
+        except FileNotFoundError:
+            print("missing")
+            continue
+        with fd:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -495,8 +534,8 @@ def test_a_batch_holds_every_lock_from_before_its_snapshot_through_its_rollback(
     from tools.skill_manager_tool import skill_manage
     assert json.loads(skill_manage(action="create", name="local-skill", content=SKILL.replace(
         "shared-skill", "local-skill")))["success"] is True
-    paths = [_lock(fleet["shared"], "shared-skill"), _lock(fleet["b"] / "skills", "shared-skill"),
-             _lock(fleet["b"] / "skills", "local-skill")]
+    paths = [_folder(fleet, fleet["shared"] / "shared-skill"), _lock(fleet["b"] / "skills", "shared-skill"),
+             _lock(fleet["b"] / "skills", "local-skill"), _folder(fleet, fleet["b"] / "skills" / "local-skill")]
     seen = {}
 
     def probe(label):
@@ -522,4 +561,71 @@ def test_a_batch_holds_every_lock_from_before_its_snapshot_through_its_rollback(
         {"action": "patch", "name": "shared-skill", "old_string": "not in the file", "new_string": "X."}]))
     assert result["success"] is False, result
     assert "Step 1: Do the thing." in (fleet["shared"] / "shared-skill" / "SKILL.md").read_text()
-    assert seen == {"snapshot": ["held"] * 3, "rollback": ["held"] * 3}, seen
+    assert seen == {"snapshot": ["held"] * 4, "rollback": ["held"] * 4}, seen
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock semantics; msvcrt path is equivalent")
+def test_overlapping_external_roots_lock_the_same_nested_skill(fleet, tmp_path, monkeypatch):
+    """One profile lists /shared, another /shared/team, both writing /shared/team/nested-skill: each
+    finds the skill under a different configured root, so a root-keyed lock would not exclude them.
+    (Regression contributed by @kvnloo on #156263.)"""
+    nested_root = fleet["shared"] / "team"
+    target = nested_root / "nested-skill"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text(SKILL.replace("shared-skill", "nested-skill"), encoding="utf-8")
+    (fleet["b"] / "config.yaml").write_text(
+        "skills:\n  write_approval: false\n  external_dirs:\n    - " + str(nested_root) + "\n", encoding="utf-8")
+    from agent import skill_utils
+    monkeypatch.setattr(skill_utils, "_EXTERNAL_DIRS_CACHE", {}, raising=False)
+    blocked, result = _hold_and_patch(fleet, tmp_path, "nested-skill", "Step 1: Do the thing.", "Step 1: Safely.")
+    assert blocked, "two profiles reached the same skill but held disjoint root locks"
+    assert result["success"] is True, result
+    assert "Step 1: Safely." in (target / "SKILL.md").read_text(encoding="utf-8")
+    assert _folder(fleet, target).exists() and _no_lock_in(fleet["shared"])
+
+
+def test_a_categorized_skills_lock_is_its_folder_lock(fleet):
+    """A categorized skill is locked by its own folder's real path; nothing goes in the category."""
+    cat = fleet["shared"] / "cat" / "cat-skill"
+    cat.mkdir(parents=True)
+    (cat / "SKILL.md").write_text(SKILL.replace("shared-skill", "cat-skill"), encoding="utf-8")
+    from tools.skill_manager_tool import skill_manage
+    assert json.loads(skill_manage(action="patch", name="cat-skill", old_string="Step 1: Do the thing.",
+                                   new_string="Step 1: Categorized."))["success"] is True
+    assert _folder(fleet, cat).exists() and _no_lock_in(fleet["shared"])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock semantics; msvcrt path is equivalent")
+def test_a_nested_skills_lock_is_shared_and_outside_the_skill_that_holds_it(fleet, tmp_path):
+    """A skill inside another skill's folder (discovery finds both) is locked by its own real path,
+    outside the skills tree: never in the outer skill's folder, where deleting or restoring the
+    outer skill would unlink or replace the lock file a writer of the inner skill holds."""
+    outer = fleet["shared"] / "outer-skill"
+    inner = outer / "inner-skill"
+    inner.mkdir(parents=True)
+    (outer / "SKILL.md").write_text(SKILL.replace("shared-skill", "outer-skill"), encoding="utf-8")
+    (inner / "SKILL.md").write_text(SKILL.replace("shared-skill", "inner-skill"), encoding="utf-8")
+    blocked, result = _hold_and_patch(fleet, tmp_path, "inner-skill", "Step 1: Do the thing.", "Step 1: Inner.")
+    assert blocked, "another profile's writer of the nested skill was not excluded"
+    assert result["success"] is True, result
+    assert _folder(fleet, inner).exists()
+    assert _no_lock_in(fleet["shared"]), "a lock file was put inside the shared skills tree"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock semantics and symlinks")
+def test_a_skills_folder_reached_through_a_symlink_takes_the_lock_of_the_real_folder(fleet, tmp_path):
+    """Profile b's own skills folder is a symlink to the enclosing skill folder outer-skill (external
+    roots are resolved on load; the local skills folder is not). Read through the link, the
+    enclosing skill's parent is b's home; the lock follows the real path, so both writers of the
+    nested inner-skill still meet at one lock."""
+    import shutil
+    outer = fleet["shared"] / "outer-skill"
+    (outer / "inner-skill").mkdir(parents=True)
+    (outer / "SKILL.md").write_text(SKILL.replace("shared-skill", "outer-skill"), encoding="utf-8")
+    (outer / "inner-skill" / "SKILL.md").write_text(SKILL.replace("shared-skill", "inner-skill"), encoding="utf-8")
+    shutil.rmtree(fleet["b"] / "skills")
+    (fleet["b"] / "skills").symlink_to(outer, target_is_directory=True)
+    blocked, result = _hold_and_patch(fleet, tmp_path, "inner-skill", "Step 1: Do the thing.", "Step 1: Linked.")
+    assert blocked, "the linked and the real path took different locks"
+    assert result["success"] is True, result
+    assert _folder(fleet, outer / "inner-skill").exists()

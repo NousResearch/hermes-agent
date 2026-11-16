@@ -2,7 +2,7 @@
 (``skill_manage``/``_find_skill``/``_skill_gate_bypass``) is reached lazily
 through ``tools.skill_manager_tool`` so that module owns it."""
 
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 import json
 import logging
 import posixpath
@@ -253,10 +253,13 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     # Every target's lock is held from the snapshot through commit or rollback; the per-op
     # skill_manage() calls re-enter them. Without the outer fence a concurrent writer landing
     # between the snapshot and a rollback would be silently reverted.
-    with _smt._skill_mutation_locks(names):
+    # A create's folder (its category included) is known before locking, so its lock is the folder's.
+    create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
+                      for i, op in enumerate(operations) if op.get("action") == "create"}
+    with ExitStack() as held:
+        if (busy := _smt._enter_skill_locks(held, names, create_targets)) is not None:
+            return tool_error(busy, success=False)  # busy before the snapshot: nothing written
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
-        create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
-                          for i, op in enumerate(operations) if op.get("action") == "create"}
         snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill, create_targets)
         if snap_err is not None:
             shutil.rmtree(snap_root, ignore_errors=True)

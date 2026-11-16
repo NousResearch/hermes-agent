@@ -173,7 +173,9 @@ When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes aut
 
 If a request fails with HTTP 400 "You're out of extra usage" while [claude.ai/settings/usage](https://claude.ai/settings/usage) still shows quota remaining, Anthropic's server-side filter has most likely rejected part of the request; your balance is not the cause. Run `hermes auth reset anthropic` to clear the cached failure, and if it recurs, open an issue with the output of `hermes debug share`.
 
-To pay per token instead, use an `ANTHROPIC_API_KEY` — requests are billed against that key's organization (standard API pricing, independent of any Claude subscription).
+Working and permitted are separate questions. Subscription OAuth is governed by Anthropic's consumer terms, and Anthropic's [authentication and credential use policy](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) restricts third-party applications from offering Claude.ai login or routing requests through subscription credentials. Whether Hermes' native OAuth route falls under that restriction is an open question ([#146767](https://github.com/NousResearch/hermes-agent/issues/146767)); read the policy and decide for your own account.
+
+To pay per token instead, use an `ANTHROPIC_API_KEY` — requests are billed against that key's organization (standard API pricing, independent of any Claude subscription), and API-key use is the authentication Anthropic's policy directs developers to.
 :::
 
 ```bash

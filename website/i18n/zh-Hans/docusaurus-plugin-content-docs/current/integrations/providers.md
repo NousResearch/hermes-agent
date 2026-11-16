@@ -114,7 +114,9 @@ Hermes 有**两个**模型命令，用途不同：
 
 如果请求返回 HTTP 400 "You're out of extra usage"，而 [claude.ai/settings/usage](https://claude.ai/settings/usage) 仍显示有剩余配额，很可能是 Anthropic 的服务端过滤器拒绝了请求中的部分内容，而不是余额不足。运行 `hermes auth reset anthropic` 清除缓存的失败状态；如果问题再次出现，请附上 `hermes debug share` 的输出提交 issue。
 
-如果希望按 token 付费，请改用 `ANTHROPIC_API_KEY`——请求将从该 key 所属组织扣费（标准 API 定价，与任何 Claude 订阅无关）。
+能否使用与是否被允许是两个不同的问题。订阅 OAuth 受 Anthropic 消费者条款约束，Anthropic 的[认证与凭证使用政策](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)限制第三方应用提供 Claude.ai 登录或通过订阅凭证转发请求。Hermes 原生 OAuth 路径是否属于该限制范围仍是未决问题（[#146767](https://github.com/NousResearch/hermes-agent/issues/146767)）；请阅读该政策，并自行判断是否适用于你的账户。
+
+如果希望按 token 付费，请改用 `ANTHROPIC_API_KEY`——请求将从该 key 所属组织扣费（标准 API 定价，与任何 Claude 订阅无关），这也是 Anthropic 政策建议开发者使用的认证方式。
 :::
 
 ```bash

@@ -357,6 +357,24 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
     assert calls == ["stop-1"]
 
 
+def test_bindings_reuse_idle_room_reader(tmp_path, monkeypatch):
+    """Regression for #137446: room polling does not reopen state.db every cycle."""
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    calls = []
+    original = hosted_rooms._read_connection
+
+    def counted(path, **kwargs):
+        calls.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(hosted_rooms, "_read_connection", counted)
+    assert service.bindings() == ()
+    assert service.bindings() == ()
+    assert service.stop(timeout=5.0)
+    assert len(calls) == 1
+
+
 def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path: Path):
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)

@@ -654,6 +654,11 @@ export const svOverrides: TranslationOverrides = {
   settings: {
     memoryLayers: svMemoryLayers,
     about: { updates: 'Uppdateringar', channel: svUpdateChannel },
+    computerUse: {
+      accessibility: 'Hjälpmedel',
+      screenRecording: 'Skärminspelning',
+      driverHealth: 'Drivrutinens status'
+    },
     billing: {
       perMonth: amount => `${amount}/mån`,
       creditsPerMonth: amount => `${amount} krediter/mån`,

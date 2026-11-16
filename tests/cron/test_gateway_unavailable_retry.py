@@ -48,6 +48,34 @@ def test_a_refusal_with_zero_api_calls_classifies_and_nothing_else_does(tmp_cron
     assert ur.is_gateway_unavailable_failure(wrapped, _Agent(0))
 
 
+def test_canonical_dial_refusal_marks_retry_without_an_admission(tmp_cron_home, monkeypatch):
+    """A gateway drain on the canonical dial must reach the retry bookkeeping."""
+    from contextlib import asynccontextmanager
+
+    from cron.scheduler import run_job
+    from cron.scheduler_authority import journal_path
+    from gateway import session_cron
+    from hermes_cli import gateway_client
+
+    monkeypatch.setattr(session_cron, "owner_for_home", lambda _home: None)
+
+    @asynccontextmanager
+    async def refused_gateway():
+        raise gateway_client.GatewayUnavailableError(
+            "Gateway draining: update_paused", "draining", "update_paused")
+        yield  # unreachable: the owner refused before admission
+
+    monkeypatch.setattr(gateway_client, "connect_gateway", refused_gateway)
+    job = get_job(create_job("calendar mirror", "every 30m")["id"])
+    execution_id = "draining-before-admission"
+    success, _output, _answer, error = run_job(job, execution_id=execution_id)
+
+    assert success is False and error.startswith("GatewayUnavailableError:")
+    assert not journal_path(job["id"], execution_id).exists(), "no submit was attempted"
+    assert job.get("_gateway_unavailable") is True, (
+        "canonical run_job returns a failure tuple before its inline exception classifier")
+
+
 def test_a_refusal_re_arms_once_then_yields_to_the_schedule(tmp_cron_home):
     job = create_job("calendar mirror", "every 30m")
     job_id = job["id"]

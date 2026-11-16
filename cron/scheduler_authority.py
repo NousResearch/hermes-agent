@@ -148,6 +148,11 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
     except Exception as exc:
         if attempted:
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
+        # A failed dial before any admission never ran. The caller's run_job()
+        # returns this failure tuple before reaching its own exception classifier.
+        from cron.unreachable_retry import is_gateway_unavailable_failure
+        if is_gateway_unavailable_failure(exc):
+            job["_gateway_unavailable"] = True
         error = f'{type(exc).__name__}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
 

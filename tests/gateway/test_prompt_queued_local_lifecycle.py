@@ -99,6 +99,10 @@ async def _local_chat(tmp_path, monkeypatch, turn):
             if writes:
                 await asyncio.wait_for(asyncio.gather(*writes, return_exceptions=True), 10)
         finally:
+            # Production unbinds on retire (gateway/run_runtime.py); a test-owned authority
+            # otherwise stays registered in session_cron._owners with its event loop.
+            from gateway.session_cron import unbind_owner
+            unbind_owner(authority)
             runner.session_store.close_all_db_handles()
             runner.close_all_session_db_handles()
 

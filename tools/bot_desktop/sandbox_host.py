@@ -206,6 +206,15 @@ def missing_binaries(env: Any) -> list[str]:
     return [b for b in proc.stdout.decode("utf-8", "replace").split() if b]
 
 
+def _parse_published_env(output: bytes) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in output.decode("utf-8", "replace").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            out[key.strip()] = value.strip()
+    return out
+
+
 def _published(env: Any, rdir: str) -> dict[str, str]:
     proc = streams.run_in(env, ["bash", "-c", f"kill -0 $(cat {shlex.quote(rdir)}/launcher.pid 2>/dev/null) 2>/dev/null "
                                              f"&& test -S {shlex.quote(rdir)}/rfb.sock && cat {shlex.quote(rdir)}/env"],
@@ -254,6 +263,37 @@ def parse_published(text: str) -> dict[str, str]:
 
 def published_env(env: Any, profile: str) -> dict[str, str]:
     return _published(env, _remote_dir(env, profile))
+
+
+def published_env_from_marker(marker: dict[str, Any]) -> dict[str, str]:
+    """Read the published screen environment from the exact Docker container that owns the screen."""
+    container, docker, rdir = marker.get("container"), marker.get("docker"), marker.get("dir")
+    if marker.get("backend") != "DockerEnvironment" or not container or not docker or not rdir:
+        return {}
+    script = (f"kill -0 $(cat {shlex.quote(rdir)}/launcher.pid 2>/dev/null) 2>/dev/null "
+              f"&& test -S {shlex.quote(rdir)}/rfb.sock && cat {shlex.quote(rdir)}/env")
+    try:
+        proc = subprocess.run(
+            [str(docker), "exec", "--user", DESKTOP_USER, str(container), "bash", "-c", script],
+            capture_output=True, timeout=15, check=False, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    return parse_published(proc.stdout.decode("utf-8", "replace")) if proc.returncode == 0 else {}
+
+
+def docker_marker_missing_binaries(marker: dict[str, Any]) -> list[str]:
+    """Missing screen binaries in a live marker-owned Docker container; no environment creation."""
+    container, docker = marker.get("container"), marker.get("docker")
+    if not container or not docker:
+        return []
+    script = "for b in " + " ".join(_REQUIRED) + '; do command -v "$b" >/dev/null 2>&1 || echo "$b"; done'
+    try:
+        proc = subprocess.run(
+            [str(docker), "exec", "--user", DESKTOP_USER, str(container), "bash", "-c", script],
+            capture_output=True, timeout=20, check=False, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return proc.stdout.decode("utf-8", "replace").split() if proc.returncode == 0 else []
 
 
 def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,

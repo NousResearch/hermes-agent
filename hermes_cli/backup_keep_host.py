@@ -367,6 +367,9 @@ class KeepHostImport:
         self.profiles: set[str] = set()
         self.external = tuple(m for m in members if m.startswith(_EXTERNAL))
         self.undo: Optional[Path] = None
+        # The restore's error list (shared with ``run_import``) and the profiles to remove after it.
+        self.errors: list[str] = []
+        self.tombstoned: list[str] = []
         for member in members:
             if member in self.external:
                 continue
@@ -395,7 +398,8 @@ class KeepHostImport:
         def run(*args):
             self.begin()
             result = restore(*args, self)
-            result[2].extend(self.finish(result[2]))
+            self.errors = result[2]
+            self.errors.extend(self.finish(self.errors))
             return result
         return run
 
@@ -499,7 +503,7 @@ class KeepHostImport:
             problems = self._profiles_without_config_bots_off()
         self.report_messaging_off()
         if not errors and not problems and self.created:
-            problems = self._remove_created_profiles()
+            self._tombstone_created_profiles()
         left = sorted(p.name for p in (self.root / "profiles").glob("*")
                       if p.is_dir() and p.name not in self.profiles | self.created)
         if left:
@@ -533,17 +537,29 @@ class KeepHostImport:
                 problems.append(f"  profiles/{name}/config.yaml: {exc}")
         return problems
 
-    def _remove_created_profiles(self) -> list[str]:
-        """Profiles the undone transfer brought: removed whole (under the reservation, never through a link)."""
-        from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry
-        problems = []
+    def _tombstone_created_profiles(self) -> None:
+        """Mark the profiles the undone transfer brought deleted, under the reservation, so nothing
+        starts in them; :meth:`remove_created_profiles` removes them once it is released."""
+        from hermes_constants import mark_named_profile_deleted
         for name in sorted(self.created):
+            mark_named_profile_deleted(self.root / "profiles" / name)
+        self.tombstoned = sorted(self.created)
+
+    def remove_created_profiles(self) -> None:
+        """Remove the tombstoned profiles through ``hermes profile delete``'s own flow (services,
+        multiplexer, identity, the owner wait), after the import released their ``gateway.lock``:
+        removing a home whose lock this process holds fails on Windows and frees the lock on POSIX."""
+        from hermes_cli.profiles import ProfileIdentitySettlementPending, delete_profile
+        for name in self.tombstoned:
             try:
-                _rmtree_with_retry(self.root / "profiles" / name, _rmtree_make_writable)
+                delete_profile(name, yes=True)
                 print(f"  Removed profile {name} (the transfer brought it).")
-            except OSError as exc:
-                problems.append(f"  profiles/{name}: {exc}")
-        return problems
+            except ProfileIdentitySettlementPending as exc:  # the profile is gone; only its identity is not
+                print(f"  Removed profile {name} (the transfer brought it). To finish: {exc.retry_command}")
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.errors.append(f"  profiles/{name}: {exc}")
+        if self.tombstoned and self.errors:
+            print(f"\n  The restore did not finish. To put this agent back: hermes import {self.undo} --force --keep-host")
 
     def _clear_absent_host_files(self) -> list[str]:
         """A host file the archive does not carry keeps only its host-owned part."""
@@ -733,3 +749,4 @@ def keep_host_import(args, zf: zipfile.ZipFile, members: list[str], prefix: str,
     print("\n".join(kept_summary(root)))
     with gateway_paused(root):
         yield policy
+        policy.remove_created_profiles()

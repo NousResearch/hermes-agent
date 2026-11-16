@@ -102,7 +102,9 @@ def _tree(root: Path) -> dict[str, str]:
     out = {}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
-        if path.is_file() and rel.parts[0] not in {"backups", "logs"} and not path.name.endswith(".lock"):
+        # profiles/.deleted/ holds `hermes profile delete`'s tombstones (an undo removes a profile that way).
+        if (path.is_file() and rel.parts[0] not in {"backups", "logs"} and not path.name.endswith(".lock")
+                and rel.parts[:2] != ("profiles", ".deleted")):
             out[rel.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return out
 
@@ -302,6 +304,29 @@ def test_a_transfer_leaves_what_no_backup_carries_when_home_is_the_hermes_home(h
     assert not (dst / ".op.env").exists() and not (dst / ".anthropic_oauth.json").exists()
     _import(monkeypatch, dst, _undo_point(dst), keep_host=True)
     assert not (dst / "plugins/mine").exists() and {rel: (dst / rel).read_text() for rel in kept} == kept
+
+
+def test_undo_removes_the_profile_the_transfer_brought_only_after_releasing_its_lock(homes, monkeypatch):
+    """Removing a home whose gateway.lock the import still holds fails on Windows and frees the
+    lock on POSIX: the undo tombstones it under the reservation, then deletes it like
+    ``hermes profile delete`` once the reservation is released."""
+    from hermes_cli import profiles
+    from gateway.runtime_ownership import held_by_this_process
+    from hermes_constants import named_profile_is_deleted
+    src, dst, tmp = homes
+    _write(src, "profiles/writer/config.yaml", "display:\n  skin: ares\n")
+    _import(monkeypatch, dst, _backup(monkeypatch, src, tmp / "src.zip"), keep_host=True)
+    seen, real_delete = [], profiles.delete_profile
+
+    def delete(name, yes=False):
+        home = dst / "profiles" / name
+        seen.append((name, held_by_this_process(home), named_profile_is_deleted(home)))
+        return real_delete(name, yes=yes)
+
+    monkeypatch.setattr(profiles, "delete_profile", delete)
+    _import(monkeypatch, dst, _undo_point(dst), keep_host=True)
+
+    assert seen == [("writer", False, True)] and not (dst / "profiles/writer").exists()
 
 
 def test_undo_point_holds_the_memory_provider_files_outside_the_home(homes, monkeypatch):

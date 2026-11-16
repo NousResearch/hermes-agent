@@ -381,7 +381,31 @@ class TestChatCompletionsBuildKwargs:
             {"id": "pareto-router", "min_coding_score": 0.8}
         ]
 
-    def test_custom_provider_gets_provider_pref(self, transport):
+    def test_custom_provider_openrouter_endpoint_gets_provider_pref(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            provider_profile=profile,
+            provider_preferences={"only": ["openai"]},
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert kw["extra_body"]["provider"] == {"only": ["openai"]}
+
+    def test_custom_provider_nous_portal_endpoint_gets_provider_pref(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            provider_profile=profile,
+            provider_preferences={"sort": ["throughput"]},
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        assert kw["extra_body"]["provider"] == {"sort": ["throughput"]}
+
+    def test_custom_provider_unsupported_hosted_endpoint_skips_provider_pref(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
@@ -391,7 +415,7 @@ class TestChatCompletionsBuildKwargs:
             provider_preferences={"only": ["openai"]},
             base_url="https://api.polza.ai/v1",
         )
-        assert kw["extra_body"]["provider"] == {"only": ["openai"]}
+        assert "provider" not in (kw.get("extra_body") or {})
 
     def test_custom_provider_no_prefs_no_provider_key(self, transport):
         from providers import get_provider_profile

@@ -16,27 +16,19 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from utils import base_url_host_matches
 
-# Hostnames / URL patterns that do NOT support OpenRouter-style routing.
-_NON_ROUTING_HOSTMARKERS = (
-    "localhost",
-    "127.0.0.1",
-    "0.0.0.0",
-    "ollama",
-    "llamacpp",
-    "llama.cpp",
-    "vllm",
+# Endpoints documented to support OpenRouter-style `provider` routing
+# (website/docs/user-guide/features/provider-routing.md). Anything else,
+# local or hosted, gets no routing fields.
+_ROUTING_HOSTS = (
+    "openrouter.ai",
+    "inference-api.nousresearch.com",
 )
 
 def _endpoint_supports_provider_routing(base_url: str | None) -> bool:
-    """conservative check: only hosted (non-local) endpoints get routing fields."""
-    if not base_url:
-        return False
-    normalized = str(base_url).strip().lower()
-    for marker in _NON_ROUTING_HOSTMARKERS:
-        if marker in normalized:
-            return False
-    return True
+    """Explicit allowlist: only documented routing endpoints get routing fields."""
+    return any(base_url_host_matches(str(base_url or ""), host) for host in _ROUTING_HOSTS)
 
 
 class CustomProfile(ProviderProfile):

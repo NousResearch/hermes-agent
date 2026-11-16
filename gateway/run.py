@@ -1693,12 +1693,32 @@ def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
     raw = None
     if platform_cfg is not None:
         raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
+    if raw is None and platform_cfg is not None and _multiplex_is_active():
+        # Multiplex: the profile's own slack: block (the YAML→env bridge is
+        # skipped, see the Slack plugin's _apply_yaml_config).
+        _profile = getattr(platform_cfg, "extra", {}).get("profile_settings")
+        if isinstance(_profile, dict):
+            raw = _profile.get("ignored_channels")
     if raw is None:
         # Top-level ``slack.ignored_channels`` config flows through the
         # plugin's YAML→env bridge (SLACK_IGNORED_CHANNELS) rather than
         # PlatformConfig.extra — honor it here too (#46925).
-        raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
+        if _multiplex_is_active():
+            from gateway.authz_mixin import _platform_gate_env
+
+            raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
+        else:
+            raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
+
+
+def _multiplex_is_active() -> bool:
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        return is_multiplex_active()
+    except Exception:
+        return False
 
 
 def _slack_parent_channel_id(chat_id: Any) -> str:
@@ -2215,7 +2235,7 @@ def _home_thread_env_var(platform_name: str) -> str:
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
 
 
-def _home_channel_prompt_enabled(platform_name: str) -> bool:
+def _home_channel_prompt_enabled(platform_name: str, adapter: Any = None) -> bool:
     """Whether the one-time "set a home channel" onboarding notice should fire.
 
     Slack-only opt-out: ``slack.home_channel_prompt: false`` (bridged to
@@ -2225,6 +2245,11 @@ def _home_channel_prompt_enabled(platform_name: str) -> bool:
     home channel is unnecessary. Other platforms are unaffected.
     """
     if platform_name == Platform.SLACK.value:
+        setting = getattr(adapter, "_slack_setting", None)
+        if _multiplex_is_active() and callable(setting):
+            # Multiplex: this profile's slack: block / .env, not os.environ.
+            raw = setting("home_channel_prompt", "SLACK_HOME_CHANNEL_PROMPT", "true")
+            return str(raw).lower() not in {"false", "0", "no"}
         return os.getenv("SLACK_HOME_CHANNEL_PROMPT", "true").lower() not in {"false", "0", "no"}
     return True
 
@@ -17496,7 +17521,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             config
             and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(config, getattr(source, "chat_id", None))
+            and self._slack_source_ignored(source)
         ):
             logger.info(
                 "Skipping Slack platform notice for configured ignored channel %s",
@@ -18090,9 +18115,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             not is_internal
             and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(
-                getattr(self, "config", None), getattr(source, "chat_id", None)
-            )
+            and self._slack_source_ignored(source)
         ):
             logger.info(
                 "Dropping Slack message from configured ignored channel %s",
@@ -18185,7 +18208,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
             if source.chat_type == "dm" and _rbac_active_for_dm:
-                adapter = self.adapters.get(source.platform)
+                adapter = self._multiplex_adapter_for(source, source.platform)
                 if adapter:
                     await adapter.send(
                         source.chat_id,
@@ -19529,7 +19552,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if await _relevance_gate_should_skip(
                     event,
                     _load_gateway_config(),
-                    self.adapters.get(event.source.platform),
+                    self._multiplex_adapter_for(event.source, event.source.platform),
                 ):
                     logger.info(
                         "relevance gate skip: platform=%s chat=%s",
@@ -21911,7 +21934,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             home_env = "set"
                 except Exception:
                     pass
-            if not home_env and _home_channel_prompt_enabled(platform_name):
+            if not home_env and _home_channel_prompt_enabled(
+                platform_name, self._multiplex_adapter_for(source, source.platform)
+            ):
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".
@@ -22875,7 +22900,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
+        policy = _policy_for_source(self._gateway_config_for_source(source), source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(
@@ -28183,7 +28208,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             parent_id = getattr(source, "parent_chat_id", None)
 
             entry = None
-            adapter = (getattr(self, "adapters", None) or {}).get(Platform.SLACK)
+            adapter = self._multiplex_adapter_for(source, Platform.SLACK)
             adapter_extra = getattr(getattr(adapter, "config", None), "extra", None)
             if isinstance(adapter_extra, dict) and adapter_extra.get("channel_models"):
                 entry = resolve_channel_model(adapter_extra, chat_id, parent_id)
@@ -30067,6 +30092,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
         )
         return None
+
+    def _gateway_config_for_source(self, source: SessionSource) -> Any:
+        """Gateway config of the profile that owns *source* (multiplex fix 4b).
+
+        Multiplex off: ``self.config`` — unchanged. On: the source profile's
+        config, loaded inside its ``_profile_runtime_scope`` through the
+        path-keyed RBAC cache, so slash-admin lists and similar per-platform
+        policy come from that profile's ``config.yaml`` — never the default's.
+        A load failure returns ``None`` (callers treat it as "no policy")
+        rather than borrowing the default profile's config.
+        """
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return config
+        try:
+            from gateway.tool_access import _load_config_cached
+
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                return _load_config_cached()
+        except Exception:
+            logger.warning(
+                "multiplex: could not load the source profile's gateway config",
+                exc_info=True,
+            )
+            return None
+
+    def _slack_source_ignored(self, source: SessionSource) -> bool:
+        """``_is_slack_ignored_channel`` against the source profile's config."""
+        config = getattr(self, "config", None)
+        chat_id = getattr(source, "chat_id", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return _is_slack_ignored_channel(config, chat_id)
+        try:
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                from gateway.tool_access import _load_config_cached
+
+                return _is_slack_ignored_channel(_load_config_cached(), chat_id)
+        except Exception:
+            logger.warning("multiplex: ignored-channel check failed", exc_info=True)
+            return False
+
+    def _multiplex_adapter_for(self, source, platform):
+        """``self.adapters.get(platform)`` single-profile (unchanged); under
+        multiplex the adapter that owns *source* (fix 3)."""
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return self._adapter_for_source(source)
+        return (getattr(self, "adapters", None) or {}).get(platform)
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
         """Resolve which profile's HERMES_HOME should serve this inbound source.

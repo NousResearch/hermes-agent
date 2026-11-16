@@ -27,14 +27,14 @@ _CHUNK_OVERLAP = 4096
 _FILLER = r"(?:\w{1,64}\s{1,64}){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w{0,256}(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
-# "forget your original instructions" (#26977); shared with tools/skills_guard.py and tools/cronjob_prompt_scan.py.
+# "forget your original instructions" (#26977); shared with tools/skills_guard.py and cron/prompt_scan.py.
 # The word before `forget` is consumed rather than looked behind so a "don't / never / do not forget" exclusion holds
 # across any run of spaces or tabs. Negators are an explicit whole-word list (a suffix match let `IMPORTANT` / `Agent`
 # negate). `_` (Markdown emphasis) counts as punctuation, not as part of the neighbouring word.
 _NEGATOR = (r"(?:(?:do|does|did|ca|could|would|should|wo|must|need|is|are|was|were|ai|has|have|had)n[’']?t"
             r"|cannot|not|never)")
 # FORGET_RULES_RAW_RE is the unbounded rule for the raw-line scanners (tools/skills_guard.py,
-# tools/cronjob_prompt_scan.py): they neither collapse whitespace nor chunk, so no width cap applies there.
+# cron/prompt_scan.py): they neither collapse whitespace nor chunk, so no width cap applies there.
 FORGET_RULES_RAW_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’'])+[ \t]+"
                        r"|(?:^|[^\w’' \t]|_|(?<!\w)[’'])[ \t]*)"
                        r"forget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"

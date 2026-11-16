@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.blueprints import (
+from cron.skill_blueprints import (
     BlueprintError,
     BlueprintSpec,
     parse_blueprint,

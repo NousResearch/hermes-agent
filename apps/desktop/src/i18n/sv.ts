@@ -737,6 +737,23 @@ export const svOverrides: TranslationOverrides = {
           distinctCardCaption: cardLabel => `Automatisk påfyllning debiterar ${cardLabel} – stäm av på portalen`,
           distinctCardFallback: 'ett annat kort',
           reconcileAction: 'Stäm av ↗'
+        },
+        usage: {
+          subscriptionCredits: {
+            title: 'Abonnemangskrediter',
+            barLabel: 'Återstående abonnemangskrediter',
+            captionResets: date => `Återställs ${date}`,
+            valueOf: (remaining, monthly) => `${remaining} av ${monthly} återstår`,
+            valueOver: (remaining, monthly, over) => `${remaining} av ${monthly} återstår · ${over} över`
+          },
+          topupCredits: { title: 'Påfyllningskrediter', caption: 'Upphör inte att gälla' },
+          monthlyCap: {
+            title: 'Månatlig utgiftsgräns',
+            barLabel: 'Använd månatlig utgiftsgräns',
+            captionDefault: 'Standardgräns',
+            captionSpending: 'Månatlig fjärranvändning',
+            valueUsed: (spent, limit) => `${spent} av ${limit} använt`
+          }
         }
       }
     },

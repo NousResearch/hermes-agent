@@ -60,6 +60,33 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
     return RouteEntryClient(client, model, api_mode_explicit, api_mode, choice if client is not None else None)
 
 
+def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str,
+                                 old_requested_provider: str) -> None:
+    """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
+    provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
+    config injected — a caller override of the same key won at init and differs, so it survives;
+    keys the new provider redefines are re-added by the merge."""
+    try:
+        from agent.agent_init import _custom_provider_extra_body_for_agent, _merge_custom_provider_extra_body
+        custom_providers = getattr(agent, "_custom_providers", None) or []
+        old_provider_eb = _custom_provider_extra_body_for_agent(
+            provider=old_provider, model=old_model, base_url=old_base_url, custom_providers=custom_providers,
+            requested_provider=old_requested_provider) or {}
+        overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        existing_eb = overrides.get("extra_body")
+        if isinstance(existing_eb, dict) and old_provider_eb:
+            scrubbed = {k: v for k, v in existing_eb.items() if not (k in old_provider_eb and v == old_provider_eb[k])}
+            if scrubbed:
+                overrides["extra_body"] = scrubbed
+            else:
+                overrides.pop("extra_body", None)
+            agent.request_overrides = overrides
+        _merge_custom_provider_extra_body(agent, custom_providers)
+        logger.info("Fallback %s: extra_body resolved: %s", agent.model, (getattr(agent, "request_overrides", {}) or {}).get("extra_body"))
+    except Exception as _eb_err:
+        logger.debug("Failed to resolve extra_body for fallback %s; keeping current: %s", agent.model, _eb_err)
+
+
 def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str, *,
                      commit_pool_choice: bool = True) -> Optional[tuple[str, str]]:
     """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
@@ -69,7 +96,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     for a caller that may still refuse the route (it calls ``.commit()`` once it keeps it)."""
     from agent.chat_completion_helpers import (
         _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
-        _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
+        _reresolve_fallback_reasoning_config, _update_fallback_context_compressor,
     )
     # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
     route = resolve_route_entry_client(entry, provider, model)

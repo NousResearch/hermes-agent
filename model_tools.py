@@ -1476,6 +1476,17 @@ def handle_function_call(
         except Exception as _rbac_err:
             logger.debug("tool_access backstop import error: %s", _rbac_err)
 
+        # Multiplex 4c backstop: a secondary profile may not call the default
+        # profile's MCP tools (fails closed; inert single-profile).
+        try:
+            from gateway.multiplex_guard import foreign_mcp_denial
+            _mcp_denial = foreign_mcp_denial(function_name)
+        except Exception as _mcp_err:
+            logger.debug("multiplex MCP guard import error: %s", _mcp_err)
+            _mcp_denial = None
+        if _mcp_denial is not None:
+            return json.dumps({"error": _mcp_denial}, ensure_ascii=False)
+
         # Per-tool approval gate: block gated tools until the user confirms.
         # Runs AFTER the RBAC hard-deny (may-you) and before execution (confirm-you).
         try:

@@ -562,6 +562,29 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
 
 
 def _cron_enabled_toolsets_with_ceiling(job: dict, cfg: dict) -> list[str] | None:
+    """RBAC-capped toolsets (below), minus the default profile's MCP servers
+    when the job belongs to a secondary profile under multiplex (4c). The
+    multiplex filter is a no-op single-profile and for the default profile."""
+    toolsets = _cron_enabled_toolsets_rbac_capped(job, cfg)
+    try:
+        from gateway.multiplex_guard import (
+            filter_foreign_mcp_toolsets,
+            is_secondary_profile_context,
+        )
+
+        if not is_secondary_profile_context():
+            return toolsets
+        if toolsets is None:
+            from toolsets import get_all_toolsets
+
+            toolsets = sorted(get_all_toolsets())
+        return filter_foreign_mcp_toolsets(toolsets)
+    except Exception as exc:  # the dispatch backstop still fails closed
+        logger.debug("Job '%s': multiplex MCP filter skipped (%s)", job.get("id"), exc)
+        return toolsets
+
+
+def _cron_enabled_toolsets_rbac_capped(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the cron job's enabled toolsets, then cap them to the creator's
     current RBAC role (see cron/rbac_ceiling). Fail-open: any error returns the
     uncapped resolution so a transient failure can't strip a legitimate job's

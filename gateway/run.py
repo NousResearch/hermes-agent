@@ -24332,18 +24332,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Cache-safe: enabled_toolsets is part of get_tool_definitions' memo key.
         from gateway.tool_access import filter_enabled_toolsets
 
+        # Multiplex 4c: a secondary profile never gets the default profile's
+        # MCP servers (they run with the default's credentials). No-op with
+        # multiplex off or in the default profile's context.
+        from gateway.multiplex_guard import filter_foreign_mcp_toolsets
+
         if override and isinstance(override, list):
             cfg = dict(user_config)
             pts = dict(cfg.get("platform_toolsets") or {})
             pts[platform_key] = [str(t) for t in override]
             cfg["platform_toolsets"] = pts
-            return filter_enabled_toolsets(
+            return filter_foreign_mcp_toolsets(filter_enabled_toolsets(
                 source, sorted(_get_platform_tools(cfg, platform_key))
-            )
+            ))
 
-        return filter_enabled_toolsets(
+        return filter_foreign_mcp_toolsets(filter_enabled_toolsets(
             source, sorted(_get_platform_tools(user_config, platform_key))
-        )
+        ))
 
     async def _run_background_task_inner(
         self,

@@ -96,7 +96,8 @@ def _on(workflow: dict) -> dict:
     return workflow.get("on", workflow.get(True)) or {}
 
 
-def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch") -> dict[str, Any]:
+def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch",
+                    inputs: dict[str, Any] | None = None) -> dict[str, Any]:
     """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs.
 
     Replays a manual dispatch by default: E2E lanes reach their consumers only on a dispatch or a
@@ -111,7 +112,7 @@ def _detect_outputs(lanes: dict[str, bool], event_name: str = "workflow_dispatch
     classify = next(s for s in detect["steps"] if s.get("id") == "classify")
     assert classify["uses"] == "./.github/actions/detect-changes"
     steps = {"classify": {"outputs": action_out}}
-    ctx = {"steps": steps, "github": {"event_name": event_name}, "inputs": {}}
+    ctx = {"steps": steps, "github": {"event_name": event_name}, "inputs": inputs or {}}
     steps["gate-lanes"] = {"outputs": workflow_steps.outputs(gate, ctx)}
     return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
 
@@ -830,6 +831,19 @@ def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
         assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
     assert "e2e-desktop-core" not in run
     assert "tests" in run and "tests-os" in run  # the unit lanes still run
+
+
+def test_a_canary_e2e_run_reaches_every_e2e_suite():
+    """canary-e2e.yml calls ci.yaml from a workflow_run event, so only its release input opens E2E."""
+    call = _yaml(".github/workflows/canary-e2e.yml")["jobs"]["ci"]
+    ctx = {"needs": {"resolve": {"outputs": {"commit": "0" * 40}}}}
+    inputs = _inputs_for(".github/workflows/ci.yaml", {k: gha.render(v, ctx) for k, v in call["with"].items()})
+    run = _run_workflow(".github/workflows/ci.yaml", inputs=inputs,
+                        detect=_detect_outputs(cc.classify([]), "workflow_run", inputs))
+    for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
+        reached = _consumers_reached(run, lane)
+        assert reached and all(reached.values()), f"{lane}: {reached}"
+    assert "e2e-desktop-core" in run
 
 
 def test_windows_install_update_dispatch_alone_sets_strict():

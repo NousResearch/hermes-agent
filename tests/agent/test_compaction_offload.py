@@ -18,7 +18,7 @@ import pytest
 
 from agent import prepared_compaction as pc
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
-from agent.context_compressor_prune_archive import ARCHIVE_POINTER_SEP
+from tools.tool_result_storage import ARCHIVE_POINTER_SEP
 from agent.prepared_compaction import PreparedCompaction
 
 _SUMMARY = "## Goal\nRead the files.\n## Progress\nRead them."

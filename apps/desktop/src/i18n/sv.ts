@@ -924,6 +924,11 @@ export const svOverrides: TranslationOverrides = {
       }
     },
     config: {
+      minimizeToTrayTitle: 'Minimera till systemfältet',
+      minimizeToTrayDesc:
+        'Minimera fönster eller stäng huvudfönstret för att dölja dem i systemfältet, eller menyraden på macOS, och hålla Hermes igång. Avsluta Hermes från systemfältsmenyn eller med Cmd+Q. Av som standard och gäller bara den här enheten.',
+      minimizeToTrayUnavailable:
+        'Systemfältet är inte tillgängligt. Fönster minimeras och stängs som vanligt. Stäng av och slå på detta igen för att försöka på nytt.',
       none: 'Ingen',
       noneParen: '(ingen)',
       builtinOnly: 'Endast inbyggda',
@@ -944,14 +949,27 @@ export const svOverrides: TranslationOverrides = {
       keepAwakeTitle: 'Håll datorn vaken',
       keepAwakeDesc:
         'Förhindra att datorn går i viloläge så att långa körningar eller körningar över natten fortsätter. Skärmen kan fortfarande släckas ned.',
+      keepAwakeOff: 'Av',
+      keepAwakeWhileWorking: 'När arbete pågår',
+      keepAwakeAlways: 'Alltid',
       disableF12Title: 'Inaktivera F12-utvecklarverktyg',
       disableF12Desc:
         'Hindra F12 från att öppna utvecklarverktyg. Ctrl+Skift+I (eller Cmd+Alt+I på Mac) fungerar fortfarande.',
+      alwaysExternalLinksTitle: 'Öppna alltid länkar i extern webbläsare',
+      alwaysExternalLinksDesc:
+        'Öppna varje länk du klickar på i systemets webbläsare i stället för appens webbläsare. ”Öppna i appens webbläsare” i högerklicksmenyn fungerar fortfarande.',
       attachmentSizeTitle: 'Största storlek för förhandsvisning/bildinläsning',
       attachmentSizeDesc:
         'Hur stor lokal fil skrivbordsappen läser in för förhandsvisning och bildbilagor, i MB. Standardvärdet är 16. Fjärrbilagor som inte är bilder har en separat gräns på 256 MB. Ett mycket högt värde läser in hela filen i minnet och kan frysa eller krascha appen.',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: 'Största storlek för förhandsvisning/bildinläsning i megabyte'
+      attachmentSizeLabel: 'Största storlek för förhandsvisning/bildinläsning i megabyte',
+      voiceShortcutHintTitle: 'Kortkommando för röstinspelning',
+      voiceShortcutHintDesc:
+        'Ställ in kortkommandot för röstinspelning under Inställningar → Tangentbordsgenvägar (”Starta/stoppa röstsamtal”). Konfigurationsvärdet voice.record_key gäller bara CLI och TUI.',
+      desktopReadAloudTitle: 'Läs upp svar i den här appen',
+      desktopReadAloudDesc:
+        'Läs upp varje färdigt svar i Desktop. Det är samma växel som knappen i skrivfältet och gäller alla öppna fönster. Om du stänger av den avbryts en pågående uppläsning. ”Läs upp svar” nedan gäller meddelanden och CLI.',
+      showOptions: 'Visa alternativ'
     },
     screenshot: {
       enabledTitle: 'Kortkommando för skärmbild',

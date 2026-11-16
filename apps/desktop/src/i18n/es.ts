@@ -777,6 +777,8 @@ export const esOverrides = {
       mcp: 'MCP',
       archivedChats: 'Chats archivados',
       sessions: 'Sesiones',
+      backup: 'Copia de seguridad y transferencia',
+      backupOnly: 'Copia de seguridad',
       about: 'Acerca de',
       billing: 'Facturación',
       notifications: 'Notificaciones',

@@ -444,6 +444,8 @@ export const ruOverrides = {
       mcp: 'MCP',
       archivedChats: 'Архив чатов',
       sessions: 'Сеансы',
+      backup: 'Резервная копия и перенос',
+      backupOnly: 'Резервная копия',
       about: 'О программе',
       billing: 'Оплата',
       notifications: 'Уведомления',

@@ -542,6 +542,8 @@ export const zhOverrides = {
       mcp: 'MCP',
       archivedChats: '已归档对话',
       sessions: '会话',
+      backup: '备份与迁移',
+      backupOnly: '备份',
       about: '关于',
       billing: '账单',
       notifications: '通知',

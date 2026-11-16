@@ -1040,3 +1040,60 @@ def test_prompt_feedback_without_block_reason_keeps_empty_turn(monkeypatch):
     client = _blocking_client(monkeypatch, {"promptFeedback": {"safetyRatings": []}})
     out = client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
     assert out.choices[0].finish_reason == "stop"
+
+
+def test_truncated_or_blocked_reply_with_a_call_reports_mapped_reason_not_tool_calls():
+    """#144949: a MAX_TOKENS/SAFETY candidate carrying a functionCall must report length/content_filter,
+    so the turn loop's truncation/refusal branches run instead of executing the truncated or blocked call."""
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    def gemini(parts, finish_reason):
+        return translate_gemini_response(
+            {"candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": finish_reason, "index": 0}]},
+            model="gemini-2.5-flash",
+        )
+
+    for raw, mapped in [("MAX_TOKENS", "length"), ("SAFETY", "content_filter")]:
+        response = gemini([{"functionCall": {"name": "write_file", "args": {"path": "/tmp/x", "content": "side effect\n"}}}], raw)
+        assert response.choices[0].finish_reason == mapped, raw
+
+    # control: a clean STOP reply with a call still reports tool_calls
+    response = gemini([{"functionCall": {"name": "write_file", "args": {"path": "/tmp/x", "content": "y\n"}}}], "STOP")
+    assert response.choices[0].finish_reason == "tool_calls"
+
+
+def test_stream_finish_maps_reason_when_a_call_is_present():
+    """#144949, streaming side: the finish chunk maps MAX_TOKENS/SAFETY even when the event carried a functionCall."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    def event(parts, finish_reason):
+        return {"candidates": [{"content": {"role": "model", "parts": parts}, "finishReason": finish_reason, "index": 0}]}
+
+    for raw, mapped in [("MAX_TOKENS", "length"), ("SAFETY", "content_filter")]:
+        chunks = translate_stream_event(
+            event([{"functionCall": {"name": "search", "args": {"q": "abc"}}}], raw),
+            model="gemini-2.5-flash",
+            tool_call_indices={},
+        )
+        assert chunks[-1].choices[0].finish_reason == mapped, raw
+
+    # control: STOP with a call still finishes as tool_calls
+    chunks = translate_stream_event(
+        event([{"functionCall": {"name": "search", "args": {"q": "abc"}}}], "STOP"),
+        model="gemini-2.5-flash",
+        tool_call_indices={},
+    )
+    assert chunks[-1].choices[0].finish_reason == "tool_calls"
+
+
+@pytest.mark.parametrize(("raw", "mapped"), [("MAX_TOKENS", "length"), ("SAFETY", "content_filter"), ("STOP", "tool_calls")])
+def test_stream_finish_in_a_later_event_than_the_call_still_maps_the_reason(raw, mapped):
+    """The functionCall streams in one event and finishReason arrives in a later, part-less event."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    slots = {}
+    first = translate_stream_event(_fc_event("search", {"q": "abc"}), model="gemini-2.5-flash", tool_call_indices=slots)
+    assert first and all(c.choices[0].finish_reason is None for c in first)
+    last = translate_stream_event({"candidates": [{"content": {"parts": []}, "finishReason": raw}]},
+                                  model="gemini-2.5-flash", tool_call_indices=slots)
+    assert last[-1].choices[0].finish_reason == mapped

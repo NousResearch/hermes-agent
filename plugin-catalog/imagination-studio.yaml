@@ -4,7 +4,7 @@ repo: https://github.com/Keys-Wasserman/hermes-imagination-studio
 sha: "4aec4c265dba1ab02f74c89b177eea4c9d17a41b"
 version: "0.1.1"
 description: "Make pictures, video clips with sound, voice lines, songs and sound effects on your own machine with Imagination Studio (by keys + Wasserman): FLUX 3 Klein / Qwen-Image, MiniMax H3 / FastH3, Fish Audio Drama 3, MiniMax Music 3 and Stable Audio Open, rendered in the Studio's own queue and delivered to the chat as attachments. Disclosure: HTTP calls only to the Imagination Studio at the studio_url setting (default http://127.0.0.1:7870), no other service and no telemetry; copies finished files into HERMES_HOME/plugin-data/imagination-studio/outputs (up to max_download_mb each, never pruned automatically); reads the optional Studio access key with get_secret (IMAGINATION_STUDIO_KEY) and stores none; no shell commands, subprocesses or background threads; a tool call blocks for at most wait_seconds (default 120, max 600). Rendering itself happens in the Studio, which uses the GPU under its own memory and thermal gates."
-maintainer: drowzeys
+maintainer: "drowzeys & Wasserman Productions"
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"

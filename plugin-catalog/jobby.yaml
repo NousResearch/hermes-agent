@@ -1,0 +1,34 @@
+name: jobby
+repo: https://github.com/desaianm/jobby-hermes
+sha: 3b8c62670c138078e85c839f08f24a6a81213254
+description: "Source-backed international job discovery and PDF/DOCX application drafts inside Hermes; no autonomous submission. Disclosure — confirmed searches send your approved resume-derived search terms, country and location to Indeed and LinkedIn through the JobSpy scraper library; importing reads the absolute PDF path you (or the agent) give it on the backend machine and stores your resume facts, postings and generated documents in this profile's plugin data folder; the plugin never fills or submits applications."
+maintainer: desaianm
+tier: community
+category: desktop
+title: Jobby
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/desaianm/jobby-hermes/blob/3b8c62670c138078e85c839f08f24a6a81213254/README.md
+screenshots:
+  - https://raw.githubusercontent.com/desaianm/jobby-hermes/3b8c62670c138078e85c839f08f24a6a81213254/docs/images/jobby-desk.png
+readme: true
+platforms:
+  - linux
+known_issues:
+  - One provider-supported country per search; live coverage outside the earlier Canadian example and independent LinkedIn success are unverified.
+  - Screenshot and video show the earlier Canadian-example UI, not acceptance of the current international UI.
+  - Documents require human review; native desk does not submit applications.
+  - Packaged Desktop installer and full native race matrix remain unverified.
+  - Full-source validation warns about an opt-in development qualifier's private PluginManager import; runtime entrypoints use public APIs.
+capabilities:
+  provides_tools:
+    - jobby_initialize
+    - jobby_intake
+    - jobby_overview
+    - jobby_prepare
+    - jobby_review
+    - jobby_attempt
+    - jobby_discover
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

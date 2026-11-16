@@ -4,7 +4,6 @@
 (no I/O).
 """
 
-import contextlib
 import os
 import posixpath
 import re
@@ -618,11 +617,11 @@ class SearchMixin:
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
         # Record the group at spawn, as LocalEnvironment._run_bash does: rg can exit between the
-        # poll and the kill below, and on macOS a not-yet-reaped child has no pgid any more.
-        with contextlib.suppress(ProcessLookupError):
-            proc._hermes_pgid = os.getpgid(proc.pid)
-            from gateway.status import get_process_start_time
-            proc._hermes_pgid_start = get_process_start_time(proc.pid)
+        # poll and the kill below, and on macOS a not-yet-reaped child has no pgid any more. It is
+        # rg's pid by construction (start_new_session), never a getpgid read-back that same race loses.
+        from gateway.status import get_process_start_time
+        proc._hermes_pgid = proc.pid
+        proc._hermes_pgid_start = get_process_start_time(proc.pid)
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.
@@ -801,7 +800,7 @@ class SearchMixin:
         hint_parts = [f"Path not found: {path}"]
         parent_check = self._exec(f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no")
         if "yes" in parent_check.stdout and basename_query:
-            ls_result = self._exec(f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20")
+            ls_result = self._exec(f"ls -1 -- {self._escape_shell_arg(parent)} 2>/dev/null | head -20")
             if ls_result.exit_code == 0 and ls_result.stdout.strip():
                 lq = basename_query.lower()
                 candidates = [
@@ -970,20 +969,24 @@ class SearchMixin:
         return filtered
 
     def _filter_gitignored_paths(self, paths: list[str], root: str) -> list[str]:
-        """Drop paths ignored by git when *root* is inside a git worktree."""
+        """Drop paths ignored by git when *root* is inside a git worktree.
+
+        ``-c core.fsmonitor=false`` is a security override, not a preference: git runs
+        the program named by the searched repo's own ``core.fsmonitor`` config, and a
+        command-line ``-c`` outranks the repo config (#137582)."""
         if not paths:
             return paths
 
         escaped_root = self._escape_shell_arg(root)
         probe = self._exec(
-            f"git -C {escaped_root} rev-parse --is-inside-work-tree >/dev/null 2>&1",
+            f"git -c core.fsmonitor=false -C {escaped_root} rev-parse --is-inside-work-tree >/dev/null 2>&1",
             timeout=10,
         )
         if probe.exit_code != 0:
             return paths
 
         result = self._exec(
-            f"git -C {escaped_root} check-ignore --stdin",
+            f"git -c core.fsmonitor=false -C {escaped_root} check-ignore --stdin",
             timeout=10,
             stdin_data="\n".join(paths),
         )

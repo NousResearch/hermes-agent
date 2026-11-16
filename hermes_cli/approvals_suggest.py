@@ -36,10 +36,13 @@ _UNSAFE_CLASS_PATTERNS = [
     r"\bsudo\b", r"privilege", r"credential", r"\bssh\b", r"shell.rc", r"system config", r"system file",
     # data & permissions: SQL DROP/TRUNCATE/DELETE-without-WHERE, chown/chmod, world-writable, overwrite
     r"\bsql\b", r"\bchown\b", r"\bchmod\b", r"writable", r"overwrite", r"in-place edit",
+    # Windows registry writes outlive the session that approved them (reg add, setx, Set-ItemProperty)
+    r"registry",
     # remote/obfuscated execution: pipe-to-shell, encoded PowerShell, heredoc, substitutions
     r"pipe", r"obfuscation", r"remote content", r"remote script", r"heredoc", r"encoded",
     r"command substitution", r"process substitution",
-    r"hardline",
+    # a command the scanners could not read to the end: approved one run at a time, never remembered
+    r"hardline", r"too complex to scan",
 ]
 _UNSAFE_CLASS_RE = re.compile("|".join(_UNSAFE_CLASS_PATTERNS), re.IGNORECASE)
 
@@ -150,7 +153,7 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     """``(command, dangerous_class_description)`` records for dangerous-classified terminal commands
     that actually executed (i.e. carried an implied user approval).
     """
-    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    from tools.approval_detection import detect_dangerous_command, detect_hardline_command, hardline_scan_incomplete
     path = Path(db_path) if db_path else default_db_path()
     if not path.exists():
         return []
@@ -165,8 +168,9 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
             if tool_call_id in blocked:
                 continue
             # Hardline commands are unconditionally blocked at runtime; never mine them (defense in
-            # depth against stale DB rows).
-            if detect_hardline_command(command)[0]:
+            # depth against stale DB rows). Nor commands the hardline scan could not read to the end:
+            # their approval is one run at a time, so nothing about them was ever meant to persist.
+            if detect_hardline_command(command)[0] or hardline_scan_incomplete(command):
                 continue
             is_dangerous, _key, description = detect_dangerous_command(command)
             if is_dangerous:

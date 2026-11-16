@@ -7,6 +7,7 @@ onto server.py, so they must not collide with its globals.
 import logging
 import sqlite3
 
+from hermes_cli.profiles_cache import yaml_scalar_to_json as _yaml_scalar_to_json
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -86,12 +87,6 @@ def _read_profile_yaml(profile_dir) -> dict:
         return (yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}) if meta_path.is_file() else {}
     loaded = _try(load, {})
     return loaded if isinstance(loaded, dict) else {}
-
-
-def _yaml_scalar_to_json(value):
-    """``json.dumps`` default for YAML-only scalars (datetime/date → ISO 8601, else ``str``)."""
-    isoformat = getattr(value, "isoformat", None)
-    return isoformat() if callable(isoformat) else str(value)
 
 
 def _clean_revisions(raw: dict) -> dict:
@@ -276,11 +271,12 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
 def _(rid, params: dict) -> dict:
     """List Hermes profiles. ``include_sessions`` (default true) adds ``last_session`` /
     ``worker_session`` / ``canonical_session`` so a roster paints previews without N calls."""
+    from hermes_cli.isolated_scope import scope_to_launch_profile
     from hermes_cli.profiles import list_profiles
     include_sessions = is_truthy_value(params.get("include_sessions", True))
     out = []
     # Roster polls this every 5s: ``skill_count`` is the last known value, refreshed off-request.
-    for p in list_profiles(lazy_skill_count=True):
+    for p in scope_to_launch_profile(list_profiles(lazy_skill_count=True), lambda info: info.name):
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
@@ -621,14 +617,14 @@ def _save_toolset_pin(cfg, enabled, save_config) -> None:
 def _mcp_entry_enabled(entry: dict) -> bool:
     """The runtime's ``enabled`` reader; a legacy ``disabled: true`` (what older editors wrote,
     migrated by config v46) still reads as off."""
-    from hermes_cli.tools_config import _parse_enabled_flag
     from tools.mcp_tool_common import mcp_server_enabled
-    return mcp_server_enabled(entry) and not _parse_enabled_flag(entry.get("disabled", False), default=False)
+    return mcp_server_enabled(entry)
 
 
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
     """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
     coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
+    from tools.mcp_tool_common import write_mcp_server_enabled
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:
@@ -636,8 +632,7 @@ def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
             mcp_cfg[srv] = dict(launch_mcp[srv])
     for srv, entry in mcp_cfg.items():
         if isinstance(entry, dict):
-            entry["enabled"] = srv in wanted
-            entry.pop("disabled", None)
+            write_mcp_server_enabled(entry, srv in wanted)
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg
     save_config(cfg)

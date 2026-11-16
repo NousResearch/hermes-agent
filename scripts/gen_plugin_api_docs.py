@@ -12,7 +12,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "hermes_cli" / "data" / "plugin_api.json"
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import current_path
+
+DATA = ROOT / current_path("hermes_cli/data/plugin_api.json")
 OUT = ROOT / "website" / "docs" / "developer-guide" / "plugins" / "public-api.md"
 
 HEADER = """---

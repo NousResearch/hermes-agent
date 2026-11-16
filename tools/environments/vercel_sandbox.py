@@ -180,6 +180,9 @@ class VercelSandboxEnvironment(BaseEnvironment):
     """Vercel cloud sandbox backend."""
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
 
     def __init__(self, runtime: str | None = None, cwd: str = DEFAULT_VERCEL_CWD, timeout: int = 60,
                  cpu: float = 1, memory: int = 5120, disk: int = _DEFAULT_CONTAINER_DISK_MB,

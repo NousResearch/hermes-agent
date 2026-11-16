@@ -16,6 +16,7 @@ category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/calm-mode
 version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/calm-mode/70b045c3c39f6d4e3f46bfc35b6d49e5c350da70/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

@@ -50,6 +50,16 @@ _CARD_DESTINATION_REFUSALS = {
 }
 
 
+def _settled_result(fut, outcome: str):
+    """The send's result for the receipt log; None when it never resolved or raised."""
+    if outcome == "ambiguous":
+        return None
+    try:
+        return fut.result(timeout=0)
+    except Exception:  # health: allow BLE001 -- already classified and logged by _approval_send_outcome
+        return None
+
+
 def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
     say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
@@ -75,7 +85,8 @@ _LEDGER_PASSTHROUGH_KEYS = (
 # Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
 # so the authority's ``message.complete`` carries the same error card the TUI path builds;
 # ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
-_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
+_FAILURE_DESCRIPTOR_KEYS = (
+    "free_tier", "failure_retryable", "failure_resets_at", "usage_window_message", "primary_auth_failure")
 
 
 def _finite_viewer_turn() -> bool:
@@ -278,10 +289,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.
         stts = ctx.streaming_tts_consumer_holder[0]
-        scfg = getattr(getattr(self._runner, 'config', None), 'streaming', None)
-        if scfg is None:
-            from gateway.config import StreamingConfig
-            scfg = StreamingConfig()
+        from gateway.run_config_loaders import streaming_config_for_source
+        scfg = streaming_config_for_source(self._runner, ctx.source)
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
         # A loaded ``hold_stream`` transform rewrites this session's reply before the user may see it:
@@ -534,7 +543,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # A platform send can't be retracted; a local viewer withdraws the keyed notice.
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
-        agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        agent.reasoning_config, agent.service_tier = reasoning_config, turn_route.get("service_tier")
         _load_daybreak = getattr(runner, "_load_daybreak", None)  # absent on minimal test runners
         agent.daybreak = callable(_load_daybreak) and _load_daybreak(ctx.source) is True
         _surface = getattr(runner, "_daybreak_surface", None)  # read by Daybreak delegation routes
@@ -768,7 +777,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             authority.register_approval(session_id, generation, self._ctx.session_key, approval_data,
                                         timeout_s=local_viewer_events.prompt_timeout_s(self, "approval"))
 
-    def _render_approval_sync(self, approval_data: dict) -> None:
+    def _render_approval_sync(self, approval_data: dict, *, background=False) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _interim_metadata, _redact_approval_command
@@ -779,8 +788,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
         # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
         # in approve/deny.
-        adapter.pause_typing_for_chat(ctx._status_chat_id)
-        self._close_native_stream_boundary("Approval")
+        if not background:
+            adapter.pause_typing_for_chat(ctx._status_chat_id)
+            self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = _redact_approval_command(approval_data.get("description")) or ea_default_reason_text()
@@ -865,18 +875,26 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
+            # A receipt that times out (or a lost ack) is AMBIGUOUS, not a failure: the prompt may be
+            # on screen, so it stays armed for a typed /approve, exactly like the card path above.
+            outcome = _approval_send_outcome(fut, timeout=15)
             if fut is not None:
-                res = fut.result(timeout=15)
+                res = _settled_result(fut, outcome)
                 # Text-lane receipt (#138133): a card failure lands here, and a failed fallback was silent too.
-                logger.log(logging.INFO if getattr(res, "success", False) else logging.WARNING,
-                           "Exec approval text prompt send (success=%s, message_id=%s, error=%s, request_id=%s, session=%s)",
-                           getattr(res, "success", None), getattr(res, "message_id", None), getattr(res, "error", None),
+                logger.log(logging.INFO if outcome == "sent" else logging.WARNING,
+                           "Exec approval text prompt send (success=%s, outcome=%s, message_id=%s, error=%s, request_id=%s, session=%s)",
+                           getattr(res, "success", None), outcome, getattr(res, "message_id", None), getattr(res, "error", None),
                            approval_data.get("request_id"), ctx.session_key)
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            if background and outcome not in ("sent", "ambiguous"):
+                # Nobody else can still show a background child's prompt: undelivered fails it closed.
+                raise RuntimeError("Approval notification was not delivered")
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            if background:
+                raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 
@@ -1047,7 +1065,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
-        register_gateway_notify(session_key, self._approval_notify_sync)
+        from gateway.run_turn_runner_approval_transport import approval_transport
+        register_gateway_notify(session_key, approval_transport(self))
         try:
             run_message = self._native_image_run_message()
             api_message = _wrap_current_message_with_observed_context(run_message, observed_group_context)
@@ -1241,7 +1260,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             (ctx.channel_prompt or "").strip(),
             self._runner._get_system_prompt_for_channel(
                 ctx.source.platform, ctx.source.chat_id or "", thread_id=getattr(ctx.source, "thread_id", None),
-                parent_id=getattr(ctx.source, "parent_chat_id", None),
+                parent_id=getattr(ctx.source, "parent_chat_id", None), source=ctx.source,
             ),
         ):
             if extra:
@@ -1294,7 +1313,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             else:
                 scope.enter_context(api_policy_scope())
                 bind_turn_workspace(policy, self._ctx.session_id)
-                result = self._run_sync_scoped()
+                from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
+                cwd_owner = restore_turn_cwd(self._runner, self._ctx.session_key, policy)
+                try:
+                    result = self._run_sync_scoped()
+                finally:
+                    persist_turn_cwd(self._runner, self._ctx.session_key, cwd_owner)
             from gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:
@@ -1362,6 +1386,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # fallback was resolved before any agent exists (#74349); one-shot per turn.
             pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
             runner._pre_agent_fallback_notice = None
+            from agent.primary_auth_fallback import failure_for_route, route_snapshot, take_pending_primary_auth_failure
+            pending_primary_auth = take_pending_primary_auth_failure()
+            resolved_route = route_snapshot(runtime_kwargs)
             from gateway.session_api_turn import prepare_api_runtime
             model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
             if policy and policy.model and not pending_fallback_notice:
@@ -1372,6 +1399,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # The classic CLI's `/model --once` / `/moa`: this admission only, nothing persisted.
             from gateway.session_cli_turn import one_turn_route
             model, runtime_kwargs = one_turn_route(self, policy, model, runtime_kwargs)
+            # Another route runs (an API caller's or a one-turn override): its refusals are its own.
+            pending_primary_auth = failure_for_route(pending_primary_auth, resolved_route, runtime_kwargs)
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1393,7 +1422,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
         from gateway.session_cli_turn import one_turn_reasoning
         reasoning_config = one_turn_reasoning(self, reasoning_config)  # `/model --once --reasoning X`
-        runner._service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
+        service_tier = (policy.current_service_tier(runner, ctx.session_key) if policy else
             runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key))
         from gateway.session_api_turn import api_execution
         api = api_execution.get()
@@ -1404,16 +1433,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 reasoning_config = requested_reasoning
             tier = _request_service_tier(api['settings'].get('model_options'))
             if tier is not _REQUEST_OPTION_MISSING:
-                runner._service_tier = tier
+                service_tier = tier
+        # The tier stays turn-local (turn_route): one runner serves concurrent turns of every profile.
         runner._reasoning_config = reasoning_config
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
-        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs, tier=service_tier)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
+        # Set every turn (None clears it): a cached agent must not keep a login failure that resolved.
+        from agent.primary_auth_fallback import attach_primary_auth_failure
+        attach_primary_auth_failure(agent, pending_primary_auth)
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None

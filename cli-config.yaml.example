@@ -562,6 +562,10 @@ terminal:
 # -----------------------------------------------------------------------------
 # Add sudo_password to any terminal config above to enable sudo commands.
 # The password is piped via `sudo -S`. Works with local, ssh, docker, etc.
+# It is sent to the backend that runs the command, where programs running in
+# that backend can read it: for ssh, docker, modal, daytona, vercel_sandbox and
+# plugin backends, use a password that is only valid there (or passwordless sudo
+# in the image), not this machine's. Hermes logs a one-time warning per backend.
 #
 # SECURITY WARNING: Password stored in plaintext!
 #
@@ -1425,6 +1429,11 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # Debug guard: flag SessionDB (state.db) calls made on the gateway event loop,
+  # where slow storage blocks every platform. "warn" logs each call site once with
+  # its stack; "raise" fails the call (CI / development). Off by default.
+  # sessiondb_loop_guard: off
+
 # =============================================================================
 # Toolsets
 # =============================================================================
@@ -1498,6 +1507,7 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       drop_pending_on_cold_boot: false # Answer messages sent while the gateway was off (default; Telegram keeps them up to 24 h). Set true to drop that backlog on a cold boot; watcher reconnects always preserve it
+#       tls_classic_key_exchange: false  # Opt in to X25519 for TLS handshake EOFs on PQ-incompatible paths; keeps TLS 1.3 and certificate verification
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
@@ -1517,10 +1527,15 @@ platform_toolsets:
 #           - my_plugin_command
 #           - my-important-skill
 #   matrix:
+#     # Platform-wide: successful explicit NO_REPLY/[SILENT] finals stay silent in every
+#     # chat on this platform (DMs included), even when addressed. A room's own
+#     # allow_silence (true or false) overrides it; omitted/null inherits.
+#     # allow_silence: true
 #     channel_overrides:
 #       "!exampleTeamRoom:example.org":
 #         # Successful explicit NO_REPLY/[SILENT] finals stay silent, even when addressed.
-#         # Omitted/null/false keeps the current reply policy; failures remain visible.
+#         # Omitted/null takes the platform's allow_silence; false keeps the current
+#         # reply policy. Failures remain visible.
 #         # Restart the gateway after changing room overrides.
 #         allow_silence: true
 #   slack:
@@ -1689,6 +1704,13 @@ platform_toolsets:
 # =============================================================================
 # Text-to-Speech
 # =============================================================================
+# Global gateway auto-TTS is disabled by default. With it enabled, all preserves
+# audio replies to text and voice; voice_only requires voice input. Per-chat
+# /voice off, /voice on, and /voice tts override this global scope.
+# voice:
+#   auto_tts: false
+#   auto_tts_mode: "all"  # "all" (default) | "voice_only"
+#
 # TTS defaults to Edge TTS unless changed in ~/.hermes/config.yaml.
 # Gemini TTS supports persona/director prompt files, and Gemini 3.1 Flash TTS
 # can use a hidden auxiliary rewrite pass to insert expressive square-bracket
@@ -1998,7 +2020,10 @@ display:
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog
-  # stalls, media-delivery fallbacks, cron failure alerts) on this surface.
+  # stalls, media-delivery fallbacks, cron failure alerts) on this surface. Also
+  # hides the "returned only a silence marker" notice in groups/channels/threads:
+  # a successful turn ending on a bare [SILENT]/NO_REPLY there stays silent
+  # (failed/partial turns still show; DMs keep the notice).
   # Requested results, approvals, clarifications and command outcomes are never
   # hidden, and nothing is removed from the logs. Per-platform override under
   # display.platforms.<platform>.suppress_warning_notifications.

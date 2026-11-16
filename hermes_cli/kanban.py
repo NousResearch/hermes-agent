@@ -1178,21 +1178,22 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
         )
         if value
     }
-    user_id, user_id_alt = _caller_identity_for_target(
-        args.platform, args.chat_id, args.thread_id, args.user_id, getattr(args, "user_id_alt", None))
+    from hermes_cli.kanban_notify_thread import resolve_subscribe_thread
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
+        thread_id = resolve_subscribe_thread(conn, args)
+        user_id, user_id_alt = _caller_identity_for_target(
+            args.platform, args.chat_id, thread_id, args.user_id, getattr(args, "user_id_alt", None))
         kbn.add_notify_sub(
             conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
-            chat_type=args.chat_type, thread_id=args.thread_id, user_id=user_id,
+            chat_type=args.chat_type, thread_id=thread_id, user_id=user_id,
             user_id_alt=user_id_alt,
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
             delivery_metadata=delivery_metadata or None,
         )
-    print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{args.thread_id}" if args.thread_id else "")
-          + f" to {args.task_id}")
+    print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{thread_id}" if thread_id else "") + f" to {args.task_id}")
     return 0
 
 
@@ -1218,9 +1219,10 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
+    from hermes_cli.kanban_notify_thread import resolve_unsubscribe_thread
     with kbc.connect_closing() as conn:
         ok = kbn.remove_notify_sub(conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
-                                  thread_id=args.thread_id)
+                                  thread_id=resolve_unsubscribe_thread(conn, args))
     return _ok_or_err(ok, "(no such subscription)", f"Unsubscribed from {args.task_id}")
 
 

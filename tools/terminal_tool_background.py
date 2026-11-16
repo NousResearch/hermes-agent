@@ -152,6 +152,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
+    cwd_key: Optional[str] = None,
     notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
@@ -174,7 +175,7 @@ def spawn_background_process(
     )
 
     effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
+        workdir=workdir, default_cwd=cwd, session_key=cwd_key or session_key, env_type=env_type,
         mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )
@@ -188,6 +189,12 @@ def spawn_background_process(
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
         if persist_on_release:
             result_data["persist_on_release"] = True
+        if env_type == "local" and effective_cwd:
+            from tools.environments.local import _msys_to_windows_path
+            from tools.terminal_tool_result import _cwd_fallback_note
+            used = getattr(proc_session, "cwd", None)  # spawn_local resolves a dead cwd itself
+            if used and used not in (effective_cwd, _msys_to_windows_path(effective_cwd)):
+                result_data["cwd_fallback"] = _cwd_fallback_note({"requested": effective_cwd, "used": used})
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:

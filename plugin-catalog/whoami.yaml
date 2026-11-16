@@ -1,0 +1,20 @@
+name: whoami
+repo: https://github.com/atostivint/hermes-whoami
+sha: 0b70c85489bc00b88f893cab9a4acc74b545d5ec
+description: "Coloured pill in the composer showing which Hermes profile a new session will use."
+maintainer: atostivint
+tier: community
+category: desktop
+docs_url: https://github.com/atostivint/hermes-whoami
+version: "0.1.0"
+image: https://raw.githubusercontent.com/atostivint/hermes-whoami/0b70c85489bc00b88f893cab9a4acc74b545d5ec/docs/hero.png
+screenshots:
+  - https://raw.githubusercontent.com/atostivint/hermes-whoami/0b70c85489bc00b88f893cab9a4acc74b545d5ec/docs/screenshots/composer-astro.png
+  - https://raw.githubusercontent.com/atostivint/hermes-whoami/0b70c85489bc00b88f893cab9a4acc74b545d5ec/docs/screenshots/composer-default.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

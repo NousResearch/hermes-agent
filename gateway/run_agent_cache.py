@@ -279,6 +279,7 @@ class GatewayAgentCacheMixin:
                 source.platform, str(source.chat_id) if source.chat_id else "",
                 thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
                 parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+                source=source,
             )
         else:
             model = _resolve_gateway_model()
@@ -550,10 +551,16 @@ class GatewayAgentCacheMixin:
             return
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
+        from gateway.run_plugin_injection import person_input_joined_turn
+        person_input_joined_turn(self, session_key)  # /stop, /new: a plugin turn's wait ends at once
         _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if running_agent is _AGENT_PENDING_SENTINEL:
+            # No agent to interrupt yet: end the setup itself, or the turn keeps its FIFO claim (#138358).
+            from gateway.run_turn_setup_guard import cancel_preagent_setup
+            cancel_preagent_setup(self, session_key)
         # The turn's hard interrupt reaches only its in-turn children; background delegations were
         # detached at dispatch and would otherwise run to completion and wake the session later.
         # Each interrupted unit still returns as a completion (status=interrupted, partial output).

@@ -241,16 +241,29 @@ def test_cleanup_stops_every_long_lived_process(tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_stopping_an_exited_leader_still_stops_its_descendants(tmp_path):
+def test_stopping_an_exited_leader_still_stops_its_descendants(tmp_path, monkeypatch):
     """The leader exits but leaves a child in its group: stop_process still stops that child and
-    releases the group only once it is empty."""
+    releases the group only once it is empty. The leader is let exit before ``start_process``
+    returns (a fast leader on a loaded host): macOS has no pgid for an exited, unreaped child."""
+    import contextlib
     import os
     import signal
+    psutil = pytest.importorskip("psutil")
+    from hermes_cli import process_identity
     from tests.waiting import wait_until
     from tools.environments.local import LocalEnvironment
 
-    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
     pid_file = tmp_path / "child.pid"
+    real_spawn_owned = process_identity.spawn_owned
+
+    def leader_exits_first(*args, **kwargs):
+        proc = real_spawn_owned(*args, **kwargs)
+        # Exited but not reaped: the leader is this test's zombie, its pid not yet reusable.
+        wait_until(lambda: psutil.Process(proc.pid).status() == psutil.STATUS_ZOMBIE)
+        return proc
+
+    monkeypatch.setattr(process_identity, "spawn_owned", leader_exits_first)
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
     env.start_process("leader", ["bash", "-c", f"sleep 600 & echo $! > {pid_file}; exit 0"])
     leader = env._long_lived()["leader"]
     wait_until(lambda: leader.poll() is not None and pid_file.exists() and pid_file.read_text().strip())
@@ -260,7 +273,10 @@ def test_stopping_an_exited_leader_still_stops_its_descendants(tmp_path):
         wait_until(lambda: not _alive(child), timeout=10)
     finally:
         if _alive(child):
-            os.kill(child, signal.SIGKILL)
+            # Reparented to init once the leader exited, so no longer in this process's subtree;
+            # its group (the session this test started, pgid == the leader's pid) still is.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(leader.pid, signal.SIGKILL)
 
 
 def _alive(pid: int) -> bool:

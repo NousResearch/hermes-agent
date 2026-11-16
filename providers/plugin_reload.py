@@ -122,12 +122,24 @@ _in_flight_lock = threading.Lock()
 # How long a scan waits for another thread's import of the same tree. Plugin imports take well under a
 # second; the bound only matters in the lock-order cycle described in :func:`import_into_layer`.
 _IMPORT_WAIT_SECONDS = 10.0
+# Versioned module name -> (its package, the staging layer its completed import registered). The package
+# stays in ``sys.modules`` once loaded, so a tree that comes back is replayed from here, not re-imported.
+_completed: dict[str, tuple[object, object]] = {}
 
 
 def _import_and_publish(layer, plugin_dir: Path, source: str, base_name: str, module_name: str,
                         fingerprint: str, live: tuple[str, str] | None) -> None:
     import providers as P
 
+    completed = _completed.get(module_name)
+    if completed is not None and sys.modules.get(module_name) is completed[0]:
+        # This exact tree imported completely before and its package is still loaded (A, then B, then A's
+        # bytes and mtimes restored): importing it again would be a no-op that registers nothing, so publish
+        # what that import registered.
+        staging = completed[1]
+        _publish(layer, base_name, module_name, fingerprint, staging, replacing=live is not None)
+        layer.errors.pop(plugin_dir.name, None)
+        return
     staging = P._HomeLayer()
     token = P._REGISTRATION_TARGET.set(staging)
     try:
@@ -140,6 +152,8 @@ def _import_and_publish(layer, plugin_dir: Path, source: str, base_name: str, mo
     finally:
         P._REGISTRATION_TARGET.reset(token)
     if module_name in sys.modules or module_name in staging.hosted:
+        if module_name in sys.modules:
+            _completed[module_name] = (sys.modules[module_name], staging)
         _publish(layer, base_name, module_name, fingerprint, staging, replacing=live is not None)
         layer.errors.pop(plugin_dir.name, None)
         if live is not None:

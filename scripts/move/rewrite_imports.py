@@ -1,6 +1,6 @@
 """Rewrite Python sources from old module names to the names a move commit gave them.
 
-Usage: python scripts/move/rewrite_imports.py --from-commit <A> [--paths P ...] [--check]
+Usage: python scripts/move/rewrite_imports.py --from-commit <A> [--paths P ...] [--check] [--no-compat-table]
 
 Imports: ``import a`` becomes ``from hermes_agent import a`` (same bound name; the lint rejects
 ``import hermes_agent.a as a``), except in a ``try`` whose handler catches ModuleNotFoundError or reads
@@ -16,8 +16,9 @@ as a flag, ``path:line  <class>  <name>  <reason>``, and left as it is.
 
 Sites listed in ``exclusions.py`` are left alone and printed once per reason as ``excluded <reason>``;
 by-hand sites are flagged. A row whose anchor is gone is flagged. A UTF-8 BOM is kept; a file that is not
-UTF-8 is skipped with a flag. The new old-name keys go into the compat MOVES table. Exit status 1 when a
-file fails to parse, a flag remains, or (with --check) a file would change.
+UTF-8 is skipped with a flag. The new old-name keys go into the compat MOVES table; ``--no-compat-table``
+leaves the table alone, for a move whose old names no release, updater or plugin imports. Exit status 1
+when a file fails to parse, a flag remains, or (with --check) a file would change.
 """
 from __future__ import annotations
 
@@ -38,7 +39,8 @@ from libcst.metadata import GlobalScope, MetadataWrapper, ParentNodeProvider, Po
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from exclusions import BY_HAND, EXCLUDED, IDENTITY, KEPT_NAMES, anchor_spans
-from renames import config_keys, current_name, git, module_renames, moved_modules, renamed_paths
+from renames import MovedPaths, config_keys, current_name, emptied_folders, git, module_renames, moved_modules, \
+    renamed_paths
 from pieces import respell, text_of
 from rewrite_toml import rewrite_pyproject
 from sinks import ARGV, CODE, COMMAND, LOGGER, MODULE, NAMED_HELPERS, STRINGS, SYS_MODULES, TARGET, Findings, Sink, \
@@ -64,7 +66,7 @@ _HELPER_SOURCES = re.compile(r"import_module|__import__|find_spec|importorskip")
 @dataclass
 class Plan:
     renames: dict[str, str]
-    paths: list[tuple[str, str]]
+    moved: MovedPaths
     names: dict[str, set[str]]
     """Every moved module's old name -> the names its top level binds (imports included)."""
     moves: dict[str, str] = field(default_factory=dict)
@@ -82,11 +84,11 @@ class Plan:
 
     @property
     def moved_files(self) -> set[str]:
-        return {new for _, new in self.paths}
+        return {new for _, new in self.moved.paths}
 
     def aliases(self, path: str) -> set[str]:
         """``path`` and where it lives after this move and the earlier ones in MOVES."""
-        out = {path} | {new for old, new in self.paths if old == path}
+        out = {path} | {new for old, new in self.moved.paths if old == path}
         if path.endswith(".py"):
             module = path[:-3].removesuffix("/__init__").replace("/", ".")
             new = current_name(module, {**self.moves, **self.renames})
@@ -108,56 +110,6 @@ class Plan:
             for alias in self.aliases(path):
                 rows.setdefault(alias, ([], []))[1].append(anchor)
         return rows
-
-    @functools.cached_property
-    def path_pattern(self) -> re.Pattern | None:
-        """Path-shaped text that starts with a top-level name this move took away; ``find_path`` checks it."""
-        tops = sorted({PurePosixPath(old).parts[0] for old, _ in self.paths}, key=len, reverse=True)
-        return re.compile(r"(?<![\w/.-])((?:" + "|".join(map(re.escape, tops)) + r")(?:/[\w.-]+)*/?)") if tops else None
-
-    @functools.cached_property
-    def old_tree(self) -> frozenset[str]:
-        """Every old file path this move renamed and every folder above one."""
-        out = set()
-        for old, _ in self.paths:
-            parts = PurePosixPath(old).parts
-            out |= {"/".join(parts[:size]) for size in range(1, len(parts) + 1)}
-        return frozenset(out)
-
-    def find_path(self, text: str) -> tuple[str, str] | None:
-        """(old, new) for the first moved file or folder ``text`` names: a top-level file, a folder followed by a file
-        or folder that moved with it (``tools/registry.py``, ``tools/environments/``; never ``tools/list``), or the
-        whole string being a moved folder (``"tools/"``)."""
-        if self.path_pattern is None:
-            return None
-        if text.endswith("/") and text[:-1] in self.old_tree and "/" not in text[:-1]:
-            return text, self.new_path.get(text, "")
-        for match in self.path_pattern.finditer(text):
-            parts = match.group(1).rstrip("/").split("/")
-            for size in range(len(parts), 0, -1):
-                old = "/".join(parts[:size])
-                if old in self.old_tree and (size > 1 or old.endswith(".py")):
-                    folder = not old.endswith(".py")
-                    return old + "/" * folder, self.new_path.get(old + "/" * folder, "")
-        return None
-
-    @functools.cached_property
-    def new_path(self) -> dict[str, str]:
-        return dict(self.old_paths())
-
-    @functools.cached_property
-    def folders(self) -> frozenset[str]:
-        """Top-level folder and file names this move took away: ``tools``, ``model_tools.py``."""
-        return frozenset(PurePosixPath(old).parts[0] for old, _ in self.paths)
-
-    def old_paths(self) -> list[tuple[str, str]]:
-        """Old -> new path text a by-path literal can carry: each moved file and each moved directory."""
-        pairs = {old: new for old, new in self.paths if old.endswith(".py")}
-        for old, new in self.paths:
-            old_dir, new_dir = str(PurePosixPath(old).parent), str(PurePosixPath(new).parent)
-            if old_dir not in (".", new_dir):
-                pairs[old_dir + "/"] = new_dir + "/"
-        return sorted(pairs.items(), key=lambda item: -len(item[0]))
 
     def new(self, name: str) -> str | None:
         return current_name(name, self.renames)
@@ -563,9 +515,9 @@ class _Rewriter(cst.CSTTransformer):
             self._judge_module(node, text, key)
         elif text.endswith(".") and self.plan.is_module(text[:-1]):
             self._flag(node, MODULE_STRING, text, "module-name prefix outside any import; rewrite or confirm by hand")
-        elif key in self.found.path_pieces and text in self.plan.folders:
+        elif key in self.found.path_pieces and text in self.plan.moved.folders:
             self._flag(node, BY_PATH, text, "path built from a moved folder name; check the path arithmetic")
-        elif (found := self.plan.find_path(text)) is not None:
+        elif (found := self.plan.moved.find_path(text)) is not None:
             self._flag(node, BY_PATH, found[0], f"string names a moved path (now {found[1]})")
 
     def _judge_module(self, node: cst.CSTNode, text: str, key: int) -> None:
@@ -830,7 +782,7 @@ def _work(item: tuple[Path, str]) -> Result:
 
 def _candidates(root: Path, paths: list[str], plan: Plan) -> list[str]:
     listed = git(root, "ls-files", "--", *(paths or ["."])).splitlines()
-    words = {old.split(".")[0] for old in plan.renames} | {old.rstrip("/") for old, _ in plan.old_paths()}
+    words = {old.split(".")[0] for old in plan.renames} | {old.rstrip("/") for old, _ in plan.moved.old_paths()}
     needle = re.compile("|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)))
     out = []
     for path in listed:
@@ -943,8 +895,10 @@ def build_plan(root: Path, commit: str, files: list[str] | None = None) -> Plan:
     names = {old: defined | imported for old, (defined, imported) in found.items()}
     defined = {old: names_defined for old, (names_defined, _) in found.items()}
     listed = files if files is not None else git(root, "ls-files", "*.py").split()
-    plan = Plan(renames, renamed_paths(root, commit), names, _moves_table(root), config_keys=config_keys(root),
-                defined=defined, helpers=_helpers(root, listed))
+    paths = renamed_paths(root, commit)
+    before = git(root, "ls-tree", "-r", "--name-only", f"{commit}^").splitlines()
+    plan = Plan(renames, MovedPaths(tuple(paths), emptied_folders(before, paths)), names, _moves_table(root),
+                config_keys=config_keys(root), defined=defined, helpers=_helpers(root, listed))
     plan.kept_names = _kept_names(root, plan)
     return plan
 
@@ -954,6 +908,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--from-commit", required=True, help="the move commit (git mv, plus the MOVES update)")
     parser.add_argument("--paths", nargs="*", default=[], help="limit to these files or directories")
     parser.add_argument("--check", action="store_true", help="write nothing; fail when anything would change")
+    parser.add_argument("--compat-table", action=argparse.BooleanOptionalAction, default=True,
+                        help="add this move's old names to the compat MOVES table")
     args = parser.parse_args(argv)
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").strip())
     plan = build_plan(root, args.from_commit)
@@ -977,7 +933,7 @@ def main(argv: list[str] | None = None) -> int:
             changed.append(result.path)
             if not args.check:
                 (root / result.path).write_bytes(result.source.encode("utf-8"))
-    moves = update_moves(root, plan.renames, write=not args.check)
+    moves = update_moves(root, plan.renames, write=not args.check) if args.compat_table else 0
     if not args.paths or "pyproject.toml" in args.paths:
         toml_count, toml_flags = rewrite_pyproject(root, plan, write=not args.check)
         flags += toml_flags

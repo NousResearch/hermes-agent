@@ -1,26 +1,25 @@
-name: Install & Update E2E red tracker
+name: Canary E2E red tracker
 
-# Someone hears about a red scheduled matrix. After every scheduled
-# "Install & Update E2E" run, tests/install/e2e-assets/red-tracker.mjs keeps
-# ONE issue labelled install-e2e-red in step with it: a red run opens it (or
-# rewrites the open one's body in place with the current red legs grouped by
-# failure class), a green run closes it. No comment per red run, no second
-# issue.
+# Someone hears about a red canary E2E run. After every Canary E2E run that a
+# canary started, tests/install/e2e-assets/red-tracker.mjs keeps ONE issue
+# labelled install-e2e-red in step with it: a red run opens it (or rewrites the
+# open one's body in place with the current red jobs grouped by failure class),
+# a green run closes it. No comment per red run, no second issue. A dispatched
+# Canary E2E run never touches it.
 #
-# A separate workflow on purpose: install-e2e.yml is also a reusable workflow
-# called by stable-release.yml with contents/actions read only, and a nested
-# job asking for issues: write would fail that call at startup.
+# A separate workflow on purpose: canary-e2e.yml's own last job would read its
+# run while that run is still in progress, with no conclusion yet.
 #
-# Dispatch it by hand to preview (dry-run, the default) or replay a run.
+# Dispatch it by hand to preview (dry-run, the default) or replay any run.
 
 on:
   workflow_run:
-    workflows: ['Install & Update E2E']
+    workflows: ['Canary E2E']
     types: [completed]
   workflow_dispatch:
     inputs:
       run-id:
-        description: 'Install & Update E2E run id to report on.'
+        description: 'Run id to report on.'
         required: true
         type: string
       dry-run:
@@ -39,7 +38,9 @@ concurrency:
 jobs:
   track:
     name: Update the install-e2e-red tracker
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'workflow_run' && github.event.workflow_run.conclusion != 'skipped')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:

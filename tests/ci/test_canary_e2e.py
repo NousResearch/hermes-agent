@@ -44,6 +44,7 @@ def resolved_commit(ctx: dict) -> str:
 def test_the_trigger_chain_names_real_workflows():
     canary_e2e = load("canary-e2e.yml")
     assert canary_e2e["on"]["workflow_run"]["workflows"] == [load("canary-release.yml")["name"]]
+    assert load("install-e2e-red.yml")["on"]["workflow_run"]["workflows"] == [canary_e2e["name"]]
 
 
 @pytest.mark.parametrize(("ctx", "runs"), [
@@ -89,3 +90,15 @@ def test_every_call_is_the_claims_call_on_the_canary_commit():
         assert job.get("permissions") == claim[0].get("permissions"), name
         assert job.get("secrets") == claim[0].get("secrets"), name
 
+
+@pytest.mark.parametrize(("started_by", "conclusion", "tracks"), [
+    ("workflow_run", "failure", True),
+    ("workflow_run", "success", True),
+    ("workflow_run", "skipped", False),
+    ("workflow_dispatch", "failure", False),
+])
+def test_the_tracker_follows_only_runs_a_canary_started(started_by, conclusion, tracks):
+    ctx = {"github": {"event_name": "workflow_run",
+                      "event": {"workflow_run": {"event": started_by, "conclusion": conclusion}}},
+           "inputs": {}}
+    assert gha.condition(load("install-e2e-red.yml")["jobs"]["track"]["if"], ctx) is tracks

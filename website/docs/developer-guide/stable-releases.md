@@ -358,7 +358,9 @@ Pull requests and pushes to `main` run no E2E suite. After each successful
 `Canary Release`, `Canary E2E` (`canary-e2e.yml`) runs a claim's E2E calls (full
 CI with `release: true`, install/update E2E, Windows live E2E) on the commit that
 canary tagged, so an E2E regression shows up within a day of landing rather than
-at the next claim. It only reports: the canary does not wait for it.
+at the next claim. It only reports: the canary does not wait for it, and
+`install-e2e-red.yml` keeps one `install-e2e-red` issue open while the latest run
+is red.
 
 ## Canary and one-off desktop identities
 

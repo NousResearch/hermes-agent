@@ -104,6 +104,23 @@ def test_plugins_and_bundled_skills_are_not_judged(tmp_path):
         "the curator's archive holds USER skills and is judged"
 
 
+def test_a_profile_cache_rebuilt_by_the_upgrade_is_advisory_only(tmp_path):
+    # profiles/<p>/cache/schema_columns.json is rewritten whenever a release changes
+    # the session schema; the root's cache/ is never judged, so a profile's must not be.
+    home = _home(tmp_path)
+    cache = os.path.join(home, "profiles", "second", "cache")
+    os.makedirs(cache, exist_ok=True)
+    with open(os.path.join(cache, "schema_columns.json"), "w") as f:
+        f.write('{"schema_hash": "old"}')
+    snap = _snapshot(home)
+    assert "profiles/second/cache/schema_columns.json" in snap["advisory"]
+    with open(os.path.join(cache, "schema_columns.json"), "w") as f:
+        f.write('{"schema_hash": "new"}')
+    report = _verify(home, snap)
+    assert report["ok"], report
+    assert "profiles/second/cache/schema_columns.json" in report["advisory"]["modified"]
+
+
 # --- the contract -----------------------------------------------------------
 
 def test_verify_passes_when_nothing_changed(tmp_path):

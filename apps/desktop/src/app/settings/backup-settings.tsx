@@ -48,7 +48,7 @@ type Phase =
   | { kind: 'agents' }
   | { kind: 'confirm'; agent: DesktopCloudAgent }
   | { kind: 'working'; agent: DesktopCloudAgent; progress: TransferProgress }
-  | { kind: 'done'; agent: DesktopCloudAgent; target: TransferEndpoint; undoArchive: string }
+  | { kind: 'done'; agent: DesktopCloudAgent; botsOff: string[]; target: TransferEndpoint; undoArchive: string }
   | { kind: 'undoing'; agent: DesktopCloudAgent; line?: string }
   | { kind: 'undone'; agent: DesktopCloudAgent }
   | { kind: 'error'; message: string; retry: () => void; undo?: () => void }
@@ -135,8 +135,20 @@ interface TransferCardProps {
   owner: TransferEndpoint
 }
 
+/** The done line, plus which bots came over switched off (when any did). */
+function doneBody(copy: Copy, agent: string, botsOff: string[], locale: string): string {
+  if (!botsOff.length) {
+    return copy.doneHelp(agent)
+  }
+
+  const bots = new Intl.ListFormat(locale, { style: 'long', type: 'conjunction' }).format(botsOff)
+
+  return `${copy.doneHelp(agent)} ${copy.botsOff(bots, agent)}`
+}
+
 function TransferCard({ copy, hint, owner }: TransferCardProps) {
   const navigate = useNavigate()
+  const { locale } = useI18n()
   const [phase, setPhase] = useState<Phase>({ kind: 'agents' })
   const abort = useRef<AbortController | null>(null)
   const undoPoints = useRef(createUndoLedger())
@@ -169,7 +181,7 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
       })
 
       const point = undoPoints.current.get(agent.id) ?? { archive: result.undoArchive, target: connected }
-      setPhase({ agent, kind: 'done', target: point.target, undoArchive: point.archive })
+      setPhase({ agent, botsOff: result.messagingOff, kind: 'done', target: point.target, undoArchive: point.archive })
     } catch (error) {
       if (controller.signal.aborted) {
         return
@@ -274,7 +286,7 @@ function TransferCard({ copy, hint, owner }: TransferCardProps) {
               primary: true
             }
           ]}
-          body={copy.doneHelp(phase.agent.name)}
+          body={doneBody(copy, phase.agent.name, phase.botsOff, locale)}
           title={copy.doneTitle}
         />
       ),

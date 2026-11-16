@@ -23,6 +23,8 @@ export interface ActionStatus {
   running: boolean
   /** A keep-host import's undo point once it has written it; still present if the import fails. */
   undo_archive?: null | string
+  /** The messaging platforms a transfer's restore switched off (`hermes import --messaging-off`). */
+  messaging_off?: string[]
 }
 
 export type TransferPhase = 'backup' | 'restore' | 'upload'
@@ -37,6 +39,8 @@ export interface TransferProgress {
 export interface TransferResult {
   /** The cloud agent's own backup, taken before the restore: what Undo puts back. */
   undoArchive: string
+  /** The messaging bots that came over switched off on the cloud agent (their names). */
+  messagingOff: string[]
 }
 
 /** The restore failed after it was requested. With `undoArchive` set the cloud agent had already
@@ -110,14 +114,15 @@ export interface WaitOptions {
   tolerateFailures?: number
 }
 
-/** Poll an action until it stops; a non-zero exit is an error carrying its last lines. */
+/** Poll an action until it stops and return its last status; a non-zero exit is an error carrying
+ *  its last lines. */
 export async function waitForAction(
   request: TransferRequestFn,
   owner: TransferEndpoint,
   name: string,
   onLine: (line: string) => void,
   { onUndoArchive, signal, timing = realTiming, tolerateFailures = 0 }: WaitOptions = {}
-): Promise<void> {
+): Promise<ActionStatus> {
   let failures = 0
   let undoReported = false
 
@@ -158,7 +163,7 @@ export async function waitForAction(
         throw new Error(failureText(status.lines) || `${name} failed.`)
       }
 
-      return
+      return status
     }
   }
 }
@@ -392,16 +397,23 @@ export async function transferAgent(
   })
 
   let undoArchive: null | string = null
+  let finished: ActionStatus
 
   try {
-    await waitForAction(request, target, started.name || 'import', line => onProgress({ line, phase: 'restore' }), {
-      onUndoArchive: archivePath => {
-        undoArchive = archivePath
-        onUndoArchive?.(archivePath)
-      },
-      timing,
-      tolerateFailures: POLL_FAILURES
-    })
+    finished = await waitForAction(
+      request,
+      target,
+      started.name || 'import',
+      line => onProgress({ line, phase: 'restore' }),
+      {
+        onUndoArchive: archivePath => {
+          undoArchive = archivePath
+          onUndoArchive?.(archivePath)
+        },
+        timing,
+        tolerateFailures: POLL_FAILURES
+      }
+    )
   } catch (error) {
     throw new TransferRestoreError(errorText(error), undoArchive)
   }
@@ -410,7 +422,7 @@ export async function transferAgent(
     throw new TransferRestoreError('The cloud agent did not report its undo point.', null)
   }
 
-  return { undoArchive }
+  return { messagingOff: finished.messaging_off ?? [], undoArchive }
 }
 
 export interface UndoPoint {

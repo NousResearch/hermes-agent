@@ -136,7 +136,8 @@ async def append_transfer_chunk(request: Request, profile: Optional[str] = None)
 
 @router.post("/api/ops/transfer/restore")
 async def restore_transfer(request: Request, profile: Optional[str] = None):
-    """Restore a finished transfer upload with ``hermes import --keep-host``."""
+    """Restore a finished transfer upload with ``hermes import --keep-host --messaging-off``: the
+    agent's bots arrive switched off, so the computer it came from keeps answering."""
     from hermes_cli.web_routers.ops import _spawn_import
     profile = destructive_profile(profile, "POST /api/ops/transfer/restore")
     body = await _bounded_json(request)
@@ -149,7 +150,7 @@ async def restore_transfer(request: Request, profile: Optional[str] = None):
     if not await asyncio.to_thread(zipfile.is_zipfile, path):
         path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="The upload is not a valid zip file")
-    started = _spawn_import(str(path), True, profile, keep_host=True)
+    started = _spawn_import(str(path), True, profile, keep_host=True, messaging_off=True)
     await asyncio.to_thread(_prune_uploads, path)
     return {**started, "archive": str(path), "keep_host": True}
 

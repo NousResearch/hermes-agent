@@ -33,7 +33,7 @@ export interface BackupTransferTranslations {
   replaces: string[]
   keepsTitle: string
   keeps: string[]
-  botNote: string
+  botNote: (agent: string) => string
   undoNote: (agent: string) => string
   acknowledge: (agent: string) => string
   replace: (agent: string) => string
@@ -43,6 +43,8 @@ export interface BackupTransferTranslations {
   stepRestore: (agent: string) => string
   doneTitle: string
   doneHelp: (agent: string) => string
+  /** `bots`: the platforms the transfer switched off, already joined for the locale ("Telegram and Discord"). */
+  botsOff: (bots: string, agent: string) => string
   undo: string
   undoing: string
   openAgent: string

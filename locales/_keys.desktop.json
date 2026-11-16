@@ -2989,6 +2989,7 @@
     "settings.backup.backupSaved",
     "settings.backup.backupTitle",
     "settings.backup.botNote",
+    "settings.backup.botsOff",
     "settings.backup.cancel",
     "settings.backup.chooseAgent",
     "settings.backup.confirmTitle",

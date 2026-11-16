@@ -146,15 +146,25 @@ class CompactionWindowMixin:
         inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the summarizer
         reads the pointer and the model can still open the exact output. Local backend only (elsewhere the
         summarizer reads the bodies as before); a result whose write fails stays whole."""
-        from agent.context_compressor import _PRUNE_MIN_CHARS, _tool_calls_by_id
+        from agent.context_compressor import _PRUNE_MIN_CHARS, _rewritten, _tool_calls_by_id
         from agent.context_compressor_prune_archive import archive_pruned_originals
         from tools.tool_result_storage import _backend_reads_host_files
 
         if not _backend_reads_host_files():
             return plan, 0, []
         demoted, calls = list(plan), _tool_calls_by_id(plan)
-        changed = sum(self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS)
-                      for i in range(start, end) if i not in skip)
+        changed = 0
+        for i in range(start, end):
+            if i in skip:
+                continue
+            if self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS):
+                changed += 1
+            elif (plan[i].get("role") == "tool" and isinstance(plan[i].get("content"), (list, dict))
+                  and plan[i]["content"]):
+                # Plain text-block/JSON tool results have no image to strip. They are still about to
+                # be replaced by the summary, so archive them just like string bodies.
+                demoted[i] = _rewritten(plan[i], "[Structured tool output archived]")
+                changed += 1
         if not changed:
             return plan, 0, []
         rows, written, kept = archive_pruned_originals(plan, demoted, getattr(self, "_session_id", "") or "")

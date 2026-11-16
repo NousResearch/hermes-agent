@@ -245,3 +245,21 @@ def test_only_a_backend_that_reads_host_files_gets_archive_pointers(home, monkey
     assert bool(_archived(home)) is archives
     assert (ARCHIVE_POINTER_SEP in prompt) is archives
     assert "x" * 5_000 not in prompt
+
+
+def test_compaction_window_archives_structured_tool_text_instead_of_losing_it(home):
+    """A text-block tool result has no image to strip; the handoff still replaces its row."""
+    body = [{"type": "text", "text": "Important result: " + "Q" * 4_000}]
+    msgs = _round("structured", "placeholder")
+    msgs[1]["content"] = body
+    msgs[1]["api_content"] = body
+
+    projected, count, _written = _compressor()._offload_window_results(msgs, 0, len(msgs))
+
+    assert count == 1
+    stub = projected[1]["content"]
+    assert isinstance(stub, str) and ARCHIVE_POINTER_SEP in stub
+    (path,) = _pointer_paths(stub)
+    assert path.read_bytes() == json.dumps(body, ensure_ascii=False).encode("utf-8")
+    assert "api_content" not in projected[1]  # no stale full body can bypass the stub
+    assert msgs[1]["content"] == body  # the source transcript stays untouched

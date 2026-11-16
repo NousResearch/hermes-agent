@@ -134,6 +134,28 @@ def test_the_undo_point_puts_the_agent_back(homes, monkeypatch):
     assert json.loads((dst / "auth.json").read_text())["providers"] == before_auth["providers"]
 
 
+def test_undo_restores_existing_external_memory_provider_file(homes, monkeypatch):
+    """A source's external memory file must not irreversibly replace the cloud copy."""
+    src, dst, tmp = homes
+    archive = _backup(monkeypatch, src, tmp / "src.zip")
+    member = "_external/memory-provider/store.json"
+    # The source and cloud homes are on different hosts; emulate the source's
+    # real ``hermes backup`` external member in this shared-filesystem fixture.
+    with zipfile.ZipFile(archive, "a") as zf:
+        zf.writestr(member, '{"memory": "source"}\n')
+    _write(tmp, "memory-provider/store.json", '{"memory": "cloud"}\n')
+    external_file = tmp / "memory-provider/store.json"
+    undo = tmp / "undo.zip"
+
+    _import(monkeypatch, dst, archive, keep_host=True, undo_point=str(undo))
+    assert external_file.read_text() == '{"memory": "source"}\n'
+    with zipfile.ZipFile(undo) as zf:
+        assert zf.read(member) == b'{"memory": "cloud"}\n'
+
+    _import(monkeypatch, dst, undo, keep_host=True, undo_point=str(tmp / "undo2.zip"))
+    assert external_file.read_text() == '{"memory": "cloud"}\n'
+
+
 def test_plain_import_is_unchanged(homes, monkeypatch):
     """Without --keep-host the archive's own Nous sign-in and config win, as before."""
     src, dst, tmp = homes

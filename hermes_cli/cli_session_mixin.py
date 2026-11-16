@@ -1075,6 +1075,7 @@ class CLISessionMixin:
                 return
             if result.status == "compressed":
                 self._adopt_compress_result(result)
+            if result.committed:  # a no-op, aborted or refused summary buys no priming nor a fresh budget
                 prime_after_compaction(self.agent, self.conversation_history)
 
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:

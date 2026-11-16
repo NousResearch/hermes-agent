@@ -13,7 +13,10 @@ When a chat's cache is about to expire the controller makes ONE decision, in thi
    compaction threshold, and it grew since its last compaction. The compacted chat is primed (one
    request writes its smaller prefix) and gets one fresh budget; at most one compaction per idle
    stretch. The surface that owns the chat (CLI input loop, TUI ticker, gateway watcher) runs the
-   compaction through the normal pipeline, polling :func:`claim_compaction`.
+   compaction through the normal pipeline, polling :func:`claim_compaction`. A budget ends at
+   whichever comes first: its keep-alives, or the owner releasing the agent (gateway idle/LRU
+   eviction, TUI idle reap); at release the owner asks :func:`claim_compaction_at_release` and, when
+   due, compacts before it releases. Nothing is warmed after a release.
 3. EXPIRE: otherwise nothing; the entry dies.
 4. COLD RETURN lives in ``agent.turn_proactive_prune``: the next request after a proven or
    declared expiry offloads old tool results first.
@@ -39,7 +42,7 @@ import logging
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
@@ -585,11 +588,17 @@ class PromptCacheWarmer:
         if not usage:
             return "cache refresh returned no usage"
         try:
+            from agent.prompt_cache_clock import request_write_tier
+            from agent.turn_usage import with_write_tier
             from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
             canonical = normalize_usage(usage, provider=b["provider"], api_mode=b["api_mode"])
+            # Priced at the tier the request declared (a 1h write is 2x input), as a normal response is.
+            priced = with_write_tier(canonical, request_write_tier(
+                run.api_kwargs, canonical, provider=b["provider"], base_url=b["base_url"], api_mode=b["api_mode"],
+                model=b["model"]))
             cost = estimate_usage_cost(
-                b["model"], canonical, provider=b["provider"], base_url=b["base_url"], api_key=b["api_key"],
+                b["model"], priced, provider=b["provider"], base_url=b["base_url"], api_key=b["api_key"],
             )
             amount = float(cost.amount_usd) if cost.amount_usd is not None else None
             if amount is not None:
@@ -878,6 +887,40 @@ def claim_compaction(agent: Any, *, now: Optional[float] = None) -> bool:
         warmer = agent._prompt_cache_warmer
         with warmer._lock:
             warmer._spent, warmer._compacted = None, True
+    return due
+
+
+def release_compaction_due(agent: Any, *, now: Optional[float] = None) -> tuple[bool, str]:
+    """``(due, reason)``: step 2 at the owner's release. A budget ends at whichever comes first, its 3
+    keep-alives or the owner releasing the agent (gateway idle/LRU eviction, TUI idle reap), so a release
+    while a budget is still live (or just spent) decides step 2 now: the same gates as
+    :func:`compaction_due` (warm proven/declared window of 30 minutes or more, half the threshold, growth)
+    with the release as the decision moment."""
+    now = time.time() if now is None else now
+    warmer = getattr(agent, "_prompt_cache_warmer", None)
+    if warmer is None:
+        return False, "budget_not_spent"
+    with warmer._lock:
+        run, spent, compacted = warmer._run, warmer._spent, warmer._compacted
+    if spent is None and run is not None and not run.priming:
+        spent = _Spent(now, run.deadline_at, run.ttl_s, run.witness, run.after_compaction)
+    if spent is None:
+        return False, "compacted_this_stretch" if compacted else "budget_not_spent"
+    reason = _session_gate(agent) or _window_gate(agent, replace(spent, due_at=min(spent.due_at, now)), now)
+    if reason is None and not _grew_enough(agent):
+        reason = "no_growth"
+    return reason is None, reason or "due"
+
+
+def claim_compaction_at_release(agent: Any, *, now: Optional[float] = None) -> bool:
+    """:func:`release_compaction_due`, and when due, end the budget now: no keep-alive goes out after the
+    release (nor during the compaction), and the stretch compacts once. The caller compacts, then releases."""
+    due, _reason = release_compaction_due(agent, now=now)
+    if due:
+        warmer = agent._prompt_cache_warmer
+        warmer.cancel("owner releasing the agent: compacting first")
+        with warmer._lock:
+            warmer._compacted = True
     return due
 
 

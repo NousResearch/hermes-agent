@@ -108,10 +108,15 @@ def _fold_moa_usage(agent, canonical_usage):
 def _with_declared_write_tier(usage: Any, event: Any) -> Any:
     """A route that honours the tier it was sent but reports no split (OpenRouter Claude) bills its
     writes at the requested tier: name it so pricing charges a 1h write at the 1h rate."""
-    if usage.cache_write_by_ttl or not usage.cache_write_tokens or event is None:
+    if event is None:
         return usage
     from agent.prompt_cache_clock import declared_write_tier
-    if declared_write_tier(event) != "1h":
+    return with_write_tier(usage, declared_write_tier(event))
+
+
+def with_write_tier(usage: Any, tier: str | None) -> Any:
+    """*usage* with its unsplit cache writes named as *tier* when that is ``1h`` (priced at the 1h rate)."""
+    if usage.cache_write_by_ttl or not usage.cache_write_tokens or tier != "1h":
         return usage
     from dataclasses import replace
     return replace(usage, cache_write_by_ttl=(("1h", usage.cache_write_tokens),))

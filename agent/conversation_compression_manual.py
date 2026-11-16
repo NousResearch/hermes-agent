@@ -45,6 +45,17 @@ class CompressResult:
     def removed(self) -> int:
         return len(self.before_messages) - len(self.after_messages)
 
+    @property
+    def committed(self) -> bool:
+        """The chat got smaller: ``compressed`` and not a no-op, an aborted summary or a refused one."""
+        return self.status == "compressed" and summary_committed(self.summary)
+
+
+def summary_committed(summary: Optional[dict[str, Any]]) -> bool:
+    """A ``summarize_manual_compression`` payload for a compaction that replaced history (``compress_now``
+    reports ``compressed`` for an unchanged history too; its summary flags tell)."""
+    return bool(summary) and not (summary.get("noop") or summary.get("aborted") or summary.get("refused_would_grow"))
+
 
 def parse_compress_args(raw_args: str) -> CompressRequest:
     """One parser for every surface: flags anywhere, then the boundary-aware / focus positional forms."""

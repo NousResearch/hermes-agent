@@ -187,3 +187,58 @@ def test_an_unknown_clock_makes_nothing_act():
     assert pcl.compaction_due(agent) == (False, "budget_not_spent")
     assert prompt_cache_is_cold(agent) is False
     assert agent._anthropic_client.calls == []
+
+
+def test_a_release_ends_a_live_budget_and_decides_step_two_then():
+    """The owner releasing the agent ends the budget even with keep-alives left (the gateway evicts an
+    idle 1h chat after an hour, before 3 keep-alives at ~54 minutes run out): step 2 is decided now and
+    the release cancels warming, so no keep-alive follows; the stretch never compacts twice."""
+    agent = _chat()
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    assert _respond(agent, _request(), _WRITE_1H) is None
+    pcl.end_turn_prompt_cache_warming(agent)
+    assert warmer._run is not None and warmer._run.warm_count == 0  # three keep-alives still to go
+    assert pcl.compaction_due(agent) == (False, "budget_not_spent")  # the tick alone would wait ~3h
+
+    assert pcl.claim_compaction_at_release(agent) is True
+    assert warmer._run is None and agent._anthropic_client.calls == []
+    assert pcl.release_compaction_due(agent) == (False, "compacted_this_stretch")
+
+    small = _chat(tokens=50_000)  # under half the threshold: released as before, nothing compacted
+    assert _respond(small, _request(), _WRITE_1H) is None
+    assert pcl.release_compaction_due(small) == (False, "small_context")
+
+
+def test_a_one_hour_priming_write_with_no_tier_split_is_billed_at_the_one_hour_rate(monkeypatch):
+    """OpenRouter Claude honours the 1h marker but reports no 5m/1h split: the priming write (and a missed
+    replay) is priced at the tier the request declared, 2x input, as the loop prices its own responses."""
+    from agent.usage_pricing import PricingEntry
+
+    official = PricingEntry(input_cost_per_million=Decimal(5), output_cost_per_million=Decimal(25),
+                            cache_read_cost_per_million=Decimal("0.5"), cache_write_cost_per_million=Decimal("6.25"),
+                            source="official_docs_snapshot")  # the table's write rate is the 5m tier: 1.25x input
+    monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: official)
+
+    class _ChatClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def with_options(self, **kw):
+            return self
+
+        def _create(self, **kw):  # a 100k-token write, the OpenRouter usage shape (no cache_creation split)
+            return SimpleNamespace(usage=SimpleNamespace(
+                prompt_tokens=100_000, completion_tokens=1, cache_read_input_tokens=0,
+                cache_creation_input_tokens=100_000), choices=[])
+
+    agent = _chat(api_mode="chat_completions", provider="openrouter", base_url="https://openrouter.ai/api/v1",
+                  client=_ChatClient(), model="anthropic/claude-opus-4-7")
+    agent.client = agent._anthropic_client
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    request = _request()
+    request["model"] = agent.model
+    request["messages"][0]["content"][0]["text"] = "compacted handoff " * 20_000
+    assert warmer.prime(request) is None
+    _fire(warmer)
+    one_hour_write = 100_000 * 2 * 5 / 1e6  # 2x the $5/M input rate
+    assert agent.session_estimated_cost_usd == pytest.approx(one_hour_write + 25 / 1e6, rel=0, abs=1e-9)

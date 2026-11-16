@@ -156,6 +156,45 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=TRIGGER)
         logger.info("Cache-expiry compaction: session=%s", key)
 
+    def _compact_then_release(self, key: str, agent) -> bool:
+        """An agent-cache eviction (idle TTL, LRU cap): a budget ends at its keep-alives or at the release,
+        whichever comes first, so a chat whose step 2 is due at release (``claim_compaction_at_release``,
+        which ends the budget: no keep-alive after it) is compacted through the cache-expiry job and its
+        evicted agent released after that. True when the gateway loop now owns the release (the decision
+        runs there: the LRU cap evicts from a turn thread under the cache lock, and the decision reads the
+        session store); False leaves the caller to release as before."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        loop = getattr(self, "_gateway_loop", None)
+        if (agent is None or agent is _AGENT_PENDING_SENTINEL or getattr(agent, "_prompt_cache_warmer", None) is None
+                or loop is None or loop.is_closed() or not getattr(self, "_running", False)):
+            return False
+        loop.call_soon_threadsafe(self._decide_compact_then_release, key, agent)
+        return True
+
+    def _decide_compact_then_release(self, key: str, agent) -> None:
+        from agent.prompt_cache_lifecycle import claim_compaction_at_release
+        jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
+        try:
+            due = key not in jobs and claim_compaction_at_release(agent)
+        except Exception:
+            logger.debug("release-time compaction check failed for %s", key, exc_info=True)
+            due = False
+        if not due:
+            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}",
+                                       inline_fallback=True, session_key=key)
+            return
+        slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))
+        task = self._retain_background_task(asyncio.ensure_future(self._compact_then_release_job(key, agent, slots)))
+        jobs[key] = task
+        task.add_done_callback(lambda _done: jobs.pop(key, None))
+
+    async def _compact_then_release_job(self, key: str, agent, slots: asyncio.Semaphore) -> None:
+        try:
+            await self._compact_before_cache_expiry(key, agent, slots)
+        finally:
+            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-release-{key[:24]}",
+                                       inline_fallback=True, session_key=key)
+
     def _session_stall_timeout_seconds(self) -> float:
         """Return configured stall timeout (seconds); 0 disables the watchdog."""
         from gateway.run import _float_env

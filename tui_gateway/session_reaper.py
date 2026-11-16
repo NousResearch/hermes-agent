@@ -267,6 +267,10 @@ def _reap_idle_sessions() -> None:
     with _sessions_lock:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
+        with _sessions_lock:
+            session = _sessions.get(sid)
+        if session is not None and _compact_then_close(sid, session, end_reason="idle_timeout") is not None:
+            continue  # step 2 at release: that job compacts, then closes it
         _close_session_by_id(
             sid, end_reason="idle_timeout",
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
@@ -413,6 +417,8 @@ def _enforce_session_cap() -> None:
         with _sessions_lock:
             if len(_sessions) <= cap:
                 break
+        if _compact_then_close(sid, _s, end_reason="lru_evict") is not None:
+            continue  # step 2 at release: that job compacts, then closes it
         _close_session_by_id(
             sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_reapable(vs, session))
 

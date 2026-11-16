@@ -110,3 +110,87 @@ def test_a_job_whose_window_closed_before_it_started_does_not_compact(server, mo
     for thread in server._cache_expiry_tick() or ():
         thread.join(timeout=10)
     assert agent.calls == [] and len(session["history"]) == 8 and session["running"] is False
+
+
+def test_a_job_queued_behind_busy_slots_never_compacts_a_chat_closed_meanwhile(server, monkeypatch):
+    """The job holds the session dict while it waits for a summary slot; the user closes the chat
+    (``_pop_session_by_id`` sets ``_closing``). The busy claim refuses it: nothing is summarized."""
+    import agent.prompt_cache_lifecycle as decision
+
+    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "prime_after_compaction", lambda agent, history: None)
+    monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
+    agent = _Agent()
+    session = _session(agent)
+    monkeypatch.setattr(server, "_sessions", {"s": session})
+    held = [server._cache_expiry_slots.acquire(timeout=5) for _ in range(server._CACHE_EXPIRY_CONCURRENCY)]
+    try:
+        (thread,) = server._cache_expiry_tick()
+        with server._sessions_lock:  # what a close does as it unregisters the chat
+            server._sessions.pop("s")
+            session["_closing"] = True
+    finally:
+        for _ in held:
+            server._cache_expiry_slots.release()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert agent.calls == [] and len(session["history"]) == 8 and session["running"] is False
+
+
+@pytest.mark.parametrize("outcome", ["noop", "aborted", "refused_would_grow"])
+def test_a_compaction_that_did_not_shrink_the_chat_neither_primes_nor_grants_a_budget(server, monkeypatch, outcome):
+    import agent.prompt_cache_lifecycle as decision
+
+    primed = []
+    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "prime_after_compaction", lambda agent, history: primed.append(history))
+    monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
+
+    class _Unchanged(_Agent):
+        def __init__(self):
+            super().__init__()
+            self.context_compressor = type("C", (), {})()
+            if outcome != "noop":
+                setattr(self.context_compressor, {"aborted": "_last_compress_aborted",
+                                                  "refused_would_grow": "_last_compress_refused_would_grow"}[outcome],
+                        True)
+
+        def _compress_context(self, messages, system_message, **kwargs):
+            self.calls.append(kwargs)
+            return list(messages), "prompt"  # the history came back unchanged
+
+    agent = _Unchanged()
+    session = _session(agent)
+    monkeypatch.setattr(server, "_sessions", {"s": session})
+    for thread in server._cache_expiry_tick() or ():
+        thread.join(timeout=10)
+    assert len(agent.calls) == 1 and primed == []
+
+    committed = _Agent()
+    monkeypatch.setattr(server, "_sessions", {"s2": _session(committed)})
+    for thread in server._cache_expiry_tick() or ():
+        thread.join(timeout=10)
+    assert len(primed) == 1 and len(primed[0]) == 2  # a committed compaction primes the smaller chat
+
+
+def test_the_idle_reaper_compacts_a_due_chat_before_it_closes_it(server, monkeypatch):
+    """A budget ends at its keep-alives or at the release: the TTL reaper's close of a chat whose step 2 is
+    due compacts it first (no priming: nothing is warmed after a release), then closes it."""
+    import agent.prompt_cache_lifecycle as decision
+
+    order, primed = [], []
+    monkeypatch.setattr(decision, "claim_compaction_at_release", lambda agent, **k: order.append("claimed") or True)
+    monkeypatch.setattr(decision, "prime_after_compaction", lambda agent, history: primed.append(history))
+    monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
+    monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: order.append(("closed", sid)))
+    monkeypatch.setattr(server, "_session_is_reapable", lambda sid, session: True)
+    agent = _Agent()
+    session = _session(agent)
+    monkeypatch.setattr(server, "_sessions", {"s": session})
+
+    thread = server._compact_then_close("s", session, end_reason="idle_timeout")
+    assert thread is not None
+    thread.join(timeout=10)
+
+    assert [c["trigger"] for c in agent.calls] == ["cache_expiry"] and len(session["history"]) == 2
+    assert order == ["claimed", ("closed", "s")] and primed == []

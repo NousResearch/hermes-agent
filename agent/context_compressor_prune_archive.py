@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Container, Optional
 
 ARCHIVE_POINTER_SEP = " — full result: "
 _ARCHIVE_POINTER_RE = re.compile(r" — full result: \S*cache/pruned/[A-Za-z0-9_.-]+")
@@ -36,13 +36,15 @@ def _with_pointer(content: Any, display_path: str) -> Any:
 
 
 def archive_pruned_originals(
-    messages: list[dict[str, Any]], pruned: list[dict[str, Any]], session_id: str,
+    messages: list[dict[str, Any]], pruned: list[dict[str, Any]], session_id: str, *,
+    skip: Container[int] = frozenset(),
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """Write the original of every tool row *pruned* changed; returns ``(rows, written host paths, reverted)``.
 
     A changed row whose archive write fails is put back to its original (``reverted`` counts them),
     so the caller re-checks its reclaim gate and never commits a stub without a file behind it. A row
-    that already names its archive is left as the prune made it: its original is on disk.
+    that already names its archive is left as the prune made it: its original is on disk. Rows at
+    *skip* indices are left as they are (another pass already archived what replaces them).
     """
     from agent.context_compressor import _tool_calls_by_id
     from tools.tool_result_storage import write_pruned_original
@@ -50,8 +52,8 @@ def archive_pruned_originals(
     call_id_to_tool = _tool_calls_by_id(messages)
     rows, written, reverted = list(pruned), [], 0
     for i, (original, replacement) in enumerate(zip(messages, pruned)):
-        if (not isinstance(original, dict) or original.get("role") != "tool" or not isinstance(replacement, dict)
-                or replacement.get("content") == original.get("content")):
+        if (i in skip or not isinstance(original, dict) or original.get("role") != "tool"
+                or not isinstance(replacement, dict) or replacement.get("content") == original.get("content")):
             continue
         body = original.get("content")
         if isinstance(body, str) and has_archive_pointer(body):
@@ -69,7 +71,8 @@ def archive_pruned_originals(
 
 
 def archive_compaction_drops(
-    messages: list[dict[str, Any]], dropped: list[dict[str, Any]], session_id: str,
+    messages: list[dict[str, Any]], dropped: list[dict[str, Any]], session_id: str, *,
+    skip: Container[int] = frozenset(),
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """:func:`archive_pruned_originals` for a compaction's tool-result drops (window prune, lean tail).
 
@@ -81,7 +84,38 @@ def archive_compaction_drops(
 
     if not _backend_reads_host_files():
         return dropped, [], 0
-    return archive_pruned_originals(messages, dropped, session_id)
+    return archive_pruned_originals(messages, dropped, session_id, skip=skip)
+
+
+ARCHIVE_LIST_HEADING = "Archived tool output (exact originals; read_file a path to recover one):"
+
+
+def _row_text(row: Any) -> str:
+    content = row.get("content") if isinstance(row, dict) else None
+    return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+
+
+def pruned_archive_refs(rows: Any) -> set[str]:
+    """``cache/pruned/<name>`` archives the message *rows* point at."""
+    from tools.tool_result_storage import PRUNED_SUBDIR, archive_refs_in_text
+
+    return {ref for ref in archive_refs_in_text(*map(_row_text, rows)) if ref.startswith(PRUNED_SUBDIR + "/")}
+
+
+def archive_list_for_summary(named: set[str], kept: list[dict[str, Any]]) -> str:
+    """The *named* archives no row of *kept* (the committed transcript, summary included) points at, as a
+    deterministic list to append to the committed summary; ``""`` when none. The generated summary may drop
+    a pointer: this list keeps the model's recovery path, and the reference the retention sweep reads,
+    whatever the summarizer wrote."""
+    from pathlib import PurePath
+
+    from hermes_constants import display_hermes_home
+
+    missing = named - pruned_archive_refs(kept)
+    if not missing:
+        return ""
+    home = PurePath(display_hermes_home()).as_posix()
+    return "\n\n" + ARCHIVE_LIST_HEADING + "".join(f"\n- {home}/{ref}" for ref in sorted(missing))
 
 
 def discard_archives(paths: list[str]) -> None:

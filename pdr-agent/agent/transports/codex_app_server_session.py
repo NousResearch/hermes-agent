@@ -844,6 +844,10 @@ def _get_hermes_version() -> str:
     try:
         from importlib.metadata import version
 
-        return version("hermes-agent")
+        from importlib.metadata import PackageNotFoundError
+        try:
+            return version("pdr-agent")  # 引擎发行名；兼容上游名 hermes-agent
+        except PackageNotFoundError:
+            return version("hermes-agent")
     except Exception:  # pragma: no cover
         return "0.0.0"

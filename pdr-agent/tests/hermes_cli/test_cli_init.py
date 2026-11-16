@@ -50,7 +50,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     try:
         with patch.dict(sys.modules, prompt_toolkit_stubs), \
              patch.dict("os.environ", clean_env, clear=False):
-            from hermes_agent import cli as _cli_mod
+            _cli_mod = importlib.import_module("hermes_agent.cli")
             _cli_mod = importlib.reload(_cli_mod)
             with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
                  patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
@@ -67,7 +67,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         # the prompt_toolkit output cache reset in this dir's conftest).
         # Reload once more with the real modules visible so cli's globals
         # rebind cleanly.
-        from hermes_agent import cli as _cli_restore
+        _cli_restore = importlib.import_module("hermes_agent.cli")
         importlib.reload(_cli_restore)
 
 

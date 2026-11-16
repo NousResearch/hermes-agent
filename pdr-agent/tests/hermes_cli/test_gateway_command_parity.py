@@ -14,7 +14,7 @@ def _generator():
 
 
 def test_committed_parity_table_matches_every_client_verdict():
-    """A command whose gateway verdict, classic route, Ink/Desktop/ACP handling or port note
+    """A command whose gateway verdict, classic route, Ink/ACP handling or port note
     changes without re-running the generator is drift; every registry command has a row."""
     gen = _generator()
     rendered = gen.render()

@@ -585,7 +585,7 @@ def core_requirement_error(declaration, extras: Iterable[str] | None = None,
         installed = _selected_member_extras(document, _recorded_extras() if extras is None else extras, environment)[0]
         specs += [spec for name, values in document["project"].get("optional-dependencies", {}).items()
                   if _extra_key(name) in installed for spec in values]
-    pins = [requirement for requirement in _self_references(specs, "hermes-agent")
+    pins = [requirement for own in ("hermes-agent", "pdr-agent") for requirement in _self_references(specs, own)
             if requirement.specifier and _reference_active(requirement, ("", *sorted(installed)), environment)]
     if not pins:
         return None

@@ -43,7 +43,7 @@ PDR 后端通过引擎的消息网关（`gateway/`，api_server 平台，默认�
 ## 本版本相对上游的变化
 
 - 项目名改为 `pdr-agent`（`pyproject.toml`、`package.json`）。
-- 移除与 PDR 无关的部分：桌面客户端（`apps/`）、网页仪表盘前端（`web/`）及对应的打包脚本、测试和 CI，还有贡献者名录、外语翻译、Nix 打包、独立安装脚本、上游评审机器人配置。
+- 移除与 PDR 无关的部分：桌面客户端（`apps/`）、网页仪表盘前端（`web/`）及对应的打包脚本、测试和 CI，还有贡献者名录、外语翻译、Nix 打包、上游评审机器人配置。
 - 文件归类：
   - 根目录 19 个单文件模块移入 `hermes_agent/`，例如 `import run_agent` 改为 `from hermes_agent import run_agent`；`hermes_bootstrap.py` 留在根目录：启动器以 `python -I` 在 `hermes_agent` 可导入之前就要先执行它；
   - 67 个 `hermes_state_*.py` 移入 `hermes_agent/state/`，例如 `import hermes_state_sessions` 改为 `import hermes_agent.state.sessions`；存储本体 `hermes_state.py` 留在根目录。`hermes_agent/state/` 刻意不加载存储本体，导入单个主题模块不会引起循环导入；

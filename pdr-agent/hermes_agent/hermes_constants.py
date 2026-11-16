@@ -1455,7 +1455,7 @@ def project_venv_dir(project_root) -> Path | None:
     # Out-of-tree install: the path is real by construction (never invented), and non-venv installs
     # keep today's ``None`` so the ``or root / "venv"`` fallback cannot install into a base interpreter.
     running = Path(sys.prefix)
-    if (_INSTALL_ROOT == root.resolve()
+    if (Path(__file__).resolve().parent.parent == root.resolve()  # 本模块位于 <repo>/hermes_agent/
             and sys.prefix != sys.base_prefix
             and venv_python_path(running).is_file()
             and _venv_installs_checkout(running, root)):
@@ -1479,7 +1479,9 @@ def _venv_installs_checkout(venv: Path, root: Path) -> bool:
 
     from pm.environments import site_packages
 
-    for dist in distributions(name="hermes-agent", path=[str(site_packages(venv))]):
+    dists = [d for name in ("pdr-agent", "hermes-agent")  # 引擎发行名为 pdr-agent，兼容上游名
+             for d in distributions(name=name, path=[str(site_packages(venv))])]
+    for dist in dists:
         try:
             raw = dist.read_text("direct_url.json")  # windows-footgun: ok — importlib.metadata API, reads utf-8, no encoding=
             url = json.loads(raw or "{}").get("url", "")

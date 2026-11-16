@@ -50,7 +50,7 @@ def fake_install(tmp_path, monkeypatch):
     (root / "venv" / "bin").mkdir(parents=True)
     (root / "venv" / "bin" / "python").write_text("#!fake\n", encoding="utf-8")
     (root / "hermes").write_text("# entrypoint\n", encoding="utf-8")
-    (root / "hermes_agent/run_agent.py").write_text("# agent\n", encoding="utf-8")
+    (root / "run_agent.py").write_text("# agent\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(root))
     store = tmp_path / "tools"
     store.mkdir()

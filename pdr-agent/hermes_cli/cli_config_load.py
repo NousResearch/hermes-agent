@@ -302,7 +302,7 @@ def _init_logging_and_display_from_config() -> None:
         return _cli().CLI_CONFIG.get("display", {}).get(key, default)
 
     for step in (
-        lambda: _im("hermes_logging").setup_logging(mode="cli"),
+        lambda: _im("hermes_agent.hermes_logging").setup_logging(mode="cli"),
         lambda: _im("hermes_cli.config").print_config_warnings(),
         lambda: _im("hermes_cli.skin_engine").init_skin_from_config(_cli().CLI_CONFIG),
         lambda: _im("agent.display").set_tool_preview_max_len(int(_display("tool_preview_length", 0) or 0)),

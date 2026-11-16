@@ -570,7 +570,7 @@ def _owns_launcher(target: Path, root: Path) -> bool:
     except (OSError, UnicodeError, ValueError):
         return False
     paths = {str(root / p) for p in (
-        "hermes", "hermes_agent/run_agent.py", "venv/bin/python", "venv/bin/python3",
+        "hermes", "run_agent.py", "venv/bin/python", "venv/bin/python3",
         "venv/bin/hermes",
         ".hermes/bin/hermes", ".hermes/bin/hermes-acp",
     )}

@@ -52,7 +52,7 @@ def recording():
 
 
 def _site(record):
-    root = os.path.dirname(os.path.abspath(guard.__file__)) + os.sep
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(guard.__file__)))) + os.sep  # hermes_agent/state/loop_guard.py
     path = record['site'].rsplit(':', 1)[0]
     return path.removeprefix(root), record['function']
 

@@ -531,7 +531,7 @@ def _launch_cwd():
     (``terminal_uses_host_cwd``). A tree no longer selected (a later /resume moved away) never decides.
     ``hermes -w`` records the tree in the imported ``cli`` module, ``python -m hermes_agent.cli -w`` in ``__main__``."""
     terminal_cwd = os.getenv("TERMINAL_CWD")
-    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("cli", "__main__"))
+    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("hermes_agent.cli", "cli", "__main__"))
     recorded = {os.path.realpath(tree["path"]) for tree in trees if tree and tree.get("path")}
     if terminal_cwd and os.path.realpath(terminal_cwd) in recorded:
         return os.path.realpath(terminal_cwd)

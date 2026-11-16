@@ -18,7 +18,7 @@ from gateway.runtime_bootstrap import TicketStore
 
 pytestmark = pytest.mark.platforms("posix")
 
-_VECTORS_FILE = Path(__file__).resolve().parents[2] / "apps" / "shared" / "src" / "node" / "control-socket.vectors.json"
+_VECTORS_FILE = Path(__file__).resolve().parents[2] / "ui-tui" / "packages" / "shared" / "src" / "node" / "control-socket.vectors.json"
 _DOC = json.loads(_VECTORS_FILE.read_text(encoding="utf-8"))
 _BOOT_SHA = "1" * 40
 # Reply-only wildcards: values the server generates.

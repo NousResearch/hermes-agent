@@ -356,7 +356,7 @@ class TestRunJobScript:
         (deps / "probe_pkg.py").write_text("VALUE = 42\n", encoding="utf-8")
         snapshot = tmp_path / "workspace-snapshot"
         snapshot.mkdir()
-        (snapshot / "hermes_agent/hermes_constants.py").write_text("STALE = True\n", encoding="utf-8")
+        (snapshot / "hermes_constants.py").write_text("STALE = True\n", encoding="utf-8")
         (deps / "snapshot.pth").write_text(f"{snapshot}\n", encoding="utf-8")
 
         monkeypatch.setattr(

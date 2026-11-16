@@ -106,7 +106,7 @@ def applicable_requirements(specs: tuple[str, ...] | list[str]) -> tuple[str, ..
     from packaging.utils import canonicalize_name
 
     return tuple(spec for spec in specs
-                 if not (req := Requirement(spec)).url and canonicalize_name(req.name) != "hermes-agent")
+                 if not (req := Requirement(spec)).url and canonicalize_name(req.name) not in ("hermes-agent", "pdr-agent"))
 
 
 def unsupported_requirements(specs: tuple[str, ...] | list[str]) -> tuple[str, ...]:

@@ -76,7 +76,7 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     importlib.reload(cfg_mod)
     from hermes_cli import timeouts as to_mod
     importlib.reload(to_mod)
-    from hermes_agent import run_agent as ra_mod
+    ra_mod = importlib.import_module("hermes_agent.run_agent")
     importlib.reload(ra_mod)
 
     agent2 = ra_mod.AIAgent(

@@ -504,7 +504,7 @@ def _session_home_scope(session, cwd: str | None = None, profile: str | None = N
     ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
     record (a session-less catalog request binds the workspace a new session would be seeded with).
     ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651)."""
-    hc = _tools_mod("hermes_constants")
+    hc = _tools_mod("hermes_agent.hermes_constants")
     rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
     if not session and profile:
@@ -1239,7 +1239,7 @@ def _(rid, params: dict) -> dict:
 # ─── Tools / toolsets / agents ───────────────────────────────────────────────
 @_rpc("tools.show", 5034)
 def _(rid, params: dict) -> dict:
-    mt = _tools_mod("model_tools")
+    mt = _tools_mod("hermes_agent.model_tools")
     session = _sessions.get(params.get("session_id", ""))
     enabled, disabled = _session_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
@@ -1481,7 +1481,7 @@ def _(rid, params: dict) -> dict:
     runtime state; never connects, probes, or starts auth. Under a multiplexer the runtime view is the
     scoped profile's; otherwise it is shown only when ``profile`` is the launch profile."""
     import time
-    hc = _tools_mod("hermes_constants")
+    hc = _tools_mod("hermes_agent.hermes_constants")
     configured, plugins = _mcp_server_rows()
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
@@ -1626,7 +1626,7 @@ def _(rid, params: dict) -> dict:
         if cfg.get("headers") and cfg.get("auth") != "oauth":
             return _err(rid, 4001, "this server uses header/API-key auth, not OAuth")
         cfg["auth"] = "oauth"
-        hermes_home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
+        hermes_home = str(_tools_mod("hermes_agent.hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
         result = _tools_mod("tui_gateway.mcp_oauth_sessions").start_flow(
             hermes_home, name, cfg, client_redirect_uri=client_redirect_uri)
     except ValueError as e:
@@ -1644,7 +1644,7 @@ def _(rid, params: dict) -> dict:
 @_mcp_rpc("oauth.cancel", _NAME_SESSION)
 def _(rid, params: dict) -> dict:
     """Cancel a flow owned by the resolved profile, waking its callback worker."""
-    home = str(_tools_mod("hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
+    home = str(_tools_mod("hermes_agent.hermes_constants").get_hermes_home().expanduser().resolve(strict=False))
     cancel = _tools_mod("tui_gateway.mcp_oauth_sessions").cancel_flow
     return _ok(rid, cancel(_str_arg(params, "session_id"), _str_arg(params, "name"), home))
 

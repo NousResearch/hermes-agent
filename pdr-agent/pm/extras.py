@@ -422,7 +422,7 @@ def _pre_pm_site_packages(root: Path) -> list[Path]:
     """
     return [tree for venv in (root / "venv", root / ".venv") if not _built_by_pm(venv)
             for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
-            if tree.is_dir() and any(tree.glob("hermes_agent-*.dist-info"))]
+            if tree.is_dir() and any(next(tree.glob(f"{dist}-*.dist-info"), None) for dist in ("pdr_agent", "hermes_agent"))]
 
 
 def _built_by_pm(venv: Path) -> bool:
@@ -528,7 +528,8 @@ def _covered_extras(root: Path, recorded) -> set[str]:
     except (OSError, KeyError, ValueError):
         return set()
     def nested(spec: str):
-        return re.match(r"^hermes-agent\[([^\]]+)\]", spec)
+        # 引擎发行名为 pdr-agent；上游名 hermes-agent 仍按核心自身处理
+        return re.match(r"^(?:pdr|hermes)-agent\[([^\]]+)\]", spec)
 
     def name_of(spec: str) -> str:
         return _canonical(re.split(r"[\s\[<>=!~;@(]", spec, maxsplit=1)[0])

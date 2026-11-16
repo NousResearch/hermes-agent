@@ -48,7 +48,7 @@ def _doctor_fix(tmp_path, monkeypatch, cfg):
     from hermes_cli.doctor_config import _check_config_file
 
     root = tmp_path / "checkout"  # only the template, so a stray cli-config.yaml cannot short-circuit the seed
-    root.mkdir()
+    (root / "hermes_cli/data").mkdir(parents=True)
     shutil.copy2(cfg.get_project_root() / "hermes_cli/data/cli-config.yaml.example", root / "hermes_cli/data/cli-config.yaml.example")
     home = cfg.get_hermes_home()
     monkeypatch.setattr(doctor, "HERMES_HOME", home)

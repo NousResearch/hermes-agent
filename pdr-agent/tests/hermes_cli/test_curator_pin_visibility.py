@@ -57,7 +57,7 @@ def pin_env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    from hermes_agent import hermes_constants
+    hermes_constants = importlib.import_module("hermes_agent.hermes_constants")
     importlib.reload(hermes_constants)
     from tools import skill_usage
     importlib.reload(skill_usage)

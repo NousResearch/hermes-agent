@@ -402,7 +402,7 @@ def get_tool_definitions(*args, **kwargs):
     return _get_tool_definitions(*args, **kwargs)
 
 
-validate_toolset = _lazy_shim("toolsets", "validate_toolset")
+validate_toolset = _lazy_shim("hermes_agent.toolsets", "validate_toolset")
 
 
 _cleanup_all_terminals = _lazy_shim("tools.terminal_tool", "cleanup_all_environments", "_cleanup_all_terminals")

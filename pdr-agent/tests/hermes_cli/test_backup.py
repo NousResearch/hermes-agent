@@ -96,7 +96,7 @@ def _make_hermes_tree(root: Path) -> None:
 
     # hermes-agent repo (should be EXCLUDED)
     (root / "hermes-agent").mkdir(exist_ok=True)
-    (root / "hermes-agent" / "hermes_agent/run_agent.py").write_text("# big file\n")
+    (root / "hermes-agent" / "run_agent.py").write_text("# big file\n")
     (root / "hermes-agent" / ".git").mkdir()
     (root / "hermes-agent" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
 

@@ -12,10 +12,11 @@ from tools.approval_detection import detect_dangerous_command
 
 
 @pytest.fixture
-def home(monkeypatch, tmp_path):
-    path = tmp_path / "data"
-    monkeypatch.setenv("HERMES_HOME", str(path))
-    return str(path)
+def home(monkeypatch):
+    # Commands are only classified, not executed; avoid pytest's protected /private/var/tmp path.
+    path = "/hermes-test-home/data"
+    monkeypatch.setenv("HERMES_HOME", path)
+    return path
 
 
 _DESTRUCTIVE = (

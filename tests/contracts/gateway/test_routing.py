@@ -210,7 +210,7 @@ def test_latest_for_peer_admits_open_recoverable_and_handed_off_rows(backend, sc
     assert _latest(store_a, "telegram:r") is None
     _tick()
     _keyed(backend, scope_a, "gr-r-rec", "telegram:r")
-    store_a.sessions.end(SessionId("gr-r-rec"), sorted(RECOVERABLE_END_REASONS)[0])
+    store_a.sessions.end(SessionId("gr-r-rec"), min(RECOVERABLE_END_REASONS))
     assert _latest(store_a, "telegram:r").session.session_id == "gr-r-rec"
     # A row a completed handoff owns stays a candidate whatever end reason it carries.
     _tick()
@@ -228,7 +228,7 @@ def test_latest_for_peer_is_fenced_by_a_later_reset_boundary(backend, scope_a):
     store_a.messages.append(SessionId("gr-f-cand"), _msg())
     _tick()
     _keyed(backend, scope_a, "gr-f-boundary", "telegram:f")
-    store_a.sessions.end(SessionId("gr-f-boundary"), sorted(PEER_RESET_END_REASONS)[0])
+    store_a.sessions.end(SessionId("gr-f-boundary"), min(PEER_RESET_END_REASONS))
     # A same-peer row that ended with a reset reason after the candidate's recency blocks it.
     assert _latest(store_a, "telegram:f") is None
     _tick()

@@ -403,6 +403,19 @@ def _discard_kept_state_db(kept: Path) -> None:
         kept.with_name(kept.name + suffix).unlink(missing_ok=True)
 
 
+def _state_db_unchanged_since_kept(state_path: Path, kept: Path) -> bool:
+    import filecmp
+
+    for suffix in _SQLITE_FILE_SUFFIXES:
+        live = state_path.with_name(state_path.name + suffix)
+        copy = kept.with_name(kept.name + suffix)
+        if live.exists() != copy.exists():
+            return False
+        if live.exists() and not filecmp.cmp(live, copy, shallow=False):
+            return False
+    return True
+
+
 def _keep_replaced_state_db(state_path: Path) -> Path:
     """Copy the database an auto-restore is about to overwrite, sidecars included, byte for byte.
 
@@ -442,6 +455,13 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
         return False
     kept = _keep_replaced_state_db(state_path)
     if not _safe_restore_db(snap_state, state_path):
+        # A restore can fail after it unlinked or partly rewrote state.db; then the copy is the
+        # only pre-restore image left, so it is dropped only when the live files are untouched.
+        if not _state_db_unchanged_since_kept(state_path, kept):
+            print("  ✗ Auto-restore failed part-way; state.db may be missing or changed.")
+            print(f"    The pre-restore state.db is kept at {kept}")
+            print(f"    Salvage it with `hermes sessions recover --source {kept} --output <new-path>`")
+            return False
         _discard_kept_state_db(kept)
         print("  ✗ Auto-restore refused or failed; state.db was not restored.")
         print("    Stop the owning runtime and close database handles before retrying.")

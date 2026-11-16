@@ -68,6 +68,23 @@ def test_refused_restore_leaves_no_copy_behind(tmp_path, monkeypatch, capsys):
     assert "state.db was not restored" in capsys.readouterr().out
 
 
+def test_restore_failing_after_unlink_keeps_the_only_copy(tmp_path, monkeypatch, capsys):
+    home, damaged = _damaged_home_with_old_snapshot(tmp_path)
+
+    def unlink_then_fail(src, dst):
+        dst.unlink()
+        return False
+
+    monkeypatch.setattr("hermes_cli.backup_restore._safe_restore_db", unlink_then_fail)
+
+    update_cmd_maint._verify_and_restore_one_state_db(home, label="default home")
+
+    assert not (home / "state.db").exists()
+    kept = min(home.glob("state.db.replaced-*"), key=lambda path: len(path.name))
+    assert kept.read_bytes() == damaged
+    assert str(kept) in capsys.readouterr().out
+
+
 def test_no_restore_when_the_copy_cannot_be_written(tmp_path, monkeypatch, capsys):
     home, damaged = _damaged_home_with_old_snapshot(tmp_path)
 

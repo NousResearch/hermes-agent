@@ -878,7 +878,7 @@ def _unattended_approve_refusal(command: str, ctx: _Unattended) -> dict | None:
     reason = unattended_approve_refusal(command)
     if reason is None:
         return None
-    logger.warning("Unattended approve-mode refusal (%s): %s (command: %s)", ctx.cfg_key, reason, command[:200])
+    logger.warning("Unattended approve-mode refusal (%s): %s", ctx.cfg_key, reason)
     return _blocked(
         f"BLOCKED: {reason}. approvals.{ctx.cfg_key}: approve does not auto-approve this class of command "
         f"because {ctx.clause}. Do NOT retry it in another spelling. Write the command out literally, "

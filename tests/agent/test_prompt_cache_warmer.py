@@ -33,6 +33,10 @@ class _Client:
         self.messages = SimpleNamespace(create=self._create)
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
+    @staticmethod
+    def effective_output_cap(*, max_tokens=None, max_completion_tokens=None, **_):
+        return max_completion_tokens or max_tokens  # an SDK-shaped double: sends the cap it is given
+
     def with_options(self, **kw):
         self.options = kw
         return self

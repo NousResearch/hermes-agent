@@ -56,6 +56,7 @@ from agent.turn_iteration_prep import (
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
+from agent.turn_proactive_prune import route_change_offload
 from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
@@ -1724,6 +1725,7 @@ def _run_conversation_turn(
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
+        _run_phase(route_change_offload, agent, s)
         _run_phase(assemble_api_request, agent, s)
         _pg = _run_phase(run_preflight_gate, agent, s)
         if _pg.action == "return":

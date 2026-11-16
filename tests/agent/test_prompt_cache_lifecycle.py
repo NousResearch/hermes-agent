@@ -27,6 +27,10 @@ class _Client:
         self.calls, self.read, self.write = [], read, write
         self.messages = SimpleNamespace(create=self._create)
 
+    @staticmethod
+    def effective_output_cap(*, max_tokens=None, **_):
+        return max_tokens  # an SDK-shaped double: sends the cap it is given
+
     def with_options(self, **kw):
         return self
 

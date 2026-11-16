@@ -6,6 +6,7 @@ Nothing here imports ``agent.conversation_loop`` at module level (cycle)."""
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -75,6 +76,45 @@ def turn_start_cold_prune(agent: Any, out: Any, effective_task_id: Any) -> None:
     pruned = run_proactive_prune(agent, prefix, tokens, effective_task_id)
     if pruned is not prefix and len(pruned) == len(prefix):
         out.messages = pruned + out.messages[idx:]
+
+
+@dataclass
+class RouteOffloadVerdict:
+    action: str
+    messages: Any
+
+
+def route_change_offload(
+    agent: Any, *, messages: Any, current_turn_user_idx: Any, active_system_prompt: Any, effective_task_id: Any,
+) -> RouteOffloadVerdict:
+    """Before every request: the cold offload on a route that has not answered this prefix yet.
+
+    A fallback switches provider/model inside the turn and its restart never reaches the turn-start prune,
+    so without this the new route's first request writes all the old tool output and marks it warm. Only
+    ``route_changed`` counts here (an expiry is the turn-start job). The running turn is never shortened
+    (``turn_start``), so this is safe on any iteration. Each clock event is checked once per route: a retry
+    on the same route before a response does not redo the estimate, and a commit makes the window
+    ``compacted`` so the next iteration stands down."""
+    from agent.prompt_cache_clock import _display_route
+
+    window = cache_window(agent)
+    if window is None or window.reason != "route_changed" or not agent.compression_enabled:
+        return RouteOffloadVerdict("fallthrough", messages)
+    seen = (getattr(agent, "_prompt_cache_clock", None), _display_route(agent))
+    previous = getattr(agent, "_route_offload_checked", None)
+    if previous is not None and previous[0] is seen[0] and previous[1] == seen[1]:
+        return RouteOffloadVerdict("fallthrough", messages)
+    agent._route_offload_checked = seen
+    from agent import turn_context as _tc
+    from agent.turn_preflight import _proactive_tool_result_prune
+
+    tokens = _tc._preflight_request_tokens(agent, messages, active_system_prompt or "")
+    pruned = _proactive_tool_result_prune(agent, agent.context_compressor, messages, tokens,
+                                          turn_start=current_turn_user_idx)
+    if pruned is messages:
+        return RouteOffloadVerdict("fallthrough", messages)
+    _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
+    return RouteOffloadVerdict("fallthrough", pruned)
 
 
 def offload_cold_history(agent: Any, messages: list[dict[str, Any]], task_id: Any = None) -> list[dict[str, Any]]:

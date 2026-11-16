@@ -723,7 +723,21 @@ export const svOverrides: TranslationOverrides = {
             suffix: label => ` – ${label}`
           }
         },
-        buyCredits: { description: 'En engångsdebitering på ditt kort som läggs till ditt saldo i dag.' }
+        buyCredits: { description: 'En engångsdebitering på ditt kort som läggs till ditt saldo i dag.' },
+        autoRefill: {
+          title: 'Fyll på vid låg nivå',
+          genericDescription: 'Håll saldot påfyllt när det sjunker under ditt tröskelvärde.',
+          offPill: 'Av',
+          enabledPill: 'På',
+          notAvailablePill: '—',
+          manageCaption: 'Hantera automatisk påfyllning på portalen.',
+          turnOnCaption: 'Aktivera automatisk påfyllning på portalen',
+          chargesDescription: (reloadTo, threshold) =>
+            `Debiterar automatiskt ${reloadTo} när saldot sjunker under ${threshold}.`,
+          distinctCardCaption: cardLabel => `Automatisk påfyllning debiterar ${cardLabel} – stäm av på portalen`,
+          distinctCardFallback: 'ett annat kort',
+          reconcileAction: 'Stäm av ↗'
+        }
       }
     },
     hudModifier: {

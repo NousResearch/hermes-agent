@@ -243,6 +243,11 @@ export const svOverrides: TranslationOverrides = {
       tour: 'Rundtur',
       build: 'Första uppgiften'
     },
+    tours: {
+      quick: 'Snabbrundtur',
+      full: 'Visa allt',
+      skip: 'Hoppa över, låt oss bygga något'
+    },
     localModel: {
       title: 'Den här datorn kan köra en modell lokalt',
       text: (model, size) => `${model} (${size}) ryms på din maskin. Den är kostnadsfri att köra och chattarna stannar på den här datorn.`,

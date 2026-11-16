@@ -467,12 +467,25 @@ describe('transcript fade', () => {
 })
 
 describe('live tool run', () => {
-  it('keeps its rows on screen instead of hiding them behind the summary', async () => {
-    const { container } = render(<GroupHarness message={groupedPendingMessage()} />)
+  it('stays closed while a tool call is in progress and only rewrites the summary', async () => {
+    const message = groupedPendingMessage()
+    const { container, rerender } = render(<GroupHarness message={message} />)
+    const toggle = () => container.querySelector('[data-tool-summary] button[aria-expanded]') as HTMLButtonElement
+    const summary = () => container.querySelector('[data-tool-summary]')?.textContent ?? ''
 
-    await waitFor(() => {
-      expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
-    })
+    await waitFor(() => expect(toggle()).not.toBeNull())
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('[data-tool-ticker]')).toBeNull()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
+
+    const whileRunning = summary()
+
+    expect(whileRunning.length).toBeGreaterThan(0)
+
+    rerender(<GroupHarness message={{ ...message, status: { type: 'complete', reason: 'stop' } }} />)
+    await waitFor(() => expect(summary()).not.toBe(whileRunning))
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
   })
 
   it('honors explicit disclosure across live updates and completion', async () => {
@@ -484,11 +497,6 @@ describe('live tool run', () => {
     fireEvent.click(toggle())
     expect(toggle().getAttribute('aria-expanded')).toBe('true')
     expect(container.querySelector('[data-tool-ticker]')).toBeNull()
-    fireEvent.click(toggle())
-    const row = container.querySelector('[data-tool-ticker] [data-tool-row] button[aria-expanded="false"]')
-    expect(row).not.toBeNull()
-    fireEvent.click(row as Element)
-    await waitFor(() => expect(container.querySelector('[data-tool-ticker]')).toBeNull())
 
     const next = {
       ...message,
@@ -508,7 +516,13 @@ describe('live tool run', () => {
     await waitFor(() => expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(3))
     rerender(<GroupHarness message={{ ...next, status: { type: 'complete', reason: 'stop' } }} />)
     await waitFor(() => expect(toggle().getAttribute('aria-expanded')).toBe('true'))
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(3)
     fireEvent.click(toggle())
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
+
+    rerender(<GroupHarness message={next} />)
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
     expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
   })
 
@@ -529,36 +543,32 @@ describe('live tool run', () => {
 
   // Liveness used to also require an unresolved call, which is false for the
   // instant between one sequential call finishing and the next arriving — so a
-  // string of commands settled and re-opened between every one, unmounting the
-  // ticker and dropping its reel back to the first row instead of scrolling.
-  it('stays live in the gap between two sequential calls', async () => {
+  // string of commands settled and re-opened between every one. The label
+  // still narrates through that gap; the disclosure does not.
+  it('keeps the summary in the present tense between sequential calls without opening', async () => {
     const { container } = render(<GroupHarness message={betweenSequentialCallsMessage()} />)
 
     expect(await screen.findByText('Running 2 commands')).toBeTruthy()
-    expect(container.querySelector('[data-tool-ticker]')).not.toBeNull()
-    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')).not.toBeNull()
+    expect(container.querySelector('[data-tool-ticker]')).toBeNull()
+    expect(container.querySelector('[data-tool-summary] button[aria-expanded]')?.getAttribute('aria-expanded')).toBe(
+      'false'
+    )
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
   })
 
-  // The ticker is a one-line window, so a row opened inside it had its output
-  // sliced to that line and then ticked away by the next call. Opening a row
-  // is a request to read it: the run gives up the window until it settles.
-  it('drops the one-line window when a row inside it is opened', async () => {
-    const { container } = render(<GroupHarness message={betweenSequentialCallsMessage()} />)
+  it('keeps an opened run open after the in-progress call finishes', async () => {
+    const message = betweenSequentialCallsMessage()
+    const { container, rerender } = render(<GroupHarness message={message} />)
+    const toggle = () => container.querySelector('[data-tool-summary] button[aria-expanded]') as HTMLButtonElement
 
-    await screen.findByText('Running 2 commands')
+    fireEvent.click(await screen.findByText('Running 2 commands'))
+    expect(toggle().getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
 
-    const row = container.querySelector('[data-tool-ticker] [data-tool-row] button[aria-expanded="false"]')
-
-    expect(row).not.toBeNull()
-
-    fireEvent.click(row as Element)
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-tool-ticker]')).toBeNull()
-    })
-
-    // ...and the row it opened is still on screen to be read.
-    expect(container.querySelector('[data-tool-row][data-tool-open]')).not.toBeNull()
+    rerender(<GroupHarness message={{ ...message, status: { type: 'complete', reason: 'stop' } }} />)
+    await waitFor(() => expect(screen.getByText('Ran 2 commands')).toBeTruthy())
+    expect(toggle().getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelectorAll('[data-tool-row]').length).toBeGreaterThan(0)
   })
 })
 

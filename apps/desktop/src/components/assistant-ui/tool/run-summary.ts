@@ -138,8 +138,8 @@ function lowerFirst(text: string): string {
 export function summarizeToolRun(tools: readonly ToolCallLike[], live: boolean): string {
   // Which clause narrates in the present tense: normally the outstanding call,
   // but sequential calls leave gaps where the run is still going and nothing is
-  // pending. The most recent call covers those, and it's the one the ticker is
-  // showing anyway.
+  // pending. The most recent call covers those, so the closed summary keeps
+  // naming the work without opening the run.
   const narrating = live ? (tools.find(isPending) ?? tools.at(-1)) : undefined
   const liveCategory = narrating ? toolCategory(narrating.toolName) : null
 

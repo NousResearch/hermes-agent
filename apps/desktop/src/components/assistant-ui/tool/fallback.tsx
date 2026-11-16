@@ -82,7 +82,6 @@ import {
   type ToolTitleAction
 } from './fallback-model'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
-import { ToolRunTicker } from './run-ticker'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -820,18 +819,9 @@ export function splitRunItems(toolNames: readonly string[]): RunItem[] {
   return items
 }
 
-/**
- * The live run, as one line.
- *
- * A run in progress shows only what it is doing right now; each new action
- * slides the one before it up and out of a single-line window, so a turn that
- * touches thirty files reads as one line ticking over in place instead of a
- * list growing down the page. When the run settles the ticker goes away and
- * the summary above it is all that's left.
- */
 // The one grey line that stands in for a run of tool calls — "Explored 3
-// files, ran 5 commands". Live, it narrates in the present tense above the
-// ticker by default; its toggle can reveal the activity before it settles.
+// files, ran 5 commands". Live, only the label changes tense; a closed run
+// stays closed, and an open run stays open until the user toggles it.
 function ToolRunHeader({
   completedAt,
   live,
@@ -967,9 +957,10 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
  * index is what made an earlier attempt at this reshuffle the moment a turn
  * settled. `lib/tool-run-continuity.test.ts` locks that agreement down.
  *
- * Live, the run is a summary plus the one-line ticker. Settled, the summary is
- * the whole of it until the user opens it. `ToolEmbedContext` is false so each
- * row still owns its own chrome (timer / copy) when shown.
+ * Closed, the summary is the whole of it — a call in progress only rewrites
+ * the label, it does not open the run, and finishing that call does not close
+ * a run the user left open. `ToolEmbedContext` is false so each row still owns
+ * its own chrome (timer / copy) when shown.
  */
 const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
@@ -1021,7 +1012,6 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
             summary={summary}
           />
         )}
-        {count > 1 && live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
         {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
       </motion.div>
     </ToolRunDisclosureContext.Provider>

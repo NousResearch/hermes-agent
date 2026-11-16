@@ -6,6 +6,34 @@ import { svUpdateChannel } from './sv_update_channel'
 // Swedish desktop translation. Keep the English fallback for keys introduced
 // between translation updates.
 export const svOverrides: TranslationOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Dela användningsstatistik?',
+    dialogTitle: 'Användningsstatistik',
+    consentBody:
+      'Hermes kan räkna hur du använder appen: sessionslängd, vilka modeller och verktyg som körs samt när något misslyckas. Dina meddelanden, filer, sökvägar och feltexter registreras aldrig.',
+    whatIsCollected: 'Det som räknas',
+    collectedActivity: 'Sessioner: längd, resultat, feltyp och aktiv tid per dag',
+    collectedModels: 'Modeller: vilka som används och totalt antal token',
+    collectedNames: 'Funktioner: inbyggda verktyg, kommandon, appdelar och inställningar som används eller stängs av',
+    collectedMilestones: 'Konfiguration: slutförda steg, leverantörsanslutningar samt antal skills, insticksprogram och jobb',
+    collectedReliability: 'Apphälsa: krascher, hastighet vid start och svar, uppdateringar samt meddelandeanslutningar',
+    collectedUsage: 'Agentkvalitet: missade redigeringar, trasiga verktygsanrop, loopar som fastnar och kostnad per uppgift',
+    collectedMachine: 'Dator: operativsystem, RAM-intervall, GPU-typ, Hermes-version och användning av lokala modeller',
+    sending:
+      'Om du delar skickar Hermes statistik till Nous en gång per dag med ett slumpmässigt ID för den här profilen. Utöver en engångsnotering om att Hermes installerades skickas aldrig statistik från tiden före ditt samtycke. Du kan ändra detta när som helst i Inställningar.',
+    readDocs: 'Läs alla detaljer',
+    share: 'Dela med Nous',
+    off: 'Nej tack',
+    saveFailed: 'Det gick inte att spara ditt val',
+    sendLabel: 'Dela användningsstatistik med Nous',
+    sendDesc:
+      'Endast räknade värden, skickas en gång per dag med ett slumpmässigt ID för den här profilen. Aldrig dina meddelanden, filer, sökvägar eller feltexter.',
+    unavailable: 'Uppdatera Hermes-serverdelen för att ändra denna inställning.',
+    stripBody: 'Endast räknade värden. Aldrig dina meddelanden eller filer.',
+    stripReaskBody: 'Vi frågar en gång till: en tidigare version kunde spara ”Nej tack” innan du såg detta.',
+    stripChoices: { share: 'Dela med Nous', off: 'Nej tack' },
+    stripDetails: 'Detaljer'
+  },
   appTour: {
     sessions: {
       title: 'Dina chattar',

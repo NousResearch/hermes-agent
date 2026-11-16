@@ -2595,10 +2595,15 @@ export const svOverrides: TranslationOverrides = {
       movedTo: name => `Flyttad till ${name}`,
       moveFailed: 'Det gick inte att flytta sessionen',
       moveNoFolder: 'Projektet har ingen mapp att flytta till',
+      moveBusy: 'Stoppa den pågående turen och flytta sedan chatten',
       moveNoProjects: 'Inga andra projekt',
       reveal: 'Visa i mapp',
       copyPath: 'Kopiera sökväg',
       removeFromSidebar: 'Dölj från sidofältet',
+      createdInPreviousContext:
+        'Projektet skapades med den föregående anslutningen eller profilen. Växla tillbaka för att hitta det; IDEA.md skrevs inte.',
+      hiddenFromSidebar: 'Dolt från sidofältet',
+      undoHide: 'Ångra',
       createFailed: 'Det gick inte att skapa projektet',
       staleBackend:
         'Uppdatera Hermes serverdel för att skapa projekt — den är äldre än skrivbordsappen (Inställningar → Uppdateringar → Serverdel).',
@@ -2638,6 +2643,7 @@ export const svOverrides: TranslationOverrides = {
       enter: label => `Öppna ${label}`,
       reorder: label => `Ordna om ${label}`,
       toggle: (label, open) => `${open ? 'Visa' : 'Dölj'} ${label}-sessioner`,
+      showAllCount: count => `Visa alla ${count} sessioner`,
       back: 'Alla projekt',
       showAllSessions: 'Visa alla sessioner',
       autoDiscovered: 'Automatiskt upptäckt'

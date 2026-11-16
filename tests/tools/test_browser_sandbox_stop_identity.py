@@ -20,6 +20,14 @@ _STUB = textwrap.dedent("""\
     #!{python}
     import os, signal, socket, sys, time
     signal.pthread_sigmask(signal.SIG_BLOCK, {{signal.SIGTERM}})
+    if os.path.exists(__file__ + ".rewrite-title"):
+        # What Chromium's process-title rewrite leaves behind: the argv block as one space-joined string.
+        import ctypes
+        with open("/proc/self/stat", encoding="ascii") as fh:
+            fields = fh.read().rsplit(")", 1)[1].split()
+        arg_start, arg_end = int(fields[45]), int(fields[46])
+        block = ctypes.string_at(arg_start, arg_end - arg_start - 1).replace(b"\\0", b" ")
+        ctypes.memmove(arg_start, block, len(block))
     udd = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--user-data-dir="))
     s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(8)
     tmp = os.path.join(udd, "DevToolsActivePort.tmp")
@@ -88,6 +96,21 @@ def test_stop_signals_the_chromium_it_launched(local_sandbox, tmp_path):
     info = local_sandbox.create_sandbox_session("task-A")
     pid = _launched_pid(local_sandbox, info)
     try:
+        local_sandbox.stop_sandbox_browser(info)
+        assert _sigterm_pending(pid)
+    finally:
+        _kill_if_ours(pid, tmp_path)
+
+
+def test_stop_signals_a_chromium_that_rewrote_its_process_title(local_sandbox, tmp_path):
+    """Real Chromium rewrites its title, so ``/proc/<pid>/cmdline`` is one space-joined string: the stop must
+    still recognise the browser it launched, or no sandbox browser is ever stopped."""
+    (tmp_path / "chromium.rewrite-title").touch()
+    info = local_sandbox.create_sandbox_session("task-A")
+    pid = _launched_pid(local_sandbox, info)
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            assert fh.read().rstrip(b"\0").count(b"\0") == 0, "the stand-in did not rewrite its title"
         local_sandbox.stop_sandbox_browser(info)
         assert _sigterm_pending(pid)
     finally:

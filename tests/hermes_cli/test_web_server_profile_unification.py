@@ -767,7 +767,7 @@ class TestProfileScopedAudio:
     ):
         import base64
 
-        from tools import voice_mode
+        from speech.voice import mode as voice_mode
 
         seen = {}
 

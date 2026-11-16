@@ -49453,7 +49453,7 @@
       },
       "WakeInputDevice": {
         "additionalProperties": true,
-        "description": "``tools/wake_word.py::_describe_input_device`` \u2014 PortAudio diagnostics for the configured mic.",
+        "description": "``speech/wake_word/listener.py::_describe_input_device`` \u2014 PortAudio diagnostics for the configured mic.",
         "properties": {
           "selector": {
             "anyOf": [

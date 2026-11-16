@@ -29,7 +29,7 @@ async def test_transcription_start_is_logged_at_info_before_stt_runs(tmp_path, c
         return {"success": True, "transcript": "hola", "provider": "local"}
 
     with caplog.at_level(logging.INFO, logger="gateway.run"), \
-            patch("tools.transcription_tools.transcribe_audio", side_effect=fake_stt):
+            patch("speech.transcription.transcriber.transcribe_audio", side_effect=fake_stt):
         result, transcripts = await runner._enrich_message_with_transcription("", [str(clip)])
 
     assert transcripts == ["hola"]

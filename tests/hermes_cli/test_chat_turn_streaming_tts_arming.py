@@ -12,7 +12,7 @@ provider still arms streaming TTS.
 These contracts are host-independent — the arm decision is data (the requirements
 probe), not host state — so the tests run unmarked on every lane; the macOS arm of
 the *speaker output policy* itself (sounddevice never imported on Darwin) is
-covered for real by ``tests/tools/test_tts_macos_output.py`` via
+covered for real by ``tests/speech/test_tts_macos_output.py`` via
 ``@pytest.mark.platforms``.
 
 Behavior contracts, mocked per test; no real audio, no config on disk.
@@ -76,7 +76,7 @@ def _arm_turn(monkeypatch, requirements, sounddevice_factory=None):
         done_event.set()
         started.set()
 
-    import tools.tts_tool_speaker as speaker_mod
+    import speech.synthesis.speaker as speaker_mod
     monkeypatch.setattr(speaker_mod, "stream_tts_to_speaker", _fake_stream)
 
     cli = _StreamingTTSArming().make_cli()

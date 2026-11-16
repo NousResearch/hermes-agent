@@ -10,7 +10,7 @@
 import { bytesToBase64 } from './base64'
 
 const TARGET_RATE = 16_000
-const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
+const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches speech/wake_word/listener.py
 
 // Health-monitor tuning for the continuous capture chain. A platform capture
 // failure (macOS PLAS IPC delegate error → StopSourceOnError, #119089) leaves

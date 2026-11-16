@@ -208,7 +208,7 @@ class TestVideoFalStrictSelection:
 
 class TestSttStrictSelection:
     def test_nous_selection_beats_direct_openai_key(self):
-        from tools import transcription_tools as tt
+        from speech.transcription import transcriber as tt
 
         with patch.object(tt, "_load_stt_config", return_value={"openai": {"api_key": "sk-direct"}}), \
              patch("tools.tool_backend_helpers.read_selection", return_value="nous"), \
@@ -218,7 +218,7 @@ class TestSttStrictSelection:
         assert base_url.startswith("https://gateway.nousresearch.com")
 
     def test_vendor_selection_missing_key_errors_without_managed_call(self):
-        from tools import transcription_tools as tt
+        from speech.transcription import transcriber as tt
 
         with patch.object(tt, "_load_stt_config", return_value={}), \
              patch("tools.tool_backend_helpers.read_selection", return_value="openai"), \
@@ -231,7 +231,7 @@ class TestSttStrictSelection:
         assert "hermes tools" in str(exc.value)
 
     def test_never_configured_keeps_legacy_ladder(self):
-        from tools import transcription_tools as tt
+        from speech.transcription import transcriber as tt
 
         with patch.object(tt, "_load_stt_config", return_value={}), \
              patch("tools.tool_backend_helpers.read_selection", return_value=None), \

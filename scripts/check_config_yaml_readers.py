@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
 from hermes_agent.compat.paths import current_path, original_path
 DEFAULT_TREES = (
-    "hermes_cli", "agent", "gateway", "tui_gateway", "cron", "plugins", "tools", "acp_adapter", "pm",
+    "hermes_cli", "agent", "gateway", "tui_gateway", "cron", "plugins", "tools", "speech", "acp_adapter", "pm",
     "cli.py", "utils", "hermes_constants.py", "hermes_logging.py", "hermes_time.py", "run_agent.py",
     "model_tools.py", "batch_runner.py")
 # The backend module itself, and the on-disk primitives it wraps.

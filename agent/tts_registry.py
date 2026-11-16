@@ -14,7 +14,7 @@ import logging
 
 from agent.provider_registry import ProviderRegistry, lower_key
 from agent.tts_provider import TTSProvider
-from tools.tts_command_provider import BUILTIN_TTS_PROVIDERS as _BUILTIN_NAMES
+from speech.command_provider import BUILTIN_TTS_PROVIDERS as _BUILTIN_NAMES
 
 logger = logging.getLogger(__name__)
 

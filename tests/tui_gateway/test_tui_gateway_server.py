@@ -1715,7 +1715,7 @@ def test_voice_toggle_returns_configured_record_key(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "speech.voice.mode",
         types.SimpleNamespace(
             check_voice_requirements=lambda: {"available": True, "details": ""}
         ),
@@ -1749,7 +1749,7 @@ def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):
     """
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "speech.voice.mode",
         types.SimpleNamespace(
             check_voice_requirements=lambda: {"available": True, "details": ""}
         ),
@@ -1877,7 +1877,7 @@ def test_prompt_submit_typed_stop_phrase_ends_voice_chat(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "speech.voice.mode",
         types.SimpleNamespace(
             is_voice_stop_phrase=lambda t: t.strip().lower().strip(".!?") == "stop"
         ),
@@ -1915,7 +1915,7 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
     matcher must not even be consulted (guard is on voice mode)."""
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "speech.voice.mode",
         types.SimpleNamespace(
             is_voice_stop_phrase=lambda t: (_ for _ in ()).throw(
                 AssertionError("stop matcher must not run when voice is off")
@@ -1938,7 +1938,7 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
 
 
 def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatch):
-    from tools import wake_word
+    from speech.wake_word import listener as wake_word
 
     state = {"owner": None, "callback": None, "paused": False}
     voice_callbacks = {}
@@ -2123,7 +2123,7 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
 
 def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch):
     """The ear toggle / /wake on|off write wake_word.enabled; auto-arm never does."""
-    from tools import wake_word
+    from speech.wake_word import listener as wake_word
 
     config = {"enabled": False, "phrase": "hey hermes", "surface": "auto",
               "start_new_session": True}
@@ -2382,7 +2382,7 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "speech.voice.mode",
         types.SimpleNamespace(
             check_voice_requirements=lambda: {"available": True, "details": ""}
         ),
@@ -14214,7 +14214,7 @@ def test_interrupt_only_clears_own_session_pending():
 
 def _wake_lease_double():
     """Owner-gated pause/resume stand-in: only the lease holder can re-arm."""
-    from tools import wake_word
+    from speech.wake_word import listener as wake_word
 
     state = {"lease": None, "paused": False, "resumed": []}
 
@@ -20125,7 +20125,7 @@ def test_get_usage_clamps_post_compression_sentinel():
 # ---------------------------------------------------------------------------
 
 def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, listen=None, transcribe=None):
-    """Install lightweight tools.tts_tool / tools.voice_mode fakes."""
+    """Install lightweight tools.tts_tool / speech.voice.mode fakes."""
     started = {}
 
     def fake_stream(text_queue, stop, done, **_kw):
@@ -20151,12 +20151,12 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.tts_tool_speaker",
+        "speech.synthesis.speaker",
         types.SimpleNamespace(stream_tts_to_speaker=fake_stream),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "speech.voice.mode",
         types.SimpleNamespace(
             stop_playback=lambda: (playback_stops.append(True) if playback_stops is not None else None),
             listen_for_speech=listen or default_listen,
@@ -20220,7 +20220,7 @@ def test_tts_stream_begin_barges_in_on_previous_pipeline(monkeypatch):
 def test_tts_stream_stop_latches_interruption_for_next_turn(monkeypatch):
     """Cutting live speech (interrupt / typing barge) marks the latch the next
     turn's model note consumes; a mode change (user_barge=False) does not."""
-    import tools.tts_streaming as ts
+    import speech.synthesis.streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
@@ -20238,7 +20238,7 @@ def test_tts_stream_stop_latches_interruption_for_next_turn(monkeypatch):
 
 def test_tts_stream_stop_after_natural_finish_does_not_latch(monkeypatch):
     """Speech that already finished (done set) isn't an interruption."""
-    import tools.tts_streaming as ts
+    import speech.synthesis.streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
@@ -20258,7 +20258,7 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     emitted as voice.transcript so the TUI submits it — complete from its
     first syllable, no re-record round trip. The cut also latches the
     speech-interrupted note for the next turn."""
-    import tools.tts_streaming as ts
+    import speech.synthesis.streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
@@ -20298,7 +20298,7 @@ def test_full_duplex_generation_phase_interrupts_running_turn(monkeypatch, tmp_p
     in-flight agent turn via the same seam session.interrupt uses, and the
     captured interjection is emitted as voice.transcript. This is the
     half-duplex gap: previously no listener existed until playback started."""
-    import tools.tts_streaming as ts
+    import speech.synthesis.streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE", "1")
@@ -20367,8 +20367,8 @@ def test_full_duplex_stop_phrase_mid_generation_ends_voice_chat(monkeypatch, tmp
         listen=fake_listen,
         transcribe=lambda path, model=None: {"success": True, "transcript": "stop"},
     )
-    # is_voice_stop_phrase lives in the faked tools.voice_mode namespace.
-    sys.modules["tools.voice_mode"].is_voice_stop_phrase = (
+    # is_voice_stop_phrase lives in the faked speech.voice.mode namespace.
+    sys.modules["speech.voice.mode"].is_voice_stop_phrase = (
         lambda text: text.strip().lower() == "stop"
     )
     monkeypatch.setitem(
@@ -20393,7 +20393,7 @@ def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_p
     reply cuts playback and the captured interruption is emitted as
     voice.transcript — previously these paths called speak_text bare and
     were uninterruptible by voice."""
-    import tools.tts_streaming as ts
+    import speech.synthesis.streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE", "1")

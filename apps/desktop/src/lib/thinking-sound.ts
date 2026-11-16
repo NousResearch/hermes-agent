@@ -3,7 +3,7 @@
 // long thinking/tool stretches. A calm, quiet, repeating pair of soft bubble
 // blips fills the gap — same WebAudio oscillator synthesis approach as
 // wake-sound.ts / completion-sound.ts (no asset to ship), mirroring the
-// backend's numpy-synthesized blips in tools/voice_mode.py so CLI and desktop
+// backend's numpy-synthesized blips in speech/voice/mode.py so CLI and desktop
 // sound alike.
 //
 // Honours the shared sound-mute toggle ($hapticsMuted) and the

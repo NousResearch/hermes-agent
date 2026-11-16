@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.tts_tool import _generate_xai_tts
-from tools.tts_tool_providers import (
+from speech.synthesis.providers import (
     _XAI_INLINE_SPEECH_TAGS,
     _XAI_WRAPPING_SPEECH_TAGS,
     _apply_xai_auto_speech_tags,

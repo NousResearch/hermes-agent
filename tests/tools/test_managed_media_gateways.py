@@ -9,6 +9,7 @@ from hermes_cli.nous_account import NousPortalAccountInfo
 
 
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
+SPEECH_DIR = Path(__file__).resolve().parents[2] / "speech"
 
 
 def _load_tool_module(module_name: str, filename: str):
@@ -27,6 +28,7 @@ def _restore_tool_and_agent_modules():
         for name, module in sys.modules.items()
         if name == "tools"
         or name.startswith("tools.")
+        or name.startswith("speech.")
         or name == "agent"
         or name.startswith("agent.")
         or name in {"fal_client", "openai"}
@@ -38,6 +40,7 @@ def _restore_tool_and_agent_modules():
             if (
                 name == "tools"
                 or name.startswith("tools.")
+                or name.startswith("speech.")
                 or name == "agent"
                 or name.startswith("agent.")
                 or name in {"fal_client", "openai"}
@@ -230,7 +233,7 @@ def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatc
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
 
     tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
-    monkeypatch.setattr(sys.modules["tools.tts_tool_openai"].uuid, "uuid4", lambda: "tts-call-123")
+    monkeypatch.setattr(sys.modules["speech.synthesis.openai_compatible"].uuid, "uuid4", lambda: "tts-call-123")
     output_path = tmp_path / "speech.mp3"
     tts_tool._generate_openai_tts("hello world", str(output_path), {"openai": {}})
 
@@ -274,8 +277,8 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
 
     transcription_tools = _load_tool_module(
-        "tools.transcription_tools",
-        "transcription_tools.py",
+        "speech.transcription.transcriber",
+        SPEECH_DIR / "transcription" / "transcriber.py",
     )
     transcription_tools._load_stt_config = lambda: {"provider": "nous"}
     audio_path = tmp_path / "audio.wav"
@@ -293,8 +296,8 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
         transcription_response=types.SimpleNamespace(text="hello from gpt-4o"),
     )
     transcription_tools = _load_tool_module(
-        "tools.transcription_tools",
-        "transcription_tools.py",
+        "speech.transcription.transcriber",
+        SPEECH_DIR / "transcription" / "transcriber.py",
     )
 
     json_result = transcription_tools.transcribe_audio(

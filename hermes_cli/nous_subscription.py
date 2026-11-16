@@ -231,7 +231,7 @@ def _local_stt_backend_available() -> bool:
     if get_env_value("HERMES_LOCAL_STT_COMMAND"):
         return True
     try:
-        from tools.transcription_tools import _HAS_FASTER_WHISPER
+        from speech.transcription.transcriber import _HAS_FASTER_WHISPER
 
         return bool(_HAS_FASTER_WHISPER)
     except Exception:

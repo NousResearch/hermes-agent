@@ -249,7 +249,7 @@ def _consume_typed_stop_phrase(text, sid=None, *, emit: bool = True) -> bool:
         # server-side choke point every TUI submit passes through: this sidecar handler and the shared
         # owner's canonical prompt.submit. (The desktop's voice conversation is renderer-owned and never
         # flips the backend flag, so it handles its own typed stop client-side.)
-        from tools.voice_mode_transcript import is_voice_stop_phrase
+        from speech.voice_mode_transcript import is_voice_stop_phrase
         if not is_voice_stop_phrase(text):
             return False
     except Exception:  # an unreadable voice config never swallows the message: it reaches the agent
@@ -857,7 +857,7 @@ def _(rid, params: dict) -> dict:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
-        from tools.tts_streaming import mark_speech_interrupted
+        from speech.synthesis.streaming import mark_speech_interrupted
         mark_speech_interrupted()
     session, err = _sess_nowait(params, rid)
     if err:

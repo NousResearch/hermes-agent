@@ -44,17 +44,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def _resolve_main_dir() -> Path:
     candidate = REPO_ROOT.parent.parent
-    if (candidate / "tools" / "transcription_tools.py").exists() and candidate != REPO_ROOT:
+    if (candidate / "speech" / "transcription" / "transcriber.py").exists() and candidate != REPO_ROOT:
         return candidate
     sibling = REPO_ROOT.parent / "hermes-agent-main"
-    if (sibling / "tools" / "transcription_tools.py").exists():
+    if (sibling / "speech" / "transcription" / "transcriber.py").exists():
         return sibling
     return REPO_ROOT
 
 
 MAIN_DIR = _resolve_main_dir()
 PR_DIR = REPO_ROOT
-assert (PR_DIR / "tools" / "transcription_tools.py").exists(), (
+assert (PR_DIR / "speech" / "transcription" / "transcriber.py").exists(), (
     f"PR_DIR={PR_DIR} doesn't look like a hermes-agent checkout"
 )
 
@@ -88,6 +88,7 @@ with open(config_path, "w") as f:
 # Fresh import — must not have anything cached from prior runs.
 for name in list(sys.modules):
     if (name.startswith("tools.")
+            or name.startswith("speech.")
             or name.startswith("agent.")
             or name.startswith("plugins.")
             or name.startswith("hermes_cli.")):
@@ -122,7 +123,7 @@ try:
 except ImportError:
     pass
 
-import tools.transcription_tools as tt
+import speech.transcription.transcriber as tt
 
 # Use a real (but empty) audio file so _validate_audio_file passes.
 audio_path = os.path.join(home, "audio.ogg")

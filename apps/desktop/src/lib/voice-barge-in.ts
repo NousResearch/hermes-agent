@@ -7,7 +7,7 @@
 // once tripped it keeps rolling until the user goes quiet, delivering the
 // complete utterance.
 //
-// Phase-aware trigger (mirrors tools/voice_mode.full_duplex_listen on the
+// Phase-aware trigger (mirrors speech/voice/mode.full_duplex_listen on the
 // Python surfaces):
 // - The noise floor is calibrated from QUIET samples only — while no TTS audio
 //   is flowing — and HELD through playback. Calibrating while the speaker is
@@ -37,7 +37,7 @@ const FLOOR_MULTIPLIER = 3.5
 const PLAYBACK_MIN_TRIGGER_LEVEL = 0.14
 const TRIGGER_CEILING_LEVEL = 0.37
 // Backend default for voice.barge_in_threshold_multiplier
-// (tools/voice_mode.DEFAULT_BARGE_MULTIPLIER); the levels above are tuned for it.
+// (speech/voice/mode.DEFAULT_BARGE_MULTIPLIER); the levels above are tuned for it.
 export const DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER = 3
 const PLAYBACK_GRACE_MS = 500
 const PLAYBACK_GAP_FOR_GRACE_MS = 1_000

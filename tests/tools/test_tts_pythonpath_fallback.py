@@ -109,7 +109,7 @@ class TestMistralSttPythonpathFallback:
     ):
         """A provisioning failure for stt.mistral must not block
         transcription when mistralai is importable via PYTHONPATH."""
-        from tools.transcription_tools import _transcribe_mistral
+        from speech.transcription.transcriber import _transcribe_mistral
 
         audio_file = tmp_path / "audio.wav"
         audio_file.write_bytes(b"fake-audio")

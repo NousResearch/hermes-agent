@@ -15,7 +15,7 @@ def clean_env(monkeypatch):
 @pytest.fixture(autouse=True)
 def clear_kittentts_cache():
     """Reset the module-level model cache between tests."""
-    from tools import tts_tool_local as _tt
+    from speech.synthesis import local as _tt
     _tt._kittentts_model_cache.clear()
     yield
     _tt._kittentts_model_cache.clear()

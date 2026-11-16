@@ -255,7 +255,7 @@ def _start_turn_voice() -> tuple[Any, bool]:
     if _voice_cfg_dict().get("barge_in", True):
         _arm_full_duplex_listener()
     try:
-        from tools.voice_mode import is_audio_output_active, start_thinking_sound
+        from speech.voice.mode import is_audio_output_active, start_thinking_sound
 
         def _thinking_should_play() -> bool:
             if is_audio_output_active():
@@ -742,7 +742,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         st.tts_queue, st.thinking_started = _start_turn_voice()
     # Per-turn API-message notes: barge mid-speech, reactions, HUD surface (per-turn state
     # that must not touch the byte-stable system prompt).
-    from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
+    from speech.synthesis.streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
@@ -1055,7 +1055,7 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
         run_kwargs.clear()
     if st.thinking_started:
         with contextlib.suppress(Exception):
-            from tools.voice_mode import stop_thinking_sound
+            from speech.voice.mode import stop_thinking_sound
             stop_thinking_sound()
     if st.tts_queue is not None:
         st.tts_queue.put(None)  # end-of-text sentinel — flush + finish speaking

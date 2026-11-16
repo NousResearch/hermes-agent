@@ -116,7 +116,7 @@ def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
 def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp_path, monkeypatch):
     from agent.managed_worker import validate_bootstrap
     from gateway.session_kanban import run_worker_turns
-    from tools.voice_live import VOICE_LIVE_TURN_NOTE
+    from speech.voice.live import VOICE_LIVE_TURN_NOTE
     frame, (authority, ref, row, policy, scope) = assignment(tmp_path, monkeypatch)
     surface = {'surface': 'voice-live', 'voice_context': 'User: UNIQUE_PRIOR_CONTEXT', 'voice_turn': True}
     from gateway.session_managed_worker import _bootstrap

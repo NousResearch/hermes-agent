@@ -50,7 +50,7 @@ def mock_gemini_response(fake_pcm_bytes):
 
 class TestWrapPcmAsWav:
     def test_riff_header_structure(self):
-        from tools.tts_tool_delivery import _wrap_pcm_as_wav
+        from speech.synthesis.delivery import _wrap_pcm_as_wav
 
         pcm = b"\x01\x02\x03\x04" * 10
         wav = _wrap_pcm_as_wav(pcm, sample_rate=24000, channels=1, sample_width=2)
@@ -140,7 +140,7 @@ class TestGenerateGeminiTts:
 
     def test_default_voice_and_model(self, tmp_path, monkeypatch, mock_gemini_response):
         from tools.tts_tool import _generate_gemini_tts
-        from tools.tts_tool_providers import DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE
+        from speech.synthesis.providers import DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 

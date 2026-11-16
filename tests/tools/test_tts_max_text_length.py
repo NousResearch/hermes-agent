@@ -9,7 +9,7 @@ import json
 
 
 from tools.tts_tool import _resolve_max_text_length
-from tools.tts_tool_delivery import FALLBACK_MAX_TEXT_LENGTH
+from speech.synthesis.delivery import FALLBACK_MAX_TEXT_LENGTH
 
 
 class TestResolveMaxTextLength:
@@ -60,7 +60,7 @@ class TestTextToSpeechToolChunking:
             return output_path
 
         monkeypatch.setattr("tools.tts_tool._generate_openai_tts", fake_openai)
-        monkeypatch.setattr("tools.tts_tool_delivery._concat_audio_files", fake_combine)
+        monkeypatch.setattr("speech.synthesis.delivery._concat_audio_files", fake_combine)
         monkeypatch.setattr("tools.tts_tool._load_tts_config",
                             lambda: {"provider": "openai"})
 
@@ -115,7 +115,7 @@ class TestTextToSpeechToolChunking:
             return output_path
 
         monkeypatch.setattr("tools.tts_tool._generate_openai_tts", fake_openai)
-        monkeypatch.setattr("tools.tts_tool_delivery._concat_audio_files", fake_combine)
+        monkeypatch.setattr("speech.synthesis.delivery._concat_audio_files", fake_combine)
         monkeypatch.setattr("tools.tts_tool._load_tts_config",
                             lambda: {"provider": "openai",
                                      "openai": {"max_text_length": 100}})

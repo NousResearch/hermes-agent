@@ -250,9 +250,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
   // Speech-to-text backends — kept in sync with BUILTIN_STT_PROVIDERS in
-  // tools/transcription_common.py (local_command is auto-detected, not picked).
+  // speech/transcription/settings.py (local_command is auto-detected, not picked).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra'],
-  // How the desktop voice conversation is wired — tools/voice_live.py owns the
+  // How the desktop voice conversation is wired — speech/voice/live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
   'voice.gpt_live.voice': [
@@ -359,7 +359,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'kittentts',
     'piper'
   ],
-  // STT model lists mirror STT_MODEL_CATALOG in tools/transcription_common.py.
+  // STT model lists mirror STT_MODEL_CATALOG in speech/transcription/settings.py.
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
   'stt.openai.streaming_model': [
     'gpt-live-transcribe',

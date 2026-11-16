@@ -749,7 +749,7 @@ def _split_text_for_speak_stream(text: str, cap: int) -> list:
     Deliberately NOT unified with gateway.platforms.helpers' split_text_fence_aware: this
     reflows whitespace (sentences re-joined with single spaces) and has no fence semantics.
     """
-    from tools.tts_streaming import SENTENCE_BOUNDARY_RE as _SENTENCE_BOUNDARY_RE
+    from speech.synthesis.streaming import SENTENCE_BOUNDARY_RE as _SENTENCE_BOUNDARY_RE
     cap = cap if cap and cap > 0 else 4000
     pieces, buf = [], ""
     for sentence in filter(str.strip, _SENTENCE_BOUNDARY_RE.split(text)):

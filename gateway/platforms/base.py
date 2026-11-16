@@ -688,8 +688,8 @@ get_audio_cache_dir, cleanup_audio_cache = _cache_dir_accessors(
 
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """Save raw audio bytes to the cache (container-sniffed ext); return the path."""
-    # tools.audio_container is the ONE owner of container detection (outbound TTS repair + here).
-    from tools.audio_container import sniff_audio_ext
+    # speech.audio_container is the ONE owner of container detection (outbound TTS repair + here).
+    from speech.audio_container import sniff_audio_ext
     validate_inbound_media_size(len(data), media_type="audio")
     return _write_cache_file(get_audio_cache_dir(), "audio", sniff_audio_ext(data, ext), data)
 
@@ -3003,7 +3003,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         headings/bullets flattened, units expanded). Chunking and delivery limits are the TTS tool's
         job."""
         try:
-            from tools.tts_text_normalize import prepare_spoken_text
+            from speech.synthesis.text_normalize import prepare_spoken_text
             return prepare_spoken_text(text, max_chars=None)
         except Exception:
             # Keep auto-TTS best-effort if the normalizer ever fails.

@@ -39,7 +39,7 @@ def _raise(*_a, **_k):
 
 
 def test_transcribe_failed_result_is_redacted(client, monkeypatch):
-    monkeypatch.setattr("tools.voice_mode.transcribe_recording",
+    monkeypatch.setattr("speech.voice.mode.transcribe_recording",
                         lambda _p: {"success": False, "error": _LEAK})
     resp = client.post("/api/audio/transcribe", json=_AUDIO)
     assert resp.status_code == 400
@@ -48,7 +48,7 @@ def test_transcribe_failed_result_is_redacted(client, monkeypatch):
 
 
 def test_transcribe_exception_is_redacted(client, monkeypatch):
-    monkeypatch.setattr("tools.voice_mode.transcribe_recording", _raise)
+    monkeypatch.setattr("speech.voice.mode.transcribe_recording", _raise)
     resp = client.post("/api/audio/transcribe", json=_AUDIO)
     assert resp.status_code == 500
     _assert_redacted(resp.json()["detail"])
@@ -70,15 +70,15 @@ def test_speak_exception_is_redacted(client, monkeypatch):
 
 
 def test_voice_live_session_vendor_error_is_redacted(client, monkeypatch):
-    monkeypatch.setattr("tools.voice_live.create_webrtc_session", _raise)
+    monkeypatch.setattr("speech.voice.live.create_webrtc_session", _raise)
     resp = client.post("/api/audio/voice-live/session", json={"sdp": "v=0\r\n"})
     assert resp.status_code == 502
     _assert_redacted(resp.json()["detail"])
 
 
 @pytest.mark.parametrize("route, target", [
-    ("/api/audio/tts-lease", "tools.tts_tool_lifecycle.acquire_tts_lease"),
-    ("/api/audio/stt-lease", "tools.stt_lease.warm_stt_provider"),
+    ("/api/audio/tts-lease", "speech.synthesis.lifecycle.acquire_tts_lease"),
+    ("/api/audio/stt-lease", "speech.transcription.lease.warm_stt_provider"),
 ])
 def test_lease_warmup_error_body_is_redacted(client, monkeypatch, route, target):
     monkeypatch.setattr(target, _raise)
@@ -89,8 +89,8 @@ def test_lease_warmup_error_body_is_redacted(client, monkeypatch, route, target)
 
 
 @pytest.mark.parametrize("route, target", [
-    ("/api/audio/tts-lease", "tools.tts_tool_lifecycle.warm_tts_provider"),
-    ("/api/audio/stt-lease", "tools.stt_lease.warm_stt_provider"),
+    ("/api/audio/tts-lease", "speech.synthesis.lifecycle.warm_tts_provider"),
+    ("/api/audio/stt-lease", "speech.transcription.lease.warm_stt_provider"),
 ])
 def test_lease_returned_warmup_error_is_redacted(client, monkeypatch, route, target):
     # Warm-up helpers never raise: a load failure comes back as ``error=str(exc)``.
@@ -110,7 +110,7 @@ def test_transcribe_stream_error_frame_is_redacted(client, monkeypatch):
         def finalize(self):
             return {"success": False, "error": _LEAK}
 
-    monkeypatch.setattr("tools.transcription_streaming.open_streaming_session",
+    monkeypatch.setattr("speech.transcription.streaming.open_streaming_session",
                         lambda on_partial: _Session())
     previous = getattr(web_server.app.state, "auth_required", None)
     web_server.app.state.auth_required = False

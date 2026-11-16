@@ -92,7 +92,7 @@ _OWNERS = {
     ),
     # A command provider that stalls: the owner dies inside its 120 s idle timeout.
     "tts-command": (
-        "from tools.tts_command_provider import run_command_provider\n"
+        "from speech.command_provider import run_command_provider\n"
         "threading.Thread(target=run_command_provider, args=(child_cmd, 120.0), daemon=True).start()\n"
     ),
 }
@@ -237,7 +237,7 @@ def test_verify_start_phase_owns_then_releases_the_app_group(monkeypatch, tmp_pa
 
 
 def test_tts_command_owns_then_releases_its_group_after_success_and_idle_kill(monkeypatch, owned):
-    from tools import tts_command_provider as tts
+    from speech import command_provider as tts
 
     released = []
     monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.extend(pgids))

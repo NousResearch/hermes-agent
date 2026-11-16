@@ -97,9 +97,10 @@ def _recorder():
 def test_turn_tts_synthesizes_as_the_turn_profile(two_profiles, monkeypatch, streaming):
     """A turn's streaming TTS consumer and the hop that synthesizes (the sync executor, or the
     prefetch thread that runs a streaming provider's generator) keep the turn's home and secrets."""
-    from tools import tts_streaming
-    from tools import tts_tool_speaker as speaker
-    from tools import tts_tool, voice_mode
+    from speech.synthesis import streaming as tts_streaming
+    from speech.synthesis import speaker
+    from speech.voice import mode as voice_mode
+    from tools import tts_tool
     from tui_gateway import server
     home, session = two_profiles
     seen, done, record = _recorder()
@@ -138,7 +139,7 @@ def test_turn_tts_synthesizes_as_the_turn_profile(two_profiles, monkeypatch, str
 def test_voice_toggle_leases_tts_as_the_requested_profile(two_profiles, monkeypatch, tts_on):
     """``voice.toggle {action: tts, profile: b}`` acquires (off -> on) or releases (on -> off) the
     engine lease under B's scope."""
-    from tools import tts_tool_lifecycle as lifecycle
+    from speech.synthesis import lifecycle
     from tui_gateway import server
     home, _session = two_profiles
     seen, done, record = _recorder()

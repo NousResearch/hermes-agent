@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import tts_tool, tts_tool_openai
+from speech.synthesis import openai_compatible as tts_tool_openai
+from tools import tts_tool
 
 
 class TestResolveOpenaiAudioClientConfig:

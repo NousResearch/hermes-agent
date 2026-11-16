@@ -9,7 +9,7 @@ Covers:
 - Case + whitespace insensitivity on lookup
 - ABC contract: default implementations work
 - ABC contract: transcribe() must be implemented
-- Sync invariant: registry built-ins match tools/transcription_tools.py
+- Sync invariant: registry built-ins match speech/transcription/transcriber.py
 """
 
 from __future__ import annotations

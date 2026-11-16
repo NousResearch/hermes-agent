@@ -227,7 +227,7 @@ class TestVoiceCompatibleHelper:
         assert tts_tool._plugin_provider_is_voice_compatible("cartesia") is False
 
 
-# ── Streaming voice path (tools.tts_streaming) ──────────────────────────────
+# ── Streaming voice path (speech.synthesis.streaming) ──────────────────────────────
 
 
 class _PCMPlugin(TTSProvider):
@@ -252,7 +252,7 @@ class _PCMPlugin(TTSProvider):
 
 @pytest.mark.parametrize("streaming", [{}, {"provider": "auto"}, {"provider": "fake-pcm"}])
 def test_opted_in_plugin_streams_pcm_in_the_configured_voice(monkeypatch, streaming):
-    from tools import tts_streaming
+    from speech.synthesis import streaming as tts_streaming
     monkeypatch.setattr(tts_streaming, "_try_instantiate", lambda name, cfg: None)  # no built-in creds
     plugin = _PCMPlugin()
     tts_registry.register_provider(plugin)
@@ -274,7 +274,7 @@ def test_opted_in_plugin_streams_pcm_in_the_configured_voice(monkeypatch, stream
     (_PCMPlugin(), {"providers": {"fake-pcm": {"type": "command", "command": "say {input_path}"}}}),
 ])
 def test_plugin_without_full_opt_in_keeps_per_sentence_synthesis(plugin, extra_cfg):
-    from tools import tts_streaming
+    from speech.synthesis import streaming as tts_streaming
     tts_registry.register_provider(plugin)
     assert tts_streaming.resolve_streaming_provider({"provider": "fake-pcm", **extra_cfg}) is None
     assert plugin.calls == []

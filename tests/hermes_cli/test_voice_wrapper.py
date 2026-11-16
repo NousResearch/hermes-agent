@@ -454,8 +454,9 @@ class TestSpeakTextStreamingDispatch:
 
     def test_streaming_provider_routes_through_dispatcher(self, monkeypatch):
         from hermes_cli import voice
-        import tools.tts_streaming as ts
-        from tools import tts_tool, tts_tool_speaker
+        import speech.synthesis.streaming as ts
+        from speech.synthesis import speaker as tts_tool_speaker
+        from tools import tts_tool
 
         streamed = []
 

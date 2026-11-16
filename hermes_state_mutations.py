@@ -110,7 +110,10 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
             # can now rename that tip, so a committed rename advances the whole lineage's revision,
             # as the lineage-wide flags below do: a client holding any segment's older copy refuses.
             tip = db._compression_tip_on(conn, session_id)
-            if db._set_session_title_in_transaction(conn, tip, value, source=db.TITLE_SOURCE_USER):
+            written = db._set_session_title_in_transaction(conn, tip, value, source=db.TITLE_SOURCE_USER)
+            # A row the uniqueness rule freed the name from (an empty chat, a retired Bot Chat) changed too.
+            affected.update(written)
+            if written:
                 lineage = [row[0] for row in conn.execute(
                     _LINEAGE_CTE_SQL + 'SELECT id FROM lineage', (session_id, session_id))]
                 affected.update(lineage)

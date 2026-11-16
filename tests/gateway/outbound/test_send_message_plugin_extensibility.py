@@ -13,7 +13,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platform_registry import PlatformEntry, platform_registry
-from tools.send_message_tool import resolve_send_target, send_message_tool
+from gateway.outbound.send import resolve_send_target, send_message_tool
 
 
 @pytest.fixture
@@ -231,7 +231,7 @@ from unittest.mock import patch
 from hermes_cli.plugins import discover_plugins
 from gateway.config import Platform
 from tools.registry import registry
-from tools.send_message_tool import send_message_tool
+from gateway.outbound.send import send_message_tool
 
 discover_plugins()
 platform = Platform("fmsg")
@@ -273,7 +273,7 @@ def test_declared_target_syntax_and_standalone_policy_drive_send_routing():
     import asyncio
 
     from gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
-    from tools.send_message_tool import _send_to_platform
+    from gateway.outbound.send import _send_to_platform
 
     calls: list[dict] = []
 

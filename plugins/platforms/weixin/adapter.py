@@ -1266,7 +1266,7 @@ async def send_weixin_direct(
 
 
 # ---------------------------------------------------------------------------
-# Plugin wiring (formerly core: gateway/run.py _BUILTIN_ADAPTERS row, tools/send_message_senders.py
+# Plugin wiring (formerly core: gateway/run.py _BUILTIN_ADAPTERS row, gateway/outbound/senders.py
 # ``_send_weixin``, hermes_cli/gateway_setup_wizard.py ``_setup_weixin``).
 # ---------------------------------------------------------------------------
 

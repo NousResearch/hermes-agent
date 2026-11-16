@@ -66,10 +66,10 @@ def _satellite_config():
 
 
 def _tool(args):
-    from tools.send_message_tool import send_message_tool
+    from gateway.outbound.send import send_message_tool
 
     with patch("gateway.config.load_gateway_config", return_value=_satellite_config()), \
-            patch("tools.send_message_tool._authorize_relay_target", return_value=None), \
+            patch("gateway.outbound.send._authorize_relay_target", return_value=None), \
             patch("tools.interrupt.is_interrupted", return_value=False), \
             patch("model_tools._run_async", side_effect=lambda c: asyncio.run(c)), \
             patch("gateway.mirror.mirror_to_session", return_value=False):
@@ -79,7 +79,7 @@ def _tool(args):
 def _live_adapter_allows(platform, profile, chat_id, thread_id):
     """The gate as the choke point applies it: ``_live_adapter`` resolves the profile itself (the
     fixture's ``sec``) and must forward the target's thread."""
-    from tools.send_message_senders import SharedBotTargetRefused, _live_adapter
+    from gateway.outbound.senders import SharedBotTargetRefused, _live_adapter
 
     assert profile == "sec"
     try:

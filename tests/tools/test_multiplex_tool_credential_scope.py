@@ -39,7 +39,7 @@ def test_scoped_tool_credential_gates_ignore_default_profile_environ(monkeypatch
 
 
 def test_weixin_home_channel_resolves_from_profile_scope_not_environ(monkeypatch, secondary_scope):
-    from tools import send_message_tool
+    from gateway.outbound import send as send_message_tool
 
     class _NoHome:
         def get_home_channel(self, platform):

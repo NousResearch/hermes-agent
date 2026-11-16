@@ -743,7 +743,15 @@ export const svOverrides: TranslationOverrides = {
         roleRequired: { title: 'Administratörsroll krävs', message: 'För att lägga till medel krävs en organisationsadministratör eller ägare. Be en administratör om hjälp eller hantera det på portalen.' },
         idempotencyConflict: { title: 'Starta en ny påfyllning', message: '🔴 Den debiteringsnyckeln har redan använts för ett annat belopp. Starta en ny påfyllning.' },
         noPaymentMethod: { title: 'Inget sparat kort', message: '💳 Det finns ännu inget sparat kort för terminaldebiteringar. Lägg till ett på portalen (engångsköp av krediter sparar inget återanvändbart kort).' },
-        orgAccessDenied: { title: 'Organisationens åtkomst nekades', message: 'Den här tokenen är inte kopplad till en organisation som du kan hantera' }
+        orgAccessDenied: { title: 'Organisationens åtkomst nekades', message: 'Den här tokenen är inte kopplad till en organisation som du kan hantera' },
+        monthlyCapExceeded: { title: 'Månadens utgiftsgräns är nådd', messageReached: '🔴 Månadens utgiftsgräns är nådd.', messageHeadroom: remaining => `🔴 Månadens utgiftsgräns är nådd – ${remaining} återstår.` },
+        rateLimited: { title: 'För många debiteringar just nu', message: mins => mins > 0 ? `🟡 För många debiteringar just nu (försök igen om cirka ${mins} min). Det är inte ett betalningsfel.` : '🟡 För många debiteringar just nu. Det är inte ett betalningsfel.' },
+        stripeUnavailable: { title: 'Stripe har problem', message: mins => mins > 0 ? `Stripe har problem – försök igen om cirka ${mins} min` : 'Stripe har problem – försök igen snart' },
+        upgradeCapExceeded: { title: 'Dagens gräns för abonnemangsbyte är nådd', message: 'Dagens gräns för abonnemangsbyte är nådd – försök igen i morgon' },
+        endpointUnavailable: { title: 'Faktureringsändpunkten är inte tillgänglig', message: 'Faktureringsändpunkten returnerade ett svar som inte är JSON (den kanske inte är tillgänglig i denna installation).' },
+        timeout: { title: 'Begäran om fakturering tog för lång tid', message: 'Begäran om fakturering tog för lång tid.' },
+        transport: { title: 'Anslutningen för fakturering misslyckades', message: 'Begäran om fakturering misslyckades innan den nådde gatewayen.' },
+        default: { title: 'Begäran om fakturering misslyckades', message: 'Begäran om fakturering misslyckades.' }
       },
       state: {
         notice: {

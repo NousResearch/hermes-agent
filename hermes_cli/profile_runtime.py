@@ -7,6 +7,7 @@ gateway serving that home is not. So the answer comes from what the SERVING gate
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -16,6 +17,8 @@ RUNTIME_VALUES: tuple[str, ...] = ("auto", "container", "native")
 
 _STATE_FILE = "gateway_state.json"
 
+logger = logging.getLogger(__name__)
+
 
 def _declared_runtime_kind(home: Path) -> Optional[str]:
     """``runtime_kind`` last stamped into ``home``'s gateway_state.json, or None.
@@ -24,7 +27,7 @@ def _declared_runtime_kind(home: Path) -> Optional[str]:
     which a stopped gateway answers just as well as a running one.
     """
     try:
-        data = json.loads((home / _STATE_FILE).read_text(encoding="utf-8"))
+        data = json.loads((home / _STATE_FILE).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -46,6 +49,7 @@ def resolve_profile_runtime(explicit: Optional[str] = None) -> tuple[RuntimeKind
         try:
             configured = (load_config().get("profiles") or {}).get("runtime")
         except Exception:
+            logger.debug("profiles.runtime unreadable; using auto", exc_info=True)
             configured = None
         choice = configured if configured is not None else "auto"
         source = "profiles.runtime"
@@ -74,5 +78,6 @@ def container_name() -> str:
     try:
         configured = (load_config().get("profiles") or {}).get("container_name")
     except Exception:
+        logger.debug("profiles.container_name unreadable; using the default", exc_info=True)
         configured = None
     return configured if isinstance(configured, str) and configured.strip() else "hermes"

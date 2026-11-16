@@ -625,12 +625,20 @@ export const svOverrides: TranslationOverrides = {
         'Extra meningar för röstsamtalets personlighet (ton, tempo, språk). Hermes behåller sin egen systemprompt.'
     },
     appearance: {
+      chatTextScaleTitle: 'Chattens textstorlek',
+      chatTextScaleDesc:
+        'Skalar konversationstexten och meddelanderedigeraren i förhållande till gränssnittets skala. Sidofält och kontroller behåller samma storlek.',
       title: 'Utseende',
       intro: 'Endast för skrivbordsappen. Läge styr ljusstyrka, tema styr färgpalett och chattens utseende.',
       colorMode: 'Färgläge',
       colorModeDesc: 'Välj ett fast läge eller låt Hermes följa systeminställningen.',
       toolViewTitle: 'Visning av verktygsanrop',
       toolViewDesc: 'Produktläge döljer råa verktygsdata; tekniskt läge visar fullständig in- och utdata.',
+      hideCodeDiffsTitle: 'Dölj kodskillnader',
+      hideCodeDiffsDesc:
+        'Visa filändringar som rader i verktyget med antal tillagda och borttagna rader, utan koden.',
+      hideThreadTimelineTitle: 'Dölj tidslinjestaplar för trådar',
+      hideThreadTimelineDesc: 'Dölj navigeringsstaplarna längs högerkanten i varje konversation.',
       reasoningCollapsedTitle: 'Fäll ihop resonemang som standard',
       reasoningCollapsedDesc: 'Behåll strömmat resonemang tillgängligt utan att fälla ut det förrän du öppnar det.',
       uiScaleTitle: 'Gränssnittsskalning',
@@ -652,6 +660,13 @@ export const svOverrides: TranslationOverrides = {
       terminalFontPlaceholder: 'MesloLGS NF eller en CSS-teckensnittsstapel',
       terminalFontPreview: 'Förhandsvisning av glyfer',
       terminalFontReset: 'Använd standardvärdet',
+      chatFontTitle: 'Chattens teckensnitt',
+      chatFontDesc:
+        'Välj ett installerat teckensnitt för chatten och resten av appen. Praktiskt för lättlästa typsnitt som OpenDyslexic; lämna tomt för temats teckensnitt.',
+      chatFontPlaceholder: 'OpenDyslexic eller en CSS-teckensnittsstapel',
+      chatFontPreview: 'Förhandsvisning',
+      chatFontSample: 'Snabba bruna rävar hoppar över lata hundar. 0123456789',
+      chatFontReset: 'Använd temats teckensnitt',
       translucencyTitle: 'Fönstergenomskinlighet',
       translucencyDesc:
         'Se skrivbordet genom hela fönstret, även bakom text. Anpassas separat för ljust och mörkt läge.',
@@ -667,8 +682,14 @@ export const svOverrides: TranslationOverrides = {
       translucencyScope: { window: 'Hela fönstret', sidebar: 'Endast sidofältet' },
       backdropTitle: 'Bakgrund för chatt',
       backdropDesc: 'Den svaga statybilden bakom konversationen.',
+      textDirectionTitle: 'Textriktning',
+      textDirectionDesc:
+        'Hur chattmeddelanden och skrivfältet väljer riktning. Automatiskt följer den första bokstaven i varje stycke; välj en riktning när blandad text hamnar fel. Kod är alltid vänster-till-höger.',
+      textDirection: { auto: 'Automatiskt', rtl: 'Höger till vänster', ltr: 'Vänster till höger' },
       introSplashTitle: 'Startbild',
       introSplashDesc: 'Ordmärket och prompten som visas i en tom chatt.',
+      modelPricingTitle: 'Modellpriser',
+      modelPricingDesc: 'Visa priser för indata, utdata och cacheläsningar per miljon token i modellväljaren.',
       reactionsTitle: 'Meddelandereaktioner',
       reactionsDesc: 'Emoji-reaktioner i iMessage-stil: reagera på meddelanden och Hermes kan reagera på dina.',
       tipsTitle: 'Tips i appen',
@@ -680,6 +701,9 @@ export const svOverrides: TranslationOverrides = {
         'Låt Hermes markera varje steg när du guidas genom appen. Stängs av automatiskt efter de första 30 dagarna. Du kan aktivera dem igen.',
       composerPopoutTitle: 'Flytande skrivfält',
       composerPopoutDesc: 'Tillåt att skrivfältet dras ut ur sin docka. Stäng av för att låsa det längst ned.',
+      fileBrowserTitle: 'Filbläddrare',
+      fileBrowserDesc:
+        'Visa filbläddraren bredvid chatten när en arbetsyta är öppen. Växlingen i namnlisten ändrar också detta.',
       vibeHeartsTitle: 'Vibe-hjärtan',
       vibeHeartsDesc:
         'Flytande hjärtan när du säger tack, ily, good bot eller skickar ett hjärta. Separat från meddelandereaktioner ovan.',
@@ -696,6 +720,7 @@ export const svOverrides: TranslationOverrides = {
       technicalDesc: 'Inkludera råa verktygsargument/-resultat och detaljer på låg nivå.',
       themeTitle: 'Tema',
       themeDesc: 'Endast skrivbordspaletter. Det valda läget tillämpas ovanpå.',
+      themeSearchPlaceholder: 'Sök bland dina teman eller på VS Code Marketplace…',
       themeProfileNote: profile => `Sparat för profilen ${profile} — varje profil behåller sitt eget tema.`,
       installTitle: 'Installera från VS Code',
       installDesc:

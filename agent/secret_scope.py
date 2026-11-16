@@ -431,22 +431,23 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
     from ``os.environ`` — so the scope holds only profile secrets."""
     from hermes_secret_routing import read_profile_env  # the selected secret store's view of the profile
-    from hermes_secret_routing import local_bootstrap_env, routed_provider
+    from hermes_secret_routing import live_bootstrap_env, routed_provider, profile_env_layer
     provider = routed_provider()
     if provider is not None:
         provider.current_snapshot(hermes_home)
-        secrets = local_bootstrap_env(hermes_home, provider)
-        store_layer = lambda: provider.current_snapshot(hermes_home).env
+        secrets = LiveSecretScope((live_bootstrap_env(hermes_home, provider),
+                                   profile_env_layer(provider, hermes_home)))
+        dotenv = {}
     else:
         secrets = read_profile_env(Path(hermes_home) / ".env")
-    # Launch-only keys are never profile secrets (#135200): get_secret consults
-    # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
-    # under multiplexing) do not — a planted .env entry would otherwise survive
-    # into the mapping as a readable value. The external/managed paths below
-    # already drop them via _is_global_env; this is the one entry that doesn't.
-    from hermes_constants import is_launch_only_env_key
-    secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
-    dotenv = dict(secrets)
+        # Launch-only keys are never profile secrets (#135200): get_secret consults
+        # _is_global_env first, but direct scope.get readers (e.g. platform_gate_env
+        # under multiplexing) do not — a planted .env entry would otherwise survive
+        # into the mapping as a readable value. The external/managed paths below
+        # already drop them via _is_global_env; this is the one entry that doesn't.
+        from hermes_constants import is_launch_only_env_key
+        secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
+        dotenv = dict(secrets)
     try:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(Path(hermes_home))
@@ -459,7 +460,10 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     from gateway.config_loader import bridged_allow_all_users
     bridged = bridged_allow_all_users()
     if bridged is not None and _is_process_home(hermes_home):
-        secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
+        if isinstance(secrets, LiveSecretScope):
+            secrets.layers += ({"GATEWAY_ALLOW_ALL_USERS": bridged},)
+        else:
+            secrets.setdefault("GATEWAY_ALLOW_ALL_USERS", bridged)
     # Administrator-managed ``.env`` LAST, with override: the launch process applies it that way
     # (``env_loader._apply_managed_env``) so policy beats a user's own value. Under multiplex
     # semantics ``get_secret`` never reads ``os.environ`` on a scope miss, so a scope built from
@@ -473,7 +477,7 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     secrets.update(managed)
     _expand_dotenv_templates(secrets, hermes_home, {**dotenv, **managed})
     if provider is not None:
-        return LiveSecretScope((secrets, store_layer), profile_home=hermes_home)
+        secrets.profile_home = hermes_home
     return secrets
 
 
@@ -511,20 +515,32 @@ class LiveSecretScope(Mapping[str, str]):
 
     def __init__(self, layers, *, profile_home=None):
         self.profile_home = profile_home
-        self.layers = tuple(layers)  # highest precedence first; callables are live layers
+        self.layers = ({}, *layers)  # writable caller overlay, then highest precedence first
 
     def _maps(self):
-        return tuple(layer.copy() if isinstance(layer, LiveSecretScope) else
-                     layer() if callable(layer) else layer for layer in self.layers)
+        return (layer() if callable(layer) else layer for layer in self.layers)
 
     def __getitem__(self, name):
         for layer in self._maps():
-            if name in layer:
+            try:
                 return layer[name]
+            except KeyError:
+                continue
         raise KeyError(name)
 
+    def __setitem__(self, name, value):
+        self.layers[0][name] = value
+
+    def update(self, values):
+        self.layers[0].update(values)
+
+    def setdefault(self, name, value):
+        if name not in self:
+            self[name] = value
+        return self[name]
+
     def __iter__(self):
-        return iter(dict.fromkeys(name for layer in reversed(self._maps()) for name in layer))
+        return iter(dict.fromkeys(name for layer in self._maps() for name in layer))
 
     def __len__(self):
         return len(set(iter(self)))
@@ -532,7 +548,7 @@ class LiveSecretScope(Mapping[str, str]):
     def copy(self):
         """Materialise once at a child-process or serialization boundary."""
         result = {}
-        for layer in reversed(self._maps()):
+        for layer in reversed(tuple(self._maps())):
             result.update(layer)
         return result
 

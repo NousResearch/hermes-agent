@@ -168,7 +168,7 @@ def _load_hermes_env() -> None:
     from agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() if is_multiplex_active() else None
     if scope is not None:
-        target = scope if isinstance(scope, dict) else dict(scope)
+        target = scope
     else:
         target = os.environ
         env_path = home / ".env"

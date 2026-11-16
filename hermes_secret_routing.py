@@ -99,6 +99,7 @@ def reset_for_tests() -> None:
     """Forget resolved providers and published views (tests only)."""
     with _PROVIDERS_LOCK:
         _PROVIDERS.clear()
+        _BOOTSTRAP_LAYERS.clear()
     with _PUBLISH_LOCK:
         _PUBLISHED.clear()
         _PUBLISHED_VERSIONS.clear()
@@ -187,6 +188,45 @@ def local_bootstrap_env(home: Path, provider: SecretStoreProvider) -> dict[str, 
     """Only the file-backed deployment layer of a non-file-backed profile scope."""
     from agent.secret_scope import load_env_file
     return {k: v for k, v in load_env_file(Path(home) / ENV_FILENAME).items() if stays_local(provider, k)}
+
+
+_BOOTSTRAP_LAYERS = {}
+
+
+def live_bootstrap_env(home, provider):
+    """Shared local layer refreshed by local credential writes, never by hot lookups."""
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key(home)
+    values = local_bootstrap_env(home, provider)
+    layer = _BOOTSTRAP_LAYERS.setdefault(key, {})
+    layer.update(values)
+    for name in tuple(layer):
+        if name not in values:
+            del layer[name]
+    return layer
+
+
+class ProfileEnvLayer(Mapping[str, str]):
+    """Filter one snapshot by key without copying its complete view."""
+
+    def __init__(self, provider, home):
+        self.provider, self.home = provider, home
+
+    def __getitem__(self, name):
+        if stays_local(self.provider, name):
+            raise KeyError(name)
+        return self.provider.current_snapshot(self.home).env[name]
+
+    def __iter__(self):
+        return (name for name in self.provider.current_snapshot(self.home).env
+                if not stays_local(self.provider, name))
+
+    def __len__(self):
+        return sum(1 for _ in self)
+
+
+def profile_env_layer(provider, home):
+    return ProfileEnvLayer(provider, home)
 
 
 def read_profile_env(env_path: Path) -> dict[str, str]:
@@ -297,7 +337,7 @@ def view_changed(home: Path, old_env=None, new_env=None) -> None:
                 if name not in new and os.environ.get(name) == value:
                     os.environ.pop(name, None)
             changed = {name: value for name, value in new.items()
-                       if old.get(name) != value and os.environ.get(name) in (None, old.get(name))}
+                       if old.get(name) != value and (name not in old or os.environ.get(name) in (None, old.get(name)))}
             for name, value in changed.items():
                 os.environ[name] = value
             _LOADED_DOTENV_KEYS.update(changed)

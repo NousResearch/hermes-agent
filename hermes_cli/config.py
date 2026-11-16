@@ -2497,32 +2497,8 @@ def _env_line_defines_key(line: str, key: str, *, is_windows: Optional[bool] = N
 
 
 def _publish_env_value(key: str, value: Optional[str]) -> None:
-    """Publish a just-persisted ``.env`` change to the live process.
-    Under a multiplexed gateway a routed profile's write must not land in the SHARED
-    ``os.environ`` where every profile sees it; the installed scope mapping is updated instead so
-    same-turn reads see the change. All other callers keep the legacy ``os.environ`` publish.
-
-    ``save_env_value`` / ``remove_env_value`` already target the right file (``get_env_path()`` honors the
-    profile-home override), but the in-process mirror historically went straight to ``os.environ``. See
-    #77490, #88441.
-    """
-    try:
-        from agent.secret_scope import current_secret_scope, serves_routed_profile
-
-        scope, routed = current_secret_scope(), serves_routed_profile()
-    except Exception:
-        scope, routed = None, False
-    # The launch profile's own body runs under a scope snapshot even single-profile (the TUI /
-    # dashboard launch scope), so a same-request read after the write must see it there too; a
-    # routed profile's value never reaches the shared process env.
-    targets = [scope] if isinstance(scope, dict) else []
-    if not routed and not is_launch_only_env_key(key):
-        targets.append(os.environ)
-    for target in targets:
-        if value is None:
-            target.pop(key, None)
-        else:
-            target[key] = value
+    from hermes_cli.config_env_publication import publish_env_value
+    publish_env_value(key, value)
 
 
 def env_write_refusal(key: str, action: str) -> Optional[str]:

@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytest_plugins = ["tests.agent.test_secret_layer_precedence"]
+
 from agent.secret_scope import (
     reset_secret_scope,
     set_multiplex_active,
@@ -942,12 +944,12 @@ class TestLoadGatewayConfig:
         ("gateway:\n  allow_all_users: true\n", "false", "false"),  # explicit env wins over YAML
         ("gateway: {}\n", None, None),
     ])
-    def test_allow_all_users_yaml_never_widens_past_env(self, tmp_path, monkeypatch, yaml_text, env, expected):
+    def test_allow_all_users_yaml_never_widens_past_env(self, profile_store, monkeypatch, yaml_text, env, expected):
         from gateway.authz_mixin import GatewayAuthorizationMixin
         from gateway.session import SessionSource
 
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
+        hermes_home, seed = profile_store
+        seed({} if env is None else {"GATEWAY_ALLOW_ALL_USERS": env})
         (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         if env is None:

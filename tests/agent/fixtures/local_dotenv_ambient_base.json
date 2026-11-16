@@ -1,6 +1,6 @@
 {
- "source": "7541e088e1",
- "method": "Original load_hermes_dotenv(load_external_secrets=False) in a fresh process (process home); original resolver with process-global lookup (satellite home)",
+ "source": "06189b9508",
+ "method": "Original load_hermes_dotenv(load_external_secrets=False) in a fresh process (process home); original build_profile_secret_scope in a fresh process (satellite home)",
  "launch": {
   "OPENAI_API_KEY": "launch-credential-marker",
   "RV10_OUTSIDE": "outside-marker",
@@ -726,7 +726,7 @@
    "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\\b'\n",
    "values": {
     "RV10_INNER": "earlier",
-    "RV10_VALUE": "a\\b"
+    "RV10_VALUE": "a\\\\b"
    }
   },
   {
@@ -862,7 +862,7 @@
    "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\nb\"\n",
    "values": {
     "RV10_INNER": "earlier",
-    "RV10_VALUE": "a\nb"
+    "RV10_VALUE": "a\\nb"
    }
   },
   {
@@ -870,7 +870,7 @@
    "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\tb\"\n",
    "values": {
     "RV10_INNER": "earlier",
-    "RV10_VALUE": "a\tb"
+    "RV10_VALUE": "a\\tb"
    }
   },
   {
@@ -1088,7 +1088,7 @@
    "home": "satellite",
    "text": "RV10_VALUE=\"multi\nline ${RV10_OUTSIDE}\"\n",
    "values": {
-    "RV10_VALUE": "multi\nline "
+    "RV10_VALUE": "\"multi"
    }
   }
  ]

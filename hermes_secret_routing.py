@@ -184,7 +184,7 @@ def stays_local(provider: SecretStoreProvider, name: str) -> bool:
 
 def _routed_env_home(env_path: Path) -> tuple[Optional[SecretStoreProvider], Optional[Path]]:
     provider = routed_provider()
-    if provider is None:
+    if provider is None or pinned_env_bytes(env_path) is not None:
         return None, None
     home = _profile_home_of(env_path, ENV_FILENAME)
     return (provider, home) if home is not None else (None, None)
@@ -202,6 +202,41 @@ def profile_snapshot(home, snapshot):
         _PROFILE_SNAPSHOT.reset(token)
 
 
+_LOCAL_READ = ContextVar("local_profile_read", default=None)
+
+
+@contextmanager
+def local_profile_read(home, raw: bytes):
+    """Within: *home*'s ``.env`` reads as the local store reads it, holding *raw* (a store's one-time
+    import asks the local readers what they serve for the bytes it captured)."""
+    token = _LOCAL_READ.set((Path(home), raw))
+    try:
+        yield
+    finally:
+        _LOCAL_READ.reset(token)
+
+
+def pinned_env_bytes(env_path: Path) -> Optional[bytes]:
+    """The bytes :func:`local_profile_read` pins for *env_path*, or None."""
+    pinned = _LOCAL_READ.get()
+    env_path = Path(env_path)
+    return pinned[1] if pinned is not None and env_path.name == ENV_FILENAME and env_path.parent == pinned[0] else None
+
+
+def local_served_env(home, raw: bytes) -> dict[str, str]:
+    """What the local store serves from *home*'s ``.env`` holding *raw*, by its own readers, for a
+    store's one-time import: for the process home, what its load puts in ``os.environ``; for any
+    other profile, its secret scope's ``.env`` layer (external sources and the managed ``.env``
+    apply over a store as they did over the file)."""
+    from agent.secret_scope import _build_profile_secret_scope, _is_process_home
+    from hermes_cli.env_loader import launch_dotenv_values
+    home = Path(home)
+    if _is_process_home(home):
+        return launch_dotenv_values(home / ENV_FILENAME, raw)
+    with local_profile_read(home, raw):
+        return _build_profile_secret_scope(home, overlays=False)
+
+
 def bootstrap_generation(home):
     return _BOOTSTRAP_GENERATIONS.get(Path(home), 0)
 
@@ -217,7 +252,8 @@ def read_profile_env(env_path: Path) -> dict[str, str]:
     from agent import secret_scope
     provider, home = _routed_env_home(env_path)
     if provider is None or home is None:
-        return secret_scope.load_env_file(env_path)
+        raw = pinned_env_bytes(env_path)
+        return secret_scope.load_env_file(env_path) if raw is None else secret_scope.parse_env_bytes(raw)
     merged = {k: v for k, v in secret_scope.load_env_file(env_path).items() if stays_local(provider, k)}
     pinned = _PROFILE_SNAPSHOT.get()
     snapshot = pinned[1] if pinned is not None and pinned[0] == Path(home) else provider.current_snapshot(home)

@@ -5,15 +5,17 @@ the profile's ``.env``), taken before anything is read and held until the import
 concurrent boot of the same profile, in another process or thread, waits for it and then starts
 from a fresh read (normally finding nothing left to import). Under the lock (:func:`prepare`):
 
-1. ``.env`` is normalised by the dotenv loader's own sanitiser, as every load does; then ``.env``,
-   ``auth.json`` and an unfinished staging file are each read once (:class:`Sources`);
+1. the process home's ``.env`` is normalised by the dotenv loader's own sanitiser, as every load of
+   it does (a satellite's never is); then ``.env``, ``auth.json`` and an unfinished staging file are
+   each read once (:class:`Sources`);
 2. every kept-local ``.env`` line must be literal (:func:`non_literal_kept_names`): one the loader
    would expand stops the boot (``SecretStoreUnavailable``, names only) before anything is staged,
    refreshed, written or sent;
-3. the entries outside the bootstrap set (``.env`` values as the loader resolves them, every
-   reference included; ``auth.json`` records from the captured bytes) are staged in :data:`STAGING`
-   (0600, merged over an unfinished staging) before the credential resolves: a token refresh saves
-   ``auth.json`` with its bootstrap records only.
+3. the entries outside the bootstrap set (``.env`` values exactly as the local store serves them
+   for the captured bytes, ``hermes_secret_routing.local_served_env``; ``auth.json`` records from
+   the captured bytes) are staged in :data:`STAGING` (0600, merged over an unfinished staging)
+   before the credential resolves: a token refresh saves ``auth.json`` with its bootstrap records
+   only.
 
 Then, against the fetched view (the backend): a profile the plane has never stored
 (``profileVersion == 0``) gets the staged entries in one ``PATCH /self`` with
@@ -39,7 +41,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, NoReturn
 
 from dotenv.parser import parse_stream
-from agent.secret_scope import _is_global_env, invalidate_env_file_cache
+from agent.secret_scope import invalidate_env_file_cache
 from utils import atomic_json_write, atomic_replace, fsync_directory, mkstemp_beside
 
 logger = logging.getLogger(__name__)
@@ -106,17 +108,19 @@ def capture(home: Path) -> Sources:
 
 
 def prepare(home: Path, provider, profile: str) -> Prepared:
-    """Under the import lock: normalise ``.env`` (the loader's sanitiser), read the files once,
-    refuse a non-literal kept line, stage the entries to import. Nothing is written before the
-    check but what the loader's own sanitiser writes on every load."""
+    """Under the import lock: normalise the process home's ``.env`` (the loader's sanitiser), read
+    the files once, refuse a non-literal kept line, stage the entries to import. Nothing is written
+    before the check but what the loader's own sanitiser writes on every load of that home."""
+    from agent.secret_scope import _is_process_home
     from hermes_cli.env_loader import _sanitize_env_file_if_needed
     env_path = Path(home) / ".env"
-    _sanitize_env_file_if_needed(env_path)
+    if _is_process_home(Path(home)):
+        _sanitize_env_file_if_needed(env_path)
     sources = capture(home)
     assignments = _assignments(sources.env)
     if names := non_literal_kept_names(provider, assignments):
         _stop(refusal_text(profile, names))
-    env, records = _local_entries(home, provider, assignments, sources.auth)
+    env, records = _local_entries(home, provider, sources)
     staged_env, staged_auth = _staged(sources.staging)
     env, records = {**staged_env, **env}, {**staged_auth, **records}
     if env or records:
@@ -148,19 +152,15 @@ def _assignments(raw: bytes | None) -> list[tuple[str, str | None]]:
     return [] if raw is None else parse_dotenv_bytes(raw)
 
 
-def _local_entries(home: Path, provider, assignments, auth_raw: bytes | None
+def _local_entries(home: Path, provider, sources: Sources
                    ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
-    """The local entries outside the bootstrap set: each ``.env`` name's value as the launch load
-    resolves it (order, duplicates, every reference, credential sanitising), stored literally from
-    then on; the captured ``auth.json``'s records."""
-    from hermes_cli.env_loader import _resolve_dotenv_assignments, _sanitize_loaded_credentials
-    from hermes_secret_routing import auth_records, stays_local
-    resolved = _resolve_dotenv_assignments(assignments, _reference_env(Path(home)), override=True)
-    env = {name: value for name, value in resolved.items() if value is not None}
-    _sanitize_loaded_credentials(env)
+    """The local entries outside the bootstrap set: what the local store serves from the captured
+    ``.env`` (``local_served_env``), stored literally from then on; the captured ``auth.json``'s records."""
+    from hermes_secret_routing import auth_records, local_served_env, stays_local
+    env = {} if sources.env is None else local_served_env(Path(home), sources.env)
     env = {name: value for name, value in env.items() if not stays_local(provider, name)}
     keep = provider.bootstrap_auth_records()
-    records = {rid: r for rid, r in auth_records(_auth_store(auth_raw) or {}).items() if rid not in keep}
+    records = {rid: r for rid, r in auth_records(_auth_store(sources.auth) or {}).items() if rid not in keep}
     return env, records
 
 
@@ -174,18 +174,6 @@ def _auth_store(raw: bytes | None) -> dict[str, Any] | None:
     except ValueError:
         return None
     return data if isinstance(data, dict) else None
-
-
-def _reference_env(home: Path) -> dict[str, str]:
-    """What references in *home*'s ``.env`` resolve against besides its own earlier lines: the launch
-    environment for the process home; for any other home the process-global names as they are now
-    (the original satellite builder's lookup: after the launch load), never a launch credential."""
-    from agent.secret_scope import _is_process_home
-    from hermes_cli.env_loader import _DOTENV_LOCK, _dotenv_lookup_env
-    if _is_process_home(home):
-        with _DOTENV_LOCK:
-            return _dotenv_lookup_env(None)
-    return {k: v for k, v in os.environ.items() if _is_global_env(k)}
 
 
 def _write_private_json(path: Path, data: Any) -> None:

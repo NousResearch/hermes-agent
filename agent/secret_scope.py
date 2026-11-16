@@ -417,13 +417,18 @@ def load_env_file(env_path: Path) -> dict[str, str]:
         if cached is not None and cached[0] == raw:
             _ENV_FILE_CACHE.move_to_end(key)
             return dict(cached[1])
-    secrets = _parse_env_text(_decode_env_bytes(raw))
+    secrets = parse_env_bytes(raw)
     with _ENV_FILE_CACHE_LOCK:
         _ENV_FILE_CACHE[key] = (raw, dict(secrets))
         _ENV_FILE_CACHE.move_to_end(key)
         while len(_ENV_FILE_CACHE) > _ENV_FILE_CACHE_MAX:
             _ENV_FILE_CACHE.popitem(last=False)
     return secrets
+
+
+def parse_env_bytes(raw: bytes) -> dict[str, str]:
+    """A ``.env``'s *raw* bytes as :func:`load_env_file` reads them."""
+    return _parse_env_text(_decode_env_bytes(raw))
 
 
 def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
@@ -437,8 +442,9 @@ def build_profile_secret_scope(hermes_home: Path) -> Mapping[str, str]:
     return _build_profile_secret_scope(hermes_home)
 
 
-def _build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
-    """The file-backed builder; stores replace only its raw profile read."""
+def _build_profile_secret_scope(hermes_home: Path, *, overlays: bool = True) -> dict[str, str]:
+    """The file-backed builder; stores replace only its raw profile read. Without *overlays*: the
+    profile ``.env`` layer alone, as served where no external source or managed ``.env`` covers a name."""
     from hermes_secret_routing import read_profile_env
     secrets = read_profile_env(Path(hermes_home) / ".env")
     # Launch-only keys are never profile secrets (#135200): get_secret consults
@@ -449,6 +455,9 @@ def _build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     from hermes_constants import is_launch_only_env_key
     secrets = {k: v for k, v in secrets.items() if not is_launch_only_env_key(k)}
     dotenv = dict(secrets)
+    if not overlays:
+        _expand_dotenv_templates(secrets, hermes_home, dotenv, managed=False)
+        return secrets
     try:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(Path(hermes_home))
@@ -477,7 +486,8 @@ def _build_profile_secret_scope(hermes_home: Path) -> dict[str, str]:
     return secrets
 
 
-def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: dict[str, str]) -> None:
+def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: dict[str, str], *,
+                             managed: bool = True) -> None:
     """Resolve ``${VAR}`` / ``${VAR:-default}`` in values that came from the dotenv layers, with
     ``load_hermes_dotenv``'s own resolver, so the scope and ``os.environ`` agree on what a file says:
     ``TELEGRAM_HOME_CHANNEL=${TELEGRAM_USER_ID}`` otherwise reached cron delivery as the literal
@@ -491,7 +501,7 @@ def _expand_dotenv_templates(secrets: dict[str, str], hermes_home: Path, raw: di
         return
     from hermes_cli.env_loader import resolve_home_dotenv
     lookup = None if _is_process_home(hermes_home) else {k: v for k, v in os.environ.items() if _is_global_env(k)}
-    resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup)
+    resolved = resolve_home_dotenv(Path(hermes_home), lookup_env=lookup, managed=managed)
     secrets.update((k, resolved[k]) for k in templated if k in resolved)
 
 

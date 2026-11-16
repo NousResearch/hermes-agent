@@ -82,6 +82,7 @@ _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 # callers (gateway with a project .env, cron without; home A then B) must peel each other's output too.
 _DOTENV_PUBLISHED: dict[str, tuple[str | None, str, int]] = {}
 _DOTENV_PASSES = itertools.count()
+_BOOTSTRAP_PASS = -1  # ``apply_config_bootstrap_env``'s early publication of a store's names: no load's pass
 _DOTENV_LOCK = threading.RLock()
 
 # Per-process credentials a parent mints and injects into the child's environment (the Desktop shell /
@@ -409,7 +410,10 @@ def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order. For a
     profile ``.env`` a store of literal values serves: the store's values as :class:`StoredValue`,
     then the file's own kept-local lines (literal too: the store refuses to boot otherwise)."""
-    from hermes_secret_routing import routed_profile_env, routed_provider, routed_store_env, stays_local
+    from hermes_secret_routing import pinned_env_bytes, routed_profile_env, routed_provider, routed_store_env, stays_local
+    pinned = pinned_env_bytes(path)
+    if pinned is not None:
+        return parse_dotenv_bytes(pinned)
     stored = routed_store_env(path)
     if stored is not None:
         provider = routed_provider()
@@ -472,16 +476,18 @@ def _resolve_dotenv_assignments(
     return resolved
 
 
-def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
+def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None, managed: bool = True,
+                        ) -> dict[str, str]:
     """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included.
     *lookup_env* replaces that environment: another profile's file must not resolve against this one's.
     With a secret store that keeps the profile's secrets off disk, the home's layer is what the
-    launch load publishes for it instead: the file's bootstrap names plus the store's view, as is."""
+    launch load publishes for it instead: the file's bootstrap names plus the store's view, as is.
+    Without *managed*: the home's layer alone."""
     from hermes_cli import managed_scope
-    managed_dir = managed_scope.get_managed_dir()
+    managed_dir = managed_scope.get_managed_dir() if managed else None
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
     if lookup_env is not None:
         lookup_env = dict(lookup_env)
@@ -509,6 +515,38 @@ def _release_bridge_claim(name: str) -> None:
     os.environ.pop(BRIDGED_ENV_MARKER_PREFIX + name, None)
 
 
+def _dotenv_layer(assignments, *, override: bool, load_pass: int | None, source: str
+                  ) -> dict[str, tuple[str, str | None]]:
+    """What one dotenv layer publishes into ``os.environ``: ``{name: (value, baseline)}``, unsanitized,
+    nothing written. Caller holds ``_DOTENV_LOCK``."""
+    resolved = _resolve_dotenv_assignments(assignments, _dotenv_lookup_env(load_pass), override=override)
+    out: dict[str, tuple[str, str | None]] = {}
+    for name, value in resolved.items():
+        if value is None or (not override and name in os.environ):
+            continue
+        if is_launch_only_env_key(name):
+            _warn_launch_only_key(source, name)
+            continue  # deployment bootstrap knob (#135200, #144685)
+        current = os.environ.get(name)
+        record = _DOTENV_PUBLISHED.get(name)
+        ours = record is not None and current == record[1]
+        if name in _SPAWN_CREDENTIAL_KEYS and current and not ours:
+            continue  # parent-minted per-process credential: .env must not split it from the parent
+        # Ours and untouched since → keep the original baseline; anything else is a newer outside value.
+        out[name] = (value, record[0] if ours else current)
+    return out
+
+
+def launch_dotenv_values(path: Path, raw: bytes) -> dict[str, str]:
+    """What loading the process home's ``.env`` *path* holding *raw* puts in ``os.environ``, read-only:
+    the user layer of ``load_hermes_dotenv`` (same lookup, precedence and credential sanitising)."""
+    with _DOTENV_LOCK:
+        layer = _dotenv_layer(parse_dotenv_bytes(raw), override=True, load_pass=None, source=f"dotenv {path}")
+    values = {name: value for name, (value, _baseline) in layer.items()}
+    _sanitize_loaded_credentials(values)
+    return values
+
+
 def _load_dotenv_with_fallback(
     path: Path, *, override: bool, load_pass: int | None = None, managed: bool = False,
 ) -> None:
@@ -523,20 +561,8 @@ def _load_dotenv_with_fallback(
     with _DOTENV_LOCK:
         if load_pass is None:
             load_pass = next(_DOTENV_PASSES)
-        resolved = _resolve_dotenv_assignments(assignments, _dotenv_lookup_env(load_pass), override=override)
-        for name, value in resolved.items():
-            if value is None or (not override and name in os.environ):
-                continue
-            if is_launch_only_env_key(name):
-                _warn_launch_only_key(f"dotenv {path}", name)
-                continue  # deployment bootstrap knob (#135200, #144685)
-            current = os.environ.get(name)
-            record = _DOTENV_PUBLISHED.get(name)
-            ours = record is not None and current == record[1]
-            if name in _SPAWN_CREDENTIAL_KEYS and current and not ours:
-                continue  # parent-minted per-process credential: .env must not split it from the parent
-            # Ours and untouched since → keep the original baseline; anything else is a newer outside value.
-            baseline = record[0] if ours else current
+        for name, (value, baseline) in _dotenv_layer(assignments, override=override, load_pass=load_pass,
+                                                     source=f"dotenv {path}").items():
             os.environ[name] = value
             _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
             if value.strip():
@@ -674,10 +700,22 @@ def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_
     from hermes_secret_port import SECRET_STORE_ENV
     from hermes_secret_routing import bootstrap_env_names_for
 
-    names |= bootstrap_env_names_for(env.get(SECRET_STORE_ENV))
-    for name in names:
-        value = env.get(name)
+    store_names = bootstrap_env_names_for(env.get(SECRET_STORE_ENV))
+    # A store's own credential names are published this early only because that store is selected:
+    # to ``${VAR}`` lookups they are an earlier dotenv pass's output, peeled back like one, so every
+    # ``.env`` resolves as it does with the local store.
+    early = store_names - bootstrap_env_names_for(None) - names
+    early_values = {name: env[name] for name in early if name in env}
+    _sanitize_loaded_credentials(early_values)  # and in the form the dotenv load leaves them
+    for name in names | store_names:
+        value = early_values.get(name, env.get(name))
         if value is not None and os.environ.get(name) != value:
+            if name in early:
+                with _DOTENV_LOCK:
+                    record = _DOTENV_PUBLISHED.get(name)
+                    current = os.environ.get(name)
+                    baseline = record[0] if record is not None and current == record[1] else current
+                    _DOTENV_PUBLISHED[name] = (baseline, value, _BOOTSTRAP_PASS)
             os.environ[name] = value
 
 

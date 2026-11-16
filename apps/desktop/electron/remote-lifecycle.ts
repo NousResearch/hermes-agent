@@ -1173,32 +1173,60 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       // and every mkdir/cat against the variable fails forever.
       `reservation=${reservation}; lock=${lockPath}; owner_file=${ownerPath}; ` +
       `reservation_nonce=${shq(reservationNonce)}; ` +
-      `i=0; incomplete=0; mkdir -p "$reservation"; ` +
+      `i=0; incomplete=0; mkdir -p "$reservation"; reclaim_marker="$reservation/.reclaim"; ` +
+      `reclaim_hand="$reservation/.reclaim.$$"; ` +
+      // Reclaim has to be as atomic as acquire. The residue of the mkdir-era
+      // reaper was `rm -rf "$reservation"` issued by every waiter that judged
+      // the same pid dead: a delete could land AFTER another caller created its
+      // record, so a live holder lost it (measured 14/20 rounds with two holders
+      // at K=8). Now exactly one reaper exists at a time: the marker is published
+      // with `ln` (one winner) after its pid is already inside, so there is no
+      // window in which a marker exists without an owner, and a reaper that dies
+      // leaves a pid the next reaper clears. Inside that section the record is
+      // re-judged — a record another caller has replaced is left alone, a record
+      // whose pid is alive is left alone — and only then is it moved off the
+      // shared path with one `mv`, the MOVED copy judged again, and a still-live
+      // copy put back. Nothing ever unlinks the shared path.
+      `reclaim_record() { printf '%s' "$$" > "$reclaim_hand" 2>/dev/null || return 0; ` +
+      `if ! ln "$reclaim_hand" "$reclaim_marker" 2>/dev/null; then ` +
+      `held=$(cat "$reclaim_marker" 2>/dev/null || true); ` +
+      `case "$held" in ''|*[!0-9]*) ;; *) kill -0 "$held" 2>/dev/null || rm -f "$reclaim_marker" ;; esac; ` +
+      `rm -f "$reclaim_hand"; return 0; fi; rm -f "$reclaim_hand"; ` +
+      `now=$(cat "$owner_file" 2>/dev/null || true); ` +
+      `if [ "$now" = "$judged" ]; then ` +
+      `case "$now" in *:*) now_pid=${'${now%%:*}'}; ` +
+      `case "$now_pid" in ''|*[!0-9]*) ;; *) kill -0 "$now_pid" 2>/dev/null && { rm -f "$reclaim_marker"; return 0; };; esac;; esac; ` +
+      `taken="$reservation.reclaim.$$.$i"; ` +
+      `if mv "$owner_file" "$taken" 2>/dev/null; then moved=$(cat "$taken" 2>/dev/null || true); ` +
+      `case "$moved" in *:*) moved_pid=${'${moved%%:*}'}; ` +
+      `case "$moved_pid" in ''|*[!0-9]*) ;; *) kill -0 "$moved_pid" 2>/dev/null && (set -C; printf '%s' "$moved" > "$owner_file") 2>/dev/null;; esac;; esac; ` +
+      `rm -rf "$taken"; fi; fi; rm -f "$reclaim_marker"; }; ` +
       // The reservation is ONE O_EXCL create of the owner record, never a
       // `mkdir` exit status. Ubuntu 26.04 ships uutils coreutils 0.10.0, whose
-      // `mkdir` can report success twice for the same path under concurrency
-      // (1-43 double-wins per 200 parallel rounds): with mkdir as the mutex the
-      // loser never takes the "already reserved" path below, two backends spawn
-      // for one ownership id, and a reaper can rm -rf a reservation whose owner
-      // was not written yet. `set -C` (noclobber) makes the shell itself open
-      // the record O_CREAT|O_EXCL, which the kernel arbitrates: exactly one
-      // caller creates it, and every other lands in this retry body.
+      // `mkdir` reports a create it lost as a success in a small fraction of
+      // parallel rounds (8 of 400 at K=8, 16 of 400 at K=16 here, earlier runs
+      // 1-5 per 200-1000, always exactly two winners and never three): with
+      // mkdir as the mutex the loser never takes the "already reserved" path
+      // below, two backends spawn for one ownership id, and a reaper can delete
+      // a reservation whose owner was not written yet. `set -C` (noclobber)
+      // makes the shell itself open the record O_CREAT|O_EXCL, which the kernel
+      // arbitrates: exactly one caller creates it (200 of 200 rounds under the
+      // same load), and every other lands in this retry body.
       `while ! (set -C; printf '%s:%s' "$$" "$reservation_nonce" > "$owner_file") 2>/dev/null; do ` +
       // The holder removes the reservation when it exits, so a missing
       // directory is not a stale record: recreate the container and retry,
       // never counting it as an unpublished owner.
       `[ -d "$reservation" ] || { mkdir -p "$reservation"; i=$((i+1)); [ "$i" -ge 600 ] && exit 75; sleep 0.05; continue; }; ` +
-      `owner_data=$(cat "$owner_file" 2>/dev/null || true); ` +
+      `judged=$(cat "$owner_file" 2>/dev/null || true); owner_data=$judged; ` +
       // A record lacking its pid:nonce separator is not published yet (the
       // winner is between create() and write(), a microsecond window) or its
       // writer died there. Retry briefly, then reclaim it as stale instead of
       // spending the whole budget waiting on it.
       `case "$owner_data" in *:*) ;; *) owner_data='';; esac; owner_pid=${'${owner_data%%:*}'}; ` +
       `case "$owner_pid" in ''|*[!0-9]*) incomplete=$((incomplete+1)); ` +
-      `[ "$incomplete" -ge 40 ] && { rm -rf "$reservation"; mkdir -p "$reservation"; incomplete=0; continue; };; ` +
-      // A published record whose owning shell is gone is stale: reclaim it.
-      `*) incomplete=0; kill -0 "$owner_pid" 2>/dev/null || { rm -rf "$reservation"; mkdir -p "$reservation"; continue; };; ` +
-      `esac; ` +
+      `[ "$incomplete" -ge 40 ] && { incomplete=0; reclaim_record; };; ` +
+      // A published record whose owning shell is gone is stale.
+      `*) incomplete=0; kill -0 "$owner_pid" 2>/dev/null || reclaim_record;; esac; ` +
       `i=$((i+1)); [ "$i" -ge 600 ] && exit 75; sleep 0.05; done; ` +
       // Release on every exit path this shell can observe: EXIT covers normal
       // and explicit exits, and each signal trap turns a caught HUP/INT/TERM

@@ -128,6 +128,7 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
     'head',
     'sleep',
     'mv',
+    'ln',
     'env',
     'ps',
     launcher
@@ -402,6 +403,113 @@ time.sleep(30)`,
   20_000
 )
 
+interface ReservationRace {
+  root: string
+  home: string
+  /** The reservation block `buildSpawnCommand` composes, byte for byte. */
+  payload: string
+  reservation: string
+  owner: string
+}
+
+/**
+ * Capture the reservation payload the app really composes: the argv the remote
+ * shell hands to python3 is recorded and the payload is argv[3] of that call.
+ * Every race below runs those bytes verbatim instead of a copy of them.
+ */
+async function reservationRace(): Promise<ReservationRace> {
+  const root: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-reservation-race-'))
+  const home: string = path.join(root, 'home')
+  const argvShim: string = path.join(root, 'argv-shim')
+  const argvFile: string = path.join(root, 'argv.bin')
+
+  await mkdir(home)
+  await mkdir(argvShim)
+
+  await writeFile(path.join(argvShim, 'python3'), `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\n`, {
+    mode: 0o755
+  })
+
+  const command: string = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    lockMetadata: { ownershipId, spawnNonce },
+    logPath: spawnLogPath(ownershipId, spawnNonce),
+    ownershipId,
+    reservationNonce: spawnNonce,
+    spawnNonce,
+    tokenFilePath: spawnTokenPath(ownershipId, spawnNonce)
+  })
+
+  await exec(command, { env: { ...process.env, HOME: home, PATH: `${argvShim}:${process.env.PATH}` }, shell: 'sh' })
+
+  const payload: string = (await readFile(argvFile, 'utf8')).split('\0')[3]
+  const reservation: string = home + connectReservationPath(ownershipId).replace(/^~/, '')
+
+  return { root, home, payload, reservation, owner: path.join(reservation, 'owner') }
+}
+
+/** The reservation block alone: everything the payload does before it spawns. */
+function reservationBlock(payload: string): string {
+  const reserve: number = payload.indexOf('i=0;')
+  const spawned: number = payload.indexOf('mkdir -p "$(dirname', reserve)
+
+  assert.ok(reserve > 0 && spawned > reserve, 'the reservation block moved; teach this test its new shape')
+
+  return payload.slice(0, spawned)
+}
+
+/**
+ * A caller that runs the shipped block, then behaves like the holder: it proves
+ * the record it took is its own, holds long enough for a second holder to be
+ * observable, and re-checks the record before it releases. `notmine`/`lost` are
+ * a live holder whose record was taken away — the defect under test.
+ */
+async function holderRacer(root: string, payload: string): Promise<string> {
+  const race: string = path.join(root, 'race.sh')
+
+  await writeFile(
+    race,
+    `${reservationBlock(payload)}` +
+      `printf '%s\\n' "$$" >> "$MARK_DIR/entries"; ` +
+      `case "$(cat "$owner_file" 2>/dev/null || true)" in "$$:"*) ;; *) : > "$MARK_DIR/notmine";; esac; ` +
+      `if [ -e "$MARK_DIR/held" ]; then : > "$MARK_DIR/double"; fi; ` +
+      `: > "$MARK_DIR/held"; sleep 0.15; ` +
+      `case "$(cat "$owner_file" 2>/dev/null || true)" in "$$:"*) ;; *) : > "$MARK_DIR/lost";; esac; ` +
+      `rm -f "$MARK_DIR/held"; `,
+    { mode: 0o755 }
+  )
+
+  return race
+}
+
+/** Run one round of `callers` real callers and fail on any overlap/steal marker. */
+async function raceRound(race: string, home: string, mark: string, callers: number, label: string): Promise<string[]> {
+  await rm(mark, { force: true, recursive: true })
+  await mkdir(mark)
+
+  await Promise.all(
+    Array.from({ length: callers }, (): Promise<{ stdout: string }> =>
+      exec(race, { env: { ...process.env, HOME: home, MARK_DIR: mark }, shell: 'sh' })
+    )
+  )
+
+  for (const name of ['double', 'notmine', 'lost']) {
+    await assert.rejects(
+      readFile(path.join(mark, name)),
+      { code: 'ENOENT' },
+      `${label}: ${
+        name === 'double'
+          ? 'two callers held the ownership reservation at once'
+          : name === 'notmine'
+            ? 'a caller that believed it held the reservation found a foreign owner record'
+            : 'a live holder lost its owner record while it was holding'
+      }`
+    )
+  }
+
+  return (await readFile(path.join(mark, 'entries'), 'utf8')).trim().split('\n')
+}
+
 // The reservation must be decided by an atomic create, never by the exit status
 // of `mkdir`. Ubuntu 26.04 ships uutils coreutils 0.10.0, whose `mkdir` can
 // report success twice for the same path under concurrency; with mkdir as the
@@ -412,25 +520,15 @@ time.sleep(30)`,
 test.skipIf(process.platform === 'win32')(
   'the ownership reservation admits one holder when a mkdir reports a create it lost',
   async (): Promise<void> => {
-    const root: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-reservation-race-'))
+    const { root, home, payload }: ReservationRace = await reservationRace()
 
     try {
-      const home: string = path.join(root, 'home')
-      const argvShim: string = path.join(root, 'argv-shim')
-      const argvFile: string = path.join(root, 'argv.bin')
       const round: string = path.join(root, 'round')
       const raceShim: string = path.join(root, 'race-shim')
       const race: string = path.join(root, 'race.sh')
 
-      await mkdir(home)
-      await mkdir(argvShim)
       await mkdir(raceShim)
 
-      // Capture the argv the remote shell hands to python3 and take the payload
-      // from it, so the race below runs the command the app really composes.
-      await writeFile(path.join(argvShim, 'python3'), `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\n`, {
-        mode: 0o755
-      })
       await writeFile(
         path.join(raceShim, 'mkdir'),
         '#!/bin/sh\n' +
@@ -442,35 +540,15 @@ test.skipIf(process.platform === 'win32')(
         { mode: 0o755 }
       )
 
-      const command: string = buildSpawnCommand('/x/hermes', 'work', {
-        hermesHome: '~/.hermes',
-        lockMetadata: { ownershipId, spawnNonce },
-        logPath: spawnLogPath(ownershipId, spawnNonce),
-        ownershipId,
-        reservationNonce: spawnNonce,
-        spawnNonce,
-        tokenFilePath: spawnTokenPath(ownershipId, spawnNonce)
-      })
-
-      await exec(command, {
-        env: { ...process.env, HOME: home, PATH: `${argvShim}:${process.env.PATH}` },
-        shell: 'sh'
-      })
-
-      const payload: string = (await readFile(argvFile, 'utf8')).split('\0')[3]
-      const reserve: number = payload.indexOf('i=0;')
-      const spawned: number = payload.indexOf('mkdir -p "$(dirname', reserve)
-
-      assert.ok(reserve > 0 && spawned > reserve, 'the reservation block moved; teach this test its new shape')
-
       // Racer protocol: whoever holds the reservation sleeps; a second holder
       // inside that window is the double-win the mkdir mutex allowed, and the
       // one the reaper's reservation delete raced against.
       await writeFile(
         race,
-        `${payload.slice(0, spawned)}` +
+        `${reservationBlock(payload)}` +
           `if [ -e "$MARK_DIR/held" ]; then : > "$MARK_DIR/double"; fi; ` +
-          `: > "$MARK_DIR/held"; sleep 0.3; rm -f "$MARK_DIR/held"; `
+          `: > "$MARK_DIR/held"; sleep 0.3; rm -f "$MARK_DIR/held"; `,
+        { mode: 0o755 }
       )
 
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PATH: `${raceShim}:${process.env.PATH}` }
@@ -494,4 +572,103 @@ test.skipIf(process.platform === 'win32')(
     }
   },
   60_000
+)
+
+// Reclaim must have the atomicity of acquire. A dead owner record used to be
+// removed with `rm -rf "$reservation"` by every waiter that judged the same pid
+// dead; a delete could land after another caller created its record, so a live
+// holder lost it and a second backend spawned. Measured on Ubuntu 26.04 with
+// uutils 0.10.0 at K=8: 14 of 20 rounds admitted two holders and 34-35 of 50
+// rounds took a live holder's record away.
+test.skipIf(process.platform === 'win32')(
+  'reclaiming a dead owner record admits one holder and never takes a live record away',
+  async (): Promise<void> => {
+    const { root, home, payload, reservation, owner }: ReservationRace = await reservationRace()
+    const race: string = await holderRacer(root, payload)
+
+    try {
+      for (let index = 0; index < 6; index++) {
+        const dead: number = await deadPid()
+
+        assert.throws(
+          (): boolean => process.kill(dead, 0),
+          { code: 'ESRCH' },
+          `round ${index + 1}: the seeded owner pid ${dead} is alive`
+        )
+
+        await mkdir(reservation, { recursive: true })
+        await writeFile(owner, `${dead}:${spawnNonce}`)
+
+        const entries: string[] = await raceRound(race, home, path.join(root, `dead-${index}`), 8, `round ${index + 1}`)
+
+        assert.equal(entries.length, 8, `round ${index + 1}: every caller should have taken the reservation in turn`)
+        assert.equal(new Set(entries).size, 8, `round ${index + 1}: a caller took the reservation twice`)
+      }
+    } finally {
+      await rm(root, { force: true, recursive: true })
+    }
+  },
+  120_000
+)
+
+// The takeover is the crash window the reclaim now owns: a caller that dies
+// between "record moved" and "record judged" must leave the record moved — never
+// unlinked — and must not wedge the next callers.
+test.skipIf(process.platform === 'win32')(
+  'a reclaim killed mid-takeover leaves the record moved, not unlinked, and the next callers admit one holder',
+  async (): Promise<void> => {
+    const { root, home, payload, reservation, owner }: ReservationRace = await reservationRace()
+    const shim: string = path.join(root, 'kill-shim')
+    const race: string = path.join(root, 'race.sh')
+    const dead: number = await deadPid()
+
+    await mkdir(shim)
+    // The takeover is the first `mv` the block runs: do the real rename and then
+    // kill the caller, which is exactly the crash between the two halves.
+    await writeFile(path.join(shim, 'mv'), '#!/bin/sh\ncommand -p mv "$@"\nkill -9 "$PPID"\n', { mode: 0o755 })
+    await writeFile(race, reservationBlock(payload), { mode: 0o755 })
+
+    try {
+      await mkdir(reservation, { recursive: true })
+      await writeFile(owner, `${dead}:${spawnNonce}`)
+
+      const crash: { code: number | null; signal: string | null } = await new Promise(resolve => {
+        const child: ChildProcess = spawn('sh', [race], {
+          env: { ...process.env, HOME: home, PATH: `${shim}:${process.env.PATH}` },
+          stdio: 'ignore'
+        })
+
+        child.once('close', (code, signal) => resolve({ code, signal }))
+      })
+
+      assert.equal(crash.signal, 'SIGKILL', 'the racer should be dead after the takeover moved the record')
+
+      await assert.rejects(
+        readFile(owner),
+        { code: 'ENOENT' },
+        'the dead record must have been moved off the shared path'
+      )
+
+      const owning: string = path.dirname(reservation)
+
+      const moved: string[] = (await readdir(owning)).filter((name: string): boolean =>
+        name.startsWith('.connect.lock.reclaim.')
+      )
+
+      assert.equal(moved.length, 1, 'the takeover must leave exactly one moved copy of the record')
+      assert.equal(
+        await readFile(path.join(owning, moved[0]), 'utf8'),
+        `${dead}:${spawnNonce}`,
+        'the moved copy must still be the record the takeover judged'
+      )
+
+      const next: string = await holderRacer(root, payload)
+      const entries: string[] = await raceRound(next, home, path.join(root, 'next'), 4, 'after the crash')
+
+      assert.equal(entries.length, 4, 'the crashed takeover must not wedge the next callers')
+    } finally {
+      await rm(root, { force: true, recursive: true })
+    }
+  },
+  120_000
 )

@@ -475,7 +475,7 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
         if not _state_db_unchanged_since_kept(state_path, kept):
             print("  ✗ Auto-restore failed part-way; state.db may be missing or changed.")
             print(f"    The pre-restore state.db is kept at {kept}")
-            print(f"    Salvage it with `hermes sessions recover --source {kept} --output <new-path>`")
+            print(f"    Salvage it with `hermes sessions recover --source {kept} --output <new-path> --allow-partial`")
             return False
         _discard_kept_state_db(kept)
         print("  ✗ Auto-restore refused or failed; state.db was not restored.")

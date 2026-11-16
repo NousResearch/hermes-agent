@@ -590,7 +590,7 @@ def _per_model_reasoning_effort(model: Optional[str]) -> Optional[dict]:
     ``none`` → ``{"enabled": False}`` reading both belong to ``hermes_constants``; this only supplies
     the config. Read-only load, never mutated.
     """
-    if not model:
+    if not model or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
         return None
     from hermes_cli.config import load_config_readonly
     from hermes_constants import resolve_per_model_reasoning_effort

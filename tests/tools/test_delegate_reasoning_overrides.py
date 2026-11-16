@@ -108,6 +108,11 @@ def test_config_file_on_disk_is_honoured(tmp_path, monkeypatch):
     kwargs = _runtime(_parent(), {"reasoning_effort": "low"}, "disk-model")
     assert kwargs["reasoning_config"] == {"enabled": True, "effort": "max"}
 
+    # --ignore-user-config must not resurrect an effort pinned in the skipped YAML file.
+    monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+    ignored = _runtime(_parent(), {"reasoning_effort": "low"}, "disk-model")
+    assert ignored["reasoning_config"] == {"enabled": True, "effort": "low"}
+
 
 def test_override_lookup_is_spelling_tolerant_and_silent_on_misses():
     """The lookup itself: tolerant matching, ``None`` when nothing matches, no config when no model.

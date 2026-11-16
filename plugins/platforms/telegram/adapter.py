@@ -201,7 +201,8 @@ from plugins.platforms.telegram.telegram_media_fetch import (
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, tap_matches_prompt
-from plugins.platforms.telegram.telegram_clarify_multi import handle_multi_token, multi_prompt_extras, resolve_clarify_choice
+from plugins.platforms.telegram.telegram_clarify_multi import handle_multi_token, resolve_clarify_choice
+from plugins.platforms.telegram.telegram_clarify_labels import clarify_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from gateway.approval_actor import picker_refusal, update_prompt_refusal
 from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
@@ -3881,21 +3882,10 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
+        """Render a clarify prompt: configured captions per choice plus "✏️ Other (type answer)" (flips to
         text-capture mode); without choices, plain question and the gateway text-intercept captures."""
         def build():
-            text = f"❓ {_html.escape(question)}"
-            keyboard = None
-            if choices:
-                # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
-                text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
-                if multi := multi_prompt_extras(self, clarify_id, len(choices)):  # toggles + Send (#154195)
-                    text, keyboard = text + multi[0], multi[1]
-                else:
-                    # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                    rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                    rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
-                    keyboard = InlineKeyboardMarkup(rows)
+            text, keyboard = clarify_prompt(self, question, choices, clarify_id)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, ClarifyPrompt.from_sent(session_key, msg))
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
@@ -6570,7 +6560,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
             extras.setdefault(key, value)
         _set_env(env, value)
 
-    for _topic_key in ("disable_topic_auto_rename", "dm_topic_auto_transfer"):
+    for _topic_key in ("disable_topic_auto_rename", "dm_topic_auto_transfer", "clarify_button_labels"):
         if _topic_key in telegram_cfg:
             extras.setdefault(_topic_key, telegram_cfg[_topic_key])
     _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))

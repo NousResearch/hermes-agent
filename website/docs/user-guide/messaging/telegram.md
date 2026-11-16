@@ -1619,10 +1619,47 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 > ❓ Which framework should I use for the dashboard?
 >
-> [1. Next.js] [2. Remix] [3. Astro]
+> 1. Next.js (Recommended)
+> 2. Remix
+> 3. Astro
+>
+> [1] [2] [3]
 > [✏️ Other (type answer)]
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
+
+### Choice button labels
+
+The default numeric buttons deliberately avoid mobile label truncation. To opt into text labels,
+set `platforms.telegram.extra.clarify_button_labels` in `config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      clarify_button_labels: auto  # numbers | text | auto
+```
+
+| Mode | Choice button caption |
+|------|-----------------------|
+| `numbers` (default) | The choice number, preserving the existing mobile-friendly behavior. |
+| `text` | The choice text, bounded to 60 display columns and 64 Unicode code points, with `…` when shortened. |
+| `auto` | Text for each choice up to **28 display columns**; otherwise that choice's number. Short and long choices can share one keyboard. |
+
+The top-level convenience spelling `telegram: {clarify_button_labels: auto}` is also supported.
+Missing or unrecognized values safely use `numbers`. Restart the gateway after changing the setting.
+
+Display columns use Unicode-aware width estimates: Cyrillic letters generally count as one column,
+wide CJK characters and emoji as two, and combining marks do not add width. The 28-column cutoff
+is a conservative mobile heuristic, **not** a guarantee for Telegram's proportional fonts, screen
+sizes, or accessibility text scaling. Text captions are single-line, control formatting is removed,
+and shortening preserves grapheme clusters (including joined emoji). Empty or invisible captions
+fall back to their choice number.
+
+All modes retain the **complete original numbered list** in the message body, including recommendation
+labels; only button captions change. Multi-select toggles use the same labels with their existing
+checkboxes. Callbacks still identify choices by index, so shortening or sanitizing a caption never
+changes the answer. No wrapper plugin or monkey-patching is needed.
 
 When `clarify` is in the session's tools (not in cron jobs or profiles that disable it), the Telegram platform hint tells the agent to use it for small fixed-choice decisions, so it does not improvise numbered lists or copy-to-clipboard buttons, which never send an answer back. Persistent agent-authored action buttons are not a generic Hermes feature yet.
 

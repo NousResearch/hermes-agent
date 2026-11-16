@@ -260,7 +260,9 @@ def create_live_transcripts(
         paths: list[str] = [str(w.path) for w in made if w.path is not None]
         if not paths:
             return None, [None] * n, []
-        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider, home=home)
+        # writers is index-aligned (None where init failed); the compressed paths list is not,
+        # so anything mapping task index -> log must consume writers, never paths.
+        _write_manifest(deleg_id, task_list, writers, model=model, provider=provider, home=home)
         return deleg_id, writers, paths
     return None, [None] * n, []
 
@@ -269,8 +271,8 @@ def _manifest_path(delegation_id: str, home: Optional[Path] = None) -> Path:
     return live_transcript_root(home) / delegation_id / "manifest.json"
 
 
-def _write_manifest(delegation_id: str, task_list: list[dict[str, Any]],
-                    paths: list[str], model: Optional[str] = None,
+def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
+                    writers: List[Optional[LiveTranscriptWriter]], model: Optional[str] = None,
                     provider: Optional[str] = None, home: Optional[Path] = None) -> None:
     with _best_effort("manifest write"):
         _dump_json(_manifest_path(delegation_id, home), {
@@ -280,7 +282,7 @@ def _write_manifest(delegation_id: str, task_list: list[dict[str, Any]],
                 "index": i,
                 # Same mounted dir as the .log files, so the goal needs the same redaction.
                 "goal": _redact(str(t.get("goal", ""))[:500]),
-                "log": paths[i] if i < len(paths) else None,
+                "log": str(writers[i].path) if i < len(writers) and writers[i] is not None else None,
                 "status": "running"} for i, t in enumerate(task_list)]})
 
 

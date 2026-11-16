@@ -101,7 +101,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   ingress path calls the canonicalize seam before it derives a key: the adapter side
   (`platforms/base.py::_canonicalize` — `handle_message`, `_enqueue_text_event`, Telegram photo /
   album routing, `_handle_message_while_active`, every `_source_session_key`) and the runner side
-  (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
+  (`run_adapters::_canonicalize` — the per-profile / default message, busy and platform-event
   handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation
   before it; an unresolved identity under multiplexing (route to an unserved profile) is dropped
   with one WARNING at the first seam it reaches, never keyed into `agent:main`
@@ -190,7 +190,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   profile flips the process-wide guard (`tui_gateway/launch_profile_policy.py::
   activate_multi_profile_hosting`) inside the gateway process, after the adapters were wired; every
   standalone entry point (`run_turn.py::_profile_scope_for_source`, the primary adapter's message /
-  busy / platform-event handlers via `run_adapters.py::_standalone_scoped`) then binds the launch
+  busy / platform-event handlers via `run_adapters::_standalone_scoped`) then binds the launch
   profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
   activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
   `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
@@ -207,7 +207,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   conflicting flags before touching precedence.
 - **Unserved is reported, never silent.** Shared-ingress platforms (Relay) run on the default
   profile only; a secondary enabling one is logged once with the remedy and stamped into runtime
-  status (`run_adapters.py::_note_unserved_secondary_platform`). The WhatsApp bridge is per profile:
+  status (`run_adapters::_note_unserved_secondary_platform`). The WhatsApp bridge is per profile:
   a paired secondary gets its own adapter and port (`plugins/platforms/whatsapp/bridge_ownership.py`),
   an unpaired one is reported as `whatsapp_unpaired`, and a secondary never adopts or signals a
   bridge its own pidfile (pid + start time + port) does not identify. `needs_attention` is

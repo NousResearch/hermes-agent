@@ -249,7 +249,8 @@ A captionless voice note can only match them with `voice_mention_patterns: true`
 voice note first (off by default: every unaddressed voice note then goes to your speech-to-text provider; the
 turn reuses that transcript).
 
-Then start the gateway:
+If the gateway is already running, completing the pairing wizard activates its WhatsApp adapter
+without restarting the gateway or interrupting active chats. If the gateway is stopped, start it:
 
 ```bash
 hermes gateway              # Foreground
@@ -257,7 +258,8 @@ hermes gateway install      # Install as a user service
 sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
-The gateway starts the WhatsApp bridge automatically using the saved session.
+The gateway starts the WhatsApp bridge automatically using the saved session. If activation fails,
+check `hermes gateway status` for the WhatsApp error; local chats remain available.
 
 ---
 

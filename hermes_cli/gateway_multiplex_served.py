@@ -1,6 +1,6 @@
 """Which profiles does the LIVE default multiplexer serve? One answer for every CLI/dashboard surface.
 
-``gateway/run_adapters.py::_record_served_profiles`` writes ``served_profiles`` into the default
+``gateway/run_adapters/__init__.py::_record_served_profiles`` writes ``served_profiles`` into the default
 home's ``gateway_state.json`` at startup. That record is the truth about the running process; the
 default ``config.yaml`` plus ``GATEWAY_MULTIPLEX_PROFILES`` as seen by the *CLI* process is only a
 guess (``hermes -p coder ...`` loads coder's ``.env``, so an env-only opt-in on the default profile
@@ -124,3 +124,14 @@ def notify_multiplexer_profiles_changed(profile_name: str, *, timeout: float = 8
         return None
     served = answer.get("served_profiles")
     return [str(p) for p in served] if isinstance(served, list) else None
+
+
+def notify_gateway_whatsapp_paired(home: Path, profile_name: str) -> Optional[dict]:
+    """Activate a paired profile on its own gateway or its default-profile host."""
+    from gateway.control_socket import activate_gateway_whatsapp
+    from hermes_constants import get_default_hermes_root
+
+    answer = activate_gateway_whatsapp(home, profile_name)
+    if answer is None and profile_name != "default":
+        answer = activate_gateway_whatsapp(get_default_hermes_root(), profile_name)
+    return None if answer and answer.get("reason") == "profile_not_served" else answer

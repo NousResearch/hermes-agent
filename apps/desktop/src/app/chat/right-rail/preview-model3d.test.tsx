@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const viewer = vi.hoisted(() => ({
   destroy: vi.fn(),
+  setBackground: vi.fn(),
   instances: [] as { host: HTMLElement; load: ReturnType<typeof vi.fn>; params: Record<string, (() => void) | unknown> }[]
 }))
 
@@ -11,6 +12,7 @@ vi.mock('online-3d-viewer', () => ({
   EmbeddedViewer: class {
     Destroy = viewer.destroy
     LoadModelFromFileList = vi.fn()
+    GetViewer = () => ({ SetBackgroundColor: viewer.setBackground })
 
     constructor(host: HTMLElement, params: Record<string, unknown>) {
       viewer.instances.push({ host, load: this.LoadModelFromFileList, params })
@@ -34,6 +36,7 @@ describe('Model3dPreview', () => {
   beforeEach(() => {
     viewer.instances.length = 0
     viewer.destroy.mockClear()
+    viewer.setBackground.mockClear()
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ blob: async () => new Blob([new Uint8Array([0, 1, 2])]) }))
@@ -71,6 +74,16 @@ describe('Model3dPreview', () => {
     await waitFor(() => expect(viewer.instances).toHaveLength(1))
     ;(viewer.instances[0]?.params.onModelLoadFailed as () => void)()
     expect(await screen.findByText(/load this 3D model/i)).toBeTruthy()
+  })
+
+  it('repaints the viewer background when the app theme changes', async () => {
+    render(<Model3dPreview dataUrl={DATA_URL} name="part.obj" />)
+    await waitFor(() => expect(viewer.instances).toHaveLength(1))
+    expect(viewer.setBackground).not.toHaveBeenCalled()
+
+    window.document.documentElement.setAttribute('data-hermes-theme', 'other')
+    await waitFor(() => expect(viewer.setBackground).toHaveBeenCalledTimes(1))
+    window.document.documentElement.removeAttribute('data-hermes-theme')
   })
 
   it('destroys the viewer on unmount', async () => {

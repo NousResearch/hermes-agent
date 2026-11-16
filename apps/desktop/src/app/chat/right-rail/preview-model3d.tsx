@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { onThemeRepaint } from '@/hooks/use-theme-epoch'
 import { useI18n } from '@/i18n'
 
 /** Resolve a CSS color (any syntax, incl. oklch/var()) to 0-255 RGB via a 1px canvas. */
@@ -39,6 +40,7 @@ export function Model3dPreview({ dataUrl, name }: { dataUrl: string; name: strin
   useEffect(() => {
     const host = hostRef.current
     let viewer: { Destroy: () => void } | undefined
+    let stopTheme: (() => void) | undefined
     let active = true
 
     setError(undefined)
@@ -52,15 +54,16 @@ export function Model3dPreview({ dataUrl, name }: { dataUrl: string; name: strin
           return
         }
 
-        const [r, g, b] = resolveRgb(host, 'var(--background)')
+        const themeColor = () => new o3dv.RGBAColor(...resolveRgb(host, 'var(--background)'), 255)
 
         const embedded = new o3dv.EmbeddedViewer(host, {
-          backgroundColor: new o3dv.RGBAColor(r, g, b, 255),
+          backgroundColor: themeColor(),
           onModelLoadFailed: () => active && (setLoading(false), setError(t.preview.model3dFailed)),
           onModelLoaded: () => active && setLoading(false)
         })
 
         viewer = embedded
+        stopTheme = onThemeRepaint(() => embedded.GetViewer().SetBackgroundColor(themeColor()))
         embedded.LoadModelFromFileList([new File([blob], name)])
       } catch (e) {
         if (active) {
@@ -72,6 +75,7 @@ export function Model3dPreview({ dataUrl, name }: { dataUrl: string; name: strin
 
     return () => {
       active = false
+      stopTheme?.()
       viewer?.Destroy()
     }
   }, [dataUrl, name, t])

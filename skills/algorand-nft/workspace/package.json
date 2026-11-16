@@ -1,0 +1,14 @@
+{
+  "name": "hermes-algorand-nft-workspace",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort"
+  },
+  "dependencies": {"@perawallet/connect": "1.10.0", "algosdk": "3.9.0"},
+  "devDependencies": {"vite": "8.3.8", "happy-dom": "21.0.4"}
+}

@@ -4417,6 +4417,12 @@ export const svOverrides: TranslationOverrides = {
     restartingGateway: 'Startar om…',
     restartFailed: detail => `Gatewayomstarten misslyckades${detail}`,
     enabledRestarting: 'Webhooks aktiverade; gatewayen startar om…',
+    signatureOptions: {
+      generic: 'Generisk (med tidsstämpel)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     all: '(alla)',
     deliverOnly: 'leverera endast',
     createdTitle: 'Prenumeration skapad',

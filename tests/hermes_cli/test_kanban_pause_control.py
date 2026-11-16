@@ -212,6 +212,50 @@ def test_fractional_integer_control_values_fail_closed(conn, column):
     assert state.error_code == "invalid_control_state"
 
 
+def test_out_of_range_control_timestamp_fails_closed(conn):
+    kanban_control.pause_board(conn, changed_by="operator")
+    conn.execute(
+        "UPDATE kanban_dispatch_control SET changed_at=? WHERE id=1",
+        (2**63 - 1,),
+    )
+
+    state = kanban_control.read_control(conn)
+
+    assert state.state == "unknown"
+    assert state.error_code == "invalid_control_state"
+
+
+def test_status_reads_wal_board_without_mutating_source_files(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    path = kb.kanban_db_path(board="default")
+    kb._INITIALIZED_PATHS.discard(str(path.resolve()))
+    kb.init_db()
+    writer = kbc.connect()
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        paused = kanban_control.pause_board(writer, changed_by="operator")
+        wal = path.with_name(path.name + "-wal")
+        shm = path.with_name(path.name + "-shm")
+        assert wal.exists() and shm.exists()
+        source_before = {
+            item.name: item.read_bytes() for item in (path, wal, shm) if item.exists()
+        }
+
+        result = kanban_control.control_status(board="default")
+
+        source_after = {
+            item.name: item.read_bytes() for item in (path, wal, shm) if item.exists()
+        }
+        assert result["state"] == "paused"
+        assert result["boards"][0]["revision"] == paused.revision
+        assert source_after == source_before
+    finally:
+        writer.close()
+
+
 def _queued_task(conn, status):
     task_id = kb.create_task(conn, title=f"{status} task", assignee="worker")
     with kb.write_txn(conn):

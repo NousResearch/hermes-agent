@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import sqlite3
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Optional
 
 
@@ -189,6 +192,10 @@ def read_control(conn: sqlite3.Connection) -> ControlState:
         or not _valid_text(reason, maximum=_MAX_REASON_LENGTH, allow_none=True)
     ):
         return _unknown("invalid_control_state")
+    try:
+        datetime.fromtimestamp(changed_at, tz=UTC)
+    except (OSError, OverflowError, ValueError):
+        return _unknown("invalid_control_state")
     return ControlState(
         state=state,
         revision=revision,
@@ -328,12 +335,30 @@ def control_status(*, board: Optional[str] = None) -> dict:
             if not path.exists():
                 state = ControlState(state="running", revision=0)
             else:
-                conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-                conn.row_factory = sqlite3.Row
-                try:
-                    state = read_control(conn)
-                finally:
-                    conn.close()
+                wal = path.with_name(path.name + "-wal")
+                shm = path.with_name(path.name + "-shm")
+                if not wal.exists() and not shm.exists():
+                    uri = path.resolve().as_uri() + "?mode=ro&immutable=1"
+                    conn = sqlite3.connect(uri, uri=True)
+                    conn.row_factory = sqlite3.Row
+                    try:
+                        state = read_control(conn)
+                    finally:
+                        conn.close()
+                else:
+                    with tempfile.TemporaryDirectory(prefix="hermes-kanban-status-") as tmp:
+                        snapshot = Path(tmp) / path.name
+                        shutil.copyfile(path, snapshot)
+                        if wal.exists():
+                            shutil.copyfile(
+                                wal, snapshot.with_name(snapshot.name + "-wal"),
+                            )
+                        conn = sqlite3.connect(snapshot)
+                        conn.row_factory = sqlite3.Row
+                        try:
+                            state = read_control(conn)
+                        finally:
+                            conn.close()
         except Exception as exc:
             logger.exception("failed to read Kanban pickup control for board %s", slug)
             state = ControlState(

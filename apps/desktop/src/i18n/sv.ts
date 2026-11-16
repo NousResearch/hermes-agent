@@ -6,6 +6,25 @@ import { svUpdateChannel } from './sv_update_channel'
 // Swedish desktop translation. Keep the English fallback for keys introduced
 // between translation updates.
 export const svOverrides: TranslationOverrides = {
+  appTour: {
+    sessions: {
+      title: 'Dina chattar',
+      text: 'Alla konversationer finns här. Sök, fäst eller öppna dem igen.'
+    },
+    composer: { title: 'Fråga här', text: 'Beskriv vad du vill få gjort. Skriv @ för att lägga till en fil.' },
+    newSession: { title: 'Börja på nytt', text: 'En ny session har sin egen kontext. Använd en per uppgift.' },
+    model: { title: 'Modellväljare', text: 'Väljer vilken modell som svarar.' },
+    modelLocal: 'Datorn kan köra en modell lokalt: Inställningar > Leverantörer > Lokala modeller.',
+    capabilities: {
+      title: 'Funktioner',
+      text: 'Skills, verktyg och insticksprogram som Hermes kan använda. Lägg till fler här.'
+    },
+    messaging: { title: 'Meddelanden', text: 'Nå Hermes från Telegram, Slack, Discord med flera.' },
+    rightPane: {
+      title: 'Arbetsytan',
+      text: 'Öppnar filer, terminalen, granskning och den inbyggda webbläsaren till höger.'
+    }
+  },
   connectorsPage: {
     segment: {
       all: 'Alla',

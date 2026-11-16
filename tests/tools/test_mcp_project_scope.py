@@ -59,11 +59,11 @@ def root(tmp_path_factory) -> Path:
     _kill_orphaned_mcp_children(include_active=True)
 
 
-def _register(root: Path, name: str) -> None:
+def _register(root: Path, name: str, **config) -> None:
     from tools import mcp_tool
     from tools.mcp_tool_discovery import register_mcp_servers
     register_mcp_servers({name: {"command": sys.executable, "args": [str(root / "probe.py")],
-                                          "connect_timeout": 30, "timeout": 30}})
+                                 "connect_timeout": 30, "timeout": 30, **config}})
     assert name in mcp_tool._servers, mcp_tool._server_connect_errors.get(name)
 
 
@@ -789,13 +789,8 @@ def test_a_null_cwd_is_not_an_explicit_cwd_opt_out(root):
     """``cwd: null`` in the config means "unset" everywhere else (_stdio_launch treats it so);
     the clone opt-out must read it the same way, or a server configured with ``cwd: null`` never
     clones and every project shares the launch-dir child (review finding 8b)."""
-    from tools import mcp_tool
-    from tools.mcp_tool_discovery import register_mcp_servers
-
     name = "cwdprobe_nullcwd"
-    register_mcp_servers({name: {"command": sys.executable, "args": [str(root / "probe.py")],
-                                 "connect_timeout": 30, "timeout": 30, "cwd": None}})
-    assert name in mcp_tool._servers
+    _register(root, name, cwd=None)
     try:
         clone_cwd, clone_pid = _call(name, cwd=str(root / "a"))
         _baseline_cwd, baseline_pid = _call(name)

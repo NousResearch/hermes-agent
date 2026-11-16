@@ -107,6 +107,22 @@ class TestDerivedDicts:
         registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
         assert set(COMMANDS_BY_CATEGORY.keys()) == registry_categories
 
+    def test_discovery_tables_contain_canonical_names_only(self):
+        """Aliases resolve for compatibility but never become command rows."""
+        alias_names = {f"/{alias}" for cmd in COMMAND_REGISTRY for alias in cmd.aliases}
+        discovered = {
+            name
+            for category in COMMANDS_BY_CATEGORY.values()
+            for name in category
+        }
+
+        assert not discovered & alias_names
+        assert "/reload-mcp" in discovered
+        assert "/reload_mcp" not in discovered
+        resolved = resolve_command("reload_mcp")
+        assert resolved is not None
+        assert resolved.name == "reload-mcp"
+
 
 # ---------------------------------------------------------------------------
 # Gateway helpers
@@ -355,6 +371,14 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/he")
         texts = {item.text for item in completions}
         assert "help" in texts
+
+    def test_aliases_are_not_autocomplete_entries(self):
+        texts = {item.text for item in _completions(SlashCommandCompleter(), "/reload")}
+
+        assert "reload-mcp" in texts
+        assert "reload-skills" in texts
+        assert "reload_mcp" not in texts
+        assert "reload_skills" not in texts
 
 
 # ── Stacked slash-skill completion ──────────────────────────────────────

@@ -39,3 +39,14 @@ def test_plugin_commands_lists_names_a_display_entry_hides():
     assert result["plugin_commands"] == {"logs": "Plugin logs", "probe": "Probe"}
     plugin_rows = next(c["pairs"] for c in result["categories"] if c["name"] == "Plugin commands")
     assert ["/logs", "Plugin logs"] not in plugin_rows
+
+
+def test_builtin_catalog_pairs_are_canonical_only():
+    result = _catalog(dict)
+    pairs = [pair for category in result["categories"] for pair in category["pairs"]]
+    names = {name for name, _description in pairs}
+
+    assert "/reload-mcp" in names
+    assert "/reload-skills" in names
+    assert "/reload_mcp" not in names
+    assert "/reload_skills" not in names

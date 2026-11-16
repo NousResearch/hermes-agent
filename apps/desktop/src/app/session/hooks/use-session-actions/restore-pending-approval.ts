@@ -1,5 +1,5 @@
 import { $gateway } from '@/store/gateway'
-import { receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
+import { approvalKindFields, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import type { SessionResumeResult } from '@/types/hermes'
 
 /** Re-park a resume snapshot's pending approval; true when one was restored. */
@@ -20,7 +20,8 @@ export function restorePendingApproval(response: SessionResumeResult, sessionId:
     description: pending.description ?? 'dangerous command',
     requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
     sessionId,
-    smartDenied: pending.smart_denied === true
+    smartDenied: pending.smart_denied === true,
+    ...approvalKindFields(pending as Record<string, unknown>)
   })
   void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
 

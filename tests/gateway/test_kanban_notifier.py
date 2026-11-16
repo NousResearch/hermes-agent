@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -796,3 +798,56 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+@pytest.mark.parametrize("mode", ["notify+wake", "notify", "wake"])
+@pytest.mark.parametrize("reason", ["Waiting for the external release window", None])
+def test_scheduled_handoff_delivery_and_cursor(tmp_path, monkeypatch, mode, reason):
+    """Parking hands back immediately, without releasing the scheduled task."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "scheduled.db"))
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="release follow-up", assignee="worker")
+        for chat, profile in [("origin", None), ("other-origin", "unserved")]:
+            kbn.add_notify_sub(
+                conn, task_id=tid, platform="telegram", chat_id=chat,
+                thread_id="topic-7", chat_type="group", delivery_mode=mode,
+                notifier_profile=profile,
+            )
+        assert kb.schedule_task(conn, tid, reason=reason)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == (0 if mode == "wake" else 1)
+    if adapter.sent:
+        ping = adapter.sent[0]
+        assert ping["chat_id"] == "origin"
+        assert ping["metadata"]["thread_id"] == "topic-7"
+        assert f"[default] @worker Kanban {tid} scheduled" in ping["text"]
+        if reason:
+            assert reason in ping["text"]
+    assert len(adapter.handled) == (0 if mode == "notify" else 1)
+    if adapter.handled:
+        wake = adapter.handled[0]
+        assert wake.source.chat_id == "origin"
+        assert wake.source.thread_id == "topic-7"
+        assert "Board: default" in wake.text
+        assert "parked in scheduled" in wake.text
+        if reason:
+            assert reason in wake.text
+
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "scheduled"
+        subs = {sub["chat_id"]: sub for sub in kbn.list_notify_subs(conn)}
+        assert subs["origin"]["last_event_id"] > subs["other-origin"]["last_event_id"]
+        for chat, expected in [("origin", 0), ("other-origin", 1)]:
+            _, events = kbn.unseen_events_for_sub(
+                conn, task_id=tid, platform="telegram", chat_id=chat,
+                thread_id="topic-7", kinds=["scheduled"],
+            )
+            assert len(events) == expected
+
+    # Restart the watcher: the durable cursor prevents a second ping or wake.
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert len(adapter.sent) == (0 if mode == "wake" else 1)
+    assert len(adapter.handled) == (0 if mode == "notify" else 1)

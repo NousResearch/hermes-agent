@@ -118,6 +118,7 @@ class FakeMediaRecorder {
 
   stop() {
     this.state = 'inactive'
+
     const deliver = () => {
       this.ondataavailable?.({ data: new Blob(['clip'], { type: 'audio/webm' }) })
       this.onstop?.()
@@ -291,6 +292,7 @@ describe('useMicRecorder level meter', () => {
   it.each(['idle', 'utterance'])('drains historical %s silence before ending captured speech', async boundary => {
     const { result } = renderHook(() => useMicRecorder(copy))
     let stopped: Promise<MicRecording | null> | undefined
+
     const onSilence = vi.fn(() => {
       stopped = result.current.handle.stop()
     })
@@ -407,6 +409,7 @@ describe('useMicRecorder level meter', () => {
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
     const onSilence = vi.fn()
     let renders = 0
+
     const { result } = renderHook(() => {
       renders++
 

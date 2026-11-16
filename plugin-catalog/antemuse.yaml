@@ -2,20 +2,21 @@
 name: antemuse
 title: Antemuse
 repo: https://github.com/roosiq/antemuse-plugin
-sha: d9c3388b741c54c7458cffb333408f5e936e4506
+sha: cb44038894bf846bf7c81ef3ea911d523c29bfaa
 description: 'One agent state and a concept map you fly yourself. /walk changes the frame the agent works
-  in without sending it anywhere: six hops out to the far rim of a concept''s neighbourhood in WordNet,
-  one bought per turn, recorded for the pane and never injected into the turn, so what comes back comes
-  from somewhere it would not have reached. In /explore you fly the same graph yourself and the plugin
-  only records what you pick. The cockpit names the concept under your reticle, and keep/trash judgements
-  are written to the ledger and counted by tools/hit_rate.py. No model calls on the state path. Disclosure
-  — By default, once per session, reads the last 14 days of your Hermes session messages (read-only) so
-  the walk steers away from concepts you have already met (turn off with the `session_scan` setting).'
+  in without sending it anywhere: six hops out to the far rim of a concept''s neighbourhood in WordNet
+  (or in a corpus graph you supply), one bought per turn, recorded for the pane and never injected into
+  the turn, so what comes back comes from somewhere it would not have reached. In /explore you fly the
+  same graph yourself and the plugin only records what you pick. The cockpit names the concept under your
+  reticle, and keep/trash judgements are written to the ledger and counted by tools/hit_rate.py. No model
+  calls on the state path. Disclosure — By default, once per session, reads the last 14 days of your Hermes
+  session messages (read-only) so the walk steers away from concepts you have already met (turn off with
+  the `session_scan` setting).'
 maintainer: roosiq
 tier: community
 category: desktop
 docs_url: https://github.com/roosiq/antemuse-plugin#readme
-version: "0.11.19"
+version: "0.11.20"
 requires_hermes: '>=0.21.6'
 platforms:
 - linux
@@ -42,9 +43,9 @@ known_issues:
   path, so the pane is expected to work but is unverified there.'
 - The exploration library (spark, keep, collider, selection) is present but runtime-gated behind experimental.enabled
   and makes no quality claim.
-image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/banner.png
+image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/cb44038894bf846bf7c81ef3ea911d523c29bfaa/docs/screenshots/banner.png
 screenshots:
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/pane-walk.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/cockpit.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/return-account.png
-- https://raw.githubusercontent.com/roosiq/antemuse-plugin/d9c3388b741c54c7458cffb333408f5e936e4506/docs/screenshots/blocked-tool.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/cb44038894bf846bf7c81ef3ea911d523c29bfaa/docs/screenshots/pane-walk.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/cb44038894bf846bf7c81ef3ea911d523c29bfaa/docs/screenshots/cockpit.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/cb44038894bf846bf7c81ef3ea911d523c29bfaa/docs/screenshots/return-account.png
+- https://raw.githubusercontent.com/roosiq/antemuse-plugin/cb44038894bf846bf7c81ef3ea911d523c29bfaa/docs/screenshots/blocked-tool.png

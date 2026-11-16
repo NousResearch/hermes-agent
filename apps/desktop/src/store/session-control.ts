@@ -1,11 +1,14 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { $archivedSessions } from './archived-sessions'
 import { $gateway } from './gateway'
 import { refreshSessionGoal } from './goals'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { $sessions, $unlistedSessionOwnerRows } from './session'
 import { ambientRequestFor } from './session-gone-latch'
-import { requestForOwnedSession } from './session-states'
+import { isSessionOwnerResolutionError } from './session-owner-resolution'
+import { knownOwnerForSession, requestForOwnedSession } from './session-states'
 
 export type SessionControlGoalStatus = 'active' | 'done' | 'paused'
 export type SessionControlLoopMode = 'interval' | 'self_paced'
@@ -607,6 +610,7 @@ export function clearSessionControl(sessionId: string): void {
   }
 
   advanceVersion(sessionId)
+  forgetOwnerlessRead(sessionId)
   const entries = $sessionControlBySession.get()
 
   if (!(sessionId in entries)) {
@@ -631,6 +635,8 @@ export function clearAllSessionControl(): void {
   $sessionControlBySession.set({})
   versions.clear()
   eventVersions.clear()
+  ownerlessReadSessionIds.clear()
+  ownerlessReadAttempts.clear()
 }
 
 function beginRead(sessionId: string, background: boolean): number {
@@ -750,6 +756,73 @@ function isMethodNotFound(error: unknown): boolean {
   return message.toLowerCase().includes('method not found') || message.toLowerCase().includes('method-not-found')
 }
 
+/**
+ * Sessions whose control read stopped at the OWNER LADDER, not at the backend.
+ *
+ * Cold boot legitimately leaves ownership unstamped for a beat: the archived
+ * slice is its own backend query (`archived=only`) and unlisted/hidden rows
+ * arrive with their own page, so `session.control.read` can find no owner while
+ * the transcript — an id-only REST read — loads fine. A missing owner is
+ * missing METADATA, not a dead runtime: latching the session gone here would
+ * heal a live conversation, and painting the routing failure as a control error
+ * is what put a red "Session controls unavailable" bar on a working session.
+ * Keep the entry (snapshot included), drop the banner, and re-run the read once
+ * a slice the owner ladder walks changes.
+ *
+ * Bounded per session: list churn must not become a probe loop, and the next
+ * mount re-arms the budget. Actions are untouched — an action that cannot be
+ * routed really did fail, and its caller owns the error UX.
+ */
+const ownerlessReadSessionIds = new Set<string>()
+const ownerlessReadAttempts = new Map<string, number>()
+const MAX_OWNERLESS_READ_RETRIES = 3
+
+function forgetOwnerlessRead(sessionId: string): void {
+  ownerlessReadSessionIds.delete(sessionId)
+  ownerlessReadAttempts.delete(sessionId)
+}
+
+function deferOwnerlessRead(sessionId: string, token: number): void {
+  if (!isCurrent(sessionId, token)) {
+    return
+  }
+
+  const current = $sessionControlBySession.get()[sessionId] ?? emptyEntry()
+
+  publishEntry(sessionId, { ...current, error: null, loading: false })
+  ownerlessReadSessionIds.add(sessionId)
+}
+
+/** The ladder's row sources are the signal: any of them landing can name an
+ *  owner that was missing when the read ran. */
+function retryOwnerlessReads(): void {
+  for (const sessionId of [...ownerlessReadSessionIds]) {
+    const attempts = ownerlessReadAttempts.get(sessionId) ?? 0
+
+    if (isSessionGone(sessionId) || attempts >= MAX_OWNERLESS_READ_RETRIES) {
+      forgetOwnerlessRead(sessionId)
+
+      continue
+    }
+
+    // Wait for metadata that actually answers: somebody else's list churn must
+    // not spend this session's retry budget.
+    if (!knownOwnerForSession(sessionId)) {
+      continue
+    }
+
+    ownerlessReadAttempts.set(sessionId, attempts + 1)
+    ownerlessReadSessionIds.delete(sessionId)
+
+    // Still ownerless? The read re-defers itself, attempts included.
+    void refreshSessionControl(sessionId, { background: true })
+  }
+}
+
+$archivedSessions.listen(retryOwnerlessReads)
+$sessions.listen(retryOwnerlessReads)
+$unlistedSessionOwnerRows.listen(retryOwnerlessReads)
+
 /** Hydrates one session's structured controls; background refreshes never flash a loading state. */
 export async function refreshSessionControl(
   sessionId: string,
@@ -789,9 +862,20 @@ export async function refreshSessionControl(
       return $sessionControlBySession.get()[sessionId]
     }
 
+    forgetOwnerlessRead(sessionId)
+
     return applyParsedSnapshot(sessionId, snapshot)
   } catch (error) {
     if (!isCurrent(sessionId, token)) {
+      return $sessionControlBySession.get()[sessionId]
+    }
+
+    // A missing owner is a ROUTING state, not a control verdict — the backend
+    // was never asked. Preserve whatever snapshot is painted, drop the banner,
+    // and leave the read armed for the moment the ladder can name a backend.
+    if (isSessionOwnerResolutionError(error)) {
+      deferOwnerlessRead(sessionId, token)
+
       return $sessionControlBySession.get()[sessionId]
     }
 

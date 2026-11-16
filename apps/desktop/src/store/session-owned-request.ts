@@ -56,8 +56,15 @@ export function setSessionOwnerProbe(probe: SessionOwnerProbe | null): void {
  * id-only REST read names its owner. Run the same cross-profile probe the RPC
  * dispatcher uses before giving up: a hit routes the request (this is what lets
  * session control work on an archived conversation), a miss still throws.
+ *
+ * The KNOWN-owner path stays SYNCHRONOUS on purpose. `requestForOwnedSession`
+ * is awaited by the background pollers, and the gone-latch they time is
+ * sensitive to one extra microtask: making this function `async` outright
+ * re-fired `process.list` on remount
+ * (`status-stack/polling-guard.test.tsx` pins that shape). Only the
+ * unknown-owner detour below is async.
  */
-export async function requestForOwnedSession<T>(
+export function requestForOwnedSession<T>(
   sessionId: null | string | undefined,
   ambientRequest: <R>(
     method: string,
@@ -70,15 +77,38 @@ export async function requestForOwnedSession<T>(
   timeoutMs?: number,
   signal?: AbortSignal
 ): Promise<T> {
-  let owner = knownOwnerResolver?.(sessionId)
+  const owner = knownOwnerResolver?.(sessionId)
 
-  if (sessionId && !sessionOwnerIsKnown(owner) && !ambientGatewayOwnsEverySession() && sessionOwnerProbe) {
-    const probed = await sessionOwnerProbe(sessionId).catch(() => undefined)
-
-    if (probed) {
-      owner = probed
+  if (!sessionId || sessionOwnerIsKnown(owner) || ambientGatewayOwnsEverySession() || !sessionOwnerProbe) {
+    try {
+      assertSessionOwnerResolved(owner, { method, sessionId })
+    } catch (error) {
+      return Promise.reject(error)
     }
+
+    return requestForSessionProfile<T>(owner, ambientRequest, method, params, timeoutMs, signal)
   }
+
+  return dispatchViaOwnerProbe<T>(sessionId, owner, sessionOwnerProbe, ambientRequest, method, params, timeoutMs, signal)
+}
+
+/**
+ * The async rung: name an owner the sync ladder cannot see, then dispatch
+ * through it. A probe miss still fails closed — the ambient gateway is
+ * presentation state, so routing there would be a guess.
+ */
+async function dispatchViaOwnerProbe<T>(
+  sessionId: string,
+  knownOwner: SessionOwnerScope,
+  probe: SessionOwnerProbe,
+  ambientRequest: <R>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<R>,
+  method: string,
+  params: Record<string, unknown>,
+  timeoutMs?: number,
+  signal?: AbortSignal
+): Promise<T> {
+  const probed = await probe(sessionId).catch(() => undefined)
+  const owner = probed ?? knownOwner
 
   assertSessionOwnerResolved(owner, { method, sessionId })
 

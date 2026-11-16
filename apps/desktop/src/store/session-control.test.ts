@@ -2,12 +2,33 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { refreshLegacyGoal } = vi.hoisted(() => ({ refreshLegacyGoal: vi.fn() }))
+const { ownerRequest } = vi.hoisted(() => ({ ownerRequest: vi.fn() }))
 
 vi.mock('./goals', async importOriginal => ({
   ...(await importOriginal()),
   refreshSessionGoal: refreshLegacyGoal
 }))
 
+// The ownership gate in front of every control RPC, driven directly: the read /
+// action asymmetry asserted below is this store's contract, and routing itself
+// is covered by session-states-runtime-map.test.ts (real probe) and
+// session-rpc-dispatcher.test.ts (real dispatch). With no per-test override the
+// wrapper defers to the REAL gate, so every other test here keeps exercising
+// the gateway call shape it asserts on.
+type OwnedRequest = (...args: unknown[]) => Promise<unknown>
+
+vi.mock('./session-states', async importOriginal => {
+  const actual = (await importOriginal()) as { requestForOwnedSession: OwnedRequest }
+
+  return {
+    ...actual,
+    requestForOwnedSession: (...args: unknown[]) => ownerRequest(...args) ?? actual.requestForOwnedSession(...args)
+  }
+})
+
+import { makeSessionInfo } from '@/test/session-info'
+
+import { $archivedSessions } from './archived-sessions'
 import { $gateway } from './gateway'
 import { resetBackgroundPollingGuard } from './runtime-gone'
 import {
@@ -22,6 +43,7 @@ import {
   runSessionControlAction,
   type SessionControlSnapshot
 } from './session-control'
+import { SessionOwnerResolutionError } from './session-owner-resolution'
 
 const FULL_SNAPSHOT: SessionControlSnapshot = {
   goal: {
@@ -89,12 +111,15 @@ function useGateway(request: (method: string, params: Record<string, unknown>) =
 describe('session-control store', () => {
   beforeEach(() => {
     refreshLegacyGoal.mockReset()
+    ownerRequest.mockReset()
+    $archivedSessions.set([])
     clearAllSessionControl()
   })
 
   afterEach(() => {
     $gateway.set(null as never)
     resetBackgroundPollingGuard()
+    $archivedSessions.set([])
     clearAllSessionControl()
   })
 
@@ -482,5 +507,58 @@ describe('session-control store', () => {
       pendingAction: null,
       snapshot: { revision: 'action-stale' }
     })
+  })
+
+  // Archived and unlisted rows are SEPARATE backend queries, so a cold boot can
+  // run the control read before the owner ladder can name a backend. That is a
+  // routing state, not a control verdict: the backend was never asked, and the
+  // session is alive — the transcript next to the composer loaded fine.
+  it('keeps the painted snapshot and hides the banner when the owner ladder cannot name a backend yet', async () => {
+    applySessionControlSnapshot('archived-1', FULL_SNAPSHOT)
+    useGateway(vi.fn(() => Promise.resolve({ control: FULL_SNAPSHOT })))
+
+    ownerRequest.mockRejectedValueOnce(new SessionOwnerResolutionError('archived-1', 'session.control.read'))
+
+    const entry = await refreshSessionControl('archived-1')
+
+    expect(ownerRequest).toHaveBeenCalledTimes(1)
+    expect(entry).toMatchObject({ capability: 'supported', error: null, loading: false })
+    expect(entry!.snapshot!.revision).toBe('revision-1')
+  })
+
+  it('re-reads once an owner slice finally names the backend, and only then', async () => {
+    useGateway(vi.fn(() => Promise.resolve({ control: { ...FULL_SNAPSHOT, revision: 'after-owner' } })))
+
+    ownerRequest
+      .mockRejectedValueOnce(new SessionOwnerResolutionError('archived-1', 'session.control.read'))
+      .mockResolvedValue({ control: { ...FULL_SNAPSHOT, revision: 'after-owner' } })
+
+    await refreshSessionControl('archived-1')
+    expect($sessionControlBySession.get()['archived-1']).toMatchObject({ error: null })
+
+    // Somebody else's list churn: the ladder still cannot name this session, so
+    // the retry budget is untouched.
+    $archivedSessions.set([makeSessionInfo({ id: 'someone-else', profile: 'work' })])
+    await Promise.resolve()
+    expect(ownerRequest).toHaveBeenCalledTimes(1)
+
+    $archivedSessions.set([
+      makeSessionInfo({ id: 'someone-else', profile: 'work' }),
+      makeSessionInfo({ archived: true, id: 'archived-1', profile: 'work' })
+    ])
+
+    await vi.waitFor(() => expect(ownerRequest).toHaveBeenCalledTimes(2))
+    expect($sessionControlBySession.get()['archived-1']!.snapshot!.revision).toBe('after-owner')
+  })
+
+  it('leaves action errors alone: an action that cannot be routed really did fail', async () => {
+    useGateway(vi.fn())
+
+    ownerRequest.mockRejectedValueOnce(new SessionOwnerResolutionError('s1', 'session.control'))
+
+    await expect(runSessionControlAction('s1', 'goal.pause')).rejects.toBeInstanceOf(SessionOwnerResolutionError)
+
+    expect(ownerRequest).toHaveBeenCalledTimes(1)
+    expect($sessionControlBySession.get().s1!.error).toContain('Session owner could not be resolved')
   })
 })

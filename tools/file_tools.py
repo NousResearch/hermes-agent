@@ -1115,6 +1115,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
         result_dict = result.to_dict(densify=densify)
+        # Code-kernel callers need the documented array even for zero hits.
+        if densify is False:
+            result_dict.setdefault("matches", [])
 
         if omitted:
             result_dict["_omitted"] = (

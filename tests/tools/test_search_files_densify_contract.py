@@ -90,3 +90,17 @@ class TestKernelSearchFilesContract:
         assert captured["payload"]["densify"] is False
         assert captured["payload"]["pattern"] == "hit"
         assert captured["payload"]["limit"] == 10
+
+    def test_kernel_flag_zero_results_preserves_empty_matches_array(self):
+        """A zero-hit kernel search returns an empty matches list, not a missing key."""
+        from tools.file_tools import _handle_search_files
+        mock_ops = MagicMock()
+        mock_ops.search.return_value = SearchResult(total_count=0)
+        with patch("tools.file_tools._get_file_ops", return_value=mock_ops):
+            raw = _handle_search_files(
+                {"pattern": "__kernel_zero_hit__", "path": "dir", "densify": False},
+                task_id="kernel-zero-result-contract",
+            )
+        result = json.loads(raw)
+        assert result["total_count"] == 0
+        assert result["matches"] == []

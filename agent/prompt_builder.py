@@ -916,9 +916,10 @@ def _local_temp_hint() -> str:
     # own scratch path. Otherwise honor the OS temp-variable precedence.
     marker = os.environ.get("HERMES_SCRATCH_DIR", "")
     inherited = (() if marker and os.environ.get("TMPDIR") == marker else
-                 tuple(os.environ.get(name, "") for name in ("TMPDIR", "TEMP", "TMP")))
+                 tuple(value for name in ("TMPDIR", "TEMP", "TMP")
+                       if (value := os.environ.get(name, "")) != marker))
     for candidate in (_tenv_read("TERMINAL_TEMP_DIR"), *inherited):
-        if candidate and candidate != marker and os.path.isabs(candidate) and os.path.isdir(candidate):
+        if candidate and os.path.isabs(candidate) and os.path.isdir(candidate):
             if Path(candidate).resolve() != scratch.resolve():
                 return f"Temporary directory: {candidate} (write temporary files and probes here)"
             break

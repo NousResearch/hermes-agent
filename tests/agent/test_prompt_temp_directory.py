@@ -89,3 +89,55 @@ def test_prompt_names_native_temp_when_tmpdir_is_unset(tmp_path, monkeypatch, te
     assert f"Temporary directory: {native_temp}" in hints
     assert f"Scratch directory: {scratch}" not in hints
     assert "24h" not in hints
+
+
+def test_explicit_terminal_temp_can_select_launch_scratch(tmp_path, monkeypatch):
+    """An explicit scoped override wins even when it equals the boot marker."""
+    from agent.prompt_builder import _local_temp_hint
+    from tools.environments.local import LocalEnvironment
+
+    launch = tmp_path / "launch" / "cache" / "scratch"
+    launch.mkdir(parents=True)
+    for name in ("TMPDIR", "TEMP", "TMP", "HERMES_SCRATCH_DIR"):
+        monkeypatch.setenv(name, str(launch))
+    home_token = set_hermes_home_override(tmp_path / "served")
+    policy = {"TERMINAL_TEMP_DIR": str(launch)}
+    scope_token = set_terminal_scope(policy)
+    try:
+        terminal_temp = LocalEnvironment.get_temp_dir(SimpleNamespace(env=policy))
+        hint = _local_temp_hint()
+    finally:
+        reset_terminal_scope(scope_token)
+        reset_hermes_home_override(home_token)
+
+    assert terminal_temp == launch.as_posix()
+    assert f"Temporary directory: {launch}" in hint
+    assert "24h" not in hint
+
+
+@pytest.mark.parametrize("winner", ("TMPDIR", "TEMP", "TMP"))
+def test_inherited_temp_precedence_matches_python(tmp_path, monkeypatch, winner):
+    import tempfile
+    from pathlib import Path
+
+    from agent.prompt_builder import _local_temp_hint
+
+    names = ("TMPDIR", "TEMP", "TMP")
+    monkeypatch.delenv("HERMES_SCRATCH_DIR", raising=False)
+    expected = None
+    for index, name in enumerate(names):
+        path = tmp_path / name
+        if index >= names.index(winner):
+            path.mkdir()
+        monkeypatch.setenv(name, str(path))
+        if name == winner:
+            expected = path
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    token = set_terminal_scope({})
+    try:
+        assert Path(tempfile.gettempdir()).resolve() == expected.resolve()
+        hint = _local_temp_hint()
+    finally:
+        reset_terminal_scope(token)
+    assert f"Temporary directory: {expected}" in hint
+    assert "24h" not in hint

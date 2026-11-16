@@ -3973,6 +3973,22 @@ export const svOverrides: TranslationOverrides = {
     }
   },
   cron: {
+    control: {
+      stop: 'Stoppa',
+      stopping: 'Stoppar…',
+      stopped: 'Körningen avbröts',
+      finishedFirst: 'Körningen blev klar innan den kunde stoppas',
+      nothingToStop: 'Ingen körning pågår',
+      failedStop: 'Det gick inte att stoppa körningen',
+      lastCancelled: reason => (reason ? `Senaste körningen avbröts: ${reason}` : 'Senaste körningen avbröts'),
+      catchUpLabel: 'Missade körningar',
+      catchUpHint: 'Vad som ska hända med körningar som missades medan Hermes inte kördes.',
+      catchUpChoices: {
+        default: 'Använd standardinställningen',
+        run: 'Kör en gång när Hermes är tillbaka',
+        skip: 'Hoppa över dem'
+      }
+    },
     close: 'Stäng schemalagda jobb',
     title: 'Schemalagda jobb',
     count: count => `${count} ${count === 1 ? 'jobb' : 'jobb'}`,

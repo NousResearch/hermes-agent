@@ -354,7 +354,37 @@ def _no_card_result(client: Any, action: str, targets: list[HostedTarget], force
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _status_result(client: Any, connectors: list[str]) -> str:
+def _mcp_target_names(args: dict[str, Any]) -> Optional[list[str]]:
+    """The MCP server names in a raw ``connectors`` list, or None when the caller named none.
+
+    ``status`` covers both kinds of target, so the MCP servers are read off the raw arguments
+    rather than off the hosted targets: a bare slug is a hosted connector, and only the
+    ``{"name": ..., "mcp": true}`` form names a local server.
+    """
+    raw = args.get("connectors")
+    if raw is None:
+        return None
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return None
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("mcp"):
+            name = str(item.get("name") or "").strip().lower()
+            if name and name not in names:
+                names.append(name)
+    return names or None
+
+
+def _mcp_status_rows(names: Optional[list[str]] = None) -> list[dict[str, Any]]:
+    """The local MCP servers and whether their tools are live, for a status answer."""
+    from tools.connectors.mcp import status_rows
+
+    return status_rows(names)
+
+
+def _status_result(client: Any, connectors: list[str], *, mcp_names: Optional[list[str]] = None) -> str:
     items = client.list_connectors()
     from hermes_cli.free_tier_offer import note_connected_apps_seen
 
@@ -378,11 +408,13 @@ def _status_result(client: Any, connectors: list[str]) -> str:
                 entry["retired"] = True
             by_slug.setdefault(str(row.get("connector", "")).lower(), []).append(entry)
         items = [dict(i, accounts=by_slug.get(str(i.get("connector", "")).lower(), [])) for i in items]
-    return json.dumps({"connectors": items, "hint": (
+    return json.dumps({"connectors": items, "mcp_servers": _mcp_status_rows(mcp_names), "hint": (
         "connected=false means calls to that connector will return CONNECTION_REQUIRED. "
         "Use action 'connect' to start an authorization. 'accounts' lists each account by its name "
         "(alias) and the vendor's label; address an unnamed account by its label. A retired account was "
-        "replaced by a reconnect and is kept only for the record."), **({"unknown": unknown} if unknown else {})},
+        "replaced by a reconnect and is kept only for the record. 'mcp_servers' lists the local MCP "
+        "servers; a stdio server there is connected by action 'enable' and takes env keys, not OAuth, "
+        "while a server with a url can also use 'authorize'."), **({"unknown": unknown} if unknown else {})},
         ensure_ascii=False)
 
 
@@ -455,7 +487,8 @@ def run_managed_action(
             return _display_result(client, [t.name for t in targets], session_id=session_id, tool_call_id=tool_call_id,
                                    connection_callback=connection_callback if card_surface else None, call=call)
         if action == "status":
-            return _status_result(client, [t.name for t in targets])
+            return _status_result(client, [t.name for t in targets],
+                                  mcp_names=_mcp_target_names(args))
         if not targets:
             return tool_error(
                 f"'{action}' requires 'connectors': the connector slugs to authorize (e.g. [\"gmail\"]). "

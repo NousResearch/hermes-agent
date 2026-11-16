@@ -23,6 +23,7 @@ class _EncodedModelHandler(BaseHTTPRequestHandler):
     """Serves /models with a body compressed using the given encoding."""
 
     encoding = "gzip"
+    omit_encoding = False
     models = [{"id": "k3.1-pro"}, {"id": "k3-256k"}]
 
     def do_GET(self):
@@ -39,7 +40,8 @@ class _EncodedModelHandler(BaseHTTPRequestHandler):
             body = raw
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Encoding", self.encoding)
+        if not self.omit_encoding:
+            self.send_header("Content-Encoding", self.encoding)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -48,11 +50,15 @@ class _EncodedModelHandler(BaseHTTPRequestHandler):
         pass  # suppress noise
 
 
-def _start_server(encoding, models=None):
+def _start_server(encoding, models=None, *, omit_encoding=False):
     handler = type(
         "_Handler",
         (_EncodedModelHandler,),
-        {"encoding": encoding, "models": models or _EncodedModelHandler.models},
+        {
+            "encoding": encoding,
+            "models": models or _EncodedModelHandler.models,
+            "omit_encoding": omit_encoding,
+        },
     )
     server = HTTPServer(("127.0.0.1", 0), handler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -60,8 +66,8 @@ def _start_server(encoding, models=None):
     return server, server.server_address[1]
 
 
-def _fetch(encoding, models=None):
-    server, port = _start_server(encoding, models)
+def _fetch(encoding, models=None, *, omit_encoding=False):
+    server, port = _start_server(encoding, models, omit_encoding=omit_encoding)
     try:
         profile = ProviderProfile(name="test", base_url=f"http://127.0.0.1:{port}")
         return profile.fetch_models(base_url=f"http://127.0.0.1:{port}")
@@ -89,3 +95,11 @@ class TestFetchModelsCompressedResponse:
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_gzip_body_without_header_is_detected(self):
+        """An intermediary may forward gzip bytes with no Content-Encoding.
+
+        The gzip magic number is the only signal left, so decoding must fall back to it
+        instead of handing the compressed bytes to UTF-8.
+        """
+        assert _fetch("gzip", omit_encoding=True) == ["k3.1-pro", "k3-256k"]

@@ -609,7 +609,9 @@ class ProviderProfile:
                 # straight as UTF-8 raises on the gzip magic bytes, which used to be swallowed
                 # below and silently degraded the picker to the static curated catalog.
                 encoding = (resp.headers.get("Content-Encoding") or "").strip().lower()
-                if encoding in ("gzip", "x-gzip"):
+                # Some intermediaries forward the compressed bytes but drop the header, so fall
+                # back to the gzip magic number when nothing was advertised.
+                if encoding in ("gzip", "x-gzip") or (not encoding and body[:2] == b"\x1f\x8b"):
                     body = gzip.decompress(body)
                 elif encoding == "deflate":
                     body = zlib.decompress(body)

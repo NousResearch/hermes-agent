@@ -1,0 +1,353 @@
+"""Desktop intake screen: automatic hold for block-tier submits on the
+Desktop App Chat (W1 build queue, owner order 16 Nov 2026; CBA
+section 4: placement class BLOCKING, purpose id ``desktop-screen``).
+
+The W1 twin of the Phase 2 gateway guardrail
+(``gateway/guardrail.py``, owner decision 14 Nov 2026): the same
+five-question guardrail battery through the local RNR Judgement
+Engine (``/v1/screen``), held BEFORE the submit is durably admitted -
+no session turn runs for a held message. Wired at the interactive
+control-plane surface (``prompt.submit`` and the queued-edit verbs
+``prompt.replace_queued`` / ``prompt.steer_queued``), never at
+``SessionAuthority.submit`` itself: machine producers (kanban cards,
+hosted rooms, a2a, automation envelopes) never pass through the
+interactive surface, so their traffic is structurally out of scope.
+
+Scope: sessions launched from the desktop surfaces (frozen launch
+source ``gui`` or ``desktop`` - the label a Desktop chat migrated
+from main keeps). Configurable via ``HERMES_DESKTOP_SCREEN_SOURCES``
+(comma-separated launch-source labels; use ``all`` for every
+interactive source). TUI/CLI/ACP viewers stay unscreened by default
+and can be added later by env alone.
+
+Verdicts (identical semantics to Phase 2):
+
+- ``allow``      -> proceeds (outcome ``accepted`` reported)
+- ``review``     -> proceeds, logged (outcome ``escalated``)
+- ``block``      -> HELD: ``DesktopScreenHold`` refuses the submit
+                    with a visible notice (outcome ``escalated``).
+                    The sender IS the local owner, so the refused
+                    submit's error toast is the alert; every hold is
+                    also logged for the owner dashboard.
+- ``chain_down`` -> proceeds (the engine already applied its
+                    fail_mode rule; hard-three held inside the
+                    engine), logged
+- unreachable / malformed response -> proceeds + log. We cannot hold
+  what we cannot judge, and a dead or lying engine must not lock the
+  owner out of his own desktop (documented, deliberate fail-open -
+  the same rule Phase 2 set for the household).
+
+No-raise guarantee: the public entry point wraps every step; any
+error degrades to ``proceed`` with a log line. All engine response
+parsing is type-defensive; all numeric env values fall back to
+defaults.
+
+Event-loop safety (the Phase 2 review B4 rule): ALL HTTP work -
+screen and outcome - runs off the event loop via ``asyncio.to_thread``;
+the screen call additionally has an overall deadline (per-socket
+timeout + 1s) so a drip-feeding peer cannot stretch it, and outcome
+reports are fire-and-forget tasks that can never block or delay an
+intake decision.
+
+The judge advises, it never replaces owner gates: holds are audited
+(log + outcomes), and only review-tier and chain-down passes plus
+block-tier holds reach the logs the owner dashboard reads.
+
+Configuration is environment-driven (the gateway's existing override
+pattern) so the core change is inert until the operator opts in:
+
+- HERMES_DESKTOP_SCREEN              "" (off) | "1"/"true" (on)
+- HERMES_DESKTOP_SCREEN_ENDPOINT     default http://127.0.0.1:8201/v1/screen
+- HERMES_DESKTOP_SCREEN_TIMEOUT_S    default 4.0 (hard cap: timeout + 1s)
+- HERMES_DESKTOP_SCREEN_CALLER       default hermes-desktop
+- HERMES_DESKTOP_SCREEN_PURPOSE      default desktop-screen
+- HERMES_DESKTOP_SCREEN_SOURCES      default gui,desktop ("all" = every
+                                      interactive launch source)
+- HERMES_DESKTOP_SCREEN_HOLD_NOTICE  default visible hold text
+- HERMES_DESKTOP_SCREEN_LOG          default ~/.hermes/logs/desktop-screen.log
+
+Deployment coupling: the purpose header needs the engine-side
+``/v1/screen`` purpose override (RNR-Judgement-Engine branch
+``hermes/judgement-engine-integrator/w1-screen-purpose-override``);
+without it the screen still works, it just attributes under
+``gateway-screen`` in /metrics.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import math
+import os
+import time
+import urllib.request
+from pathlib import Path
+
+logger = logging.getLogger("hermes.gateway.desktop_screen")
+
+MAX_TEXT_CHARS = 4000
+_DEFAULT_ENDPOINT = "http://127.0.0.1:8201/v1/screen"
+_DEFAULT_HOLD_NOTICE = ("Held by the desktop intake screen (block tier): "
+                        "your message was not delivered. It matched the "
+                        "injection/abuse guardrail battery; see "
+                        "~/.hermes/logs/desktop-screen.log and retry "
+                        "rephrased if this is a false positive.")
+_DEFAULT_SOURCES = "gui,desktop"
+_INTERACTIVE_SOURCES = frozenset({"cli", "tui", "gui", "desktop", "acp"})
+
+# Fire-and-forget outcome tasks (kept referenced so CPython cannot GC
+# them mid-run; discarded on completion).
+_OUTCOME_TASKS: set = set()
+
+
+class DesktopScreenHold(Exception):
+    """A block-tier submit refused by the desktop intake screen.
+
+    Raised to the control-plane caller (prompt.submit /
+    prompt.replace_queued / prompt.steer_queued) so the interactive
+    client shows the hold instead of an admission receipt. Carries the
+    tier reasons for the wire error's data block.
+    """
+
+    def __init__(self, reasons):
+        self.reasons = [str(r) for r in (reasons or [])][:8]
+        super().__init__("desktop_screen_hold")
+
+
+def _log_path() -> Path:
+    # Resolved per call, not at import: env overrides and test patches
+    # made after import must be honoured (the guardrail rule).
+    return Path(os.environ.get(
+        "HERMES_DESKTOP_SCREEN_LOG",
+        os.path.expanduser("~/.hermes/logs/desktop-screen.log")))
+
+
+def _flag(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def desktop_screen_enabled() -> bool:
+    return _flag("HERMES_DESKTOP_SCREEN").lower() in ("1", "true", "yes", "on")
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        value = float(_flag(name))
+        if not math.isfinite(value) or value <= 0:
+            return default
+        return value
+    except (TypeError, ValueError):
+        return default
+
+
+def _effective_endpoint() -> str:
+    return _flag("HERMES_DESKTOP_SCREEN_ENDPOINT") or _DEFAULT_ENDPOINT
+
+
+def _outcome_endpoint() -> str:
+    endpoint = _effective_endpoint()
+    if "/v1/screen" in endpoint:
+        return endpoint.replace("/v1/screen", "/v1/outcome")
+    return endpoint.rsplit("/", 1)[0] + "/outcome"
+
+
+def _caller() -> str:
+    return _flag("HERMES_DESKTOP_SCREEN_CALLER") or "hermes-desktop"
+
+
+def _purpose() -> str:
+    return _flag("HERMES_DESKTOP_SCREEN_PURPOSE") or "desktop-screen"
+
+
+def _scoped_sources() -> frozenset:
+    raw = _flag("HERMES_DESKTOP_SCREEN_SOURCES") or _DEFAULT_SOURCES
+    if raw.lower() == "all":
+        return _INTERACTIVE_SOURCES
+    labels = {part.strip() for part in raw.split(",") if part.strip()}
+    return frozenset(labels & _INTERACTIVE_SOURCES) or frozenset({"gui", "desktop"})
+
+
+def _hold_notice() -> str:
+    return _flag("HERMES_DESKTOP_SCREEN_HOLD_NOTICE") or _DEFAULT_HOLD_NOTICE
+
+
+def _post(url: str, payload: dict, headers: dict, timeout: float) -> dict:
+    headers = dict(headers, **{"Content-Type": "application/json"})
+    request = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read())
+
+
+def _log(record: dict) -> None:
+    record["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        path = _log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+    except OSError:
+        logger.warning("desktop_screen: log write failed", exc_info=True)
+
+
+def _report_outcome_sync(result: dict, outcome: str, note: str,
+                         question_id) -> None:
+    request_id = result.get("request_id")
+    if not request_id:
+        return
+    _post(_outcome_endpoint(), {
+        "request_id": request_id,
+        "question_id": question_id,
+        "outcome": outcome,
+        "note": note[:200],
+    }, {}, 3.0)
+
+
+def _spawn_outcome_report(result: dict, outcome: str, note: str,
+                          question_id) -> None:
+    """Fire-and-forget, off-loop, deadline-capped outcome report.
+
+    Never awaited by the intake path (the Phase 2 review B4 rule): a
+    slow or dead outcome endpoint cannot delay or block a gate
+    decision.
+    """
+    try:
+        task = asyncio.get_running_loop().create_task(asyncio.wait_for(
+            asyncio.to_thread(_report_outcome_sync, result, outcome,
+                              note, question_id),
+            timeout=4.0))
+    except RuntimeError:
+        return
+    _OUTCOME_TASKS.add(task)
+
+    def _done(finished):
+        _OUTCOME_TASKS.discard(finished)
+        if not finished.cancelled() and finished.exception() is not None:
+            logger.debug("desktop_screen: outcome report failed",
+                         exc_info=finished.exception())
+
+    task.add_done_callback(_done)
+
+
+async def drain_outcome_tasks(timeout: float = 5.0) -> None:
+    """Best-effort wait for pending outcome reports (tests, clean
+    shutdown). Never raises: a stuck report is logged by the task
+    callback and forgotten."""
+    if _OUTCOME_TASKS:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*list(_OUTCOME_TASKS),
+                               return_exceptions=True),
+                timeout=timeout)
+        except TimeoutError:
+            for stuck in list(_OUTCOME_TASKS):
+                stuck.cancel()
+
+
+def session_in_scope(authority, session_id: str) -> bool:
+    """True when the session's frozen launch source is a screened
+    desktop surface. Never raises (an unreadable source means not in
+    scope: the screen must never wedge a submit)."""
+    try:
+        sources = getattr(authority, "launch_sources", None)
+        if sources is None:
+            return False
+        session_id = str(session_id or "")
+        if session_id not in sources:
+            with authority.db._read_ctx() as conn:
+                found = conn.execute(
+                    "SELECT source FROM sessions WHERE id=?",
+                    (session_id,)).fetchone()
+            if found is None:
+                return False
+            sources[session_id] = found[0]
+        return sources[session_id] in _scoped_sources()
+    except Exception:
+        logger.warning("desktop_screen: source lookup failed; not screening",
+                       exc_info=True)
+        return False
+
+
+async def screen(subject: str, session_id: str, text: str) -> tuple:
+    """Screen one desktop submit; returns ``(held, reasons)``. ``held``
+    is True only for a block-tier verdict. NEVER raises: every failure
+    degrades to 'proceed', logged."""
+    try:
+        return await _screen_inner(subject, session_id, text)
+    except Exception:
+        logger.exception("desktop_screen: unexpected error; proceeding")
+        return False, []
+
+
+async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
+    if not desktop_screen_enabled():
+        return False, []
+    text = (text or "").strip()
+    if not text:
+        return False, []
+    base = {"subject": str(subject or "unknown"),
+            "session": str(session_id or ""), "preview": text[:120]}
+    endpoint = _effective_endpoint()
+    timeout = _float_env("HERMES_DESKTOP_SCREEN_TIMEOUT_S", 4.0)
+    headers = {"X-Judge-Caller": _caller(), "X-Judge-Purpose": _purpose()}
+
+    def call() -> dict:
+        return _post(endpoint, {"text": text[:MAX_TEXT_CHARS]},
+                     headers, timeout)
+
+    try:
+        # Overall deadline: socket timeout + 1s guards drip-fed bodies.
+        result = await asyncio.wait_for(asyncio.to_thread(call),
+                                        timeout=timeout + 1.0)
+        if not isinstance(result, dict):
+            raise ValueError(f"non-dict engine response: {type(result)!r}")
+    except Exception as err:
+        _log(dict(base, tier="engine_unreachable_or_malformed",
+                  error=str(err)[:160]))
+        return False, []
+
+    tier = result.get("tier")
+    tier = tier if isinstance(tier, str) else None
+    raw_reasons = result.get("reasons")
+    if not isinstance(raw_reasons, list):
+        raw_reasons = []
+    reasons = [str(r) for r in raw_reasons
+               if isinstance(r, str) and r.strip()][:8]
+    served_by = result.get("served_by")
+    served_by = served_by.get("provider") if isinstance(served_by, dict) else None
+    scores = result.get("scores") if isinstance(result.get("scores"), dict) else {}
+    _log(dict(base, tier=tier, reasons=reasons,
+              served_by=served_by, scores=scores))
+    question_id = ("q_" + reasons[0]) if reasons else None
+    if tier == "block":
+        _spawn_outcome_report(result, "escalated",
+                              "block-tier held automatically (desktop screen)",
+                              question_id)
+        return True, reasons
+    if tier in ("review", "chain_down"):
+        _spawn_outcome_report(result, "escalated",
+                              f"{tier}-tier (desktop screen advisory pass)",
+                              question_id)
+        return False, reasons
+    _spawn_outcome_report(result, "accepted", "allow-tier (desktop screen)",
+                          question_id)
+    return False, []
+
+
+def hold_error(reasons) -> Exception:
+    """The control-plane refusal for a held submit: a RuntimeStoreError
+    subclass whose wire message is the owner-visible hold notice (the
+    dispatcher's error frame carries ``wire_message``), so the desktop
+    client shows why the message was not delivered."""
+    from hermes_state_runtime import RuntimeStoreError
+
+    class _Hold(RuntimeStoreError):
+        wire_code = 4001
+
+        def __init__(self, tier_reasons):
+            self.reasons = [str(r) for r in (tier_reasons or [])][:8]
+            self.wire_message = _hold_notice()
+            super().__init__("desktop_screen_hold")
+
+    return _Hold(reasons)

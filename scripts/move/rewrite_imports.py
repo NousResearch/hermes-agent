@@ -785,7 +785,8 @@ def _work(item: tuple[Path, str]) -> Result:
 
 def _candidates(root: Path, paths: list[str], plan: Plan) -> list[str]:
     listed = git(root, "ls-files", "--", *(paths or ["."])).splitlines()
-    words = {old.split(".")[0] for old in plan.renames} | {old.rstrip("/") for old, _ in plan.moved.old_paths()}
+    words = {old.split(".")[0] for old in plan.renames} | {old.rstrip("/") for old, _ in plan.moved.old_paths()} \
+        | plan.moved.departed_files
     needle = re.compile("|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)))
     out = []
     for path in listed:

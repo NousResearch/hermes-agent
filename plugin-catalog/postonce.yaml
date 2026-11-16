@@ -1,0 +1,17 @@
+name: postonce
+title: PostOnce
+repo: https://github.com/postoncehq/postonce-skills
+sha: b2c2686d654a143a0e24292bb8d28fee568abdd8
+version: "0.1.0"
+description: "Write a native post for each platform and publish or schedule it to LinkedIn, X, Threads, Bluesky, Facebook Pages, Instagram, TikTok, YouTube and Pinterest through their official APIs, via PostOnce's hosted MCP server (Streamable HTTP at https://postonce.to/mcp, OAuth sign-in, no keys in config). Bundles six skills: postonce, post-everywhere, content-calendar, analyze-my-posts, hook-vault and viral-formats. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to PostOnce's hosted server (postonce.to) and acts on the user's PostOnce account; the tool set is served by that server at runtime and is not covered by the pinned sha. Published posts go out to the user's connected social accounts. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: postoncehq
+tier: community
+category: tools
+docs_url: https://github.com/postoncehq/postonce-skills/blob/b2c2686d654a143a0e24292bb8d28fee568abdd8/README.md
+requires_hermes: ">=0.21.6"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

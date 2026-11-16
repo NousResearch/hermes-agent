@@ -180,8 +180,9 @@ def auto_cache_ttl_for_agent(agent: Any) -> str:
         finite = json.loads(policy.request_json).get("turn_v1", {}).get("finite", policy.source == "oneshot")
     ttl = "5m" if finite is True else auto_cache_ttl_for_source(
         session_source_for(getattr(agent, "platform", None)))
-    return effective_cache_ttl(ttl, model=getattr(agent, "model", "") or "", provider=getattr(agent, "provider", "") or "",
-                               base_url=getattr(agent, "base_url", "") or "", auto=True)
+    # The source's choice, not the route's: the route clamp runs per send (effective_cache_ttl with
+    # auto=True), so a chat that starts on a 5m route still gets 1h after switching to a 1h route.
+    return ttl
 
 
 def refresh_auto_cache_ttl(agent: Any) -> None:
@@ -245,7 +246,9 @@ def route_ttl_ceiling(provider: str, base_url: str = "") -> str | None:
     from providers import get_provider_profile
 
     names = _route_names(provider, base_url)
-    overrides = (load_config_readonly().get("prompt_caching") or {}).get("route_ttl_ceilings") or {}
+    section = load_config_readonly().get("prompt_caching")
+    # Runs on every send: a malformed (non-mapping) section or override table counts as absent.
+    overrides = section.get("route_ttl_ceilings") if isinstance(section, dict) else None
     for name in names:
         if isinstance(overrides, dict) and name in overrides:
             value = overrides[name]

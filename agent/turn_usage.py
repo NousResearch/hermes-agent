@@ -94,7 +94,8 @@ def _with_declared_write_tier(usage: Any, event: Any) -> Any:
     writes at the requested tier: name it so pricing charges a 1h write at the 1h rate."""
     if usage.cache_write_by_ttl or not usage.cache_write_tokens or event is None:
         return usage
-    if event.requested_ttl != "1h" or event.tier != "1h" or event.confidence != "declared":
+    from agent.prompt_cache_clock import declared_write_tier
+    if declared_write_tier(event) != "1h":
         return usage
     from dataclasses import replace
     return replace(usage, cache_write_by_ttl=(("1h", usage.cache_write_tokens),))

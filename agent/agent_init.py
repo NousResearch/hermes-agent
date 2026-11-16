@@ -581,6 +581,8 @@ def _init_prompt_cache_config(agent):
             type(exc).__name__,
         )
     agent._cache_ttl = "5m"
+    # Auto takes the send-time route clamp (Bedrock legacy 5m) even when a fork copies a 1h tier.
+    agent._cache_ttl_auto = ttl == AUTO_CACHE_TTL
     if ttl in ("5m", "1h"):  # a tuple: an unhashable YAML value (a list) must not raise here
         agent._cache_ttl = ttl
     elif ttl == AUTO_CACHE_TTL and not getattr(agent, "side_agent", False):
@@ -1048,7 +1050,10 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
             source = "Anthropic-compatible endpoint"
         else:
             source = "Claude via OpenRouter"
-        print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
+        from agent.prompt_caching import effective_cache_ttl
+        ttl = effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model,
+                                  base_url=agent.base_url or "", auto=agent._cache_ttl_auto)
+        print(f"💾 Prompt caching: ENABLED ({source}, {ttl} TTL)")
 
 
 def _publish_session_id(session_id: str) -> None:

@@ -6,6 +6,7 @@ never restarts 12h), the guaranteed vs estimated ends, and how the window dies o
 or compaction.
 """
 
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -218,3 +219,25 @@ def test_context_line_shows_the_wall_clock_expiry_then_how_long_ago(now, expecte
     assert expected in render_context_breakdown_lines(payload, grid=False)
     assert not any("Prompt cache" in line for line in render_context_breakdown_lines({**payload, "prompt_cache": None},
                                                                                      grid=False))
+
+
+def test_a_1h_write_over_an_older_5m_prefix_is_priced_at_the_1h_rate(monkeypatch):
+    """The clock's tier is the earliest deadline over the whole prefix (5m here); the new writes of a
+    1h OpenRouter Claude request still went to 1h and bill at 2x input, not 1.25x."""
+    from agent.turn_usage import _with_declared_write_tier
+    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+
+    agent = _agent("openrouter", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.6")
+    agent._prompt_cache_clock_restored = True
+    for at, ttl, usage in ((1_000.0, "5m", CanonicalUsage(cache_write_tokens=100_000)),
+                           (1_060.0, "1h", CanonicalUsage(cache_read_tokens=100_000, cache_write_tokens=1_000_000))):
+        agent._prompt_cache_attempt = {"sent_at": at, "marker_ttl": ttl}
+        event = record_cache_response(agent, usage, model=agent.model, provider=agent.provider,
+                                      base_url=agent.base_url, api_mode=agent.api_mode)
+    assert event.tier == "5m"  # the shorter, older prefix still bounds the window
+    priced = _with_declared_write_tier(usage, event)
+    assert priced.cache_write_by_ttl == (("1h", 1_000_000),)
+    # Priced on the native Anthropic table ($3/M input) to keep the test offline: 2x vs 1.25x input.
+    as_1h = estimate_usage_cost("claude-sonnet-4-6", priced, provider="anthropic").amount_usd
+    as_5m = estimate_usage_cost("claude-sonnet-4-6", usage, provider="anthropic").amount_usd
+    assert as_1h - as_5m == Decimal("2.25")

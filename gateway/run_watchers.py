@@ -151,10 +151,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         history = await self.async_session_store.load_transcript(entry.session_id)
         if len(history or ()) < MIN_MESSAGES or self._is_session_running(key):
             return
-        # The summary call replays the live agent's last request, so it reads that warm cache.
-        warm = (live_agent, list(getattr(live_agent, "_session_messages", None) or history))
-        await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=TRIGGER,
-                                           warm_prefix=warm)
+        await self._run_manual_compression(entry.origin, entry, history, CompressRequest(), trigger=TRIGGER)
         logger.info("Cache-expiry compaction: session=%s", key)
 
     def _session_stall_timeout_seconds(self) -> float:

@@ -419,21 +419,10 @@ def build_prompt_cache_plan(
     api_messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, *,
     cache_ttl: str = "5m", native_anthropic: bool = False, static_system_prefix: str | None = None,
     direct_native_tool_cache: bool = False, tool_part_markers: bool = True,
-    session_system_prompt: str | None = None, unmarked_tail: int = 0,
+    session_system_prompt: str | None = None,
 ) -> PromptCachePlan:
     """Build copy-on-write cache sections for one resolved request destination
-    (``tool_part_markers=False`` keeps markers off role:tool parts on LiteLLM-style routes).
-
-    ``unmarked_tail`` > 0 plans the request without its last ``unmarked_tail`` messages (where the
-    previous request put its breakpoints) and appends them unmarked: a one-off request that extends
-    a warm prefix reads it and writes no cache entry of its own."""
-    if unmarked_tail > 0 and len(api_messages or []) > unmarked_tail:
-        head = build_prompt_cache_plan(
-            api_messages[:-unmarked_tail], tools, cache_ttl=cache_ttl, native_anthropic=native_anthropic,
-            static_system_prefix=static_system_prefix, direct_native_tool_cache=direct_native_tool_cache,
-            tool_part_markers=tool_part_markers, session_system_prompt=session_system_prompt)
-        tail = strip_anthropic_cache_control(copy.deepcopy(list(api_messages[-unmarked_tail:])))
-        return PromptCachePlan(messages=head.messages + tail, tools=head.tools)
+    (``tool_part_markers=False`` keeps markers off role:tool parts on LiteLLM-style routes)."""
     planned_tools = strip_anthropic_tool_cache_control(tools)
     if not direct_native_tool_cache or not planned_tools:
         # apply_anthropic_cache_control re-canonicalises prior decoration itself.

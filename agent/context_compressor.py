@@ -3553,8 +3553,39 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
         self._note_aux_route_fallback(_aux_route)
-        return self._validated_summary_text(
-            response, _response_finish_reason(response), f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})")
+        # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
+        content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
+        where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
+        # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
+        # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
+        # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
+        # otherwise be stored as a prefix-only summary with no body — silently wiping the compacted turns
+        # and making the model forget the in-progress task (#11978, #11914). Treat empty content as a
+        # failure so it routes through the same main-model fallback + cooldown machinery as a transport
+        # error, rather than replacing real context with an empty summary.
+        if not content.strip():
+            raise RuntimeError(f"Context compression LLM returned empty content {where}")
+        if _is_refusal_response(response, content):
+            # Treat a refusal as unusable content. This deliberately reuses the
+            # established fallback/cooldown/abort path for an empty body, so it
+            # can never be committed as `_previous_summary`.
+            raise RuntimeError(f"Context compression LLM returned refusal content {where}")
+        # A finish_reason of "length" means the summarizer hit its output token cap mid-generation: the text
+        # present is PARTIAL. Persisting a partial summary as the compaction checkpoint silently truncates
+        # the conversation's memory — the cut-off text replaces the real middle turns AND is fed back into
+        # every subsequent iterative update prompt, compounding the loss across compactions. Treat it as a
+        # failure so it routes through the same main-model fallback + abort machinery as other degraded
+        # responses instead of becoming a checkpoint. (Ported from earendil-works/pi#7048.)
+        # A length stop means the merged rolling summary is partial — persisting it would silently drop the
+        # tail of the merge and feed the cut-off text into every later micro-compact pass. Leave the
+        # exchange unabsorbed instead; a later pass retries it. (Same class as _generate_summary's guard;
+        # pi#7048.)
+        if _response_finish_reason(response) == "length":
+            raise RuntimeError(
+                f"Context compression summary was truncated ({_TRUNCATED_SUMMARY_MARKER}): generation hit the output "
+                f"token cap and the summary is incomplete {where}"
+            )
+        return content
 
     def _generate_summary(
         self, turns_to_summarize: list[dict[str, Any]], focus_topic: Optional[str] = None,
@@ -3606,7 +3637,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         messages = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
         messages[1:1] = typed_turns
         try:
-            content = self._summary_content(messages, prompt_started_at, turns_to_summarize, (summary_budget, focus_topic, memory_context, has_user_turn))
+            content = self._call_summary_llm(messages, prompt_started_at)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
             from agent.agent_runtime_helpers import strip_think_blocks
             content = strip_think_blocks(None, content).strip() or content

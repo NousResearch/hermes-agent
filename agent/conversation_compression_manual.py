@@ -8,7 +8,6 @@ here so ``--preview`` / ``--aggressive`` and the lock-skip wording cannot drift 
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -71,7 +70,6 @@ def compress_now(
     agent: Any, history: Sequence[dict[str, Any]], request: CompressRequest, *,
     system_message: Any = None, task_id: str = "default", skip_without_window: bool = False,
     snapshot_is_current: Optional[Callable[[], bool]] = None, trigger: Optional[str] = None,
-    warm_prefix: Optional[tuple[Any, Sequence[dict[str, Any]]]] = None,
 ) -> CompressResult:
     """Run one manual compression of ``history`` on ``agent`` and return the outcome; the caller installs
     ``after_messages`` (and re-anchors session ids) — history is never mutated here.
@@ -82,10 +80,7 @@ def compress_now(
     yields ``lock_skipped`` with the agent's signal cleared and the deferred context-engine notification
     discarded; ``trigger`` (an automatic owner, e.g. cache-expiry compaction) runs the same sequence
     WITHOUT ``force``, so the failure cooldown and breakers apply and telemetry names that trigger;
-    ``warm_prefix`` (cache-expiry only) is ``(live agent, the history its last request sent)``, whose warm
-    prompt cache the summary call reuses (default ``(agent, history)``; the gateway compacts on a
-    temporary agent). The window is re-read first: a prefix no longer guaranteed warm answers
-    ``nothing_to_do`` (compacting would save nothing);
+    the window is re-read first: a prefix no longer guaranteed warm answers ``nothing_to_do``;
     otherwise the caller must call ``finalize_context_engine_compression_notification(agent,
     committed=True)`` once its own history transaction commits (``committed=False`` on failure).
     ``system_message=None`` makes ``_compress_context`` rebuild the prompt; passing the cached prompt
@@ -113,8 +108,7 @@ def compress_now(
 
     from agent.cache_expiry_compaction import TRIGGER, window_still_warm
     if trigger == TRIGGER:
-        warm_prefix = warm_prefix or (agent, before)
-        if not window_still_warm(warm_prefix[0]):
+        if not window_still_warm(agent):
             return CompressResult("nothing_to_do", before, before, before_tokens, before_tokens, request)
     compressor = getattr(agent, "context_compressor", None)
     has_content = getattr(compressor, "has_content_to_compress", None)
@@ -139,13 +133,12 @@ def compress_now(
                 row["_absorbed_row_ids"] = absorbed
         tail_rows.append(row)
     try:
-        with _summary_route(warm_prefix if trigger == TRIGGER else None):
-            compressed, _ = agent._compress_context(
-                head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=trigger is None,
-                defer_context_engine_notification=True, **({"trigger": trigger} if trigger else {}),
-                **({"task_id": task_id} if task_id != "default" else {}),
-                **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
-                **({"verbatim_tail": tail_rows} if tail_rows else {}))
+        compressed, _ = agent._compress_context(
+            head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=trigger is None,
+            defer_context_engine_notification=True, **({"trigger": trigger} if trigger else {}),
+            **({"task_id": task_id} if task_id != "default" else {}),
+            **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
+            **({"verbatim_tail": tail_rows} if tail_rows else {}))
     except Exception:
         finalize_context_engine_compression_notification(agent, committed=False)
         raise
@@ -168,15 +161,6 @@ def compress_now(
         summary = summarize_manual_compression(before, compressed, before_tokens, after_tokens,
                                                compression_state=compressor)
     return CompressResult("compressed", before, list(compressed), before_tokens, after_tokens, request, summary=summary)
-
-
-def _summary_route(warm_prefix: Optional[tuple[Any, Sequence[dict[str, Any]]]]):
-    """Cache-expiry compactions summarise on the live conversation's warm prefix; others as before."""
-    from agent.cache_expiry_compaction import warm_prefix_summary
-
-    if warm_prefix is None:
-        return contextlib.nullcontext()
-    return warm_prefix_summary(warm_prefix[0], list(warm_prefix[1]))
 
 
 def render_compress_result(result: CompressResult, *, prefix: str = "") -> list[str]:

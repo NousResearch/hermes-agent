@@ -193,6 +193,15 @@ export const svOverrides: TranslationOverrides = {
     on: 'På',
     off: 'Av'
   },
+  butterbar: {
+    legal: {
+      before: 'Användningen av Hermes Agent omfattas av våra ',
+      terms: 'användarvillkor',
+      between: ' och ',
+      privacy: 'integritetspolicy',
+      after: '.'
+    }
+  },
   catalog: {
     developer: {
       heading: 'Utvecklarläge',

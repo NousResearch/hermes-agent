@@ -1,6 +1,6 @@
 """Ink's Python helpers boot PM's committed dependency generation themselves (regression for #138878).
 
-Ink runs ``ui-tui/scripts/gateway_bootstrap.py`` (``gatewayClient.ts``) and
+Ink runs ``ui-tui/scripts/gateway_bootstrap.py`` (``localGatewayBootstrap.ts``) and
 ``ui-tui/scripts/clipboard_image.py`` (``imageAttachments.ts``) on ``HERMES_PYTHON`` with
 ``PYTHONPATH=<root>`` only. On a source install ``HERMES_PYTHON`` is PM's store Python, which owns no
 packages, so the launcher's own activation never reaches these children. Each child here runs with
@@ -42,7 +42,7 @@ def _commit_generation() -> None:
 
 
 def _ink_child(script: str, *args: str, scripts: Path = _SCRIPTS, **env: str) -> subprocess.CompletedProcess:
-    """Exactly what gatewayClient.ts runs: PYTHONPATH and HERMES_PYTHON_SRC_ROOT name the Python root."""
+    """Exactly what localGatewayBootstrap.ts runs: PYTHONPATH and HERMES_PYTHON_SRC_ROOT name the Python root."""
     child_env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     child_env.update(PYTHONPATH=str(_ROOT), HERMES_PYTHON_SRC_ROOT=str(_ROOT), **env)
     return subprocess.run([sys.executable, "-S", str(scripts / script), *args], cwd=_ROOT,

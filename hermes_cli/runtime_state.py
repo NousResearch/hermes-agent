@@ -22,6 +22,7 @@ from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
     lock_fd as _lock,
+    lock_path,
     read_bytes_or_none as _bytes,
 )
 
@@ -44,16 +45,13 @@ def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_
     (``activate_dependencies`` still selects and leases the committed generation), writers that
     cannot be skipped pass ``timeout=None`` — an install the user asked for is theirs to wait on.
     """
-    state = install_state_dir(project)
-    state.mkdir(parents=True, exist_ok=True)
-    fd = os.open(state / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    lock = install_state_dir(project) / ".install.lock"
+    fd = lock_path(lock, timeout=timeout, create_dir=True)
+    if fd is None:
+        LOG.warning("dependency lock still held after %ss; continuing without it (%s)", timeout, lock)
+        yield False
+        return
     try:
-        if not _lock(fd, wait=True, timeout=timeout):
-            LOG.warning(
-                "dependency lock still held after %ss; continuing without it (%s)",
-                timeout, state / ".install.lock")
-            yield False
-            return
         yield True
     finally:
         os.close(fd)

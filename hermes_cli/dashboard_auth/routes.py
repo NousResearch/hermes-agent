@@ -32,7 +32,8 @@ from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import webapp_sign_in
 from hermes_cli.dashboard_auth import (
-    get_provider, list_providers, list_session_providers, native_flow)
+    get_provider, list_interactive_providers, list_providers, list_session_providers,
+    native_flow)
 from hermes_cli.dashboard_auth import prefix as _prefix_mod
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
@@ -43,9 +44,9 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import (
     render_login_html, render_native_provider_choice_html)
-from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
+from hermes_cli.dashboard_auth.refresh_singleflight import forget as forget_refresh, refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age, client_ip as _client_ip, is_safe_next_path)
+    access_token_max_age, client_ip as _client_ip, is_safe_next_path, is_same_origin_path)
 
 _log = logging.getLogger(__name__)
 
@@ -164,7 +165,9 @@ def _externalize_post_login_target(target: str, prefix: str) -> str:
         return target
     if target == prefix or target.startswith(f"{prefix}/"):
         return target
-    return f"{prefix}{target}"
+    # The browser consumes the composed string, so validate that, not just its validated parts.
+    composed = f"{prefix}{target}"
+    return composed if is_same_origin_path(composed) else target
 
 
 def _complete_login(request: Request, provider: str, session: Session, *, broker_state: str,
@@ -210,14 +213,17 @@ async def login_page(request: Request) -> HTMLResponse:
 
 @router.get("/api/auth/providers", name="auth_providers")
 async def api_auth_providers() -> Any:
-    # Only interactive providers are sign-in options; fail closed on zero.
-    providers = list_session_providers()
-    if not providers:
+    # Only interactive providers are sign-in options; fail closed on zero
+    # session providers. A deployment authenticated solely by a provisioned
+    # credential (interactive_login False — the session-token provider) answers
+    # an empty list: there is no browser sign-in to offer, which is correct,
+    # not an outage.
+    if not list_session_providers():
         return JSONResponse({"detail": "no auth providers registered"}, status_code=503)
     return {"providers": [
         {"name": p.name, "display_name": p.display_name,
          "supports_password": bool(getattr(p, "supports_password", False))}
-        for p in providers]}
+        for p in list_interactive_providers()]}
 
 
 # --- Public: OAuth round trip ----------------------------------------------
@@ -229,6 +235,10 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         raise _http(404, f"Unknown provider: {provider!r}")
     if not getattr(p, "supports_session", True):
         raise _http(404, f"Provider does not support interactive login: {provider!r}")
+    if not getattr(p, "interactive_login", True):
+        # Verifies credentials but has no sign-in flow (the session-token provider):
+        # never 500 inside start_login — answer the same 404 an unknown provider gets.
+        raise _http(404, f"Provider has no interactive login: {provider!r}")
     safe_next = _validate_post_login_target(next)
     if getattr(p, "supports_password", False):
         login_url = f"{_prefix(request)}/login"
@@ -290,7 +300,7 @@ def _select_native_provider(provider: str):
     them via ``/login``); with several the caller renders a chooser instead of guessing."""
     if provider:
         return get_provider(provider)
-    candidates = list_session_providers()
+    candidates = list_interactive_providers()
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -309,7 +319,7 @@ async def auth_native_authorize(
     redirect_uri = _validate_loopback_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
     if p is None and not provider:
-        candidates = list_session_providers()
+        candidates = list_interactive_providers()
         if len(candidates) > 1:
             # Render the chooser BEFORE allocating broker state or setting a cookie: every link
             # re-enters this same validated route with an explicit provider.
@@ -324,7 +334,9 @@ async def auth_native_authorize(
                 headers=_NO_STORE)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
-    if not getattr(p, "supports_session", True):
+    if not getattr(p, "supports_session", True) or not getattr(p, "interactive_login", True):
+        # Checked BEFORE register_pending: a provisioned-credential provider (session-token)
+        # has only a start_login stub, so it must never reach the upstream round trip.
         raise _http(400, f"Provider does not support native login: {p.name!r}")
     try:
         broker_state = native_flow.register_pending(
@@ -502,13 +514,21 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
 
 @router.post("/auth/logout", name="auth_logout")
 async def auth_logout(request: Request):
-    _at, rt = read_session_cookies(request, webapp_sign_in.cookie_gateway(request))
-    # Best-effort revoke on every provider; failures logged, never raised.
-    for provider in list_providers() if rt else ():
+    at, rt = read_session_cookies(request, webapp_sign_in.cookie_gateway(request))
+    # Best-effort revoke on every provider; failures logged, never raised. The access token too:
+    # a long-TTL one outlives the refresh token and its cookie.
+    for provider in list_providers() if at or rt else ():
         try:
-            provider.revoke_session(refresh_token=rt)
+            if rt:
+                provider.revoke_session(refresh_token=rt)
+            if at:
+                provider.revoke_access_session(access_token=at)
         except Exception as e:
             _log.warning("dashboard-auth: revoke on %r failed: %s", provider.name, e)
+    if rt:
+        # After the revoke: a refresh that starts later is refused by the provider, an earlier one
+        # in flight is barred from caching, and a cached rotation of this login is dropped.
+        forget_refresh(rt)
     sess = getattr(request.state, "session", None)
     _audit(request, AuditEvent.LOGOUT, provider=(sess.provider if sess else "unknown"),
            user_id=(sess.user_id if sess else ""))

@@ -1,4 +1,14 @@
 // @vitest-environment jsdom
+// Loaded once at collection, outside every hook's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. Without this each
+// host's hook pays the cold transform of the whole graph and times out on a loaded runner.
+import '@/app/chat/sidebar'
+import '@/app/shell/hooks/use-statusbar-items'
+import '@/components/pane-shell/tree/model'
+import '@/components/pane-shell/tree/store'
+import '@/components/ui/sidebar'
+import '@/store/profile-rail-prefs'
+
 import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -8,8 +18,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 // the rail. The Webapp (browser-hosted Desktop) always draws the rail as its
 // dropdown, never the squares; native Desktop keeps the squares until the
 // dropdown threshold. The host is fixed per page load, so each case loads a
-// fresh module graph after declaring its host — in a hook, whose timeout
-// absorbs the cold sidebar/statusbar import.
+// fresh module graph after declaring its host.
 
 type SurfaceWindow = Window & { __HERMES_UI_SURFACE__?: string }
 

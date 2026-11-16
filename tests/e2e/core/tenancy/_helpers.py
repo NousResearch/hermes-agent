@@ -288,24 +288,72 @@ def snapshot_problems(tenants: dict[str, Tenant]) -> list[str]:
     return problems
 
 
+def _routing_owner(key: str, tenants: dict[str, Tenant]) -> str | None:
+    """The tenant a routing-index key belongs to (``agent:<profile>:...``; ``agent:main:`` is the
+    default profile)."""
+    parts = key.split(":")
+    name = "default" if parts[1:2] == ["main"] else (parts[1] if len(parts) > 1 else "")
+    return name if parts[:1] == ["agent"] and name in tenants else None
+
+
+def _launch_index_view(path: Path, rel: Path, tenants: dict[str, Tenant]) -> list[tuple[str, bytes]] | None:
+    """The launch home's state.db / sessions.json split by owner: a multiplexed gateway keeps every
+    profile's routing entries in its one launch-home index by design (8d74cb52dac6, #66887), so each
+    routing row is checked as its own profile's (``agent:<profile>:`` key), the rest as the launch
+    profile's. ``(owner, bytes)`` pairs, owner ``None`` = the launch profile; None: not an index file."""
+    def split(items: Iterable[tuple[str, str]]) -> list[tuple[str, bytes]]:
+        return [(_routing_owner(key, tenants), text.encode()) for key, text in items]
+
+    if rel == Path("sessions/sessions.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return split((k, json.dumps({k: v})) for k, v in data.items())
+    if rel.name in ("state.db-wal", "state.db-shm") and rel.parent == Path("."):
+        return []  # non-secret canaries are read through the database's current rows below
+    if rel != Path("state.db"):
+        return None
+    import sqlite3
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+    try:
+        rows: list[tuple[str, str]] = []
+        for (table,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            cur = conn.execute(f'SELECT * FROM "{table}"')
+            cols = [c[0] for c in cur.description]
+            key = cols.index("session_key") if table == "gateway_routing" else None
+            rows += [(r[key] if key is not None else "", repr(r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    return split(rows)
+
+
 def file_leaks(tenants: dict[str, Tenant], launch: str = "default") -> list[str]:
     """Byte-scan every file of every tenant home (state.db + WAL, logs, sessions, config, .env,
-    memories, cron output) for any other tenant's canary. The launch home's ``profiles/`` subtree
-    belongs to the other tenants and is scanned as theirs."""
+    memories, cron output) for any other tenant's canary. A foreign secret anywhere in the raw bytes
+    is a leak, deleted SQLite pages still in the WAL included. The launch home's ``profiles/`` subtree
+    belongs to those tenants, and the launch index's routing rows are each checked against their own
+    profile for every canary (a secondary profile's routing row carries its own workdir, and the
+    launch profile's secret in it is a leak the launch-owned raw scan cannot see)."""
+    def foreign_to(owner: str, *, secrets_only: bool = False) -> list[tuple[str, str, bytes]]:
+        return [(u.name, kind, value.encode()) for u in tenants.values() if u.name != owner
+                for kind, value in u.canaries().items() if not secrets_only or kind in u.secrets()]
+
     problems: list[str] = []
     for t in tenants.values():
-        foreign = [(u.name, kind, value.encode()) for u in tenants.values() if u is not t
-                   for kind, value in u.canaries().items()]
         for path in t.home.rglob("*"):
-            if not path.is_file() or (t.name == launch and "profiles" in path.relative_to(t.home).parts[:1]):
+            rel = path.relative_to(t.home)
+            if not path.is_file() or (t.name == launch and "profiles" in rel.parts[:1]):
                 continue
             try:
-                data = path.read_bytes()
+                raw = path.read_bytes()
+                parts = _launch_index_view(path, rel, tenants) if t.name == launch else None
             except OSError:
                 continue
-            problems += [f"{t.name}: {path.relative_to(t.home)} contains {owner}'s {kind}"
-                         for owner, kind, value in foreign if value in data]
-    return problems
+            problems += [f"{t.name}: {rel} contains {who}'s {kind}"
+                         for who, kind, value in foreign_to(t.name, secrets_only=True) if value in raw]
+            for owner, data in [(None, raw)] if parts is None else parts:
+                where = f"{t.name}: {rel}" if owner in (None, t.name) else f"{t.name}: {owner}'s routing row in {rel}"
+                problems += [f"{where} contains {who}'s {kind}"
+                             for who, kind, value in foreign_to(owner or t.name) if value in data]
+    return list(dict.fromkeys(problems))
 
 
 def check_isolation(tenants: dict[str, Tenant], *, launch: str = "default", min_snapshots: int = 1,

@@ -22,10 +22,11 @@ from cron.store_health import degraded_records
 from hermes_time import now as _now
 
 logger = logging.getLogger(__name__)
-_KNOWN_STATUSES = {"claimed", "running", "completed", "failed", "unknown"}
+# ``cancelled``: an operator stopped the run; ``missed``: the scheduler skipped past its slots.
+_KNOWN_STATUSES = {"claimed", "running", "completed", "failed", "unknown", "cancelled", "missed"}
 _KNOWN_SOURCES = {"builtin", "direct", "external"}
 _KNOWN_DELIVERY_OUTCOMES = {"queued", "delivered", "failed", "suppressed", "suppressed_acked", "not_configured"}
-_TERMINAL_STATUSES = {"completed", "failed", "unknown"}
+_TERMINAL_STATUSES = {"completed", "failed", "unknown", "cancelled", "missed"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +121,10 @@ def _is_overdue(job: dict[str, Any], now: datetime) -> bool:
     try:
         if next_run.tzinfo is None and now.tzinfo is not None:
             next_run = next_run.replace(tzinfo=now.tzinfo)
-        return (now - next_run).total_seconds() > _compute_grace_seconds(schedule)
+        # A per-job grace override moves the scheduler's own overdue line; the metric must
+        # agree with it or the dashboard flags jobs the ticker considers on time.
+        return (now - next_run).total_seconds() > _compute_grace_seconds(
+            schedule, job.get("grace_minutes"))
     except (TypeError, ValueError):
         return False
 

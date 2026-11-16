@@ -18,7 +18,8 @@ from typing import Any, NoReturn
 _result: int | None = None
 
 # The historical updater entrypoints. `_historical_context` reads capture data
-# from these frames; `tools.lazy_deps.install_specs` hands off only inside them.
+# from these frames; every retired shim hands off only inside them
+# (`stop_historical_updater`).
 # Keep in sync with scripts/audit-old-updater-imports.py UPDATE_ENTRYPOINTS: the
 # audit list is wider on purpose (helpers run *under* these frames and are found
 # by the frame walk).
@@ -30,8 +31,21 @@ _HISTORICAL_UPDATE_FRAMES = (
 
 def _is_historical_update_frame(frame: Any) -> bool:
     modules, names = _HISTORICAL_UPDATE_FRAMES
-    return (frame.f_globals.get("__name__") in modules
-            and frame.f_code.co_name in names)
+    if frame.f_code.co_name not in names:
+        return False
+    module = frame.f_globals.get("__name__")
+    if module in modules:
+        return True
+    # `python -m hermes_cli.main update` runs the updater as `__main__`; releases from before
+    # update_cmd.py was split out keep cmd_update/_cmd_update_impl there. Recognize them by the
+    # file the code was compiled from: this checkout's own hermes_cli/main.py.
+    if module != "__main__":
+        return False
+    try:
+        source = Path(frame.f_code.co_filename).resolve()
+    except (OSError, ValueError):
+        return False
+    return source == Path(__file__).resolve().with_name("main.py")
 
 
 def in_historical_update() -> bool:
@@ -112,11 +126,16 @@ def _run_child(request: dict) -> tuple[int, dict]:
     root = Path(__file__).resolve().parents[1]
     home = os.environ.get("HERMES_HOME")
     constants = sys.modules.get("hermes_constants")
+    # The running process may hold any historical hermes_constants: older ones keep the override in
+    # a module ContextVar, newer ones behind get_hermes_home_override() (the runtime scope state).
     override = vars(constants).get("_HERMES_HOME_OVERRIDE") if constants else None
     if override is not None:
         value = override.get()
-        if isinstance(value, (str, Path)) and value:
-            home = str(value)
+    else:
+        read_override = getattr(constants, "get_hermes_home_override", None) if constants else None
+        value = read_override() if callable(read_override) else None
+    if isinstance(value, (str, Path)) and value:
+        home = str(value)
     request.update(root=str(root), home=home, argv=list(sys.argv))
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("PYTHON", "UV_")) and key != "VIRTUAL_ENV"}
@@ -223,6 +242,25 @@ def stop_for_relaunch(*, incomplete: bool = False) -> NoReturn:
         _result = 1
         print(f"Update takeover failed: {exc}", file=sys.stderr, flush=True)
     raise SystemExit(_result)
+
+
+class RetiredUpdaterHook(RuntimeError):
+    """A retired updater hook was called by code that is not a historical updater."""
+
+
+def stop_historical_updater(hook: str, error: type[Exception] = RetiredUpdaterHook) -> NoReturn:
+    """The one gate every retired shim goes through before ``stop_for_relaunch()``.
+
+    A historical updater (its entrypoint frame is on the stack, or it already
+    handed off and is unwinding through finally/atexit) still hands off to the
+    takeover child. Any other caller is live current code (a serve, dashboard,
+    gateway, plugin): starting a whole update finish from it restarts the
+    gateway and backend it runs in, which then reaches the shim again (#122656).
+    It gets a catchable ``error`` instead.
+    """
+    if _result is not None or in_historical_update():
+        stop_for_relaunch()
+    raise error(f"{hook} is a retired updater hook; it does nothing outside a running update.")
 
 
 def relaunch_stopped_serves(token: dict) -> None:

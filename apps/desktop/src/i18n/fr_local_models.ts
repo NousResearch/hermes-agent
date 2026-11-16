@@ -57,6 +57,8 @@ export const frLocalModels: TranslationOverride<Translations['settings']['localM
   updateTitle: 'Mise à jour du moteur disponible',
   updateDetail: (next, current) =>
     `Une nouvelle build llama.cpp (${next}) est prête à être installée. Vous utilisez ${current}. Les modèles continuent de fonctionner pendant le téléchargement.`,
+  updateSameBuildDetail: tag =>
+    `Hermes fournit désormais llama.cpp ${tag} avec des fichiers nécessaires à son exécution. La mise à jour retélécharge le moteur. Les modèles continuent de fonctionner pendant le téléchargement.`,
   updateAction: 'Mettre à jour le moteur',
   updating: 'Mise à jour du moteur…',
   upToDateTitle: 'Moteur à jour',

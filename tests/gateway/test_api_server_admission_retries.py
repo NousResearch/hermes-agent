@@ -374,12 +374,17 @@ async def test_authority_preflight_refusals_do_not_exhaust_receipts(api, owner, 
 
 @pytest.mark.asyncio
 async def test_revoked_room_authorization_cannot_replay_receipt(api, monkeypatch):
-    from gateway.platforms.api_server_room_grants import RoomGrantReauthorizationRequired
+    from gateway import hosted_rooms
+    from gateway.platforms.api_server_room_grants import (
+        RoomGrantReauthorizationRequired, request_target_profile,
+    )
 
     adapter, client = api
     revoked = False
     claims = {field: "test" for field in ("room_id", "home_install_id", "authority_gateway_id",
               "authority_epoch", "member_id", "target_install_id", "target_profile")}
+    claims["target_install_id"] = hosted_rooms.local_authority_gateway_id()
+    claims["target_profile"] = request_target_profile(_api_request_profile)
 
     def grant(request, *, permission):
         assert permission == "approve"

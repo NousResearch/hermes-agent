@@ -29,9 +29,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+from hermes_agent.compat.paths import current_path, original_path
 DEFAULT_TREES = ("hermes_cli", "agent", "gateway", "tui_gateway", "cron", "plugins", "tools", "cli.py", "utils.py")
 # The config writer module and the on-disk primitive it wraps.
-ALLOWED_FILES = {ROOT / "utils.py"}
+ALLOWED_FILES = {ROOT / current_path("utils.py")}
 DUMPERS = {"atomic_yaml_write", "safe_dump", "dump"}
 CONFIG_PATH_RE = re.compile(
     r"config_path|cfg_path|config\.yaml|get_config_path\(\)|_active_config_path\(\)|\blive_path\b")
@@ -66,7 +68,7 @@ def scan_file(path: Path) -> list[str]:
         return []
     lines = src.splitlines()
     rel = path.relative_to(ROOT).as_posix()
-    in_config_module = bool(CONFIG_MODULE_RE.match(rel))
+    in_config_module = bool(CONFIG_MODULE_RE.match(original_path(rel)))
     problems: list[str] = []
 
     def flag(node: ast.Call, why: str) -> None:
@@ -95,13 +97,16 @@ def scan_file(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    targets = [ROOT / a for a in argv] or [ROOT / t for t in DEFAULT_TREES]
+    targets = [ROOT / a for a in argv] or [ROOT / current_path(t) for t in DEFAULT_TREES]
     files: list[Path] = []
     for t in targets:
         if t.is_dir():
             files.extend(p for p in t.rglob("*.py") if "node_modules" not in p.parts)
         elif t.suffix == ".py" and t.exists():
             files.append(t)
+        elif not t.exists():
+            print(f"{t} does not exist: a scan target that moved would be skipped in silence", file=sys.stderr)
+            return 2
     problems: list[str] = []
     for f in sorted(set(files)):
         if f.resolve() in ALLOWED_FILES:

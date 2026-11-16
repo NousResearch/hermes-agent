@@ -1,0 +1,24 @@
+name: cursor-subscription-directsdk
+repo: https://github.com/arnavprabhu/CursorProviderHermes
+sha: 51995a494f8ee8b5acc1723960d3a8ca5821e33a
+title: Cursor Subscription (DirectSDK)
+description: "Experimental model provider that runs Hermes turns on your Cursor plan through Cursor's official Python SDK (cursor-sdk), with Cursor Auto offered as `cursor-auto`, and Hermes tools registered as native Cursor custom tools: each tool callback parks until Hermes has executed the call under its own approvals, then the same Cursor run continues, so parallel calls arrive as one batch and tool rounds keep the model's native context and prompt cache. `hermes auth add cursor-subscription-directsdk` runs Cursor's official browser sign-in with Cursor-side persistence off and stores the minted, revocable 90-day user API key in Hermes' credential pool (CURSOR_API_KEY also works). Disclosure — sends the full conversation, Hermes' system prompt, tool schemas, tool results and user images to Cursor with your key; installs cursor-sdk 1.3.1 from PyPI (hash-pinned, about 200 MB, includes Cursor's bundled node bridge) into the plugin's own .venv and runs it as a long-lived sidecar (one per Hermes profile) that starts that bridge on loopback, with an environment rebuilt from an allowlist (PATH, HOME, locale, TLS/proxy, display variables for sign-in, its own CURSOR_SUBSCRIPTION_*), so no other Hermes keys or tokens reach Cursor's code; Cursor's built-in tools are disabled (tools=[\"mcp\"]) and agents get no MCP servers or Cursor settings sources, and local Cursor agent state lives under $HERMES_HOME/cache/cursor-subscription-directsdk and is deleted when each conversation closes."
+maintainer: arnavprabhu
+tier: community
+category: models
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/arnavprabhu/CursorProviderHermes#readme
+version: "0.3.1"
+readme: true
+platforms:
+  - linux
+  - macos
+known_issues:
+  - "Cursor's own agent harness prompt (about 10-15K tokens) precedes Hermes' system prompt, which is delivered in the first user message; the SDK has no system-prompt override."
+  - "Cursor reports usage per run, not per model call, so per-call usage and cost show n/a; spend appears on the Cursor dashboard under the SDK tag."
+  - "Images inside tool results reach the model as [image] text; temperature, top_p, stop and max_tokens are ignored."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -133,9 +133,6 @@ async def approval_response(self, request, run_id, body, *, _api_server):
     return response
 
 
-_APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
-
-
 async def _resolve_approval(self, request, run_id, body, *, _api_server):
     """Return the response and whether a proven non-mutating refusal may release its key."""
     from gateway.platforms.api_server_runs import _mark_run_event, _respond_authority_run
@@ -154,8 +151,8 @@ async def _resolve_approval(self, request, run_id, body, *, _api_server):
             self, run_id, body, kind='approval', _api_server=_api_server, on_dispatch=on_dispatch)
         # The same 4xx can follow a successful mutation and a failed detach.
         return response, not dispatched and 400 <= response.status < 500
-    raw_choice = str(body.get("choice", "")).strip().lower()
-    choice = _APPROVAL_CHOICE_ALIASES.get(raw_choice, raw_choice)
+    from tools.approval import canonical_approval_choice
+    choice = canonical_approval_choice(body.get("choice", ""))
     room_scoped = bool(self._room_grant_token(request))
     raw_request_id = body.get("request_id")
     request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""

@@ -88,7 +88,12 @@ async function openListWhileTyping(text: string, { busy = false } = {}) {
     fireEvent.keyUp(editor, { key: text.at(-1) })
   })
 
-  await vi.waitFor(() => expect(container.querySelector('[role="listbox"] button')).not.toBeNull())
+  // The file's first `:` waits out the real 60 ms debounce, loads the emoji index and paints the list
+  // for the first time: 150-630 ms on a runner with 8x more runnable threads than cores, past
+  // vi.waitFor's 1 s default in 2 of 20 runs. Later opens hit the cached index and take ~5 ms.
+  await vi.waitFor(() => expect(container.querySelector('[role="listbox"] button')).not.toBeNull(), {
+    timeout: 10_000
+  })
 
   const send = container.querySelector<HTMLButtonElement>('button[type="submit"]')!
 

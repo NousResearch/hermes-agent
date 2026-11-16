@@ -43,9 +43,14 @@ blocked              -> searching | found | not_found | indirect_exposure | acti
 
 A transition to the same state is always allowed (idempotent field updates).
 
+**Defunct-broker close-out:** when the broker record carries `defunct` (domain seized / NXDOMAIN),
+`action_selected | submitted | verification_pending | awaiting_processing | human_task_queued ->
+not_found` is also allowed (`ledger.DEFUNCT_CLOSEOUT_FROM`; `record` checks the broker record). A
+dead site cannot hold the listing. For a live broker these moves stay illegal.
+
 ## Notes / gotchas learned in the field
 
-- **`submitted -> not_found` is ILLEGAL.** A lodged request that then finds no matching profile is a
+- **`submitted -> not_found` is ILLEGAL** for a live broker. A lodged request that then finds no matching profile is a
   no-op that resolves as `awaiting_processing`, never a walk back to `not_found`. (This is why a guided
   opt-out whose matcher says "no results" after you have already submitted is recorded
   `awaiting_processing`, not `not_found`.)

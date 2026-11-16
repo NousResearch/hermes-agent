@@ -60,3 +60,57 @@ def test_unchanged_or_missing_definition_keeps_the_running_config(monkeypatch, t
     assert task._refresh_remote_config(cfg) is cfg  # non-endpoint keys do not trigger a rebind
     monkeypatch.setattr(mcp_tool_config, "_load_mcp_config", dict)
     assert task._refresh_remote_config(cfg) is cfg
+
+
+@pytest.mark.no_isolate
+def test_plugin_remote_server_keeps_its_rendered_header_across_a_rebuild(monkeypatch, tmp_path):
+    """A plugin-provided remote server's ``${VAR}`` header is rendered by the config load like a
+    native one, so a rebuild sees an unchanged definition instead of adopting the raw placeholder."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PKG_API_KEY", "k-123")
+    from tools import mcp_tool_config
+    from tools.mcp_tool import MCPServerTask
+
+    portable = {"srv": {"url": "https://mcp.example.test/mcp", "headers": {"apikey": "${PKG_API_KEY}"},
+                        "strict_redirect_headers": True}}
+    manager = SimpleNamespace(get_portable_mcp_servers=lambda: {k: dict(v) for k, v in portable.items()})
+    with patch("hermes_cli.config.load_config", return_value={}), \
+            patch("hermes_cli.plugins.discover_plugins"), \
+            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        running = mcp_tool_config._interpolate_env_vars(dict(portable["srv"]))
+        task = MCPServerTask("srv")
+        task._config = running
+        assert task._refresh_remote_config(running) is running
+        assert mcp_tool_config._load_mcp_config()["srv"]["headers"]["apikey"] == "k-123"
+
+
+@pytest.mark.no_isolate
+def test_unscoped_multiplex_load_keeps_plugin_servers_after_a_templated_one(monkeypatch, tmp_path):
+    """With multiplex on and no secret scope bound, a plugin server whose header needs a secret does
+    not end the merge: it stays listed with its raw template (connect renders it under the owner's
+    scope and refuses an unresolved one) and the plugin servers declared after it still load."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from agent.secret_scope import set_multiplex_active
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools import mcp_tool_config
+
+    portable = {"srv": {"url": "https://mcp.example.test/mcp", "headers": {"apikey": "${VENDOR_KEY}"}},
+                "plain": {"url": "https://plain.example.test/mcp"}}
+    manager = SimpleNamespace(get_portable_mcp_servers=lambda: {k: dict(v) for k, v in portable.items()})
+    set_multiplex_active(True)
+    try:
+        with patch("hermes_cli.config.load_config", return_value={}), \
+                patch("hermes_cli.plugins.discover_plugins"), \
+                patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+            loaded = mcp_tool_config._load_mcp_config()
+    finally:
+        set_multiplex_active(False)
+    assert list(loaded) == ["srv", "plain"]
+    with pytest.raises(ValueError, match="VENDOR_KEY"):
+        mcp_tool_config._require_rendered_remote("srv", loaded["srv"])

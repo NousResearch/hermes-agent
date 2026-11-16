@@ -8,7 +8,8 @@ import {
   normalizeWindowConnectionRoute,
   registrySshPoolScopeByConnectionId,
   registrySshScopeForWindowRoute,
-  WindowConnectionRouteRegistry
+  WindowConnectionRouteRegistry,
+  windowRouteVersionScope
 } from './window-connection-route'
 
 test('normalizes an exact registry-scoped connection and profile', () => {
@@ -202,4 +203,28 @@ test('falls back to the canonical profile when the applied window had no route t
     profile: 'default',
     registryScoped: false
   })
+})
+
+test('about-panel version scope follows the window route, not the primary', () => {
+  assert.deepEqual(windowRouteVersionScope({ connectionId: 'remote-a', profile: 'work', registryScoped: true }), {
+    connectionId: 'remote-a',
+    profile: 'work'
+  })
+  // Legacy/profile-only route: profile only, no registry pin.
+  assert.deepEqual(windowRouteVersionScope({ connectionId: 'x', profile: 'work', registryScoped: false }), {
+    profile: 'work'
+  })
+  // No recorded route: unscoped (primary), same as before.
+  assert.deepEqual(windowRouteVersionScope(null), {})
+})
+
+test('about-panel scope uses the focused window route and falls back to the primary', () => {
+  const routes = new WindowConnectionRouteRegistry()
+  routes.set(7, { connectionId: 'remote-a', profile: 'work', registryScoped: true })
+  const window = (id: number, destroyed = false) => ({ isDestroyed: () => destroyed, webContents: { id } })
+
+  assert.deepEqual(routes.versionScopeFor(window(7)), { connectionId: 'remote-a', profile: 'work' })
+  assert.deepEqual(routes.versionScopeFor(window(7, true)), {})
+  assert.deepEqual(routes.versionScopeFor(window(8)), {})
+  assert.deepEqual(routes.versionScopeFor(null), {})
 })

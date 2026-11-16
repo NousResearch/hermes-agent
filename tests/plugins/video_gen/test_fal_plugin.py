@@ -156,6 +156,19 @@ def test_wan_30_audio_toggle_uses_family_key_and_start_image_url():
     assert _build_payload(FAL_FAMILIES["veo3.1"], image_url=None, **kw)["generate_audio"] is True
 
 
+def test_wan_27_payload_matches_live_schema():
+    """Wan 2.7 (fal-ai/wan/v2.7/*): integer duration clamped to 2..15, aspect_ratio on t2v only,
+    seed + negative_prompt on both, and no audio toggle key (audio is auto-generated)."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    kw = dict(prompt="x", duration=20, aspect_ratio="16:9", resolution="720p", negative_prompt="blurry", audio=True, seed=7)
+    t2v = _build_payload(FAL_FAMILIES["wan-2.7"], image_url=None, **kw)
+    assert t2v == {"prompt": "x", "seed": 7, "aspect_ratio": "16:9", "resolution": "720p", "duration": 15, "negative_prompt": "blurry"}
+    i2v = _build_payload(FAL_FAMILIES["wan-2.7"], image_url="https://i.png", **kw)
+    assert i2v["image_url"] == "https://i.png" and "aspect_ratio" not in i2v and i2v["duration"] == 15
+    assert _build_payload(FAL_FAMILIES["wan-2.7"], image_url=None, **{**kw, "duration": 1})["duration"] == 2
+
+
 def test_text_only_job_errors_cleanly_for_i2v_only_family(monkeypatch):
     """Catalog-shape guard: a family without a text endpoint must error cleanly
     instead of submitting to a None endpoint. Every cataloged family is now
@@ -190,7 +203,7 @@ class TestFamilyRouting:
 
     @pytest.fixture
     def with_fake_fal(self, monkeypatch):
-        """Stub fal_client.submit to capture which endpoint we hit."""
+        """Stub fal_client.SyncClient(key=...).submit to capture which endpoint we hit."""
         import sys
         import types
 
@@ -208,7 +221,7 @@ class TestFamilyRouting:
             captured["endpoint"] = endpoint
             captured["arguments"] = arguments
             return FakeHandle()
-        fake.submit = _submit  # type: ignore
+        fake.SyncClient = lambda key=None: types.SimpleNamespace(submit=_submit)  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         # Reset the lazy global so it picks up our stub
@@ -535,7 +548,7 @@ class TestUpscalePass:
 
     @pytest.fixture
     def with_fake_fal(self, monkeypatch):
-        """Stub fal_client.submit, capturing every endpoint hit in order."""
+        """Stub fal_client.SyncClient(key=...).submit, capturing every endpoint hit in order."""
         import sys
         import types
 
@@ -557,7 +570,7 @@ class TestUpscalePass:
         def _submit(endpoint, arguments=None, headers=None):
             captured["calls"].append((endpoint, arguments))
             return FakeHandle(endpoint)
-        fake.submit = _submit  # type: ignore
+        fake.SyncClient = lambda key=None: types.SimpleNamespace(submit=_submit)  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         from plugins.video_gen import fal as fal_plugin

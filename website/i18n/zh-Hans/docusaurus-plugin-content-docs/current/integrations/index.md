@@ -14,7 +14,7 @@ Hermes 开箱即支持多个 AI 推理提供商。使用 `hermes model` 进行�
 
 - **[AI 提供商](../user-guide/features/provider-routing.md)** — OpenRouter、Anthropic、OpenAI、Google 以及任何兼容 OpenAI 的端点。Hermes 会自动检测每个提供商的能力，包括视觉、流式传输和工具调用。
 - **[提供商路由](../user-guide/features/provider-routing.md)** — 精细控制哪些底层提供商处理你的 OpenRouter 请求。通过排序、白名单、黑名单和显式优先级排序，在成本、速度或质量之间优化。
-- **[备用提供商](../user-guide/features/fallback-providers.md)** — 当主模型遇到错误时，自动故障转移到备用 LLM 提供商。包括主模型回退，以及用于视觉、压缩和网页提取的独立辅助任务回退。
+- **[备用提供商](../user-guide/features/fallback-providers.md)** — 当主模型遇到错误时，自动故障转移到备用 LLM 提供商。包括主模型回退，以及用于视觉、压缩和标题生成等辅助任务的独立回退。
 
 ## 工具服务器（MCP）
 

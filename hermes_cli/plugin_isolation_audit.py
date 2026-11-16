@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set
 
+from hermes_agent.compat.paths import current_module
+
 VERDICT_HOST = "host"
 VERDICT_IN_PROCESS = "in_process"
 VERDICT_PORTABLE = "portable"
@@ -33,13 +35,15 @@ VERDICT_PORTABLE = "portable"
 HERMES_PACKAGES: frozenset = frozenset({
     "agent", "tools", "hermes_cli", "gateway", "cron", "providers", "plugins", "tui_gateway",
     "acp_adapter", "run_agent", "cli", "model_tools", "toolsets", "hermes_state", "hermes_constants",
-    "hermes_logging", "hermes_time", "utils", "registration_lifecycle", "hermes_platform",
+    "hermes_logging", "hermes_time", "utils", "registration_lifecycle", "hermes_platform", "hermes_agent",
 })
 # ``<module>.<callable>`` that mutate a Hermes-process registry when called from plugin code.
 _DIRECT_REGISTRY_CALLS: frozenset = frozenset({
     ("tools.registry", "register"), ("tools.registry", "deregister"),
     ("gateway.platform_registry", "register"), ("providers", "register_provider"),
 })
+_DIRECT_REGISTRY_CALLS |= {(current_module(mod), attr) for mod, attr in _DIRECT_REGISTRY_CALLS}
+_PROVIDERS_MODULES = {"providers", current_module("providers")}
 _MANIFEST_KIND_REASONS: dict[str, str] = {
     "platform": "kind 'platform': gateway platform adapters run in the Hermes process",
 }
@@ -164,7 +168,7 @@ class _SourceVisitor(ast.NodeVisitor):
         if not target:
             return
         module, _, attr = target.rpartition(".")
-        if self.model_provider and (module, attr) == ("providers", "register_provider"):
+        if self.model_provider and attr == "register_provider" and module in _PROVIDERS_MODULES:
             return
         if (module, attr) in _DIRECT_REGISTRY_CALLS or (
                 module.endswith("_registry") and attr in {"register", "register_provider"}):

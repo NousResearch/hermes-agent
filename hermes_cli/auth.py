@@ -32,10 +32,12 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_signature, is_truthy_value
+from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
+from hermes_cli.auth_declared_providers import (
+    default_api_key_base_url, provider_env_base_url, resolve_declared_api_key_provider)
 from hermes_cli.auth_model_picker import (
     _prompt_model_selection, _save_model_choice)
 from hermes_cli.auth_device_flow import (
@@ -257,7 +259,7 @@ from hermes_cli.auth_plugin_providers import (
     canonical_registry_rows as _canonical_registry_rows, get_plugin_oauth_auth_status,
     registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
-sync_plugin_provider_registry()
+PROVIDER_REGISTRY.sync_before_first_read()  # not at import: listing providers reads config
 
 
 def get_anthropic_key() -> str:
@@ -510,8 +512,8 @@ def _load_global_auth_store() -> dict[str, Any]:
         _global_auth_store_cache = None
         return {}
     try:
-        cache_key: Optional[tuple[str, tuple[int, int, int, int]]] = (
-            str(global_path.resolve(strict=False)), file_signature(global_path.stat()))
+        cache_key: Optional[tuple[str, tuple[Any, ...]]] = (
+            str(global_path.resolve(strict=False)), file_cache_version(global_path))
     except Exception:
         cache_key = None
     cached = _global_auth_store_cache
@@ -1882,19 +1884,19 @@ def _resolve_nous_access_token(
 
 # Process-level memo for get_nous_auth_status(): it validates via a synchronous refresh POST
 # (~350ms) and read-only UI surfaces call it many times per render (~31x per menu paint), burning
-# single-use refresh tokens. Keyed on auth.json path + mtime so profile switches don't share a memo
+# single-use refresh tokens. Keyed on auth.json path + file_cache_version so profile switches don't share a memo
 # and login/logout/add/remove invalidate naturally.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[tuple[float, str, Optional[float], dict[str, Any]]] = None
+_nous_auth_status_cache: Optional[tuple[float, str, Optional[tuple[Any, ...]], dict[str, Any]]] = None
 
-# mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store); same invalidation rule.
-_global_auth_store_cache: Optional[tuple[str, int, dict[str, Any]]] = None
+# Memo for _load_global_auth_store(): (path, file_cache_version, store); same invalidation rule.
+_global_auth_store_cache: Optional[tuple[str, tuple[Any, ...], dict[str, Any]]] = None
 
 
-def _auth_file_cache_key() -> tuple[str, Optional[float]]:
+def _auth_file_cache_key() -> tuple[str, Optional[tuple[Any, ...]]]:
     auth_file = _auth_file_path()
     try:
-        return _resolved_key(auth_file), auth_file.stat().st_mtime
+        return _resolved_key(auth_file), file_cache_version(auth_file)
     except Exception:  # missing file included: key without an mtime
         return _resolved_key(auth_file), None
 
@@ -2023,25 +2025,13 @@ def get_xai_oauth_auth_status() -> dict[str, Any]:
         resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
 
 
-def _provider_env_base_url(pconfig: ProviderConfig) -> str:
-    if pconfig.id == "actual":
-        from hermes_cli.providers import normalize_provider
-
-        model = read_raw_config().get("model")
-        if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == "actual":
-            configured_url = str(model.get("base_url") or "").strip()
-            if configured_url:
-                return configured_url
-    return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
-
-
 def get_api_key_provider_status(provider_id: str) -> dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = _registry_lookup(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
         return {"configured": False}
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
-    env_url = _provider_env_base_url(pconfig)
+    env_url = provider_env_base_url(pconfig)
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     else:
@@ -2079,7 +2069,7 @@ def _external_process_spec(
 
     Launch details come from the provider's own profile (``process_command`` and its env overrides),
     so out-of-tree providers describe their binary."""
-    base_url = _provider_env_base_url(pconfig) or pconfig.inference_base_url
+    base_url = provider_env_base_url(pconfig) or pconfig.inference_base_url
     try:
         from providers import get_provider_profile as _get_provider_profile
         profile = _get_provider_profile(pconfig.id)
@@ -2087,11 +2077,10 @@ def _external_process_spec(
         profile = None
     command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
     args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
-    command = (next((v for v in (os.getenv(var, "").strip() for var in command_env_vars) if v), "")
-               or str(getattr(profile, "process_command", "") or ""))
+    from hermes_cli.auth_external_process import external_process_command, resolve_external_process_command
+    command = external_process_command(profile)
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
-    from hermes_cli.auth_external_process import resolve_external_process_command
     return command, args, base_url, resolve_external_process_command(command), command_env_vars
 
 
@@ -2201,24 +2190,22 @@ def _get_azure_foundry_auth_status() -> dict[str, Any]:
     return info
 
 
-def _default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
-    return env_url.rstrip("/") if env_url else default
-
-
 # Providers whose runtime base URL is not simply env-override-or-registry-default:
 # ``(api_key, registry_default, env_override) -> base_url``.
 _API_KEY_BASE_URL_RESOLVERS: dict[str, Callable[[str, str, str], str]] = {
     "kimi-coding": _resolve_kimi_base_url,
     "kimi-coding-cn": _resolve_kimi_base_url,
     "zai": _resolve_zai_base_url,
-    "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(_default_api_key_base_url(*a)),
-    "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
+    "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(default_api_key_base_url(*a)),
+    "actual": lambda *a: normalize_actual_base_url(default_api_key_base_url(*a))}
 
 
 def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
     """Resolve API key and base URL for an API-key provider."""
     pconfig = _registry_lookup(provider_id)
-    if not pconfig or pconfig.auth_type != "api_key":
+    if not pconfig:
+        return resolve_declared_api_key_provider(provider_id)
+    if pconfig.auth_type != "api_key":
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
             provider=provider_id, code="invalid_provider")
@@ -2230,8 +2217,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
 
-    env_url = _provider_env_base_url(pconfig)
-    resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
+    env_url = provider_env_base_url(pconfig)
+    resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, default_api_key_base_url)
     profile = _credential_profile(provider_id)
     base_url = (profile.runtime_base_url(api_key=api_key, default=pconfig.inference_base_url, env_url=env_url)
                 if profile else None)

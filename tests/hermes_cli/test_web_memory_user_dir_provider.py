@@ -1,7 +1,7 @@
 """A memory provider installed under ``$HERMES_HOME/plugins/`` (catalog install) keeps the
-Desktop surfaces a bundled copy has: host-block config storage and the OAuth connect routes
-resolve the provider's own ``client`` / ``oauth_flow`` modules through ``find_provider_dir``,
-not a hard-coded ``plugins.memory.<name>`` import that only the bundled copy satisfies."""
+Desktop surfaces a bundled copy has: its provider-owned config panel and the OAuth connect routes
+resolve through ``find_provider_dir``, not a hard-coded ``plugins.memory.<name>`` import that
+only the bundled copy satisfies."""
 
 import json
 import sys
@@ -11,34 +11,33 @@ from pathlib import Path
 import pytest
 
 _CLIENT = '''
-import json, os
+import json
 from pathlib import Path
 
-def resolve_active_host():
-    return "hermes"
+def resolve_config_path(home):
+    return Path(home) / "honcho.json"
 
-def resolve_config_path():
-    return Path(os.environ["HERMES_HOME"]) / "honcho.json"
-
-def _host_block(cfg, host):
-    return (cfg.get("hosts") or {}).get(host) or {}
+def read_fields(home):
+    raw = json.loads(resolve_config_path(home).read_text(encoding="utf-8"))
+    return (raw.get("hosts") or {}).get("hermes") or {}
 '''
 
 _OAUTH_FLOW = '''
 from . import client  # relative import: only a real package load resolves it
 
 def start_loopback_flow_background():
-    return {"state": "pending", "config": str(client.resolve_config_path())}
+    import os
+    return {"state": "pending", "config": str(client.resolve_config_path(os.environ["HERMES_HOME"]))}
 
 def get_flow_status():
     return {"state": "idle"}
 '''
 
 _CONFIG_SCHEMA = '''
-from plugins.memory.config_schema import STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField
+from plugins.memory.config_schema import STORAGE_PROVIDER, ProviderConfigSchema, ProviderField
 
 CONFIG_SCHEMA = ProviderConfigSchema(
-    name="honcho", label="Honcho (user dir)", storage=STORAGE_HONCHO_HOST_BLOCK,
+    name="honcho", label="Honcho (user dir)", storage=STORAGE_PROVIDER,
     fields=(ProviderField(key="workspace", label="Workspace", inline=True),),
 )
 '''
@@ -53,9 +52,21 @@ def user_dir_honcho(monkeypatch, tmp_path, _isolate_hermes_home):
 
     plugin_dir = get_hermes_home() / "plugins" / "honcho"
     plugin_dir.mkdir(parents=True)
-    (plugin_dir / "__init__.py").write_text(
-        '"""fake provider: register_memory_provider"""\nfrom .client import resolve_active_host\n', encoding="utf-8"
-    )
+    (plugin_dir / "__init__.py").write_text(textwrap.dedent('''
+        """fake provider: register_memory_provider"""
+        from agent.memory_provider import MemoryProvider
+        from .client import read_fields  # relative import: only a real package load resolves it
+
+        class UserDirProvider(MemoryProvider):
+            name = "honcho"
+            def is_available(self): return True
+            def initialize(self, session_id, **kwargs): pass
+            def get_tool_schemas(self): return []
+            def read_config_fields(self, hermes_home): return {"values": read_fields(hermes_home)}
+
+        def register(ctx):
+            ctx.register_memory_provider(UserDirProvider())
+        '''), encoding="utf-8")
     for stem, source in (("client", _CLIENT), ("oauth_flow", _OAUTH_FLOW), ("config_schema", _CONFIG_SCHEMA)):
         (plugin_dir / f"{stem}.py").write_text(textwrap.dedent(source), encoding="utf-8")
     (get_hermes_home() / "honcho.json").write_text(

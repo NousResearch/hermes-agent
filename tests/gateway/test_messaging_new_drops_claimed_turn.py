@@ -23,7 +23,7 @@ async def test_route_move_after_claim(monkeypatch, case):
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal, Submission
+    from gateway.session_contract import SessionActor, Submission
     from gateway.session_ingress import executing_admission
     from gateway.session_results import execution_result
     from hermes_state_runtime import list_session_admissions
@@ -64,7 +64,7 @@ async def test_route_move_after_claim(monkeypatch, case):
 
     if case == 'viewer_new':
         ref = authority.register(source)
-        viewer = Principal('authenticated-viewer', 'default', frozenset({'session:submit'}), 'viewer')
+        viewer = SessionActor('authenticated-viewer', 'default', frozenset({'session:submit'}), 'viewer')
         submit = asyncio.create_task(authority.submit(viewer, Submission('A', ref, {'text': 'A'}, 'queue')))
     else:
         await adapter.handle_message(MessageEvent(text='A', source=source, message_id='A'))

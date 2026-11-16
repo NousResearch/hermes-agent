@@ -1,0 +1,16 @@
+name: compound-security
+repo: https://github.com/offense-research/compound-security-plugin
+sha: 0229f786e747582f68caa73c18519b123a0c8aab
+version: "0.4.1"
+description: "Security audit, dependency inspection, remediation, and verification skills. Disclosure — skills only (no code runs at load); when invoked, the workflows have the agent read the repository you point it at, write audit reports and checkpoints under `~/.compound-security/audits/` by default, and in patch / fix / run / lfg modes edit that repository (code, tests, lockfiles) through Hermes' normal file and terminal tools; bundled Node.js scripts only validate and render its own JSON records; online `npm audit` / `outdated` runs only when you collect them."
+maintainer: offense-research
+tier: community
+category: tools
+title: Compound Security
+requires_hermes: ">=0.23.0"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

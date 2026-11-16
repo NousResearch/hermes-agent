@@ -31,7 +31,9 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 
-FORCED = kbd.FORCED_REVIEW_SKILL
+# Keep the test importable for source-reverted RED runs. The contract still
+# exercises the same forced skill on both heads.
+FORCED = getattr(kbd, "FORCED_REVIEW_SKILL", "sdlc-review")
 
 
 @pytest.fixture

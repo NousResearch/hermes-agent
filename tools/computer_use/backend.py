@@ -145,6 +145,18 @@ class ComputerUseBackend(ABC):
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")
 
+    # System clipboard. Optional compatibility hooks: backends without clipboard access stay instantiable and
+    # refuse with a stable code instead of raising. ``meta`` on success carries the driver payload
+    # (``types`` list, ``text`` when plain text is present).
+    def clipboard_read(self) -> ActionResult:
+        return ActionResult(ok=False, action="clipboard_read", code="clipboard_unsupported",
+                            message="This computer_use backend has no clipboard access.")
+
+    def clipboard_write(self, *, text: Optional[str] = None, image_path: Optional[str] = None,
+                        file_path: Optional[str] = None) -> ActionResult:
+        return ActionResult(ok=False, action="clipboard_write", code="clipboard_unsupported",
+                            message="This computer_use backend has no clipboard access.")
+
 
 class ComputerUseProvider(ProviderBase):
     """Factory for one computer_use driver, registered via ``ctx.register_computer_use_provider`` from a provider

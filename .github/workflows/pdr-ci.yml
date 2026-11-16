@@ -1,4 +1,4 @@
-# PDR 自身的检查：表命名规范与 DDL、config.yaml 与引擎默认配置一致、用户端构建、引擎核心测试。
+# PDR 自身的检查：表命名规范与 DDL、config.yaml 与引擎默认配置一致、管理端与用户端构建、引擎核心测试。
 # 上游 hermes-agent 的其余 workflow 依赖 Nous Research 的发布流程与密钥，在本仓库中不作为 PDR 的质量门槛。
 name: PDR CI
 
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   pdr:
-    name: PDR 检查（命名规范 / DDL / 配置 / 用户端）
+    name: PDR 检查（命名规范 / DDL / 配置 / 管理端 / 用户端）
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -33,18 +33,20 @@ jobs:
         run: |
           uv run python -m pdr_server.db.render
           git diff --exit-code -- pdr/deploy/sql
-      - name: config.yaml 与引擎默认配置一致（含中文元数据）
+      - name: config.yaml 与引擎默认配置一致（含中文元数据），管理端配置表单数据已重新生成
         run: |
           uv run python pdr/scripts/gen_config_yaml.py
           git diff --exit-code -- pdr/config.yaml
+          uv run python pdr/scripts/gen_admin_config_schema.py
+          git diff --exit-code -- pdr/web/admin/src/data/config-schema.json
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
           node-version: "22"
-      - name: 前端（pnpm 工作区）：用户端类型检查与构建
+      - name: 前端（pnpm 工作区）：管理端与用户端类型检查与构建
         run: |
           corepack enable
           pnpm install --frozen-lockfile
-          pnpm build:portal
+          pnpm build
 
   engine:
     name: pdr-agent 核心测试

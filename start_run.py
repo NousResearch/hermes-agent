@@ -223,33 +223,44 @@ PENDING = [
     ("MinerU 解析服务", "mineru-kit api-server"),
     ("hermes 智能体网关", "pdr-agent/ 下的 gateway（api_server 平台）"),
     ("PDR 后端与 worker", "pdr/server"),
-    ("管理端前端", "pdr/web/admin"),
 ]
-PORTAL = PDR / "web" / "portal"
+# 两个独立前端：管理端与用户端各自一个 Vite 工程、一个端口，互不链接
+WEBS = [
+    # (名称, 工程目录, pnpm 包名, config.yaml 段, 端口环境变量, 示例数据环境变量)
+    ("管理端", PDR / "web" / "admin", "pdr-admin", "admin_web", "PDR_ADMIN_PORT", "VITE_ADMIN_MOCK"),
+    ("用户端", PDR / "web" / "portal", "pdr-portal", "portal_web", "PDR_PORTAL_PORT", "VITE_PORTAL_MOCK"),
+]
 
 
-def start_portal(cfg: dict) -> subprocess.Popen | None:
-    """安装并启动用户端（Vue 3 + Vite 开发服务器）；mock_api 为真时使用内置示例数据。"""
-    if not (PORTAL / "package.json").exists():
-        return None
+def install_web(cfg: dict) -> str | None:
+    """pnpm 工作区（仓库根目录）一次安装两端依赖；返回 pnpm 路径，缺少 pnpm 时返回 None。"""
     pnpm = shutil.which("pnpm")
     if not pnpm:
-        say("  – 用户端：未找到 pnpm，跳过（corepack enable 或 npm install -g pnpm 后重试）")
+        say("  – 前端：未找到 pnpm，跳过（corepack enable 或 npm install -g pnpm 后重试）")
         return None
     inst = cfg.get("install", {})
     registry = pick_mirror(inst.get("npm_registry", ""), inst.get("npm_candidates", []),
                            inst.get("strategy", "fastest"), float(inst.get("probe_timeout_seconds", 3)))
-    say(f"  用户端依赖源：{registry or '默认'}")
+    say(f"  前端依赖源：{registry or '默认'}")
     run([pnpm, "install", "--frozen-lockfile", *(["--registry", registry] if registry else [])], cwd=ROOT)
-    web = cfg["portal_web"]
-    env = {**os.environ, "PDR_PORTAL_PORT": str(web["port"]),
+    return pnpm
+
+
+def start_web(cfg: dict, pnpm: str, name: str, project: Path, package: str, section: str,
+              port_env: str, mock_env: str) -> subprocess.Popen | None:
+    """启动一个前端的 Vite 开发服务器；mock_api 为真时使用内置示例数据。"""
+    if not (project / "package.json").exists():
+        say(f"  – {name}：工程不存在（{project.relative_to(ROOT)}），跳过")
+        return None
+    web = cfg[section]
+    env = {**os.environ, port_env: str(web["port"]),
            "PDR_API_URL": f"http://{cfg['app']['host']}:{cfg['app']['port']}",
-           "VITE_PORTAL_MOCK": "true" if web.get("mock_api", True) else "false"}
+           mock_env: "true" if web.get("mock_api", True) else "false"}
     # 子进程单独成组，退出时整组结束（包括 pnpm 拉起的 vite）
     group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-    proc = subprocess.Popen([pnpm, "--filter", "pdr-portal", "dev"], cwd=ROOT, env=env, **group)
+    proc = subprocess.Popen([pnpm, "--filter", package, "dev"], cwd=ROOT, env=env, **group)
     mode = "示例数据" if web.get("mock_api", True) else "连接后端"
-    say(f"  ✓ 用户端已启动（{mode}）：http://127.0.0.1:{web['port']}")
+    say(f"  ✓ {name}已启动（{mode}）：http://127.0.0.1:{web['port']}")
     return proc
 
 
@@ -257,9 +268,11 @@ def start_apps(cfg: dict) -> list[subprocess.Popen]:
     step("7/7 应用进程")
     for name, where in PENDING:
         say(f"  – {name}：尚未实现（{where}，编码阶段交付后由此处拉起）")
-    procs = [p for p in [start_portal(cfg)] if p]
-    say(f"\n访问地址：用户端 {cfg['portal_web']['public_url']}（已启动）  管理端 {cfg['admin_web']['public_url']}（待实现）"
-        "；两端独立，互不链接")
+    pnpm = install_web(cfg)
+    procs = [p for w in WEBS if pnpm and (p := start_web(cfg, pnpm, *w))]
+    if procs:
+        say(f"\n访问地址：管理端 {cfg['admin_web']['public_url']}  用户端 {cfg['portal_web']['public_url']}"
+            "；两端独立，互不链接")
     return procs
 
 

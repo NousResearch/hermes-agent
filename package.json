@@ -4,12 +4,16 @@
   "description": "PDR 前端工作区（pnpm 管理）：pdr/web 下的管理端与用户端",
   "packageManager": "pnpm@10.28.0",
   "scripts": {
+    "dev:admin": "pnpm --filter pdr-admin dev",
     "dev:portal": "pnpm --filter pdr-portal dev",
+    "build:admin": "pnpm --filter pdr-admin build",
     "build:portal": "pnpm --filter pdr-portal build",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

@@ -8,6 +8,31 @@ importers:
 
   .: {}
 
+  pdr/web/admin:
+    dependencies:
+      pinia:
+        specifier: ^3.0.4
+        version: 3.0.4(typescript@5.9.3)(vue@3.5.45(typescript@5.9.3))
+      vue:
+        specifier: ^3.5.25
+        version: 3.5.45(typescript@5.9.3)
+      vue-router:
+        specifier: ^4.6.3
+        version: 4.6.5(vue@3.5.45(typescript@5.9.3))
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.2
+        version: 6.0.11(vite@7.3.8)(vue@3.5.45(typescript@5.9.3))
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^7.2.4
+        version: 7.3.8
+      vue-tsc:
+        specifier: ^3.1.5
+        version: 3.3.14(typescript@5.9.3)
+
   pdr/web/portal:
     dependencies:
       pinia:

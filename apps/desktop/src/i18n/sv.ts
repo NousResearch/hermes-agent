@@ -2567,6 +2567,11 @@ export const svOverrides: TranslationOverrides = {
   },
   ui: {
     search: { clear: 'Rensa sökning' },
+    logs: {
+      bottom: 'Längst ned i loggen',
+      search: 'Sök i loggar…',
+      top: 'Längst upp i loggen'
+    },
     pagination: {
       label: 'sidindelning',
       previous: 'Föregående',

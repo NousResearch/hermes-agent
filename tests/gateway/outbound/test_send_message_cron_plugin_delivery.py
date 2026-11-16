@@ -19,7 +19,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platform_registry import PlatformEntry, platform_registry
-from tools.send_message_tool import _send_to_platform
+from gateway.outbound.send import _send_to_platform
 
 
 @pytest.fixture

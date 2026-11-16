@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -377,6 +378,54 @@ def review_revert(cwd: str, file_path: str | None) -> dict:
     target = ["--", file_path or "."]
     _git_write(cwd, ["checkout", "HEAD", *target])
     _git_write(cwd, ["clean", "-fd", *target])
+    return {"ok": True}
+
+
+_HUNK_APPLY_FLAGS = {"revert": ["-R"], "stage": ["--cached"], "unstage": ["--cached", "-R"]}
+STALE_HUNK_ERROR = "This change no longer matches the file. Refresh the review and try again."
+
+
+def _single_hunk_patch(diff: str, hunk: str) -> str | None:
+    """The patch for ONE ``@@`` hunk of *diff*, or None when *hunk* is not one of its hunks verbatim.
+    Mirrors ``apps/shared/src/diff-hunks.ts::singleHunkPatch``."""
+    lines = diff.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    first = next((i for i, line in enumerate(lines) if line.startswith("@@")), None)
+    if first is None:
+        return None
+    header = "\n".join(lines[:first])
+    hunks: list[list[str]] = []
+    for line in lines[first:]:
+        if line.startswith("@@") or not hunks:
+            hunks.append([])
+        hunks[-1].append(line)
+    if "\n+++ " not in header or hunk not in ("\n".join(h) for h in hunks):
+        return None
+    return f"{header}\n{hunk}\n"
+
+
+def review_hunk(cwd: str, file_path: str, hunk: str, action: str) -> dict:
+    """Stage, unstage or revert one change (hunk) of *file_path*. The patch is rebuilt from a fresh
+    diff, so a hunk the file no longer holds verbatim is refused rather than applied blind."""
+    flags = _HUNK_APPLY_FLAGS.get(action)
+    if not flags or not file_path or not hunk:
+        raise RuntimeError("Invalid hunk request")
+    cached = ["--cached"] if action == "unstage" else []
+    code, diff, err = _git(cwd, ["diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", *cached,
+                                 "--", f":(literal){file_path}"])
+    if code != 0:
+        raise RuntimeError(err.strip() or "git diff failed")
+    patch_text = _single_hunk_patch(diff, hunk)
+    if patch_text is None:
+        raise RuntimeError(STALE_HUNK_ERROR)
+    git_dir = Path(_git_line(cwd, ["rev-parse", "--absolute-git-dir"]))
+    patch_path = git_dir / f"hermes-review-hunk-{os.getpid()}-{time.monotonic_ns()}.patch"
+    patch_path.write_text(patch_text, encoding="utf-8", newline="\n")
+    try:
+        _git_ok(cwd, ["apply", *flags, "--", str(patch_path)])
+    finally:
+        patch_path.unlink(missing_ok=True)
     return {"ok": True}
 
 

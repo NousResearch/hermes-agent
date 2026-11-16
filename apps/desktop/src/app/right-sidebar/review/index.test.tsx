@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReviewFile } from '@/global'
 import { I18nProvider } from '@/i18n'
@@ -13,6 +13,7 @@ import {
   $reviewScope,
   $reviewSelectedPath
 } from '@/store/review'
+import { $currentCwd } from '@/store/session'
 
 import { ReviewPane } from './index'
 
@@ -87,5 +88,56 @@ describe('ReviewPane header gating', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Uncommitted' }))
 
     expect($reviewScope.get()).toBe('uncommitted')
+  })
+})
+
+const TWO_HUNKS = [
+  'diff --git a/a.ts b/a.ts',
+  '--- a/a.ts',
+  '+++ b/a.ts',
+  '@@ -1,3 +1,3 @@',
+  ' one',
+  '-two',
+  '+TWO',
+  ' three',
+  '@@ -20,3 +20,3 @@',
+  ' twenty',
+  '-twentyone',
+  '+TWENTYONE',
+  ' twentytwo',
+  ''
+].join('\n')
+
+describe('ReviewPane per-change actions', () => {
+  afterEach(() => {
+    cleanup()
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    $reviewFiles.set([])
+  })
+
+  it('reverts only the chosen change after the confirm', async () => {
+    const hunk = vi.fn(async () => ({ ok: true }))
+
+    const revert = vi.fn(async () => ({ ok: true }))
+
+    ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+      git: { review: { diff: async () => TWO_HUNKS, hunk, list: async () => ({ files: [file('a.ts')] }), revert } }
+    }
+    $currentCwd.set('/repo')
+    $reviewScope.set('uncommitted')
+    $reviewFiles.set([file('a.ts')])
+    $reviewSelectedPath.set('a.ts')
+    $reviewDiff.set(TWO_HUNKS)
+    $reviewDiffLoading.set(false)
+
+    renderPane()
+
+    expect(screen.getAllByLabelText('Stage this change')).toHaveLength(2)
+    fireEvent.click(screen.getAllByLabelText('Revert this change')[1])
+    fireEvent.click(await screen.findByRole('button', { name: 'Revert this change' }))
+
+    await waitFor(() => expect(hunk).toHaveBeenCalledTimes(1))
+    expect(hunk).toHaveBeenCalledWith('/repo', 'a.ts', TWO_HUNKS.split('\n').slice(8, 13).join('\n'), 'revert')
+    expect(revert).not.toHaveBeenCalled()
   })
 })

@@ -4121,6 +4121,10 @@ export const esOverrides = {
         '¿Descartar los cambios en este archivo y restaurarlo al estado comprometido? Esto no se puede deshacer.',
       revertAllConfirm:
         '¿Descartar todos los cambios y restaurar archivos al estado comprometido? Esto no se puede deshacer.',
+      stageHunk: 'Preparar este cambio',
+      unstageHunk: 'Quitar este cambio de preparados',
+      revertHunk: 'Revertir este cambio',
+      revertHunkConfirm: '¿Descartar este cambio y restaurar esas líneas al estado comprometido? Esto no se puede deshacer.',
       staged: 'Preparados',
       noChanges: 'Sin cambios',
       notRepo: 'No es un repositorio Git',

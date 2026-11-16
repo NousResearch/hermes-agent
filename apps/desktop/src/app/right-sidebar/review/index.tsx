@@ -4,7 +4,6 @@ import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DiffSkeleton, TreeSkeleton } from '@/components/chat/skeletons'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DiffCount } from '@/components/ui/diff-count'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
@@ -19,14 +18,11 @@ import {
   $reviewFiles,
   $reviewIsRepo,
   $reviewLoading,
-  $reviewRevertTarget,
   $reviewScope,
   $reviewSelectedPath,
   $reviewTreeMode,
-  cancelRevert,
   clearReviewSelection,
   closeReview,
-  confirmRevert,
   refreshReview,
   requestRevert,
   stageReviewFile,
@@ -38,6 +34,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
+import { hunkActionsFor, ReviewRevertDialog } from './hunk-actions'
 import { ReviewScopeRow } from './scope-row'
 import { ReviewShipBar } from './ship-bar'
 
@@ -55,7 +52,6 @@ export function ReviewPane() {
   const selectedPath = useStore($reviewSelectedPath)
   const diff = useStore($reviewDiff)
   const diffLoading = useStore($reviewDiffLoading)
-  const revertTarget = useStore($reviewRevertTarget)
   const treeMode = useStore($reviewTreeMode)
   const scope = useStore($reviewScope)
   // Stage / unstage / revert and the ship bar act on the working tree, so they
@@ -66,8 +62,8 @@ export function ReviewPane() {
   const hasFiles = files.length > 0
   // A repo (or a load that may reveal one) gets the header + scope chrome.
   const showChrome = loading || isRepo
-  // `{ path: null }` → revert all; `{ path: '…' }` → revert one file.
-  const revertingAll = revertTarget?.path == null
+  const renderHunkActions = hunkActionsFor(selectedFile, isUncommitted)
+
   // Delay the skeletons so fast loads (most project switches) just blank → content
   // instead of flashing a jarring loading state.
   const showTreeSkeleton = useDelayedTrue(loading && !hasFiles)
@@ -162,7 +158,7 @@ export function ReviewPane() {
 
       {/* Selected file's diff — reuses the shiki-highlighted FileDiffPanel. */}
       {selectedFile && (
-        <div className="flex max-h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
+        <div className="flex h-[55%] shrink-0 flex-col border-t border-(--ui-stroke-secondary)">
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
@@ -204,7 +200,13 @@ export function ReviewPane() {
                 <DiffSkeleton />
               ) : null
             ) : diff ? (
-              <FileDiffPanel className="mx-0 mb-0 h-full max-h-none" diff={diff} path={selectedFile.path} virtualized />
+              <FileDiffPanel
+                className="mx-0 mb-0 h-full max-h-none"
+                diff={diff}
+                path={selectedFile.path}
+                renderHunkActions={renderHunkActions}
+                virtualized
+              />
             ) : (
               <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
             )}
@@ -214,30 +216,7 @@ export function ReviewPane() {
 
       <ReviewShipBar />
 
-      <ConfirmDialog
-        confirmLabel={revertingAll ? c.revertAll : c.revert}
-        description={
-          <>
-            {revertingAll ? c.revertAllConfirm : c.revertConfirm}
-            {!revertingAll && revertTarget?.path && (
-              <span
-                className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
-                title={displayPath(revertTarget.path)}
-              >
-                {displayPath(revertTarget.path)}
-              </span>
-            )}
-          </>
-        }
-        destructive
-        // confirmRevert closes the dialog itself, then reverts in the
-        // background — so the failure lands in a toast, not inline.
-        dismissOnConfirm
-        onClose={cancelRevert}
-        onConfirm={() => confirmRevert().catch(err => void notifyError(err, c.revert))}
-        open={revertTarget !== undefined}
-        title={revertingAll ? c.revertAll : c.revert}
-      />
+      <ReviewRevertDialog />
     </aside>
   )
 }

@@ -4143,6 +4143,10 @@ export const frOverrides = {
         "Abandonner les modifications de ce fichier et le rétablir à l'état validé ? Cela ne peut pas être annulé.",
       revertAllConfirm:
         "Abandonner toutes les modifications et rétablir les fichiers à l'état validé ? Cela ne peut pas être annulé.",
+      stageHunk: 'Indexer cette modification',
+      unstageHunk: 'Désindexer cette modification',
+      revertHunk: 'Annuler cette modification',
+      revertHunkConfirm: "Abandonner cette modification et rétablir ces lignes à l'état validé ? Cela ne peut pas être annulé.",
       staged: 'En zone de préparation',
       noChanges: 'Aucune modification',
       notRepo: 'Pas un dépôt git',

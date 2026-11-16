@@ -6,6 +6,7 @@
 import { ipcMain } from 'electron'
 
 import { scanGitRepos } from './git-repo-scan'
+import { reviewHunk } from './git-review-hunk'
 import {
   fileDiffVsHead,
   repoStatus,
@@ -85,6 +86,10 @@ export function registerGitIpc({ resolveGitBinary, resolveGhBinary }: GitIpcDeps
   )
   ipcMain.handle('hermes:git:review:revert', async (_event, repoPath, filePath) =>
     reviewRevert(repoPath, filePath ?? null, resolveGitBinary())
+  )
+  // One change (hunk) of a file: stage, unstage or revert just that block.
+  ipcMain.handle('hermes:git:review:hunk', async (_event, repoPath, filePath, hunk, action) =>
+    reviewHunk(repoPath, filePath, hunk, action, resolveGitBinary())
   )
   ipcMain.handle('hermes:git:review:revParse', async (_event, repoPath, ref) =>
     reviewRevParse(repoPath, ref, resolveGitBinary())

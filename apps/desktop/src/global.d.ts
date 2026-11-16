@@ -605,6 +605,13 @@ declare global {
           stage: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
           unstage: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
           revert: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
+          // One change (an `@@` hunk, by its exact diff text) of one file.
+          hunk: (
+            repoPath: string,
+            filePath: string,
+            hunk: string,
+            action: HermesReviewHunkAction
+          ) => Promise<{ ok: boolean }>
           revParse: (repoPath: string, ref?: null | string) => Promise<null | string>
           commit: (repoPath: string, message: string, push: boolean) => Promise<{ ok: boolean }>
           // Diff (staged-or-all) + recent commit subjects for drafting a
@@ -1829,6 +1836,8 @@ export interface HermesReviewFile {
   status: string
   staged: boolean
 }
+
+export type HermesReviewHunkAction = 'revert' | 'stage' | 'unstage'
 
 export interface HermesReviewList {
   files: HermesReviewFile[]

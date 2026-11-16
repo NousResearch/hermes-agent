@@ -166,6 +166,10 @@ can also lose it. Do not assume that a later terminal environment change is
 already visible inside an existing kernel. The old `code_execution.kernel_mode`
 setting is no longer a separate switch.
 
+In persistent session kernels (local and remote), a final bare expression is echoed via `repr`
+(`None` prints nothing); `print()` output keeps its format. The per-call fallback path on
+remote hosts that cannot spawn a kernel has no echo — use `print(...)` there.
+
 ## Resource Limits
 
 | Resource | Limit | Notes |
@@ -206,7 +210,7 @@ code_execution:
   max_session_kernels: 4      # kernels kept alive at once; oldest is evicted past this
 ```
 
-**Remote backends** (Docker, SSH, Modal) run a remote session kernel with the same contract. If the kernel cannot be spawned on the backend, Hermes falls back to running each call as a standalone script and says so in the result.
+**Remote backends** (Docker, SSH, Modal) run a remote session kernel with the same contract, including REPL echo of a final expression. If the kernel cannot be spawned on the backend, Hermes falls back to running each call as a standalone script and says so in the result. That fallback has no echo — use `print(...)` there.
 
 **Large output.** Stdout over 50 KB is shown head-and-tail inline, and the full text is saved under `~/.hermes/cache/exec/` with the path included in the result, so the agent can page through it with `read_file` instead of re-running the script.
 

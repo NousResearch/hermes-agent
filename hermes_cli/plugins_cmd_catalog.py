@@ -564,7 +564,7 @@ class RepinResult(NamedTuple):
 
 # Surfaces a re-pin can widen without the user seeing a diff: each is a list of identifiers the
 # new manifest adds (``desktop`` = a Desktop half appeared). Compared as sets — removals are not consent events.
-_SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks": "hooks",
+_SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks": "hooks", "shell_commands": "terminal commands",
                    "python_dependencies": "Python dependencies", "desktop": "Desktop UI half",
                    "requires_auth": "your sign-in for", "oauth": "your OAuth sign-in for"}
 
@@ -585,6 +585,7 @@ def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
     return {
         "capabilities": set(_declared_capabilities_from_manifest(manifest, str(manifest.get("name") or "?"))),
         "tools": _list("provides_tools"), "hooks": _list("provides_hooks", "hooks"),
+        "shell_commands": _list("shell_commands"),
         "python_dependencies": _list("python_dependencies"), "requires_auth": _list("requires_auth"),
         "oauth": oauth_surface(manifest),
         "desktop": _desktop_surface(tree),

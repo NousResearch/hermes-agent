@@ -95,7 +95,10 @@ def update_one(name: str, target: Path, console, *, interactive: bool = True, fo
     from hermes_cli.plugins_auto_update import plugin_update_lock, unattended_gate
     with plugin_update_lock(target):
         gate = unattended_gate(name, target) if unattended else None
-        return _update_one_locked(name, target, console, interactive=interactive, force=force, surface_gate=gate)
+        moved = _update_one_locked(name, target, console, interactive=interactive, force=force, surface_gate=gate)
+        from hermes_cli.plugin_shell_commands import sync_plugin_commands
+        sync_plugin_commands(target, console)
+        return moved
 
 
 def _update_one_locked(name: str, target: Path, console, *, interactive: bool = True, force: bool = False,

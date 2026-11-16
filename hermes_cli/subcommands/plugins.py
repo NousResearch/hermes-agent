@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_json_flag
@@ -14,6 +15,12 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         description="Install, update, remove, list, or validate native Hermes plugins "
             "and portable Agent Plugins v1 packages. Portable packages install disabled.")
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
+
+    shell_run = plugins_subparsers.add_parser(
+        "run-shell", help="Run an installed plugin's declared package command")
+    shell_run.add_argument("shell_plugin", help="Installed plugin directory name")
+    shell_run.add_argument("shell_command", help="Declared shell_commands entry")
+    shell_run.add_argument("shell_arguments", nargs=argparse.REMAINDER)
 
     plugins_install = plugins_subparsers.add_parser(
         "install", help="Install a plugin from the curated catalog, a Git URL, or owner/repo")

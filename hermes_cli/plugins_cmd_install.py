@@ -88,6 +88,10 @@ def _install_plugin_python_deps(
     try:
         declaration = read_python_declaration(target)
         deps = declaration.install_requirements
+        from hermes_cli.plugin_shell_commands import declared_commands
+        shell_commands = declared_commands(target)
+        if shell_commands:
+            console.print("Terminal commands declared: " + ", ".join(shell_commands))
     except Exception as exc:
         return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
     has_python = declaration.installs_packages
@@ -762,6 +766,8 @@ def cmd_install(
         # (its MCP servers stay absent from every session) and nothing tells the user to restart.
         from hermes_cli.plugins_activation import report_activation
         report_activation(console, installed_name)
+    from hermes_cli.plugin_shell_commands import sync_plugin_commands
+    sync_plugin_commands(target, console)
     console.print()
 
 

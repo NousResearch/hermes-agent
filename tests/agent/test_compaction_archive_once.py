@@ -1,9 +1,9 @@
-"""A compaction archives each dropped tool result exactly once, after it is admitted, and the committed
-chat names every archive whatever the generated summary says.
+"""A compaction archives each dropped tool result exactly once, after its summary exists, and the
+committed chat names every archive whatever the generated summary says.
 
-Planning (``_plan_compaction_window``) only decides whether work can start, so it writes nothing: a
-prepared pass the slot cap refuses, or one planned on every tool batch, leaves ``cache/pruned`` empty,
-and a compaction that splices a prepared summary does not archive the pass's window a second time.
+Planning (``_plan_compaction_window``) only decides whether work can start, so it writes nothing; a
+prepared pass (refused or completed) summarizes the originals and writes nothing either: the compaction
+that splices its summary archives the window once.
 The summary is model text and may drop a pointer, so the committed summary row lists every archive the
 replaced rows named; the retention sweep then keeps those files.
 """
@@ -58,7 +58,7 @@ def _no_pointer_summary():
     return patch("agent.context_compressor.call_llm", return_value=response)
 
 
-def test_planning_writes_nothing_and_a_spliced_prepared_summary_archives_each_result_once(home):
+def test_planning_and_the_prepared_pass_write_nothing_and_the_splice_archives_each_result_once(home):
     msgs = _transcript()
     c = _compressor()
     for _ in range(3):  # every tool batch plans; none of them is admitted work
@@ -75,15 +75,13 @@ def test_planning_writes_nothing_and_a_spliced_prepared_summary_archives_each_re
 
     thread = pc.maybe_prepare(agent, msgs, origin="tool-batch")
     thread.join(5.0)
-    after_pass = _archived(home)
-    assert after_pass and c.prepared_compaction._entry is not None
+    assert c.prepared_compaction._entry is not None and _archived(home) == []
 
     compressed = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
 
     assert any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in compressed)
     bodies = [p.read_bytes() for p in _archived(home)]
-    assert len(bodies) == len(set(bodies))  # no tool result was written twice
-    assert set(after_pass) <= set(_archived(home))
+    assert bodies and len(bodies) == len(set(bodies))  # no tool result was written twice
 
 
 def test_the_committed_summary_names_every_archive_the_generated_text_omits_and_the_sweep_keeps_them(home):

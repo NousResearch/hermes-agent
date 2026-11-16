@@ -31,7 +31,7 @@ from agent.auxiliary_client import (
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_durable import DurableStateMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
-from agent.context_compressor_window import CompactionWindowMixin
+from agent.context_compressor_window import CompactionWindowMixin, summary_view
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
@@ -5083,12 +5083,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             messages, compress_start, fresh=bool(force or focus_topic or bypass_cooldown),
             provider_context=bool(memory_context.strip()),
         )
-        messages, pruned_count, compress_start, compress_end = self._admit_window(  # planning wrote nothing
-            canonical_messages, messages, pruned_count, compress_start, compress_end, prepared)
+        if prepared is not None:
+            compress_end = prepared.compress_end
+        # Summarize first, archive after: the summarizer reads the ORIGINAL window rows (bounded only by its
+        # own input budget), and nothing is written until a summary exists (_commit_window below).
+        plan = messages
+        messages = summary_view(plan, canonical_messages, compress_start, compress_end)
         turns_to_summarize = messages[compress_start:compress_end]
-        # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
-        if getattr(self, "tail_mode", "lean") == "lean":
-            messages = self._demote_stale_tail_tools(messages, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(
@@ -5136,8 +5137,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
-        # Phase 4: Assemble compressed message list
-        compressed = self._assemble_with_archive_list(messages, compress_start, compress_end, scan, summary, prepared)
+        # Phase 4: the summary exists, so archive what the compaction drops or shortens, then assemble.
+        messages, pruned_count = self._commit_window(canonical_messages, plan, pruned_count, compress_start, compress_end)
+        compressed = self._assemble_with_archive_list(messages, compress_start, compress_end, scan, summary)
         return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images, pruned_count)
 
     def _assemble_compressed(

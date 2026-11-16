@@ -94,6 +94,16 @@ export function createPrimaryInstallIdResolver(deps: PrimaryInstallIdDeps): () =
   }
 }
 
+/** Last-known backend facts for a registry entry (display-only); each is absent until a probe has seen it. */
+export function knownBackendFacts(connectionId: string): { installId?: string; runtimeKind?: 'container' | 'native' } {
+  const known = connectionInstallIds.get(connectionId)
+
+  return {
+    ...(known?.id ? { installId: known.id } : {}),
+    ...(known?.runtimeKind ? { runtimeKind: known.runtimeKind } : {})
+  }
+}
+
 /** Record the install_id a connection's `/api/status` body reports (or its absence). */
 export function rememberConnectionInstallId(connectionId: string, statusBody: unknown): string | undefined {
   const id = installIdFromStatus(statusBody)

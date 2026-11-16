@@ -1672,13 +1672,45 @@ export const svOverrides: TranslationOverrides = {
       cloudUseSaved: 'Använd gateway',
       cloudActive: 'Aktiv i detta fönster',
       webAccess: {
+        title: 'Webbåtkomst',
+        intro:
+          'Öppna Hermes på den här datorn från mobilen eller en annan dator efter inloggning med ditt Nous-konto. Den som loggar in kan köra kommandon på den här datorn.',
+        failed: 'Kunde inte ändra webbåtkomsten',
+        running: 'Körs',
+        stopped: 'Stoppad',
+        starting: 'Startar',
+        stopping: 'Stoppar',
+        restartNeeded: 'Omstart krävs',
+        unavailable: 'Inte tillgänglig',
+        notRunningDetail: 'Starta den för att öppna Hermes från en annan enhet.',
+        needsNous: 'Logga först in på ditt Nous-konto under Leverantörer.',
+        runningLan: 'Öppna den här adressen på en enhet i samma nätverk.',
+        runningPublic: 'Tillhandahålls via din URL.',
+        runningLocal: 'Endast den här datorn kan öppna den. Stoppa den och starta sedan igen för att öppna den från andra enheter.',
+        pendingOn: 'Sparat. Gatewayen tillhandahåller webbappen efter nästa omstart.',
+        pendingOff: 'Avstängd, men gatewayen fortsätter tillhandahålla webbappen tills den har startats om.',
+        unavailableDetail: reason => `Gatewayen kunde inte tillhandahålla webbappen: ${reason}`,
+        restartBusy: 'Sparat. En chatt körs, så gatewayen startades inte om. Välj Starta om gateway när den är klar.',
+        restartFailed: 'Sparat, men gatewayen kunde inte startas om. Välj Starta om gateway för att försöka igen.',
+        restartFailedBecause: reason => `Gatewayen kunde inte startas om: ${reason}`,
+        startTimedOut: 'Gatewayen började inte tillhandahålla webbappen inom 90 sekunder.',
+        stopTimedOut: 'Gatewayen slutade inte tillhandahålla webbappen inom 90 sekunder.',
         startStages: {
           preparing: 'Förbereder webbappen. Bygget kan ta några minuter.',
           building: 'Bygger webbappen. Det kan ta några minuter.',
           registering: 'Konfigurerar Nous-inloggning för den här adressen.',
           restarting: 'Startar om gatewayen för att tillhandahålla webbappen.'
         },
-        startElapsed: time => `Förfluten tid: ${time}`
+        startElapsed: time => `Förfluten tid: ${time}`,
+        start: 'Starta',
+        stop: 'Stoppa',
+        restartGateway: 'Starta om gateway',
+        modeLan: 'Det här nätverket',
+        modeLanDetail: url => `Enheter på ditt Wi-Fi öppnar ${url}. Använd den bara i ett nätverk du litar på.`,
+        lanUnencrypted: 'Anslutningen är inte krypterad: andra i nätverket kan läsa det du skickar och tar emot.',
+        noLan: 'Den här datorn har ingen nätverksadress som andra enheter kan nå.',
+        modePublic: 'Min egen URL',
+        modePublicDetail: port => `En HTTPS-adress som du redan kör, till exempel Tailscale Serve eller en tunnel som vidarebefordrar till http://127.0.0.1:${port}.`
       }
     },
     vault: {

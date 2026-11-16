@@ -1,5 +1,6 @@
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { svMemoryLayers } from './sv_memory_layers'
+import { svUpdateChannel } from './sv_update_channel'
 
 // Swedish desktop translation. Keep the English fallback for keys introduced
 // between translation updates.
@@ -411,6 +412,7 @@ export const svOverrides: TranslationOverrides = {
   },
   settings: {
     memoryLayers: svMemoryLayers,
+    about: { updates: 'Uppdateringar', channel: svUpdateChannel },
     subpages: {
       appearanceTheme: 'Tema',
       appearanceTypography: 'Typografi',

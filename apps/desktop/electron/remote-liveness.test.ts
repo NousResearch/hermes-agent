@@ -360,6 +360,112 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     expect(retire).not.toHaveBeenCalled()
     expect(reconnect).not.toHaveBeenCalled()
   })
+
+  it('retries once and keeps a descriptor that answers on the second probe', async () => {
+    const healthy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const connectionPromise = Promise.resolve(healthy)
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    // First probe times out (cold-start / ssh-lifecycle still bootstrapping);
+    // the second answers. The descriptor must be kept, not retired.
+    let calls = 0
+    const probe = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) {
+        throw new Error('Timed out connecting to Hermes backend after 10000ms')
+      }
+      return { ok: true }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => connectionPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(healthy)
+
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('retries on a fresh socket so a stale pooled socket cannot force a retire', async () => {
+    const healthy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const connectionPromise = Promise.resolve(healthy)
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    // First probe fails on a keep-alive pooled socket left over from a wedged
+    // SSH mux forward ('socket hang up' while the backend is healthy). The
+    // retry must bypass the pool: a fresh socket makes the TCP handshake the
+    // liveness test, so the healthy descriptor is kept (#131765).
+    let calls = 0
+    const probe = vi.fn(async (_c: unknown, _p: string, options: { timeoutMs: number; freshSocket?: boolean }) => {
+      calls += 1
+      if (calls === 1) {
+        throw new Error('socket hang up')
+      }
+      return { ok: true, freshSocket: options.freshSocket }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => connectionPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(healthy)
+
+    expect(probe).toHaveBeenCalledTimes(2)
+    // First attempt uses the shared keep-alive pool...
+    expect(probe.mock.calls[0][2].freshSocket).toBeUndefined()
+    // ...the retry bypasses it with a fresh socket.
+    expect(probe.mock.calls[1][2].freshSocket).toBe(true)
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('retires only after the retry also fails', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+
+      return replacement
+    })
+
+    // Both attempts fail: the descriptor is genuinely dead.
+    const probe = vi.fn(async () => {
+      throw new Error('connect ECONNREFUSED 127.0.0.1:49525')
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(replacement)
+
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
+  })
 })
 
 describe('revalidatePooledRemoteBackends', () => {

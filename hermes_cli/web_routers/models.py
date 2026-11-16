@@ -61,7 +61,7 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
 _MODEL_INFO_PROBE_BUDGET_S = 5.0
 
 
-def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> int:
+def _bounded_context_length_probe(model: str, base_url: str, provider: str, api_key: str = "") -> int:
     """``get_model_context_length`` with the route's blocking budget.
 
     On timeout the abandoned probe keeps running in its worker thread (bounded
@@ -74,7 +74,7 @@ def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> i
     try:
         return pool.submit(
             get_model_context_length, model=model, base_url=base_url, provider=provider,
-            config_context_length=None
+            api_key=api_key, config_context_length=None
         ).result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
     except concurrent.futures.TimeoutError:
         _log.warning(
@@ -106,7 +106,10 @@ def get_model_info(profile: Optional[str] = None):
             # config_context_length=None: ignore the override — we want the auto value.
             # Bounded: the resolver's provider probes can hang for tens of seconds
             # when model.base_url is unreachable (#63214).
-            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider)
+            from hermes_cli.runtime_provider_custom import model_block_key_for
+            with _config_profile_scope(profile):  # key_env reads the profile's own secrets
+                api_key = model_block_key_for(model_cfg, base_url)
+            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider, api_key)
         except Exception:
             auto_ctx = 0
 

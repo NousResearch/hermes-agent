@@ -1,0 +1,17 @@
+name: token-dashboard
+repo: https://github.com/Whydiriki700/token-dashboard
+sha: 39949565742a74d00ec03c9921c7ef3eee208d88
+title: Token Dashboard
+description: 'Token cost and usage dashboard for Hermes Desktop: a right pane with the focused session''s live input and output tokens, session cost (backend-reported cost_usd when available, otherwise a labelled estimate from a built-in per-model price table), API calls and context usage bar, plus a recent-sessions overview with message counts and a status bar cost chip. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware, or env vars. Disclosure: reads the focused session usage state and the session list through the Desktop host API and renders them locally; no network calls, no storage.'
+maintainer: Whydiriki700
+tier: community
+category: desktop
+version: "1.1.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Whydiriki700/token-dashboard
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

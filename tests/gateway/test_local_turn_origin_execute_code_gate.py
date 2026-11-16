@@ -20,7 +20,7 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
     from gateway.session_authority import initialize_session_authority
     from gateway.session_automation import admit_route_wake
     from gateway.session_context import clear_session_vars, set_session_vars
-    from gateway.session_contract import Principal, Submission
+    from gateway.session_contract import SessionActor, Submission
     from gateway.session_local import create_local_session
     from gateway.session_policy import _ACTIVE_POLICY, policy_for_source
     from hermes_state import SessionDB
@@ -63,7 +63,6 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
             clear_session_vars(vars_tokens)
             with A._lock:
                 A._gateway_queues.pop(live.route, None)
-                A._pending.pop(live.route, None)
 
     async def answer(event):
         gates[event.text] = await asyncio.to_thread(gate_in_turn_thread, authority.sessions[ref.session_id])
@@ -71,7 +70,7 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
 
     monkeypatch.setattr(runner, "_handle_message", answer)
     try:
-        viewer = Principal("test-owner", "default", frozenset(
+        viewer = SessionActor("test-owner", "default", frozenset(
             {"session:create", "session:submit", "session:read", "session:approve"}), "viewer")
         ref = create_local_session(authority, viewer, dict(request_id="cli", source="cli", model="fixture",
                                                           toolsets=[]))

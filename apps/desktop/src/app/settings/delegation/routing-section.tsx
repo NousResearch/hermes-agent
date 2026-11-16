@@ -111,7 +111,12 @@ function RoutingBody({ routing, scope }: { routing: DelegationRouting; scope: Pr
       {blocked && !isPluginMode(mode) && <BlockedBanner message={thirdPartyBlockedMessage(routing, r)} scope={scope} />}
       {mode === 'model_map' && (
         <div className="mt-6">
-          <ModelRoutesEditor providerNames={providerNames} routes={routing.model_map} scope={scope} />
+          <ModelRoutesEditor
+            providerNames={providerNames}
+            routeKeys={routing.backends.find(b => b.name === 'model_map')?.route_keys ?? []}
+            routes={routing.model_map}
+            scope={scope}
+          />
         </div>
       )}
       {mode === 'profile_routes' && (

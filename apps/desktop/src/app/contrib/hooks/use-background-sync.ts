@@ -6,6 +6,10 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
+import {
+  isSessionRecentlyInterrupted,
+  recentInterruptRemainingMs
+} from '@/app/session/hooks/use-prompt-actions/utils'
 import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
@@ -19,7 +23,8 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
-import { pendingSessionReplay, sharedPrimaryRoute } from '@/store/gateway'
+import { pendingSessionReplay } from '@/store/gateway'
+import { sharedPrimaryRoute } from '@/store/gateway-shared-route'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
@@ -30,6 +35,7 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentModelSource,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -62,6 +68,8 @@ import {
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
+
+import { useLiveWorkRoster } from './use-live-work-roster'
 
 interface ActiveTranscriptSession {
   ownerRoute?: SessionOwnerRoute
@@ -135,10 +143,36 @@ export interface ActiveTranscriptRefreshDeps {
   ) => ClientSessionState
 }
 
+/**
+ * Stop idles the view at the click, but the stopped turn's rows stay unstored
+ * until its interrupted `message.complete` binds the receipt. A page read in
+ * that gap already holds the stored turn, so the merge drew it twice until the
+ * completion landed (#144899 N2). The hold ends with the binding, or with the
+ * Stop cooldown when no receipt ever comes.
+ */
+export function stopAwaitsItsReceipt(state: ClientSessionState, runtimeId: string): boolean {
+  if (!state.interrupted || !isSessionRecentlyInterrupted(runtimeId)) {
+    return false
+  }
+
+  const messages = state.messages
+  const lastUser = messages.findLastIndex(message => message.role === 'user')
+  const lastReply = messages.findLastIndex(message => message.role === 'assistant' && !message.hidden)
+
+  if (lastReply > lastUser) {
+    return !messages[lastReply].persistedTurn
+  }
+
+  return lastUser >= 0 && messages[lastUser].rowId === undefined
+}
+
 function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   const state = $sessionStates.get()[runtimeId]
 
-  return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
+  return Boolean(
+    state &&
+      (state.busy || state.awaitingResponse || state.needsInput || state.turnLive || stopAwaitsItsReceipt(state, runtimeId))
+  )
 }
 
 /** Backfill/retention may prepend or release a prefix without changing the tail. */
@@ -193,7 +227,10 @@ function tileRowFingerprintKey(storedSessionId: string): string {
 }
 
 /** The session row backing a tile, if it is listed in the sidebar slices.
- *  Hidden bot chats have no row — they keep fetching every tick. */
+ *  Hidden bot chats have no row — they keep fetching every tick. Listed
+ *  slices only, never ownerLookupSessionRows(): its owner-only stubs include
+ *  parked hidden rows no list page refreshes, so their fingerprint would
+ *  freeze the tile. */
 function tileListRow(storedSessionId: string) {
   return (
     $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
@@ -1038,6 +1075,7 @@ export function useBackgroundSync({
   requestGateway,
   updateSessionState
 }: BackgroundSyncParams): void {
+  useLiveWorkRoster()
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
@@ -1097,6 +1135,20 @@ export function useBackgroundSync({
       $activeSessionId.get() === activeSessionId && $selectedStoredSessionId.get() === activeStoredSessionId
 
     const isLive = () => $busy.get() || tileRuntimeOwnsLiveState(activeSessionId)
+    let stopHoldTimer: null | ReturnType<typeof setTimeout> = null
+
+    // A Stop hold whose receipt never comes ends on the clock, not on a store
+    // write, so wake the observer once the cooldown runs out.
+    const observeWhenStopHoldExpires = () => {
+      const state = $sessionStates.get()[activeSessionId]
+
+      if (stopHoldTimer === null && state && stopAwaitsItsReceipt(state, activeSessionId)) {
+        stopHoldTimer = setTimeout(() => {
+          stopHoldTimer = null
+          observe()
+        }, recentInterruptRemainingMs(activeSessionId) + 1)
+      }
+    }
 
     const observe = () => {
       if (!isCurrent()) {
@@ -1104,6 +1156,8 @@ export function useBackgroundSync({
       }
 
       if (isLive()) {
+        observeWhenStopHoldExpires()
+
         const read = activeTranscriptReadRef.current
 
         if (read?.sessionKey === sessionKey) {
@@ -1142,6 +1196,11 @@ export function useBackgroundSync({
       disposed = true
       unsubscribeState()
       unsubscribeBusy()
+
+      if (stopHoldTimer !== null) {
+        clearTimeout(stopHoldTimer)
+      }
+
       activeTranscriptReadRef.current = null
       activeTranscriptRefreshPendingRef.current = null
     }
@@ -1562,4 +1621,23 @@ export function useBackgroundSync({
       void refreshHermesConfig()
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])
+
+  // A refused mid-turn pick hands new chats back to the default (deferred-pick.ts) while a draft may already
+  // be open: repaint that draft's pill with the default it now launches with.
+  useEffect(() => {
+    if (gatewayState !== 'open' || activeSessionId) {
+      return
+    }
+
+    let last = $currentModelSource.get()
+
+    return $currentModelSource.listen(next => {
+      const released = last === 'manual' && next === 'default'
+      last = next
+
+      if (released) {
+        void refreshCurrentModel()
+      }
+    })
+  }, [activeSessionId, gatewayState, refreshCurrentModel])
 }

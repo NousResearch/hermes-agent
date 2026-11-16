@@ -318,6 +318,11 @@ Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.
 
+On macOS, native traffic lights use a 12-point left inset in every titled window.
+Keep the renderer's startup fallback insets aligned with that position so the
+adjacent toolbar and panel reservations do not jump when native state arrives.
+Windows/Linux retain their previous toolbar startup fallback until native state arrives.
+
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
 In Simple interface mode only sidebar, settings and the layout editor render,
@@ -329,6 +334,9 @@ binding and hovered/focused-zone resolver as the number shortcuts.
 
 Tab close buttons fade the label with a content mask, not a painted gradient.
 The tab reads its surface token directly so glass tint is painted only once.
+Close glyphs keep a 24px hit area, including session tabs wrapped in context menus.
+`PaneTab` owns its `data-slot` marker after forwarded props so composition cannot
+disable that width or the label mask.
 
 Sticky user messages clip covered scrolling content, including the gap above
 them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
@@ -519,6 +527,20 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Zone tabs have one keyboard entry point at the selected tab. Arrows follow
+  the strip's orientation; Home/End move focus, Enter/Space activate, and Tab
+  leaves the tabs. Delete invokes an available close action and retains focus
+  on a surviving sibling. Restoring a vertical rail retains its tab focus.
+  The collapsed rail keeps the zone context menu on its outer surface; its
+  inner tab list owns vertical keyboard navigation.
+- Tab-header focus belongs to navigation: session activation and queued composer
+  focus retries must not redirect it. Explicit composer focus still works.
+  Entering a split's tab strip selects its visible chat as the typing recipient
+  without moving focus into the editor; hidden tabs must not receive that input.
+- Sidebar keyboard stops are real controls: session title, reorder handle and
+  actions, not timestamps. Focus uses existing theme tokens, stays distinct from
+  selection, and reveals hover-only controls. Focused/open actions replace their
+  metadata tail; real metadata actions remain independently reachable.
 - Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
   Dimming still distinguishes session panes; sidebar navigation must not desaturate
   the chat or transfer its active highlight to a hidden primary tab.
@@ -566,7 +588,21 @@ The detailed state contract lives in the scoped
 
 - `cursor-pointer` at the primitive level (Button, dropdown/select) — don't
   hardcode it per call site.
-- Global focus-ring reset; titlebar actions have no active-background state.
+- Keep keyboard focus visible through existing control primitives and theme
+  tokens; never globally suppress outlines or focus rings. Preserve native
+  focus indicators on controls without a themed replacement. Titlebar actions
+  have no active-background state.
+- Each control has one focus treatment: its existing ring, outline, or field
+  border. Suppress the native outline only when that replacement is visible.
+  In forced-colors mode, use one system-color outline on the focused control
+  (or its field wrapper); don't outline unfocused menu rows or containers.
+  Keep command-picker input and selected-row fallback outlines inset so scroll
+  and group clipping cannot cut off their edges.
+  Inline message editors delegate focus chrome to their card border, just like
+  the main composer; their inner contenteditable must not add a second outline.
+- Keyboard users can activate image viewers and return to their available
+  opener when the viewer closes. Composer focus-follow must preserve focus
+  returning from a floating layer while updating the owning chat surface.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);
   close is an x-icon, not the word "Close".
 

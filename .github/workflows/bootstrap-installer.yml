@@ -124,7 +124,8 @@ jobs:
 
       - name: Prepare isolated acceptance-test dependencies
         shell: bash
-        run: python -m scripts.ci.python_packages pytest==9.1.1 pytest-asyncio==1.3.0 ruamel.yaml==0.18.17 packaging==26.0
+        # psutil: tests/conftest.py's session-end daemon reaper reads process environments with it.
+        run: python -m scripts.ci.python_packages pytest==9.1.1 pytest-asyncio==1.3.0 ruamel.yaml==0.18.17 packaging==26.0 psutil==7.2.2
 
       - name: Current installer to PM worker to published command
         shell: bash

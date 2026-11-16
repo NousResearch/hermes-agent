@@ -133,10 +133,6 @@ def _binary_supports_http_cache(binary: str) -> bool:
         return False
 
 
-def _record_path(session_name: str) -> Path:
-    return _state_dir() / f"{session_name}.json"
-
-
 def _browser_env() -> dict:
     from tools.browser_session import build_browser_env
     return build_browser_env()
@@ -219,6 +215,7 @@ def launch_lightpanda(session_name: str, *, block_private_networks: bool = False
     try:
         with open(log_path, "wb") as log_file:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    # detached-spawn: ok — a crashed owner's server is reaped from its state record by the next Hermes (reap_orphaned_lightpanda); owning it is a follow-up with the launcher's Chromium
                                     stderr=log_file, env=_browser_env(), start_new_session=True)
     except (OSError, subprocess.SubprocessError) as e:
         return None, f"Failed to launch lightpanda serve ({binary}): {e}"

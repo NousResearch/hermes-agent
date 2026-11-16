@@ -1,0 +1,37 @@
+name: airlock-sandbox
+title: Airlock Sandbox
+repo: https://github.com/justrunme/hermes-airlock-plugin
+sha: a35cf831045450e4f207a6843e2cbf912151236c
+subdir: ""
+description: >-
+  Terminal backend that routes Hermes command execution through an operator-chosen
+  Airlock HTTPS API and disposable sandbox, then surfaces receipts (RFC 8785 JCS,
+  SHA-256, Ed25519) as BLOCKED / ALLOWED / VERIFIED
+  (`hermes config set terminal.backend airlock_sandbox`). Requires an explicit
+  HTTPS origin `base_url` (no built-in default host). When `verify_receipts` is
+  true (default), requires a locally configured `public_key_hex` obtained
+  out-of-band — the verifying key is never fetched from the Airlock API at verify
+  time. VERIFIED binds signed decision + execution digests/exit_code only; it does
+  not prove command text and does not verify full receipt-chain linkage (`prev_hash`
+  is informational). Disclosure — HTTPS calls to the configured origin only
+  (`/healthz`, `/api/arena`, `/api/receipt/{id}`); optional secret
+  `AIRLOCK_API_TOKEN` via Hermes secret scope; no host shell of its own (commands
+  run only inside Airlock when policy allows). Hermes dangerous-command approvals
+  are not bypassed. File-tool stdin pipes and non-default cwd are refused (Airlock
+  arena has neither process-stdin nor cwd).
+maintainer: justrunme
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "0.1.2"
+image: https://raw.githubusercontent.com/justrunme/hermes-airlock-plugin/a35cf831045450e4f207a6843e2cbf912151236c/docs/img/banner.jpg
+docs_url: https://github.com/justrunme/hermes-airlock-plugin
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

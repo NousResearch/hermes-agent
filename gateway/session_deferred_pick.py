@@ -26,6 +26,11 @@ def defer_pick(authority, actor, ref, params):
     from hermes_state_runtime import _epoch, _json, mutation_receipt_key, replay_mutation_receipt
     operation = params.get('operation', 'model')
     validate_action(operation, params['payload'])
+    shown = None
+    if operation == 'model':
+        from gateway.session_mutation_model import configured_default, is_model_reset
+        if is_model_reset(params['payload']):  # a queued reset shows the default it adopts, not "reset"
+            shown = configured_default(authority)[0]
     key, digest = mutation_receipt_key(actor.subject, ref.session_id, params['request_id'], operation=operation,
                                        payload=params['payload'], expected_revision=params.get('expected_revision'),
                                        expected_generation=params.get('expected_generation'))
@@ -51,7 +56,7 @@ def defer_pick(authority, actor, ref, params):
             # slot never holds both, so committing the slot's level never strips the model's own.
             older = 'reasoning' in current and 'reasoning' not in params['payload']
             value = {**pick, **({'reasoning': current['reasoning']} if older else {})}
-            picked = {'model': params['payload']['model']}
+            picked = {'model': shown or params['payload']['model']}
         result = {'session_id': ref.session_id, 'operation': operation, 'status': 'deferred', **picked,
                   'revision': row[0], 'execution_generation': row[1]}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',

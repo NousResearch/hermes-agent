@@ -73,3 +73,56 @@ describe('overlapping served set reads', () => {
     expect(served.serves('solo')).toBe(false)
   })
 })
+
+// What the gateway's Webapp answers a caller it does not count as signed in, as a signed-in tab
+// whose access token expired since its last gated request reads it.
+const SIGNED_OUT_STATUS = {
+  auth_flows: ['cookie'],
+  auth_providers: ['password'],
+  auth_required: true,
+  components: {},
+  gateway_running: true,
+  gateway_state: 'running',
+  overall: 'ok',
+  release_date: '2026.10.28',
+  version: '0.0.0'
+}
+
+describe('a signed-out status read', () => {
+  it('keeps the last served set and asks again on the next inventory read', async () => {
+    const api = vi
+      .fn()
+      .mockResolvedValueOnce({ active_sessions: 0, gateway_shared_with: ['default'], install_id: 'i' })
+      .mockResolvedValueOnce(SIGNED_OUT_STATUS)
+      .mockResolvedValueOnce({ active_sessions: 0, gateway_shared_with: ['default', 'solo'], install_id: 'i' })
+
+    const served = createServedProfiles(api as unknown as <T>(request: HermesApiRequest) => Promise<T>)
+
+    await served.refresh(['default', 'solo'])
+    expect(served.serves('solo')).toBe(false)
+
+    // The list changed, so the set is re-read, and that read comes back signed out.
+    await served.refresh(['default', 'solo', 'fresh'])
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(served.serves('solo')).toBe(false)
+    expect(served.serves('fresh')).toBe(false)
+
+    // The signed-out read settled nothing, so the same list is read again inside the TTL.
+    await served.refresh(['default', 'solo', 'fresh'])
+    expect(api).toHaveBeenCalledTimes(3)
+    expect(served.serves('solo')).toBe(true)
+  })
+
+  it('still reads a full body without the set as an older backend', async () => {
+    const api = vi
+      .fn()
+      .mockResolvedValueOnce({ active_sessions: 0, gateway_shared_with: ['default'], install_id: 'i' })
+      .mockResolvedValueOnce({ active_sessions: 0, auth_required: true, install_id: 'i' })
+
+    const served = createServedProfiles(api as unknown as <T>(request: HermesApiRequest) => Promise<T>)
+
+    await served.refresh(['default', 'solo'])
+    await served.refresh(['default', 'solo', 'fresh'])
+    expect(served.serves('solo')).toBe(true)
+  })
+})

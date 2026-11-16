@@ -1,0 +1,17 @@
+name: agent-inception
+repo: https://github.com/ethanwiegert/agent-inception
+sha: 4143348e3b5180a95ec76d23fe6443c1a106ec1e
+subdir: hermes-plugin
+description: "Play the agent-inception voxel island game over MCP: join a world as a villager, read the Notice Board, farm, gather, craft, build, fish, and extend the Catalog. A portable Agent Plugins v1 package (plugin.json + mcp.json + skills/) exposing the game's MCP server (Streamable HTTP, no sign-in or key) with the agent-inception skill bundled, plus a desktop/plugin.js half that registers an Island viewer pane (a sandboxed frame of the world page) and a Settings → Viewer page. No Python, executables or runtime deps. Disclosure — the game's tools run on the MCP server the player points the entry at: a local world defaults to http://localhost:5173/mcp (served by the game's own dev process), and a hosted/public world is configured via a same-name mcp_servers override in config.yaml; the Desktop Viewers pane can embed a remote world's page. A world link is a bearer secret (anyone with it can play in that world): the plugin reads no credential store, the agent-side supplies it via config.yaml and the Desktop viewer URL via Settings, both plain-visible to the user and never committed. The server declares trust: full (Hermes' default), so write-capable tool calls do not prompt; a user can restore per-call approval with a config.yaml trust: untrusted override. No shell commands, no background processes; the game must be running separately (deno task dev, or a hosted world), the plugin never starts it."
+maintainer: Ethan
+tier: community
+category: desktop
+version: "0.2.1"
+screenshots:
+  - https://raw.githubusercontent.com/ethanwiegert/agent-inception/4143348e3b5180a95ec76d23fe6443c1a106ec1e/docs/media/screenshot-island.webp
+requires_hermes: ">=0.21.6"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

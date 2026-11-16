@@ -439,7 +439,10 @@ def _messages(home: _Root) -> bool:
         return False
     # Read-only URI, never the state registry: that opens a writer and migrates a schema we do not own.
     try:
-        with contextlib.closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=_DB_BUSY_SECONDS)) as conn:
+        from hermes_cli.sqlite_safe_read import connect_tracked  # a tracked raw reader, still not the state registry
+
+        with contextlib.closing(connect_tracked(f"{db.as_uri()}?mode=ro", uri=True, timeout=_DB_BUSY_SECONDS,
+                                                tracking_path=db)) as conn:
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone() is None:
                 return False
             return conn.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None

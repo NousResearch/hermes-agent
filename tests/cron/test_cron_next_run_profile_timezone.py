@@ -70,7 +70,11 @@ def test_foreign_process_tick_persists_owning_profile_offset(
         reset_hermes_home_override(token)
 
     next_run = datetime.fromisoformat(job["next_run_at"])
-    expected_offset = datetime.now(ZoneInfo("America/New_York")).utcoffset()
+    # The offset New York uses AT next_run, not today: across a DST change
+    # (e.g. run on Oct 31 for a Nov 1 job) the two differ by an hour.
+    expected_offset = next_run.replace(
+        tzinfo=ZoneInfo("America/New_York")
+    ).utcoffset()
     assert next_run.utcoffset() == expected_offset, (
         f"next_run_at {job['next_run_at']} persisted with foreign offset "
         f"{next_run.utcoffset()} instead of the owning profile's "

@@ -12,7 +12,7 @@ const fixture = (name) => {
   const dir = mkdtempSync(path.join(tmpdir(), name))
   mkdirSync(path.join(dir, 'web/src'), { recursive: true })
   writeFileSync(path.join(dir, 'package.json'), '{"private":true}')
-  writeFileSync(path.join(dir, 'package-lock.json'), '{}')
+  writeFileSync(path.join(dir, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n")
   writeFileSync(path.join(dir, 'web/src/main.ts'), 'export const answer: string = "prepared web";')
   return dir
 }

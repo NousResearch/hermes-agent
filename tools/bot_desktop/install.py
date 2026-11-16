@@ -58,20 +58,10 @@ def _try_flock(path: Path):
     return fh
 
 
-def assert_not_running() -> None:
-    with _install_lock:
-        if hermes_home_key() in _running:
-            raise InstallBusy("an install is already running for this profile")
-    fh = _try_flock(runtime.state_dir() / "install.lock")
-    if fh is None:
-        raise InstallBusy("an install is already running for this profile (another process)")
-    fh.close()
-
-
 def claim() -> str:
     """Atomically take this profile's install slot; raises :class:`InstallBusy` when taken. A caller that
     claims before handing off to a worker passes ``claimed=True`` to :func:`install_packages`, which then
-    owns releasing it — a check-then-spawn pair (``assert_not_running`` + later claim on the worker) lets
+    owns releasing it — a check-then-spawn pair (a read-only check + later claim on the worker) lets
     two Install clicks both pass the check."""
     key = hermes_home_key()
     with _install_lock:
@@ -141,9 +131,10 @@ def _run(cmd: str, *, ask_password: Callable[[], str], on_line: Callable[[str], 
             stdin_payload = password + "\n"
     on_line(f"$ {cmd}")
     env = {"DEBIAN_FRONTEND": "noninteractive", "LC_ALL": "C.UTF-8"}
+    # Short-lived and awaited: the group exists so _kill_group's timeout kill reaches apt/dnf under sudo.
     proc = subprocess.Popen(  # windows-footgun: ok — Linux-only (is_supported_host)
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        env={**os.environ, **env}, start_new_session=True)
+        env={**os.environ, **env}, start_new_session=True)  # detached-spawn: ok — awaited, group-killed on timeout
     try:
         if stdin_payload is not None:
             proc.stdin.write(stdin_payload.encode("utf-8"))  # type: ignore[union-attr]

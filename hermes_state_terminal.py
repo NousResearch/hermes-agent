@@ -7,7 +7,7 @@ Worker receipt reads additionally require the original private adoption proof.
 import hmac
 import json
 
-from hermes_state_runtime import RuntimeStoreError, _epoch, _json, _row, _secret_digest, _text, admission_fingerprint
+from hermes_state_runtime import ADMITTED_REQUEST_CONFLICT, RuntimeStoreError, _epoch, _json, _row, _secret_digest, _text, admission_fingerprint
 
 RESULT_PREFIX = 'gateway.admission.result.v1.'
 ADMISSION_PREFIX = 'gateway.terminal_admission.v1.'
@@ -142,7 +142,7 @@ def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id,
             raise RuntimeStoreError('not_found')
         row = terminal_admission(conn, json.loads(saved[0]))
         if row['payload_digest'] != digest:
-            raise RuntimeStoreError('admission_conflict')
+            raise RuntimeStoreError('admission_conflict', **ADMITTED_REQUEST_CONFLICT)
         return _row(row)
 
 

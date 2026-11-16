@@ -1,0 +1,17 @@
+name: munito-provider
+title: Munito AI
+repo: https://github.com/munitoai/hermes-provider
+sha: 81b6b6202771de1fa7ab30bf92b8dc3dd35cfdde
+description: "Munito AI model providers: open models (GLM-5.3-Flash, DeepSeek-V4-Flash, DeepSeek-V4.1-Flash, Qwen3.8-27B, Kolibri 1) on a global host and an EU-only host, with the context window, image input and price of each model bundled. Disclosure: registers two model providers at import and nothing else (no tools, hooks, commands or threads); requests go to https://api.munito.ai/inference/v1 or https://api.eu.munito.ai/inference/v1 through Hermes' own client with MUNITO_API_KEY, which Hermes reads; the plugin itself opens no connections, reads and writes no files, starts no processes and sends no telemetry."
+maintainer: munitoai
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+version: "0.1.0"
+docs_url: https://docs.munito.ai/agents/hermes
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MUNITO_API_KEY

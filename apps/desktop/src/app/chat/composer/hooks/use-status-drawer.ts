@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $collapsedStatusDrawers, setStatusDrawerCollapsed, statusDrawerKey } from '@/store/composer-status-drawer'
@@ -37,8 +37,14 @@ export function useStatusDrawer(sessionKey: string | null) {
 
   const collapsed = key ? saved : draft.key === draftKey && draft.collapsed
 
+  // Stable ids for the two drawer regions (status stack, coding row) their toggles control.
+  const statusDrawerId = useId()
+  const codingDrawerId = useId()
+
   return {
+    codingDrawerId,
     collapsed,
+    statusDrawerId,
     toggle: () => {
       if (key) {
         setStatusDrawerCollapsed(key, !collapsed)

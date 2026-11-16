@@ -55,3 +55,27 @@ test('the close timer does not fire after unmount', async () => {
   expect(onClose).not.toHaveBeenCalled()
   vi.useRealTimers()
 })
+
+// The confirm action itself can unmount the dialog's owner (disbanding a group
+// room closes the room view). The await in run() then resolves after cleanup
+// already ran, so a timer armed at that point had nobody left to clear it.
+test('a confirm that unmounts the dialog before it resolves never arms the close timer', async () => {
+  vi.useFakeTimers()
+  const onClose = vi.fn()
+
+  let finish: () => void = () => {}
+  const onConfirm = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+
+  render(<ConfirmDialog confirmLabel="Delete" onClose={onClose} onConfirm={onConfirm} open title="Delete session" />)
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+  expect(onConfirm).toHaveBeenCalled()
+
+  cleanup()
+  finish()
+  await Promise.resolve()
+  await Promise.resolve()
+  vi.advanceTimersByTime(1000)
+
+  expect(onClose).not.toHaveBeenCalled()
+  vi.useRealTimers()
+})

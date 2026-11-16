@@ -11,6 +11,7 @@ sequences (``⚠️``); those clamp to 0 — a 1-cell drift beats widening every
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import re
 from typing import List
 
@@ -28,9 +29,114 @@ def _disp_width(s: str) -> int:
     return max(wcswidth(s), 0)
 
 
+def _fills_cell(row: str, start: int, end: int) -> bool:
+    """The backtick run ``row[start:end]`` is a whole cell: whitespace, then a pipe or the row edge, on
+    both sides. A run touching a pipe (`` `| grep` ``, `` `cat |` ``) opens or closes code holding it."""
+    left = start
+    while left > 0 and row[left - 1].isspace():
+        left -= 1
+    right = end
+    while right < len(row) and row[right].isspace():
+        right += 1
+    return ((left == 0 or (row[left - 1] == "|" and left < start))
+            and (right == len(row) or (row[right] == "|" and right > end)))
+
+
+# The letters an English contraction leaves after its apostrophe (don`t, it`s, we`ll, you`re).
+_CONTRACTION_TAIL_RE = re.compile(r"(?:[stdm]|ll|re|ve)(?![A-Za-z])", re.IGNORECASE)
+
+
+def _is_apostrophe(row: str, start: int, end: int) -> bool:
+    """``row[start:end]`` is one backtick typed for an apostrophe inside an ASCII word (``don`t``)."""
+    return (end - start == 1 and start > 0 and row[start - 1].isascii() and row[start - 1].isalpha()
+            and _CONTRACTION_TAIL_RE.match(row, end) is not None)
+
+
+def _is_space(row: str, pos: int) -> bool:
+    return pos < 0 or pos >= len(row) or row[pos].isspace()
+
+
+def _not_a_code_span(row: str, opener: int, opener_end: int, closing_end: int) -> bool:
+    """A backtick pair that crosses a spaced pipe without being code: an opener typed as an
+    apostrophe (``don`t | it`s``: code never opens mid-contraction), an opener ending the word
+    before it (``foo` | ``), a closer starting the word after it (`` | `x``), or both runs alone in
+    their cells (`` `` | x | `` ``). Code glued to the text outside it (``运行`ls | grep`即可``,
+    ``run`ls | grep x`now``) is still code: only ASCII contraction tails count as apostrophes."""
+    closer = closing_end - (opener_end - opener)
+    return (_is_apostrophe(row, opener, opener_end)
+            or (_is_space(row, opener_end) and not _is_space(row, opener - 1) and row[opener - 1] != "|")
+            or (_is_space(row, closer - 1) and not _is_space(row, closing_end))
+            or (_fills_cell(row, opener, opener_end) and _fills_cell(row, closer, closing_end)))
+
+
 def split_table_row(row: str) -> list[str]:
-    """Split ``| a | b | c |`` into ``["a", "b", "c"]`` with trims."""
-    return [c.strip() for c in row.strip().removeprefix("|").removesuffix("|").split("|")]
+    """Split a GFM row on unescaped pipes outside matched inline-code spans."""
+    # Pre-index runs by delimiter width: unmatched backticks must not rescan
+    # the rest of a long, model-generated table row.
+    next_run: dict[int, int] = {}
+    matching_ends: dict[int, int] = {}
+    scan = len(row) - 1
+    while scan >= 0:
+        if row[scan] != "`":
+            scan -= 1
+            continue
+        end = scan + 1
+        while scan >= 0 and row[scan] == "`":
+            scan -= 1
+        start = scan + 1
+        width = end - start
+        if width > 1 and width - 1 in next_run:
+            matching_ends[start + 1] = next_run[width - 1]  # the opener left after an escaped first tick
+        if width in next_run:
+            matching_ends[start] = next_run[width]
+        next_run[width] = end
+
+    # A span may hold a spaced pipe (`` `ls | grep x` ``), but backticks used
+    # as apostrophes in two cells (``don`t | it`s``) never pair across one.
+    cell_edges = [m.start() + 1 for m in re.finditer(r" \| ", row)]
+    separators: list[int] = []
+    i = 0
+    while i < len(row):
+        if row[i] == "\\":
+            slash_start = i
+            while i < len(row) and row[i] == "\\":
+                i += 1
+            if (i - slash_start) % 2 and i < len(row):
+                i += 1  # the next character is escaped, including a pipe or backtick
+            continue
+        if row[i] == "`":
+            end = i + 1
+            while end < len(row) and row[end] == "`":
+                end += 1
+            closing_end = matching_ends.get(i)
+            if closing_end is not None:
+                edge = bisect_left(cell_edges, end)
+                within_cell = edge == len(cell_edges) or cell_edges[edge] >= closing_end - (end - i)
+                if within_cell or not _not_a_code_span(row, i, end, closing_end):
+                    i = closing_end
+                    continue
+            i = end  # unmatched or cross-cell backticks are literal
+            continue
+        if row[i] == "|":
+            separators.append(i)
+        i += 1
+
+    start, end = 0, len(row)
+    if separators and not row[: separators[0]].strip():
+        start = separators[0] + 1
+    if separators and not row[separators[-1] + 1 :].strip():
+        end = separators[-1]
+    if start > end:
+        return [""]
+
+    cells: list[str] = []
+    cell_start = start
+    for separator in separators:
+        if start <= separator < end:
+            cells.append(row[cell_start:separator].strip())
+            cell_start = separator + 1
+    cells.append(row[cell_start:end].strip())
+    return cells
 
 
 def is_table_divider(row: str) -> bool:

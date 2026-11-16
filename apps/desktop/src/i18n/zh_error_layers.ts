@@ -12,7 +12,7 @@ export const zhErrorLayers: {
     billing: '额度不足',
     disk: '磁盘已满',
     endpoint: '自定义端点错误',
-    gateway: '网关错误',
+    gateway: '无法发送你的消息',
     generic: '本轮失败',
     provider: '模型服务商错误',
     runtime: '本地运行时错误',

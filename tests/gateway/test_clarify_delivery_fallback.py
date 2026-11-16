@@ -84,7 +84,8 @@ def _runner(adapter, loop, monkeypatch, timeout=5):
 
 def _answer_once_text_prompt_is_seen(adapter, text):
     """Answer causally from the adapter's plain-text send, never from a timing poll."""
-    adapter.on_text_sent = lambda: cm.resolve_text_response_for_session("sk-fallback", text)
+    adapter.on_text_sent = lambda: cm.attempt_text_response(
+        cm.get_pending_for_session("sk-fallback", include_choice_prompts=True).clarify_id, text)
 
 
 # --- Atom: the platform rejects the native card -> plain-text question instead of a sentinel ---

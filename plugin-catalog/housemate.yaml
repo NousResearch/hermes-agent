@@ -1,0 +1,39 @@
+name: housemate
+repo: https://github.com/RaYYeR220/housemate
+sha: 09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5
+version: "0.1.0"
+title: Housemate
+description: "Hands-free Hermes in every room: old phones, tablets and laptops become room speakers through their browser. Say the wake word, ask, and hear the answer in the same room. One household conversation across rooms, the nearest device answers when several hear you, timers and alarms that ring where they were set, intercom, cards on room screens, spoken approvals, and a Rooms page in Hermes Desktop. Disclosure — the gateway runs an HTTPS + WebSocket hub on 0.0.0.0:8742 (self-signed certificate made on first start; its fingerprint is shown on the Rooms page and by hermes housemate cert) and a loopback control API on 127.0.0.1:8743 with a token that changes on every start; only devices paired with a six-digit code approved on the PC are heard. Each started satellite streams its microphone to the hub continuously; the hub keeps the stream in memory and hands only the question after the wake word (or a held talk button or an open answer window) to Hermes's audio cache and the STT provider configured in Hermes; replies use the configured TTS. On first start it downloads openWakeWord v0.5.1 models (CC BY-NC-SA 4.0, non-commercial) from the official openWakeWord GitHub release and Silero VAD v6.2.3 from the official silero-vad repository, each pinned by SHA-256, into plugin-data/housemate/models/. It registers an optional streamed Piper voice (tts.provider: housemate-piper); when chosen, a missing voice is fetched with Piper's own downloader into Hermes's cache/piper-voices. Runs ffmpeg from PATH to decode non-WAV speech. A start-up warm-up sends one quiet tone through Hermes's STT in a side chat that the plugin's pre_llm_call hook vetoes (prewarm: false turns it off); the same hook applies spoken approve, deny, clarify and stop answers to Hermes's own cards by request id through resolve_gateway_approval_card and resolve_gateway_clarify, never auto-approves, leaves an unanswered approval to Hermes's timeout (deny), and takes only a tap for commands flagged by smart approval. The agent can speak in other rooms with housemate_announce, and /announce does the same from any chat. Writes only under plugin-data/housemate/ (SQLite with rooms, devices and SHA-256 hashes of their keys, timers; the certificate and private key; the control token), except that the Rooms page's Household / Per room switch writes platforms.housemate.conversation to config.yaml; paired device ids are set as the platform's allow_from in memory. The gateway log records the first 80 characters of spoken answers to prompts. hermes housemate bench is opt-in: it downloads about 266 MB of public-domain LibriVox audio from archive.org (SHA-1 pinned), may generate test clips with Microsoft's Edge TTS service when edge-tts is installed, and pairs a device named Bench satellite. No telemetry."
+maintainer: RaYYeR220
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/RaYYeR220/housemate/blob/09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5/README.md
+image: https://raw.githubusercontent.com/RaYYeR220/housemate/09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5/docs/screens/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/RaYYeR220/housemate/09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5/docs/screens/rooms-arbitration-light.png
+  - https://raw.githubusercontent.com/RaYYeR220/housemate/09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5/docs/screens/satellite-speaking.png
+  - https://raw.githubusercontent.com/RaYYeR220/housemate/09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5/docs/screens/satellite-approval.png
+  - https://raw.githubusercontent.com/RaYYeR220/housemate/09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5/docs/screens/satellite-timer-ringing.png
+  - https://raw.githubusercontent.com/RaYYeR220/housemate/09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5/docs/screens/satellite-card.png
+  - https://raw.githubusercontent.com/RaYYeR220/housemate/09c1a1d0a88bfa8762cee6b3ccf94271b0f172c5/docs/screens/rooms-speaking-dark.png
+known_issues:
+  - The wake phrase is "Hey Jarvis" (openWakeWord's stock model). A custom "Hey Hermes" model missed our accuracy bar on non-US accents and is not shipped.
+  - openWakeWord's wake-word models are CC BY-NC-SA 4.0, so the wake pipeline is for non-commercial use.
+  - Needs speech-to-text turned on in Hermes (stt.enabled, any provider) and a text-to-speech voice.
+  - On Hermes 0.23.0 the Rooms page uses the plugin's REST routes; the plugin RPC path for newer builds is unit-tested only. Tested in the Webapp, not in the native Desktop app.
+  - The first answer after a gateway restart takes about 7 s.
+  - Tested on Windows 11 with Chrome; macOS and Safari are untested.
+capabilities:
+  provides_tools:
+    - housemate_rooms
+    - housemate_announce
+    - housemate_timer_set
+    - housemate_alarm_set
+    - housemate_timer_list
+    - housemate_timer_cancel
+    - housemate_show
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

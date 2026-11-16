@@ -41,8 +41,9 @@ def _file_signature(path: Path, digest: str) -> tuple | None:
 def whisper_cpp_command() -> str | None:
     import pm
 
-    # Passive: an engine the install does not carry is absent, never fetched here.
-    installed = pm.installed_package("whispercpp-cpu")
+    # Passive: an engine the install does not carry is absent, never fetched here. One staged
+    # from an earlier pin keeps working until a deliberate install re-stages it.
+    installed = pm.installed_package("whispercpp-cpu", allow_outdated=True)
     if installed is None:
         return None
     binary = installed.binary

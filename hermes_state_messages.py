@@ -720,29 +720,37 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
 
     def replace_messages(self, session_id: str, messages: list[dict[str, Any]], active_only: bool = False,
         archive_dropped: bool = False, reject_active_turn_lease: bool = False) -> None:
-        """Atomically replace a session's messages (/retry, /undo, /compress). DESTRUCTIVE by default (rows
-        DELETEd, leave FTS). ``active_only`` spares soft-archived rows (needed with in-place compaction).
-        ``archive_dropped`` SOFT-archives live rows rewind-style: what rewind/edit/regenerate must use, since
-        DELETE leaves nothing to recover. ``reject_active_turn_lease``: in-txn lease check for user rewrites.
-
-        Pass ``archive_dropped=True`` to SOFT-archive the live rows instead of DELETEing them: the replaced
-        turns stay on disk with ``active = 0``, ``compacted = 0`` — the same "the user took it back" marking
-        :meth:`rewind_to_message` applies — and stay readable via :meth:`get_messages` with
-        ``include_inactive=True``. This is the mode a rewind/edit/regenerate must use: those flows overwrite
-        a transcript the user may not have meant to drop, and a plain DELETE also evicts the rows from the
-        FTS index, leaving nothing to recover from (#82756). It implies active-only handling —
-        already-archived rows are never touched — so ``active_only`` is redundant with it. Live rows that
-        *messages* keeps in place (the common in-order prefix, matched on role/content/tool identity) are
-        left untouched with their ids; only the divergent live suffix is archived and only the new suffix
-        of *messages* is inserted (#82956: archiving and re-inserting the kept prefix grew the archive by
-        the whole transcript on every rewind). The live view is identical either way; only the durability
-        of the dropped turns differs.
-        """
+        """Atomically replace messages; DELETE by default. ``active_only`` spares archives.
+        ``archive_dropped`` implies active-only: preserve the matching prefix and its ids,
+        archive only the divergent suffix (active=0, compacted=0; readable via include_inactive,
+        searchable via FTS). ``reject_active_turn_lease`` checks ownership in-txn (#82756, #82956)."""
         def _do(conn):
             self.replace_messages_in_transaction(
                 conn, session_id, messages, active_only=active_only, archive_dropped=archive_dropped,
                 reject_active_turn_lease=reject_active_turn_lease)
         self._execute_transcript_write(_do, messages)
+
+    def replace_active_messages_if_unchanged(
+        self, session_id: str, expected_messages: list[dict[str, Any]], messages: list[dict[str, Any]], *,
+        archive_dropped: bool = False, reject_active_turn_lease: bool = False,
+    ) -> bool:
+        """Compare ``get_resume_conversations``'s model history and replace atomically;
+        return False without writing on mismatch. Shared replacement preserves ids and archives."""
+        def _do(conn):
+            rows = conn.execute(
+                f"SELECT {self._CONVERSATION_ROW_COLUMNS} FROM messages "
+                "WHERE session_id = ? AND active = 1 AND role != 'session_meta' ORDER BY id",
+                (session_id,)).fetchall()
+            current_messages = self._rows_to_conversation(
+                rows, session_id=session_id, include_ancestors=False, repair_alternation=True,
+                include_row_ids=True, include_summary_markers=True)
+            if current_messages != expected_messages:
+                return False
+            self.replace_messages_in_transaction(
+                conn, session_id, messages, active_only=True, archive_dropped=archive_dropped,
+                reject_active_turn_lease=reject_active_turn_lease)
+            return True
+        return self._execute_transcript_write(_do, messages)
 
     def replace_messages_in_transaction(self, conn, session_id: str, messages: list[dict[str, Any]], *,
                                         active_only: bool = False, archive_dropped: bool = False,

@@ -58,5 +58,15 @@ export const esPreviewWeb: TranslationOverride<Translations['preview']['web']> =
   commentPlaceholder: 'Añade un comentario...',
   commentTitle: (n: number) => `Comentario ${n}`,
   saveComment: 'Guardar',
-  cancelComment: 'Cancelar comentario'
+  cancelComment: 'Cancelar comentario',
+  vaultFill: 'Rellenar un inicio de sesión guardado',
+  vaultTitle: site => `Inicios de sesión guardados para ${site}`,
+  vaultLoading: 'Cargando inicios de sesión guardados…',
+  vaultEmpty: 'No hay ningún inicio de sesión guardado para este sitio',
+  vaultUnlock: name => `Desbloquear ${name}`,
+  vaultOpenSettings: 'Abrir los ajustes de la bóveda de credenciales',
+  vaultFilled: label => `Se rellenó ${label}. Revisa el formulario y luego inicia sesión.`,
+  vaultFillFailed: 'No se pudo rellenar el inicio de sesión',
+  vaultLoadFailed: 'No se pudieron cargar los inicios de sesión guardados',
+  vaultPageNotReady: 'La página aún se está cargando. Vuelve a intentarlo cuando termine.'
 }

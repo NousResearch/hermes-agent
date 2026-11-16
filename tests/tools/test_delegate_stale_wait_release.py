@@ -43,10 +43,10 @@ def test_stale_heartbeat_ends_the_wait_without_a_configured_timeout(monkeypatch)
         session_id="parent", _current_task_id=None, _active_children=[child],
         _active_children_lock=threading.Lock(), _touch_activity=lambda _d: None, _interrupt_requested=False,
     )
-    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_INTERVAL", 0.01)
-    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IDLE", 2)
-    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: None)
-    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._HEARTBEAT_INTERVAL", 0.01)
+    monkeypatch.setattr("tools.delegate_tool_child_run._HEARTBEAT_STALE_CYCLES_IDLE", 2)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: None)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: False)
     # Safety valve so an unfixed tree fails (status "completed") instead of hanging the suite.
     valve = threading.Timer(30.0, child.release.set)
     valve.daemon = True
@@ -70,10 +70,10 @@ def test_stale_verdict_under_a_configured_cap_reports_the_stale_threshold_not_th
         session_id="parent", _current_task_id=None, _active_children=[child],
         _active_children_lock=threading.Lock(), _touch_activity=lambda _d: None, _interrupt_requested=False,
     )
-    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_INTERVAL", 0.01)
-    monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IDLE", 2)
-    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 3600)
-    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._HEARTBEAT_INTERVAL", 0.01)
+    monkeypatch.setattr("tools.delegate_tool_child_run._HEARTBEAT_STALE_CYCLES_IDLE", 2)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 3600)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: False)
     valve = threading.Timer(30.0, child.release.set)
     valve.daemon = True
     valve.start()

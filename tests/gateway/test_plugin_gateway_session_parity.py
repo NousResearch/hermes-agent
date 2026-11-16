@@ -15,6 +15,8 @@ import pytest
 from tests.gateway.test_plugin_origin_injection_authority import _context, _plugin_rows, _publish
 from tests.waiting import async_wait_until
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 @pytest.mark.asyncio
 async def test_keyless_injection_from_a_cli_session_turn_lands_in_that_session(tmp_path, monkeypatch):

@@ -93,6 +93,10 @@ def _plugin_session_info(agent: Any) -> dict[str, str]:
     info = {k: str(getattr(agent, k, None) or "") for k in ("session_id", "model", "provider", "platform")}
     info.update(profile_name=_active_profile_name(agent, _ambient_plugin_profile_name), cwd=cwd,
                 conversation_id=conversation_id(agent))
+    # The creating client's self-declared label ("" when none): plugin data only, never prompt text.
+    from hermes_cli.plugin_session import session_client
+    client = session_client() or {}
+    info.update(client=client.get("name", ""), client_version=client.get("version", ""))
     return info
 
 
@@ -412,8 +416,9 @@ def _active_profile_line(agent: Any) -> str:
     )
 
 
-def _default_platform_hint(platform_key: str) -> str:
-    """Built-in hint, else the plugin adapter's ``platform_hint``, else ``""``."""
+def _default_platform_hint(platform_key: str, tool_names: Any = ()) -> str:
+    """Built-in hint, else the plugin adapter's ``platform_hint`` plus its ``platform_hint_tool_notes`` for
+    tools in *tool_names* (the session's toolset), else ``""``."""
     hint = PLATFORM_HINTS.get(platform_key, "")
     if not hint and platform_key:
         try:
@@ -426,6 +431,10 @@ def _default_platform_hint(platform_key: str) -> str:
                 discover_plugins()
                 _entry = platform_registry.get(platform_key)
             hint = (_entry and _entry.platform_hint) or ""
+            _notes = [note for tool, note in ((_entry and _entry.platform_hint_tool_notes) or {}).items()
+                      if tool in (tool_names or ())]
+            if hint and _notes:
+                hint = " ".join([hint.rstrip(), *_notes])
         except Exception:
             pass
     if platform_key == "telegram" and hint and _telegram_rich_messages_enabled():
@@ -446,7 +455,8 @@ def _cron_delivery_hint(agent: Any) -> str:
     deliver_key = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").lower().strip()
     if not deliver_key or deliver_key == "cron":
         return ""
-    hint = _resolve_platform_hint(agent, deliver_key, _default_platform_hint(deliver_key))
+    hint = _resolve_platform_hint(
+        agent, deliver_key, _default_platform_hint(deliver_key, getattr(agent, "valid_tool_names", ())))
     return f"Delivery destination ({deliver_key}): {hint}" if hint else ""
 
 
@@ -454,7 +464,8 @@ def platform_hint(agent: Any) -> str:
     """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
     override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
     platform_key = (agent.platform or "").lower().strip()
-    _effective_hint = _resolve_platform_hint(agent, platform_key, _default_platform_hint(platform_key))
+    _effective_hint = _resolve_platform_hint(
+        agent, platform_key, _default_platform_hint(platform_key, getattr(agent, "valid_tool_names", ())))
     if platform_key == "tui" and _effective_hint:
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
     if platform_key == "cron":

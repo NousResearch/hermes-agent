@@ -86,9 +86,13 @@ this.
 The pattern repeats across files:
 
 - **Pull requests:** one run per PR per workflow. A new push cancels the older
-  run (`cancel-in-progress: true` only for `pull_request`).
-- **Pushes to `main` and dispatches:** keyed on `github.ref`. They are never
-  cancelled by a newer commit in `ci.yaml`. Some children (`tests.yml`,
+  run (`cancel-in-progress: true` for `pull_request`).
+- **Dispatches on a side branch** (`refs/heads/*` other than `main`): keyed on
+  `github.ref`; in `ci.yaml` a newer dispatch on the same branch cancels the
+  older run, so a re-dispatch never queues behind a stale one.
+- **Pushes to `main`, dispatches on `main` or a tag:** keyed on `github.ref`.
+  `ci.yaml` does not set `cancel-in-progress` for them (GitHub may still
+  replace a *pending* run in the group). Some children (`tests.yml`,
   `lint.yml`, …) still use `cancel-in-progress` for non-tag refs.
 - **Release / `commit`-pinned calls:** keyed on `github.run_id`, never
   cancelled. A parent rerun cannot kill a child that is still running.
@@ -261,6 +265,21 @@ ones. OSV runs on a weekly schedule.
   the lane-bound consumers `tests`, `tests-os`, `e2e-desktop-update`,
   `remote-backends` and `catalog-tests`: when `detect` selected their lane,
   they must succeed.
+- **Cancelled duplicate (PR runs, `--allow-superseded`):** GitHub can deliver
+  one push as two `pull_request` runs (seen when the push also dismisses a
+  stale review). The per-PR concurrency group cancels the older copy, and
+  branch protection requires the gate of every check suite on the SHA. A gate
+  whose only non-successes are `cancelled` jobs passes when the Actions API
+  shows a later-started (`run_started_at`, then higher run id) live or
+  successful run of the same workflow, event, head SHA, head branch and head
+  repository; that run's gate is the real verdict. (Fork runs carry no
+  `pull_requests`, so the PR itself can't be matched; the same branch opened
+  against two bases is not told apart.) Delegation only points forward, so the
+  last run to start never passes by delegation, and a rerun never delegates
+  (attempt 2 of a fork run approved after `action_required` counts as its
+  first). A run cancelled while still waiting in the concurrency group never
+  runs its gate at all, so it leaves no gate behind. Otherwise it fails as
+  before.
 - **Release mode:** every required job must be `success`. Only the deferred
   `e2e-desktop` may skip. The PR-only checks are steps of `repo-guards`, which
   runs on every event, so they never reach the gate as a skip.
@@ -311,7 +330,7 @@ branch protection.
 | `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on darwin-arm64, win32-x64, win32-arm64. Linux targets are commented out; there is no Intel macOS leg. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
 | `termux-verify.yml`, **Termux verification** | `push: main` / `pull_request` on `scripts/termux/**`, `pm/**` (not `*.md`), `tests/scripts/test_termux*`, itself; `workflow_dispatch`; `workflow_call` (stable) | `contracts` and `tui` always run. `r2-provisioned` is skipped on PRs. `native-runtime` (arm64) runs only when R2 secrets exist or `release: true`. A release run fails loudly without R2. | `gh workflow run termux-verify.yml` |
 | `plugin-catalog-ci.yml`, **Plugin Catalog CI** | `pull_request` on `plugin-catalog/**` | `structural` (schema) and `pinned-source-validate` (the pinned SHA is reachable and the plugin passes `hermes plugins validate`; inner steps skip when no entry file changed). | none |
-| `sandbox-image.yml`, **Sandbox desktop image** | `pull_request` on its Dockerfile and smoke script; `release: published`; `workflow_dispatch` (`publish`) | `build`+smoke on the upstream repo only. `publish`/`merge` (push `nousresearch/hermes-sandbox:desktop`) only on `release` or a dispatch with `publish=true`. Never on `main` pushes. | `gh workflow run sandbox-image.yml -f publish=true` |
+| `sandbox-image.yml`, **Sandbox desktop image** | `pull_request` on its Dockerfile and smoke script; `workflow_run` of a successful Stable Release; weekly `schedule`; `workflow_dispatch` (`publish`) | `build`+smoke on the upstream repo only. `publish`/`merge` (push `nousresearch/hermes-sandbox:desktop`, plus `:v<version>-desktop` after a stable release) on those three, a dispatch only with `publish=true`; publishing builds skip the layer cache to pick up base and apt fixes. The weekly run rolls `:desktop` from main's Dockerfile, so a Dockerfile change reaches users within a week. Never on `main` pushes. | `gh workflow run sandbox-image.yml -f publish=true` |
 | `windows-bundle-sdk.yml`, **Windows bundle SDK** | `pull_request` on the Windows bundle and signing scripts plus their tests; `workflow_dispatch` | Runs the real Windows SDK downloader on cold Windows runners. | `gh workflow run windows-bundle-sdk.yml --ref <branch>` |
 
 ---
@@ -345,6 +364,7 @@ branch protection.
 | `skills-index-freshness.yml` | every 4 h | dispatch | Upstream only. Opens an issue if `/docs/api/skills-index.json` is more than 26 h stale, missing, or a source collapsed. Also checks CORS on `/docs/api/plugins.json`. |
 | `docs-search-monitor.yml` | every 6 h at :17 | `workflow_run` after every **Deploy Site**; dispatch | Upstream only. Live Algolia and headless-browser probe of docs search. A red run is the alert. |
 | `osv-scanner.yml` | Mondays 09:00 | dispatch | OSV scan of `uv.lock`, `pnpm-lock.yaml` and the nested `package-lock.json` files. Results go to the Security tab. Advisory (does not fail on vulnerabilities). Intentionally not per-PR. |
+| `sandbox-image.yml` | Mondays 04:23 | PR (paths), `workflow_run` after Stable Release, dispatch | Upstream only. Rebuilds `nousresearch/hermes-sandbox:desktop` without layer cache so base-image and apt security fixes land between releases. See [standalone](#standalone-pr--main-checks). |
 
 ---
 
@@ -502,7 +522,7 @@ gh workflow run install-e2e-red.yml -f run-id=<id> -f dry-run=false
 |---|---|---|
 | `bootstrap-installer-build.yml`, **Bootstrap installer build** | `workflow_dispatch` (`ref`, `pin_branch`, `pin_commit`) | Signed Hermes-Setup.exe (Azure Trusted Signing) and notarized Hermes-Setup.dmg. Uploaded as run artifacts only, never published. No caches. |
 | `live-providers.yml`, **Live provider canaries** | `push: tags v*`; `workflow_dispatch` (`filter`) | Live calls to real provider APIs, upstream only. Each case skips when its `LIVE_*_API_KEY` secret is missing. Tags pushed by `GITHUB_TOKEN` do not start it, and stable attempt refs (`rc.*`) do not match `v*`. In practice it runs on dispatch or on a `v*` tag a person pushes. `gh workflow run live-providers.yml -f filter='openrouter-anthropic'` |
-| `sandbox-image.yml` | see [standalone](#standalone-pr--main-checks) | Publishes `:desktop` on `release: published` or dispatch. |
+| `sandbox-image.yml` | see [standalone](#standalone-pr--main-checks) | Publishes `:v<version>-desktop` and `:desktop` when Stable Release succeeds (`workflow_run`), `:desktop` weekly or on dispatch. |
 | `deploy-site.yml` | see [post-merge](#post-merge-automation-on-main) | The Vercel deploy runs on `release: published` or dispatch. |
 
 ---
@@ -563,7 +583,7 @@ gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptan
 | `remote-backends.yml` | Remote terminal backends | R | ci |
 | `repo-guards.yml` | Repository guards | R | ci |
 | `rust-tests.yml` | Rust tests | R | ci |
-| `sandbox-image.yml` | Sandbox desktop image | PR (paths), release published, dispatch | none |
+| `sandbox-image.yml` | Sandbox desktop image | PR (paths), workflow_run(Stable Release completed), cron weekly, dispatch | none |
 | `skills-index-freshness.yml` | Skills Index Freshness Check | cron 4 h, dispatch | none |
 | `skills-index.yml` | Build Skills Index | cron 06:00/18:00, main (paths), dispatch | none |
 | `stable-release-publication.yml` | Stable Release Publication | workflow_run(Stable Release completed), dispatch | none |
@@ -599,5 +619,5 @@ coverage:
   on every push to `main`. The `detect` gate in `ci.yaml` is authoritative:
   the E2E lanes are off for every PR and every push.
 - The `push: tags` / `release: published` triggers (`live-providers`,
-  `deploy-site` Vercel job, `sandbox-image` publish) do not fire for tags and
+  `deploy-site` Vercel job) do not fire for tags and
   releases that automation creates with `GITHUB_TOKEN`.

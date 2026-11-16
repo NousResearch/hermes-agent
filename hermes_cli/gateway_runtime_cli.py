@@ -51,19 +51,26 @@ def cmd_gateway_ensure(args) -> None:
 def cmd_gateway_attach(args) -> None:
     """``ensure``'s verdict plus, once attachable, the owner's WebSocket ``url``, its ``protocol``,
     the dial ``protocols`` and one single-use ``ticket`` for this profile. A refusal adds the
-    ``message`` Ink's bootstrap shows (``gateway <state>: <reason>`` lines) and exits like ensure."""
+    ``message`` Ink's bootstrap shows (``gateway <state>: <reason>`` lines) and exits like ensure.
+    Every reply carries ``start_context.windows_service_session``."""
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, gateway_ws_target
     from hermes_cli.gateway_runtime import GatewayDiscovery
-    from hermes_cli.gateway_runtime_attach import (GatewayAttach, TicketUnavailable, attach_gateway,
-                                                   failure_message, scrub_client_launch_env)
+    from hermes_cli.gateway_runtime_attach import (SERVICE_SESSION_START_WARNING, GatewayAttach, TicketUnavailable,
+                                                   attach_gateway, failure_message, scrub_client_launch_env,
+                                                   windows_service_session)
 
+    # Where a gateway THIS call starts would run, so a remote client can decide not to ask for one.
+    service_session = windows_service_session()
+    start_context = {"start_context": {"windows_service_session": service_session}}
     try:
         timeout = float(args.timeout)
     except ValueError:
         timeout = math.nan
     if not math.isfinite(timeout) or timeout <= 0:
-        _emit(INVALID_INVOCATION, 2)
+        _emit({**INVALID_INVOCATION, **start_context}, 2)
+    if args.start and service_session:
+        print(SERVICE_SESSION_START_WARNING, file=sys.stderr)
     scrub_client_launch_env()
     with redirect_stdout(sys.stderr):
         try:
@@ -72,7 +79,7 @@ def cmd_gateway_attach(args) -> None:
             # Attachable at discovery, then no ticket (the owner went away or refused the grant).
             attached = GatewayAttach(GatewayDiscovery("inaccessible", reason_code="ticket_unavailable",
                                                       detail=exc.detail or exc.reason))
-        payload = _verdict_payload(attached.receipt)
+        payload = {**_verdict_payload(attached.receipt), **start_context}
     if attached.ticket is None:
         message = failure_message(attached.receipt)
         print(message, file=sys.stderr)

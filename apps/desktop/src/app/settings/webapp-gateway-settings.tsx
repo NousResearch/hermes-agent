@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { Check, Loader2 } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
+import { ConnectionsRegistrySection } from './connections-registry'
 import { ListRow, Pill, SettingsContent } from './primitives'
 
 interface ServingHost {
@@ -12,11 +13,13 @@ interface ServingHost {
   url: string
 }
 
+/** How often the open page re-reads the saved connections, which native Desktop may change too. */
+const SAVED_CONNECTIONS_POLL_MS = 5_000
+
 /**
- * Gateways in the Webapp. The page is served by one Hermes host and can only
- * talk to it, so the native connection controls (mode, Cloud, saved
- * connections, logs) have nothing to act on. What does apply is which host
- * this is and, behind the sign-in gate, signing out of it.
+ * Gateways in the Webapp: which host serves the page and, behind the sign-in gate, signing out of
+ * it, then native Desktop's own Saved connections page over the one list this machine keeps. The
+ * native connection-mode controls (local runtime, Cloud login, logs) stay with the native app.
  */
 export function WebappGatewaySettings({ embedded }: { embedded: boolean }) {
   const { t } = useI18n()
@@ -41,6 +44,20 @@ export function WebappGatewaySettings({ embedded }: { embedded: boolean }) {
 
     return () => void (cancelled = true)
   }, [g.failedLoad])
+
+  // An edit in native Desktop or another tab shows here while the page is open (the read publishes
+  // what changed, which the section and the gateway switcher follow).
+  useEffect(() => {
+    const list = window.hermesDesktop?.connections?.list
+
+    if (!list) {
+      return
+    }
+
+    const timer = window.setInterval(() => void list().catch(() => undefined), SAVED_CONNECTIONS_POLL_MS)
+
+    return () => window.clearInterval(timer)
+  }, [])
 
   // Success leaves the page for the login screen, so only a failure re-arms.
   const signOut = async (url: string) => {
@@ -79,6 +96,7 @@ export function WebappGatewaySettings({ embedded }: { embedded: boolean }) {
       <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {g.webappHostDesc}
       </p>
+      <ConnectionsRegistrySection />
     </SettingsContent>
   )
 }

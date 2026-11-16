@@ -63,7 +63,6 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
             clear_session_vars(vars_tokens)
             with A._lock:
                 A._gateway_queues.pop(live.route, None)
-                A._pending.pop(live.route, None)
 
     async def answer(event):
         gates[event.text] = await asyncio.to_thread(gate_in_turn_thread, authority.sessions[ref.session_id])

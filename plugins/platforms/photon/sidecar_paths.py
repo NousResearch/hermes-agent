@@ -22,9 +22,10 @@ logger = logging.getLogger(__name__)
 
 SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 
-# The files that define the sidecar. Mirrored into the writable runtime dir
-# when the install tree is read-only. node_modules is deliberately absent —
-# it is either baked (managed image) or installed by npm in the mirror.
+# Files that define the sidecar; node_modules is deliberately absent (baked on managed
+# images or installed by npm in the mirror). .npmrc rides along so a fresh resolve in
+# the mirror (the `npm install` fallback when `npm ci` refuses a drifted lockfile) keeps
+# the source tree's release-age gate (#134019); `npm ci` from the lockfile never reads it.
 _MIRROR_FILES = (
     "index.mjs",
     "package.json",
@@ -35,6 +36,7 @@ _MIRROR_FILES = (
     "spectrum-runtime.mjs",
     "startup-error.mjs",
     "stream-staleness.mjs",
+    ".npmrc",
 )
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None

@@ -6,7 +6,14 @@ export const enGatewayHost: GatewayHostTranslations = {
   unavailableDesc: 'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
   webappHostTitle: 'Hermes host',
   webappHostDesc:
-    'The Webapp always uses the Hermes host that serves it. To switch gateways, sign in to Hermes Cloud or manage saved connections, use the Hermes Desktop app.',
+    'The Webapp always runs on the Hermes host that serves it. The saved connections below are this machine\'s list, shared with the Hermes Desktop app; other gateways are reached through this host.',
+  webappOauthPaste: {
+    title: 'Finish signing in',
+    description: 'If the sign-in tab ended on an address that would not load (this browser is not on the gateway\'s machine), paste that address here.',
+    placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+    finish: 'Finish',
+    failed: 'Could not finish signing in'
+  },
   webAccess: {
     title: 'Web access',
     intro: 'Open Hermes on this computer from your phone or another computer, signed in with your Nous account. Whoever signs in can run commands on this computer.',

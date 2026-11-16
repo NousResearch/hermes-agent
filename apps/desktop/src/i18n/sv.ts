@@ -1,4 +1,5 @@
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { svDesktopCommands } from './sv_desktop_commands'
 import { svMemoryLayers } from './sv_memory_layers'
 import { svUpdateChannel } from './sv_update_channel'
 
@@ -6,6 +7,7 @@ import { svUpdateChannel } from './sv_update_channel'
 // between translation updates.
 export const svOverrides: TranslationOverrides = {
   promptNotices: {
+    desktopCommands: svDesktopCommands,
     sessionCommands: {
       undoUsage: 'användning: /undo [N]',
       undoNothing: 'inget att ångra',

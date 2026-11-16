@@ -42,6 +42,23 @@ def test_epochs_are_scope_local(backend, scope_a, scope_b):
     assert store_b.runtime.current_epoch() is None
 
 
+def test_ownership_conflict_is_the_documented_epoch_refusal():
+    # CONTRACT: a bump while another process holds the profile's gateway ownership is refused with this code and field.
+    from persistence.authority.runtime import SessionRuntimeRepository
+
+    assert "``ownership_conflict``" in (AuthorityRefusal.__doc__ or "")
+    doc = SessionRuntimeRepository.begin_epoch.__doc__ or ""
+    assert "AuthorityRefusal('ownership_conflict', field='runtime_epoch')" in doc
+    assert "documented, not enforced" not in doc
+
+
+def test_begin_epoch_on_a_store_without_a_profile_home_never_refuses(backend, scope_a):
+    # CONTRACT: the ownership check reads the profile home; a store without one has no owner to fence out, so every bump is granted.
+    first, second = backend.open(scope_a), backend.open(scope_a)
+    epochs = [first.runtime.begin_epoch(instance_id="instance-a"), second.runtime.begin_epoch(instance_id="instance-b"), first.runtime.begin_epoch(instance_id="instance-a")]
+    assert epochs == [1, 2, 3] and first.runtime.current_epoch() == second.runtime.current_epoch() == 3
+
+
 def test_sidebar_flags_cover_the_compression_lineage_and_bump_each_revision(backend, scope_a):
     store = backend.open(scope_a)
     epoch = store.runtime.begin_epoch(instance_id="instance-a")

@@ -531,7 +531,7 @@ class SessionRuntimeRepository(Protocol):
     # Writes
 
     def begin_epoch(self, *, instance_id: str) -> int:
-        """Advance the store's authority epoch (1 on first acquisition), record ``instance_id`` as holder, return it. The caller holds the profile ownership lock (documented, not enforced)."""
+        """Advance the store's authority epoch (1 on first acquisition), record ``instance_id`` as holder, return it. The bump is a takeover and an owner captures the epoch once at boot, so the caller must own the profile: while another process holds the profile's gateway ownership the bump raises ``AuthorityRefusal('ownership_conflict', field='runtime_epoch')`` and the epoch is unchanged; a reservation this process holds is granted. A store with no profile directory (the reference backend) has no owner to fence out and never refuses."""
         ...
 
     def prepare_mutation(self, epoch: int, *, principal_id: str, session_id: str, request_id: str, expected_revision: int, command: MutationCommand, expected_generation: int | None = None, live_guard: GateRefusal | None = None) -> LocalSnapshot | MutationOutcome:

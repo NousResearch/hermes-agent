@@ -314,7 +314,7 @@ class CapabilityUnsupported(PersistenceError):
 class AuthorityRefusal(PersistenceError, ValueError):
     """A refusal by the state authority. ``reason`` is the bounded wire code (callers compare it as a string); ``field`` and ``detail`` name the check that fired and why, so a client and the gateway log can tell the reasons' many checks apart instead of reporting the bare code.
 
-    The codes store code raises: ``admission_conflict``, ``admission_started``, ``invalid_params``, ``not_found``, ``permission_denied``, ``queue_full``, ``revision_conflict``, ``runtime_coordination_required``, ``session_busy``, ``session_idle``, ``stale_epoch``, ``stale_generation``, ``storage_unavailable``, ``unknown_execution``, and the worker codes ``producer_not_started``, ``worker_not_live``, ``unsupported_producer``. Application code raises its own codes with the same class, and veto callables refuse by raising it.
+    The codes store code raises: ``admission_conflict``, ``admission_started``, ``invalid_params``, ``not_found``, ``ownership_conflict``, ``permission_denied``, ``queue_full``, ``revision_conflict``, ``runtime_coordination_required``, ``session_busy``, ``session_idle``, ``stale_epoch``, ``stale_generation``, ``storage_unavailable``, ``unknown_execution``, and the worker codes ``producer_not_started``, ``worker_not_live``, ``unsupported_producer``. Application code raises its own codes with the same class, and veto callables refuse by raising it.
     """
 
     def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None) -> None:

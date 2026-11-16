@@ -439,7 +439,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
-    finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
+    finalize_final_obligation, idempotent_metadata, ledger_attempted, ledger_bracket, record_final_obligation, without_idempotency_key)
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
@@ -3597,8 +3597,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 # Not a diagnostic: the requested result itself was lost and this is its only signal.
                 notice = t("gateway.notify.delivery_failed_retry")
-                try:
-                    await _send(notice)
+                try:  # never the reply's idempotency key: a later redelivery would dedupe onto this notice
+                    await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=without_idempotency_key(metadata))
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
@@ -4163,8 +4163,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                         len(text_content), event.source.chat_id)
             if obligation_id is not None:
                 await self._release_turn_marker(event)  # the ledger now owns the crash recovery
-            result = await delivery_adapter._send_with_retry(
-                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+            result = await delivery_adapter._send_with_retry(chat_id=event.source.chat_id, content=text_content,
+                reply_to=reply_to, metadata=idempotent_metadata(metadata, obligation_id))
             stop_reply_clock(delivery_adapter, event.source.chat_id, result)
             return result
         return await ledger_bracket(self, event, session_key, text_content, _send,

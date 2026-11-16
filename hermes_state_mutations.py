@@ -111,8 +111,13 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
             # as the lineage-wide flags below do: a client holding any segment's older copy refuses.
             tip = db._compression_tip_on(conn, session_id)
             if db._set_session_title_in_transaction(conn, tip, value, source=db.TITLE_SOURCE_USER):
-                affected.update(row[0] for row in conn.execute(
-                    _LINEAGE_CTE_SQL + 'SELECT id FROM lineage', (session_id, session_id)))
+                lineage = [row[0] for row in conn.execute(
+                    _LINEAGE_CTE_SQL + 'SELECT id FROM lineage', (session_id, session_id))]
+                affected.update(lineage)
+                if not db.sanitize_title(value):
+                    # An untitled tip lists under an ancestor's title, so a clear clears the lineage.
+                    conn.executemany('UPDATE sessions SET title=NULL, title_source=NULL WHERE id=?',
+                                     [(sid,) for sid in lineage])
             result[key] = conn.execute('SELECT title FROM sessions WHERE id=?', (tip,)).fetchone()[0]
         else:
             column = 'last_read_at' if key == 'unread' else key

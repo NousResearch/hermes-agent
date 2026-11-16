@@ -59,3 +59,14 @@ def test_a_tip_rename_makes_an_older_copy_of_any_segment_stale(tmp_path):
             rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='chat', request_id='a1',
                                       expected_revision=stale, operation='sidebar', payload={'title': 'A name'})
         assert db.get_session('chat-2')['title'] == 'B name'
+
+
+def test_clearing_through_an_ended_segment_clears_the_listed_name(tmp_path):
+    """A rotation cut off before the title copy leaves the name on the root, and the untitled tip
+    lists under it: a clear must remove that fallback too, or the sidebar keeps the old name."""
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        epoch = _compressed(db, root_title='Old name')
+        db.set_session_title('chat-2', '')  # the copy never happened: the tip is untitled
+        assert _rename(db, epoch, 'chat', '', 'c1')['title'] is None
+        [row] = [s for s in db.list_sessions_rich() if 'chat' in s.get('_lineage_ids', [s['id']])]
+        assert row['title'] is None

@@ -459,6 +459,53 @@ def test_respawn_guards_compare_mixed_int_and_iso_times_by_value(conn) -> None:
     assert kbd.check_respawn_guard(conn, guarded) == "active_pr"
 
 
+def test_same_second_changes_requested_lifts_active_pr(conn) -> None:
+    """#156514: a reviewer's changes_requested call posts its review comment
+    (naming the PR it reviewed) and fires the changes_requested event in one
+    action, so both land at the same whole-second timestamp on every real
+    review round — not a rare race. Requiring the lifting event to be
+    strictly AFTER the PR comment made that routine tie fail closed forever:
+    respawn_guarded(active_pr) on every dispatch tick, with no way out short
+    of a human manually reassigning the card to a different profile. Live
+    incident: sojourn board, cards F2-1-FU and F2-3, 2026-11-20."""
+    card = kb.create_task(conn, title="same-second tie", assignee="dev")
+    now = int(time.time())
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'lead', ?, ?)",
+            (card, "Changes requested. Full review on PR #14: https://github.com/o/r/pull/14#", now),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'changes_requested', '{}', ?)",
+            (card, now),
+        )
+    # Before the fix this returned "active_pr" (same-second tie, strict `>` never
+    # satisfied) and stayed that way on every subsequent tick. It must lift now.
+    assert kbd.check_respawn_guard(conn, card) is None
+
+
+def test_same_second_same_profile_reassign_does_not_lift_active_pr(conn) -> None:
+    """Loosening the same-second tie to `>=` must not reopen the duplicate-PR
+    risk #111910 existed to prevent: a same-second 'assigned' event that is
+    NOT a real reassignment (same profile, or the dispatcher's own
+    `kanban.default_assignee` stamp) still must not lift the guard, regardless
+    of timing — `_is_handoff_event`'s own checks (not the timestamp compare)
+    are what police this."""
+    card = kb.create_task(conn, title="same-second no-op reassign", assignee="dev")
+    now = int(time.time())
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, 'dev', ?, ?)",
+            (card, "Opened https://github.com/o/r/pull/9", now),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES "
+            "(?, 'assigned', '{\"assignee\": \"dev\", \"from\": \"dev\"}', ?)",
+            (card, now),
+        )
+    assert kbd.check_respawn_guard(conn, card) == "active_pr"
+
+
 def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     task_id, _review = _claimed_review(conn, "Reviewer repeatedly fails")
     assert kbd._record_task_failure(

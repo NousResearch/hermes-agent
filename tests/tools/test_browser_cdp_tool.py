@@ -18,7 +18,7 @@ from websockets.asyncio.server import serve
 
 from tools import browser_cdp_tool
 import requests
-from tools import browser_session_cdp
+from browser import session_cdp as browser_session_cdp
 from tools import browser_url_policy
 from tools import browser_use_cli
 
@@ -218,7 +218,7 @@ class _FakeSupervisor:
 
 @pytest.fixture
 def fake_supervisor(monkeypatch):
-    from tools import browser_supervisor
+    from browser import supervisor as browser_supervisor
 
     loop = asyncio.new_event_loop()
     running = threading.Event()

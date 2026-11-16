@@ -126,7 +126,7 @@ def _run_async(coro):
 
 def _resolve_cdp_endpoint() -> str:
     """Normalized CDP WebSocket URL via ``browser_session_cdp.get_cdp_override``, or ""."""
-    from tools.browser_session_cdp import get_cdp_override
+    from browser.session_cdp import get_cdp_override
     return (get_cdp_override() or "").strip()
 
 
@@ -323,7 +323,7 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
                                 timeout: float) -> str:
     """Route a CDP call through the live supervisor session for an OOPIF frame."""
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from browser.supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover — defensive
         return tool_error(f"CDP supervisor is not available: {exc}. frame_id routing requires a running "
                           "supervisor attached via /browser connect or an active Browserbase session.")
@@ -495,7 +495,7 @@ def _browser_cdp_check() -> bool:
     ``cdp_url`` isn't surfaced) and the browser surface exists (browser-harness importable). Raw (no-I/O)
     gate: check_fns run at every startup, and resolving the endpoint over HTTP here would block launch on
     a stale endpoint."""
-    from tools.browser_session_cdp import get_cdp_override_raw
+    from browser.session_cdp import get_cdp_override_raw
     from tools.browser_use_cli import browser_exec_available
     return bool(browser_exec_available() and get_cdp_override_raw())
 

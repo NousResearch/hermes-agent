@@ -9,7 +9,8 @@ Cloud backends (Browserbase, Browser Use) enforce it by default. Users can opt o
 
 import pytest
 
-from tools import browser_session_cdp, browser_session_cloud, browser_url_policy, browser_use_cli
+from browser import session_cdp as browser_session_cdp, session_cloud as browser_session_cloud
+from tools import browser_url_policy, browser_use_cli
 from tools.browser_url_policy import evaluate_url_safety
 
 

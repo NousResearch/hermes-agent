@@ -19,7 +19,7 @@ from pathlib import Path
 from hermes_agent.compat.paths import current_path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PACKAGES = ("agent", "tools", "hermes_cli", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins", "providers")
+PACKAGES = ("agent", "tools", "browser", "hermes_cli", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins", "providers")
 
 
 def _root_py_modules() -> set[str]:

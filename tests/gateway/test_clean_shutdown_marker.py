@@ -66,7 +66,7 @@ class TestCleanShutdownMarker:
              patch("gateway.status.remove_pid_file"), \
              patch("tools.process_registry.process_registry") as mock_proc_reg, \
              patch("tools.terminal_tool.cleanup_all_environments"), \
-             patch("tools.browser_session_lifecycle.cleanup_all_browsers"):
+             patch("browser.session_lifecycle.cleanup_all_browsers"):
             mock_proc_reg.kill_all = MagicMock()
 
             import asyncio

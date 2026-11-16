@@ -408,7 +408,7 @@ _cleanup_all_terminals = _lazy_shim("tools.terminal_tool", "cleanup_all_environm
 set_sudo_password_callback = _lazy_shim("tools.terminal_tool", "set_sudo_password_callback")
 set_approval_callback = _lazy_shim("tools.terminal_tool", "set_approval_callback")
 set_secret_capture_callback = _lazy_shim("tools.skills_tool", "set_secret_capture_callback")
-_cleanup_all_browsers = _lazy_shim("tools.browser_session_lifecycle", "emergency_cleanup_all_sessions", "_cleanup_all_browsers")
+_cleanup_all_browsers = _lazy_shim("browser.session_lifecycle", "emergency_cleanup_all_sessions", "_cleanup_all_browsers")
 
 _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False

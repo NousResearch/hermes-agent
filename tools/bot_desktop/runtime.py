@@ -615,7 +615,7 @@ def geometry() -> str:
 
 
 def status(profile: Optional[str] = None) -> DesktopStatus:
-    from tools.bot_desktop import browser as _bd_browser
+    from browser import desktop_profile as _bd_browser
     from tools.bot_desktop import resources
     from tools.bot_desktop import sandbox_host
     where = placement.resolve()
@@ -809,7 +809,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             "HERMES_BD_HOME": str(get_hermes_home()),
             "HERMES_BD_IDLE_FIRST_DELAY": str(next_check_in(idle_stop_seconds(), 0.0)),
         })
-        from tools.bot_desktop.browser import dock_exec_line, dock_launch
+        from browser.desktop_profile import dock_exec_line, dock_launch
         if (browser := dock_launch()) is not None:
             # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
             child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
@@ -867,7 +867,7 @@ def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
     with _flocked(sd / "start.lock"):
         # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile the agent's browser
         # uses there: the human's browser is the bot's browser, as on the host.
-        from tools.bot_desktop.browser import dock_exec_line
+        from browser.desktop_profile import dock_exec_line
         exe = sandbox_host.chromium_executable(env)
         browser = (exe, dock_exec_line(exe, sandbox_host.browser_profile_dir(env), sandbox_bypass=True)) if exe else (None, None)
         published = sandbox_host.start(env, _profile_name(), geometry=geometry(), wait_seconds=max(wait_seconds, 20.0),

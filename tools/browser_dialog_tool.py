@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-from tools.browser_supervisor import SUPERVISOR_REGISTRY
+from browser.supervisor import SUPERVISOR_REGISTRY
 from tools.registry import registry
 
 BROWSER_DIALOG_SCHEMA: dict[str, Any] = {

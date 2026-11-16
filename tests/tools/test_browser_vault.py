@@ -263,14 +263,14 @@ class TestBrowserVaultTools:
 
         empty = VaultStore(base_dir=tmp_path / "empty-vault")
         with patch("agent.vault_store.get_vault_store", return_value=empty), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""):
+             patch("browser.session_cdp.get_cdp_override_raw", return_value=""):
             with patch("tools.browser_use_cli.browser_exec_available", return_value=True):
                 assert browser_vault_tool._check_vault_available() is True
             with patch("tools.browser_use_cli.browser_exec_available", return_value=False):
                 assert browser_vault_tool._check_vault_available() is False
         # A configured CDP endpoint is a browser too: the vault rides along even without browser-harness
         with patch("tools.browser_use_cli.browser_exec_available", return_value=False), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value="ws://127.0.0.1:9222/devtools/browser/x"):
+             patch("browser.session_cdp.get_cdp_override_raw", return_value="ws://127.0.0.1:9222/devtools/browser/x"):
             assert browser_vault_tool._check_vault_available() is True
 
     def test_list_returns_identifier_never_password(self, store):
@@ -490,8 +490,8 @@ class TestBrowserVaultTools:
         # and nothing evaluates the secret-bearing script.
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-             patch("tools.browser_session.session_for_task", return_value={}), \
-             patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg:
+             patch("browser.session.session_for_task", return_value={}), \
+             patch("browser.supervisor.SUPERVISOR_REGISTRY") as reg:
             reg.get.return_value = None
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)

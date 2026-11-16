@@ -47,10 +47,10 @@ def test_checkpoint_and_snapshot_paths_follow_active_profile(two_profiles):
 
 
 def test_config_caches_are_keyed_by_profile(two_profiles):
-    import tools.browser_session_cloud as bsc
+    import browser.session_cloud as bsc
     import tools.file_tools as ft
     import tools.tool_output_limits as tol
-    from tools.browser_session_lifecycle import cleanup_all_browsers
+    from browser.session_lifecycle import cleanup_all_browsers
 
     prof_a, prof_b = two_profiles
     tol._reset_tool_output_limits_cache()

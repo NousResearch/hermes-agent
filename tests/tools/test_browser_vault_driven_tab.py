@@ -20,7 +20,7 @@ import threading
 
 import pytest
 
-from tools.browser_supervisor import _SupervisorRegistry
+from browser.supervisor import _SupervisorRegistry
 
 _ORIGIN = "https://accounts.example"
 _TABS = [
@@ -139,8 +139,8 @@ def test_browser_exec_records_its_daemons_tab_on_the_vault_supervisor(tmp_path, 
     import stat
 
     import tools.browser_use_cli as bu_cli
-    from tools import browser_session as bs
-    from tools import browser_supervisor
+    from browser import session as bs
+    from browser import supervisor as browser_supervisor
 
     recorded: list = []
 
@@ -174,8 +174,8 @@ def test_a_call_the_bot_desktop_fence_refuses_leaves_the_driven_tab_alone(tmp_pa
     import stat
 
     import tools.browser_use_cli as bu_cli
-    from tools import browser_session as bs
-    from tools import browser_supervisor
+    from browser import session as bs
+    from browser import supervisor as browser_supervisor
 
     recorded: list = []
 

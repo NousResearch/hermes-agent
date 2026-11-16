@@ -16,10 +16,10 @@ from unittest.mock import Mock
 import pytest
 
 from tools.bot_desktop import placement
-from tools import browser_launcher
-from tools import browser_session as bs
-from tools import browser_session_cloud as bs_cloud
-from tools import browser_session_lifecycle as lifecycle
+from browser import launcher as browser_launcher
+from browser import session as bs
+from browser import session_cloud as bs_cloud
+from browser import session_lifecycle as lifecycle
 from tools import browser_use_cli as bu
 
 _LOCAL_CDP = "ws://127.0.0.1:9444/devtools/browser/sidecar"
@@ -29,12 +29,12 @@ _LOCAL_CDP = "ws://127.0.0.1:9444/devtools/browser/sidecar"
 def _reset_routing_state(monkeypatch):
     """Clear module-level caches so each test starts clean."""
     monkeypatch.setattr(bs, "_active_sessions", {})
-    monkeypatch.setattr("tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
-    monkeypatch.setattr("tools.browser_session_lifecycle.update_session_activity", lambda t: None)
+    monkeypatch.setattr("browser.session_lifecycle.start_cleanup_thread", lambda: None)
+    monkeypatch.setattr("browser.session_lifecycle.update_session_activity", lambda t: None)
     monkeypatch.setattr(bs_cloud, "auto_local_for_private_urls", lambda: True)
     # Default: no CDP override
-    monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: None)
-    monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr("browser.session_cdp.get_cdp_override", lambda: None)
+    monkeypatch.setattr("browser.session_cdp.get_cdp_override_raw", lambda: "")
     monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
     monkeypatch.setattr(browser_launcher, "launch_chromium",
                         lambda key, **kw: (SimpleNamespace(cdp_url=_LOCAL_CDP, pid=4242), None))
@@ -107,7 +107,7 @@ class TestHybridRoutingSessionCreation:
             "cdp_url": "wss://fake.browserbase.com/ws",
         }
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda t: None)
+        monkeypatch.setattr("browser.session_cdp.ensure_cdp_supervisor", lambda t: None)
 
         session = bs.get_session_info("default::local")
 
@@ -127,8 +127,8 @@ class TestHybridRoutingSessionCreation:
             "cdp_url": "wss://real.browserbase.com/ws",
         }
         monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
-        monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda t: None)
-        monkeypatch.setattr("tools.browser_session_cdp.resolve_cdp_override", lambda u: u)
+        monkeypatch.setattr("browser.session_cdp.ensure_cdp_supervisor", lambda t: None)
+        monkeypatch.setattr("browser.session_cdp.resolve_cdp_override", lambda u: u)
 
         session = bs.get_session_info("default")
 

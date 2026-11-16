@@ -57,7 +57,7 @@ _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str,
      "agent.browser_provider:BrowserProvider", "browser provider",
      "Register an :class:`agent.browser_provider.BrowserProvider`; "
      "``provider.name`` is matched by ``browser.cloud_provider`` (consulted by "
-     "``tools.browser_session_cloud.get_cloud_provider``).", {}),
+     "``browser.session_cloud.get_cloud_provider``).", {}),
     ("register_terminal_environment_provider", "terminal_environment_provider",
      "agent.terminal_env_registry", "agent.terminal_env_provider:TerminalEnvironmentProvider",
      "terminal environment provider",

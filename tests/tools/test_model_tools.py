@@ -547,7 +547,7 @@ def test_browser_exec_points_at_vision_analyze_only_when_the_session_has_it(monk
 
     monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: native)
     monkeypatch.setattr("tools.vision_tools.check_vision_requirements", lambda: True)
-    monkeypatch.setattr("tools.browser_lightpanda.lightpanda_engine_status", lambda: (False, ""))
+    monkeypatch.setattr("browser.lightpanda.lightpanda_engine_status", lambda: (False, ""))
     exec_def = {"type": "function", "function": {"name": "browser_exec", **bu_cli._dynamic_schema_overrides()}}
     for names in (("terminal",), ("terminal", "vision_analyze")):
         others = [{"type": "function", "function": {"name": n, "description": n}} for n in names]

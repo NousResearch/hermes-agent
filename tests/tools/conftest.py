@@ -39,7 +39,7 @@ def _no_chromium_download():
     """A test that reaches the launcher without a fake binary must never start PM's ~170 MB Chromium
     download; the one-shot auto-install is pinned to "declined"."""
     try:
-        import tools.browser_launcher as launcher
+        from browser import launcher
     except Exception:
         yield
         return

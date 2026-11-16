@@ -1481,9 +1481,9 @@ class TestStagedRuntimeVenv:
 def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
 
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: True, raising=False)
+    monkeypatch.setattr("browser.lightpanda.using_lightpanda_engine", lambda: True, raising=False)
     monkeypatch.setattr(
-        "tools.browser_lightpanda.lightpanda_engine_status",
+        "browser.lightpanda.lightpanda_engine_status",
         lambda: (False, "cloud provider Browserbase is selected"), raising=False,
     )
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
@@ -1496,10 +1496,10 @@ def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
 def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
 
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: True, raising=False)
-    monkeypatch.setattr("tools.browser_lightpanda.lightpanda_engine_status",
+    monkeypatch.setattr("browser.lightpanda.using_lightpanda_engine", lambda: True, raising=False)
+    monkeypatch.setattr("browser.lightpanda.lightpanda_engine_status",
                         lambda: (True, "Hermes spawns `lightpanda serve`"), raising=False)
-    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
+    monkeypatch.setattr("browser.lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
 

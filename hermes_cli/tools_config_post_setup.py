@@ -41,7 +41,7 @@ def _ensure_browser_use_cli() -> None:
 def _post_setup_lightpanda() -> None:
     # browser_exec spawns ``lightpanda serve`` and attaches over CDP. No Chromium needed.
     _ensure_browser_use_cli()
-    from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
+    from browser.lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
 
     lightpanda_bin = find_lightpanda_binary()
     if lightpanda_bin:
@@ -339,7 +339,7 @@ def _browser_harness_installed() -> bool:
 def _lightpanda_installed() -> bool:
     """True when a lightpanda binary is on PATH or in a known install dir."""
     try:
-        from tools.browser_lightpanda import find_lightpanda_binary
+        from browser.lightpanda import find_lightpanda_binary
         return find_lightpanda_binary() is not None
     except Exception:
         return False

@@ -20,7 +20,9 @@ their canaries. Kinds:
 Comments: the releases that reach the name, and one caller. Plain literals, importable on Python 3.11.
 
 Two names are here for people, not releases: the documentation tells users to run ``python cli.py``
-and to drop a provider file into ``providers/``.
+and to drop a provider file into ``providers/``. Moved modules on the published plugin API
+(``hermes_cli/data/plugin_api.json``) are here for plugins, which import them on every release, also in a
+gateway that started before the update.
 
 ``REQUIRED_TEXT``: text a release searches for in the file at the old path. The shim carries it in a
 comment. The text is fixed by the releases that read it.
@@ -128,6 +130,8 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_state_common": "module",  # v0.22.7..v0.23.1: the updater reads its text, see REQUIRED_TEXT
     "model_tools": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "run_agent": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
+    "tools.browser_supervisor": "module",  # plugins: hermes_cli/data/plugin_api.json:58
+    "tools.browser_supervisor_capture": "module",  # plugins: hermes_cli/data/plugin_api.json:59
     "tools.env_passthrough": "module",  # v0.22.7..v0.23.0: tools/environments/local.py:322@v0.23.0
     "tools.environments": "module",  # v0.22.7..v0.23.0: tools/environments/local_pythonpath.py:24@v0.23.0
     "tools.environments.local": "module",  # v0.21.6..v0.23.0: hermes_cli/update_cmd_posix_pause.py:527@v0.23.0

@@ -76,7 +76,7 @@ function runningInDocker() {
   }
 }
 
-// Same host policy as Hermes' own browser (tools/browser_launcher.py needs_chromium_sandbox_bypass):
+// Same host policy as Hermes' own browser (browser/launcher.py needs_chromium_sandbox_bypass):
 // Chrome's sandbox stays on unless the host cannot run it.
 function sandboxBypassReason(facts = {}) {
   const isRoot = facts.isRoot ?? (typeof process.getuid === 'function' && process.geteuid() === 0);

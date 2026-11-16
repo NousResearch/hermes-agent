@@ -59,7 +59,7 @@ def main() -> int:
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{srv.server_address[1]}"
 
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from browser.supervisor import SUPERVISOR_REGISTRY
     try:
         # browser_exec opens its own tabs; the login page is deliberately NOT the first one.
         _exec("new_tab('about:blank')")
@@ -132,7 +132,7 @@ def main() -> int:
         return 0
     finally:
         SUPERVISOR_REGISTRY.stop_all()
-        from tools.browser_session_lifecycle import cleanup_all_browsers
+        from browser.session_lifecycle import cleanup_all_browsers
         cleanup_all_browsers()
         srv.shutdown()
 

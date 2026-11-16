@@ -1,5 +1,5 @@
 """The sandbox port forward (tools/environments/streams.py) reports connections that never reached their
-target: the sandbox browser's liveness is re-checked only after one (tools/browser_session_sandbox.py)."""
+target: the sandbox browser's liveness is re-checked only after one (browser/session_sandbox.py)."""
 
 import socket
 import subprocess

@@ -64,7 +64,7 @@ def _runner(monkeypatch, *, due):
     runner.session_authority = None
     runner._running = True
     runner._gateway_loop = asyncio.get_running_loop()
-    agent = SimpleNamespace(_prompt_cache_warmer=_Warmer(), _last_activity_ts=0.0)
+    agent = SimpleNamespace(session_id="s1", _prompt_cache_warmer=_Warmer(), _last_activity_ts=0.0)
     runner._agent_cache = {"k1": (agent, "sig")}
     runner._agent_cache_lock = threading.Lock()
     runner._agent_cache_bounds_cache = SimpleNamespace(idle_ttl_secs=60.0, max_size=None)

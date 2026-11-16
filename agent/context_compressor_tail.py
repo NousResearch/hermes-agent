@@ -41,7 +41,7 @@ def lean_tail_budget(context_length: int, threshold_tokens: int) -> int:
 def is_demoted_stub(content: str) -> bool:
     """True for a tail tool result already replaced by ``_lean_recovery_stub`` (plus an optional reload marker),
     or for a prune stub naming its archived original (re-summarizing it would drop the only pointer back)."""
-    from agent.context_compressor_prune_archive import has_archive_pointer
+    from tools.tool_result_storage import has_archive_pointer
     return len(content) < 1_000 and _DEMOTED_STUB_RE.match(content) is not None or has_archive_pointer(content)
 
 
@@ -108,7 +108,7 @@ def demote_stale_tail_tools(
         result[i] = _rewritten(msg, stub)
         demoted += 1
     if demoted:  # the demoted originals are saved and named like the window's prune stubs
-        from agent.context_compressor_prune_archive import archive_compaction_drops
+        from tools.tool_result_storage import archive_compaction_drops
 
         result, _, kept = archive_compaction_drops(messages, result, session_id)
         demoted -= kept

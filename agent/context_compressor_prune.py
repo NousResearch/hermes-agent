@@ -143,7 +143,7 @@ class ProactivePruneMixin:
             return messages, 0
         # No information loss: every shortened result's original goes to disk first and its stub names the
         # file; a result whose write fails stays whole, so the gate is re-checked on what is left.
-        from agent.context_compressor_prune_archive import archive_pruned_originals, discard_archives
+        from tools.tool_result_storage import archive_pruned_originals, discard_archives
         from agent.context_compressor_tail import with_pruned_row_skill_safety_rule
         pruned_msgs, archives, unarchived = archive_pruned_originals(messages, pruned_msgs, session_id)
         pruned_msgs = with_pruned_row_skill_safety_rule(messages, pruned_msgs)

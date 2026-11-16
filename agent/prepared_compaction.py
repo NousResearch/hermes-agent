@@ -206,7 +206,7 @@ def _archived_window(
     write-free) and the ``cache/pruned`` refs its rows now name. Only ``[start, end)`` is written: the rows
     after it stay live and the splicing compaction archives whatever of them it shortens. The boundaries
     are the window's identity, so they are kept even when a failed write leaves an original whole."""
-    from agent.context_compressor_prune_archive import pruned_archive_refs
+    from tools.tool_result_storage import pruned_archive_refs
 
     outside = set(range(len(working))) - set(range(start, end))
     archived = compressor._archive_compaction_window(

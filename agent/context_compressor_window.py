@@ -98,7 +98,7 @@ class CompactionWindowMixin:
         unpruned transcript without blank echoes (index-aligned with *plan*). Rows at *skip* are left alone (a
         prepared pass already archived the window its summary replaces, or lies outside the pass's window);
         ``fixed`` keeps the boundaries even when a failed write leaves a larger original in place."""
-        from agent.context_compressor_prune_archive import archive_compaction_drops
+        from tools.tool_result_storage import archive_compaction_drops
 
         session_id = getattr(self, "_session_id", "") or ""
         written: list[str] = []
@@ -133,7 +133,7 @@ class CompactionWindowMixin:
         """``_assemble_compressed`` with every archive a replaced row named, that neither the kept head and tail
         nor the generated summary still name, listed in the summary row: the summarizer may drop a pointer, and
         the list keeps the model's path back and the reference the retention sweep keeps the file for."""
-        from agent.context_compressor_prune_archive import archive_list_for_summary, pruned_archive_refs
+        from tools.tool_result_storage import archive_list_for_summary, pruned_archive_refs
 
         named = pruned_archive_refs(messages) | (prepared.archives if prepared is not None else frozenset())
         kept = [*messages[:start], *messages[max(end, scan.tail_start):], {"content": summary}]
@@ -147,8 +147,7 @@ class CompactionWindowMixin:
         reads the pointer and the model can still open the exact output. Local backend only (elsewhere the
         summarizer reads the bodies as before); a result whose write fails stays whole."""
         from agent.context_compressor import _PRUNE_MIN_CHARS, _rewritten, _tool_calls_by_id
-        from agent.context_compressor_prune_archive import archive_pruned_originals
-        from tools.tool_result_storage import _backend_reads_host_files
+        from tools.tool_result_storage import _backend_reads_host_files, archive_pruned_originals
 
         if not _backend_reads_host_files():
             return plan, 0, []

@@ -1,12 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { $backgroundStatusBySession } from '@/store/composer-status'
-
-import { seedAgentTerminalCommand, syncAgentTerminalSnapshot } from './agent-terminal-stream'
 import { setActiveTerminalId } from './buffer'
 import { AgentTerminalInstance, TerminalInstance } from './instance'
-import { $activeTerminalId, $terminals, ensureAgentTerminal } from './terminals'
+import { $activeTerminalId, $terminals } from './terminals'
 
 interface TerminalWorkspaceProps {
   onAddSelectionToChat: (text: string, label?: string) => void
@@ -19,7 +16,6 @@ interface TerminalWorkspaceProps {
 export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspaceProps) {
   const terminals = useStore($terminals)
   const activeId = useStore($activeTerminalId)
-  const background = useStore($backgroundStatusBySession)
 
   // Mirror the tab selection into the agent reader (read_terminal reads it).
   useEffect(() => {
@@ -30,19 +26,6 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
       setActiveTerminalId(null)
     }
   }, [])
-
-  // Surface the agent's background processes as read-only tabs (once each).
-  // Live chunks stream via agent.terminal.output; the process-list snapshot also
-  // seeds/falls back so the tab never stays blank if the stream races startup.
-  useEffect(() => {
-    for (const list of Object.values(background)) {
-      for (const item of list) {
-        ensureAgentTerminal(item.id, item.title)
-        seedAgentTerminalCommand(item.id, item.title)
-        syncAgentTerminalSnapshot(item.id, item.output ?? '')
-      }
-    }
-  }, [background])
 
   return (
     <>

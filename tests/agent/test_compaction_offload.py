@@ -1,11 +1,12 @@
-"""Every compaction archives the tool results it drops, and the summarizer reads the pointers.
+"""Every compaction summarizes the ORIGINAL tool results first, then archives what it dropped.
 
 Threshold ``compress()``, the prepared pass (``compression.prepare_ahead``) and manual ``/compress``
-(``compress_now``, also the cache-expiry and gateway-hygiene owners) all plan through
-``_plan_compaction_window``: each tool result that plan shortens is first written byte-exact to
-``$HERMES_HOME/cache/pruned/`` and its stub names the file, so the summary input carries the pointer.
-A failed write keeps that result whole and the compaction still commits; a sandboxed backend (which
-cannot ``read_file`` host paths) keeps today's plain stubs and writes nothing.
+(``compress_now``, also the cache-expiry and gateway-hygiene owners) all plan through the write-free
+``_plan_compaction_window``; the summarizer reads the window's original results (``summary_view``), and only
+once a summary exists is each tool result the compaction removed or shortened written byte-exact to
+``$HERMES_HOME/cache/pruned/`` with its stub naming the file (and the summary row listing it). A failed or
+aborted summary writes nothing; a failed write keeps that result whole and the compaction still commits; a
+sandboxed backend (which cannot ``read_file`` host paths) keeps plain stubs and writes nothing.
 """
 
 import json
@@ -34,14 +35,21 @@ def home(tmp_path, monkeypatch):
 @pytest.fixture
 def summarizer():
     """The summary LLM boundary; records every prompt it is sent."""
-    prompts: list[str] = []
+    class _Prompts(list):
+        archived_at_call: list
+
+    prompts = _Prompts()
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = _SUMMARY
 
     def _call(**kw):
         prompts.append("\n".join(str(m.get("content")) for m in kw["messages"]))
+        _call.archived_at_call.append(len(_archived_dir()))
         return response
+
+    _call.archived_at_call = []
+    prompts.archived_at_call = _call.archived_at_call
 
     with patch("agent.context_compressor.call_llm", side_effect=_call):
         yield prompts
@@ -83,6 +91,10 @@ def _archived(home) -> list[Path]:
     return sorted(d.iterdir()) if d.exists() else []
 
 
+def _archived_dir() -> list[Path]:
+    return _archived(Path(os.environ["HERMES_HOME"]))
+
+
 def _assert_pointers_name_byte_exact_originals(home, originals, rows):
     archived = 0
     for row in rows:
@@ -95,28 +107,42 @@ def _assert_pointers_name_byte_exact_originals(home, originals, rows):
     return archived
 
 
-def test_threshold_compaction_archives_dropped_results_and_the_summarizer_reads_the_pointers(home, summarizer):
+def test_the_summarizer_reads_original_results_and_archives_land_only_after_the_summary(home, summarizer):
+    """Summarize first, archive after: a distinctive in-window body reaches the summary prompt verbatim, no
+    archive exists while the summarizer runs, and every dropped result is on disk byte-exact once it commits."""
     msgs = _transcript()
+    msgs[5]["content"] = "DISTINCTIVE-ORIGINAL-7731 " + msgs[5]["content"]
     originals = _originals(msgs)
     c = _compressor()
     _working, pruned, start, end = c._plan_compaction_window(msgs)
-    assert pruned and start < end
+    assert pruned and start < end <= len(msgs) and start <= 5 < end
+    assert not _archived(home)  # planning is write-free
 
     compressed = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
 
     assert any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in compressed)
-    files = _archived(home)
-    assert files
     (prompt,) = summarizer
-    named = set(_pointer_paths(prompt))
-    assert named and named <= set(files)
-    for path in named:
-        assert path.read_bytes() in {body.encode("utf-8") for body in originals.values()}
-    # Stubs kept in the tail name their originals too.
+    assert "DISTINCTIVE-ORIGINAL-7731" in prompt
+    assert ARCHIVE_POINTER_SEP not in prompt  # the summarizer never reads pointers
+    assert summarizer.archived_at_call == [0]  # nothing was written before the summary existed
+    files = _archived(home)
+    assert files and {f.read_bytes() for f in files} <= {b.encode("utf-8") for b in originals.values()}
+    committed = "\n".join(str(m.get("content")) for m in compressed)
+    assert all(f"cache/pruned/{f.name}" in committed for f in files)  # every archive stays reachable
     _assert_pointers_name_byte_exact_originals(home, originals, compressed)
 
 
-def test_prepared_pass_summarizes_the_archived_stubs(home):
+def test_an_aborted_summary_writes_no_archive(home):
+    msgs = _transcript()
+    c = _compressor()
+    c.abort_on_summary_failure = True
+    with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("summary model down")):
+        out = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
+    assert not any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in out)
+    assert not _archived(home)
+
+
+def test_prepared_pass_summarizes_the_original_results_and_writes_nothing(home):
     msgs = _transcript()
     originals = _originals(msgs)
     c = _compressor()
@@ -135,11 +161,13 @@ def test_prepared_pass_summarizes_the_archived_stubs(home):
     thread.join(5.0)
 
     assert c.prepared_compaction._entry is not None
-    assert _assert_pointers_name_byte_exact_originals(home, originals, seen)
+    tool_rows = [m for m in seen if m.get("role") == "tool"]
+    assert tool_rows and all(m["content"] == originals[m["tool_call_id"]] for m in tool_rows)
+    assert not _archived(home)  # the splicing compaction archives, after its summary is adopted
     assert msgs == _transcript()  # the live transcript is untouched
 
 
-def test_manual_compress_now_archives_what_it_drops(home, summarizer):
+def test_manual_compress_now_summarizes_originals_then_archives_what_it_drops(home, summarizer):
     from agent.conversation_compression_manual import compress_now, parse_compress_args
     from hermes_state import SessionDB
 
@@ -159,9 +187,10 @@ def test_manual_compress_now_archives_what_it_drops(home, summarizer):
         result = compress_now(agent, history, parse_compress_args(""), system_message="")
 
         assert result.status == "compressed"
-        assert summarizer and _pointer_paths(summarizer[-1])
-        for path in _pointer_paths(summarizer[-1]):
-            assert path.read_bytes() in {body.encode("utf-8") for body in originals.values()}
+        assert summarizer and ARCHIVE_POINTER_SEP not in summarizer[-1]
+        assert summarizer.archived_at_call[-1] == 0
+        files = _archived(home)
+        assert files and {f.read_bytes() for f in files} <= {b.encode("utf-8") for b in originals.values()}
     finally:
         db.close()
 
@@ -180,25 +209,16 @@ def test_a_failed_archive_write_keeps_that_result_whole_and_compaction_still_com
 
     c = _compressor()
     with patch("tools.tool_result_storage._write_to_spillover", side_effect=flaky):
-        plan, pruned, start, end = c._plan_compaction_window(msgs)
-        assert not _archived(home)  # planning is write-free; the admitted compaction archives
-        working = c._archive_compaction_window(c._drop_blank_echoes(msgs), plan, pruned, start, end)[0]
-        kept_id = next(cid for cid, body in originals.items() if body == failed[0])
-        assert next(m for m in working if m.get("tool_call_id") == kept_id)["content"] == failed[0]
-        assert _assert_pointers_name_byte_exact_originals(home, originals, working)
-        failed.clear()
         compressed = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
 
     assert any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in compressed)
-    (prompt,) = summarizer
-    assert _pointer_paths(prompt)
-    for path in _pointer_paths(prompt):
-        assert path.read_bytes() != failed[0].encode("utf-8")
+    assert failed and all(f.read_bytes() != failed[0].encode("utf-8") for f in _archived(home))
+    assert _assert_pointers_name_byte_exact_originals(home, originals, compressed) or _archived(home)
 
 
-def test_a_large_result_the_prune_left_whole_is_archived_before_the_summary_replaces_it(home, summarizer):
-    """Live on Nous: a 44 KB read sat inside the summary window, the prune (tail-budget pass) left it
-    whole, and the summary replaced it with no copy on disk. The window's own results are saved first."""
+def test_a_large_result_the_prune_left_whole_is_archived_after_the_summary_replaces_it(home, summarizer):
+    """Live on Nous: a 44 KB read sat inside the summary window, the prune (tail-budget pass) left it whole,
+    and the summary replaced it with no copy on disk. The summarizer reads it; the archive follows."""
     big = json.dumps({"content": "1|" + "Q" * 44_000})
     msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "read it"}, *_round(0, big),
             {"role": "assistant", "content": "read"}, {"role": "user", "content": "ok"},
@@ -212,9 +232,9 @@ def test_a_large_result_the_prune_left_whole_is_archived_before_the_summary_repl
 
     assert any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in compressed)
     (prompt,) = summarizer
-    (path,) = _pointer_paths(prompt)
+    assert "Q" * 1_000 in prompt and ARCHIVE_POINTER_SEP not in prompt
+    (path,) = _archived(home)
     assert path.read_bytes() == big.encode("utf-8")
-    assert "Q" * 5_000 not in prompt
 
 
 def test_lean_tail_demotion_archives_the_demoted_originals(home):
@@ -233,7 +253,7 @@ def test_lean_tail_demotion_archives_the_demoted_originals(home):
 @pytest.mark.parametrize("backend, archives", [("local", True), ("docker", False), ("ssh", False)])
 def test_only_a_backend_that_reads_host_files_gets_archive_pointers(home, monkeypatch, summarizer, backend, archives):
     """The same compaction archives on the local backend and keeps plain stubs where the model cannot
-    ``read_file`` a host path; either way the summary input is demoted."""
+    ``read_file`` a host path; either way the summarizer reads the original results."""
     monkeypatch.setenv("TERMINAL_ENV", backend)
     msgs = _transcript()
     c = _compressor()
@@ -243,8 +263,7 @@ def test_only_a_backend_that_reads_host_files_gets_archive_pointers(home, monkey
     assert any(m.get(COMPRESSED_SUMMARY_METADATA_KEY) for m in compressed)
     (prompt,) = summarizer
     assert bool(_archived(home)) is archives
-    assert (ARCHIVE_POINTER_SEP in prompt) is archives
-    assert "x" * 5_000 not in prompt
+    assert ARCHIVE_POINTER_SEP not in prompt
 
 
 def test_compaction_window_archives_structured_tool_text_instead_of_losing_it(home):

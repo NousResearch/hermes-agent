@@ -114,8 +114,6 @@ class PreparedSummary(_Window):
     call_state: dict[str, Any] = field(default_factory=dict, compare=False)  # _SUMMARY_CALL_STATE after the pass
     telemetry: dict[str, Any] = field(default_factory=dict, compare=False)  # _SUMMARY_CALL_TELEMETRY of the pass
     waited: Optional[float] = field(default=None, compare=False)  # seconds the taking compaction waited on the pass
-    #: ``cache/pruned/<name>`` archives the pass wrote for its window: the splice lists any the summary omits.
-    archives: frozenset[str] = field(default=frozenset(), compare=False)
 
 
 class _PendingPass:
@@ -124,7 +122,6 @@ class _PendingPass:
 
     def __init__(self, window: _Window) -> None:
         self.window = window
-        self.archives: frozenset[str] = frozenset()  # what the pass's window rows point at once archived
         self.done = threading.Event()
         # Set once nothing can use the pass any more; its summary stream is closed (the aux hard-cancel path).
         self.cancelled = threading.Event()
@@ -197,21 +194,6 @@ def _mismatch(window: _Window, messages: list[dict[str, Any]], session_id: str, 
         elif digest != now_digest:
             return _Miss("text_changed", f"message {idx} changed and has no durable id to vouch for it")
     return None
-
-
-def _archived_window(
-    compressor: Any, messages: list[dict[str, Any]], working: list[dict[str, Any]], pruned: int, start: int, end: int,
-) -> tuple[list[dict[str, Any]], frozenset[str]]:
-    """The admitted pass's window with its tool results archived (once, after admission: planning is
-    write-free) and the ``cache/pruned`` refs its rows now name. Only ``[start, end)`` is written: the rows
-    after it stay live and the splicing compaction archives whatever of them it shortens. The boundaries
-    are the window's identity, so they are kept even when a failed write leaves an original whole."""
-    from tools.tool_result_storage import pruned_archive_refs
-
-    outside = set(range(len(working))) - set(range(start, end))
-    archived = compressor._archive_compaction_window(
-        compressor._drop_blank_echoes(messages), working, pruned, start, end, skip=outside, fixed=True)[0]
-    return archived, frozenset(pruned_archive_refs(archived[start:end]))
 
 
 def _worker_copy(compressor: Any) -> Any:
@@ -421,7 +403,7 @@ class PreparedCompaction:
             with self._lock:
                 if self._pending is not None or self._entry is not None:
                     return None  # one summary per compaction: later messages join the tail at the splice
-            working, pruned, start, end = compressor._plan_compaction_window(messages)
+            working, _pruned, start, end = compressor._plan_compaction_window(messages)
             if start >= end:
                 return None
             worker = _worker_copy(compressor)
@@ -444,10 +426,13 @@ class PreparedCompaction:
                     _slots.release()
                     return None
                 token = self._pending = _PendingPass(window)
-            archived, archives = _archived_window(compressor, messages, working, pruned, start, end)
-            token.archives = archives
-            worker = _worker_copy(compressor)  # the gating scan mutated the first copy on the unarchived rows
-            turns = worker._scan_window_handoffs(archived, start, end, archived[start:end]).turns_to_summarize
+            # The pass summarizes the window's ORIGINAL rows and writes nothing: the splicing compaction
+            # archives what it replaces once its summary is adopted (summarize first, archive after).
+            from agent.context_compressor_window import summary_view
+
+            source = summary_view(working, compressor._drop_blank_echoes(messages), start, end)
+            worker = _worker_copy(compressor)  # the gating scan mutated the first copy
+            turns = worker._scan_window_handoffs(source, start, end, source[start:end]).turns_to_summarize
             from agent.memory_provider import spawn_context_thread
 
             # Profile and secret scope ride the contextvars into the pass.
@@ -499,7 +484,6 @@ class PreparedCompaction:
                     summary, worker._previous_summary,
                     call_state={name: getattr(worker, name, None) for name in _SUMMARY_CALL_STATE},
                     telemetry={key: telemetry.get(key) for key in _SUMMARY_CALL_TELEMETRY},
-                    archives=token.archives,
                 )
                 logger.info("prepared compaction: pass completed session=%s window=%d-%d in %.1fs",
                             window.session_id, window.compress_start, window.compress_end, time.monotonic() - started)

@@ -7,6 +7,7 @@ import type { CanonicalRoomContext, CanonicalRoomMember } from './canonical-grou
 /** The gateway-authored event a lead's routing turn publishes (`gateway/hosted_room_lead.py`). */
 export const ASSIGNMENT_EVENT_KIND = 'room.assignment'
 const EVERYONE = 'everyone'
+const AUTO = 'auto'
 // Member options carry a prefix: `everyone` is a reserved handle, not a reserved member id.
 const MEMBER_PREFIX = 'member:'
 
@@ -27,31 +28,38 @@ const fill = (template: string, values: Record<string, string>) =>
   template.replace(/\{(\w+)\}/g, (match, key: string) => values[key] ?? match)
 
 export interface CanonicalGroupLeadSettingProps {
+  /** The runtime can pick who answers with a model call (`driver_status.routing_modes` has `auto`). */
+  autoRouting?: boolean
   disabled?: boolean
   draft: CanonicalRoomContext
   members: readonly CanonicalRoomMember[]
   onChange: (draft: CanonicalRoomContext) => void
 }
 
-/** Who answers a message that names nobody: everyone (the default) or the member picked as lead. */
-export function CanonicalGroupLeadSetting({ disabled, draft, members, onChange }: CanonicalGroupLeadSettingProps) {
+const ROUTING_HINT = { [EVERYONE]: 'routingEveryoneHint', [AUTO]: 'routingAutoHint' } as const
+
+/** Who answers a message that names nobody: everyone (the default), a model pick, or the member picked as lead. */
+export function CanonicalGroupLeadSetting({ autoRouting = false, disabled, draft, members, onChange }: CanonicalGroupLeadSettingProps) {
   const labels = useCanonicalGroupLabels()
   const lead = canonicalRoomLeadId(draft)
-  const value = lead === undefined ? EVERYONE : MEMBER_PREFIX + lead
+  const value = lead !== undefined ? MEMBER_PREFIX + lead : draft.routing === AUTO ? AUTO : EVERYONE
 
   const choose = (next: string) => onChange(next.startsWith(MEMBER_PREFIX)
     ? { ...draft, routing: 'lead', lead_member_id: next.slice(MEMBER_PREFIX.length) }
-    : { ...draft, routing: 'everyone', lead_member_id: '' })
+    : { ...draft, routing: next === AUTO ? AUTO : EVERYONE, lead_member_id: '' })
+
+  const hint = value in ROUTING_HINT ? labels[ROUTING_HINT[value as keyof typeof ROUTING_HINT]] : labels.routingLeadHint
 
   return <label className="grid gap-1 text-xs">{labels.routingLabel}
     <Select disabled={disabled || !members.length} onValueChange={choose} value={value}>
       <SelectTrigger aria-label={labels.routingLabel} className="h-8 rounded-md"><SelectValue /></SelectTrigger>
       <SelectContent>
         <SelectItem value={EVERYONE}>{labels.routingEveryone}</SelectItem>
+        {(autoRouting || value === AUTO) && <SelectItem value={AUTO}>{labels.routingAuto}</SelectItem>}
         {members.map(member => <SelectItem key={member.member_id} value={MEMBER_PREFIX + member.member_id}>{fill(labels.routingLead, { name: memberName(member) })}</SelectItem>)}
       </SelectContent>
     </Select>
-    <span className="text-(--ui-text-tertiary)">{value === EVERYONE ? labels.routingEveryoneHint : labels.routingLeadHint}</span>
+    <span className="text-(--ui-text-tertiary)">{hint}</span>
   </label>
 }
 

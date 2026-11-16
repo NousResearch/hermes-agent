@@ -107,6 +107,7 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
 
+import { logBotWake } from './bot-wake-log'
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
@@ -1115,7 +1116,7 @@ export const host = {
 
           // Logged per attempt so a support bundle shows the retry happened at
           // all; the terminal failure is reported once by the catch below.
-          console.warn('[bot-wake] hydration timed out, retrying', {
+          logBotWake('hydration timed out, retrying', {
             attempt,
             hydrationWaitMs: Date.now() - profileActiveAt,
             profile: targetProfile,
@@ -1132,7 +1133,7 @@ export const host = {
       ) {
         const timedOutAt = Date.now()
 
-        console.warn('[bot-wake] hydration timed out', {
+        logBotWake('hydration timed out', {
           attempts: wakePhase === 'hydration' ? maxAttempts : 1,
           hydrationWaitMs: wakePhase === 'hydration' ? timedOutAt - profileActiveAt : 0,
           phase: wakePhase,
@@ -1252,7 +1253,7 @@ export const host = {
       const openTab = $newSessionTabAction.get()
 
       if (!openTab) {
-        notify({ kind: 'error', message: 'Update Hermes Desktop to open another Bot chat.' })
+        notify({ kind: 'error', message: 'Update Hermes Desktop to open another bot chat.' })
 
         return
       }
@@ -1950,8 +1951,8 @@ export type { StatusResponse } from '@/types/hermes'
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
 /** Bot Screen wire shapes, generated from `tui_gateway/contracts/display.py`. */
 export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult } from '@hermes/shared'
-/** `session.list` / `profiles.list` session rows, generated from `tui_gateway/contracts`. */
-export type { ProfileSessionPreview, SessionListRow } from '@hermes/shared'
+/** Profile creation and session rows, generated from `tui_gateway/contracts`. */
+export type { ProfilesCreateResult, ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'

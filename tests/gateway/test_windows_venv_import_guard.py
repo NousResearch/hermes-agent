@@ -32,7 +32,7 @@ def test_committed_generation_blocks_the_legacy_venv_overlay(tmp_path, monkeypat
     (generation / "Lib" / "site-packages").mkdir(parents=True)
 
     monkeypatch.setattr("pm.environments.committed_venv", lambda _root: generation)
-    monkeypatch.setattr(gateway_run, "__file__", str(root / "gateway" / "run.py"))
+    monkeypatch.setattr(gateway_run, "project_root_str", lambda: str(root))
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setenv("VIRTUAL_ENV", str(legacy))
     monkeypatch.delenv("PYTHONPATH", raising=False)
@@ -69,7 +69,7 @@ def test_legacy_venv_of_unknown_or_foreign_abi_is_never_overlaid(tmp_path, monke
         (legacy / "pyvenv.cfg").write_text("home = C:\\Python\n" + version_line, encoding="utf-8")
 
     monkeypatch.setattr("pm.environments.committed_venv", lambda _root: None)
-    monkeypatch.setattr(gateway_run, "__file__", str(root / "gateway" / "run.py"))
+    monkeypatch.setattr(gateway_run, "project_root_str", lambda: str(root))
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
 
@@ -93,7 +93,7 @@ def test_same_abi_venv_is_still_overlaid(tmp_path, monkeypatch):
     venv = _venv(root / "venv", "{}.{}.{}".format(*sys.version_info[:3]))
 
     monkeypatch.setattr("pm.environments.committed_venv", lambda _root: None)
-    monkeypatch.setattr(gateway_run, "__file__", str(root / "gateway" / "run.py"))
+    monkeypatch.setattr(gateway_run, "project_root_str", lambda: str(root))
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
 
@@ -122,7 +122,7 @@ def test_venv_import_setup_scopes_to_sys_path_not_global_environ(
     site_packages = venv / "Lib" / "site-packages"
 
     monkeypatch.setattr("pm.environments.committed_venv", lambda _root: None)
-    monkeypatch.setattr(gateway_run, "__file__", str(root / "gateway" / "run.py"))
+    monkeypatch.setattr(gateway_run, "project_root_str", lambda: str(root))
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.setenv("VIRTUAL_ENV", str(venv))
     monkeypatch.setenv("PYTHONPATH", "already-there")

@@ -250,8 +250,8 @@ class LSPClient:
             # CancelledError is a BaseException on supported Python versions, and cleanup
             # must outlive that cancellation or the spawned server escapes all tracking.
             await asyncio.shield(self._cleanup_process())
-            # Attach the details to the ORIGINAL exception rather than re-instantiating its
-            # type: LSPRequestError's ctor is (code, message, data), so ``type(e)(text)``
+            # Attach the details to the ORIGINAL exception rather than re-instantiating its type,
+            # because LSPRequestError's ctor is (code, message, data), so ``type(e)(text)``
             # would surface as a TypeError instead of the LSP error the caller logs.
             details = self.failure_details()
             if details and isinstance(e, Exception):
@@ -493,8 +493,28 @@ class LSPClient:
             raise LSPProtocolError(f"send failed for {method!r}: {e}") from e
         try:
             return await fut
+        except asyncio.CancelledError:
+            # The caller abandoned the request (wait_for timeout, or the pull/push race in
+            # wait_for_diagnostics cancelling the loser). Without $/cancelRequest the server
+            # keeps computing it and blocks the requests queued behind it. Written without
+            # drain: awaiting inside a cancelled task is unreliable.
+            self._notify_cancel_nowait(req_id)
+            raise
         finally:
             self._pending.pop(req_id, None)
+
+    def _notify_cancel_nowait(self, req_id: int) -> None:
+        """Best-effort ``$/cancelRequest``; a late answer to ``req_id`` is dropped by
+        ``_dispatch_response`` because the id is no longer pending."""
+        # LSP allows no notification but ``exit`` after ``shutdown``, and none before InitializeResult.
+        if self._stopping or self._state != "running":
+            return
+        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
+            return
+        try:
+            self._proc.stdin.write(encode_message(make_notification("$/cancelRequest", {"id": req_id})))
+        except _WRITE_ERRORS:
+            pass
 
     async def _send_request_with_retry(self, method: str, params: Any, *, timeout: float) -> Any:
         """Send a request, retrying ``ContentModified`` (-32801) with backoff; other errors propagate."""

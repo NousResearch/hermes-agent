@@ -2,7 +2,7 @@
  * Tests for electron/backend-ready.ts.
  *
  * Run with: node --test electron/backend-ready.test.ts
- * (Wired into npm test:desktop:platforms in package.json.)
+ * (Wired into pnpm run test:desktop:platforms in package.json.)
  *
  * Covers the cold-start port-announcement deadline (issue #50209): the clock
  * starts before the backend binds its port, so a tight 45s deadline killed a

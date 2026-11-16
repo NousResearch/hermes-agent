@@ -13,7 +13,7 @@ import xml.sax.saxutils
 
 import pytest
 
-from scripts.releases import lanes as lane_set
+from scripts.releases import desktop_targets, lanes as lane_set
 
 
 @contextmanager
@@ -450,39 +450,36 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         pub = publisher(url)
         base = pub.public_base
         prefix = f"releases/tag/{tag}/"
-        for platform in ("darwin", "win32"):
-            for arch in ("arm64", "x64"):
-                if (platform, arch) in (("darwin", "x64"), ("macos", "x64")):
-                    continue  # no Intel macOS package
-                native = "macos" if platform == "darwin" else "windows"
-                version = "2.0.0" if platform == "darwin" else "2.0.0.0"
-                metadata = {"platform": native, "arch": arch, "tag": tag, "commit": commit,
-                            "version": version, "identity": identity["appId" if platform == "darwin" else "msixAppIdWithOrg"]}
-                files = {}
-                if platform == "darwin":
-                    metadata["teamId"] = "ABCDEFGHIJ"
-                    for suffix in ("zip", "dmg", "zip.blockmap", "dmg.blockmap"):
-                        name = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{suffix}"
-                        files[name] = (name + " fixture bytes").encode()
-                    metadata["filename"] = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.zip"
-                    # The per-arch electron feed leg, as the macOS build stages it.
-                    leg = {"version": "2.0.0", "files": [
-                        {"url": name, "size": len(files[name]),
-                         "sha512": base64.b64encode(hashlib.sha512(files[name]).digest()).decode("ascii")}
-                        for name in (f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{ext}" for ext in ("zip", "dmg"))]}
-                    files[f"{arch}-stable-mac.yml"] = canonical_json(leg)
-                else:
-                    metadata.update(publisher="CN=Fixture", applicationId=identity["appNamePascal"])
-                    files[f"{identity['artifactNamePascal']}-2.0.0-win-{arch}.msix"] = b"fixture msix"
-                files[f"metadata-{native}-{arch}.json"] = canonical_json(metadata)
-                rows = []
-                for name, body in files.items():
-                    objects[prefix + name] = body
-                    (tmp_path / name).write_bytes(body)
-                    rows.append({"path": name, "size": len(body), "sha256": hashlib.sha256(body).hexdigest()})
-                receipt = {"schema": 1, "tag": tag, "commit": commit, "name": f"{platform}-{arch}", "files": rows}
-                (tmp_path / receipt_name(receipt["name"])).write_bytes(canonical_json(receipt))
-                objects[prefix + receipt_name(receipt["name"])] = canonical_json(receipt)
+        for platform, arch in desktop_targets.TARGETS:
+            native = desktop_targets.MANIFEST_PLATFORM[platform]
+            version = "2.0.0" if platform == "darwin" else "2.0.0.0"
+            metadata = {"platform": native, "arch": arch, "tag": tag, "commit": commit,
+                        "version": version, "identity": identity["appId" if platform == "darwin" else "msixAppIdWithOrg"]}
+            files = {}
+            if platform == "darwin":
+                metadata["teamId"] = "ABCDEFGHIJ"
+                for suffix in ("zip", "dmg", "zip.blockmap", "dmg.blockmap"):
+                    name = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{suffix}"
+                    files[name] = (name + " fixture bytes").encode()
+                metadata["filename"] = f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.zip"
+                # The per-arch electron feed leg, as the macOS build stages it.
+                leg = {"version": "2.0.0", "files": [
+                    {"url": name, "size": len(files[name]),
+                     "sha512": base64.b64encode(hashlib.sha512(files[name]).digest()).decode("ascii")}
+                    for name in (f"{identity['artifactNamePascal']}-2.0.0-mac-{arch}.{ext}" for ext in ("zip", "dmg"))]}
+                files[f"{arch}-stable-mac.yml"] = canonical_json(leg)
+            else:
+                metadata.update(publisher="CN=Fixture", applicationId=identity["appNamePascal"])
+                files[f"{identity['artifactNamePascal']}-2.0.0-win-{arch}.msix"] = b"fixture msix"
+            files[f"metadata-{native}-{arch}.json"] = canonical_json(metadata)
+            rows = []
+            for name, body in files.items():
+                objects[prefix + name] = body
+                (tmp_path / name).write_bytes(body)
+                rows.append({"path": name, "size": len(body), "sha256": hashlib.sha256(body).hexdigest()})
+            receipt = {"schema": 1, "tag": tag, "commit": commit, "name": f"{platform}-{arch}", "files": rows}
+            (tmp_path / receipt_name(receipt["name"])).write_bytes(canonical_json(receipt))
+            objects[prefix + receipt_name(receipt["name"])] = canonical_json(receipt)
         bundle_name = f"{identity['artifactNamePascal']}-2.0.0.0-win.msixbundle"
         with zipfile.ZipFile(tmp_path / bundle_name, "w") as archive:
             archive.writestr("AppxMetadata/AppxBundleManifest.xml", f'<Bundle><Identity Name="{identity["msixAppIdWithOrg"]}" Publisher="CN=Fixture" Version="2.0.0.0"/><Packages><Package Type="application" Architecture="arm64"/><Package Type="application" Architecture="x64"/></Packages></Bundle>')
@@ -499,8 +496,7 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         request = pub.allocate_protected("released", commit, "2.0.0", release_tag=tag, version="2.0.0", windows_version="2.0.0.0", identity=identity, policy="stable-release", release_gate=lambda request: True)
         from scripts.bundles.channel_artifacts import assemble
         manifest, feeds = assemble(request, native, tmp_path, artifact_prefix=prefix)
-        assert {(p["platform"], p["arch"]) for p in manifest["packages"]} == {
-            ("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")}
+        assert {(p["platform"], p["arch"]) for p in manifest["packages"]} == set(desktop_targets.TARGETS)
         assert all(p["artifact"]["key"].startswith(prefix) for p in manifest["packages"])
         assert all(f.is_file() for f in feeds)
         accepted = {"packages": []}
@@ -640,15 +636,12 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
                      "archive": attempt,
                      "smoke_results": {job: {"result": "success"} for job in channel_releases.stable.SMOKE_JOBS},
                      "packages": []}
-        for platform in ("macos", "windows"):
-            for arch in ("arm64", "x64"):
-                if (platform, arch) in (("darwin", "x64"), ("macos", "x64")):
-                    continue  # no Intel macOS package
-                candidate["packages"].append({"platform": platform, "arch": arch, "tag": tag, "commit": commit,
-                    "version": "2.0.0" if platform == "macos" else "2026.5761.123.0", "identity": "fixture.identity",
-                    **({"executableVersion": "2026.5761.123.0"} if platform == "windows" else {}),
-                    "teamId": "ABCDEFGHIJ", "publisher": "CN=Fixture", "applicationId": "Fixture",
-                    "artifact": {"url": f"{pub.public_base}/releases/tag/{attempt}/fixture-{arch}." + ("zip" if platform == "macos" else "msixbundle"), "sha256": "d" * 64}})
+        for platform, arch in desktop_targets.MANIFEST_TARGETS:
+            candidate["packages"].append({"platform": platform, "arch": arch, "tag": tag, "commit": commit,
+                "version": "2.0.0" if platform == "macos" else "2026.5761.123.0", "identity": "fixture.identity",
+                **({"executableVersion": "2026.5761.123.0"} if platform == "windows" else {}),
+                "teamId": "ABCDEFGHIJ", "publisher": "CN=Fixture", "applicationId": "Fixture",
+                "artifact": {"url": f"{pub.public_base}/releases/tag/{attempt}/fixture-{arch}." + ("zip" if platform == "macos" else "msixbundle"), "sha256": "d" * 64}})
         raw = canonical_json(candidate)
         key = f"releases/tag/{attempt}/release-candidates.json"
         objects[key] = raw
@@ -715,26 +708,30 @@ def test_stable_receipts_bind_the_attempt_ref_while_metadata_binds_the_payload_t
     from scripts.releases.handoff import receipt_name
     from hermes_cli.release_channels import ChannelError, canonical_json
     attempt, payload, commit = "rc.15-v2.0.0", "v2.0.0", "e" * 40
-    legs = ("darwin-arm64", "win32-arm64", "win32-x64")
 
     def stage(metadata_tag):
-        for leg in legs:
-            platform, arch = leg.split("-")
-            native = "macos" if platform == "darwin" else "windows"
+        for platform, arch in desktop_targets.TARGETS:
+            leg = f"{platform}-{arch}"
+            native = desktop_targets.MANIFEST_PLATFORM[platform]
             name = f"metadata-{native}-{arch}.json"
             body = canonical_json({"platform": native, "arch": arch, "tag": metadata_tag, "commit": commit})
             (tmp_path / name).write_bytes(body)
             rows = [{"path": name, "size": len(body), "sha256": hashlib.sha256(body).hexdigest()}]
             receipt = {"schema": 1, "tag": attempt, "commit": commit, "name": leg, "files": rows}
             (tmp_path / receipt_name(leg)).write_bytes(canonical_json(receipt))
+        # The universal bundle handoff carries no metadata row of its own.
+        body = b"bundle fixture"
+        rows = [{"path": "fixture.msixbundle", "size": len(body), "sha256": hashlib.sha256(body).hexdigest()}]
+        receipt = {"schema": 1, "tag": attempt, "commit": commit, "name": "windows-universal", "files": rows}
+        (tmp_path / receipt_name("windows-universal")).write_bytes(canonical_json(receipt))
 
     stage(payload)
-    native = channel_releases.read_native_receipts(tmp_path, attempt, commit, legs, payload_tag=payload)
+    native = channel_releases.read_native_receipts(tmp_path, attempt, commit, payload_tag=payload)
     assert {row["tag"] for row in native["packages"]} == {payload}
     # Without the payload tag the rows are held to the attempt ref and refused.
     with pytest.raises(ChannelError, match="identity mismatch"):
-        channel_releases.read_native_receipts(tmp_path, attempt, commit, legs)
+        channel_releases.read_native_receipts(tmp_path, attempt, commit)
     # A row stamped with the attempt ref is not the published payload.
     stage(attempt)
     with pytest.raises(ChannelError, match="identity mismatch"):
-        channel_releases.read_native_receipts(tmp_path, attempt, commit, legs, payload_tag=payload)
+        channel_releases.read_native_receipts(tmp_path, attempt, commit, payload_tag=payload)

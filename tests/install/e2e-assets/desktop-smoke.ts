@@ -6,13 +6,11 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { _electron, type ElectronApplication, type Page } from '@playwright/test'
-import { z } from 'zod'
-
 import { resolveDesktopHermesHome } from '../../../apps/desktop/electron/data-paths.mjs'
 import { applyBundleEnvironment } from '../../../apps/desktop/scripts/bundle-env.mjs'
 import { type ChatIdentity, readChatIdentity, runDesktopChatSmoke, waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke.ts'
 import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit, reusedDesktopBuildCommit } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import { _electron, type ElectronApplication, type Page, z } from '../../../tests-js/scripts/e2e-driver-deps.ts'
 import { validateMockUrl, writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config.ts'
 import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server.ts'
 
@@ -92,6 +90,19 @@ function requireEmptyHermesHome(home: string): void {
   const entries = fs.readdirSync(home)
   if (entries.length > 0) {
     throw new Error(`Predicted Hermes home ${home} is not empty (${entries.length} entries); refusing to seed an existing profile`)
+  }
+}
+
+/** After an update the app reopens the profile the OLD phase left, so the post-update
+ * smoke expects state there. Reseeding it is safe only when the prediction is one of
+ * this run's own homes, never a real profile the resolver fell through to. */
+export function admitPredictedHermesHome(home: string, phase: SmokeOptions['phase'], runHomes: readonly string[]): void {
+  if (phase !== 'new') {
+    requireEmptyHermesHome(home)
+    return
+  }
+  if (!runHomes.some((runHome: string): boolean => path.relative(runHome, home) === '')) {
+    throw new Error(`Predicted Hermes home ${home} is not one of this run's homes (${runHomes.join(', ')}); refusing to seed it after the update`)
   }
 }
 
@@ -294,7 +305,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
     predictedHome = bundleEnv ? predictSmokeHermesHome(launch.env, bundleEnv) : undefined
 
     // Check before the driver creates its sandbox folders inside this home.
-    if (predictedHome) { requireEmptyHermesHome(predictedHome) }
+    if (predictedHome) { admitPredictedHermesHome(predictedHome, options.phase, candidateSmokeHermesHomes(options.home, options['user-data'])) }
 
     fs.mkdirSync(options.home, { recursive: true })
     fs.mkdirSync(options['user-data'], { recursive: true })

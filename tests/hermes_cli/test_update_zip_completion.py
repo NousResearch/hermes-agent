@@ -75,7 +75,7 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     monkeypatch.setattr(update_cmd, "_source_update_channel", lambda args: "main")
     monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda branch: None)
 
-    def prepare(selected, *, desktop):
+    def prepare(selected, *, desktop, after_dependencies=None):
         assert selected == root and desktop is False
         assert (root / "payload.txt").read_text() == "new"
         events.append("prepare")
@@ -434,7 +434,7 @@ def test_installed_app_without_a_checkout_build_is_still_rebuilt(zip_update, mon
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path / "default-home")
     built = []
     monkeypatch.setattr("hermes_cli.source_build.build_update_products",
-                        lambda selected, *, desktop: built.append(desktop))
+                        lambda selected, *, desktop, after_dependencies=None: built.append(desktop))
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
 

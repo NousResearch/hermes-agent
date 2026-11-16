@@ -66,9 +66,9 @@ def profile_config(tmp_path, monkeypatch):
 
 
 def test_persist_publishes_only_a_complete_model_route(profile_config, monkeypatch):
-    import utils
+    import utils.files
 
-    replace = utils.atomic_replace
+    replace = utils.files.atomic_replace
     published = []
 
     def observe(source, target):
@@ -79,17 +79,17 @@ def test_persist_publishes_only_a_complete_model_route(profile_config, monkeypat
             )
         return result
 
-    monkeypatch.setattr(utils, "atomic_replace", observe)
+    monkeypatch.setattr(utils.files, "atomic_replace", observe)
     persist_model_selection(_RESULT, profile_config)
 
     assert published == [_EXPECTED]
 
 
 def test_failed_route_publication_leaves_original_bytes(profile_config, monkeypatch):
-    import utils
+    import utils.files
 
     original = profile_config.read_bytes()
-    replace = utils.atomic_replace
+    replace = utils.files.atomic_replace
 
     def reject_new_provider(source, target):
         if Path(target) == profile_config:
@@ -98,7 +98,7 @@ def test_failed_route_publication_leaves_original_bytes(profile_config, monkeypa
                 raise OSError("synthetic publication failure")
         return replace(source, target)
 
-    monkeypatch.setattr(utils, "atomic_replace", reject_new_provider)
+    monkeypatch.setattr(utils.files, "atomic_replace", reject_new_provider)
     with pytest.raises(OSError, match="synthetic publication failure"):
         persist_model_selection(_RESULT, profile_config)
 

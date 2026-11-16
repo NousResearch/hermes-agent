@@ -83,11 +83,8 @@ def nous_signed_in() -> bool:
 
 def _registration(home: Path) -> dict:
     """*home*'s registration record, or ``{}`` when there is none or it cannot be read."""
-    try:
-        record = json.loads((Path(home) / _REGISTRATION_PATH).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
-    return record if isinstance(record, dict) else {}
+    from utils import read_json_or_empty
+    return read_json_or_empty(Path(home) / _REGISTRATION_PATH)
 
 
 def sign_in_client(home) -> Optional[tuple[str, str]]:
@@ -390,3 +387,29 @@ def access_status() -> dict:
         "public_url": settings.public_url,
         "nous_signed_in": nous_signed_in(),
     }
+
+
+def gateway_instance() -> Optional[tuple]:
+    """The gateway process answering for the home in scope, ``(pid, start_time)``, or None when none
+    answers. The Webapp address a gateway reports names only its port, so this is what tells the
+    gateway a restart put in place from the one it replaced."""
+    from hermes_cli.webapp_launcher import GatewayUnreachable, _control
+
+    try:
+        response = _control(gateway_home(), "identify")
+    except GatewayUnreachable:
+        return None
+    result = response.get("result") if response.get("ok") else None
+    return (result.get("pid"), result.get("start_time")) if isinstance(result, dict) else None
+
+
+def serves_config(status: dict) -> bool:
+    """Whether the gateway in *status* (:func:`access_status`) serves the Webapp its config turns
+    on, on the configured port, so it has restarted onto that config. The pane decides the same way."""
+    gateway = status["gateway"]
+    if not status["enabled"] or gateway.get("state") != "serving" or not gateway.get("url"):
+        return False
+    try:
+        return urlsplit(gateway["url"]).port == status["port"]
+    except ValueError:  # an address with no readable port is not one this config names
+        return False

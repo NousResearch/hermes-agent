@@ -16,6 +16,7 @@ from pathlib import Path
 
 import hermes_yaml
 
+from scripts.releases.desktop_targets import TARGETS
 from scripts.releases.job_groups import JOB_GROUPS
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,10 +25,10 @@ SMOKE_WORKFLOW = "./.github/workflows/desktop-bundle-smoke.yml"
 BUILD_CACHE_ACTION = "./.github/actions/desktop-build-cache"
 SHA = "a" * 40
 CANARY_TAG = "v0.28.0+canary.20260818T101010Z"
-# Native build targets per platform. Intel macOS (darwin-x64) is not built.
-PLATFORM_ARCHES = {"darwin": ("arm64",), "win32": ("arm64", "x64")}
+# Native build targets per platform, from the one release-side definition.
+PLATFORM_ARCHES = {platform: tuple(a for p, a in TARGETS if p == platform) for platform, _ in TARGETS}
 PLATFORMS = tuple(PLATFORM_ARCHES)
-NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform, arches in PLATFORM_ARCHES.items() for arch in arches)
+NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform, arch in TARGETS)
 # The release branch may write the shared dependency cache; commit and channel
 # builds run unreviewed inputs and may only read it.
 _MODE_BY_CACHE = {"write": "release", "read": "commit"}

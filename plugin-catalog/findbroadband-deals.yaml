@@ -1,0 +1,19 @@
+name: findbroadband-deals
+title: FindBroadband
+repo: https://github.com/FindBroadband/mcp
+sha: 452358616b1b8d79d730693c927b1b398203496a
+subdir: plugins/findbroadband-deals
+version: "1.0.0"
+description: "The broadband deals available at an exact UK address, priced on their true whole-contract cost, and whether a bill or renewal quote is too high, through FindBroadband's MCP server (Streamable HTTP at https://www.findbroadbanddeals.com/api/mcp/standard, no sign-in, no keys in config). Bundles one skill, uk-broadband-deals. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to findbroadbanddeals.com, which receives the postcode or address and filters asked about and logs each call (the tool, the postcode district only, the filters and the result count) for usage statistics, with no IP address or cookies stored. All four tools are read-only and the package marks the server untrusted. Deal links open findbroadbanddeals.com, which may earn a commission when a user switches. Personal, non-commercial use only (findbroadbanddeals.com/terms, section 8). The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: FindBroadband
+tier: community
+category: tools
+docs_url: https://github.com/FindBroadband/mcp/tree/main/plugins/findbroadband-deals
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

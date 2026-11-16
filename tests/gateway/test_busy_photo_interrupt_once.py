@@ -117,7 +117,7 @@ def _voice(tmp_path):
     voice = tmp_path / "note.ogg"
     voice.write_bytes(b"OggS" + b"\x00" * 32)
     return MessageEvent(text="", message_type=MessageType.VOICE, message_id="V",
-                        media_urls=[str(voice)], media_types=["audio/ogg"]), "note.ogg", "heard this"
+                        media_urls=[str(voice)], media_types=["audio/ogg"]), "note.ogg", f"[User sent audio: {voice}]"
 
 
 def _text(tmp_path):

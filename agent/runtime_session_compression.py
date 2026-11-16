@@ -39,6 +39,9 @@ class RuntimeSessionCompressionMixin:
     def get_conversation_root(self, session_id):
         return self._apply('compression.lineage', {'target': session_id})['root']
 
+    def get_tool_rotation_root(self, session_id):
+        return self._apply('compression.lineage', {'target': session_id})['tool_root']
+
     def get_compression_tip(self, session_id):
         return self._apply('compression.lineage', {'target': session_id})['tip']
 
@@ -87,6 +90,9 @@ class RuntimeSessionCompressionMixin:
             unresolved_held=unresolved, held_for_cas=cas))
         from agent.runtime_session_store import apply_row_annotations
         apply_row_annotations(compacted_messages, result['annotations'])
+        # The worker's local context version (the prompt-cache clock's compaction witness): every
+        # in-place rewrite archives through here, a prune or micro-compaction included.
+        self.context_rewrites = getattr(self, 'context_rewrites', 0) + 1
         return result['value']
 
     def publish_compression_child(self, *, parent_session_id, child_session_id, source, messages,

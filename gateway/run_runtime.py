@@ -671,15 +671,30 @@ async def recover_gateway_native_sessions(runner):
     return results
 
 
+def _prime_recovered_egress(bindings):
+    """Warm a Relay's per-chat egress routing for every session recovery may run. Those caches fill
+    only on live inbound, so after a restart a recovered turn's reply would leave without the
+    scope/user discriminators the connector requires (or on the primary's platform) and be declined."""
+    from gateway.platforms.event import MessageEvent
+    for _sid, origin, adapter in bindings:
+        prime = getattr(adapter, 'prime_routing_cache', None)
+        if callable(prime):
+            # Verified provenance restores the relay marker too, but no live inbound warmed this chat.
+            prime(MessageEvent(text='', source=origin))
+
+
 async def recover_profile_native_sessions(runner, authority):
     """Bind one authority's queued native rows to the adapters connected now."""
     from gateway.session_authorities import owner_scope
+    from gateway.session_native_recovery_routes import recovered_native_source
     with owner_scope(authority):
         pending = {row['target_session_id'] for row in authority.db._read_all(
             "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-        bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
+        bindings = [(owner, origin, runner._adapter_for_source(origin))
                     for entry in runner.session_store.list_sessions() if entry.origin is not None
-                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
+                    for owner in [authority.logical_owner(entry.session_id)] if owner in pending
+                    for origin in [recovered_native_source(runner, authority, entry, owner)]]
+        _prime_recovered_egress(bindings)
         outcome = await authority.recover_native_sessions(bindings)
         from gateway.session_detached import recover_detached_sessions
         outcome.update(dict.fromkeys(recover_detached_sessions(authority, pending - set(outcome)), 'detached'))
@@ -715,6 +730,27 @@ async def wait_gateway_runtime(runner):
         await asyncio.gather(shutdown, return_exceptions=True)
 
 
+# Shared bound for the drain's concurrent inbound stops (all adapters, all profiles).
+INBOUND_STOP_SECONDS = 10.0
+
+
+async def _stop_adapters_inbound(runner):
+    adapters = [adapter for group in (runner.adapters, *getattr(runner, '_profile_adapters', {}).values())
+                for adapter in list(group.values()) if getattr(adapter, 'stop_inbound', None) is not None]
+    if not adapters:
+        return
+    tasks = {asyncio.ensure_future(adapter.stop_inbound()): adapter for adapter in adapters}
+    done, pending = await asyncio.wait(tasks, timeout=INBOUND_STOP_SECONDS)
+    for task in done:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning('stop_inbound(%s) failed during drain', tasks[task].name, exc_info=task.exception())
+    for task in pending:
+        task.cancel()  # the adapter's disconnect retries the stop
+        logger.warning('stop_inbound(%s) missed %.0fs during drain', tasks[task].name, INBOUND_STOP_SECONDS)
+    if pending:
+        await asyncio.wait(pending, timeout=1.0)
+
+
 async def drain_gateway_runtime(runner):
     """Withdraw admission before any await; close sockets before DB teardown."""
     descriptor = getattr(runner, 'session_runtime_descriptor', None)
@@ -727,6 +763,12 @@ async def drain_gateway_runtime(runner):
         del descriptor['drain_reason']  # stopping now: no client attaches to answer anymore
     from gateway.session_hosted_service import stop_hosted_service
     await stop_hosted_service(runner)
+    # Stop fetching (long-poll / socket) BEFORE withdrawing the handlers: an update a fetcher acks
+    # after the withdrawal is dropped and never redelivered (#143122); one never fetched stays on
+    # the platform for the next boot. Egress stays up for admitted work; the disconnect retries a
+    # failed stop. Only fetching adapters implement the seam; they stop together under one bound so
+    # a wedged fetcher cannot eat the leash the turn settle needs.
+    await _stop_adapters_inbound(runner)
     # Withdraw the public ingress callback without disconnecting egress needed
     # by already admitted work. Base adapters refuse before stamping acceptance.
     for adapter in runner.adapters.values():
@@ -753,6 +795,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
     wait = TURN_SETTLE_SECONDS if budget is None else max(0.0, min(TURN_SETTLE_SECONDS,
                                                                    budget - STOP_TAIL_RESERVE_SECONDS))
+    deadline = asyncio.get_running_loop().time() + wait
     if tasks:
         done, pending = await asyncio.wait(tasks, timeout=wait) if wait > 0 else (set(), set(tasks))
         for task in done:
@@ -764,7 +807,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     from gateway.session_runtime_workers import join_authority_work
     for authority in authorities:
         try:
-            await join_authority_work(authority, 0)
+            await join_authority_work(authority, max(0.0, deadline - asyncio.get_running_loop().time()))
         except TimeoutError:
             logger.warning('Profile %s still has live writers at shutdown; its admissions stay for recovery',
                            getattr(authority, 'profile_id', '?'))

@@ -16,6 +16,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
 
@@ -211,11 +213,11 @@ async def test_a_submit_only_delivery_never_moves_the_api_bot_chat(headless):
     from pathlib import Path
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_state_runtime import RuntimeStoreError
     db = headless.authority.db
     old = _api_bot_chat(db)
-    actor = Principal('uid:1000', headless.authority.profile_id,
+    actor = SessionActor('uid:1000', headless.authority.profile_id,
                       frozenset({'session:submit', 'session:read'}), 'bot-owner-recovery')
     profile = served_profile_name(Path(db.db_path).parent.resolve())
     with pytest.raises(RuntimeStoreError) as exc:

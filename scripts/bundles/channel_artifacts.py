@@ -8,9 +8,7 @@ from pathlib import Path
 
 from hermes_cli.release_channels import ChannelError, build_prefix, canonical_json, validate_manifest
 from scripts.bundles.release_artifacts import single, validate_windows_bundle, write_appinstaller
-
-
-ALL_TARGETS = (("macos", "arm64"), ("windows", "arm64"), ("windows", "x64"))
+from scripts.releases.desktop_targets import MANIFEST_TARGETS
 
 
 def _leg_sha512(root: Path, files: dict, arch: str) -> dict[str, str]:
@@ -32,7 +30,7 @@ def _leg_sha512(root: Path, files: dict, arch: str) -> dict[str, str]:
 
 def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
              local_bytes: bool = True) -> tuple[dict, list[Path]]:
-    """Every native target (ALL_TARGETS: arm64 macOS and both Windows arches) is required.
+    """Every native target (desktop_targets.MANIFEST_TARGETS) is required.
 
     ``local_bytes=False`` trusts the receipts instead of downloaded packages:
     every artifact is bound by its receipt sha256 (and was validated when the
@@ -40,7 +38,7 @@ def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
     per-arch feed legs, and no multi-GB package needs to be on disk."""
     files = native["files"]
     rows = native["packages"]
-    if sorted((row["platform"], row["arch"]) for row in rows) != sorted(ALL_TARGETS):
+    if sorted((row["platform"], row["arch"]) for row in rows) != sorted(MANIFEST_TARGETS):
         raise ChannelError("Native metadata must cover macOS arm64 and both Windows architectures")
     prefix = build_prefix(request["buildId"])
     base = request["publicBase"]

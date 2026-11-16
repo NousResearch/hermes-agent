@@ -47,7 +47,7 @@ def _run_owned_job(job, tmp_path, db=None):
     )
     row = {
         "admission_id": admission_id, "request_id": request_id,
-        "principal_id": "cron-owner", "payload": {"text": ""},
+        "principal_id": "cron-owner", "owner_epoch": 1, "generation": 1, "payload": {"text": ""},
     }
     policy = SimpleNamespace(request_json=json.dumps({
         "cron_job": job, "extra_prompt": None, "request_id": request_id,
@@ -441,7 +441,7 @@ class TestDeliverResultWrapping:
             patch("gateway.config.load_gateway_config", return_value=config),
             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro),
-            patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+            patch("gateway.outbound.send._send_to_platform", new=standalone_send),
         ):
             result = _deliver_result(
                 job,
@@ -1256,8 +1256,7 @@ class TestRunJobModelResolution:
     def test_config_model_alias_key_resolves(self, tmp_path, monkeypatch):
         """A ``model: {model: ...}`` alias key resolves like the CLI sibling.
 
-        ``hermes_cli/oneshot.py``, ``fallback_cmd.py`` and ``prompt_size.py``
-        all accept ``model.model`` as an alias for ``model.default``. The cron
+        ``fallback_cmd.py`` and ``prompt_size.py`` both accept ``model.model`` as an alias for ``model.default``. The cron
         resolver mirrors that so a config that works in the CLI also works in
         cron.
         """
@@ -1816,7 +1815,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send = AsyncMock(return_value={"success": True})
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+             patch("gateway.outbound.send._send_to_platform", new=standalone_send):
             result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
         return result, standalone_send
 
@@ -1890,7 +1889,7 @@ class TestDeliverResultPartialSplitDelivery:
         try:
             with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
                  patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-                 patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+                 patch("gateway.outbound.send._send_to_platform", new=standalone_send):
                 result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
         finally:
             loop.call_soon_threadsafe(loop.stop)
@@ -1945,7 +1944,7 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
-             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+             patch("gateway.outbound.send._send_to_platform", new=standalone_send):
             result = _deliver_result(
                 job,
                 "Hello world",
@@ -2135,7 +2134,7 @@ class TestCronDeliveryMirror:
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.outbound.send._send_to_platform", new=AsyncMock(return_value={"success": True})), \
              patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
             job = {
                 "id": "test-job",

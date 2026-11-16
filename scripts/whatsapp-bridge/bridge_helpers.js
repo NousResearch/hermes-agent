@@ -32,8 +32,10 @@ function unwrapMessageEnvelopes(content) {
       cur.ephemeralMessage?.message ??
       cur.viewOnceMessage?.message ??
       cur.viewOnceMessageV2?.message ??
-      cur.documentWithCaptionMessage?.message;
-    if (next === undefined) break;
+      cur.documentWithCaptionMessage?.message ??
+      // any associatedChildMessage; known: the HD copy of a photo or video, the clip of a motion photo
+      cur.associatedChildMessage?.message;
+    if (!next) break; // a decoded envelope without an inner message gives null, not undefined
     cur = next;
   }
   return cur;

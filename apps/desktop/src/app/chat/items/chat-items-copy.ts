@@ -1,12 +1,16 @@
 import { isBundledLocale, useI18n } from '@/i18n'
 import type { BundledLocale } from '@/i18n/types'
 
-export type ChatItemsTab = 'all' | 'artifacts' | 'files' | 'web'
+/** The kinds of thing a chat makes or finds. */
+export type ChatItemKind = 'all' | 'artifacts' | 'files' | 'web'
+
+/** The pane's tabs: the kinds, and the routines of the chat's agent (named by the Routines page). */
+export type ChatItemsTab = ChatItemKind | 'routines'
 
 /** The chat items pane's words (Figma 1083:8348 / 1095:9308). Redesign only, like the Library's. */
 export interface ChatItemsCopy {
   pane: string
-  tabs: Record<ChatItemsTab, string>
+  tabs: Record<ChatItemKind, string>
   tabsLabel: string
   seeAll: (section: string) => string
   seeAllShort: string

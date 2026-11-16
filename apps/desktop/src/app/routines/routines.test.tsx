@@ -17,7 +17,7 @@ import { $shellChoice } from '@/store/shell-variant'
 import { SimplifiedGlobalNav } from '../chat/sidebar/simplified-global-nav'
 
 import { AgentRoutines } from './agent-routines'
-import { AgentRoutinesChip, agentRoutineSummaries } from './agent-routines-chip'
+import { routinesByAgent } from './routines-by-agent'
 import { routinesCopy } from './routines-copy'
 import { RoutinesPage } from './routines-page'
 import { $routineOverviewQuery, $routineRename, closeRoutineEditor, selectRoutine } from './routines-store'
@@ -306,39 +306,18 @@ describe('Agent › Settings › Routines', () => {
   })
 })
 
-describe('the chat sidebar’s Routines chip', () => {
-  it('counts each agent’s routines from the snapshot, flags the failing ones, and says nothing without a scope', () => {
-    const summaries = agentRoutineSummaries([brief, failing, { ...failing, id: 'x', latest_execution: null, last_error: null }], '\u0000all')
+describe('an agent’s routines for its chats', () => {
+  it('groups the snapshot’s routines by agent in the page’s order, and says nothing without a scope', () => {
+    const byAgent = routinesByAgent([failing, brief, { ...failing, id: 'x', name: 'Alpha' }], '\u0000all')
 
-    expect(summaries.get(agentSidebarKey({ connectionId: null, profile: 'default' }))).toEqual({ count: 1, failing: [] })
-    expect(summaries.get(agentSidebarKey({ connectionId: null, profile: 'ops' }))?.count).toBe(2)
-    expect(summaries.get(agentSidebarKey({ connectionId: null, profile: 'ops' }))?.failing.map(job => job.id)).toEqual([
+    expect(byAgent.get(agentSidebarKey({ connectionId: null, profile: 'default' }))?.map(job => job.id)).toEqual([
+      brief.id
+    ])
+    expect(byAgent.get(agentSidebarKey({ connectionId: null, profile: 'ops' }))?.map(job => job.id)).toEqual([
+      'x',
       'job-flights'
     ])
-    expect(agentRoutineSummaries([brief], '').size).toBe(0)
-  })
-
-  it('opens Routines on that agent’s routines, and is absent for an agent with none', () => {
-    const { container, unmount } = render(
-      <MemoryRouter>
-        <AgentRoutinesChip agentLabel="ops" summary={{ count: 2, failing: [failing] }} />
-        <LocationProbe />
-      </MemoryRouter>
-    )
-
-    expect(container.querySelector('.portal-agent-routines-dot')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.chipTooltip(2, 'ops')) }))
-    expect(screen.getByTestId('location').textContent).toBe('/cron')
-    expect($routineOverviewQuery.get()).toBe('ops')
-    unmount()
-
-    const empty = render(
-      <MemoryRouter>
-        <AgentRoutinesChip agentLabel="ops" summary={undefined} />
-      </MemoryRouter>
-    )
-
-    expect(empty.container.querySelector('.portal-agent-routines')).toBeNull()
+    expect(routinesByAgent([brief], '').size).toBe(0)
   })
 })
 

@@ -1093,9 +1093,10 @@ where the backend recorded an outcome). In the agent's settings each row has Cha
 Delete. "What kind of routine?" offers the agent's ready-made catalog, Ask in chat (a new chat with the
 agent, its composer seeded with a starter sentence) and Start blank. When to run composes the
 scheduler's own strings and reads them back in words. Send results to lists the agent's chat and its
-connected channels; nothing checked is today's save-only `local`. In the chat sidebar each agent with
-routines gets a Routines chip under its chats (count, error dot when one needs attention; 1100:8452)
-that opens the Routines page searched to that agent; runs never join Chats. The sidebar's scheduled-jobs
+connected channels; nothing checked is today's save-only `local`. A chat's items pane lists the routines
+of the chat's agent first (a Routines section and tab; rev 11/16, 1264:40927), each with its schedule
+in words and an error dot while it needs attention, and opens one on the Routines page. The chat list
+carries no routines; runs never join Chats. The sidebar's scheduled-jobs
 section and the statusbar's Cron item are classic only.
 
 ### The chat sidebar is a variant

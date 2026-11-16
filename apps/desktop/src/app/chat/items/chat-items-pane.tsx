@@ -2,6 +2,7 @@ import './chat-items.css'
 
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 import type { ArtifactRecord as IndexedItem } from '@/app/artifacts/artifact-utils'
 import type { IndexedChat } from '@/app/artifacts/item-index-snapshot'
@@ -9,6 +10,7 @@ import { ArtifactPreview } from '@/app/chat/right-rail/preview-artifact'
 import { formatItemTime, ItemThumb, itemTypeTag } from '@/app/library/library-collections'
 import { Button } from '@/components/ui/button'
 import { PixelIcon } from '@/components/ui/pixel-icon'
+import type { CronJob } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { localPreviewTarget } from '@/lib/local-preview'
@@ -20,6 +22,12 @@ import { openPreview } from '@/store/preview'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 
 import { PageTabs } from '../../redesign/page-header'
+import { CRON_ROUTE } from '../../routes'
+import { routineNeedsAttention, routineTitle } from '../../routines/routine-model'
+import { describeSchedule } from '../../routines/routine-schedule'
+import { useAgentRoutines } from '../../routines/routines-by-agent'
+import { useRoutinesCopy } from '../../routines/routines-copy'
+import { selectRoutine } from '../../routines/routines-store'
 import { useChatOwner } from '../use-chat-owner'
 
 import { type ChatItemsCopy, type ChatItemsTab, useChatItemsCopy } from './chat-items-copy'
@@ -124,6 +132,33 @@ function LinkRow({ item }: { item: IndexedItem }) {
   )
 }
 
+/** A routine of the chat's agent (rev 11/16, "Routine within the session chat" 1264:43850): its
+ *  name over when it runs, a dot while it needs attention. It opens on the Routines page. */
+function RoutineRow({ job }: { job: CronJob }) {
+  const { locale, t } = useI18n()
+  const copy = useRoutinesCopy()
+  const navigate = useNavigate()
+  const words = { copy, dayName: (day: string) => t.cron.days[day] ?? day, locale }
+
+  return (
+    <ItemRow
+      icon={<PixelIcon name="clock" />}
+      meta={describeSchedule(job.schedule, words, job.next_run_at)}
+      onOpen={() => {
+        selectRoutine({ id: job.id, profile: job.profile ?? '' })
+        navigate(CRON_ROUTE)
+      }}
+      title={routineTitle(job)}
+      trailing={
+        <>
+          {routineNeedsAttention(job) && <span aria-label={copy.status.failed} className="chat-items-attention" role="img" />}
+          <PixelIcon name="chevron-right" />
+        </>
+      }
+    />
+  )
+}
+
 interface SectionProps {
   label: string
   count: number
@@ -154,6 +189,7 @@ function Section({ children, count, label, onSeeAll }: SectionProps) {
 
 interface ListProps {
   items: ChatItems
+  routines: readonly CronJob[]
   tab: ChatItemsTab
   simple: boolean
   copy: ChatItemsCopy
@@ -161,12 +197,19 @@ interface ListProps {
   onOpenArtifact: (artifact: ArtifactRecord) => void
 }
 
-/** The sections a tab shows: All's three short ones (or simple mode's whole list), or one kind. */
-function ItemSections({ copy, items, onOpenArtifact, onTab, simple, tab }: ListProps) {
+/** The sections a tab shows: All's short ones (or simple mode's whole list), or one kind. */
+function ItemSections({ copy, items, onOpenArtifact, onTab, routines, simple, tab }: ListProps) {
+  const { t } = useI18n()
   const cap = (rows: number) => (tab === 'all' && !simple ? SECTION_ROWS : rows)
   const seeAll = (next: ChatItemsTab) => (tab === 'all' && !simple ? () => onTab(next) : undefined)
 
   const sections = [
+    {
+      id: 'routines' as const,
+      label: t.cron.title,
+      count: routines.length,
+      rows: routines.slice(0, cap(routines.length)).map(job => <RoutineRow job={job} key={job.id} />)
+    },
     {
       id: 'artifacts' as const,
       label: simple ? copy.madeForYou : copy.tabs.artifacts,
@@ -218,8 +261,8 @@ function EmptyItems({ copy, sessionId }: { copy: ChatItemsCopy; sessionId: null 
 }
 
 /** The chat items pane (Figma "Dev · chat panel" 1083:8348, "Non-dev · chat panel" 1095:9308): the
- *  focused chat's artifacts, files and links. Developer mode tabs them (All / Artifacts / Files /
- *  Web); simple mode lists them under one "All items" head and closes from it. An artifact opens
+ *  focused chat's artifacts, files and links, under the routines of its agent (rev 11/16, 1264:40927).
+ *  Developer mode tabs them (All / Routines / Artifacts / Files / Web); simple mode lists them under one "All items" head and closes from it. An artifact opens
  *  inside the pane (05 "Item from list"); a file opens in the preview, a link through the app's link
  *  rules. Only what the transcript and the item index really hold is shown. */
 export function ChatItemsPane() {
@@ -228,6 +271,8 @@ export function ChatItemsPane() {
   const sessionId = useStore($focusedStoredSessionId)
   const owner = useChatOwner(sessionId)
   const items = useChatItems(sessionId, owner)
+  const routines = useAgentRoutines(owner)
+  const { t } = useI18n()
   const [tab, setTab] = useState<ChatItemsTab>('all')
   const [opened, setOpened] = useState<ArtifactRecord | null>(null)
 
@@ -253,7 +298,8 @@ export function ChatItemsPane() {
   }
 
   const counts: Record<ChatItemsTab, number> = {
-    all: items.total,
+    all: items.total + routines.length,
+    routines: routines.length,
     artifacts: items.artifacts.length,
     files: items.files.length,
     web: items.links.length
@@ -267,7 +313,7 @@ export function ChatItemsPane() {
         ) : (
           <>
             <h2 className="chat-items-heading">
-              {copy.allItems} <span>{items.total}</span>
+              {copy.allItems} <span>{counts.all}</span>
             </h2>
             <Button aria-label={copy.close} onClick={closeChatItems} size="icon-sm" variant="ghost">
               <PixelIcon name="close" />
@@ -279,9 +325,9 @@ export function ChatItemsPane() {
         <PageTabs
           label={copy.tabsLabel}
           onChange={id => setTab(id as ChatItemsTab)}
-          tabs={(['all', 'artifacts', 'files', 'web'] as const).map(id => ({
+          tabs={(['all', 'routines', 'artifacts', 'files', 'web'] as const).map(id => ({
             id,
-            label: copy.tabs[id],
+            label: id === 'routines' ? t.cron.title : copy.tabs[id],
             meta: counts[id]
           }))}
           value={tab}
@@ -296,6 +342,7 @@ export function ChatItemsPane() {
             items={items}
             onOpenArtifact={setOpened}
             onTab={setTab}
+            routines={routines}
             simple={!advanced}
             tab={tab}
           />

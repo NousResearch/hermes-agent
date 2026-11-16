@@ -139,9 +139,6 @@ export interface RoutinesCopy {
   editCardTitle: string
   editCardHint: string
   askInChatPrompt: string
-  chipTooltip: (count: number, agent: string) => string
-  chipFailing: (name: string) => string
-  chipOpens: string
 }
 
 const plural = (count: number, one: string, other: string) => (count === 1 ? one : other)
@@ -279,9 +276,6 @@ const en: RoutinesCopy = {
   editCardTitle: 'Change what it does, when, or where results go',
   editCardHint: 'Routines are edited in their agent’s settings.',
   askInChatPrompt: 'Set up a routine that ',
-  chipTooltip: (count, agent) => `${count} ${plural(count, 'routine', 'routines')} for ${agent}`,
-  chipFailing: name => `${name} failed · opens Routines`,
-  chipOpens: 'Opens Routines',
   railAttention: count => `${count} ${plural(count, 'routine needs', 'routines need')} attention`
 }
 
@@ -418,9 +412,6 @@ const fr: RoutinesCopy = {
   editCardTitle: 'Changer ce qu’elle fait, quand, ou où vont les résultats',
   editCardHint: 'Les routines se modifient dans les réglages de leur agent.',
   askInChatPrompt: 'Crée une routine qui ',
-  chipTooltip: (count, agent) => `${count} ${plural(count, 'routine', 'routines')} pour ${agent}`,
-  chipFailing: name => `${name} a échoué · ouvre les routines`,
-  chipOpens: 'Ouvre les routines',
   railAttention: count => `${count} ${plural(count, 'routine à vérifier', 'routines à vérifier')}`
 }
 
@@ -557,9 +548,6 @@ const de: RoutinesCopy = {
   editCardTitle: 'Ändern, was sie tut, wann sie läuft oder wohin die Ergebnisse gehen',
   editCardHint: 'Routinen werden in den Einstellungen ihres Agenten bearbeitet.',
   askInChatPrompt: 'Richte eine Routine ein, die ',
-  chipTooltip: (count, agent) => `${count} ${plural(count, 'Routine', 'Routinen')} für ${agent}`,
-  chipFailing: name => `${name} fehlgeschlagen · öffnet Routinen`,
-  chipOpens: 'Öffnet Routinen',
   railAttention: count => `${count} ${plural(count, 'Routine braucht', 'Routinen brauchen')} Aufmerksamkeit`
 }
 
@@ -696,9 +684,6 @@ const es: RoutinesCopy = {
   editCardTitle: 'Cambiar qué hace, cuándo o adónde van los resultados',
   editCardHint: 'Las rutinas se editan en los ajustes de su agente.',
   askInChatPrompt: 'Configura una rutina que ',
-  chipTooltip: (count, agent) => `${count} ${plural(count, 'rutina', 'rutinas')} de ${agent}`,
-  chipFailing: name => `${name} falló · abre Rutinas`,
-  chipOpens: 'Abre Rutinas',
   railAttention: count => `${count} ${plural(count, 'rutina requiere', 'rutinas requieren')} atención`
 }
 
@@ -839,9 +824,6 @@ const ja: RoutinesCopy = {
   editCardTitle: '内容・実行タイミング・結果の送信先を変更',
   editCardHint: 'ルーティンはエージェントの設定で編集します。',
   askInChatPrompt: '次のことをするルーティンを作って：',
-  chipTooltip: (count, agent) => `${agent} のルーティン ${count} 件`,
-  chipFailing: name => `${name} が失敗 · ルーティンを開きます`,
-  chipOpens: 'ルーティンを開きます',
   railAttention: count => `要確認のルーティンが ${count} 件あります`
 }
 
@@ -976,9 +958,6 @@ const zh: RoutinesCopy = {
   editCardTitle: '更改任务内容、运行时间或结果去向',
   editCardHint: '例行任务在其智能体的设置中编辑。',
   askInChatPrompt: '帮我设置一个例行任务：',
-  chipTooltip: (count, agent) => `${agent} 的 ${count} 个例行任务`,
-  chipFailing: name => `${name} 失败 · 打开例行任务`,
-  chipOpens: '打开例行任务',
   railAttention: count => `${count} 个例行任务需要处理`
 }
 
@@ -1113,9 +1092,6 @@ const zhHant: RoutinesCopy = {
   editCardTitle: '變更任務內容、執行時間或結果去向',
   editCardHint: '例行任務在其智慧體的設定中編輯。',
   askInChatPrompt: '幫我設定一個例行任務：',
-  chipTooltip: (count, agent) => `${agent} 的 ${count} 個例行任務`,
-  chipFailing: name => `${name} 失敗 · 開啟例行任務`,
-  chipOpens: '開啟例行任務',
   railAttention: count => `${count} 個例行任務需要處理`
 }
 
@@ -1268,10 +1244,6 @@ const ru: RoutinesCopy = {
   editCardTitle: 'Изменить, что она делает, когда запускается и куда отправляет результаты',
   editCardHint: 'Регулярные задачи меняются в настройках их агента.',
   askInChatPrompt: 'Настрой регулярную задачу, которая ',
-  chipTooltip: (count, agent) =>
-    `${agent}: ${count} ${RU_PLURAL(count, 'регулярная задача', 'регулярные задачи', 'регулярных задач')}`,
-  chipFailing: name => `${name}: ошибка · открывает регулярные задачи`,
-  chipOpens: 'Открывает регулярные задачи',
   railAttention: count =>
     `${count} ${RU_PLURAL(count, 'регулярная задача требует', 'регулярные задачи требуют', 'регулярных задач требуют')} внимания`
 }
@@ -1407,9 +1379,6 @@ const ar: RoutinesCopy = {
   editCardTitle: 'غيّر ما تفعله أو وقت تشغيلها أو وجهة نتائجها',
   editCardHint: 'تُحرَّر المهام الروتينية في إعدادات وكيلها.',
   askInChatPrompt: 'أعدّ لي مهمة روتينية ',
-  chipTooltip: (count, agent) => `مهام ${agent} الروتينية: ${count}`,
-  chipFailing: name => `فشلت ${name} · يفتح المهام الروتينية`,
-  chipOpens: 'يفتح المهام الروتينية',
   railAttention: count => `مهام روتينية تحتاج إلى انتباه: ${count}`
 }
 

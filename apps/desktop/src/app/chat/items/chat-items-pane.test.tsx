@@ -1,8 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { $routineSelection } from '@/app/routines/routines-store'
+import type { CronJob } from '@/hermes'
 import { $artifactRegistry, upsertArtifact } from '@/store/artifacts'
 import { $chatItemsOpen } from '@/store/chat-items'
+import { beginCronJobsRequest, commitCronJobsRequest, invalidateCronJobsRequests } from '@/store/cron'
 import { setInterfaceMode } from '@/store/interface-mode'
 import { _resetItemIndexForTests } from '@/store/item-index'
 import { setSelectedStoredSessionId, setSessions } from '@/store/session'
@@ -50,6 +54,9 @@ afterEach(() => {
   $shellChoice.set(null)
   $artifactRegistry.set({})
   $chatItemsOpen.set(false)
+  commitCronJobsRequest(beginCronJobsRequest('\u0000all'), [])
+  invalidateCronJobsRequests()
+  $routineSelection.set(null)
   setSelectedStoredSessionId(null)
   setSessions([])
   setInterfaceMode('advanced')
@@ -92,6 +99,30 @@ it('says so when the chat has nothing yet', async () => {
 
   await waitFor(() => expect(getSessionMessages).toHaveBeenCalledWith('quiet', 'default', expect.anything()))
   expect(screen.getByText('Nothing here yet')).toBeTruthy()
+})
+
+it('lists the routines of the chat’s agent first, and opens one on the Routines page', async () => {
+  const routine = (id: string, name: string, profile: string) =>
+    ({ enabled: true, id, name, profile, schedule: { kind: 'interval', minutes: 60 } }) as CronJob
+
+  commitCronJobsRequest(beginCronJobsRequest('\u0000all'), [
+    routine('brief', 'Morning brief', 'default'),
+    routine('other', 'Someone else’s', 'ops')
+  ])
+  setSelectedStoredSessionId('busy')
+  render(
+    <MemoryRouter>
+      <ChatItemsPane />
+    </MemoryRouter>
+  )
+
+  const tabs = await screen.findByRole('tablist', { name: 'Chat items' })
+  await waitFor(() => expect(within(tabs).getByRole('tab', { name: /All\s*5/ })).toBeTruthy())
+  expect(within(tabs).getAllByRole('tab')[1].textContent).toMatch(/1$/)
+  expect(screen.queryByRole('button', { name: /Someone else/ })).toBeNull()
+
+  fireEvent.click(screen.getByRole('button', { name: /Morning brief/ }))
+  expect($routineSelection.get()).toEqual({ id: 'brief', profile: 'default' })
 })
 
 function SimpleButton({ sessionId }: { sessionId: string }) {

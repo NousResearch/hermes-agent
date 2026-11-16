@@ -18,7 +18,6 @@ import { knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
 
-import { AgentRoutinesChip, type AgentRoutineSummary, useAgentRoutineSummaries } from '../../../routines/agent-routines-chip'
 import { tileOwnerRoute } from '../../session-tile-owner'
 import { ProfileGroupHeaderSlot } from '../gateway-groups'
 import { useHiddenAgentCopy } from '../hidden-agent-copy'
@@ -51,8 +50,6 @@ interface AgentCardProps extends Pick<PortalAgentGroupsProps, 'onToggle' | 'onOp
   hidden: boolean
   /** How many of the agent's chats the list holds: the card's second line when no description. */
   chatCount: number
-  /** Its routines (R5 chip); absent when it has none. */
-  routines?: AgentRoutineSummary
   children: ReactNode
 }
 
@@ -70,7 +67,6 @@ function AgentCard({
   onToggle,
   onOpenAgent,
   pending,
-  routines,
   children
 }: AgentCardProps) {
   const { t } = useI18n()
@@ -78,8 +74,8 @@ function AgentCard({
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${agent.label}`
   const summary = chatCount ? t.simplifiedAgents.chatCount(chatCount) : t.simplifiedAgents.noChats
   const headerItems = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
-  // The disclosure is offered only when folding would hide something: chats, routines or plugin chrome.
-  const foldable = chatCount > 0 || Boolean(routines?.count) || headerItems.length > 0
+  // The disclosure is offered only when folding would hide something: chats or plugin chrome.
+  const foldable = chatCount > 0 || headerItems.length > 0
 
   return (
     <div
@@ -132,7 +128,6 @@ function AgentCard({
         />
       )}
       {open && children}
-      {open && <AgentRoutinesChip agentLabel={agent.label} summary={routines} />}
     </div>
   )
 }
@@ -145,7 +140,6 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const tiles = useStore($sessionTiles)
   const { agents, sessionsByAgent, owner } = props.agents
   const attention = useAgentSidebarAttention(agents, props.allSessions)
-  const routines = useAgentRoutineSummaries()
   const query = props.query.trim().toLowerCase()
 
   const viewedOwner = focused
@@ -210,7 +204,6 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                       onToggle={props.onToggle}
                       open={Boolean(query) || (props.expanded[agentKey(agent)] ?? true)}
                       pending={props.pending}
-                      routines={routines.get(agentKey(agent))}
                       selected={agentKey(agent) === activeAgentKey}
                     >
                       {props.renderSessions(sessionsByAgent.get(agent.id) ?? [], agent)}

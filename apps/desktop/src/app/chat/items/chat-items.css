@@ -169,8 +169,19 @@
 }
 
 .chat-items-trailing {
+  display: flex;
   flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
   color: var(--portal-text-quaternary);
+}
+
+/* A routine that needs the user (the rail's dot, 1081:29422). */
+.chat-items-attention {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-status-error-ink);
 }
 
 .chat-items-trailing svg {

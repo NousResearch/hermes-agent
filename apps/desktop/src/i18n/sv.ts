@@ -409,6 +409,38 @@ export const svOverrides: TranslationOverrides = {
     }
   },
   settings: {
+    uninstallSection: {
+      dangerZone: 'Riskområde',
+      checkingInstalled: 'Kontrollerar vad som är installerat…',
+      uninstallHermes: 'Avinstallera Hermes',
+      managedBody: 'Installationen hanteras av systemet, så Hermes kan inte ta bort sig självt.',
+      dataKept: path => `Din konfiguration, dina chattar och dina hemligheter finns i ${path}. De tas inte bort när appen avinstalleras.`,
+      openAppsSettings: 'Öppna appinställningar',
+      chooseHowMuch: 'Välj hur mycket som ska tas bort. Appen stängs för att slutföra arbetet. Du kan alltid öppna installationsprogrammet igen.',
+      confirmUninstall: 'Bekräfta avinstallationen',
+      confirmBody: what => `Detta tar bort ${what}. Det kan inte ångras.`,
+      appLabel: 'App:',
+      couldNotStart: 'Avinstallationen kunde inte starta.',
+      uninstalling: 'Avinstallerar…',
+      yesUninstall: 'Ja, avinstallera',
+      options: {
+        gui: {
+          title: 'Avinstallera bara chattgränssnittet',
+          description: 'Ta bort skrivbordsappen. Hermes-agenten, konfigurationen och chattarna behålls.',
+          consequence: 'chattgränssnittet för skrivbordet, alltså denna app och dess data'
+        },
+        lite: {
+          title: 'Avinstallera gränssnitt och agent, behåll data',
+          description: 'Ta bort appen och Hermes-agenten, men behåll konfiguration, chattar och hemligheter för en framtida ominstallation.',
+          consequence: 'chattgränssnittet och Hermes-agenten. Konfiguration, chattar och hemligheter behålls'
+        },
+        full: {
+          title: 'Avinstallera allt',
+          description: 'Ta bort appen, agenten och alla användardata: konfiguration, chattar, schemalagda jobb, hemligheter och loggar.',
+          consequence: 'ALLT: chattgränssnittet, Hermes-agenten samt all konfiguration, alla chattar, hemligheter och loggar'
+        }
+      }
+    },
     closeSettings: 'Stäng inställningar',
     exportConfig: 'Exportera konfiguration',
     importConfig: 'Importera konfiguration',

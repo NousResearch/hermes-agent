@@ -828,22 +828,32 @@ button.portal-section-title:hover {
 }
 
 /* The open machine's header stays at the top of the list while its agents scroll under it, until
-   its card ends. Opaque: the card's fill over the panel's solid colour, so rows never show through it. */
+   its card ends. Opaque, so rows never show through it, and painted as the panel itself is (its
+   noise and veil over the window's art, portal-artwork.css) under the card's fill: a flat colour
+   there read as a dark slab laid on the card. */
 .portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] {
+  --portal-machine-head-hover: transparent;
+
   position: sticky;
   top: 0;
   z-index: 1;
   border-radius: var(--portal-sidebar-machine-radius) var(--portal-sidebar-machine-radius) 0 0;
   background:
+    linear-gradient(var(--portal-machine-head-hover), var(--portal-machine-head-hover)),
     linear-gradient(var(--portal-sidebar-machine-fill), var(--portal-sidebar-machine-fill)),
-    var(--portal-sidebar-background);
+    var(--artwork-panel-noise), linear-gradient(var(--portal-sidebar-panel-background)), var(--artwork-paint);
+  background-color: var(--portal-surface-canvas);
+  background-blend-mode: normal, normal, normal, normal, var(--artwork-blend);
 }
 
 .portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading']:hover {
-  background:
-    linear-gradient(var(--portal-sidebar-hover), var(--portal-sidebar-hover)),
-    linear-gradient(var(--portal-sidebar-machine-fill), var(--portal-sidebar-machine-fill)),
-    var(--portal-sidebar-background);
+  --portal-machine-head-hover: var(--portal-sidebar-hover);
+}
+
+.portal-sidebar
+  [data-slot='gateway-group'][data-open='true']
+  > [data-slot='gateway-heading']:has(> :is(.portal-machine-row, .portal-machine-status):active) {
+  --portal-machine-head-hover: var(--portal-sidebar-press);
 }
 
 .portal-machine-agents {

@@ -423,6 +423,14 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
+    // This turn's end-of-turn report is still to come, and may arrive after the
+    // next turn's message.start (ClientSessionState.turnEndReportOwed). Not when
+    // the report already settled the turn ahead of this frame (#119569): the turn
+    // is then neither live nor stopped here.
+    deps.updateSessionState(sessionId, state =>
+      (state.turnLive || state.interrupted) && !state.turnEndReportOwed ? { ...state, turnEndReportOwed: true } : state
+    )
+
     // The view mirrors this runtime only while bound to it (settled-turns.ts).
     noteTurnSettled(sessionId, deps.activeSessionIdRef.current === sessionId)
     completeAssistantMessage(

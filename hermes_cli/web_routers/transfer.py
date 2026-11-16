@@ -16,6 +16,7 @@ import contextlib
 import json
 import os
 import secrets
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -90,12 +91,24 @@ async def read_dashboard_backup_chunk(archive: str, offset: int = 0, length: int
     return await asyncio.to_thread(_read_chunk, target, offset, length)
 
 
+# One writer per upload: a late request for a chunk the client already retried must not interleave.
+_UPLOAD_LOCKS: dict[str, threading.Lock] = {}
+_UPLOAD_LOCKS_GUARD = threading.Lock()
+
+
+def _upload_lock(path: Path) -> threading.Lock:
+    with _UPLOAD_LOCKS_GUARD:
+        return _UPLOAD_LOCKS.setdefault(path.name, threading.Lock())
+
+
 def _append(path: Path, offset: int, data: bytes, create: bool) -> int:
-    """Write ``data`` at ``offset`` (a retried chunk rewrites from its own offset); return the size."""
+    """Write ``data`` at ``offset``; return the size. Nothing is ever truncated: a retried chunk
+    (offset below the size) must match the bytes already there, so a late duplicate cannot cut
+    off the chunks written after it."""
     if create:
         path.parent.mkdir(parents=True, exist_ok=True)
         os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-    with path.open("r+b") as handle:
+    with _upload_lock(path), path.open("r+b") as handle:
         received = handle.seek(0, os.SEEK_END)
         if offset > received:
             raise HTTPException(status_code=409, detail={"code": "offset_gap", "received": received,
@@ -103,9 +116,11 @@ def _append(path: Path, offset: int, data: bytes, create: bool) -> int:
         if offset + len(data) > TRANSFER_MAX_BYTES:
             raise HTTPException(status_code=413, detail="The backup is too large to transfer")
         handle.seek(offset)
-        handle.truncate()
-        handle.write(data)
-        return handle.tell()
+        held = handle.read(len(data))
+        if held != data[:len(held)]:
+            raise HTTPException(status_code=409, detail="The chunk differs from the bytes already received")
+        handle.write(data[len(held):])
+        return max(received, handle.tell())
 
 
 @router.post("/api/ops/transfer/chunk")

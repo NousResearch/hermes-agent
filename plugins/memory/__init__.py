@@ -16,6 +16,7 @@ import importlib.metadata
 import importlib.util
 import logging
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
@@ -40,6 +41,9 @@ _NATIVE_WARM_IMPORTS: tuple[str, ...] = ("numpy",)
 # providers are re-collected on every agent build, so each load registers the same tools again; the
 # newest generation supersedes the previous one, which is disposed instead of accumulating forever.
 _MEMORY_PROVIDER_TOOL_REGISTRATIONS: dict[tuple[str, str, str], object] = {}
+# A temporary inspection must restore the live tool it temporarily overrides on release.
+# Capture this at collector creation; isolated plugin hosts can register on another thread.
+_TRANSIENT_MEMORY_PROVIDER_LOAD: ContextVar[bool] = ContextVar("transient_memory_provider_load", default=False)
 
 
 def _registered_skills_for_active_home() -> dict[str, Path]:
@@ -446,6 +450,7 @@ class _ProviderCollector:
         self._register_skills = register_skills
         self._context = None
         self._hook_source = None
+        self._transient_tool_registrations = _TRANSIENT_MEMORY_PROVIDER_LOAD.get()
 
     def collect(self, register, *, source=None):
         """Run ``register`` with this collector; hooks it registers form the fallback group that
@@ -496,7 +501,8 @@ class _ProviderCollector:
         is_async = kwargs.get("is_async", args[2] if len(args) > 2 else False)
         registration = self.__getattr__("register_tool")(
             name, toolset, schema, _ClaimGatedHandler(self, name, handler, bool(is_async)), *args, **kwargs)
-        self._supersede_tool_registration(name, registration)
+        if not self._transient_tool_registrations:
+            self._supersede_tool_registration(name, registration)
         return registration
 
     def _supersede_tool_registration(self, name, registration) -> None:
@@ -596,7 +602,11 @@ def provider_registration_scope(name: str) -> Iterator[Callable[[], None]]:
             made = [r for r in manager._ownership_ledger.get(key, ()) if id(r) not in before]
             manager._dispose_registrations(made)
 
-    yield release
+    token = _TRANSIENT_MEMORY_PROVIDER_LOAD.set(True)
+    try:
+        yield release
+    finally:
+        _TRANSIENT_MEMORY_PROVIDER_LOAD.reset(token)
 
 
 def _get_active_memory_provider() -> Optional[str]:

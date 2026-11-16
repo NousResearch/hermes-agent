@@ -134,3 +134,30 @@ def test_lease_and_ledger_bookkeeping_stays_bounded(home):
         tool_regs = [r for r in manager._registration_order if r.kind == "tool" and r.key == _TOOL]
     assert len(replacement_coordinator._active.get(slot, [])) == 1
     assert len(tool_regs) == 1
+
+
+def test_transient_provider_load_restores_existing_tool_without_leaking_generations(home):
+    """One-shot provider inspection must not revoke the active provider's registry tool."""
+    from hermes_cli.plugins import get_plugin_manager
+    from plugins.memory import load_memory_provider, provider_registration_scope
+    from tools.registry import registry
+
+    first = _build_and_finish(home, 0)
+    current = _build_and_finish(home, 1)
+    with _scoped(home):
+        scope = get_plugin_manager().scope_key
+        expected = registry.snapshot_registration(_TOOL, scope=scope)
+        assert expected is not None
+        with provider_registration_scope("pergen") as release:
+            inspection = load_memory_provider("pergen", register_skills=False)
+            assert inspection is not None
+            transient = weakref.ref(inspection)
+            assert registry.snapshot_registration(_TOOL, scope=scope) is not expected
+            del inspection
+            release()
+        assert registry.snapshot_registration(_TOOL, scope=scope) is expected
+        assert json.loads(registry.dispatch(_TOOL, {})) == {"generation": 1}
+    gc.collect()
+    assert first() is None, "a superseded normal generation is still retained"
+    assert transient() is None, "the finished inspection provider is still retained"
+    assert current() is not None

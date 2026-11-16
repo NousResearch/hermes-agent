@@ -5101,6 +5101,7 @@ export const svOverrides: TranslationOverrides = {
     openDirective: 'Öppna',
     queueMessage: 'Köa meddelande',
     steer: 'Styr den pågående körningen',
+    redirect: 'Omdirigera den pågående körningen',
     stop: 'Stoppa',
     send: 'Skicka',
     speaking: 'Talar',
@@ -5284,7 +5285,26 @@ export const svOverrides: TranslationOverrides = {
     voiceEngineChangeFailed: 'Det gick inte att byta motor för röstchatt',
     voiceEngineChainedShort: 'tal till text',
     voiceEngineLiveShort: 'GPT-Live',
-    hiddenQueued: 'Konfigurationsanteckning'
+    hiddenQueued: 'Konfigurationsanteckning',
+    wakeWord: phrase => `Väckningsord ”${phrase}”`,
+    restoredDraftNotice: 'Ditt oskickade meddelande återställdes',
+    restoredDraftUndo: 'Ångra',
+    queueExpand: 'Fäll ut',
+    queueCollapse: 'Fäll ihop',
+    queueLostNote: 'Turen förlorades under omstarten',
+    restoreImageDraft: 'Återställ bildutkast',
+    queueCancelFailed: 'Det gick inte att ta bort den köade turen',
+    queueLostDiscard: 'Förkasta',
+    queueLostDiscardTip:
+      'Gatewayen startade om mitt i turen och kan inte slutföra den. Förkasta den så att de köade turerna bakom kan köras.',
+    queueDroppedTitle: 'Köad prompt togs bort',
+    queueDroppedBody:
+      'Den här bakgrundsposten i kön togs bort eftersom sessionen inte kunde återupptas efter upprepade försök. Övriga poster i kön påverkades inte.',
+    terminalSelectionMissingTitle: 'Terminalmarkeringen är inte tillgänglig',
+    terminalSelectionMissingBody:
+      'Markera terminalraderna igen (Ctrl/Cmd+L) före sändning — den här etiketten saknar ursprunglig text.',
+    queuedTerminalSelectionExpiredBody:
+      'Den här köade terminalmarkeringen är inte längre tillgänglig. Markera raderna igen (Ctrl/Cmd+L) och köa sedan meddelandet på nytt.'
   },
   commandCenter: {
     close: 'Stäng kommandocentralen',

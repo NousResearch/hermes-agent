@@ -5551,6 +5551,20 @@ export const svOverrides: TranslationOverrides = {
     terminalCloseAll: 'Stäng alla',
     addToChat: 'Lägg till i chatten'
   },
+  interfaceMode: {
+    title: 'Gränssnittsläge',
+    hint: 'Ändrar vad som visas, inte vad Hermes kan göra.',
+    sessionNote:
+      'Har angetts av enkelt läge. Ändringen gäller den här sessionen; växla till avancerat läge för att göra den permanent.',
+    simple: {
+      label: 'Enkelt',
+      description: 'För samtal med Hermes. Sidofält och chatt, utan paneler för terminal, filer eller skillnader.'
+    },
+    advanced: {
+      label: 'Avancerat',
+      description: 'För utvecklare. Terminal, filer, skillnader, statusrad och layouter enligt dina inställningar.'
+    }
+  },
   zones: {
     showTabStrip: 'Visa flikar',
     hideTabStrip: 'Dölj flikar',

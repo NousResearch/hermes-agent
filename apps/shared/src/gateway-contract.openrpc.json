@@ -37626,6 +37626,18 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "reset_to_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reset To Session Id"
           }
         },
         "required": [

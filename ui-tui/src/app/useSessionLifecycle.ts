@@ -193,9 +193,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   // model turn). `deferMessages`: the caller resets the transcript next and shows them itself afterwards.
   // A canonical session is the gateway's: the view detaches, it never closes the owner's session.
   const closeSession = useCallback(
-    async (targetSid?: null | string, deferMessages = false) => {
+    async (targetSid?: null | string, deferMessages = false, resetToSessionId?: string) => {
       const closed =
-        targetSid && !gw.isCanonical ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : null
+        targetSid && !gw.isCanonical
+          ? await rpc<SessionCloseResponse>('session.close', {
+              session_id: targetSid,
+              ...(resetToSessionId ? { reset_to_session_id: resetToSessionId } : {})
+            })
+          : null
 
       if (!deferMessages) {
         closed?.messages?.forEach(message => sys(message))
@@ -445,12 +450,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           return null
         }
 
-        const closed = keepCurrent ? null : await closeSession(previousSid, true)
-
-        if (flight !== attachmentFlight.current) {
-          return null
-        }
-
         // HERMES_TUI_CWD is the dashboard-picked workspace: an explicit cwd on
         // session.create on both transports, so /new stays in that workspace.
         const workspaceCwd = STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {}
@@ -470,6 +469,16 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         if (!r) {
           patchUiState({ status: 'ready' })
+
+          return null
+        }
+
+        // Legacy /new explicitly links both live records. Plain create/resume and
+        // keepCurrent open another conversation without resetting the predecessor.
+        const closed = keepCurrent ? null : await closeSession(previousSid, true, r.session_id)
+
+        if (flight !== attachmentFlight.current) {
+          discardStaleAttachment(r)
 
           return null
         }

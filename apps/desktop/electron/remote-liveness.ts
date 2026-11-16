@@ -218,14 +218,20 @@ export interface PooledRemoteEntry<TConnection extends RemoteConnectionDescripto
   remoteBaseUrl?: null | string
 }
 
+interface PooledRemoteBackendRecovery {
+  canRetire: () => Promise<boolean>
+  retire: () => Promise<void> | void
+}
+
 export interface RevalidatePooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
   entries: Iterable<[string, PooledRemoteEntry<TConnection>]>
   currentEntry?: (profile: string) => PooledRemoteEntry<TConnection> | undefined
-  canRetire?: (
+  /** Requires currentEntry to verify guarded retirement actually removed the entry. */
+  recoveryForEntry?: (
     profile: string,
     entry: PooledRemoteEntry<TConnection>,
     connection: TConnection | undefined
-  ) => Promise<boolean>
+  ) => PooledRemoteBackendRecovery
   log: (message: string) => void
   probe: (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
   stopBackend: (profile: string) => Promise<void> | void
@@ -245,12 +251,16 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
 export async function revalidatePooledRemoteBackends<TConnection extends RemoteConnectionDescriptor>({
   entries,
   currentEntry,
-  canRetire,
+  recoveryForEntry,
   log,
   probe,
   stopBackend,
   tracker
 }: RevalidatePooledRemoteBackendsOptions<TConnection>): Promise<{ dropped: string[] }> {
+  if (recoveryForEntry && !currentEntry) {
+    throw new Error('Guarded pooled recovery requires currentEntry to verify retirement.')
+  }
+
   const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
   const dropped: string[] = []
 
@@ -282,14 +292,25 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
           return
         }
 
-        const permitted = canRetire ? await canRetire(profile, entry, connection) : true
+        const recovery = recoveryForEntry?.(profile, entry, connection)
+        const permitted = recovery ? await recovery.canRetire() : true
 
         if (!permitted || (currentEntry && currentEntry(profile) !== entry)) {
           return
         }
 
+        if (recovery) {
+          await recovery.retire()
+        } else {
+          await stopBackend(profile)
+        }
+
+        // A guarded retirement can become a no-op while waiting for the drain.
+        if (currentEntry && currentEntry(profile) === entry) {
+          return
+        }
+
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
-        await stopBackend(profile)
         dropped.push(profile)
       }
     })

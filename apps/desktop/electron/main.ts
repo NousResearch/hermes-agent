@@ -13934,7 +13934,7 @@ function revalidatePool() {
     log: rememberLog,
     probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
     currentEntry: key => backendPool.get(key),
-    canRetire: (key, entry, connection) => pooledBackendRecovery(key, entry, connection ? connection.remoteKind === 'ssh' : sshConnections.has(sshScopeKey(key))).canRetire(),
+    recoveryForEntry: (key, entry, connection) => pooledBackendRecovery(key, entry, connection ? connection.remoteKind === 'ssh' : sshConnections.has(sshScopeKey(key))),
     stopBackend: stopPoolBackend,
     tracker: pooledRemoteLiveness
   })
@@ -13976,7 +13976,7 @@ function revalidateSuspectPoolAfterResume() {
 
         if (!entry) {return}
         const connection = await entry.connectionPromise.catch(() => null)
-        const recovery = pooledBackendRecovery(poolKey, entry, connection?.remoteKind === 'ssh')
+        const recovery = pooledBackendRecovery(poolKey, entry, connection ? connection.remoteKind === 'ssh' : sshConnections.has(sshScopeKey(poolKey)))
 
         if (!(await recovery.canRetire())) {throw new Error('The remote owner is not confirmed stopped; keeping its work.')}
 

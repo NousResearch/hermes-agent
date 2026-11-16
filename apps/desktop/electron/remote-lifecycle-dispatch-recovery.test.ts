@@ -145,9 +145,16 @@ describe('background SSH pool retirement', () => {
       const connection = { baseUrl: 'http://127.0.0.1:50001', remoteKind: 'ssh' }
       const entry = { connectionPromise: Promise.resolve(connection), remoteBaseUrl: connection.baseUrl }
       const pool = new Map([['scope', entry]])
-      const state = { pid: 333 }
+      const ssh = { exec: vi.fn(), cancelForward: vi.fn(async () => {}), close: vi.fn(async () => {}) }
+      const state = { ssh, localPort: 50001, remotePort: 40000, pid: 333 }
       const sshStates = new Map([['scope', state]])
-      const releaseTransport = vi.fn(async () => {})
+      const stopKeepalive = vi.fn()
+
+      const releaseTransport = vi.fn(async (key: string, captured: typeof state) => {
+        sshStates.delete(key)
+        stopKeepalive(key)
+        await recovery.releaseSshTransport(captured)
+      })
 
       const stopBackend = vi.fn(async (key: string) => {
         await Promise.resolve()
@@ -165,8 +172,8 @@ describe('background SSH pool retirement', () => {
         drain: async (_key, cleanup) => cleanup()
       })
 
-      const canRetire = vi.fn(async (key, probed, resolved) =>
-        forEntry(key, probed, resolved?.remoteKind === 'ssh').canRetire()
+      const recoveryForEntry = vi.fn((key, probed, resolved) =>
+        forEntry(key, probed, resolved?.remoteKind === 'ssh')
       )
 
       const tracker = new RemoteLivenessTracker()
@@ -179,7 +186,7 @@ describe('background SSH pool retirement', () => {
         revalidatePooledRemoteBackends({
           entries: pool.entries(),
           currentEntry: key => pool.get(key),
-          canRetire,
+          recoveryForEntry,
           probe,
           stopBackend,
           tracker,
@@ -189,12 +196,23 @@ describe('background SSH pool retirement', () => {
       await expect(run()).resolves.toEqual({ dropped: [] })
       await expect(run()).resolves.toEqual({ dropped: [] })
       await expect(run()).resolves.toEqual({ dropped: permitted ? ['scope'] : [] })
-      expect(canRetire).toHaveBeenCalledWith('scope', entry, connection)
+      expect(recoveryForEntry).toHaveBeenCalledOnce()
+      expect(recoveryForEntry).toHaveBeenCalledWith('scope', entry, connection)
       expect(probe).toHaveBeenCalledTimes(3)
       expect(pool.get('scope')).toBe(permitted ? undefined : entry)
       expect(stopBackend).toHaveBeenCalledTimes(permitted ? 1 : 0)
-      expect(sshStates.get('scope')).toBe(state)
-      expect(releaseTransport).not.toHaveBeenCalled()
+      expect(releaseTransport).toHaveBeenCalledTimes(permitted ? 1 : 0)
+      expect(stopKeepalive).toHaveBeenCalledTimes(permitted ? 1 : 0)
+      expect(ssh.cancelForward).toHaveBeenCalledTimes(permitted ? 1 : 0)
+      expect(ssh.close).toHaveBeenCalledTimes(permitted ? 1 : 0)
+      expect(sshStates.get('scope')).toBe(permitted ? undefined : state)
+      expect(ssh.exec).not.toHaveBeenCalled()
+
+      if (permitted) {
+        expect(releaseTransport).toHaveBeenCalledWith('scope', state)
+        expect(ssh.cancelForward).toHaveBeenCalledWith(50001, 40000)
+        expect(stopKeepalive).toHaveBeenCalledWith('scope')
+      }
     }
   )
 
@@ -206,18 +224,21 @@ describe('background SSH pool retirement', () => {
     const stopBackend = vi.fn()
     const tracker = new RemoteLivenessTracker()
 
-    const canRetire = vi.fn(async () => {
-      await Promise.resolve()
-      pool.set('scope', replacement)
+    const recoveryForEntry = vi.fn(() => ({
+      canRetire: async () => {
+        await Promise.resolve()
+        pool.set('scope', replacement)
 
-      return true
-    })
+        return true
+      },
+      retire: stopBackend
+    }))
 
     const run = () =>
       revalidatePooledRemoteBackends({
         entries: pool.entries(),
         currentEntry: key => pool.get(key),
-        canRetire,
+        recoveryForEntry,
         probe: async () => {
           throw new Error('probe timed out')
         },
@@ -229,9 +250,119 @@ describe('background SSH pool retirement', () => {
     await run()
     await run()
     await expect(run()).resolves.toEqual({ dropped: [] })
-    expect(canRetire).toHaveBeenCalledOnce()
+    expect(recoveryForEntry).toHaveBeenCalledOnce()
     expect(pool.get('scope')).toBe(replacement)
     expect(stopBackend).not.toHaveBeenCalled()
+  })
+})
+
+describe('background SSH pool drain races', () => {
+  it('rejects guarded recovery without currentEntry before any work', async () => {
+    const connection = { baseUrl: 'http://127.0.0.1:50001', remoteKind: 'ssh' }
+    const entry = { connectionPromise: Promise.resolve(connection), remoteBaseUrl: connection.baseUrl }
+    const pool = new Map([['scope', entry]])
+
+    const probe = vi.fn(async () => {
+      throw new Error('probe timed out')
+    })
+
+    const canRetire = vi.fn(async () => true)
+    const retire = vi.fn((): void => {})
+    const recoveryForEntry = vi.fn(() => ({ canRetire, retire }))
+    const stopBackend = vi.fn((): void => {})
+
+    await expect(
+      revalidatePooledRemoteBackends({
+        entries: pool.entries(),
+        recoveryForEntry,
+        probe,
+        stopBackend,
+        tracker: new RemoteLivenessTracker(1),
+        log: () => {}
+      })
+    ).rejects.toThrow('Guarded pooled recovery requires currentEntry to verify retirement.')
+    expect(probe).not.toHaveBeenCalled()
+    expect(recoveryForEntry).not.toHaveBeenCalled()
+    expect(canRetire).not.toHaveBeenCalled()
+    expect(retire).not.toHaveBeenCalled()
+    expect(stopBackend).not.toHaveBeenCalled()
+    expect(pool.get('scope')).toBe(entry)
+  })
+
+  it('does not report retirement when SSH state changes while draining', async () => {
+    const connection = { baseUrl: 'http://127.0.0.1:50001', remoteKind: 'ssh' }
+    const entry = { connectionPromise: Promise.resolve(connection), remoteBaseUrl: connection.baseUrl }
+    const pool = new Map([['scope', entry]])
+    const ssh = { exec: vi.fn(), cancelForward: vi.fn(async () => {}), close: vi.fn(async () => {}) }
+    const state = { ssh, localPort: 50001, remotePort: 40000, pid: 333 }
+    const replacementSsh = { exec: vi.fn(), cancelForward: vi.fn(async () => {}), close: vi.fn(async () => {}) }
+    const replacement = { ssh: replacementSsh, localPort: 50002, remotePort: 40001, pid: 444 }
+    const sshStates = new Map([['scope', state]])
+    const stopKeepalive = vi.fn()
+
+    const releaseTransport = vi.fn(async (key: string, captured: typeof state) => {
+      sshStates.delete(key)
+      stopKeepalive(key)
+      await recovery.releaseSshTransport(captured)
+    })
+
+    const stopBackend = vi.fn(async (key: string) => {
+      pool.delete(key)
+    })
+
+    const proveStopped = vi.fn(async () => true)
+
+    const drain = vi.fn(async (_key, cleanup) => {
+      await Promise.resolve()
+      sshStates.set('scope', replacement)
+      await cleanup()
+    })
+
+    const forEntry = recovery.createPooledBackendRecovery({
+      pool,
+      sshStates,
+      scopeFor: key => key,
+      proveStopped,
+      markRecovery: () => {},
+      retireEntry: stopBackend,
+      releaseTransport,
+      drain
+    })
+
+    const recoveryForEntry = vi.fn((key, probed) => forEntry(key, probed, true))
+    const tracker = new RemoteLivenessTracker()
+
+    const run = () =>
+      revalidatePooledRemoteBackends({
+        entries: pool.entries(),
+        currentEntry: key => pool.get(key),
+        recoveryForEntry,
+        probe: async () => {
+          throw new Error('probe timed out')
+        },
+        stopBackend,
+        tracker,
+        log: () => {}
+      })
+
+    await expect(run()).resolves.toEqual({ dropped: [] })
+    await expect(run()).resolves.toEqual({ dropped: [] })
+    const result = await run()
+    expect(recoveryForEntry).toHaveBeenCalledOnce()
+    expect(proveStopped).toHaveBeenCalledExactlyOnceWith(state)
+    expect(drain).toHaveBeenCalledOnce()
+    expect(pool.get('scope')).toBe(entry)
+    expect(sshStates.get('scope')).toBe(replacement)
+    expect(stopBackend).not.toHaveBeenCalled()
+    expect(releaseTransport).not.toHaveBeenCalled()
+    expect(stopKeepalive).not.toHaveBeenCalled()
+    expect(ssh.cancelForward).not.toHaveBeenCalled()
+    expect(ssh.close).not.toHaveBeenCalled()
+    expect(ssh.exec).not.toHaveBeenCalled()
+    expect(replacementSsh.cancelForward).not.toHaveBeenCalled()
+    expect(replacementSsh.close).not.toHaveBeenCalled()
+    expect(replacementSsh.exec).not.toHaveBeenCalled()
+    expect(result).toEqual({ dropped: [] })
   })
 })
 

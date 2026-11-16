@@ -6,7 +6,7 @@ records that goes through:
 
 - the profile ``.env`` read (:func:`read_profile_env`: the profile secret scope, ``load_env()``,
   every ``load_env_file(<home>/.env)`` reader), and the launch load of that file into
-  ``os.environ`` (:func:`routed_bootstrap_env`, :func:`boot_secret_store`);
+  ``os.environ`` (the ordinary dotenv loader, fenced by :func:`load_profile_dotenv`);
 - ``save_env_value`` / ``remove_env_value`` (:func:`route_env_write`);
 - the ``auth.json`` store's load and save (:func:`load_auth_store`, :func:`save_auth_store`) and the
   readers that parse the file themselves (:func:`read_auth_json`).

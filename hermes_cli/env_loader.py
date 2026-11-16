@@ -105,9 +105,9 @@ _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     """KEY names assigned in a dotenv file (including empty ``KEY=``), via the same tokenizer that installs
     profile scopes — a key the installer sees is a key the dashboard scrub sees (BOM'd first line included)."""
-    from agent.secret_scope import load_env_file
+    from hermes_secret_routing import read_profile_env
 
-    return set(load_env_file(path))
+    return set(read_profile_env(path))
 
 
 def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
@@ -117,7 +117,8 @@ def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
     Does **not** run when the ``.env`` file does not exist (bare-profile case, which follows ``#66930`` /
     ``#67027`` semantics).
     """
-    if not path.exists():
+    from hermes_secret_routing import env_file_exists
+    if not env_file_exists(path):
         return
     defined = _env_keys_defined_in_dotenv(path)
     for key in _PROFILE_MANAGED_ENV_KEYS:

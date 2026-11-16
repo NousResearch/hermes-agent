@@ -487,6 +487,16 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     return event
 
 
+def declared_write_tier(event: CacheEvent) -> Optional[str]:
+    """The tier THIS request's writes went to when the route declares it (no usage split): the
+    request's TTL under the route rule. ``event.tier`` is the earliest deadline over the whole
+    prefix, so a 1h write on top of an older 5m prefix would read as 5m."""
+    provider, base_url = event.destination[0], event.destination[1]
+    verdict = _RULES[event.route_class](_Ctx(event.route_class, event.requested_ttl, None, {}, event.write_tokens,
+                                             route_ttl_ceiling(provider, base_url)))
+    return verdict.tiers[-1] if verdict.confidence == DECLARED and verdict.tiers else None
+
+
 def record_unobserved_cache_response(agent: Any, usage: Any, *, reason: str) -> Optional[CacheEvent]:
     """A runtime whose requests Hermes does not build (the Codex app-server sets its own cache
     options): the cache moved but its window cannot be known, so it is recorded ``unknown`` and no
@@ -530,7 +540,7 @@ def _fallback_event(agent: Any, last_assistant_at: float, generation: Optional[i
     model = str(getattr(agent, "model", "") or "")
     caching = bool(getattr(agent, "_use_prompt_caching", False))
     requested = effective_cache_ttl(getattr(agent, "_cache_ttl", None), provider=provider, model=model,
-                                    base_url=base_url) if caching else None
+                                    base_url=base_url, auto=getattr(agent, "_cache_ttl_auto", False)) if caching else None
     route_class = classify_route(provider=provider, base_url=base_url, api_mode=str(getattr(agent, "api_mode", "") or ""),
                                  model=model, has_markers=caching, retention=None)
     verdict = _RULES[route_class](_Ctx(route_class, requested, None, {}, 0, route_ttl_ceiling(provider, base_url)))

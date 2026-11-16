@@ -253,6 +253,15 @@ export const svOverrides: TranslationOverrides = {
     }
   },
   firstRun: {
+    namePlaceholder: 'Ditt namn',
+    useName: name => `Använd ”${name}”`,
+    install: 'Installera',
+    installed: 'Installerad',
+    loading: 'Läser in…',
+    noPlugins: 'Det finns inga insticksprogram att visa just nu.',
+    noneChosen: 'Inget',
+    noAnswer: 'Inget svar',
+    answerRefused: 'Svaret godkändes inte',
     beats: {
       name: 'Namn',
       theme: 'Accentfärg',
@@ -267,6 +276,12 @@ export const svOverrides: TranslationOverrides = {
       full: 'Visa allt',
       skip: 'Hoppa över, låt oss bygga något'
     },
+    skippedAll: 'Introduktionen hoppades över',
+    skip: 'Hoppa över introduktionen',
+    skipTip: 'Avsluta den guidade introduktionen och öppna en ny chatt.',
+    skipFailed: 'Det gick inte att hoppa över introduktionen',
+    slashOffTitle: 'Snedstreckskommandon är avstängda under introduktionen',
+    slashOffBody: 'De fungerar som vanligt när introduktionen är klar.',
     localModel: {
       title: 'Den här datorn kan köra en modell lokalt',
       text: (model, size) => `${model} (${size}) ryms på din maskin. Den är kostnadsfri att köra och chattarna stannar på den här datorn.`,
@@ -278,6 +293,10 @@ export const svOverrides: TranslationOverrides = {
       description: 'Öppna en ny installationschatt som går igenom stegen för första starten med din aktuella modell.',
       action: 'Kör igen',
       failed: 'Det gick inte att starta introduktionen'
+    },
+    intro: {
+      greeting: 'Hej, jag är Hermes.',
+      plan: 'Vi ställer in några saker åt dig. Sedan gör vi något användbart.'
     }
   },
   fileMenu: {

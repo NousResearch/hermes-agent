@@ -64,9 +64,25 @@ def _interpreter_dirs(root: Path) -> tuple[str, ...]:
     return str(interpreter), str(shims)
 
 
+# A replayed step is a pure function of its rendered script, env and cwd within one process.
+# The routing tests replay the same unmutated workflow dozens of times (363 Bash runs, 37
+# distinct, in the Windows lane's selection); each Git Bash spawn costs ~0.5 s on a loaded
+# Windows runner, which pushed the file past the runner's 300 s per-file cap.
+_REPLAYED: dict[tuple, tuple[dict, list]] = {}
+
+
 def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = False) -> tuple[dict, list]:
     required(step, ctx)
     assert step.get("shell", "bash") == "bash", "only safe Bash selection steps are replayed"
+    key = (gha.render(step["run"], ctx), receipt, str(cwd),
+           tuple((k, gha.to_string(gha.render(v, ctx))) for k, v in step.get("env", {}).items()))
+    if key not in _REPLAYED:
+        _REPLAYED[key] = _execute(step, ctx, cwd, receipt=receipt)
+    outputs, calls = _REPLAYED[key]
+    return dict(outputs), list(calls)
+
+
+def _execute(step: dict, ctx: dict, cwd: Path | None, *, receipt: bool) -> tuple[dict, list]:
     with tempfile.TemporaryDirectory(prefix="workflow-replay-", ignore_cleanup_errors=True) as directory:
         root = Path(directory)
         output, calls = root / "outputs", root / "calls"

@@ -96,17 +96,20 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
-    from agent.agent_init import config_context_length_for_runtime, set_config_context_length
+    from agent.agent_init import _positive_int, config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
     agent.compression_enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).lower() in {"true", "1", "yes"}
     agent.codex_responses_native_compaction = is_truthy_value(compression.get("codex_responses_native", False))
-    native_threshold_raw = compression.get("codex_responses_compact_threshold", 200_000)
-    try:
-        if isinstance(native_threshold_raw, bool) or (native_threshold := int(native_threshold_raw)) <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        logger.warning("Invalid compression.codex_responses_compact_threshold=%r; using 200000.", native_threshold_raw)
-        native_threshold = 200_000
+    native_threshold_raw = compression.get("codex_responses_compact_threshold")
+    native_threshold = None
+    if native_threshold_raw is not None:
+        native_threshold = _positive_int(native_threshold_raw, reject=(bool, float))
+        if native_threshold is None:
+            logger.warning(
+                "Invalid compression.codex_responses_compact_threshold=%r; "
+                "using the automatic threshold derived from local compression.",
+                native_threshold_raw,
+            )
     agent.codex_responses_compact_threshold = native_threshold
     # Absence restores the agent_init/config default (0 = disabled).
     with contextlib.suppress(TypeError, ValueError):

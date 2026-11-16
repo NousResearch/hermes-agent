@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
+import inspect
 import logging
 import os
 import signal
@@ -41,6 +43,15 @@ async def _stop_exec_tree(proc) -> None:
             os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch; start_new_session made pid the pgid
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(proc.wait(), timeout=5)
+
+
+def _carry_replied_voice_answer(event, rewritten, new_text: str) -> None:
+    """``dataclasses.replace`` drops the adapter's private typed-answer attribute, and without it a
+    clarify reads the replied-to voice note's speech as the answer. Carry it: the plugin's rewritten
+    text is the answer, or the typed text when the plugin returned the text unchanged."""
+    attr = "_telegram_replied_voice_typed_text"  # read by _prepare_clarify_reply_text
+    if (typed := getattr(event, attr, None)) is not None:
+        setattr(rewritten, attr, typed if new_text == event.text else new_text.strip())
 
 
 class GatewayInboundHooksMixin:
@@ -101,9 +112,17 @@ class GatewayInboundHooksMixin:
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
                     from gateway.session_ingress_context import carry_callback
-                    rewritten = dataclasses.replace(event, text=_new_text)
-                    carry_callback(event, rewritten)
-                    event = rewritten
+                    if getattr(event, '_busy_observed', False):
+                        # Its observer closes the hooks using this exact event. Replacing it loses
+                        # the process-local admission handle assigned after this hook returns.
+                        _carry_replied_voice_answer(event, event, _new_text)
+                        event.text = _new_text
+                    else:
+                        rewritten = dataclasses.replace(event, text=_new_text)
+                        carry_callback(event, rewritten)
+                        rewritten._rewritten_from = event  # accept_interrupt reaches the adapter's event
+                        _carry_replied_voice_answer(event, rewritten, _new_text)
+                        event = rewritten
                 break
             if _action == "allow":
                 break
@@ -186,7 +205,7 @@ class GatewayInboundHooksMixin:
                 env=build_subprocess_env(), cwd=cwd,
                 # Its own process group, so cleanup can reach what the shell started (POSIX;
                 # Windows ignores it and _stop_exec_tree walks the tree with taskkill /T).
-                start_new_session=True,
+                start_new_session=True,  # detached-spawn: ok — awaited; the timeout/cancel path kills its group
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_QUICK_COMMAND_TIMEOUT)
             output = (stdout or stderr).decode().strip()
@@ -209,7 +228,7 @@ class GatewayInboundHooksMixin:
     ) -> tuple[bool, Optional[str], Optional[str]]:
         """Drain gate, user-defined quick commands (exec/alias) and plugin slash commands →
         ``(handled, result, command)``; an alias quick command rewrites ``command``."""
-        if self._draining:
+        if self._draining and getattr(event, "_admitted_before_drain", False) is not True:
             return True, t("gateway.busy.drain_rejected_new_work", action=self._status_action_gerund()), command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
@@ -271,15 +290,30 @@ class GatewayInboundHooksMixin:
         # message has none yet, so session_key is derived from source. Sync handlers run on the
         # gateway pool (contextvars carried), never the loop thread: blocking I/O there starves
         # the liveness watchdog and the process exits 75 mid-handler (#105279).
+        if session_entry is None and getattr(self, "session_store", None) is not None:
+            # The chat's current session, if it has one (lookup only: a command never creates one), so
+            # HERMES_SESSION_ID / session_id name what a later /new reports as old_session_id (#123245).
+            session_entry = await self.async_session_store.lookup_by_session_key(
+                self._session_key_for_source(source))
         _plugin_context = build_session_context(source, self.config, session_entry)
         if session_entry is None:
             _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip() if args is None else args
-        with self._session_env_scope(_plugin_context):
-            if asyncio.iscoroutinefunction(plugin_handler):
-                result = await plugin_handler(user_args)
+        from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+        from gateway.plugin_messages import bind_live_source
+        from gateway.plugin_command_choice import chat_choices
+        call = functools.partial(
+            invoke_plugin_command, plugin_handler, user_args, source=source,
+            session_id=_plugin_context.session_id or "", session_key=_plugin_context.session_key or "",
+            platform=source.platform.value)
+        # ctx.post_message from the handler reaches this chat even before its session is stored;
+        # ctx.ask_choice asks it with the clarify prompt.
+        with (self._session_env_scope(_plugin_context), bind_live_source(source),
+              chat_choices(self, source, self._session_key_for_source(source))):
+            if inspect.iscoroutinefunction(plugin_handler):
+                result = await call()
             else:
-                result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                if asyncio.iscoroutine(result):
+                result = await self._run_in_executor_with_context(call)
+                if inspect.isawaitable(result):
                     result = await result
         return str(result) if result else None

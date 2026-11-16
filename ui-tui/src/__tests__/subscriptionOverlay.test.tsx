@@ -22,9 +22,10 @@ vi.mock('@hermes/ink', async importOriginal => {
   }
 })
 
+import type { SubscriptionStateResponse } from '@hermes/shared/gateway-types'
+
 import type { SubscriptionOverlayState } from '../app/interfaces.js'
 import { SubscriptionOverlay } from '../components/subscriptionOverlay.js'
-import type { SubscriptionStateResponse } from '../gatewayTypes.js'
 import { applyLocale, messages, resetLocale } from '../i18n/runtime.js'
 import { DEFAULT_THEME } from '../theme.js'
 

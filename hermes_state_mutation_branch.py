@@ -34,7 +34,10 @@ def _branch_boundary(conn, target, through):
 def _child_policy(policy, child, prepared):
     """The parent's frozen policy, except editor MCP servers: the gateway prepared the child's own
     selection under the child's own scope (gateway/session_local_mcp.py ``prepare_branch_editor``).
-    Copying the parent's would share its scope, borrowed credentials and live connections."""
+    Copying the parent's would share its scope, borrowed credentials and live connections.
+    A branch starts at Default (``ask``), as main's ACP ``fork_session`` did."""
+    if 'edit_approval_policy' in policy:
+        policy = {**policy, 'edit_approval_policy': 'ask'}
     if prepared is None:
         if policy.get('editor_mcp_json'):
             raise RuntimeStoreError('runtime_coordination_required')

@@ -47,19 +47,44 @@ def wire(turn, agent) -> dict:
     if owner is not None:
         from gateway.session_usage import seed_compression_count
         seed_compression_count(owner[0].sessions.get(owner[1]), agent)
-    if show_reasoning(turn):
-        # Only on request: a reasoning sink makes the agent ask the provider for reasoning.
-        agent.reasoning_callback = lambda text: publish("reasoning.delta", {"text": str(text or "")})
+    if show_reasoning(turn) or _config_default_launch():
+        # A reasoning sink makes the agent ask the provider for reasoning; each delta re-checks the
+        # session's display so /reasoning show|hide applies mid-turn.
+        agent.reasoning_callback = lambda text: (
+            publish("reasoning.delta", {"text": str(text or "")}) if show_reasoning(turn) else None)
     # The desktop window bridges (preview/terminal/window reads, preview actions, desktop_ui events).
     previous[_DESKTOP_UI_TOKEN] = local_desktop_ui.wire(turn, agent)
     return previous
 
 
+# Launch sources whose viewer never sets the session flag; main's TUI gateway defaulted it from config.
+_CONFIG_DEFAULT_SOURCES = frozenset({"tui", "gui"})
+
+
 def show_reasoning(turn) -> bool:
-    """The session's ``show_reasoning`` display flag (``config.set``), off until a viewer sets it."""
+    """The session's ``show_reasoning`` display flag (``config.set``, ``/reasoning show|hide``); unset on an
+    Ink or Desktop launch, its ``display.show_reasoning`` (default on), as main's TUI gateway resolved it."""
     owner = getattr(turn, "_approval_owner", None)
     live = owner[0].sessions.get(owner[1]) if owner is not None else None
-    return getattr(live, "show_reasoning", None) is True
+    flag = getattr(live, "show_reasoning", None)
+    if flag is not None or live is None:
+        return flag is True
+    from gateway.session_policy import active_policy
+    return launch_shows_reasoning(active_policy(), owner[0])
+
+
+def _config_default_launch() -> bool:
+    from gateway.session_policy import active_policy
+    return getattr(active_policy(), "source", None) in _CONFIG_DEFAULT_SOURCES
+
+
+def launch_shows_reasoning(policy, authority) -> bool:
+    """An unset session flag: ``display.show_reasoning`` for an Ink or Desktop launch, else off."""
+    if getattr(policy, "source", None) not in _CONFIG_DEFAULT_SOURCES:
+        return False
+    from gateway.display_config import local_display_config
+    display = local_display_config(policy.config(authority, secrets=False).get("display"))
+    return bool(display.get("show_reasoning", True))
 
 
 def _is_active_session_subagent(turn, payload: dict, event_type: str = "") -> bool:
@@ -110,6 +135,10 @@ def publish_progress(turn, event_type, name, preview, kwargs) -> None:
         _publish_subagent(turn, event_type, _subagent_payload(
             event_type, name, preview, kwargs, show_reasoning=show_reasoning(turn)))
         return
+    if event_type == "tool.progress":
+        from agent.tool_progress_relay import tool_progress_payload
+        turn._publish_execution(event_type, tool_progress_payload(name, preview, kwargs))
+        return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
         return
     from gateway.session_cli_turn import classic_cli_turn
@@ -142,6 +171,20 @@ def restore(agent, previous: dict | None) -> None:
         setattr(agent, name, value)
 
 
+def publish_control_if_changed(turn) -> None:
+    """Agent thread, after each tool: a tool (a plugin adding goal criteria, parking the goal) can move
+    automation state mid-turn, so viewers' cards repaint now instead of at turn end. Scheduled on the
+    gateway loop, which takes the publish ticket in order with the slash commands' publishes; the snapshot
+    (three state.db meta reads on the shared connection lock) is read in a worker thread, because one read
+    per tool across every running session saturated the loop. Revision-gated: other tools publish nothing."""
+    from gateway.session_control_actions import publish_async
+    authority, canonical_id, _generation = turn._approval_owner
+
+    async def republish():
+        await publish_async(authority, canonical_id, only_if_changed=True)
+    turn._schedule(republish(), "session.control.update after a tool")
+
+
 def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:
     """Monotonic start time of one call (``tool.complete.duration_s``) and, for a write-capable
     tool, the before-state of its local files: the agent fires the start callback BEFORE the tool
@@ -161,9 +204,11 @@ def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:
         turn.__dict__.setdefault("_local_edit_snapshots", {})[key] = snapshot
 
 
-def complete_fields(turn, call_id, tool_name=None, args=None, result=None) -> dict:
+def complete_fields(turn, call_id, tool_name=None, args=None, result=None, *, is_error=False) -> dict:
     """``duration_s``, ``inline_diff`` (the rendered edit diff main's CLI printed after a write,
-    ``None`` when there is none) and, for the todo tool, the full ``todos`` snapshot."""
+    ``None`` when there is none), ``image_path`` (the local image the call produced or looked at,
+    which main's CLI draws inline; ``None`` when there is none or the call failed) and, for the todo tool, the full
+    ``todos`` snapshot."""
     key = str(call_id or "")
     started = turn.__dict__.setdefault("_local_tool_starts", {}).pop(key, None)
     fields = {"duration_s": (time.monotonic() - started) if started is not None else None}
@@ -179,6 +224,8 @@ def complete_fields(turn, call_id, tool_name=None, args=None, result=None) -> di
         logger.debug("Edit diff preview failed for %s", tool_name, exc_info=True)
         rendered = []
     fields["inline_diff"] = "\n".join(rendered) if rendered else None
+    from agent.terminal_image import tool_image_path
+    fields["image_path"] = tool_image_path(tool_name, args, result, is_error=is_error)
     todo = todo_state(tool_name, result)
     if todo is not None:
         fields.update(todo)

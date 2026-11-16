@@ -1,0 +1,17 @@
+name: hermes-fal-video
+repo: https://github.com/axAilotl/hermes-fal-video
+sha: b31de9cb089f83483893ae42eae85116a6a5041b
+title: FAL Video
+description: "Video edit, video extend and reference-to-video on FAL (MiniMax H3, FLUX 3, Kling 4.0, Wan 3.0, Seedance 2.5, Gemini Omni Flash and more), with a skill that chains them. Disclosure — sends prompts and media to FAL as paid jobs billed to FAL_KEY, with no per-call approval; a local path the model passes is uploaded to FAL storage (which returns a hosted URL) when the resolved file has a video or image extension and is under the size cap (200 MB by default), from anywhere the user can read; http(s) URLs are handed to FAL to fetch."
+maintainer: axAilotl
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/axAilotl/hermes-fal-video#readme
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [fal_video_edit, fal_video_extend, fal_video_from_references]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [FAL_KEY]

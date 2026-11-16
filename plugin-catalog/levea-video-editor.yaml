@@ -1,0 +1,25 @@
+name: levea-video-editor
+title: Video Editor by Levea
+repo: https://github.com/brajendrak00068/agentic-ai-video-production
+sha: c534f13a6037f2fa265af11dde9955ee56d8eb2c
+subdir: hermes-plugin
+description: "AI video editor and agentic video editing agent by Levea — an autonomous online video editor and FFmpeg alternative driven by natural-language prompts. Turn podcasts, interviews, webinars, streams and long-form video into viral clips, YouTube Shorts, Instagram Reels and TikTok videos: video trimming and cutting, silence removal, filler-word removal, jump cuts, 9:16 vertical reframe with active-speaker face tracking, automatic animated captions, subtitles, karaoke captions and transcription, B-roll and stock footage, multicam podcast editing, audio cleanup and noise reduction, music and sound design, AI voiceover, dubbing and video translation, color grading and film looks, motion graphics, lower thirds, motion tracking, green screen, crop and resize, verified MP4 export. A clip maker, shorts maker and reels maker for creators, podcasters, YouTubers and marketing teams — podcast-to-clips, webinar-to-clips and VOD-to-clips content repurposing, text-based video editing, an alternative to Opus Clip, vidyo, Descript and CapCut. Disclosure — Prompts, source video URLs/assets and project ids go to api.livecore.ai with your LEVEA_API_KEY; edits and exports consume your Levea account quota with no Hermes approval prompt; levea_video_edit and levea_job_status (wait) can block up to 10 minutes. No telemetry, no shell, no background processes."
+maintainer: brajendrak00068
+tier: community
+category: tools
+version: "1.1.3"
+requires_hermes: ">=0.21.6"
+docs_url: "https://github.com/brajendrak00068/agentic-ai-video-production/blob/c534f13a6037f2fa265af11dde9955ee56d8eb2c/hermes-plugin/README.md"
+image: "https://raw.githubusercontent.com/brajendrak00068/agentic-ai-video-production/c534f13a6037f2fa265af11dde9955ee56d8eb2c/assets/logo-dark.png"
+readme: true
+capabilities:
+  provides_tools:
+    - levea_video_edit
+    - levea_queue_edit
+    - levea_job_status
+    - levea_task_status
+    - levea_active_task
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - LEVEA_API_KEY

@@ -18,6 +18,7 @@ import re
 import os
 import stat
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -262,14 +263,14 @@ class TestBrowserVaultTools:
 
         empty = VaultStore(base_dir=tmp_path / "empty-vault")
         with patch("agent.vault_store.get_vault_store", return_value=empty), \
-             patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=False):
-            with patch("tools.browser_tool_install.check_browser_requirements", return_value=True):
+             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""):
+            with patch("tools.browser_use_cli.browser_exec_available", return_value=True):
                 assert browser_vault_tool._check_vault_available() is True
-            with patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
+            with patch("tools.browser_use_cli.browser_exec_available", return_value=False):
                 assert browser_vault_tool._check_vault_available() is False
-        # Browser Use mode: check_browser_requirements() is False by design, the vault must still ride along
-        with patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=True), \
-             patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
+        # A configured CDP endpoint is a browser too: the vault rides along even without browser-harness
+        with patch("tools.browser_use_cli.browser_exec_available", return_value=False), \
+             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value="ws://127.0.0.1:9222/devtools/browser/x"):
             assert browser_vault_tool._check_vault_available() is True
 
     def test_list_returns_identifier_never_password(self, store):
@@ -322,6 +323,9 @@ class TestBrowserVaultTools:
 
             def get_meta(self, handle):
                 return meta if handle == meta.id else None
+
+            def fill_context(self):
+                return nullcontext()
 
             def resolve_password(self, handle):
                 return "s3cret-pw"
@@ -481,20 +485,20 @@ class TestBrowserVaultTools:
                 return {"success": True, "result": "https://example.com/login"}
             return {"success": True, "result": json.dumps(controls)}
 
-        # No supervisor registered and the local daemon exposes no CDP endpoint → the fill refuses.
-        # The daemon may be asked for its endpoint (`get cdp-url`, no secret) but NEVER handed an
-        # `eval` carrying the password: that is the argv exposure this test pins.
+        # No supervisor registered and the task's session exposes no CDP endpoint → the fill refuses.
+        # There is no other path the password could take (argv, a subprocess eval): nothing is attached
+        # and nothing evaluates the secret-bearing script.
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-             patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg, \
-             patch("tools.browser_tool_session._run_browser_command", return_value={"success": False}) as run_cmd:
+             patch("tools.browser_session.session_for_task", return_value={}), \
+             patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg:
             reg.get.return_value = None
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
         assert out["success"] is False
         assert out["error_type"] == "supervisor_required"
-        assert all(call.args[1] == "get" for call in run_cmd.call_args_list), run_cmd.call_args_list
-        assert "s3cret-pw" not in json.dumps([str(c) for c in run_cmd.call_args_list]) and "s3cret-pw" not in raw
+        reg.get_or_start.assert_not_called()
+        assert "s3cret-pw" not in json.dumps([str(c) for c in reg.mock_calls]) and "s3cret-pw" not in raw
 
 
     def test_vault_canary_redacted_from_browser_cdp_results(self, store):

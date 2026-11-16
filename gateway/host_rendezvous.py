@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional, Sequence
+from hermes_dir_acl import make_user_dir
 
 from utils import atomic_json_write
 
@@ -175,7 +176,7 @@ def ensure_host_state_dir() -> Path:
     Ownership of the dir is ours, so widening is repaired rather than refused.
     """
     directory = host_state_dir()
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    make_user_dir(directory, parents=True, exist_ok=True, mode=0o700)
     if sys.platform != "win32":
         with contextlib.suppress(OSError):
             if stat.S_IMODE(directory.stat().st_mode) & 0o077:

@@ -1,0 +1,31 @@
+name: neuralwatt-provider
+repo: https://github.com/ptaranat/hermes-neuralwatt-provider
+sha: 2523343f4f9871e9348b893ff77e3684fe2b903f
+version: "0.1.0"
+description: >-
+  Neuralwatt as a Hermes model provider (`provider: neuralwatt`). The /model picker lists
+  Neuralwatt's live catalog with real context windows, and Hermes's reasoning setting is sent as
+  `reasoning_effort`. Each turn gets a cost estimate from Neuralwatt's published energy figures,
+  and /usage shows credits, daily free energy, this month's spend and 30 days of energy and
+  carbon. Works alongside the `neuralwatt` tools plugin. Not affiliated with Neuralwatt.
+  Disclosure: registers one model provider and nothing else (no tools, hooks, commands or
+  threads). Chat goes through Hermes's own client to https://api.neuralwatt.com/v1 (or
+  NEURALWATT_BASE_URL) with NEURALWATT_API_KEY, read through Hermes's secret scope. The plugin
+  itself sends GET requests to that API's /models, /quota and /usage/energy, and to Neuralwatt's
+  public energy price table at portal.neuralwatt.com. It sends the Hermes session id as
+  `metadata.conversation_id`, which Neuralwatt stores as a hash. It writes no files and starts
+  no processes.
+maintainer: ptaranat
+tier: community
+category: models
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/ptaranat/hermes-neuralwatt-provider#readme
+image: https://raw.githubusercontent.com/ptaranat/hermes-neuralwatt-provider/2523343f4f9871e9348b893ff77e3684fe2b903f/assets/card.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - NEURALWATT_API_KEY

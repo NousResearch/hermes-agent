@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useState } from 'react'
@@ -33,6 +34,8 @@ import {
   setActiveProject,
   setProjectAppearance
 } from '@/store/projects'
+
+import { SIDEBAR_FOCUS_VISIBLE } from '../chrome'
 
 import { ProjectAppearancePicker } from './project-appearance'
 import type { SidebarProjectTree } from './workspace-groups'
@@ -112,12 +115,17 @@ function useProjectActions({
 
   // The OS file manager needs the local filesystem; a remote backend's
   // project is not on this computer (the file trees hide reveal the same way).
+  // Another gateway's project names its own machine: one on This device opens
+  // even from a remote window; one elsewhere stays listed but disabled, as no
+  // file manager here can show it.
+  const onThisComputer = project.connectionId ? project.connectionId === LOCAL_CONNECTION_ID : !isDesktopFsRemoteMode()
+
   const pathItems: ActionItemSpec[] = [
-    ...(isDesktopFsRemoteMode()
+    ...(!project.connectionId && isDesktopFsRemoteMode()
       ? []
       : [
           {
-            disabled: !project.path,
+            disabled: !project.path || !onThisComputer,
             icon: 'folder-opened',
             key: 'reveal',
             label: p.reveal,
@@ -220,7 +228,8 @@ export function ProjectMenu({
       <button
         aria-label={p.menu}
         className={cn(
-          'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:opacity-100',
+          'grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 data-[state=open]:opacity-100',
+          SIDEBAR_FOCUS_VISIBLE,
           // In the project header reveal on the whole header hover; in overview
           // rows reveal on the row hover.
           scoped ? 'group-hover/section:opacity-100' : 'group-hover/workspace:opacity-100'

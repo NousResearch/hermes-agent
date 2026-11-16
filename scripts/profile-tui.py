@@ -7,7 +7,7 @@ Usage:
 Defaults: picks the session with the most messages, holds PageUp for 8s at
 ~30 Hz (matching xterm key-repeat), summarizes ~/.hermes/perf.log on exit.
 
-The --tui build must exist (run `npm run build` in ui-tui first). This script
+The --tui build must exist (run `pnpm run build` in ui-tui first). This script
 launches `node dist/entry.js` directly with HERMES_TUI_RESUME set so it
 bypasses the hermes_cli wrapper — we want repeatable timing, not the CLI's
 session-picker flow.
@@ -407,7 +407,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
     tui_dir = Path(args.tui_dir).resolve()
     entry = tui_dir / "dist" / "entry.js"
     if not entry.exists():
-        sys.exit(f"{entry} missing — run `npm run build` in {tui_dir} first")
+        sys.exit(f"{entry} missing — run `pnpm run build` in {tui_dir} first")
 
     sid = args.session or pick_longest_session(DEFAULT_STATE_DB)
     print(f"• session: {sid}")
@@ -570,7 +570,7 @@ def loop_mode(args: argparse.Namespace) -> int:
             if iteration > 1:
                 print("• rebuilding…")
                 result = subprocess.run(
-                    ["npm", "run", "build"],
+                    ["pnpm", "run", "build"],
                     cwd=tui_dir,
                     capture_output=True,
                     text=True, encoding='utf-8', errors='replace',

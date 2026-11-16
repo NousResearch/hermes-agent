@@ -29,6 +29,28 @@ logger = logging.getLogger("gateway.run")
 _MAX_DELEGATE_PROVENANCE_HOPS = 16
 
 
+def _local_completion_card(evt: dict) -> dict[str, str]:
+    """The card of a local process notice: the async-result card the in-process TUI wrote for a
+    completion or async delegation (a gateway-side ``/review`` reports as one), and a liveness tick's
+    one-line receipt. The claim's ``message.start`` carries it, and an idle classic CLI only opens a
+    turn that has one. ``{}`` for a watch match."""
+    from tools.process_registry_notifications import (
+        PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
+    evt_type = evt.get("type", "completion")
+    if evt_type == "completion":
+        return {"display_kind": PROCESS_COMPLETE_DISPLAY_KIND,
+                "display_text": evt.get("_display_text") or process_completion_display_text([evt])}
+    if evt_type == "async_delegation":
+        return {"display_kind": "async_delegation_complete", "display_text": async_delegation_display_text(evt)}
+    if evt_type == "heartbeat":
+        # The wake stays machinery (no bubble, and a quiet tick may end in silence); the receipt lets an
+        # idle CLI open the turn with one line and show the agent's reply.
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+        from tools.process_registry_notifications import heartbeat_display_text
+        return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
+    return {}
+
+
 class GatewayNotificationOwnershipMixin:
     """Ownership proof and route resolution for pinned async and process completions."""
 
@@ -119,6 +141,15 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, row
             if session_id == current_session_id:
                 return "deliver", session_id, row
+            # A hop compressed into the current route is its conversation (a resumed delegate run), as
+            # admission rules: climbing past it would reach the parent the run was spawned from.
+            if current_session_id and row.get("end_reason") == "compression":
+                try:
+                    if await session_db.get_compression_tip(session_id) == current_session_id:
+                        return "deliver", session_id, row
+                except Exception:
+                    logger.debug("Completion compression lookup failed for %s", session_id, exc_info=True)
+                    return "retry", session_id, None
             config = row.get("model_config")
             try:
                 if isinstance(config, str):
@@ -137,6 +168,33 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, None
             session_id = parent
         return "terminal", session_id, None
+
+    async def _watch_pin_gone(self, evt: dict, refusal: str, *, log: bool = True) -> bool:
+        """True (logged once with ``log``) when a refused notice is pinned to a permanently-gone session.
+
+        The session authority admits a notice only into its pinned session or that session's
+        compression continuation, so after /new it refuses the notice on every retry and the drain
+        would spin on it (#141562). This is the completion pre-flight's verdict, applied after the
+        refusal. A dropped notice is gone for good; a /resume reopens the pinned session, so the
+        process's later notices are admitted again.
+        """
+        pinned = str(evt.get("parent_session_id") or "").strip()
+        if not pinned:
+            return False
+        session_key = str(evt.get("session_key") or "")
+        verdict, _owner, _target = await cast(Any, self)._classify_completion_owner(pinned, session_key)
+        if verdict != "terminal":
+            return False
+        if not log:
+            return True
+        logger.warning(
+            "Dropping %s notification of process %s: pinned session %s is permanently gone (closed "
+            "at a user boundary such as /new, or no longer an owner); the route now runs %s and "
+            "refuses it (%s). Output remains available via process(action='log').",
+            evt.get("type") or "watch", evt.get("session_id") or "<unknown>", pinned,
+            cast(Any, self).session_store.peek_session_id(session_key) or "<none>", refusal,
+        )
+        return True
 
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str, proven_session_id: str = "",

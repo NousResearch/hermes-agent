@@ -1,6 +1,6 @@
 # agent/ — AIAgent, turn loop, prompt, compression
 
-Applies on top of the root `AGENTS.md` (prompt-caching invariant, facade + siblings rules).
+Applies on top of the root `AGENTS.md` (prompt-caching invariant, package and Python-shape rules).
 
 ## Shape
 

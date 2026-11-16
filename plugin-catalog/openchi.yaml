@@ -1,0 +1,21 @@
+name: openchi
+repo: https://github.com/imkieransmith/openchi
+sha: bdc7926455e7aadfcda43f4e4f7eb4b726fffc8d
+title: OpenChi
+description: 'Guided desk stretches and breathing breaks for Hermes Desktop. When your agent takes on a long task, a card below the input box offers a few minutes of stretches; nothing starts until you click. Desktop-only (desktop/plugin.js inside the plugin SDK surface). No network calls, agent tools, hooks or env vars.'
+maintainer: imkieransmith
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+docs_url: https://github.com/imkieransmith/openchi
+image: https://raw.githubusercontent.com/imkieransmith/openchi/bdc7926455e7aadfcda43f4e4f7eb4b726fffc8d/assets/screenshots/catalog.png
+screenshots:
+  - https://raw.githubusercontent.com/imkieransmith/openchi/bdc7926455e7aadfcda43f4e4f7eb4b726fffc8d/assets/screenshots/offer.png
+  - https://raw.githubusercontent.com/imkieransmith/openchi/bdc7926455e7aadfcda43f4e4f7eb4b726fffc8d/assets/screenshots/exercise.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

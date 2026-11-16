@@ -68,8 +68,9 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
         db.create_session("repo_a", source="cli", cwd=str(repo_a), git_repo_root=str(repo_a))
         db.create_session("repo_b", source="cli", cwd="/other/repo-b", git_repo_root="/other/repo-b")
         with db._lock:
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (100.0, "repo_a"))
-            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (9000.0, "repo_b"))
+            # One message each: ``-c`` never resumes an empty launch stub.
+            db._conn.execute("UPDATE sessions SET started_at=?, message_count=1 WHERE id=?", (100.0, "repo_a"))
+            db._conn.execute("UPDATE sessions SET started_at=?, message_count=1 WHERE id=?", (9000.0, "repo_b"))
             db._conn.commit()
     finally:
         db.close()
@@ -101,7 +102,7 @@ def test_resolve_last_session_cli_continues_a_oneshot(monkeypatch, tmp_path):
         db.create_session("tui_chat", source="tui")
         with db._lock:
             for sid, started in (("interactive", 100.0), ("oneshot_run", 200.0), ("tui_chat", 300.0)):
-                db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (started, sid))
+                db._conn.execute("UPDATE sessions SET started_at=?, message_count=1 WHERE id=?", (started, sid))
             db._conn.commit()
     finally:
         db.close()

@@ -195,10 +195,24 @@ def prefers_gateway(config_section: str) -> bool:
 NOUS_MANAGED_PROVIDER = "nous"
 # Per-capability keys that also count as "this category has been configured".
 _EXTRA_SELECTION_KEYS = {"web": ("search_backend", "extract_backend")}
-# Key(s) carrying the category's provider selection. ``browser.backend`` is the DRIVER
-# choice (browser-use CLI vs built-in), not the cloud provider — excluded.
-_SELECTION_NAME_KEYS = {"browser": ("cloud_provider",), "web": ("backend",)}
 _DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
+# Key(s) carrying each category's provider selection: one entry per `hermes tools` / Tool Gateway
+# category read_selection() serves. A leftover ``browser.backend`` (the pre-v52 driver choice) is
+# not the cloud provider — excluded.
+_SELECTION_NAME_KEYS = {
+    "browser": ("cloud_provider",), "web": ("backend",),
+    **dict.fromkeys(("image_gen", "video_gen", "tts", "stt"), _DEFAULT_NAME_KEYS),
+}
+
+
+def selection_config_keys() -> frozenset[str]:
+    """Dotted config keys read_selection()/selection_exists() honour, from their own tables.
+    DEFAULT_CONFIG leaves them unseeded on purpose (a stored key is the user's explicit pick), so
+    the config-key validator asks here instead of walking the defaults."""
+    return frozenset(
+        f"{section}.{key}"
+        for section, name_keys in _SELECTION_NAME_KEYS.items()
+        for key in ("use_gateway", *name_keys, *_EXTRA_SELECTION_KEYS.get(section, ())))
 
 
 def _raw_section(section: str) -> dict[str, Any] | None:
@@ -285,7 +299,12 @@ def selection_error(section: str, selection_name: str, failure: str) -> str:
             f"tools), but {failure}. Run 'hermes tools' to change it.")
 
 
+def fal_key() -> str:
+    """The active profile's FAL_KEY (scope/env, else ``.env`` for CLI paths that run before dotenv
+    loads), stripped; ``""`` when unset. The key a direct FAL client is built with."""
+    return _scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY")
+
+
 def fal_key_is_configured() -> bool:
-    """True when FAL_KEY is set (scope/env, else ``.env`` for CLI paths that run before dotenv
-    loads) to a non-whitespace value, so tool-side and CLI setup-time checks agree."""
-    return bool(_scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY"))
+    """True when :func:`fal_key` is non-empty, so tool-side and CLI setup-time checks agree."""
+    return bool(fal_key())

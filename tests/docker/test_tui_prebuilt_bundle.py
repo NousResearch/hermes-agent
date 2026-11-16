@@ -1,12 +1,11 @@
-"""Harness: the image ships a prebuilt TUI bundle, not a runtime npm install.
+"""Harness: the image ships a prebuilt TUI bundle, not a runtime pnpm install.
 
 Regression guard for the hosted-chat failure where the embedded dashboard
-Chat tab died with a 502 / "[session ended]". Root cause: the image installs
-only a subset of the npm monorepo workspaces (root/web/ui-tui, never apps/*),
-so the actualized node_modules permanently disagrees with the canonical
-package-lock.json. Without HERMES_TUI_DIR set, ``_make_tui_argv`` falls
-through to source dependency preparation, racing itself across
-concurrent /api/pty connections → ENOTEMPTY.
+Chat tab died with a 502 / "[session ended]". Root cause: the runtime image
+carries no workspace node_modules (frontend dependencies stay in the build
+stage), so source dependency preparation can never converge there. Without
+HERMES_TUI_DIR set, ``_make_tui_argv`` falls through to that preparation,
+racing itself across concurrent /api/pty connections → ENOTEMPTY.
 
 The fix is ``ENV HERMES_TUI_DIR=/opt/hermes/ui-tui`` in the Dockerfile, which
 makes the launcher take the prebuilt-bundle fast path (``node --expose-gc
@@ -59,8 +58,8 @@ print(child.stdout.strip())
 
 
 def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> None:
-    """The launcher must (a) find the prebuilt bundle and (b) NOT want an
-    npm install — i.e. it takes the same path as a nix/packaged release."""
+    """The launcher must (a) find the prebuilt bundle and (b) NOT want a
+    pnpm install — i.e. it takes the same path as a nix/packaged release."""
     py = (
         "import json\n"
         "from pathlib import Path\n"

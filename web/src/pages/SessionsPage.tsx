@@ -39,7 +39,6 @@ import {
 import type {
   SessionInfo,
   SessionMessage,
-  SessionSearchResult,
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
@@ -85,6 +84,7 @@ import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 import { LoadErrorNotice } from "@/components/LoadErrorNotice";
+import { useSessionSearch } from "@/hooks/useSessionSearch";
 import { en } from "@/i18n/en";
 
 
@@ -691,6 +691,19 @@ type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
 
+/** The session list, or the load/search failure in its place: never "No sessions yet" for a list
+ *  that failed to load, nor every session listed as a match for a search that failed. */
+function SessionsListOrError({ searchActive, searchError, loadError, onRetrySearch, onRetryLoad, children }: {
+  searchActive: boolean; searchError: string | null; loadError: string | null;
+  onRetrySearch: () => void; onRetryLoad: () => void; children: React.ReactNode;
+}) {
+  const { t } = useI18n();
+  const error = searchActive ? searchError : loadError;
+  if (!error) return <>{children}</>;
+  const what = searchActive ? (t.sessions.searchWhat ?? en.sessions.searchWhat!) : (t.sessions.loadWhat ?? en.sessions.loadWhat!);
+  return <LoadErrorNotice what={what} detail={error} onRetry={searchActive ? onRetrySearch : onRetryLoad} />;
+}
+
 function SessionsPagination({
   className,
   compact = false,
@@ -746,14 +759,7 @@ export default function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [searchResults, setSearchResults] = useState<
-    SessionSearchResult[] | null
-  >(null);
-  const [searching, setSearching] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [searchAttempt, setSearchAttempt] = useState(0);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -770,7 +776,6 @@ export default function SessionsPage() {
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionsRequestRef = useRef(0);
-  const searchRequestRef = useRef(0);
   // Count of empty (no-message, ended, non-archived) sessions across the
   // entire DB, populated by /api/sessions/empty/count. Used to:
   //   • hide the "Delete empty" button when there's nothing to clean up
@@ -1184,45 +1189,8 @@ export default function SessionsPage() {
     clearSelection();
   }, [clearSelection, sessionCategory]);
 
-  // Debounced FTS search
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    // Every run supersedes the search in flight, a cleared box included, so a
-    // late answer to an older query never lands under the current one.
-    const requestId = ++searchRequestRef.current;
-    const current = () => requestId === searchRequestRef.current;
-
-    if (!search.trim()) {
-      debounceRef.current = setTimeout(() => {
-        setSearchResults(null);
-        setSearchError(null);
-        setSearching(false);
-      }, 0);
-      return;
-    }
-
-    debounceRef.current = setTimeout(() => {
-      setSearching(true);
-      setSearchResults(null);
-      setSearchError(null);
-      api
-        .searchSessions(search.trim(), sessionQueryOptions)
-        .then((resp) => {
-          if (current()) setSearchResults(resp.results);
-        })
-        // A failed search is not the unfiltered page: say so instead of listing every session as a match.
-        .catch((err) => {
-          if (current()) setSearchError(errorMessage(err));
-        })
-        .finally(() => {
-          if (current()) setSearching(false);
-        });
-    }, 300);
-
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [search, sessionQueryOptions, searchAttempt]);
+  // Debounced FTS search; a failed search is not the unfiltered page.
+  const { results: searchResults, searching, error: searchError, retry: retrySearch } = useSessionSearch(search, sessionQueryOptions);
 
   // The profile a listed row was read from — the store that owns it. Every
   // per-row request (delete, rename, export, messages) must go there, not to
@@ -1511,7 +1479,6 @@ export default function SessionsPage() {
   }
 
   const filtered = searchResults ?? sessions;
-  const listError = search.trim() ? searchError : loadError;
 
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})
@@ -2038,15 +2005,9 @@ export default function SessionsPage() {
       )}
 
       {showList ? (
-        listError ? (
-          <LoadErrorNotice
-            what={search.trim()
-              ? (t.sessions.searchWhat ?? en.sessions.searchWhat!)
-              : (t.sessions.loadWhat ?? en.sessions.loadWhat!)}
-            detail={listError}
-            onRetry={() => (search.trim() ? setSearchAttempt((n) => n + 1) : loadSessions(page))}
-          />
-        ) : filtered.length === 0 ? (
+        <SessionsListOrError searchActive={Boolean(search.trim())} searchError={searchError} loadError={loadError}
+          onRetrySearch={retrySearch} onRetryLoad={() => loadSessions(page)}>
+          {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
             <Clock className="h-8 w-8 mb-3 opacity-40" />
             <p className="text-sm font-medium">
@@ -2095,7 +2056,8 @@ export default function SessionsPage() {
               />
             )}
           </>
-        )
+        )}
+        </SessionsListOrError>
       ) : (
         <div className="flex min-w-0 flex-col gap-4">
           {platformEntries.length > 0 && status && (

@@ -1,0 +1,22 @@
+name: finix
+title: Finix
+repo: https://github.com/web3blind/finix
+sha: b4241cdefa70b9184bc5728600204d0e0f723b46
+description: Age-encrypted profile backups with verified cloud readback and offline extraction; automatic recovery is unavailable.
+maintainer: web3blind
+tier: community
+category: automation
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+readme: true
+platforms: [linux, windows]
+known_issues:
+  - Experimental beta. Automatic default replacement and named-profile import/activation are disabled pending a supported public recovery contract. Retained journals are not replayed.
+  - Google Drive uses only the declared Hermes-managed finix:google client with drive.file; owning-profile client configuration and consent are required. The Workspace skill backend is removed.
+  - Current Linux CLI/Desktop cloud backup and externally orchestrated cold data recovery are verified; current native Windows GUI/cloud and unrestricted historical-suite acceptance are not claimed.
+  - Requires separately installed age and age-keygen. Keep independent backups and the recovery key off the backup host.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

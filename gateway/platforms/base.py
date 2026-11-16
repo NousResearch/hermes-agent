@@ -3628,19 +3628,23 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         raw = getattr(result, "raw_response", None)
         return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
 
-    @classmethod
-    def _partial_tail_uncertain(cls, result: "SendResult") -> bool:
-        """A partial delivery whose remainder may already have landed (no ``undelivered_chunks``): no
-        retry can resume it and the plain-text fallback would repeat the head, so it is returned as-is."""
-        return cls._is_partial_delivery(result) and not result.raw_response.get("undelivered_chunks")
+    # Raw-response keys naming a tail this adapter's ``_resume_partial_send`` can still deliver.
+    _RESUMABLE_PARTIAL_KEYS: tuple[str, ...] = ("undelivered_chunks",)
+
+    def _partial_tail_uncertain(self, result: SendResult) -> bool:
+        """A partial delivery with no tail this adapter can resume: no retry can finish it and the
+        plain-text fallback would repeat the head, so it is returned as-is instead of backing off."""
+        raw = result.raw_response
+        return self._is_partial_delivery(result) and not any(raw.get(k) for k in self._RESUMABLE_PARTIAL_KEYS)
 
     @staticmethod
     def _with_partial_send(
         result: SendResult, undelivered: list[str], delivered: list[str], *, tail_certain: bool = True) -> SendResult:
         """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
         ``_edit_overflow_split`` sets and the stream consumer reads; every split-sending adapter shares it), so
-        no caller re-sends the visible head; ``undelivered`` (for :meth:`_resume_partial_send`) is attached only when ``tail_certain``. An uncertain
-        failure reports ``unattempted_chunks``: the messages after the one in flight, which never left."""
+        no caller re-sends the visible head; ``undelivered`` (for :meth:`_resume_partial_send`) is attached
+        only when ``tail_certain``. An uncertain failure reports ``unattempted_chunks``: the messages after
+        the one in flight, which never left."""
         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
         if not tail_certain and len(undelivered) > 1:
             raw["unattempted_chunks"] = tuple(undelivered[1:])
@@ -3676,7 +3680,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     @classmethod
     def _split_send_failed(
-        cls, result: SendResult, undelivered: List[str], delivered: List[Any], *, unsent: bool) -> SendResult:
+        cls, result: SendResult, undelivered: list[str], delivered: list[Any], *, unsent: bool) -> SendResult:
         """``result`` for a split send whose chunk after ``delivered`` failed (``unsent``: it certainly never
         landed, see :meth:`_send_never_landed`). Once a chunk landed, the tail is kept for
         :meth:`_resume_partial_send` only when ``unsent``, and only then is it retryable: a whole-payload

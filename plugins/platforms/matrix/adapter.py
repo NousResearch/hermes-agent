@@ -1258,8 +1258,8 @@ class MatrixAdapter(BasePlatformAdapter):
             metadata)
 
     async def _send_chunks(
-        self, chat_id: str, chunks: List[str], delivered: List[str], reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]]) -> SendResult:
+        self, chat_id: str, chunks: list[str], delivered: list[str], reply_to: Optional[str],
+        metadata: Optional[dict[str, Any]]) -> SendResult:
         """Send ``chunks`` after the ``delivered`` event ids; a failure after one landed is a partial result
         (see :meth:`_split_send_failed`), so the visible head is never sent again."""
         for i, chunk in enumerate(chunks):
@@ -1287,7 +1287,7 @@ class MatrixAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=delivered[-1] if delivered else None)
 
     async def _resume_partial_send(
-        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
     ) -> Optional[SendResult]:
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
         undelivered = list(raw.get("undelivered_chunks") or ())

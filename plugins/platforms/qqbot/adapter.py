@@ -1378,7 +1378,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return await self._send_chunks(chat_id, self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH),
                                        [], reply_to)
 
-    async def _send_chunks(self, chat_id: str, chunks: List[str], delivered: List[str],
+    async def _send_chunks(self, chat_id: str, chunks: list[str], delivered: list[str],
                            reply_to: Optional[str]) -> SendResult:
         """Send ``chunks`` after the ``delivered`` message ids (only the reply's first chunk quotes ``reply_to``);
         a failure after one landed is a partial result (see :meth:`_split_send_failed`), so the visible head
@@ -1392,7 +1392,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return result
 
     async def _resume_partial_send(self, chat_id: str, result: SendResult, *, reply_to: Optional[str],
-                                   metadata: Optional[Dict[str, Any]]) -> Optional[SendResult]:
+                                   metadata: Optional[dict[str, Any]]) -> Optional[SendResult]:
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
         undelivered = list(raw.get("undelivered_chunks") or ())
         if not undelivered or not await self._ensure_connected():
@@ -1402,7 +1402,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
 
     async def _send_chunk(self, chat_id: str, content: str,
-                          reply_to: Optional[str] = None) -> Tuple[SendResult, bool]:
+                          reply_to: Optional[str] = None) -> tuple[SendResult, bool]:
         """One chunk, retried here, and whether it certainly never landed: true only when every attempt
         was refused or never connected (:meth:`_send_never_landed`), since any earlier attempt may have posted it."""
         last_exc: Optional[Exception] = None

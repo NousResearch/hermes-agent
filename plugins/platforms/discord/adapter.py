@@ -3175,7 +3175,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            message_ids: List[str] = []
+            message_ids: list[str] = []
             try:
                 await self._send_chunks(
                     channel, chunks, message_ids, self._reply_reference_for_send(reply_to, channel), reply_to)
@@ -3204,7 +3204,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
 
     async def _send_chunks(
-        self, channel: Any, chunks: List[str], message_ids: List[str], reference: Any, reply_to: Optional[str],
+        self, channel: Any, chunks: list[str], message_ids: list[str], reference: Any, reply_to: Optional[str],
     ) -> None:
         """Send formatted ``chunks`` in order, appending each landed id to ``message_ids`` (pre-seeded with the
         head's ids when resuming, so only the first chunk of the reply carries the reference in ``first``
@@ -3237,7 +3237,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         return SendResult(success=False, error=str(e))
 
     def _partial_send_result(
-        self, e: BaseException, undelivered: List[str], delivered: List[str], channel: Any,
+        self, e: BaseException, undelivered: list[str], delivered: list[str], channel: Any,
     ) -> SendResult:
         """The failed result for a split send whose head already landed. Only a transport error proves the
         refused chunk never reached Discord, so only then is the tail kept for :meth:`_resume_partial_send`;
@@ -3248,7 +3248,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         return result
 
     async def _resume_partial_send(
-        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
     ) -> Optional[SendResult]:
         """Send only the chunks a partial ``send()`` could not deliver, continuing the message-id sequence;
         ``None`` when the tail was not certain-undelivered or its channel is gone."""

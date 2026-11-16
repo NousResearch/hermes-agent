@@ -2204,8 +2204,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         chat_id = await self._dm_target(chat_id, metadata)
         thread_ts = None
         team_id = ""
-        chunks: List[str] = []
-        delivered: List[Optional[str]] = []
+        chunks: list[str] = []
+        delivered: list[Optional[str]] = []
         try:
             team_id = self._metadata_team_id(metadata)
             slash_ctx = self._pop_slash_context(chat_id, team_id)
@@ -2242,7 +2242,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
 
     async def _posted_result(
         self, chat_id: str, team_id: str, thread_ts: Optional[str], last_result: Any,
-        metadata: Optional[Dict[str, Any]]) -> SendResult:
+        metadata: Optional[dict[str, Any]]) -> SendResult:
         """Success bookkeeping once the last chunk is posted."""
         # Clear Slack Assistant status as soon as the final message is posted.
         if thread_ts:
@@ -2258,7 +2258,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         return SendResult(success=True, message_id=sent_ts, raw_response=last_result)
 
     def _send_failure_result(
-        self, e: Exception, undelivered: List[str], delivered: List[Optional[str]], chat_id: str, team_id: str,
+        self, e: Exception, undelivered: list[str], delivered: list[Optional[str]], chat_id: str, team_id: str,
         thread_ts: Optional[str]) -> SendResult:
         """The failed result; after a landed chunk it is partial, so the visible head is never posted again."""
         _retryable = self._is_retryable_upload_error(e)
@@ -2275,7 +2275,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         return result
 
     async def _resume_partial_send(
-        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
     ) -> Optional[SendResult]:
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
         undelivered = list(raw.get("undelivered_chunks") or ())
@@ -2293,8 +2293,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         return await self._posted_result(target, team_id, thread_ts, last_result, metadata)
 
     async def _post_chunks(
-        self, chat_id: str, team_id: str, content: str, chunks: List[str], thread_ts: Optional[str],
-        delivered: List[Optional[str]],
+        self, chat_id: str, team_id: str, content: str, chunks: list[str], thread_ts: Optional[str],
+        delivered: list[Optional[str]],
     ) -> Any:
         """``chat.postMessage`` each chunk after the ``delivered`` ones, appending each landed ts to
         ``delivered``; returns the last response. Block Kit only for single-chunk messages (a >39k

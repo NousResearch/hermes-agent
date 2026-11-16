@@ -1095,7 +1095,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         finally:
             self.resume_typing_for_chat(chat_id)
 
-    async def _send_chunks(self, chat_id: str, chunks: List[str], delivered: List[Optional[str]],
+    async def _send_chunks(self, chat_id: str, chunks: list[str], delivered: list[Optional[str]],
                            thread_id: Optional[str], typing_msg_name: Optional[str] = None) -> SendResult:
         """Send ``chunks`` after the ``delivered`` message names, the reply's first chunk patching
         ``typing_msg_name``. A failure after one landed is a partial result (see
@@ -1150,7 +1150,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return SendResult(success=False, error=_redact_sensitive(str(exc)), retryable=_is_retryable_error(exc))
 
     async def _resume_partial_send(
-        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
     ) -> Optional[SendResult]:
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
         undelivered = list(raw.get("undelivered_chunks") or ())

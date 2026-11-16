@@ -400,6 +400,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
     _STATUS_MESSAGE_IDS_MAX = 2000
+    # _resume_partial_send also sends a never-attempted tail and a rich part that never left.
+    _RESUMABLE_PARTIAL_KEYS = ("undelivered_chunks", "unattempted_chunks", "undelivered_rich_parts")
     _ptb_proxy_url: str | None = None  # set by _build_ptb_requests; error text then shows no detail
 
     MAX_MESSAGE_LENGTH = 4096

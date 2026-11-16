@@ -392,7 +392,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
         return await self._send_chunks(chat_id, chunks, [], reply_to)
 
-    async def _send_chunks(self, chat_id: str, chunks: List[str], delivered: List[str],
+    async def _send_chunks(self, chat_id: str, chunks: list[str], delivered: list[str],
                            reply_to: Optional[str]) -> SendResult:
         """Send ``chunks`` (one bubble each) after the ``delivered`` message GUIDs; a failure after one landed
         is a partial result (see :meth:`_split_send_failed`), so the visible head is never sent again."""
@@ -415,7 +415,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=delivered[-1] if delivered else None)
 
     async def _resume_partial_send(self, chat_id: str, result: SendResult, *, reply_to: Optional[str],
-                                   metadata: Optional[Dict[str, Any]]) -> Optional[SendResult]:
+                                   metadata: Optional[dict[str, Any]]) -> Optional[SendResult]:
         raw = result.raw_response if isinstance(result.raw_response, dict) else {}
         undelivered = list(raw.get("undelivered_chunks") or ())
         if not undelivered or not self.client:

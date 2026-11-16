@@ -738,7 +738,7 @@ class SignalAdapter(BasePlatformAdapter):
         base_params = await self._with_target({"account": self.account}, chat_id)
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
         last_result = None
-        delivered: List[str] = []
+        delivered: list[str] = []
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
             params: dict[str, Any] = dict(base_params, message=plain_text)
             if len(text_styles) == 1:

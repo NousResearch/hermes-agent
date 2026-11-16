@@ -117,9 +117,44 @@ def test_credential_mirroring_under_a_store_copies_nothing_and_says_so(store, mo
     assert "boot-only" not in (profile_env.read_text(encoding="utf-8") if profile_env.exists() else "")
     assert not (result.path / "auth.json").exists()
     assert result.mirrored["env"] is False and result.mirrored["auth"] is not True
-    assert [w for w in result.warnings if "secret store" in w and "nothing was copied" in w]
+    assert [w for w in result.warnings if "secret store" in w and "no API keys or logins were copied" in w]
     with pytest.raises(CredentialMirrorRefused):
         mirror_launch_credentials(result.path, {})
+
+
+_VOICE = "stt:\n  provider: local\ntts:\n  provider: edge\nvoice:\n  record_key: ctrl+b\n"
+
+
+def _profile_config(path: Path) -> dict:
+    from hermes_cli.config import read_user_config_raw
+    from tui_gateway.launch_profile_policy import profile_config_scope
+    with profile_config_scope(path):
+        return read_user_config_raw() or {}
+
+
+def test_a_store_refuses_only_the_credential_copy_not_the_config_sections(store, monkeypatch):
+    """Kills the refusal that also skips the non-secret sections: the store copies the same config
+    sections as the local store does, and no credential file."""
+    _, home = store
+    _provisioning(monkeypatch, home)
+    with (home / "config.yaml").open("a", encoding="utf-8") as fh:
+        fh.write(_VOICE)
+    (home / ".env").write_text("VIEW_STORE_TOKEN=boot-only\n", encoding="utf-8")
+    (home / "auth.json").write_text('{"version": 1, "providers": {}, "credential_pool": {}}', encoding="utf-8")
+    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    stored = provision_profile(ProfileCreateRequest(name="work", share_auth=False))
+    monkeypatch.delenv("HERMES_SECRET_STORE")
+    routing.reset_for_tests()
+    local = provision_profile(ProfileCreateRequest(name="home", share_auth=False))
+    assert local.mirrored["voice"] is True and (local.path / "auth.json").exists()  # the local oracle
+    assert _profile_config(local.path)["stt"] == {"provider": "local"}
+    assert _profile_config(stored.path) == _profile_config(local.path)  # every non-secret section, as local
+    assert stored.mirrored["voice"] is True
+    assert stored.mirrored["env"] is False and stored.mirrored["auth"] is not True
+    assert not (stored.path / "auth.json").exists()
+    profile_env = stored.path / ".env"
+    assert "boot-only" not in (profile_env.read_text(encoding="utf-8") if profile_env.exists() else "")
+    assert [w for w in stored.warnings if "secret store" in w]
 
 
 def test_a_profile_the_store_serves_auth_for_does_not_read_the_roots(store, monkeypatch):

@@ -1,7 +1,8 @@
 import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { notifyError } from '@/store/notifications'
+import { translateNow } from '@/i18n'
+import { notify, notifyError } from '@/store/notifications'
 
 /**
  * Feature store for backend (agent) plugins — the native Hermes plugins plus
@@ -589,10 +590,11 @@ export interface AgentPluginScanFinding {
 /** Outcome of `updateAgentPlugin`: `applied` when the update landed, `unchanged`
  *  when already current, `consent` when a new catalog pin widens the plugin
  *  (retry with `acceptCapabilities`), `scan` when the security scan blocked the
- *  new code (a `caution` verdict can be retried with `force`). The backend
- *  changed nothing for `consent` and `scan`. */
+ *  new code (a `caution` verdict can be retried with `force`), `unknown` when
+ *  the request timed out and the backend may still finish. The backend changed
+ *  nothing for `consent` and `scan`. */
 export type AgentPluginUpdateOutcome =
-  | { kind: 'applied' | 'unchanged' | 'failed' }
+  | { kind: 'applied' | 'unchanged' | 'failed' | 'unknown' }
   | { kind: 'consent'; sha: string; deltaLines: string[] }
   | { kind: 'scan'; verdict: string; findings: AgentPluginScanFinding[] }
 
@@ -653,6 +655,17 @@ export async function updateAgentPlugin(
 
     return { kind: result.unchanged ? 'unchanged' : 'applied' }
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+
+    if (/^request timed out after \d+s: plugins\.manage$/.test(message)) {
+      notify({
+        kind: 'warning',
+        message: translateNow('chat.catalogInstall.updatePending', name)
+      })
+
+      return { kind: 'unknown' }
+    }
+
     notifyError(e, failMessage)
 
     return { kind: 'failed' }

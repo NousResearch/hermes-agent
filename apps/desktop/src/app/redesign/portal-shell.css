@@ -32,6 +32,14 @@
   pointer-events: none;
 }
 
+/* That painter runs a window's height past its zone, so the zone must clip it without becoming a
+   scroll container: under `overflow: hidden` the overhang is scrollable, and a focus move inside the
+   zone (a row scrolled into view) slid the whole panel up under the band, leaving a bare strip at
+   its foot. */
+:root[data-shell='portal'] [data-tree-group] {
+  overflow: clip;
+}
+
 /* The sessions pane paints its own translucent panel so the artwork reads through it. */
 :root[data-shell='portal'] [data-tree-group][data-zone-pane='sessions'] > [data-panel-header]::before {
   background-color: transparent;

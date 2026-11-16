@@ -1848,6 +1848,10 @@ export const svOverrides: TranslationOverrides = {
         mcp: { label: 'MCP', hint: 'Routning av MCP-verktyg' },
         title_generation: { label: 'Rubrikgenerering', hint: 'Sessionsrubriker' },
         review: { label: 'Granskning', hint: 'Underagent för /review' },
+        voice_chat: { label: 'Röstchatt', hint: 'Talade svar i röstläge' },
+        triage_specifier: { label: 'Triageprecisering', hint: 'Utveckling av Kanban-specifikationer' },
+        kanban_decomposer: { label: 'Kanban-uppdelare', hint: 'Uppgiftsuppdelning' },
+        profile_describer: { label: 'Profilbeskrivare', hint: 'Automatiska profilbeskrivningar' },
         curator: { label: 'Kurator', hint: 'Granskning av skillanvändning' }
       }
     },

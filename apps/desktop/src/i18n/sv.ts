@@ -401,6 +401,12 @@ export const svOverrides: TranslationOverrides = {
       signIn: 'Logga in',
       view: 'Visa'
     },
+    actions: {
+      restartHermes: 'Starta om Hermes',
+      openKeys: 'Öppna nycklar',
+      openGateways: 'Öppna gateways',
+      openMaintenance: 'Öppna underhåll'
+    },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT behöver ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs avvisade API-nyckeln (401).',

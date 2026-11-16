@@ -453,6 +453,34 @@ and its route are kept; run Disband again once it is back. A deferred turn with 
 run receipt may first wait for its exact Stop request, up to the client's 30-second
 timeout per member.
 
+### Session YOLO for a room participant
+
+Clients connected to the canonical gateway can read or set YOLO for one local
+room participant through `groups.member.yolo`. Select the room and member IDs
+from `groups.state`:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"groups.member.yolo","params":{"room_id":"ROOM_ID","member_id":"MEMBER_ID","enabled":true}}
+```
+
+Omit `enabled` to read; send `true` or `false` to set the session override.
+Explicit sets are safe to retry. Reads require `session:read`; updates require
+`session:control`, and both require ownership of the room. The response includes
+the resolved `session_key`, `enabled` for the session setting, and
+`effective_enabled` for the bypass including profile or process policy.
+
+The gateway routes the request to the participant's canonical owner, including
+another local profile's daemon. The participant must already have a room session;
+send it a room message first if the request returns `not_found`. Peer participants
+are unsupported. If the owner is unavailable, retry when it is running.
+
+The setting follows the participant's session through compression and restart.
+It applies to subsequent approval checks, including checks during an active turn,
+but does not answer an approval already pending. Other participants, other rooms,
+Bot Chat, and profile defaults keep their own settings. Reading or changing this
+control starts no model request and does not rebuild the conversation's prompt.
+Clients can use the method for per-member controls or targeted slash commands.
+
 ### Transferring hosted room authority
 
 Authority takeover is an **operator recovery procedure**, not an atomic handover.

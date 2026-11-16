@@ -24,7 +24,7 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history', 'results',
-                         'info', 'interrupt', 'discard', 'approve'})
+                         'info', 'interrupt', 'discard', 'approve', 'yolo'})
 # One chunk per private-socket exchange. The response is a single JSON line capped at
 # gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
 # Windows pipe: 360 KiB raw -> 480 KiB base64, leaving 32 KiB for the envelope (owner
@@ -74,6 +74,7 @@ def owner_request(home, verb, params, *, timeout=30):
     if response.get('ok') is not True:
         reason = str(response.get('error', '')).split(': ')[-1]
         if reason not in {'permission_denied', 'profile_mismatch', 'invalid_params', 'unknown_execution',
+                          'not_found', 'storage_unavailable',
                           'stale_generation', 'admission_conflict', 'response_too_large', 'request_too_large'}:
             reason = 'runtime_draining'
         raise RuntimeStoreError(reason)

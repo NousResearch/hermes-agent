@@ -28,6 +28,7 @@ GROUP_METHODS = {
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
+    'groups.member.yolo': 'session:read',
     'groups.peer.register': 'session:control',
     'groups.peer.invite': 'session:operator',
     'groups.peer.revoke': 'session:operator',
@@ -50,6 +51,7 @@ _FIELDS = {
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
                        'choice', 'request_id'},
+    'groups.member.yolo': {'room_id', 'member_id', 'enabled'},
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
                            'member_id', 'ttl_seconds', 'status_ttl_seconds'},
@@ -61,6 +63,8 @@ _FIELDS = {
 async def dispatch_group_control(connection, method, params):
     authority, actor = connection.authority, connection.actor
     capability = GROUP_METHODS.get(method, 'session:read')
+    if method == 'groups.member.yolo' and params.get('enabled') is not None:
+        capability = 'session:control'
     if capability not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     if actor.profile_id != authority.profile_id:
@@ -130,7 +134,7 @@ def _group(authority, actor, method, params, *, host_scope=False):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.continue', 'groups.retry', 'groups.discard',
-                         'groups.approve'}
+                         'groups.approve', 'groups.member.yolo'}
     admit = None
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
@@ -333,6 +337,10 @@ def _execution_control(service, method, params):
                 raise RuntimeStoreError(str(exc)) from exc
             raise
 
+    def member_yolo():
+        from gateway.session_hosted_yolo import member_yolo
+        return member_yolo(service, **params)
+
     handlers = {
         'groups.send': send,
         'groups.stop': lambda: {'cancelled': service.stop_room(
@@ -342,6 +350,7 @@ def _execution_control(service, method, params):
         'groups.retry': attempt_control,
         'groups.discard': attempt_control,
         'groups.approve': approve,
+        'groups.member.yolo': member_yolo,
     }
     return handlers[method]()
 

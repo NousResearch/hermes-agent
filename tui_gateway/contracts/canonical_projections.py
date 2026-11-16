@@ -1,7 +1,7 @@
 """Canonical projections with demonstrated differences from standalone wire."""
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import StrictBool, model_validator
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams
@@ -64,6 +64,24 @@ class CanonicalRoomAttemptParams(RoomParams):
 class CanonicalRoomApproveParams(CanonicalRoomAttemptParams):
     choice: Literal['once', 'deny']
     request_id: str
+
+
+class CanonicalRoomMemberYoloParams(RoomParams):
+    member_id: str
+    enabled: StrictBool | None = None
+
+
+class CanonicalRoomMemberYoloResult(Result):
+    room_id: str
+    member_id: str
+    session_key: str
+    enabled: bool
+    effective_enabled: bool
+
+
+canonical_method('groups.member.yolo', params=CanonicalRoomMemberYoloParams,
+                 result=CanonicalRoomMemberYoloResult,
+                 doc='Read or explicitly set YOLO for one existing local room participant session.')
 
 
 class CanonicalBotDeliverParams(Params):

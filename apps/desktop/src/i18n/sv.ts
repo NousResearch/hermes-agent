@@ -3609,6 +3609,13 @@ export const svOverrides: TranslationOverrides = {
   },
   messaging: {
     search: 'Sök meddelandetjänster…',
+    statusFilter: {
+      all: 'Alla',
+      bad: 'Fel',
+      good: 'Anslutna',
+      muted: 'Inaktiva',
+      warn: 'Kräver åtgärd'
+    },
     loading: 'Läser in meddelandeplattformar…',
     loadFailed: 'Kunde inte läsa in meddelandeplattformar',
     states: {

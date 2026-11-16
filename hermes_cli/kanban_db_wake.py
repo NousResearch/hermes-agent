@@ -78,10 +78,12 @@ def _process_outcome(wait: dict, now: int) -> Optional[tuple[str, Optional[int]]
     from tools.process_registry_output_log import recorded_exit_code
 
     if wait.get("host") == _kb._host_prefix():
+        # Decided BEFORE the read: a shell that is gone has already written its exit status.
+        alive = _worker_alive(wait["pid"], wait.get("started_at"))
         code = recorded_exit_code(wait["output_log"])
         if code is not None:
             return "exited", code
-        if not _worker_alive(wait["pid"], wait.get("started_at")):
+        if not alive:
             return "lost", None
     if now >= int(wait["until"]):
         return "deadline", None

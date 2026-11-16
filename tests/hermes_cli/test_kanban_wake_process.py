@@ -133,6 +133,37 @@ def test_task_wakes_when_awaited_process_exits(worker_env, spawn, all_assignees_
     assert (resolved.payload["outcome"], resolved.payload["exit_code"]) == ("exited", code)
 
 
+def test_process_that_exits_during_the_sweep_is_not_reported_lost(worker_env, spawn, monkeypatch, tmp_path,
+                                                                  all_assignees_spawnable):
+    """A sweep whose exit-file read lands just before the job records its code must not call the job lost."""
+    import tools.process_registry_output_log as output_log
+    from hermes_cli import kanban_db as kb
+
+    release = tmp_path / "release"
+    session = spawn(f"until [ -e {release} ]; do sleep 0.1; done; exit 5")
+    assert _park(session)["status"] == "scheduled"
+    real_read, stale_reads = output_log.recorded_exit_code, []
+
+    def read_then_let_the_job_finish(log):
+        code = real_read(log)
+        if not stale_reads and code is None:
+            stale_reads.append(log)
+            release.touch()
+            wait_until(lambda: real_read(log) is not None and not kb._pid_alive(session.pid),
+                       timeout=15, what="the job to record its exit code and go away")
+        return code
+
+    monkeypatch.setattr(output_log, "recorded_exit_code", read_then_let_the_job_finish)
+    spawned: list = []
+    _tick(spawned)
+    _tick(spawned)
+
+    assert stale_reads, "the sweep never read the exit file while the job was running"
+    assert worker_env in spawned
+    [resolved] = _events(worker_env, "wait_resolved")
+    assert (resolved.payload["outcome"], resolved.payload["exit_code"]) == ("exited", 5)
+
+
 def test_task_wakes_when_awaited_process_dies_without_exit_code(worker_env, spawn, all_assignees_spawnable):
     session = spawn("sleep 300")
     assert _park(session)["status"] == "scheduled"

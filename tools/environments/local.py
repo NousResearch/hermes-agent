@@ -418,8 +418,7 @@ def build_subprocess_env(
         if is_multiplex_active():
             # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
             # values the child already inherits byte-identical.
-            secrets = current_secret_scope()
-            env.update(secrets.copy() if secrets is not None else {})
+            env.update(_materialize_secret_scope(current_secret_scope()))
             # Administrator-managed values keep their precedence over the routed profile's own .env,
             # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
             restore_managed_env(env)
@@ -432,6 +431,16 @@ def build_subprocess_env(
     strip_supervised_process_identity(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
+
+
+def _materialize_secret_scope(secrets: Mapping[str, str] | None) -> dict[str, str]:
+    """Plain dict of a bound scope at a child-spawn boundary. A store's live view materialises
+    atomically through its own ``copy``; any other ``Mapping`` (``set_secret_scope``'s contract,
+    which does not promise ``copy``) through ``dict`` exactly as before."""
+    from agent.secret_scope import LiveSecretScope
+    if secrets is None:
+        return {}
+    return secrets.copy() if isinstance(secrets, LiveSecretScope) else dict(secrets)
 
 
 def served_profile_child_env(
@@ -475,8 +484,7 @@ def served_profile_child_env(
                     "", "served_profile_child_env(inherit_credentials=True) called with no target home and "
                     "no profile secret scope bound while multiplexing is on; the child would inherit the "
                     "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
-        materialized = secrets.copy() if secrets is not None else {}
-        env.update((k, v) for k, v in materialized.items() if v is not None)
+        env.update((k, v) for k, v in _materialize_secret_scope(secrets).items() if v is not None)
         if not (_is_routed_home(target) if target else secrets is not None):
             _restore_bootstrap_tokens(env, os.environ if base is None else base)
     _carry_bridge_markers(env, base if base is not None else os.environ, own_profile=not routed)

@@ -12,7 +12,10 @@ def publish_env_value(key: str, value: Optional[str]) -> None:
     from agent.secret_scope import current_secret_scope, serves_routed_profile
     from hermes_secret_routing import live_bootstrap_env, routed_provider, stays_local
 
-    scope, routed = current_secret_scope(), serves_routed_profile()
+    try:
+        scope, routed = current_secret_scope(), serves_routed_profile()
+    except Exception:  # health: allow BLE001 -- base fallback: a scope that cannot resolve publishes ambient
+        scope, routed = None, False
     provider = routed_provider()
     if provider is not None and stays_local(provider, key):
         live_bootstrap_env(config.get_hermes_home(), provider)

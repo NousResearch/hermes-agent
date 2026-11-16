@@ -235,8 +235,9 @@ def messaging_off(cfg: dict[str, Any], env_text: str,
 
     A bot runs when a block sets ``enabled: true``, or when none sets ``enabled`` and ``env_text``
     holds its token (the gateway enables it from env). Off is ``platforms.<id>.enabled: false``, the
-    switch the Messaging page writes, plus ``false`` in any other block that sets ``enabled``, so no
-    other spelling turns it back on. Tokens and every other setting are left as they are."""
+    switch the Messaging page writes, and no ``enabled`` in any other block: a later block wins in the
+    gateway's merge, so a ``false`` left there would outvote the page's switch. Tokens and every other
+    setting are left as they are."""
     from utils import is_truthy_value
     bots = _bot_platforms() if bots is None else bots
     out, env, off = copy.deepcopy(cfg), _env_on(env_text), []
@@ -246,8 +247,7 @@ def messaging_off(cfg: dict[str, Any], env_text: str,
         if not (any(is_truthy_value(flag) for flag in flags) or (not flags and env.intersection(names))):
             continue
         for block in blocks:
-            if "enabled" in block:
-                block["enabled"] = False
+            block.pop("enabled", None)
         if not isinstance(out.get("platforms"), dict):
             out["platforms"] = {}
         if not isinstance(out["platforms"].get(pid), dict):

@@ -241,6 +241,28 @@ def test_transfer_then_undo_returns_the_agent_byte_for_byte(homes, monkeypatch):
     assert _ids(dst / "state.db") == ["cloud-chat"]
 
 
+@pytest.mark.parametrize("spelling", [
+    "platforms:\n  telegram:\n    enabled: true\n",
+    "gateway:\n  telegram:\n    enabled: true\n",
+    "telegram:\n  enabled: true\n",
+])
+def test_a_bot_switched_off_by_the_transfer_comes_back_on_from_the_messaging_page(homes, monkeypatch, spelling):
+    """Every spelling of ``enabled`` the gateway reads: after ``--messaging-off`` the Messaging page's
+    switch (``platforms.<id>.enabled``) alone turns the bot back on."""
+    from gateway.config import Platform, load_gateway_config
+    from hermes_cli.web_server_messaging import _write_platform_enabled
+    src, dst, tmp = homes
+    _write(src, "config.yaml", spelling)
+    _write(src, ".env", "TELEGRAM_BOT_TOKEN=SRC-TG\n")
+    _import(monkeypatch, dst, _backup(monkeypatch, src, tmp / "src.zip"), keep_host=True, messaging_off=True)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "SRC-TG")
+    assert not load_gateway_config().platforms[Platform.TELEGRAM].enabled
+
+    _write_platform_enabled("telegram", True)
+
+    assert load_gateway_config().platforms[Platform.TELEGRAM].enabled
+
+
 def test_a_transfer_brings_the_bots_switched_off_and_its_undo_brings_the_cloud_bot_back(homes, monkeypatch, capsys):
     """``--messaging-off``: every bot the backup runs (an ``enabled`` flag or just a token), in the
     root and in a profile, arrives off with its token and settings; the undo (no flag) puts the

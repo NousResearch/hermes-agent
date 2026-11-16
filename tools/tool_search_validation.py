@@ -119,10 +119,17 @@ def _bounded_parameters(parameters: Any, *, keys: Iterable[str] = ()) -> tuple[A
 
 
 def _failing_keys(error: Any) -> tuple[str, ...]:
-    """Top-level argument names on a jsonschema error's path: the branch (or field) the call
-    failed on, so a trimmed echo still carries the schema the model has to repair."""
+    """Top-level arguments for a validation failure, including conditional requirements."""
     for part in getattr(error, "absolute_path", ()):
         return (part,) if isinstance(part, str) else ()
+    # An allOf/then 'required' failure at the root has no instance path. Pick the
+    # missing required argument(s) so the bounded echo can show their schemas.
+    if getattr(error, "validator", None) == "required":
+        instance = getattr(error, "instance", None)
+        required = getattr(error, "validator_value", None)
+        if isinstance(instance, dict) and isinstance(required, list):
+            return tuple(key for key in required
+                         if isinstance(key, str) and key not in instance)
     return ()
 
 

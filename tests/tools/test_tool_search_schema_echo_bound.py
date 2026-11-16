@@ -94,6 +94,20 @@ def test_failing_branch_on_a_large_schema_echoes_that_branch_only():
     assert "branch_2" not in json.dumps(echoed)
 
 
+def test_missing_conditional_branch_echoes_required_property():
+    """A then.required failure has an empty instance path, unlike a bad branch field."""
+    from tools.tool_search import validate_deferred_call_args
+
+    name = _register("mcp_echo_missing_conditional", _large_params())
+    payload = _payload(validate_deferred_call_args(name, {"action": "branch_1"}))
+
+    assert "branch_1" in payload["error"]
+    echoed = payload["parameters"]
+    assert echoed["required"] == ["action"]
+    assert list(echoed["properties"]) == ["branch_1"]
+    assert "branch_2" not in json.dumps(echoed)
+
+
 @pytest.mark.parametrize("branches", [2, 40])
 def test_error_size_does_not_track_schema_size(branches):
     from tools.tool_search import validate_deferred_call_args

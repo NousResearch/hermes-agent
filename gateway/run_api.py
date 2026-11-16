@@ -139,8 +139,10 @@ class GatewayDashboardMount:
             if self._closed:
                 raise RuntimeError("gateway API stopped")
             import importlib
-            web = sys.modules.get("hermes_cli.web_server") or await asyncio.to_thread(
-                importlib.import_module, "hermes_cli.web_server")
+            # import_module, not a sys.modules lookup: the module is listed there while another
+            # thread still runs its body. It returns a loaded module at once and waits for one
+            # that is still importing.
+            web = await asyncio.to_thread(importlib.import_module, "hermes_cli.web_server")
             if self._closed:  # the listener stopped while the import ran
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):

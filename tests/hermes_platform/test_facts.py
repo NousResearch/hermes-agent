@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -117,3 +119,22 @@ def test_linux_live_cpu_facts_match_cpuinfo(cleared_fact_caches) -> None:
 
     assert facts.cpu_vendor() == facts.parse_cpuinfo_vendor(cpuinfo)
     assert facts.cpu_model() in cpuinfo
+
+def test_windows_nonconsole_interactive_session_uses_user32(monkeypatch) -> None:
+    """A remote interactive Windows session must check the user32 window station."""
+    dlls = {
+        "kernel32": SimpleNamespace(WTSGetActiveConsoleSessionId=lambda: 2),
+        "user32": SimpleNamespace(GetProcessWindowStation=lambda: 0x1234),
+    }
+    loaded = []
+
+    def fake_windll(name: str, *, use_last_error: bool):
+        assert use_last_error
+        loaded.append(name)
+        return dlls[name]
+
+    monkeypatch.setattr(facts, "_windows_session_id", lambda: 3)
+    monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising=False)
+
+    assert facts._windows_interactive_session() is True
+    assert loaded == ["kernel32", "user32"]

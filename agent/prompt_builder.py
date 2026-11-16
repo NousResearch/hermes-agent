@@ -912,13 +912,13 @@ def _clear_backend_probe_cache() -> None:
 def _local_temp_hint() -> str:
     """Honor user temp locations; only managed scratch carries the pruning policy."""
     scratch = get_scratch_dir()
-    tmpdir = os.environ.get("TMPDIR", "")
-    # A boot-exported path belongs to the launch profile. Re-derive it for the served home,
-    # as apply_scratch_tmp_env() does when preparing the terminal's child environment.
-    if tmpdir == os.environ.get("HERMES_SCRATCH_DIR", ""):
-        tmpdir = ""
-    for candidate in (_tenv_read("TERMINAL_TEMP_DIR"), tmpdir):
-        if candidate and os.path.isabs(candidate) and os.path.isdir(candidate):
+    # An owned TMPDIR belongs to the launch profile; the served profile has its
+    # own scratch path. Otherwise honor the OS temp-variable precedence.
+    marker = os.environ.get("HERMES_SCRATCH_DIR", "")
+    inherited = (() if marker and os.environ.get("TMPDIR") == marker else
+                 tuple(os.environ.get(name, "") for name in ("TMPDIR", "TEMP", "TMP")))
+    for candidate in (_tenv_read("TERMINAL_TEMP_DIR"), *inherited):
+        if candidate and candidate != marker and os.path.isabs(candidate) and os.path.isdir(candidate):
             if Path(candidate).resolve() != scratch.resolve():
                 return f"Temporary directory: {candidate} (write temporary files and probes here)"
             break

@@ -60,3 +60,32 @@ def test_prompt_rederives_managed_scratch_for_the_served_home(tmp_path, monkeypa
     assert str(scratch) in hints
     assert str(launch) not in hints
     assert "24h" in hints
+
+
+@pytest.mark.parametrize("temp_var", ("TEMP", "TMP"))
+def test_prompt_names_native_temp_when_tmpdir_is_unset(tmp_path, monkeypatch, temp_var):
+    """An OS-supplied TEMP/TMP wins over boot scratch, even without TMPDIR."""
+    import tempfile
+    from pathlib import Path
+
+    from agent.prompt_builder import _local_host_hints
+
+    native_temp = tmp_path / "native temp"
+    native_temp.mkdir()
+    for name in ("TMPDIR", "TEMP", "TMP", "HERMES_SCRATCH_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(temp_var, str(native_temp))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+
+    token = set_terminal_scope({})
+    try:
+        assert apply_scratch_tmp_env({temp_var: str(native_temp)}) is False
+        assert Path(tempfile.gettempdir()).resolve() == native_temp.resolve()
+        scratch = get_scratch_dir()
+        hints = "\n".join(_local_host_hints())
+    finally:
+        reset_terminal_scope(token)
+
+    assert f"Temporary directory: {native_temp}" in hints
+    assert f"Scratch directory: {scratch}" not in hints
+    assert "24h" not in hints

@@ -263,6 +263,20 @@ class TestSlackToken:
         assert _resolve_slack_token() == ""  # unscoped
         assert no_dotenv == []
 
+    def test_unscoped_never_reaches_config_env_token(self, monkeypatch, no_dotenv):
+        """Unscoped, load_gateway_config() would read the default bot's token
+        from os.environ — the resolver must not consult it."""
+        import gateway.config as gc
+
+        monkeypatch.setattr(
+            gc, "load_gateway_config",
+            lambda: (_ for _ in ()).throw(AssertionError("config must not be read unscoped")),
+        )
+        from tools.slack_react_tool import _resolve_slack_token
+
+        ss.set_multiplex_active(True)
+        assert _resolve_slack_token() == ""
+
     def test_post_thread_check_uses_same_resolution(self):
         from tools.slack_post_thread_tool import _check_slack_post_thread
 

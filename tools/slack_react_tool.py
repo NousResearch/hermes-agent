@@ -65,12 +65,19 @@ def _resolve_slack_token() -> str:
     configured". When neither config nor env yields a token, load the Hermes
     dotenv once and retry before giving up.
     """
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+    # Multiplex with no profile scope: load_gateway_config() would resolve the
+    # token from os.environ — the DEFAULT bot's. Skip it; read_secret below
+    # then reports "not configured" (fail closed, never another bot's token).
+    unscoped_multiplex = is_multiplex_active() and current_secret_scope() is None
     try:
-        from gateway.config import load_gateway_config, Platform
-        cfg = load_gateway_config()
-        pconfig = cfg.platforms.get(Platform.SLACK)
-        if pconfig and getattr(pconfig, "token", ""):
-            return pconfig.token or ""
+        if not unscoped_multiplex:
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+            pconfig = cfg.platforms.get(Platform.SLACK)
+            if pconfig and getattr(pconfig, "token", ""):
+                return pconfig.token or ""
     except Exception:
         pass
     # Multiplex: the profile scope only — a miss returns "" so the tool can

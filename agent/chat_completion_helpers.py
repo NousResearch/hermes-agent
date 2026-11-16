@@ -1202,6 +1202,22 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
+    # Custom-provider system-prompt representation (#76783). Resolved from the
+    # custom_providers entry matching this base_url; "system" (default) is a
+    # no-op. "user" moves the runtime prompt into the first user message for
+    # Gemini-backed relays that 429 on long systemInstruction content.
+    _spm = "system"
+    if agent.provider == "custom":
+        try:
+            from hermes_cli.config import get_custom_provider_system_prompt_mode
+
+            _spm = get_custom_provider_system_prompt_mode(
+                agent.model, agent.base_url
+            )
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug("system_prompt_mode resolution failed: %s", _exc)
+            _spm = "system"
+
     return _ct.build_kwargs(
         model=agent.model,
         messages=_msgs_for_chat,
@@ -1215,6 +1231,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),
         model_lower=(agent.model or "").lower(),
+        system_prompt_mode=_spm,
         is_openrouter=_is_or,
         is_nous=_is_nous,
         is_qwen_portal=_is_qwen,

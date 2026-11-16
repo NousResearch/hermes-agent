@@ -344,6 +344,14 @@ class ChatCompletionsTransport(ProviderTransport):
         # Reached only when get_provider_profile() returned None.
         # Known providers always go through the profile path above.
 
+        # system_prompt_mode compatibility transform for custom providers
+        # (Gemini-backed relays, #76783). No-op for the default "system" mode.
+        _spm = params.get("system_prompt_mode")
+        if _spm and _spm != "system":
+            from providers.base import apply_system_prompt_mode
+
+            sanitized = apply_system_prompt_mode(sanitized, _spm)
+
         # Developer role swap for GPT-5/Codex models
         model_lower = params.get("model_lower", (model or "").lower())
         if (

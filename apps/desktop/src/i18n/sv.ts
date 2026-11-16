@@ -4162,7 +4162,12 @@ export const svOverrides: TranslationOverrides = {
     failedLoadSoul: 'Kunde inte läsa in SOUL.md',
     failedSaveSoul: 'Kunde inte spara SOUL.md',
     failedCreate: 'Kunde inte skapa profil',
-    failedRename: 'Kunde inte byta namn på profil'
+    failedRename: 'Kunde inte byta namn på profil',
+    status: {
+      unread: count => (count === 1 ? '1 oläst session' : `${count} olästa sessioner`),
+      needsInput: count => (count === 1 ? '1 session behöver ditt svar' : `${count} sessioner behöver ditt svar`),
+      working: count => (count === 1 ? '1 session körs' : `${count} sessioner körs`)
+    }
   },
   messaging: {
     search: 'Sök meddelandetjänster…',

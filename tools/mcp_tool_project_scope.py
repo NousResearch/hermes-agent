@@ -83,9 +83,16 @@ def _caller_cwd() -> str:
     ContextVar the MCP loop cannot see). A non-local terminal backend's cwd names a path in the
     target environment, never on this host — the worker side gates on the backend too — so it
     clones nothing rather than resolving a coincidental host path (review finding 8c).
+    A refusal scope (the profile's terminal policy could not be resolved) fails closed the same
+    way: no clone, the baseline child serves the call — raising out of here would break every
+    scoped stdio call from that session (review finding 8c residual).
     realpath: ``/p``, ``/p/`` and a symlink to it are one project."""
-    from tools.terminal_scope import terminal_env
-    if (terminal_env("TERMINAL_ENV", "local") or "local").strip().lower() != "local":
+    from tools.terminal_scope import TerminalPolicyUnavailable, terminal_env
+    try:
+        backend = terminal_env("TERMINAL_ENV", "local")
+    except TerminalPolicyUnavailable:  # refusal scope: no-clone, never a mid-call raise
+        return ""
+    if (backend or "local").strip().lower() != "local":
         return ""
     from agent.runtime_cwd import resolve_agent_cwd
     try:

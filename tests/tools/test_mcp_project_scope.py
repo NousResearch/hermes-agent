@@ -820,6 +820,27 @@ def test_a_remote_backend_caller_never_clones(root, monkeypatch):
     assert _call(name)[0] != str(root / "a")  # the launch-dir baseline still serves it
 
 
+def test_a_refusal_scope_session_serves_off_the_baseline(root):
+    """A refusal scope (the session's terminal policy could not be resolved) used to raise
+    TerminalPolicyUnavailable out of _caller_cwd on EVERY scoped stdio call, where main served
+    the call off the baseline. Fail closed to no-clone instead: the baseline child serves it
+    (T00018 residual 1)."""
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.terminal_scope import TerminalPolicyRefusal, reset_terminal_scope, set_terminal_scope
+
+    name = "cwdprobe_refusal"
+    _register(root, name)
+    token = set_terminal_scope(TerminalPolicyRefusal("unresolvable test policy"))
+    try:
+        spawn_cwd, _pid = _call(name, cwd=str(root / "a"))
+        assert spawn_cwd != str(root / "a"), \
+            "a refusal-scope session spawned a project clone anyway"
+        assert not _clones(name), "a refusal-scope session left a clone behind"
+    finally:
+        reset_terminal_scope(token)
+        shutdown_mcp_servers(scope=None, names={name})
+
+
 def _reap_bare_keyed_clones() -> None:
     """Reap clones stranded under a bare baseline key (the rekey bug's signature), so a run of
     these tests never leaks its children into the next one."""

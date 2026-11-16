@@ -588,12 +588,12 @@ describe('toChatMessages', () => {
         role: 'user',
         content: 'opaque model context payload',
         display_kind: 'model_switch',
-        display_metadata: '{"model": "gpt-4o", "provider": "openai"}',
+        display_metadata: '{"model": "gpt-4o", "provider": "openai", "effort": "high"}',
         timestamp: 1
       }
     ])
 
-    expect(chatMessageText(restForm[0])).toBe('model changed to gpt-4o via openai')
+    expect(chatMessageText(restForm[0])).toBe('model changed to gpt-4o via openai · high')
   })
 
   it('never paints a background-process heartbeat wake as a user bubble', () => {

@@ -350,14 +350,19 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
     // content-free fallback only for rows written by backends that predate the metadata.
     const metadata = parseDisplayMetadata(message.display_metadata)
     const model = typeof metadata?.model === 'string' && metadata.model.trim() ? metadata.model.trim() : undefined
+
     const provider =
       typeof metadata?.provider === 'string' && metadata.provider.trim() ? metadata.provider.trim() : undefined
+
+    const effort = typeof metadata?.effort === 'string' && metadata.effort.trim() ? metadata.effort.trim() : undefined
 
     if (model === undefined) {
       return 'model changed'
     }
 
-    return provider === undefined ? `model changed to ${model}` : `model changed to ${model} via ${provider}`
+    const route = provider === undefined ? `model changed to ${model}` : `model changed to ${model} via ${provider}`
+
+    return effort === undefined ? route : `${route} · ${effort}`
   }
 
   if (message.display_kind === 'auto_continue') {

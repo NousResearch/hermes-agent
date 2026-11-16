@@ -251,7 +251,7 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
     return {"value": result.new_model, "warning": msg, "confirm_required": True, "confirm_message": msg}
 
 
-def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot):
+def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot, effort: str = ""):
     """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts. The transcript
     claim is held for the whole commit (the marker writes the chat's transcript), so the idle reaper cannot
     release the lease between the ownership check and the marker."""
@@ -274,7 +274,8 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         _restart_slash_worker(sid, session)
         _persist_live_session_runtime(session)
         _persist_live_session_system_prompt(session)
-        _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
+        # A `--reasoning` level is applied after this commit, so the marker is told it up front.
+        _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider, effort=effort)
         _emit_session_info(sid, session)
         if snapshot is not None:
             session["one_turn_model_restore"] = snapshot
@@ -341,7 +342,7 @@ def _apply_model_switch(
     try:
         if agent:
             # Provenance must exist before this transaction persists the switched runtime.
-            _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+            _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot, effort=reasoning_effort)
     except Exception:
         if records_composer_override:
             if had_composer_profile:

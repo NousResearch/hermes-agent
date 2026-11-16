@@ -13,7 +13,8 @@ and head commits in ``_HERMES_PR_BASE_SHA`` and ``_HERMES_PR_HEAD_SHA``. Each su
 (the litellm-style payloads). Low-signal heuristics were removed on purpose because they fired
 on nearly every PR and trained reviewers to ignore the scanner; keep it ruthlessly narrow.
 Both diff base...head, from the merge base, so only changes this PR introduces are judged, not
-changes that landed on main after the PR branched off.
+changes that landed on main after the PR branched off. An added line that the same diff also
+removes from a file of the same name is a moved line and is not judged; see ``numbered_added_lines``.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,15 +67,36 @@ UNBOUNDED_DEP = re.compile(r'"[a-zA-Z0-9_-]+(?:\[[^\\]\]*\])?>=[ 0-9.]+"')
 def pr_diff(*pathspec: str) -> str:
     """Three-dot diff of the PR; a git failure yields an empty diff, as ``|| true`` did."""
     commits = f"{os.environ['_HERMES_PR_BASE_SHA']}...{os.environ['_HERMES_PR_HEAD_SHA']}"
-    result = subprocess.run(("git", "diff", commits, "--", *pathspec), stdout=subprocess.PIPE,
+    result = subprocess.run(("git", "diff", "--no-renames", commits, "--", *pathspec), stdout=subprocess.PIPE,
                             stdin=subprocess.DEVNULL, timeout=300, check=False)
     return result.stdout.decode("utf-8", "surrogateescape")
 
 
 def numbered_added_lines(diff: str) -> list[str]:
-    """``grep -n '^+'`` over the diff."""
-    return [f"{number}:{line}" for number, line in enumerate(diff.split("\n"), 1)
-            if line.startswith("+")]
+    """``grep -n '^+'`` over the diff, less the lines the PR only moved.
+
+    The diff has no rename detection, so a moved file is all removed lines at its old path and all
+    added lines at its new one. An added line is left out when the diff also removes a line with
+    the same text from a file of the same name, once per removed line. A copy whose source keeps
+    the line, a second copy of a moved file, and text taken from a file of another name are still
+    judged.
+    """
+    lines = diff.split("\n")
+    keys, name = [], ""
+    for line in lines:
+        if line.startswith("diff --git "):
+            name = line.rsplit("/", 1)[-1].rstrip('"')
+        keys.append((name, line[1:]))
+    removed = Counter(key for key, line in zip(keys, lines) if line.startswith("-"))
+    added = []
+    for number, (key, line) in enumerate(zip(keys, lines), 1):
+        if not line.startswith("+"):
+            continue
+        if removed[key]:
+            removed[key] -= 1
+        else:
+            added.append(f"{number}:{line}")
+    return added
 
 
 def critical_findings(diff: str) -> str:

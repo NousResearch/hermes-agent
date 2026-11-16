@@ -70,9 +70,9 @@ def _purge_stale_hermes_modules() -> None:
 
 def _reload_updated_runtime_modules() -> None:
     # Historical updater hook: dependency activation belongs to the next process.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd_maint._reload_updated_runtime_modules")
 
 
 def _print_curator_first_run_notice() -> None:
@@ -270,9 +270,9 @@ def _finish_dashboard_update_cleanup(
     node_failures: list[str], already_restarted_units: set[str] | None = None
 ) -> None:
     """Historical updater hook; do not continue a pre-PM update after the swap."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd_maint._finish_dashboard_update_cleanup")
 
 
 def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
@@ -404,9 +404,9 @@ def _print_verified_update_completion(message: str) -> bool:
 
 def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
     """Historical updater hook; old soft-build results cannot establish completion."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.update_cmd_maint._print_update_summary")
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
@@ -912,6 +912,11 @@ def _install_default_tools_after_update() -> None:
         return
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
+            # The entry found may be a row another checkout recorded: claim it, or that
+            # checkout's upgrade drops the row and `pm gc` deletes this one's tool. Claiming
+            # an installed tool downloads and re-hashes nothing.
+            with suppress(pm.InstallError, OSError):
+                pm.ensure(name, explicit=True, verify=False)
             continue
         print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:
@@ -1061,6 +1066,11 @@ def _run_post_update_maintenance(
     owed_step("config_migration", lambda: _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
     ))
+    # Catalog plugins marked ``default: true`` that a profile never had: a fresh install's home, or a
+    # default added since the last update. A failed fetch is retried from a later boot, so nothing is owed.
+    with _best_effort('Default plugin install failed: %s'):
+        from hermes_cli.default_plugins import install_and_record
+        install_and_record()
 
     print()
     update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))

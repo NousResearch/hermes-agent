@@ -99,6 +99,7 @@ with a name allows that one name only.
 | `tools.clarify_gateway` | `SKIPPED` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.url_safety` | `is_safe_url` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `tools.url_safety` | `create_ssrf_safe_async_client` | adding-platform-adapters.md § Public helpers for platform plugins |
+| `tools.url_safety` | `create_ssrf_safe_client` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `gateway.platforms._http_client_limits` | `platform_httpx_limits` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.gateway_setup_wizard` | `print_setup_header` | adding-platform-adapters.md § Public helpers for platform plugins |
 | `hermes_cli.gateway_setup_wizard` | `confirm_reconfigure` | adding-platform-adapters.md § Public helpers for platform plugins |
@@ -121,3 +122,16 @@ with a name allows that one name only.
 | `gateway.session_context` | `get_session_env` | plugins/index.md § platform plugins: read session identity through the task-local context |
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |
+| `agent.file_safety` | `get_read_block_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `agent.file_safety` | `raise_if_read_blocked` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `agent.file_safety` | `is_write_denied` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `agent.file_safety` | `get_write_denied_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `hermes_yaml` | `safe_load` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `hermes_yaml` | `safe_dump` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `hermes_cli.urllib_security` | `open_credentialed_url` | plugins/index.md § Send a credentialed HTTP request without leaking it on redirect |
+| `hermes_cli.chat_launch` | `hermes_command` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.chat_launch` | `print_exit_summary` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.gateway_chat` | `shell_client_env` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `create` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `restore` | user-guide/features/plugins.md § A plugin with its own chat client |
+| `hermes_cli.session_worktree` | `finish` | user-guide/features/plugins.md § A plugin with its own chat client |

@@ -35,12 +35,40 @@ _guard = threading.Lock()
 class _Flight:
     lock: threading.Lock = field(default_factory=threading.Lock)
     users: int = 0
+    # Bumped by ``forget`` for this login: a refresh that started before its logout must not cache.
+    generation: int = 0
 
 
 # Hold the provider itself while caching: replacement (including same-name scoped
 # registrations) invalidates identity, and Python cannot recycle its id under a live entry.
 _cache: dict[tuple[int, bytes], tuple[float, DashboardAuthProvider, Session | None]] = {}
 _flights: dict[tuple[int, bytes], _Flight] = {}
+
+
+def _digest(token: str) -> bytes:
+    return hashlib.sha256(token.encode()).digest()
+
+
+def forget(refresh_token: str) -> None:
+    """Drop every replayable result of the login *refresh_token* belongs to (logout). Without it
+    a copy of an RT rotated within the success TTL keeps getting the cached session after the
+    provider revoked it. Follows the rotation chain both ways: each cached entry links the RT it
+    was keyed on to the RT it handed out."""
+    linked = {_digest(refresh_token)}
+    with _guard:
+        changed = True
+        while changed:
+            changed = False
+            for key, (_, _, session) in list(_cache.items()):
+                issued = _digest(session.refresh_token) if session and session.refresh_token else None
+                if key[1] in linked or issued in linked:
+                    del _cache[key]
+                    linked.update(d for d in (key[1], issued) if d)
+                    changed = True
+        # Only this login's flights: another login's burst must keep sharing its one rotation.
+        for key, flight in _flights.items():
+            if key[1] in linked:
+                flight.generation += 1
 
 
 def _prune(now: float) -> None:
@@ -54,8 +82,7 @@ def _prune(now: float) -> None:
 def _refresh_provider(provider: DashboardAuthProvider, token: str) -> Session | None:
     # Keyed on the token alone: whoever presents this RT already owns the session, and a client
     # that changed network between two requests of one burst must still hit the cache.
-    digest = hashlib.sha256(token.encode()).digest()
-    key = (id(provider), digest)
+    key = (id(provider), _digest(token))
     with _guard:
         _prune(time.monotonic())
         flight = _flights.setdefault(key, _Flight())
@@ -66,6 +93,7 @@ def _refresh_provider(provider: DashboardAuthProvider, token: str) -> Session | 
                 cached = _cache.get(key)
                 if cached is not None and cached[0] > time.monotonic():
                     return cached[2]
+                generation = flight.generation
             try:
                 session = provider.refresh_session(refresh_token=token)
             except RefreshExpiredError:
@@ -73,7 +101,8 @@ def _refresh_provider(provider: DashboardAuthProvider, token: str) -> Session | 
             # ProviderError and unexpected execution failures are deliberately not cached.
             with _guard:
                 now = time.monotonic()
-                _cache[key] = (now + (_SUCCESS_TTL if session is not None else _FAILURE_TTL), provider, session)
+                if generation == flight.generation and (session is None or provider.refresh_reuse_detection):
+                    _cache[key] = (now + (_SUCCESS_TTL if session is not None else _FAILURE_TTL), provider, session)
                 _prune(now)
             return session
     finally:

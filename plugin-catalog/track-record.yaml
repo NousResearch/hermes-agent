@@ -16,6 +16,7 @@ category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/track-record
 version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/track-record/d56184755627a9bd61cc0b741dee7f233ea5f2b1/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

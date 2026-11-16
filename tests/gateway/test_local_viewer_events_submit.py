@@ -93,7 +93,7 @@ def _gateway_runner():
         "session-model", {"provider": "custom", "api_key": "k1", "base_url": "http://session"})
     runner._resolve_session_reasoning_config.return_value = None
     runner._resolve_session_service_tier.return_value = None
-    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt: {
+    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt, **_kw: {
         "model": model, "runtime": {k: v for k, v in rt.items() if k != "request_overrides"}}
     runner._agent_config_signature.return_value = ("sig",)
     runner._extract_cache_busting_config.return_value = {}

@@ -16,6 +16,7 @@ category: models
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/sampler
 version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/sampler/acabf65e57f3306e1eb522ad08f3020f5b6e565d/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

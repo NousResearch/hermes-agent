@@ -9,12 +9,12 @@ it answers anything.
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 from typing import Any, Optional
 
 from agent.i18n import t
+from gateway.platforms.helpers import prompt_id_counter
 from gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class FeishuChoiceCardsMixin:
         self._clarify_state: dict[str, dict[str, str]] = {}
         # picker_id -> {session_key, message_id, chat_id, body, choices, on_choice_selected, metadata}
         self._choice_picker_state: dict[int, dict[str, Any]] = {}
-        self._choice_picker_counter = itertools.count(1)
+        self._choice_picker_counter = prompt_id_counter()
 
     # --- clarify ---
     async def send_clarify(
@@ -130,7 +130,8 @@ class FeishuChoiceCardsMixin:
         answer = str(choices[int(token)])
         if not clarify_gateway.resolve_gateway_clarify(clarify_id, answer):
             return self._card_response(self._settled_clarify_card(state, t("gateway.clarify.expired"), "grey"))
-        logger.info("Feishu clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, answer, user_name)
+        logger.info("Feishu clarify button resolved (id=%s, choice_index=%s, user=%s)", clarify_id, token, user_id or open_id)
+        logger.debug("Feishu clarify choice text (id=%s): %.100r", clarify_id, answer)
         return self._card_response(self._settled_clarify_card(state, f"**{user_name}:** {answer}", "green"))
 
     async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:

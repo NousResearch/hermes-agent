@@ -178,6 +178,20 @@ def delegation_wakes_parent(evt: dict) -> bool:
         for r in results)
 
 
+def completion_resumes_parent(evt: dict) -> bool:
+    """True for a result the parent asked to hear about and carries on from: an async delegation's
+    final result (not the early per-task notice, not a manual cron run's finished text) or a background
+    process's exit, whatever its exit code. Its unviewed local parent runs it as a turn, as a watched one
+    does, so the work goes on while no client is connected (a laptop asleep, a closed tab).
+    ``delegation_wakes_parent`` is the failed-delegation subset, whose wakes are bounded
+    (gateway/session_completion_notes.py); a process exit is never in it."""
+    if evt.get("type") == "async_delegation":
+        if evt.get("task_failure_notice"):
+            return False
+        return bool(evt.get("_sibling_resumes")) or evt.get("role") != "cron_run"
+    return evt.get("type") == "completion"
+
+
 _CONTENT_POLICY_RECOVERY = (
     "This model's provider refused the task (content_policy_blocked). The refusal is deterministic for "
     "that model, so do not re-dispatch it unchanged: re-dispatch it with delegate_task on a different "
@@ -195,6 +209,20 @@ def _failure_recovery_lines(r: dict) -> list[str]:
                 "re-dispatch it unchanged: re-dispatch it with delegate_task on a different model or provider "
                 "only if that avoids the cause, otherwise tell the user what failed."]
     return []
+
+
+def _auto_resume_lines(r: dict) -> list[str]:
+    """A mixed unit's line for a child ``delegation.auto_resume`` will continue (``auto_resume``); a give-up's
+    terminal failure carries its own reason in ``error``."""
+    if not r.get("subagent_id"):
+        return []
+    if r.get("auto_gave_up"):
+        lines = [f"Last transcript tail:\n{r['transcript_tail']}"] if r.get("transcript_tail") else []
+        return lines or ["Not resumed automatically any more; continue it by hand or re-dispatch it."]
+    if not isinstance(r.get("auto_resume"), dict):
+        return []
+    from tools.delegate_tool_auto_resume import notice_line
+    return [notice_line(str(r["subagent_id"]), r["auto_resume"])]
 
 
 def _notice_lines(results) -> list[str]:
@@ -303,7 +331,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         else:
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r_status not in _DONE:
-            lines += _failure_recovery_lines(r)
+            lines += _auto_resume_lines(r) or _failure_recovery_lines(r)
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
         lines += _process_accounting_lines(r)

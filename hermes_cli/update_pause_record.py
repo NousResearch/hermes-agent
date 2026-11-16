@@ -872,13 +872,23 @@ def drop_never_stopped(token: dict) -> dict:
 
 def split_draining(token: dict) -> dict:
     """Remove and return ``{"profiles", "unmapped", "posix_units"}`` whose recorded process is still
-    running: it was asked to stop and has not exited yet, so it can only be restarted once it has."""
+    running: it was asked to stop and has not exited yet, so it can only be restarted once it has.
+    A supervised unit whose ``--force`` stop did not settle is held while its stop job still runs
+    (its gateway PID may be gone already): a start now would queue behind that job."""
     live = _live_pids(token)
     draining = {"profiles": {p: pid for p, pid in (token.get("profiles") or {}).items() if str(pid) in live},
                 "unmapped": [u for u in (token.get("unmapped") or []) if str(u.get("pid")) in live],
                 "posix_units": [u for u in (token.get("posix_units") or []) if str(u.get("pid")) in live]}
     _without(token, live)
+    if stopping := [u for u in token.get("posix_units") or [] if u.get("stop_unsettled") and _unit_stop_pending(u)]:
+        draining["posix_units"] += stopping
+        token["posix_units"] = [u for u in token["posix_units"] if u not in stopping]
     return draining
+
+
+def _unit_stop_pending(unit: dict) -> bool:
+    from hermes_cli.update_cmd_posix_pause import unit_stop_pending
+    return unit_stop_pending(unit)
 
 
 def merge_into(token: dict | None, adopted: dict) -> dict:

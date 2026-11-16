@@ -1,0 +1,19 @@
+name: inkly
+title: Inkly
+repo: https://github.com/inkly-so/inkly-mcp
+sha: f7cd97387dca2522087f01b4ab92c4061b21e290
+subdir: hermes
+version: "1.0.0"
+description: "Run your eSignature and document signing workflows directly from Hermes. Inkly lets you send, track, and manage documents for eSignature. Send a contract from your saved templates, turn a PDF into a signable document, see which agreements are still waiting to be signed and send a reminder, or get the signed PDF of any completed document. Built for anyone who needs fast, simple document signing, whether it's contracts, forms, or approvals. Connects to Inkly's hosted MCP server (Streamable HTTP at https://www.inkly.so/mcp, OAuth sign-in, no keys in config). Bundles the inkly workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Inkly's hosted server (www.inkly.so) and acts on the user's Inkly account at the workspace and access level they approve at sign-in; the tool set is served by that server at runtime and is not covered by the pinned sha. send_template emails a real, legally binding document, send_reminder emails signers, and void_document voids a sent document and emails its signers; at the default Prepare level nothing is emailed until the user presses Send in Inkly. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Inkly
+tier: community
+category: tools
+docs_url: https://github.com/inkly-so/inkly-mcp/tree/main/hermes#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

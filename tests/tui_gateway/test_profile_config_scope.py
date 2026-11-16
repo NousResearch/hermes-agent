@@ -46,6 +46,17 @@ def test_a_secondary_home_gets_only_its_own_files(homes):
     assert (get_hermes_home_override(), current_secret_scope(), get_terminal_scope()) == (None, None, None)
 
 
+def test_the_launch_home_inside_a_secondary_scope_is_the_launch_home(homes):
+    launch, work, _ = homes
+    with policy.profile_config_scope(work), policy.profile_config_scope(launch):
+        assert get_hermes_home() == launch
+        assert current_secret_scope_home() is None
+        assert _secrets() == {"LAUNCH_FILE_KEY": "launch-file", "LAUNCH_ENV_ONLY": "env-only", "WORK_KEY": None,
+                              "SHARED_KEY": "launch"}
+        assert (get_terminal_scope() or {}).get("TERMINAL_ENV") != "docker"
+    assert (get_hermes_home_override(), current_secret_scope(), get_terminal_scope()) == (None, None, None)
+
+
 def test_the_launch_home_keeps_the_launch_rules(homes):
     launch, _, multiplex = homes
     with policy.profile_config_scope(launch):

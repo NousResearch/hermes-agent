@@ -4,25 +4,47 @@ repo: https://github.com/mojomast/hyperrizz
 sha: 35c482e22413ee43c74955bd6da7fe7b053cdd9b
 subdir: ""
 description: >-
-  Agent-led HyperFrames films with a live review pane, frame notes, revisions and
-  on-demand full Studio. Runs local Node/Chromium/FFmpeg subprocesses and background
-  jobs; npm downloads pinned dependencies on first build. Project code runs locally.
-  Stores projects in profile-scoped plugin data. No API keys or hosted generation.
-  Disclosure — spawns local Node/Chromium/FFmpeg child processes with a minimal
-  non-secret environment; runs background build/check/render workers and an optional
-  loopback Studio sidecar (token-gated, 512 KiB capture budget, no redirects);
-  project write can edit the project's scripts/*.mjs and package.json, and build/check/render
-  run them with Node at the user's full privileges (no filesystem or network sandbox), the same
-  power as file writes plus the terminal; npm ci runs package lifecycle scripts; the embedded
-  HyperFrames Studio server listens on loopback without a token; Desktop pane uses ctx.rest only; post_tool_call binds projects to the host session;
-  no credentials, no telemetry, no self-update.
+  Hyperrizz: tell Hermes the story and watch your HyperFrames film take shape in
+  a live review pane, then get a verified MP4. Hermes researches, art-directs,
+  writes the scenes, builds, checks and iterates on a HyperFrames project while
+  the pane plays the actual composition with sound, a scrubber and frame
+  stepping. Pause on a moment, write a note and press Iterate with Hermes: the
+  note carries the project, revision and exact frame back into the chat. Full
+  editor opens HyperFrames Studio inside the pane (timeline, assets, code,
+  layers, inspector), and the agent reconciles your manual edits before it
+  rebuilds. Renders are separate, cancellable jobs; a failed build keeps the
+  last working revision and a failed export keeps the last verified MP4. Three
+  tools: hyperrizz_project (create, inspect, edit, restore and reconcile
+  projects), hyperrizz_review (open the pane, exchange frame notes, hand off to
+  Studio) and hyperrizz_produce (build, check, render, inspect jobs, cancel),
+  plus the hyperrizz:production skill with its guides, a broadcast kit and
+  starter templates. Use it for product promos, release announcements, music-led
+  cuts, and restyling or rescuing an existing film. To start, you need Hermes
+  0.23.0 or newer, Node 22 or newer, Python 3.11 or newer and FFmpeg; Linux is
+  the tested platform. Run hermes plugins install hyperrizz and hermes plugins
+  enable hyperrizz, enable Hyperrizz under Capabilities → Plugins to show the
+  pane, then ask: "Use Hyperrizz to make a 30-second film about this release.
+  Show the live project as you work, then deliver the MP4." The first build
+  installs the pinned npm dependencies. No API keys or hosted generation.
+  Disclosure — processes: spawns local Node, Chromium and FFmpeg child processes
+  with a minimal non-secret environment; runs background build, check and render
+  workers and an optional loopback Studio sidecar (token-gated, 512 KiB capture
+  budget, no redirects); the embedded HyperFrames Studio server listens on
+  loopback without a token. Disclosure — code execution: project write can edit
+  the project's scripts/*.mjs and package.json, and build, check and render run
+  them with Node at your full privileges (no filesystem or network sandbox), the
+  same power as file writes plus the terminal. npm downloads pinned dependencies
+  on first build, and npm ci runs package lifecycle scripts. Disclosure — data:
+  projects are stored in profile-scoped plugin data; the Desktop pane uses
+  ctx.rest only; a post_tool_call hook binds projects to the host session. No
+  credentials, no telemetry, no self-update.
 maintainer: mojomast
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/mojomast/hyperrizz#readme
 version: "2.1.0"
-image: https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hermes-review-pane.png
+image: https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hyperrizz-banner.svg
 screenshots:
   - https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hermes-review-pane.png
   - https://raw.githubusercontent.com/mojomast/hyperrizz/35c482e22413ee43c74955bd6da7fe7b053cdd9b/docs/assets/hyperframes-studio.jpg

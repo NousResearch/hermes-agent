@@ -8,6 +8,8 @@ discrete GPU from system RAM (#148249).
 
 from __future__ import annotations
 
+import errno
+import os
 import zipfile
 from pathlib import Path
 
@@ -127,3 +129,28 @@ def test_vc_runtime_unpack_stages_only_plain_dll_names(tmp_path):
     _unpack_vc_runtime("llamacpp-cpu", payload, staged, "win32-x64")
 
     assert sorted(p.name for p in staged.parent.rglob("*") if p.is_file()) == ["msvcp140.dll"]
+
+
+def test_arm64_vc_runtime_unpack_waits_out_a_scanner_hold_on_the_dropped_x64_helper(tmp_path, monkeypatch):
+    """The x64 vcruntime140_1.dll is deleted right after it is written, while a Windows scanner can
+    still hold it: the delete is refused for a moment ([WinError 32], EACCES)."""
+    from pm import filesystem
+
+    monkeypatch.setattr(filesystem, "_HELD_RETRY_DELAYS", (0,) * len(filesystem._HELD_RETRY_DELAYS))
+    refusals = []
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.path.basename(os.fspath(path)) == "vcruntime140_1.dll" and len(refusals) < 2:
+            refusals.append(path)
+            raise PermissionError(errno.EACCES, "The process cannot access the file because it is being used "
+                                  "by another process", os.fspath(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    staged = tmp_path / "out" / "tree"
+
+    _unpack_vc_runtime("whispercpp-cpu", _redist(tmp_path / "redist.vsix", "arm64"), staged, "win32-arm64")
+
+    assert len(refusals) == 2
+    assert sorted(p.name for p in staged.iterdir()) == ["msvcp140.dll", "vcruntime140.dll"]

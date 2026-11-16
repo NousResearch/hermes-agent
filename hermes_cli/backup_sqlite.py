@@ -164,7 +164,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
                 os.close(secure_fd)
         # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
         # full locked-source deadline instead of adding the default timeout before each callback.
-        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0,
+        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0,  # health: allow HX015 -- stdlib-only module (Desktop runs it without app imports), so connect_tracked is out of reach
                                check_same_thread=False)
         backup_conn = sqlite3.connect(str(dst), check_same_thread=False)
         busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
@@ -234,7 +234,7 @@ def preflight_state_db(home: Path) -> dict:
     try:
         if not _safe_copy_db(source, staged):
             raise RuntimeError("SQLite safe copy failed; previous emergency snapshots were retained")
-        connection = sqlite3.connect(str(staged))
+        connection = sqlite3.connect(str(staged))  # health: allow HX015 -- staged copy written by this function
         try:
             result = connection.execute("PRAGMA quick_check").fetchall()
             if result != [("ok",)]:

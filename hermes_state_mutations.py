@@ -104,9 +104,13 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
     result = {}
     for key, value in payload.items():
         if key == 'title':
-            affected.update(db._set_session_title_in_transaction(
-                conn, session_id, value, source=db.TITLE_SOURCE_USER))
-            result[key] = conn.execute('SELECT title FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
+            # The listing shows a compressed conversation under its live tip's title, so a rename
+            # addressed to an ended segment (a stale tab/row) lands there (#152624). The addressed
+            # row is affected too: its receipt revision advances like any committed edit.
+            tip = db._compression_tip_on(conn, session_id)
+            written = db._set_session_title_in_transaction(conn, tip, value, source=db.TITLE_SOURCE_USER)
+            affected.update(written, [session_id] if written else [])
+            result[key] = conn.execute('SELECT title FROM sessions WHERE id=?', (tip,)).fetchone()[0]
         else:
             column = 'last_read_at' if key == 'unread' else key
             stored = (0.0 if value else time.time()) if key == 'unread' else int(value)

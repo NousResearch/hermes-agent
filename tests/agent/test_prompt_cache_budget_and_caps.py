@@ -183,6 +183,38 @@ def test_a_keep_alive_on_the_wire_when_its_run_is_replaced_still_counts_against_
         pcl.WARM_BUDGET * budget.last_warm_usd, rel=0, abs=1e-9)
 
 
+def test_a_miss_that_lands_after_its_run_was_replaced_still_ends_the_budget_and_decides_step_two():
+    """The first keep-alive is on the wire when the next tool round's reply arms a replacement run, and
+    it comes back a miss. The user turn's budget is over: the replacement stops (nothing more is sent)
+    and step 2 decides on the prompt the turn now holds, with no further real reply needed."""
+    client = _Client()
+    agent = _chat(client=client)
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    assert _respond(agent) is None
+    client.hold, stale = True, warmer._run
+    client_create = client._create
+
+    def _miss(**kw):
+        response = client_create(**kw)
+        response.usage = _Usage(3, 1, 0, 119_950)  # the entry was gone: re-written, not read
+        return response
+
+    client.messages = SimpleNamespace(create=_miss)
+    sender = threading.Thread(target=warmer._refresh, args=(stale,))
+    sender.start()
+    assert client.entered.wait(10)
+    client.hold = False
+    assert _respond(agent) is None  # the tool round's reply arms the replacement
+    replacement = warmer._run
+    client.release.set()
+    sender.join(10)
+    assert not sender.is_alive()
+
+    pcl.end_turn_prompt_cache_warming(agent)
+    assert warmer._run is None and replacement.cancelled and len(client.calls) == 1
+    assert pcl.compaction_due(agent, now=warmer._spent.due_at) == (True, "due")
+
+
 def _gemini_client(sent):
     """The real native Gemini client on a local transport that records each ``generateContent`` body."""
     import json

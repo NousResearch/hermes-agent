@@ -527,6 +527,13 @@ class PromptCacheWarmer:
         with self._lock:
             run.budget.ended = True
             if self._run is not run:
+                # A late miss after the next reply replaced its run: the user turn's budget is over all the
+                # same, so decide step 2/3 now on the prompt the turn holds (its own run, or the clock).
+                current = self._run
+                if current is not None and current.budget is run.budget:
+                    self._end_budget(current, reason, due_at=due_at)
+                elif current is None and self._budget is run.budget:
+                    self._carry_ended_budget()
                 return
             spent = _Spent(due_at, run.deadline_at, run.ttl_s, run.witness)
             self._stop(reason)

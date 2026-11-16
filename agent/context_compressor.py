@@ -5083,12 +5083,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             messages, compress_start, fresh=bool(force or focus_topic or bypass_cooldown),
             provider_context=bool(memory_context.strip()),
         )
-        if prepared is not None:
-            compress_end = prepared.compress_end
-        # Summarize first, archive after: the summarizer reads the ORIGINAL window rows (bounded only by its
-        # own input budget), and nothing is written until a summary exists (_commit_window below).
-        plan = messages
-        messages = summary_view(plan, canonical_messages, compress_start, compress_end)
+        compress_end = prepared.compress_end if prepared is not None else compress_end
+        # Summarize first, archive after: the summarizer reads the ORIGINAL rows; _commit_window writes later.
+        plan, messages = messages, summary_view(messages, canonical_messages, compress_start, compress_end)
         turns_to_summarize = messages[compress_start:compress_end]
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize

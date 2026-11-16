@@ -62,6 +62,7 @@ PROVEN, DECLARED, ASSUMED, UNKNOWN = "proven", "declared", "assumed", "unknown"
 STORAGE_UNAVAILABLE = -1  # a generation read that failed: never equal to a real (>= 0) generation
 _CONFIDENCE_RANK = {UNKNOWN: 0, ASSUMED: 1, DECLARED: 2, PROVEN: 3}
 _OPENAI_READ_FLOOR = "30m"
+_PRE_TWO_SPEC_CLASSES = frozenset({"openai_ttl", "openai_retention", "implicit"})
 
 
 @dataclass(frozen=True)
@@ -518,6 +519,9 @@ def event_from_json(raw: Any) -> Optional[CacheEvent]:
         data: Any = json.loads(raw) if isinstance(raw, str) else None
         if not isinstance(data, dict):
             return None
+        # Saved before the two-spec clock: the old OpenAI/implicit classes are the OpenAI spec now.
+        if data.get("route_class") in _PRE_TWO_SPEC_CLASSES:
+            data["route_class"] = "openai_spec"
         return CacheEvent(**{**data, "route": tuple(data["route"]), "destination": tuple(data["destination"])})
     except (TypeError, ValueError, KeyError):  # a column written by a different build: no clock
         return None

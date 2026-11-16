@@ -132,7 +132,6 @@ from agent.credential_pool_model_cooldowns import pool_failure_reason
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
 from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
-from agent.provider_route_hooks import model_forces_max_completion_tokens, route_answer
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
 from agent.auxiliary_health import (
@@ -2193,6 +2192,7 @@ def _tag_backend(client: Any, provider: str) -> Any:
 
 
 def _route_client_headers(base_url: str, provider: str, *, is_vision: bool = False) -> Optional[dict]:
+    from agent.provider_route_hooks import route_answer
     headers = route_answer("client_headers", provider=provider or "", base_url=base_url, has_images=is_vision)
     return dict(headers) if headers else None
 
@@ -5529,6 +5529,7 @@ def resolve_vision_provider_client(
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
     """Max-tokens kwarg for the auxiliary provider: direct OpenAI, a custom endpoint whose profile declares
     it, and newer OpenAI-family models (by ``model`` name: custom endpoints fronting gpt-5.x) need max_completion_tokens."""
+    from agent.provider_route_hooks import model_forces_max_completion_tokens, route_answer
     _custom_base = _current_custom_base_url()
     direct_openai_family = not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None and (
         base_url_hostname(_custom_base) == "api.openai.com"

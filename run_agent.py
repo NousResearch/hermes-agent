@@ -125,7 +125,6 @@ from agent.reasoning_params import ReasoningParamsMixin
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.session_activity import ActivityProvenance
 from agent.process_transport import implicit_non_stream_stale_timeout
-from agent.provider_route_hooks import model_forces_max_completion_tokens
 from agent.message_sanitization import (
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     deterministic_call_id as _codex_deterministic_call_id,
@@ -673,7 +672,7 @@ class AIAgent(
         else ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
         if self._is_direct_openai_url() or self._is_azure_openai_url():
             return {"max_completion_tokens": value}
-        from agent.provider_route_hooks import route_answer
+        from agent.provider_route_hooks import model_forces_max_completion_tokens, route_answer
         declared = route_answer("max_tokens_param", provider=getattr(self, "provider", "") or "", scope=self,
                                 base_url=getattr(self, "base_url", "") or "", model=self.model or "")
         if declared:

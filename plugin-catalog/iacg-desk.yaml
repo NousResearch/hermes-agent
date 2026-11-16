@@ -1,7 +1,7 @@
 name: iacg-desk
 repo: https://github.com/RajaRenga/iacgenius-ce
 subdir: profiles/iacgenius/plugins/iacg-desk
-sha: ae7f994c3bacdb1d441752b0e5327c65d7239b2c
+sha: 946266497a1131d70d5e7d8c51366225f60cfa2a
 version: "0.1.0"
 title: IaCGenius — validated Terraform/OpenTofu missions
 description: >-
@@ -19,10 +19,10 @@ description: >-
 maintainer: RajaRenga
 tier: community
 category: tools
-docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/ae7f994c3bacdb1d441752b0e5327c65d7239b2c/profiles/iacgenius/plugins/iacg-desk#readme
-image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/ae7f994c3bacdb1d441752b0e5327c65d7239b2c/docs/media/marketplace-banner.png
+docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/946266497a1131d70d5e7d8c51366225f60cfa2a/profiles/iacgenius/plugins/iacg-desk#readme
+image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/946266497a1131d70d5e7d8c51366225f60cfa2a/docs/media/marketplace-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/ae7f994c3bacdb1d441752b0e5327c65d7239b2c/docs/media/screens/01-board.png
+  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/946266497a1131d70d5e7d8c51366225f60cfa2a/docs/media/screens/01-board.png
 requires_hermes: ">=0.23.1"
 platforms: [linux]
 known_issues:

@@ -24,7 +24,7 @@ from gateway.config import Platform
 from gateway.inbound_reply_context import reply_pointer
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
-from gateway.run_busy import approval_input_words
+from gateway.run_busy import approval_input_words, normalize_approval_reply
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
 from gateway.run_inbound_moa import GatewayInboundMoaMixin
@@ -543,7 +543,7 @@ class GatewayInboundMixin(
         # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim: Slack/Matrix show the `!`
         # prefix (typed `/` is blocked in Slack threads) and adapters only rewrite
         # `!<known-command>` — confirm keywords aren't commands, so the `!` survives to here.
-        _norm_reply = (event.text or "").strip().lstrip("!/").lower()
+        _norm_reply = normalize_approval_reply((event.text or "").strip().lstrip("!/"))
         _confirm_choice = (
             self._SLASH_CONFIRM_CMD_CHOICES.get(event.get_command())
             or self._slash_confirm_text_choices().get(_norm_reply)

@@ -15,6 +15,7 @@ import contextvars
 import functools
 import json
 import os
+import re
 import time
 from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
@@ -44,6 +45,20 @@ def approval_input_words(input_key: str) -> tuple[str, ...]:
             if word:
                 seen.setdefault(word, None)
     return tuple(seen)
+
+
+# Sentence punctuation a typed reply may carry ("Yes!", "No.", "好的。") that no word list spells. A
+# question mark is kept on purpose: "approve?" is a question, not an answer, and stays unmatched.
+_APPROVAL_REPLY_EDGE_PUNCT = " .!…¡。！"
+
+
+def normalize_approval_reply(text: str | None) -> str:
+    """A typed approval reply as the ``approval.inputs`` lists spell it: lower-cased, curly
+    apostrophe straightened, commas/semicolons and whitespace runs as one space, edge punctuation
+    removed. "Yes!" -> "yes", "Approve, always." -> "approve always"; "👍" is unchanged."""
+    text = (text or "").lower().replace("\u2019", "'")
+    text = " ".join(re.sub(r"[,;]", " ", text).split())
+    return text.strip(_APPROVAL_REPLY_EDGE_PUNCT)
 
 
 # Log-record parity with the origin module.
@@ -687,7 +702,7 @@ class GatewayBusySessionMixin:
             # The busy-handler path does not auto-send that return, so we deliver it ourselves (mirroring
             # the draining-case send above).
             if event.allow_gateway_control and has_blocking_approval(session_key):
-                _raw_text = (event.text or "").strip().lower()
+                _raw_text = normalize_approval_reply(event.text)
                 _match = self._plaintext_approval_words().get(_raw_text)
                 if _match is not None:
                     _verb, _normalized_args = _match

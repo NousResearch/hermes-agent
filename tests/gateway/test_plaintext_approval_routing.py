@@ -130,3 +130,56 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
     _clear_approval_state()
 
 
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("Yes!", "once"),
+        ("Approve.", "once"),
+        ("  OK!! ", "once"),
+        ("YES", "once"),
+        ("Approve, always.", "always"),
+        ("No.", "deny"),
+        ("Deny!", "deny"),
+    ],
+)
+def test_plaintext_reply_with_case_and_punctuation_resolves_approval(reply, expected):
+    """Case and sentence punctuation around a listed word still answer the approval."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event(reply), session_key)
+    )
+
+    assert handled is True
+    assert entry.event.is_set()
+    assert entry.result == expected
+    adapter._send_with_retry.assert_awaited()
+    _clear_approval_state()
+
+
+@pytest.mark.parametrize("reply", ["approve?", "yes?", "yes but not that one", "yes, wait"])
+def test_question_or_extra_words_do_not_resolve_approval(reply):
+    """Only punctuation is dropped: a question or a longer sentence is not an answer."""
+    _clear_approval_state()
+    runner, _adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    asyncio.run(runner._route_plaintext_approval_while_busy(_make_event(reply), session_key))
+
+    assert not entry.event.is_set()
+    _clear_approval_state()
+
+
+def test_normalize_approval_reply():
+    from gateway.run_busy import normalize_approval_reply
+
+    assert normalize_approval_reply("Yes!") == "yes"
+    assert normalize_approval_reply("  Approve,   always. ") == "approve always"
+    assert normalize_approval_reply("Don’t") == "don't"
+    assert normalize_approval_reply("approve?") == "approve?"
+    assert normalize_approval_reply("👍") == "👍"
+    assert normalize_approval_reply(None) == ""

@@ -48,6 +48,7 @@
   --portal-raw-ink-8: color-mix(in srgb, var(--ui-base) 8%, transparent);
   --portal-raw-ink-10: color-mix(in srgb, var(--ui-base) 10%, transparent);
   --portal-raw-ink-14: color-mix(in srgb, var(--ui-base) 14%, transparent);
+  --portal-raw-ink-20: color-mix(in srgb, var(--ui-base) 20%, transparent);
   --portal-raw-ink-22: color-mix(in srgb, var(--ui-base) 22%, transparent);
   --portal-raw-ink-28: color-mix(in srgb, var(--ui-base) 28%, transparent);
   --portal-raw-ink-40: color-mix(in srgb, var(--ui-base) 40%, transparent);

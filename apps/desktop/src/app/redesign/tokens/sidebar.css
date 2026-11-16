@@ -58,13 +58,17 @@
   --portal-sidebar-row-line: 1.25rem;
   --portal-sidebar-hover: var(--portal-raw-ink-4);
   --portal-sidebar-press: color-mix(in srgb, var(--ui-base) 7%, transparent);
-  /* Rows carry no fill for the open chat (16292:15602): ink tells it, full for the open chat and the
-     flat rows, the floor for an agent's other chats (Figma's .4 fails AA). A row under the pointer
-     takes the hover fill. */
+  /* Chat rows (1252:38769): the open chat takes light/5, a row under the pointer a 1.5px light/20
+     rule; ink is full for those, unread chats and the flat rows, the floor for an agent's other
+     chats (Figma's .4 fails AA). */
   --portal-sidebar-row-radius: var(--portal-radius-control);
   --portal-sidebar-row-ink: var(--ui-text-primary);
   --portal-sidebar-chat-ink: var(--ui-text-quaternary);
   --portal-sidebar-row-selected-ink: var(--ui-text-primary);
+  --portal-sidebar-chat-radius: var(--portal-radius-surface);
+  --portal-sidebar-row-selected: var(--portal-raw-ink-5);
+  --portal-sidebar-row-hover-rule: var(--portal-raw-ink-20);
+  --portal-sidebar-row-hover-rule-width: 1.5px;
   --portal-sidebar-card: var(--portal-raw-ink-5);
   /* New chat (16292:15511): 40px, radius 3, light/5 (dark/2 on light), 12px sides, 10px gap, a 16px
      glyph; rimless light/5 keycaps (16292:15520) in the mono font at 11px, 60% ink. The search
@@ -96,6 +100,7 @@
   --portal-sidebar-agent-pad-start: 0.375rem;
   --portal-sidebar-agent-pad-end: 1rem;
   --portal-sidebar-agent-gap: 0.75rem;
+  --portal-sidebar-agent-action-gap: 0.25rem;
   --portal-sidebar-agent-avatar: 2rem;
   --portal-sidebar-agent-avatar-radius: var(--portal-radius-surface);
   --portal-sidebar-agent-shadow: 0 1px 4px var(--portal-raw-shadow-20);
@@ -116,11 +121,11 @@
   --portal-sidebar-agent-subtitle: var(--ui-text-quaternary);
   /* On the open agent's brand slab the floor needs .7 to hold 4.5:1. */
   --portal-sidebar-agent-subtitle-open: var(--ui-text-secondary);
-  /* An agent's chats (list 16292:15601): 6px over and under, the dot 30px into the card, the title
-     22px after it, the age 20px from the card's end. */
+  /* An agent's chats (list 1250:37633): 6px over and under, rows as wide as the agent's card, the
+     dot 24px into the row, the title 22px after it, the age 14px from the row's end. */
   --portal-sidebar-chats-pad: 0.375rem;
-  --portal-sidebar-chat-start: 1.875rem;
-  --portal-sidebar-chat-end: 1.25rem;
+  --portal-sidebar-chat-start: 1.5rem;
+  --portal-sidebar-chat-end: 0.875rem;
   --portal-sidebar-chat-dot-gap: 1.375rem;
   --portal-sidebar-chat-title: calc(
     var(--portal-sidebar-chat-start) + var(--portal-sidebar-dot) + var(--portal-sidebar-chat-dot-gap)

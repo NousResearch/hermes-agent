@@ -8,9 +8,10 @@ import { Tip } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { ChevronDown } from '@/lib/icons'
+import { ChevronDown, Plus } from '@/lib/icons'
 import { $hiddenSidebarAgents, agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $activeConnectionId } from '@/store/connections'
+import { recordAction } from '@/store/desktop-metrics'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $activeGatewayProfile } from '@/store/profile'
 import { knownSessionOwner } from '@/store/session'
@@ -20,8 +21,10 @@ import { $sessionTiles } from '@/store/session-states'
 import { AgentRoutinesChip, type AgentRoutineSummary, useAgentRoutineSummaries } from '../../../routines/agent-routines-chip'
 import { tileOwnerRoute } from '../../session-tile-owner'
 import { ProfileGroupHeaderSlot } from '../gateway-groups'
+import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { SimplifiedBotChatRow } from '../simplified-bot-chat-row'
 import { SimplifiedGatewayHeader } from '../simplified-gateway-header'
+import { startSimplifiedAgentSession } from '../simplified-new-session-model'
 import { useAgentSidebarAttention } from '../use-agent-sidebar-attention'
 import type { SimplifiedAgent, useSimplifiedAgents } from '../use-simplified-agents'
 
@@ -56,8 +59,8 @@ interface AgentCardProps extends Pick<PortalAgentGroupsProps, 'onToggle' | 'onOp
 const agentKey = (agent: SimplifiedAgent) =>
   agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile })
 
-/** An agent block inside its machine (147:6279): colour tile, name over a second line, the
- *  disclosure and menu as hover/focus affordances, then its chats under a guide line. */
+/** An agent block inside its machine (1250:37611): colour tile, name over a second line, then the
+ *  menu and a new chat (hover/focus affordances) and the disclosure, with its chats underneath. */
 function AgentCard({
   agent,
   selected,
@@ -71,6 +74,7 @@ function AgentCard({
   children
 }: AgentCardProps) {
   const { t } = useI18n()
+  const c = useHiddenAgentCopy()
   const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${agent.label}`
   const summary = chatCount ? t.simplifiedAgents.chatCount(chatCount) : t.simplifiedAgents.noChats
   const headerItems = useContributions(SIDEBAR_PROFILE_GROUP_HEADER_AREA)
@@ -86,6 +90,22 @@ function AgentCard({
     >
       <div data-active-agent={selected ? '' : undefined} data-slot="agent-heading">
         <SimplifiedBotChatRow agent={agent} fallbackSummary={summary} />
+        <PortalAgentMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null} />
+        <Tip label={c.newChat}>
+          <Button
+            aria-label={`${c.newChat}: ${agent.label}`}
+            className="portal-agent-new"
+            onClick={() => {
+              recordAction('session.new', 'click')
+              recordIaAction('ia.new_session.agent_row')
+              startSimplifiedAgentSession(agent)
+            }}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Plus aria-hidden />
+          </Button>
+        </Tip>
         {foldable && (
           <Tip label={toggleLabel}>
             <Button
@@ -103,7 +123,6 @@ function AgentCard({
             </Button>
           </Tip>
         )}
-        <PortalAgentMenu agent={agent} hidden={hidden} onOpen={() => onOpenAgent(agent)} pending={pending !== null} />
       </div>
       {open && (
         <ProfileGroupHeaderSlot

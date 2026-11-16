@@ -539,15 +539,20 @@ button.portal-section-title:hover {
   gap: var(--portal-sidebar-row-gap);
 }
 
-/* No fill marks the open chat (16292:15602): its title and dot take full ink. A row under the pointer
-   or keyboard focus, or with its menu open, takes the hover fill. */
+/* Chat row states (Web Application Redesign 1252:38769): the open chat takes a quiet fill; a row
+   under the pointer or keyboard focus, or with its menu open, takes a rule and no fill. Both, and a
+   chat with unread news, read in full ink. */
 .portal-session-row:is(:hover, :focus-visible, :has(.portal-session-open:focus-visible)),
 .portal-session-item:where([data-state='open'], :has(.portal-row-action[data-state='open'])) > .portal-session-row {
-  background: var(--portal-sidebar-hover);
+  box-shadow: inset 0 0 0 var(--portal-sidebar-row-hover-rule-width) var(--portal-sidebar-row-hover-rule);
+}
+
+.portal-session-row {
+  border-radius: var(--portal-sidebar-chat-radius);
 }
 
 .portal-session-row[aria-current='page'] {
-  color: var(--portal-sidebar-row-selected-ink);
+  background: var(--portal-sidebar-row-selected);
 }
 
 [data-slot='gateway-heading']:has(> :is(.portal-machine-row, .portal-machine-status):active) {
@@ -618,8 +623,8 @@ button.portal-section-title:hover {
   color: var(--ui-text-tertiary);
 }
 
-/* The 5px leading dot (notif 16292:15533): quiet when settled, full ink for the open chat, brand for
-   unread news, the live tones while a turn runs or waits. */
+/* The 5px leading dot (notif 16292:15533): quiet when settled, full ink for the open chat, green for
+   unread news (1252:38769), the live tones while a turn runs or waits. */
 .portal-row-mark {
   display: grid;
   flex-shrink: 0;
@@ -641,7 +646,7 @@ button.portal-section-title:hover {
 }
 
 .portal-row-mark[data-state='unread'] > span > span {
-  background: var(--portal-brand-fill);
+  background: var(--portal-sidebar-green);
 }
 
 [aria-current='page'] > .portal-row-mark[data-state='idle'] > span > span {
@@ -1015,35 +1020,42 @@ button.portal-section-title:hover {
   color: var(--portal-sidebar-agent-subtitle-open);
 }
 
-/* Disclosure and menu at the card's end: the caret stays at rest, as Figma's chevron does
-   (16292:15598); the menu appears on hover or focus. */
-.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
+/* The card's end (1250:37611): the menu, a new chat with the agent, then the disclosure. The caret
+   stays at rest; the menu and the plus appear on hover or focus. */
+.portal-sidebar :is(.portal-agent-collapse, .portal-agent-new, .portal-agent-menu-trigger) {
   width: 1.25rem;
   height: 1.25rem;
   flex-shrink: 0;
+  margin-inline-start: var(--portal-sidebar-agent-action-gap);
   border-radius: var(--portal-radius-control);
   color: var(--ui-text-tertiary);
   opacity: 0;
 }
 
 .portal-sidebar
-  [data-slot='agent-heading']:is(:hover, :focus-within)
-  :is(.portal-agent-collapse, .portal-agent-menu-trigger),
-.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger):is([data-state='open'], :focus-visible),
+  [data-slot='agent-heading']:is(:hover, :focus-within, :has(.portal-agent-menu-trigger[data-state='open']))
+  :is(.portal-agent-new, .portal-agent-menu-trigger),
 .portal-sidebar .portal-agent-collapse {
   opacity: 1;
 }
 
-.portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger):is(:hover, [data-state='open']) {
+.portal-sidebar
+  :is(.portal-agent-collapse, .portal-agent-new, .portal-agent-menu-trigger):is(:hover, [data-state='open']) {
   background: transparent;
   color: var(--ui-text-primary);
 }
 
-.portal-sidebar [data-active-agent] :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
+.portal-sidebar [data-active-agent] :is(.portal-agent-collapse, .portal-agent-new, .portal-agent-menu-trigger) {
   color: var(--portal-sidebar-agent-subtitle-open);
 }
 
-:is(.portal-agent-collapse, .portal-agent-menu-trigger) svg {
+.portal-sidebar
+  [data-active-agent]
+  :is(.portal-agent-collapse, .portal-agent-new, .portal-agent-menu-trigger):is(:hover, [data-state='open']) {
+  color: var(--ui-text-primary);
+}
+
+:is(.portal-agent-collapse, .portal-agent-new, .portal-agent-menu-trigger) svg {
   width: 0.875rem;
   height: 0.875rem;
 }
@@ -1061,9 +1073,14 @@ button.portal-section-title:hover {
   transform: rotate(90deg);
 }
 
+/* No hover on touch: the menu shows and carries the new chat, so the plus steps aside. */
 @media (hover: none), (pointer: coarse) {
   .portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
     opacity: 1;
+  }
+
+  .portal-sidebar .portal-agent-new {
+    display: none;
   }
 }
 
@@ -1077,10 +1094,10 @@ button.portal-section-title:hover {
   padding-inline: var(--portal-sidebar-chat-title) var(--portal-sidebar-chat-end);
 }
 
-/* An agent's chats (list 16292:15601): 40px rows across the machine card, the dot 30px in, the title
-   22px after it, the age 20px from the card's end; the open chat in full ink, the rest at the floor. */
+/* An agent's chats (list 1250:37633): 40px rows as wide as the agent's card, the dot 24px in, the
+   title 22px after it, the age 14px from the row's end; the open, hovered and unread chats in full
+   ink, the rest at the floor. */
 .portal-agent-sessions {
-  margin-inline: calc(-1 * var(--portal-sidebar-agent-inset));
   padding-block: var(--portal-sidebar-chats-pad);
 }
 
@@ -1099,7 +1116,10 @@ button.portal-section-title:hover {
   color: var(--portal-sidebar-chat-ink);
 }
 
-.portal-agent-sessions .portal-session-row[aria-current='page'] {
+.portal-agent-sessions
+  .portal-session-item:is(:hover, :focus-within, [data-state='open'], :has(.portal-row-action[data-state='open']))
+  > .portal-session-row,
+.portal-agent-sessions .portal-session-row:is([aria-current='page'], :has(> .portal-row-mark[data-state='unread'])) {
   color: var(--portal-sidebar-row-selected-ink);
 }
 
@@ -1147,12 +1167,14 @@ button.portal-section-title:hover {
       .portal-session-meta,
       .portal-section-chevron,
       .portal-agent-collapse,
+      .portal-agent-new,
       .portal-agent-menu-trigger,
       .portal-agent-collapse svg,
       .portal-new-session > button
     ) {
     transition:
       background-color var(--portal-motion-fast) var(--portal-ease),
+      box-shadow var(--portal-motion-fast) var(--portal-ease),
       color var(--portal-motion-fast) var(--portal-ease),
       opacity var(--portal-motion-fast) var(--portal-ease),
       transform var(--portal-motion-base) var(--portal-ease);

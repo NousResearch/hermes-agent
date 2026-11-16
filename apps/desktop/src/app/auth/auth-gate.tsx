@@ -69,10 +69,16 @@ function ClerkAuthGate({ children }: { children: ReactNode }) {
   }, [isSignedIn])
 
   if (!isSignedIn) {
-    return mode === 'sign-up' ? (
-      <SignUp routing="hash" signInUrl="#/sign-in" />
-    ) : (
-      <SignIn routing="hash" signUpUrl="#/sign-up" />
+    return (
+      <div className="fixed inset-0 overflow-y-auto">
+        <div className="flex min-h-full items-center justify-center p-6">
+          {mode === 'sign-up' ? (
+            <SignUp routing="hash" signInUrl="#/sign-in" />
+          ) : (
+            <SignIn routing="hash" signUpUrl="#/sign-up" />
+          )}
+        </div>
+      </div>
     )
   }
 

@@ -601,6 +601,8 @@ async def get_status(profile: Optional[str] = None,
 
         status = {
             "version": local["version"], "release_date": __release_date__,
+            # `hermes import --keep-host` and /api/ops/transfer/*: a client checks it before a transfer.
+            "import_keep_host": 1,
             "config_version": local["config_version"], "latest_config_version": local["latest_config_version"],
             "can_update_hermes": local["can_update_hermes"],
             "gateway_running": gateway_running, "gateway_state": gateway_state,

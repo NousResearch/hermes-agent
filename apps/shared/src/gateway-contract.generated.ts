@@ -3094,13 +3094,14 @@ export interface ApprovalReceivedParams {
 export interface ApprovalReceivedResult {
   acknowledged: boolean
 }
-/** ``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all`` resolves every pending approval, ``request_id`` a specific one, neither the oldest. */
+/** ``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all`` resolves every pending approval, ``request_id`` a specific one, neither the oldest. ``reason`` is why the user denied an ``access`` or ``network`` card; command approvals ignore it. */
 export interface ApprovalRespondParams {
   session_id: string
   profile?: string | null
   choice?: string | null
   all?: boolean | null
   request_id?: string | null
+  reason?: string | null
 }
 export interface ApprovalRespondResult {
   resolved: number
@@ -5751,7 +5752,7 @@ export interface SetupBuildAnswer {
   build: string
   label?: string | null
 }
-/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
+/** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. ``kind`` selects the card; absent means ``command``. A sandbox asks for a folder with ``access`` (``path``, and ``access`` read or read_write) and for a site with ``network`` (``host``, and an optional display ``label``). ``risk`` is one short line shown under the folder or site. On those two kinds ``once`` allows until the sandbox is switched off and ``always`` saves the rule; a ``deny`` answer may carry the user's ``reason``. */
 export interface ApprovalRequestParams {
   session_id: string
   request_id: string
@@ -5763,11 +5764,21 @@ export interface ApprovalRequestParams {
   smart_denied?: boolean | null
   tool_name?: string | null
   gateway_session_id?: string | null
+  kind?: ApprovalKind | null
+  path?: string | null
+  access?: ApprovalAccessLevel | null
+  host?: string | null
+  label?: string | null
+  risk?: string | null
   [key: string]: unknown
 }
+export type ApprovalKind = 'command' | 'access' | 'network'
+export type ApprovalAccessLevel = 'read' | 'read_write'
+/** ``reason``: why the user denied an ``access`` or ``network`` card; command approvals ignore it. */
 export interface ApprovalResult {
   choice: ApprovalChoice
   all?: boolean | null
+  reason?: string | null
 }
 /** Original command, redacted server-side before any password-injection rewrite. */
 export interface SudoRequestParams {
@@ -7343,7 +7354,7 @@ export type CanonicalRpcNamespace = keyof CanonicalRpcNamespaces
 
 // ── Server→client requests ──
 export interface ServerRequestMap {
-  /** A dangerous command awaits the user's decision. */
+  /** A dangerous command, or a sandbox's folder or site request, awaits the user's decision. */
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
   /** The clarify tool: ask the user 1-5 questions. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }

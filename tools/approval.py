@@ -765,9 +765,10 @@ _CRON_CTX = _Unattended(
 
 
 def _unattended_contexts() -> list[_Unattended]:
-    """Active unattended contexts in evaluation order: single-query first (``hermes chat -q``
-    exports HERMES_INTERACTIVE=1 but nobody answers); cron beats a platform marker because
-    cron binds the platform for delivery routing only."""
+    """Active unattended contexts. Single-query is first (``hermes chat -q`` exports
+    HERMES_INTERACTIVE=1 but nobody answers); cron beats a platform marker because cron
+    binds the platform for delivery routing only. Callers block on any deny; this order
+    only chooses which denial is reported."""
     contexts = []
     if _is_single_query_approval_context():
         contexts.append(_SINGLE_QUERY_CTX)
@@ -781,6 +782,17 @@ def _unattended_contexts() -> list[_Unattended]:
             "on unattended platforms", "sessions on this surface are intentionally trusted",
         ))
     return contexts
+
+
+def _unattended_scan() -> tuple[list[_Unattended], _Unattended | None]:
+    """Active unattended contexts and the first one whose mode is deny.
+
+    Single-query is listed ahead of cron or an unattended platform. A later deny
+    still blocks: an earlier approve does not waive it (#156677).
+    """
+    contexts = _unattended_contexts()
+    denial = next((ctx for ctx in contexts if ctx.mode() == "deny"), None)
+    return contexts, denial
 
 
 def _command_findings(command: str) -> list[tuple[str, str]]:
@@ -1217,9 +1229,11 @@ def _run_approval_gate(
 
     Order: yolo bypass → session-cache short-circuit → interactive/gateway/unattended branch →
     prompt → persistence. Input-shape checks (hardline, allowlist, pattern detection) are the
-    caller's job. ``fail_closed_when_no_human``: a non-interactive, non-gateway, non-cron
-    context without an ask bridge BLOCKS instead of auto-approving, so a plugin-flagged action
-    never runs ungated.
+    caller's job.     ``fail_closed_when_no_human``: a non-interactive, non-gateway context with no
+    unattended context and no ask bridge BLOCKS instead of auto-approving, so a
+    plugin-flagged action never runs ungated. An active unattended context resolves
+    first: any deny blocks, and an approve (including ``single_query_mode: approve``)
+    skips that fail-closed branch.
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own). ``pattern_keys``
     (default ``[pattern_key]``) are what a session/always answer persists.
@@ -1238,36 +1252,37 @@ def _run_approval_gate(
     if not is_cli and not is_gateway and not is_ask:
         log_args = (autoapprove_log_prefix, pattern_key, description)
         # Every unattended context resolves instantly — never a pending approval nobody can answer.
+        # Any deny blocks, including one listed after an approve (#156677).
         deny_messages = {
             "single_query": single_query_deny_message, "cron": cron_deny_message,
             "unattended": unattended_deny_message,
         }
-        for ctx in _unattended_contexts():
-            if ctx.mode() == "deny":
-                message = deny_messages[ctx.name]
-                if not message and ctx.name == "unattended":
-                    # Platform contexts keep the generic wording (historical shape).
-                    message = ctx.block_message(f"approval required ({description})", noun="flagged actions",
-                                                advice="Find an alternative approach that avoids this action.")
-                elif not message:
-                    message = ctx.block_message(subject, noun=noun, advice=advice)
-                return _blocked(message, pattern_key=pattern_key, description=description)
-            if ctx.name == "single_query":
-                # Return here rather than fall through: the fail-closed branch would
-                # otherwise block what single_query_mode: approve just authorized.
-                logger.warning("%s (pattern: %s): %s — single-query auto-approve "
-                               "(approvals.single_query_mode: approve).", *log_args)
-                return _approved()
-            break  # cron/unattended approve-mode: auto-approve below
-        else:
-            if fail_closed_when_no_human:
-                logger.warning("%s (pattern: %s): %s — no interactive user/gateway present; "
-                               "BLOCKED (fail-closed). Set HERMES_INTERACTIVE or "
-                               "HERMES_GATEWAY_SESSION to answer the prompt.", *log_args)
-                return _blocked(no_human_block_message or (
-                    f"BLOCKED: approval required ({description}) but no "
-                    "interactive user or gateway is present to approve it."),
-                    pattern_key=pattern_key, description=description)
+        contexts, denial = _unattended_scan()
+        if denial is not None:
+            message = deny_messages[denial.name]
+            if not message and denial.name == "unattended":
+                # Platform contexts keep the generic wording (historical shape).
+                message = denial.block_message(
+                    f"approval required ({description})", noun="flagged actions",
+                    advice="Find an alternative approach that avoids this action.")
+            elif not message:
+                message = denial.block_message(subject, noun=noun, advice=advice)
+            return _blocked(message, pattern_key=pattern_key, description=description)
+        if any(ctx.name == "single_query" for ctx in contexts):
+            # Return here rather than fall through: the fail-closed branch would
+            # otherwise block what single_query_mode: approve just authorized.
+            # A later deny already returned above.
+            logger.warning("%s (pattern: %s): %s — single-query auto-approve "
+                           "(approvals.single_query_mode: approve).", *log_args)
+            return _approved()
+        if not contexts and fail_closed_when_no_human:
+            logger.warning("%s (pattern: %s): %s — no interactive user/gateway present; "
+                           "BLOCKED (fail-closed). Set HERMES_INTERACTIVE or "
+                           "HERMES_GATEWAY_SESSION to answer the prompt.", *log_args)
+            return _blocked(no_human_block_message or (
+                f"BLOCKED: approval required ({description}) but no "
+                "interactive user or gateway is present to approve it."),
+                pattern_key=pattern_key, description=description)
         logger.warning("%s (pattern: %s): %s — set HERMES_INTERACTIVE or "
                        "HERMES_GATEWAY_SESSION to require approval.", *log_args)
         return _approved()
@@ -1487,7 +1502,8 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     (the terminal auto-approve contract); the hardline floor still blocks catastrophic
     ``terminal()`` commands the script issues. Running arbitrary code headlessly without any
     approval surface is trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode``
-    to require approval). See #30882.
+    to require approval). See #30882. When several unattended contexts are active, any
+    deny blocks; an earlier approve does not waive a later one (#156677).
     """
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
@@ -1501,15 +1517,16 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
 
     # (-q clears the presence flags, but its unattended context resolves first anyway.)
     approval_callback, is_cli, is_gateway, is_ask = _presence()
-    # No user is present to approve arbitrary code in -q / cron / unattended
-    # sessions: the first active context resolves instantly from its mode.
-    for ctx in _unattended_contexts():
-        if ctx.mode() == "deny":
-            return _denied(
-                "BLOCKED: execute_code runs arbitrary local Python (including "
-                "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
-                pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
-            )
+    # Nobody can approve arbitrary code in -q / cron / unattended sessions.
+    # Every active context is consulted; any deny blocks (#156677).
+    contexts, denial = _unattended_scan()
+    if denial is not None:
+        return _denied(
+            "BLOCKED: execute_code runs arbitrary local Python (including "
+            "subprocess calls that bypass shell-string approval checks). " + denial.exec_tail,
+            pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
+        )
+    if contexts:
         return _approved()
 
     # Only gateway/ask contexts get the one-shot whole-script approval. In an interactive CLI the script's terminal()

@@ -70,3 +70,17 @@ def test_clearing_through_an_ended_segment_clears_the_listed_name(tmp_path):
         assert _rename(db, epoch, 'chat', '', 'c1')['title'] is None
         [row] = [s for s in db.list_sessions_rich() if 'chat' in s.get('_lineage_ids', [s['id']])]
         assert row['title'] is None
+
+
+def test_a_name_freed_from_another_chat_advances_that_chats_revision(tmp_path):
+    """Taking a name an abandoned empty chat held clears it there too: that row's revision must move,
+    or a client's older copy of it still passes the fence."""
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('ghost', source='desktop')
+        db.set_session_title('ghost', 'Shared name')
+        db.end_session('ghost', 'user_exit')
+        epoch = _compressed(db)
+        before = db.get_session('ghost')['runtime_revision']
+        _rename(db, epoch, 'chat', 'Shared name', 'g1')
+        assert (db.get_session('ghost')['title'], db.get_session('chat-2')['title']) == (None, 'Shared name')
+        assert db.get_session('ghost')['runtime_revision'] > before

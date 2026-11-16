@@ -1853,6 +1853,24 @@ export const svOverrides: TranslationOverrides = {
         kanban_decomposer: { label: 'Kanban-uppdelare', hint: 'Uppgiftsuppdelning' },
         profile_describer: { label: 'Profilbeskrivare', hint: 'Automatiska profilbeskrivningar' },
         curator: { label: 'Kurator', hint: 'Granskning av skillanvändning' }
+      },
+      subagents: {
+        inherit: 'Ärv från huvudagenten',
+        modelOnly: 'Anpassad modell (använd överordnad autentisering)',
+        providerLabel: 'Leverantör för underagent',
+        modelLabel: 'Modell för underagent',
+        direct: 'Direkt åsidosättning av ändpunkt',
+        customProvider: 'Anpassad leverantör …',
+        customProviderLabel: 'Anpassad leverantör för underagent',
+        parentModel: 'Använd överordnad modell',
+        parentModelWarning:
+          'Den valda leverantören måste ha stöd för den överordnade modellen. En route med enbart leverantör kan misslyckas om modellen inte är kompatibel. Om leverantören har en egen standardmodell använder underagenter den i stället.',
+        directActive:
+          'En direkt ändpunkt är aktiv och har företräde framför den sparade leverantören. Dess ändpunkt och autentiseringsuppgifter behålls medan detta läge är valt.',
+        directClear:
+          'När denna route tillämpas rensas den direkta ändpunkten och dess sparade nyckel. Andra begärandeinställningar behålls.',
+        catalogFailed: 'Modellkatalogen är inte tillgänglig. Ange leverantör och modell manuellt eller försök igen.',
+        draftHint: 'Ändringarna stannar lokalt tills de tillämpas.'
       }
     },
     sessions: {

@@ -13,6 +13,9 @@ def test_reserved_store_names_filtered_in_live_scope(store):
     provider.refresh(home)
     scope = ss.build_profile_secret_scope(home)
     assert dict(scope) == {"OPENAI_API_KEY": "valid-marker"}
+    assert scope.get("VIEW_STORE_TOKEN") is None
+    assert scope.get("HERMES_HOME") is None
+    assert scope.get("PATH") is None
 
 
 def test_revoked_plane_name_never_falls_back_to_stale_launch(store, monkeypatch):

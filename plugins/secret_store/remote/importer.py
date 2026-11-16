@@ -13,6 +13,10 @@ On boot, the local ``.env`` and ``auth.json`` entries outside the bootstrap set 
   moves to ``.env.unimported`` / ``auth.unimported.json`` (0600, merged with what is there), the
   files keep their bootstrap entries, and ``hermes doctor`` warns.
 
+Before any of it, at store selection, :func:`refusal_names` (local files only, nothing written)
+names the kept-local lines an import would change; when the plane has never stored the profile the
+process runs on the local store instead (``RemoteSecretStoreProvider.import_refusal``).
+
 Each step is idempotent: a crash anywhere leaves the staging file, and the next boot redoes the
 step it stopped in. Nothing here logs or raises with a value.
 """
@@ -57,7 +61,7 @@ def _dotenv_file(path: Path) -> tuple[bytes, str, list]:
     return bom, codec, list(parse_stream(io.StringIO(text)))
 
 
-def _dotenv_values(path: Path) -> dict[str, str]:
+def _dotenv_values(path: Path, *, sanitize: bool = True) -> dict[str, str]:
     """Each name's value as the launch load leaves it for *path*, stored literally from then on:
     the loader's own steps (file sanitizing, parser, resolver with order, duplicates and every
     reference, credential sanitizing). References see the launch environment for the process
@@ -68,7 +72,8 @@ def _dotenv_values(path: Path) -> dict[str, str]:
         _sanitize_loaded_credentials,
     )
 
-    _sanitize_env_file_if_needed(path)
+    if sanitize:   # the loader's own rewrite of the file
+        _sanitize_env_file_if_needed(path)
     try:
         assignments = _parse_local_dotenv_file(path)
     except OSError:
@@ -91,11 +96,11 @@ def _reference_env(path: Path) -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if _is_global_env(k)}
 
 
-def _local_entries(home: Path, provider) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+def _local_entries(home: Path, provider, *, sanitize: bool = True) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     """The local files' entries outside the bootstrap set, read from the files themselves."""
     from hermes_cli import auth
     from hermes_secret_routing import auth_records, stays_local
-    env = {k: v for k, v in _dotenv_values(Path(home) / ".env").items() if not stays_local(provider, k)}
+    env = {k: v for k, v in _dotenv_values(Path(home) / ".env", sanitize=sanitize).items() if not stays_local(provider, k)}
     raw = auth._load_auth_store.__wrapped__(Path(home) / "auth.json")  # the file, not the store's view
     records = {rid: r for rid, r in auth_records(raw).items() if rid not in provider.bootstrap_auth_records()}
     return env, records
@@ -151,22 +156,34 @@ def finish(home: Path, profile: str, view, provider, entries, imported: bool) ->
                     len(env), len(records), profile)
 
 
-def refuse(home: Path, profile: str, names: tuple[str, ...], staged_before: bool) -> None:
-    """The import did not run (:func:`unmatched_kept_names` named *names*): nothing was sent and
-    ``.env`` / ``auth.json`` stay as they are, so the process serves this home from them. Only a
-    staging file this boot created goes (an earlier boot's stays for its own recovery); the next
-    boot checks again."""
-    if not staged_before:
-        _remove(Path(home) / STAGING)
-    logger.warning(refusal_text(profile, names))
+def refusal_names(home: Path, provider) -> list[str]:
+    """The kept-local names an import of *home* would change (:func:`unmatched_kept_names`), from
+    the local files (and an unfinished staging) alone: nothing is written, the ``.env`` is not even
+    sanitized. Empty when there is nothing to import."""
+    env, records = _local_entries(home, provider, sanitize=False)
+    staged_env, staged_auth = prepared_entries(home)
+    stored = {**staged_env, **env}
+    return unmatched_kept_names(home, provider, stored) if stored or records or staged_auth else []
 
 
-def refusal_text(profile: str, names: tuple[str, ...]) -> str:
-    return (f"Remote secrets: profile {profile!r} was not imported into the secrets plane: the kept-local "
-            f".env line(s) {', '.join(names)} would read differently once the other entries move there "
-            "(for example a value with a line break that also depends on a name assigned more than once). Hermes keeps "
-            "running on the local .env and auth.json; simplify those lines (e.g. write the value they "
-            "resolve to on one line, or assign each referenced name once) and restart to import.")
+def held_nous_token(home: Path):
+    """The Nous access token *home*'s ``auth.json`` holds while it is unexpired, else None: read
+    only, never refreshed (a refresh saves the file)."""
+    from hermes_cli import auth
+    from hermes_cli.anon_auth import held_connectors_token
+    raw = auth._load_auth_store.__wrapped__(Path(home) / "auth.json")  # the file, not the store's view
+    return held_connectors_token((raw.get("providers") or {}).get("nous"), skew_seconds=60)
+
+
+def refusal_text(refused: dict[str, list[str]]) -> str:
+    """The boot log's and ``hermes doctor``'s words for *refused* (profile -> kept-local names)."""
+    lines = "; ".join(f"profile {profile!r}: {', '.join(names)}" for profile, names in refused.items())
+    return ("Remote secrets: the one-time import into the secrets plane did not run, so this process runs "
+            f"on the local .env and auth.json (as HERMES_SECRET_STORE=local would). These kept-local .env "
+            f"line(s) would read differently once the other entries move there ({lines}), for example a "
+            "value with a line break that also depends on a name assigned more than once. Simplify them "
+            "(write the value they resolve to on one line, or assign each referenced name once) and "
+            "restart Hermes to import.")
 
 
 def _move_unimported(home: Path, profile: str, view, env: dict[str, str], records: dict[str, Any]) -> None:

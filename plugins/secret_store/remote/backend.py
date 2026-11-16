@@ -11,7 +11,9 @@ memory only:
 - **one-time import**: local ``.env`` / ``auth.json`` entries outside the bootstrap set are sent once
   with ``expectedProfileVersion: 0`` and the files are rewritten to the bootstrap set; when the plane
   already has the profile (409) it wins and the local entries move to ``.env.unimported`` /
-  ``auth.unimported.json`` (``importer.py``);
+  ``auth.unimported.json`` (``importer.py``). An import that would change a kept-local ``.env``
+  line is refused before any of this (:meth:`RemoteSecretStoreProvider.import_refusal`, asked once
+  at store selection): the whole process then runs on the local store;
 - **change detection**: a per-process poller asks for every booted view with ``If-None-Match`` every
   :data:`POLL_SECONDS`, holding the version the process booted with or last wrote itself. Nothing is
   installed from a poll: a different version asks the process for a graceful restart
@@ -48,7 +50,9 @@ from hermes_secret_port import (
     SecretWriteFailed, thaw_secret,
 )
 from plugins.config_backends.remote import client as config_client
-from plugins.config_backends.remote.credentials import IDP_ENV_PREFIX, PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError
+from plugins.config_backends.remote.credentials import (
+    IDP_ENV_PREFIX, PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError, credential_kind,
+)
 
 from . import client
 
@@ -147,9 +151,6 @@ class _HomeState:
     next_poll: float = 0.0
     fetched_at: float = 0.0
     last_error: Optional[str] = None
-    #: Kept-local names the refused one-time import would have changed: while set, this home's
-    #: secrets are its local files (:meth:`RemoteSecretStoreProvider.serves_home` is False).
-    refused: tuple[str, ...] = ()
 
     def __post_init__(self):
         self.cell.install(replace(self.view, version=1))
@@ -311,29 +312,31 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
                 "agent to the secrets plane. Hermes does not start without its secrets.")
         # The local entries to import are staged before the credential resolves: a token refresh
         # saves auth.json, and that save keeps only the bootstrap records.
-        staged_before = (home / importer.STAGING).exists()
         importer.stage(home, self)
         entries = importer.prepared_entries(home)
-        # Before any PATCH or rewrite: an import that would change a kept-local line's value does not run.
+        # The process-wide check (import_refusal) passed; an import that would still change a
+        # kept-local line (the plane emptied since, a profile added later) stops instead of running.
         unmatched = tuple(importer.unmatched_kept_names(home, self, entries[0])) if any(entries) else ()
+
+        def attempt() -> _HomeState:
+            token = self._bearer(home)  # resolved holding no lock of this store
+            with self._serialized(home):
+                st, imported = self._first_fetch(home, profile, token, entries, unmatched)
+            importer.finish(home, profile, st.view, self, entries, imported)
+            with self._lock:
+                self._states[key] = st
+            return st
+        return self._retrying(profile, attempt)
+
+    def _retrying(self, profile: str, attempt):
+        """*attempt*'s result, retrying an outage (:data:`BOOT_RETRY_DELAYS`); fail closed otherwise."""
+        from hermes_secret_routing import SecretStoreUnavailable
         delays = list(BOOT_RETRY_DELAYS)
         while True:
-            failed: Optional[tuple[str, bool]] = None
             try:
-                token = self._bearer(home)  # resolved holding no lock of this store
-                with self._serialized(home):
-                    st, imported = self._first_fetch(home, profile, token, entries, unmatched)
-                if st.refused:
-                    importer.refuse(home, profile, st.refused, staged_before)
-                else:
-                    importer.finish(home, profile, st.view, self, entries, imported)
-                with self._lock:
-                    self._states[key] = st
+                return attempt()
             except _FetchFailed as exc:
-                failed = (str(exc), exc.retryable)   # the failure's frames held values: dropped here
-            if failed is None:
-                return st
-            detail, retryable = failed
+                detail, retryable = str(exc), exc.retryable   # the failure's frames held values: dropped here
             if retryable and delays:
                 wait = min(delays.pop(0), MAX_RETRY_WAIT)
                 logger.warning("Remote secrets: fetch for profile %r failed (%s); retrying in %.0fs",
@@ -345,16 +348,41 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
                 f"{client.shown_url()}: {detail}. Hermes does not start without its secrets "
                 "(HERMES_SECRET_STORE=remote has no local fallback).")
 
+    def import_refusal(self, homes: Any) -> Optional[str]:
+        """Refused when a home's one-time import would change a kept-local ``.env`` line and the
+        plane has never stored that profile (the import would run). Reads the local files and, with
+        a bearer at hand without a refresh, ``GET /self``; writes nothing. With no such bearer the
+        plane cannot be asked and the files stay as they are: refused too."""
+        from hermes_secret_routing import SecretStoreUnavailable
+
+        from . import importer
+        refused: dict[str, list[str]] = {}
+        for home in map(Path, homes):
+            try:
+                profile = self._profile_for(home)
+            except SecretStoreUnavailable:
+                continue   # not a profile home: its boot refuses it
+            names = importer.refusal_names(home, self)
+            if names and client.instance_id():
+                token = client.bearer(home) if credential_kind() == "idp" else importer.held_nous_token(home)
+                if token is None or self._retrying(
+                        profile, lambda: self._get(home, profile, token=token)).profile_version == 0:
+                    refused[profile] = names
+        if not refused:
+            return None
+        text = importer.refusal_text(refused)
+        logger.warning(text)
+        return text
+
     def _first_fetch(self, home: Path, profile: str, token: str, entries,
                      unmatched: tuple[str, ...] = ()) -> tuple[_HomeState, bool]:
-        """Only network I/O and in-memory work under the home's plane-call lock. An import that
-        *unmatched* names kept-local lines for is not sent: the home is served from its files."""
+        """Only network I/O and in-memory work under the home's plane-call lock."""
         view = self._get(home, profile, token=token)
         env, records = entries
         imported = False
         if (env or records) and view.profile_version == 0 and unmatched:
-            return (_HomeState(home=home, profile=profile, view=view, fetched_at=time.time(),
-                               next_poll=time.monotonic() + _jittered(), refused=unmatched), False)
+            raise _FetchFailed(f"the one-time import would change the kept-local .env line(s) {', '.join(unmatched)}; "
+                               "restart Hermes to run on the local files", retryable=False)
         if (env or records) and view.profile_version == 0:
             body = {"expectedProfileVersion": 0, "set": env,
                     "auth": {rid: {"expectedVersion": 0, "record": r} for rid, r in records.items()}}
@@ -405,10 +433,6 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
     def boot(self, home: Any) -> None:
         self._state(Path(home))
         self._ensure_poller()   # a forked child re-arms its own poller
-
-    def serves_home(self, home: Any) -> bool:
-        st = self._state(Path(home))
-        return st is None or not st.refused
 
     def env_view(self, home: Any) -> dict[str, str]:
         st = self._state(Path(home))
@@ -568,20 +592,13 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
 
     def doctor_warnings(self, home: Any) -> tuple:
         from . import importer
-        out: list[tuple[str, str, str]] = []
-        st = self._states.get(self._key(Path(home)))
-        if st is not None and st.refused:
-            names = ", ".join(st.refused)
-            out.append((importer.refusal_text(st.profile, st.refused),
-                        f"(simplify the .env line(s) {names}, then restart Hermes to retry the import)",
-                        f"Simplify the .env line(s) {names} so the one-time import to the secrets plane can run"))
         left = [p for p in importer.unimported_paths(Path(home)) if p.exists()]
-        if left:
-            listed = ", ".join(str(p) for p in left)
-            out.append((f"Local secrets were not imported (the secrets plane already had this profile): {listed}",
-                        "(review them, set what is still needed through Hermes or the editor, then delete the files)",
-                        f"Review and delete {listed}: the secrets plane wins over these local entries"))
-        return tuple(out)
+        if not left:
+            return ()
+        listed = ", ".join(str(p) for p in left)
+        return ((f"Local secrets were not imported (the secrets plane already had this profile): {listed}",
+                 "(review them, set what is still needed through Hermes or the editor, then delete the files)",
+                 f"Review and delete {listed}: the secrets plane wins over these local entries"),)
 
     def describe(self, home: Any) -> str:
         st = self._states.get(self._key(Path(home)))
@@ -592,8 +609,6 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
         tail = f", last poll failed: {st.last_error}" if st.last_error else ""
         if self._restart_reason is not None:
             tail += ", restart pending (changed elsewhere)"
-        if st.refused:
-            tail += ", import refused: serving the local files"
         return (f"{head}: profile {st.profile!r}, profile level v{st.view.profile_version}, "
                 f"{len(st.view.env)} env name(s), {len(st.view.auth)} auth record(s), loaded {age}s ago{tail}")
 

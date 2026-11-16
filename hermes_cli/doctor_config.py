@@ -173,8 +173,11 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     managed_scope_check()
     env_path = HERMES_HOME / '.env'
-    from hermes_secret_routing import read_env_text, routed_provider
+    from hermes_secret_routing import import_refusal, read_env_text, routed_provider
     store = routed_provider()
+    if refusal := import_refusal():  # names only: this process runs on the local files below
+        check_warn(refusal, "(simplify those .env lines, then restart Hermes to import)")
+        f.issues.append("Simplify the kept-local .env line(s) named above so the secrets plane import can run")
     if store is not None:  # the selected secret store holds this profile's secrets, not the .env file
         check_ok(f"Secret store: {store.describe(HERMES_HOME)}")
         for warning, hint, issue in store.doctor_warnings(HERMES_HOME):

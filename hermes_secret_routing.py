@@ -18,6 +18,9 @@ bootstrap entries (the names and records it needs to select, address and authent
 every other name and record is the store's, read from its view and written through it, and no
 local entry outside the bootstrap set is ever read in its place.
 
+A store may refuse the process at selection (``import_refusal``, asked once, before anything
+routes): the process then runs on the local store for its whole lifetime, as if none were selected.
+
 A named store that is missing or unavailable stops the process (:class:`SecretStoreUnavailable`, a
 ``SystemExit`` like the config backend's): many readers fail open with ``except Exception``, and
 reading the local files instead of the selected store is the silent failure this must not become.
@@ -94,20 +97,57 @@ def routed_provider() -> Optional[SecretStoreProvider]:
     if name == "local":
         return None
     provider = _provider_named(name)
-    return None if provider.files_backed else provider
+    return None if provider.files_backed or _import_refused(provider) else provider
 
 
-def routed_provider_for(home) -> Optional[SecretStoreProvider]:
-    """:func:`routed_provider` when it serves profile *home* (``serves_home``), else None: a home
-    the store declined runs today's file code."""
-    provider = routed_provider()
-    return provider if provider is not None and provider.serves_home(Path(home)) else None
+#: Store name -> why this process runs on the local store instead (None: it does not). Decided once.
+_REFUSALS: dict[str, Optional[str]] = {}
+_REFUSAL_LOCK = threading.Lock()
+_DECIDING = threading.local()
+
+
+def _import_refused(provider: SecretStoreProvider) -> bool:
+    """Whether this process runs on the local store although *provider* is selected
+    (:meth:`~hermes_secret_port.SecretStoreProvider.import_refusal`): asked once, at the first
+    routed call, before anything routes or boots, for every profile home the process may serve.
+    The answer holds for the process's lifetime; while it is asked, every read is the local files'."""
+    if provider.name in _REFUSALS:
+        return _REFUSALS[provider.name] is not None
+    if getattr(_DECIDING, "active", False):
+        return True
+    with _REFUSAL_LOCK:
+        if provider.name not in _REFUSALS:
+            _DECIDING.active = True
+            try:
+                _REFUSALS[provider.name] = provider.import_refusal(_process_homes())
+            finally:
+                _DECIDING.active = False
+    return _REFUSALS[provider.name] is not None
+
+
+def _process_homes() -> list[Path]:
+    """The launch home, then the root's and every named profile's under it: any of them may be
+    served by this process (multiplexing, the dashboard), so a refusal of any runs it all local."""
+    from hermes_constants import get_default_hermes_root, get_routing_process_hermes_home
+    root = get_default_hermes_root()
+    try:
+        named = sorted(p for p in (root / "profiles").iterdir() if p.is_dir() and not p.name.startswith("."))
+    except OSError:
+        named = []
+    return list(dict.fromkeys([Path(get_routing_process_hermes_home()), root, *named]))
+
+
+def import_refusal() -> Optional[str]:
+    """Why this process runs on the local store although another is selected, or None."""
+    name = selected_store_name()
+    return None if name == "local" or routed_provider() is not None else _REFUSALS.get(name)
 
 
 def reset_for_tests() -> None:
     """Forget resolved providers and published views (tests only)."""
     with _PROVIDERS_LOCK:
         _PROVIDERS.clear()
+        _REFUSALS.clear()
         _BOOTSTRAP_GENERATIONS.clear()
     with _PUBLISH_LOCK:
         _PUBLICATIONS.clear()
@@ -189,14 +229,12 @@ def stays_local(provider: SecretStoreProvider, name: str) -> bool:
     return _is_global_env(name) or name in _SPAWN_CREDENTIAL_KEYS
 
 
-def _routed_env_home(env_path: Path, *, served: bool = True) -> tuple[Optional[SecretStoreProvider], Optional[Path]]:
+def _routed_env_home(env_path: Path) -> tuple[Optional[SecretStoreProvider], Optional[Path]]:
     provider = routed_provider()
     if provider is None:
         return None, None
     home = _profile_home_of(env_path, ENV_FILENAME)
-    if home is None or (served and not provider.serves_home(home)):
-        return None, None
-    return provider, home
+    return (provider, home) if home is not None else (None, None)
 
 _BOOTSTRAP_GENERATIONS = {}
 _PROFILE_SNAPSHOT = ContextVar("raw_profile_snapshot", default=None)
@@ -267,7 +305,7 @@ def routed_store_env(env_path: Path) -> Optional[dict[str, str]]:
 def env_file_exists(env_path: Path) -> bool:
     """``env_path.exists()`` with the local store; with any other store, whether the profile has
     any secret at all (local bootstrap or the store's view)."""
-    provider, home = _routed_env_home(env_path, served=False)   # never boots the store
+    provider, home = _routed_env_home(env_path)
     if provider is None or home is None:
         return Path(env_path).exists()
     return True  # an authoritative empty profile still occupies the dotenv layer
@@ -315,8 +353,6 @@ def load_profile_dotenv(loader, **kwargs):
     if _PROFILE_SNAPSHOT.get() is not None:
         return loader(**kwargs)
     provider.boot(home)
-    if not provider.serves_home(home):
-        return loader(**kwargs)
     return publish(provider.current_snapshot(home), home=home, loader=loader, **kwargs)
 
 
@@ -414,7 +450,7 @@ def _routed_auth_home(auth_file: Path) -> tuple[Optional[SecretStoreProvider], O
     if provider is None:
         return None, None
     home = _profile_home_of(auth_file, AUTH_FILENAME)
-    return (provider, home) if home is not None and provider.serves_home(home) else (None, None)
+    return (provider, home) if home is not None else (None, None)
 
 
 def boot_before_auth_lock(auth_path: Path):

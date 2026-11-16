@@ -1,0 +1,17 @@
+name: web-forage
+title: Forage
+repo: https://github.com/aldemaroc/forage
+sha: 528ddea8a7ef4ab85d16588ed9352dd741a6b526
+subdir: plugins/web/forage
+description: "Self-hosted search and extract backend for Hermes. Forage is a small self-hostable service (Docker, GPL v3) that serves web_search and web_extract plus a forage_full_extract tool for full-page text, using a static/browser hybrid strategy server-side. Set FORAGE_URL to your own instance; no third-party API key and no hosted account. Disclosure: every web_search, web_extract and forage_full_extract call goes to the Forage instance in FORAGE_URL (default http://localhost:3672), which fetches the requested pages itself and may render them in a headless browser on the same host; optional FORAGE_API_KEY is sent as a Bearer token when the instance has auth enabled, and FORAGE_BYPASS_CACHE=1 makes the plugin skip that instance's cache."
+maintainer: aldemaroc
+tier: community
+category: web
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/aldemaroc/forage/blob/528ddea8a7ef4ab85d16588ed9352dd741a6b526/docs/HERMES.md
+capabilities:
+  provides_tools:
+  - forage_full_extract
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

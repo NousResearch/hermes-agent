@@ -464,6 +464,8 @@ export const zh: Translations = {
     customKeyNamePlaceholder: "例如 MY_SERVICE_API_KEY",
     add: "添加",
     invalidKeyName: "只能使用字母、数字和下划线（必须以字母或下划线开头）。",
+    channelManagedKey: "{key} 是消息平台的凭据，请在 Channels 页面设置。",
+    openChannels: "打开 Channels",
   },
 
   oauth: {

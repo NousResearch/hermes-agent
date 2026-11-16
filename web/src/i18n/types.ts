@@ -593,6 +593,8 @@ export interface Translations {
     customKeyNamePlaceholder: string;
     add: string;
     invalidKeyName: string;
+    channelManagedKey: string;
+    openChannels: string;
   };
 
   // ── OAuth ──

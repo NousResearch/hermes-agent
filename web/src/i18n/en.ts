@@ -584,6 +584,8 @@ export const en: Translations = {
     customKeyNamePlaceholder: "e.g. MY_SERVICE_API_KEY",
     add: "Add",
     invalidKeyName: "Use letters, numbers and underscores only (must start with a letter or underscore).",
+    channelManagedKey: "{key} is a messaging platform credential, set on the Channels page.",
+    openChannels: "Open Channels",
   },
 
   oauth: {

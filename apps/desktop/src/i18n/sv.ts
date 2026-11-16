@@ -2392,6 +2392,17 @@ export const svOverrides: TranslationOverrides = {
         runtime: 'Hermes stötte på ett problem',
         streaming: 'Fel i strömningsanslutning'
       },
+      errorLayerBodies: {
+        auth: 'AI-tjänsten avvisade din inloggning. Kontrollera leverantörens inloggningsuppgifter och skicka sedan meddelandet igen.',
+        billing: 'Kontot saknar krediter hos den här leverantören. Fyll på eller byt leverantör och skicka sedan igen.',
+        disk: 'Disken är full, så Hermes kunde inte spara konversationen. Frigör utrymme och försök sedan igen.',
+        endpoint: 'Hermes kan inte nå din egna modellserver. Kontrollera att den körs och skicka sedan meddelandet igen.',
+        gateway: 'Hermes fick ett internt fel när svaret skulle startas. Skicka meddelandet igen och skicka diagnostik om felet återkommer.',
+        generic: 'Något gick fel medan Hermes svarade. Försök igen eller kopiera felinformationen om det återkommer.',
+        provider: 'AI-tjänsten kunde inte slutföra begäran. Försök igen om en stund eller byt leverantör.',
+        runtime: 'Hermes fick ett internt fel när svaret skulle startas. Skicka meddelandet igen och skicka diagnostik om felet återkommer.',
+        streaming: 'Anslutningen bröts innan svaret blev klart. Försök igen för att skicka meddelandet på nytt.'
+      },
       errorCodes: {
         auth: {
           title: provider => `${provider} avvisade din inloggning`,
@@ -2510,9 +2521,18 @@ export const svOverrides: TranslationOverrides = {
           title: 'Chattens API-nyckel har ändrats',
           body: 'Chatten startades med en API-nyckel som senare har ändrats eller tagits bort, så meddelandet skickades inte. En öppen chatt byter aldrig nyckel själv. Starta en ny session för att använda den aktuella nyckeln.'
         },
+        local_runtime_unavailable: {
+          title: 'Det gick inte att nå den lokala modellservern',
+          body: 'Den lokala modellservern är inte redo ännu och kan fortfarande starta. Försök igen om en stund eller byt modell.',
+          bodyNoRetry: 'Den lokala modellservern är avstängd. Starta den från Hermes skrivbordsapp eller med `hermes model` i terminalen, eller byt modell.'
+        },
         SESSION_OWNER_UNCONFIRMED: {
           title: 'Meddelandet kan redan ligga i kön',
           body: 'Gatewayen bekräftade inte meddelandet i tid. Om det lades i kön körs det när den tidigare körningen är klar eller har lösts. Kontrollera chatten innan du skickar det igen.'
+        },
+        agent_init_failed: {
+          title: 'Det gick inte att starta chatten',
+          body: provider => `Hermes kunde inte ansluta till ${provider} för den här chatten. Försök igen och kontrollera leverantören i Inställningar om felet återkommer.`
         },
         SESSION_NOT_OWNED: {
           title: 'Chatten är öppen någon annanstans',
@@ -2557,6 +2577,13 @@ export const svOverrides: TranslationOverrides = {
       },
       errorRetry: 'Försök igen',
       errorSwitchProvider: 'Byt leverantör',
+      errorAuthKinds: {
+        api_key: {
+          title: provider => `${provider} avvisade din API-nyckel`,
+          body: () => 'Den sparade nyckeln är ogiltig eller har återkallats. Uppdatera den och skicka sedan meddelandet igen.'
+        },
+        oauth: { title: provider => `Logga in på ${provider} igen` }
+      },
       contentRefusedNotice: 'Modellens säkerhetsfilter avvisade meddelandet. Försök med en annan fråga.',
       errorHideDetails: 'Dölj felinformation',
       errorDetailsCopy: 'Kopiera information',
@@ -2576,6 +2603,19 @@ export const svOverrides: TranslationOverrides = {
       errorUseCreditsFailed: 'Det gick inte att aktivera Fortsätt med krediter',
       errorAddCredits: 'Lägg till krediter',
       errorOpenBillingSettings: 'Öppna faktureringsinställningarna',
+      errorChooseModel: 'Välj en modell',
+      errorCompressConversation: 'Komprimera konversationen',
+      errorCompressFailed: 'Det gick inte att komprimera konversationen',
+      errorDetails: 'Visa felinformation',
+      errorGenericProvider: 'AI-tjänsten',
+      errorOpenHermesFolder: 'Öppna Hermes-mappen',
+      errorOpenHermesFolderFailed: 'Det gick inte att öppna Hermes-mappen',
+      errorRetryScheduled: (time, wait) => `Försöker igen ${time}, om ${wait}`,
+      errorRetryScheduledCancel: 'Avbryt',
+      errorSignInFreeTier: 'Logga in med ett Nous-konto',
+      errorToastTitle: 'Hermes kunde inte slutföra svaret',
+      errorUpdateApiKey: 'Uppdatera API-nyckeln',
+      responseStopped: 'Svaret stoppades',
       errorOpenLogs: 'Öppna loggar',
       errorOpenLogsFailed: 'Det gick inte att öppna loggmappen',
       errorOpenDesktopLogs: 'Öppna skrivbordsloggar',

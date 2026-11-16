@@ -140,26 +140,31 @@ def test_the_cache_moves_with_the_full_route_and_dies_at_compaction(monkeypatch)
 
 
 def test_nous_ceiling_is_data_on_the_wire_and_in_the_clock(tmp_path, monkeypatch):
-    """Nous Portal drops 1h upstream: Hermes asks for 5m there and the clock says 5m. Lifting the
-    ceiling is a config entry, not a code change, and a ``custom`` route at the Portal host counts."""
+    """Nous Portal keeps 1h for Claude, so 1h goes on the wire there (``custom`` at the Portal host
+    too) and the clock declares it. A route ceiling is still a config entry: ``{nous: 5m}`` clamps
+    the wire and the clock."""
     from agent.prompt_caching import effective_cache_ttl
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     portal = "https://inference-api.nousresearch.com/v1"
     for provider in ("nous", "custom"):
-        assert effective_cache_ttl("1h", provider=provider, model="anthropic/claude-sonnet-4.6", base_url=portal) == "5m"
-    assert effective_cache_ttl("1h", provider="openrouter", model="anthropic/claude-sonnet-4.6",
-                               base_url="https://openrouter.ai/api/v1") == "1h"
+        assert effective_cache_ttl("1h", provider=provider, model="anthropic/claude-sonnet-4.6", base_url=portal) == "1h"
+    usage = {"prompt_tokens": 5000, "completion_tokens": 3,
+             "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 4800}}
+    agent = _agent("nous", portal, "anthropic/claude-sonnet-4.6")
+    _turn(agent, _marked_request("1h"), usage, sent_at=1_000.0, monkeypatch=monkeypatch)
+    assert _ends(agent) == ("1h", "declared", 4_600.0, 4_600.0)
+    assert cache_window(agent).reason == "route_ceiling_1h"
 
+    (tmp_path / "config.yaml").write_text("prompt_caching:\n  route_ttl_ceilings:\n    nous: 5m\n", encoding="utf-8")
+    for provider in ("nous", "custom"):
+        assert effective_cache_ttl("1h", provider=provider, model="anthropic/claude-sonnet-4.6", base_url=portal) == "5m"
     agent = _agent("nous", portal, "anthropic/claude-sonnet-4.6")
     usage = {"prompt_tokens": 5000, "completion_tokens": 3,
              "prompt_tokens_details": {"cached_tokens": 4800, "cache_write_tokens": 0}}
     _turn(agent, _marked_request("5m"), usage, sent_at=1_000.0, monkeypatch=monkeypatch)
     assert _ends(agent) == ("5m", "declared", 1_300.0, 1_300.0)
     assert cache_window(agent).reason == "route_ceiling_5m"
-
-    (tmp_path / "config.yaml").write_text("prompt_caching:\n  route_ttl_ceilings:\n    nous: 1h\n", encoding="utf-8")
-    assert effective_cache_ttl("1h", provider="nous", model="anthropic/claude-sonnet-4.6", base_url=portal) == "1h"
 
 
 def test_a_configured_ceiling_applies_on_the_measured_provider_path_too(tmp_path, monkeypatch):

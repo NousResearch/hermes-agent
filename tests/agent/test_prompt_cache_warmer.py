@@ -197,9 +197,10 @@ def test_timer_delay_keeps_a_ten_second_margin():
     assert pcw.cache_warming_delay_s(12) == 2 and pcw.cache_warming_delay_s(10) is None
 
 
-def test_chat_completions_gateway_is_warmed_on_the_five_minute_schedule(priced):
+def test_chat_completions_gateway_is_warmed_on_the_tier_it_keeps(priced, tmp_path, monkeypatch):
     """A Claude request through a Chat Completions gateway (Nous Portal, OpenRouter) is replayed on
-    that wire, and its ``1h`` tier is not trusted: the gateway was measured dropping it at 7 min."""
+    that wire on the ``1h`` schedule it asked for: the Portal keeps 1h like Anthropic."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = _agent(api_mode="chat_completions", provider="nous", _cache_ttl="1h", client=_Client())
     request = {
         "model": "anthropic/claude-opus-5.5", "max_tokens": 8192, "stream": True,
@@ -208,7 +209,7 @@ def test_chat_completions_gateway_is_warmed_on_the_five_minute_schedule(priced):
     }
     warmer = pcw.get_prompt_cache_warmer(agent)
     assert _arm(agent, request, _RESPONSE) is None
-    assert warmer._run.ttl_s == 300  # the clock's route ceiling (Nous ships 5m), not the 1h asked for
+    assert warmer._run.ttl_s == 3600
     _fire(warmer)
     (sent,) = agent.client.calls
     assert sent["max_tokens"] == 1 and "stream" not in sent and "stream_options" not in sent

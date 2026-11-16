@@ -206,8 +206,9 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
-    # Longest prompt-cache tier this route actually keeps ("5m" | "1h"); None = whatever is asked.
-    # Hermes clamps the requested tier to it and the prompt-cache clock never believes more.
+    # Longest prompt-cache tier this route actually keeps ("5m" | "1h"). Hermes clamps the requested
+    # tier to it, and the prompt-cache clock declares the sent tier up to it; None leaves a 1h ask on
+    # an Anthropic-wire gateway unproven (no keep-alive, compaction or cold-return pruning).
     # Config ``prompt_caching.route_ttl_ceilings`` overrides it per provider. Keyword-only so
     # plugin subclasses' positional fields keep their slots.
     prompt_cache_max_ttl: str | None = field(default=None, kw_only=True)

@@ -147,14 +147,14 @@ def test_malformed_prompt_caching_yaml_builds_an_agent_and_sends(tmp_path, monke
 
 
 def test_auto_chat_started_on_a_5m_route_sends_1h_after_switching_to_openrouter(monkeypatch):
-    """Auto stores the source's choice; the Nous 5m ceiling is a send-time clamp, so it must not
+    """Auto stores the source's choice; a route's 5m ceiling is a send-time clamp, so it must not
     stick to the session once the chat moves to a route that keeps 1h."""
     import logging
     import hermes_cli.config
     from agent.turn_request_assembly import assemble_api_request
     from run_agent import AIAgent
 
-    cfg = {"prompt_caching": {"cache_ttl": "auto"}}
+    cfg = {"prompt_caching": {"cache_ttl": "auto", "route_ttl_ceilings": {"nous": "5m"}}}
     monkeypatch.setattr(hermes_cli.config, "load_config_readonly", lambda: cfg)
     monkeypatch.setattr(hermes_cli.config, "load_config", lambda: cfg)
     for key in ("HERMES_SESSION_SOURCE", "HERMES_SESSION_SOURCE_EXPLICIT", "HERMES_SINGLE_QUERY_SESSION"):
@@ -179,6 +179,7 @@ def test_auto_chat_started_on_a_5m_route_sends_1h_after_switching_to_openrouter(
 
     try:
         agent._current_turn_timestamp = 1.0
+        assert sent_markers() and all(marker.get("ttl") in (None, "5m") for marker in sent_markers())
         agent.provider, agent.base_url = "openrouter", "https://openrouter.ai/api/v1"
         agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy()
         markers = sent_markers()

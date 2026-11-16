@@ -238,9 +238,9 @@ def route_ttl_ceiling(provider: str, base_url: str = "") -> str | None:
     """Longest cache tier the route keeps, or None when it keeps whatever is asked for.
 
     Data, not code: config ``prompt_caching.route_ttl_ceilings: {<provider>: 5m|1h}`` wins, else the
-    provider profile's ``prompt_cache_max_ttl``. Nous Portal ships ``5m`` because its upstream
-    currently drops 1h entries after ~7 minutes and bills them at the 5m rate; once that is fixed,
-    lifting the ceiling is ``route_ttl_ceilings: {nous: 1h}`` or a one-field profile change.
+    provider profile's ``prompt_cache_max_ttl``. A route that silently keeps less than it is asked
+    for gets a ``5m`` ceiling so it is never asked for (or billed) the dearer tier; a gateway that
+    keeps 1h declares ``1h`` so the prompt-cache clock trusts the tier it sends.
     """
     from hermes_cli.config import load_config_readonly
     from providers import get_provider_profile

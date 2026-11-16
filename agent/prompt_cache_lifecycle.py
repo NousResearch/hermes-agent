@@ -9,7 +9,7 @@ When a chat's cache is about to expire the controller makes ONE decision, in thi
    cron, one-shots, /bg, /btw, the API server) warm only while a tool runs: their turn's end ends
    warming. A keep-alive that misses the cache ends warming at once (step 3).
 2. COMPACT: once the budget is spent, an idle human chat compacts IF its window is at least
-   :data:`MIN_COMPACT_WINDOW_SECONDS` (never Nous's 5m today), its context is at least half of the
+   :data:`MIN_COMPACT_WINDOW_SECONDS` (a 1h or 30m tier, never a 5m one), its context is at least half of the
    compaction threshold, and it grew since its last compaction. The compacted chat is primed (one
    request writes its smaller prefix) and gets one fresh budget; at most one compaction per idle
    stretch. The surface that owns the chat (CLI input loop, TUI ticker, gateway watcher) runs the

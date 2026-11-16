@@ -146,6 +146,7 @@ def view_backend(plane):
         with provider._lock:
             provider._states.clear()
             provider._restart_reason = None
+            provider._restart_taken = False
         provider.boot(home)
 
     return ViewBackend(provider=provider, home=home,

@@ -409,8 +409,8 @@ def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order. For a
     profile ``.env`` a secret store serves: its view, and for a store of literal values the store's
     values as :class:`StoredValue` (a later layer may still expand them like any value), then the
-    file's own kept-local lines, which resolve references to the store's names as the file did before
-    its values were imported (they followed the assignments they reference)."""
+    file's own kept-local lines. The import froze each kept line that referenced an imported name to
+    its value then, so only a kept line added after the import sees the store's names."""
     from hermes_secret_routing import routed_profile_env, routed_provider, routed_store_env, stays_local
     stored = routed_store_env(path)
     if stored is None:
@@ -460,9 +460,17 @@ def _resolve_dotenv_assignments(
     """Expand ``${VAR}`` / ``${VAR:-default}`` like ``dotenv.main.resolve_variables``, minus the live
     ``os.environ``: a line sees *lookup_env* and the file's earlier lines (earlier lines win under
     *override*, the environment otherwise)."""
+    return dict(resolve_dotenv_lines(assignments, lookup_env, override=override))
+
+
+def resolve_dotenv_lines(
+    assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], *, override: bool,
+) -> list[tuple[str, str | None]]:
+    """:func:`_resolve_dotenv_assignments` per assignment: each line's own value, in file order."""
     from dotenv.variables import parse_variables
 
     resolved: dict[str, str | None] = {}
+    lines: list[tuple[str, str | None]] = []
     for name, value in assignments:
         if isinstance(value, StoredValue):
             value = str(value)  # a secret store's value is literal
@@ -470,7 +478,8 @@ def _resolve_dotenv_assignments(
             lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
             value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
         resolved[name] = value
-    return resolved
+        lines.append((name, value))
+    return lines
 
 
 def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:

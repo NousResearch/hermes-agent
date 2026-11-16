@@ -243,9 +243,9 @@ def test_a_restart_asked_for_before_any_handler_is_replayed_once_on_registration
         assert routing.request_restart("profile 'default' changed elsewhere") is False
         routing.set_restart_handler(lambda: calls.append("first"))
         assert calls == ["first"]
-        routing.set_restart_handler(lambda: calls.append("second"))   # replayed once, not per handler
+        routing.set_restart_handler(lambda: calls.append("second"))   # taken once, not per handler
         assert calls == ["first"]
-        assert routing.request_restart("again") is True and calls == ["first", "second"]
+        assert routing.request_restart("again") is True and calls == ["first"]   # already restarting
     finally:
         routing.set_restart_handler(None)
         routing.reset_for_tests()
@@ -278,3 +278,210 @@ def test_a_change_during_a_slow_gateway_start_restarts_once_the_gateway_register
         loop.close()
     assert runner.stopped == [{"restart": True, "detached_restart": False, "service_restart": True}]
     assert os.environ["EARLY_KEY"] == "boot-value"
+
+
+class _ClosedLoop:
+    """An old gateway loop that has closed: ``call_soon_threadsafe`` raises ``RuntimeError`` as a
+    closed asyncio loop does, after *entered*/*release* when given (to hold it mid-delivery)."""
+
+    def __init__(self, entered=None, release=None):
+        self.entered, self.release = entered, release
+
+    def call_soon_threadsafe(self, *_args):
+        if self.entered is not None:
+            self.entered.set()
+            assert self.release.wait(10)
+        loop = asyncio.new_event_loop()
+        loop.close()
+        return loop.call_soon_threadsafe(lambda: None)
+
+
+class _GatewayLoop:
+    """A running gateway loop on its own thread."""
+
+    def __enter__(self):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        return self.loop
+
+    def settle(self):
+        for _ in range(3):   # let anything scheduled on the loop run
+            asyncio.run_coroutine_threadsafe(asyncio.sleep(0), self.loop).result(5)
+
+    def __exit__(self, *_exc):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(5)
+        self.loop.close()
+
+
+@pytest.fixture
+def supervised(monkeypatch):
+    import gateway.restart as restart_mod
+    monkeypatch.setattr(restart_mod, "is_gateway_supervisor_process", lambda: True)
+    monkeypatch.setattr(restart_mod, "is_container_restart_context", lambda: False)
+
+
+_PLANNED = [{"restart": True, "detached_restart": False, "service_restart": True}]
+
+
+def test_a_new_gateway_registered_while_delivery_to_a_closed_old_loop_is_in_flight_restarts(plane, supervised):
+    """The poll hands the restart to the old handler, whose loop has closed; while that delivery is
+    in flight the new gateway registers. Its registration takes the restart (it is still wanted):
+    the old delivery failing afterwards must not leave the process running on its boot view."""
+    from gateway.restart_when_idle import install_secret_store_restart
+    plane.set_level(plane.profile("default"), env={"CLOSED_RACE": "before"})
+    _boot(plane.home)
+    entered, release = threading.Event(), threading.Event()
+    install_secret_store_restart(_ClosedLoop(entered, release), _Runner())
+    plane.set_level(plane.profile("default"), env={"CLOSED_RACE": "after"})
+    poll = threading.Thread(target=_poll)
+    poll.start()
+    runner = _Runner()
+    gateway = _GatewayLoop()
+    with gateway as loop:
+        try:
+            assert entered.wait(10)
+            install_secret_store_restart(loop, runner)
+        finally:
+            release.set()
+            poll.join(10)
+        assert not poll.is_alive()
+        wait_until(lambda: bool(runner.stopped), timeout=10)
+        _poll()
+        gateway.settle()
+    assert runner.stopped == _PLANNED
+    assert os.environ["CLOSED_RACE"] == "before"
+
+
+def test_a_closed_loop_then_a_working_gateway_restarts_once(plane, supervised):
+    from gateway.restart_when_idle import install_secret_store_restart
+    plane.set_level(plane.profile("default"), env={"CLOSED_KEY": "before"})
+    _boot(plane.home)
+    install_secret_store_restart(_ClosedLoop(), _Runner())
+    plane.set_level(plane.profile("default"), env={"CLOSED_KEY": "after"})
+    _poll()
+    _poll()   # still wanted: the tick asks the closed loop again, which still cannot take it
+    runner = _Runner()
+    gateway = _GatewayLoop()
+    with gateway as loop:
+        install_secret_store_restart(loop, runner)
+        wait_until(lambda: bool(runner.stopped), timeout=10)
+        _poll()
+        install_secret_store_restart(loop, runner)
+        gateway.settle()
+    assert runner.stopped == _PLANNED
+
+
+def test_the_poller_asks_again_on_every_tick_until_the_handler_takes_the_restart(plane):
+    """A handler that cannot take the restart the first time (no new registration follows): only
+    the poller asking again on its next tick delivers it, and once taken it is never asked again."""
+    calls = []
+
+    def handler():
+        calls.append("asked")
+        if len(calls) == 1:
+            raise RuntimeError("Event loop is closed")
+
+    plane.set_level(plane.profile("default"), env={"TICK_KEY": "before"})
+    _boot(plane.home)
+    routing.set_restart_handler(handler)
+    plane.set_level(plane.profile("default"), env={"TICK_KEY": "after"})
+    _poll()
+    assert calls == ["asked"]
+    gets = len([r for r in plane.requests if r["method"] == "GET"])
+    _poll()
+    assert calls == ["asked", "asked"]
+    for _ in range(3):
+        _poll()
+    assert calls == ["asked", "asked"]
+    assert len([r for r in plane.requests if r["method"] == "GET"]) == gets   # the plane is not asked
+
+
+def test_the_poller_thread_keeps_running_while_the_restart_is_wanted(plane, monkeypatch):
+    """The real poll loop, not one tick: a restart no handler took keeps the thread asking; the
+    handler registered later takes it and the thread then ends."""
+    from plugins.secret_store.remote import backend
+    monkeypatch.setattr(backend, "_jittered", lambda: 0.05)
+    routing.set_restart_handler(None)
+    plane.set_level(plane.profile("default"), env={"LOOP_KEY": "before"})
+    _boot(plane.home)
+    provider = routing.routed_provider()
+    asked = []
+    original = routing.request_restart
+
+    def counting(reason):
+        asked.append(reason)
+        return original(reason)
+
+    monkeypatch.setattr(routing, "request_restart", counting)
+    plane.set_level(plane.profile("default"), env={"LOOP_KEY": "after"})
+    for st in provider._roster():
+        st.next_poll = 0.0
+    provider._stop.set()   # the boot's poller (waiting a whole interval) ends; start a fast one
+    provider._poller.join(10)
+    provider._stop.clear()
+    provider._poller_pid = -1
+    provider._ensure_poller()
+    wait_until(lambda: len(asked) >= 3, timeout=10)
+    assert provider._poller.is_alive()
+    calls = []
+    monkeypatch.setattr(routing, "request_restart", original)
+    routing.set_restart_handler(lambda: calls.append("taken"))
+    wait_until(lambda: not provider._poller.is_alive(), timeout=10)
+    assert calls == ["taken"]
+
+
+@pytest.mark.parametrize("order", ["request_first", "handler_first"])
+def test_a_handler_registered_during_the_poll_takes_the_restart_once(plane, monkeypatch, order):
+    """Control: the ordinary no-handler poll racing the first registration, in both orders."""
+    routing.set_restart_handler(None)
+    plane.set_level(plane.profile("default"), env={"RACE_VALUE": "old"})
+    _boot(plane.home)
+    plane.set_level(plane.profile("default"), env={"RACE_VALUE": "new"})
+    entered, release = threading.Event(), threading.Event()
+    original = routing.request_restart
+
+    def request(reason):
+        if order == "handler_first":
+            entered.set()
+            assert release.wait(10)
+            return original(reason)
+        result = original(reason)
+        entered.set()
+        assert release.wait(10)
+        return result
+
+    monkeypatch.setattr(routing, "request_restart", request)
+    poll = threading.Thread(target=_poll)
+    poll.start()
+    calls = []
+    try:
+        assert entered.wait(10)
+        routing.set_restart_handler(lambda: calls.append("first"))
+    finally:
+        release.set()
+        poll.join(10)
+    assert not poll.is_alive()
+    _poll()
+    routing.set_restart_handler(lambda: calls.append("second"))
+    _poll()
+    assert calls == ["first"]
+    assert routing.routed_provider().env_view(plane.home)["RACE_VALUE"] == "old"
+
+
+def test_repeated_ticks_and_registrations_plan_exactly_one_gateway_restart(plane, supervised):
+    from gateway.restart_when_idle import install_secret_store_restart
+    plane.set_level(plane.profile("default"), env={"ONCE_KEY": "before"})
+    _boot(plane.home)
+    runner = _Runner()
+    gateway = _GatewayLoop()
+    with gateway as loop:
+        install_secret_store_restart(loop, runner)
+        plane.set_level(plane.profile("default"), env={"ONCE_KEY": "after"})
+        for _ in range(5):
+            _poll()
+            install_secret_store_restart(loop, runner)
+        wait_until(lambda: bool(runner.stopped), timeout=10)
+        gateway.settle()
+    assert runner.stopped == _PLANNED

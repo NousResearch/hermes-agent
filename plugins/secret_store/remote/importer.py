@@ -63,10 +63,9 @@ def _dotenv_values(path: Path) -> dict[str, str]:
     reference, credential sanitizing). References see the launch environment for the process
     home; for any other home the process-global names as they are now (the original satellite
     builder's lookup: after the launch load), never a launch credential."""
-    from agent.secret_scope import _is_process_home
     from hermes_cli.env_loader import (
-        _DOTENV_LOCK, _dotenv_lookup_env, _parse_local_dotenv_file, _resolve_dotenv_assignments,
-        _sanitize_env_file_if_needed, _sanitize_loaded_credentials,
+        _parse_local_dotenv_file, _resolve_dotenv_assignments, _sanitize_env_file_if_needed,
+        _sanitize_loaded_credentials,
     )
 
     _sanitize_env_file_if_needed(path)
@@ -74,15 +73,22 @@ def _dotenv_values(path: Path) -> dict[str, str]:
         assignments = _parse_local_dotenv_file(path)
     except OSError:
         return {}
-    if _is_process_home(path.parent):
-        with _DOTENV_LOCK:
-            lookup = _dotenv_lookup_env(None)
-    else:
-        lookup = {k: v for k, v in os.environ.items() if _is_global_env(k)}
-    resolved = _resolve_dotenv_assignments(assignments, lookup, override=True)
+    resolved = _resolve_dotenv_assignments(assignments, _reference_env(path), override=True)
     values = {name: value for name, value in resolved.items() if value is not None}
     _sanitize_loaded_credentials(values)
     return values
+
+
+def _reference_env(path: Path) -> dict[str, str]:
+    """What references in *path* resolve against besides its own earlier lines: the launch
+    environment for the process home; for any other home the process-global names as they are now
+    (the original satellite builder's lookup: after the launch load), never a launch credential."""
+    from agent.secret_scope import _is_process_home
+    from hermes_cli.env_loader import _DOTENV_LOCK, _dotenv_lookup_env
+    if _is_process_home(path.parent):
+        with _DOTENV_LOCK:
+            return _dotenv_lookup_env(None)
+    return {k: v for k, v in os.environ.items() if _is_global_env(k)}
 
 
 def _local_entries(home: Path, provider) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
@@ -203,7 +209,9 @@ def _write_bytes(path: Path, data: bytes, mode: Any = None) -> None:
 def _keep_bootstrap_only(home: Path, provider) -> None:
     """Rewrite *home*'s ``.env`` and ``auth.json`` to their bootstrap entries. In ``.env`` each
     other assignment is removed whole (a quoted value with all its lines); comments, blank lines,
-    lines the parser cannot read and the bootstrap assignments stay byte for byte."""
+    lines the parser cannot read and the bootstrap assignments stay byte for byte, except a
+    bootstrap assignment that references a name the import takes: it becomes the value the launch
+    load gave that line (:func:`_frozen_kept_lines`), as every imported value is frozen at import."""
     from hermes_cli import auth
     from hermes_cli.config import _env_write_lock
     from hermes_secret_routing import auth_records, auth_store_from_records, stays_local
@@ -211,22 +219,28 @@ def _keep_bootstrap_only(home: Path, provider) -> None:
         return stays_local(provider, name)
     env_path = Path(home) / ".env"
     if env_path.exists():
+        lookup = _reference_env(env_path)   # before the file lock: it takes the loader's lock
         with _env_write_lock(env_path):
             bom, codec, bindings = _dotenv_file(env_path)
+            frozen = _frozen_kept_lines(bindings, lookup, keeps)
             kept = []
-            removed = False
+            changed = False
             for binding in bindings:
                 original = binding.original.string
-                if binding.key is None or keeps(binding.key):
+                lead = original[:len(original) - len(original.lstrip())]
+                if id(binding) in frozen:
+                    kept.append(lead + frozen[id(binding)])
+                    changed = True
+                elif binding.key is None or keeps(binding.key):
                     kept.append(original)
                 else:
                     # The parser attaches leading whitespace to the next assignment, not to a
                     # separate blank binding. Preserve it without retaining the assignment.
-                    kept.append(original[:len(original) - len(original.lstrip())])
-                    removed = True
-            if removed:
+                    kept.append(lead)
+                    changed = True
+            if changed:
                 _write_bytes(env_path, bom + "".join(kept).encode(codec), stat.S_IMODE(env_path.stat().st_mode))
-            bindings = kept = None
+            bindings = kept = frozen = lookup = None
     auth_path = Path(home) / "auth.json"
     if auth_path.exists():
         with auth._auth_store_lock(target_path=auth_path):
@@ -239,6 +253,27 @@ def _keep_bootstrap_only(home: Path, provider) -> None:
             _write_bytes(auth_path, json.dumps(local).encode("utf-8"), 0o600)
             raw = local = None
     invalidate_env_file_cache()
+
+
+def _frozen_kept_lines(bindings: list, lookup: dict[str, str], keeps) -> dict[int, str]:
+    """``{id(binding): replacement line}`` for each kept assignment whose value references a name
+    that does not stay local: ``KEY=<value>`` with the value the launch load resolves for that line
+    (file order, duplicates, defaults, *lookup*), written as ``save_env_value`` writes a value so
+    the local loader reads it back unchanged. A kept line referencing only names that stay local
+    keeps its text: those still resolve, as before, against the lines that remain."""
+    from dotenv.variables import Variable, parse_variables
+    from hermes_cli.config import _quote_env_value
+    from hermes_cli.env_loader import resolve_dotenv_lines
+    assigned = [b for b in bindings if b.key is not None]
+    values = resolve_dotenv_lines([(b.key, b.value) for b in assigned], lookup, override=True)
+    frozen: dict[int, str] = {}
+    for binding, (_name, value) in zip(assigned, values):
+        if binding.value is None or not keeps(binding.key):
+            continue
+        names = [a.name for a in parse_variables(binding.value) if isinstance(a, Variable)]
+        if any(not keeps(n) for n in names):
+            frozen[id(binding)] = f"{binding.key}={_quote_env_value(value or '')}\n"
+    return frozen
 
 
 def _remove(path: Path) -> None:

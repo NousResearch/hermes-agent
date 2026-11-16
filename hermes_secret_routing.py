@@ -106,7 +106,8 @@ def reset_for_tests() -> None:
         _PUBLICATIONS.clear()
         _PUBLISHED_NAMES.clear()
     with _RESTART_LOCK:
-        _RESTART_PENDING.clear()
+        _RESTART_WANTED.clear()
+        _RESTART_TAKEN.clear()
 
 
 # --- bootstrap and deployment ------------------------------------------------------------------
@@ -509,51 +510,62 @@ def auth_json_exists(auth_file: Path) -> bool:
 # --- restart on a change made elsewhere -----------------------------------------------------------
 
 _RESTART_HANDLER: list = []   # [callable] the running process's graceful restart, when it has one
-_RESTART_PENDING: list = []   # [reason] a restart asked for while no handler could take it
+_RESTART_WANTED: list = []    # [reason] a restart asked for; it stays wanted until a handler takes it
+_RESTART_TAKEN: list = []     # [True] once a handler took it: the process is restarting
 _RESTART_LOCK = threading.Lock()
 
 
 def set_restart_handler(handler) -> None:
     """Register the process's graceful restart (the gateway registers its drain-aware service
-    restart, the one ``SIGUSR1`` runs): a no-argument callable, safe to call from any thread.
-    ``None`` unregisters it. A restart asked for before any handler could take it (a change seen
-    while the gateway is still starting) is handed to the first handler registered, once."""
+    restart, the one ``SIGUSR1`` runs): a no-argument callable, safe to call from any thread, which
+    raises ``RuntimeError`` when it cannot take a restart (its loop has closed). ``None``
+    unregisters it. A restart still wanted (asked for while no handler could take it) is handed to
+    the handler registered."""
     with _RESTART_LOCK:
         _RESTART_HANDLER[:] = [handler] if handler is not None else []
-        pending = _RESTART_PENDING[:1] if handler is not None else []
-        if pending:
-            _RESTART_PENDING.clear()
-    if pending:
-        _deliver_restart(handler, pending[0])
+        wanted = bool(_RESTART_WANTED) and not _RESTART_TAKEN
+    if handler is not None and wanted:
+        _deliver_restart()
 
 
 def request_restart(reason: str) -> bool:
     """Ask the process to restart gracefully because its secrets changed somewhere else (a store
-    applies its values at start only). *reason* names the change, never a value. True when a
-    restart was requested; False when this process has no restart mechanism yet (an interactive
-    CLI, or a gateway still starting): the request then waits for a handler to be registered, and
-    otherwise the change applies the next time the process starts."""
-    import logging
+    applies its values at start only). *reason* names the change, never a value. The request is a
+    level, not an event: it stays wanted until a handler takes it, and every later call (a store's
+    poller asks again on each tick) or handler registration hands it to the current handler. True
+    once a handler has taken it, now or before; False while none has (an interactive CLI never
+    registers one: the change then applies the next time the process starts)."""
     with _RESTART_LOCK:
-        handler = _RESTART_HANDLER[0] if _RESTART_HANDLER else None
-        if handler is None and not _RESTART_PENDING:
-            _RESTART_PENDING.append(reason)
-    if handler is None:
+        first = not _RESTART_WANTED
+        if first:
+            _RESTART_WANTED.append(reason)
+    taken = _deliver_restart()
+    if first and not taken:
+        import logging
         logging.getLogger(__name__).warning(
             "Secrets changed outside this process (%s); they apply when Hermes next starts", reason)
+    return taken
+
+
+def _deliver_restart() -> bool:
+    """Hand the wanted restart to the current handler, outside the lock (a handler is arbitrary
+    code). Two deliveries racing may both call it; the handler's restart is idempotent."""
+    with _RESTART_LOCK:
+        if _RESTART_TAKEN:
+            return True
+        handler = _RESTART_HANDLER[0] if _RESTART_HANDLER else None
+        reason = _RESTART_WANTED[0] if _RESTART_WANTED else None
+    if handler is None or reason is None:
         return False
-    return _deliver_restart(handler, reason)
-
-
-def _deliver_restart(handler, reason: str) -> bool:
-    import logging
-    log = logging.getLogger(__name__)
-    log.warning("Secrets changed outside this process (%s); restarting gracefully to apply them", reason)
     try:
         handler()
-    except RuntimeError:  # the registering loop has closed: keep it for the next handler, if any
-        with _RESTART_LOCK:
-            if not _RESTART_PENDING:
-                _RESTART_PENDING.append(reason)
+    except RuntimeError:  # the handler's loop has closed: still wanted, for the next handler or ask
         return False
+    with _RESTART_LOCK:
+        first = not _RESTART_TAKEN
+        _RESTART_TAKEN[:] = [True]
+    if first:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Secrets changed outside this process (%s); restarting gracefully to apply them", reason)
     return True

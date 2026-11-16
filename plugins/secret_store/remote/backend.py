@@ -16,7 +16,8 @@ memory only:
   :data:`POLL_SECONDS`, holding the version the process booted with or last wrote itself. Nothing is
   installed from a poll: a different version asks the process for a graceful restart
   (``hermes_secret_routing.request_restart``), so edits made elsewhere, revocations included, apply
-  when it starts again. A failed poll keeps the process running;
+  when it starts again. The restart stays wanted, and the poller asks for it on every tick, until
+  the process's restart handler takes it. A failed poll keeps the process running;
 - **writes** (``save_env_value``, ``remove_env_value``, the auth store's save) are one CAS
   ``PATCH /v1/secrets/self`` each. The reply's view is installed (the caller applies the write
   in-process exactly as a local save does) and its version becomes the process's own. A
@@ -179,7 +180,8 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
         self._poller: Optional[threading.Thread] = None
         self._poller_pid: Optional[int] = None
         self._stop = threading.Event()
-        self._restart_reason: Optional[str] = None
+        self._restart_reason: Optional[str] = None   # a change made elsewhere: the process must restart
+        self._restart_taken = False                   # the process's restart handler took it
 
     @property
     def name(self) -> str:
@@ -468,13 +470,20 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
     # --- change detection -------------------------------------------------------------------
 
     def _restart(self, reason: str) -> None:
-        """Ask for the process's graceful restart, once; the poller stops asking the plane."""
+        """Want the process's graceful restart from now on (the first reason names it) and ask for
+        it; the poller stops asking the plane and asks again on every tick until a handler takes it."""
+        with self._lock:
+            if self._restart_reason is None:
+                self._restart_reason = reason
+        self._ask_restart()
+
+    def _ask_restart(self) -> None:
         from hermes_secret_routing import request_restart
         with self._lock:
-            if self._restart_reason is not None:
-                return
-            self._restart_reason = reason
-        request_restart(f"remote secrets, {reason}")
+            reason = None if self._restart_taken else self._restart_reason
+        if reason is not None and request_restart(f"remote secrets, {reason}"):
+            with self._lock:
+                self._restart_taken = True
 
     def poll_one(self, st: _HomeState) -> bool:
         """One conditional GET against the version the process booted with or last wrote itself.
@@ -503,6 +512,10 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
         return True
 
     def poll_all(self) -> None:
+        """One tick: with a restart wanted, ask for it again; otherwise poll every booted view."""
+        if self._restart_reason is not None:
+            self._ask_restart()
+            return
         for st in self._roster():
             if self._restart_reason is not None:
                 return
@@ -521,7 +534,11 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
             self._poller.start()
 
     def _poll_loop(self) -> None:
-        while not self._stop.is_set() and self._restart_reason is None:
+        while not self._stop.is_set() and not self._restart_taken:
+            if self._restart_reason is not None:   # wanted, not yet taken by a handler: ask again
+                self._ask_restart()
+                self._stop.wait(_jittered())
+                continue
             now = time.monotonic()
             for st in self._roster():
                 if st.next_poll <= now and self._restart_reason is None:

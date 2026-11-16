@@ -170,8 +170,11 @@ def completion_allowed(authority, ref, row):
     service = getattr(authority, 'hosted_room_service', None)
     if service is None or not same_owner(service._owner(task.room_id), parent['principal_id']):
         return False
-    from gateway.hosted_room_driver import get_task
-    stored = get_task(service.db_path, task)
+    from gateway.hosted_room_driver import get_task, TaskConflictError
+    try:
+        stored = get_task(service.db_path, task)
+    except TaskConflictError:
+        return False
     selector = {'room_id': task.room_id, 'member_id': stored['payload'].get(
         'target_member_id', stored['payload']['target_profile']), 'profile': stored['payload']['target_profile']}
     if service.profile_homes().get(selector['profile']) != Path(authority.profile_id):

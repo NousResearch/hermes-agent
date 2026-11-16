@@ -1,5 +1,6 @@
 """Completion reports queue behind their source discussion and each prior peer handoff."""
 import time
+import pytest
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -9,6 +10,29 @@ from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
 from tests.gateway import test_hosted_room_completions as fixtures
 
 room = fixtures.room
+
+
+def test_bounded_discussion_keeps_report_pending_until_settled(room):
+    from contextlib import closing
+    from gateway.session_hosted_completions import _require_idle_thread, _ReportPending
+    path, state = room
+    gateway = state['authority_gateway_id']
+    hosted_rooms.append_event(path, room_id='room', event_id='start', kind='message.user',
+        actor={'kind': 'user', 'id': 'desktop'}, payload={'text': '@builder work', 'thread_id': 'original'},
+        authority_gateway_id=gateway, authority_epoch=1)
+    def activity(event_id, status, reason):
+        hosted_rooms.append_event(path, room_id='room', event_id=event_id, kind='room.activity',
+            actor={'kind': 'gateway', 'id': gateway}, payload={'status': status, 'reason_code': reason,
+                'thread_id': 'original', 'discussion_event_id': 'start'},
+            authority_gateway_id=gateway, authority_epoch=1)
+    activity('capped', 'bounded', 'max_rounds')
+    with closing(hosted_rooms._read_connection(path)) as conn:
+        with pytest.raises(_ReportPending):
+            _require_idle_thread(conn, 'room', 'original')
+    activity('done', 'settled', 'all_members_passed')
+    assert tasks.list_tasks(path, room_id='room') == []
+    with closing(hosted_rooms._read_connection(path)) as conn:
+        _require_idle_thread(conn, 'room', 'original')
 
 
 def test_reports_on_one_thread_preserve_original_and_each_peer_handoff(room):

@@ -114,6 +114,23 @@ def asyncio_run(loop, coroutine):
     return asyncio.run_coroutine_threadsafe(coroutine, loop).result(10)
 
 
+def test_pruned_origin_task_refuses_local_completion(room, monkeypatch):
+    from types import SimpleNamespace
+    from gateway.hosted_room_driver import TaskConflictError, TaskIdentity
+    from gateway import session_hosted_completions as completions
+    from hermes_state import SessionDB
+    path, _ = room
+    task = TaskIdentity('room', 'pruned', 'original', 'turn')
+    monkeypatch.setattr(completions, 'room_origin', lambda *args: ({'principal_id': 'alice'}, task, 1))
+    def missing(*args):
+        raise TaskConflictError('task not found')
+    monkeypatch.setattr('gateway.hosted_room_driver.get_task', missing)
+    with SessionDB(path) as db:
+        authority = SimpleNamespace(db=db, hosted_room_service=SimpleNamespace(
+            db_path=path, _owner=lambda room_id: 'alice'))
+        assert completions.completion_allowed(authority, SimpleNamespace(session_id='session'), {}) is False
+
+
 @pytest.mark.parametrize('revoked', [None, 'stop', 'member', 'disband', 'generation', 'superseded', 'authority', 'stop-race'])
 def test_final_report_publishes_once_and_respects_room_fences(room, revoked, monkeypatch):
     import json

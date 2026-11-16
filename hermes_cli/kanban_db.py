@@ -1821,26 +1821,6 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
     return att
 
 
-def _unreferenced_blobs(conn: sqlite3.Connection, stored_paths: Iterable[str]) -> list[str]:
-    """Those of ``stored_paths`` (rows already deleted in the caller's txn) that no
-    remaining attachment row still names: only these blobs may be unlinked."""
-    return [
-        path for path in dict.fromkeys(stored_paths)
-        if conn.execute(
-            "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1", (path,),
-        ).fetchone() is None
-    ]
-
-
-def _unlink_blobs(paths: Iterable[str]) -> None:
-    """Best-effort blob removal, after the deleting txn has committed."""
-    for path in paths:
-        with contextlib.suppress(OSError):
-            p = Path(path)
-            if p.is_file():
-                p.unlink()
-
-
 def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return [Event.from_row(r) for r in _task_rows(conn, "task_events", task_id, "created_at ASC, id ASC")]
 
@@ -3847,13 +3827,11 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
 
 
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> list[str]:
-    """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE);
-    returns the attachment blobs this left unreferenced, to unlink after commit."""
+    """Delete every row referencing ``task_id`` (no ON DELETE CASCADE); returns the blobs left unreferenced."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
     for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
-    stored = [r["stored_path"] for r in conn.execute(
-        "SELECT stored_path FROM task_attachments WHERE task_id = ?", (task_id,))]
+    stored = [r["stored_path"] for r in conn.execute("SELECT stored_path FROM task_attachments WHERE task_id = ?", (task_id,))]
     conn.execute("DELETE FROM task_attachments WHERE task_id = ?", (task_id,))
     return _unreferenced_blobs(conn, stored)
 
@@ -4235,6 +4213,8 @@ from hermes_cli.kanban_db_workspace import (
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+    _unlink_blobs,
+    _unreferenced_blobs,
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,

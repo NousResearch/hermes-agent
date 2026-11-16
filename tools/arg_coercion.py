@@ -42,7 +42,7 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         if not prop_schema:
             continue
         prop_schema = resolve_local_schema_ref(prop_schema, parameters)
-        expected = prop_schema.get("type")
+        expected = prop_schema.get("type") or _union_branch_types(prop_schema, parameters)
         is_container = isinstance(value, (list, tuple))
 
         # Bare non-list value for an array schema. Strings go through
@@ -85,6 +85,86 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                 )
 
     return args
+
+
+def _union_branch_types(schema: dict, root_schema: Any) -> str | list | None:
+    """Branch types of a type-less ``anyOf``/``oneOf`` property, desugared to the
+    equivalent ``type`` list so ``anyOf[X, Y]`` reuses the type-list coercion machinery
+    (bare-value wrap, null guard, ``_coerce_value``'s union path). Only the branch
+    *types* are derived: deep element normalization of a native container does not
+    descend into union branches (no ``items``/``properties`` propagation). That is
+    irrelevant for string-item arrays like ``notify`` and is not a regression — the
+    whole union was skipped before.
+
+    The main loop only read ``prop_schema["type"]``; a union without a top-level
+    ``type`` (terminal ``notify: anyOf[boolean, array]``, a non-nullable MCP
+    ``Union[bool, list[str]]`` rendered as ``anyOf[boolean, array]``, or a plugin
+    tool registered with a raw ``anyOf``) yielded ``expected=None`` and was skipped,
+    leaving string-typed args uncoerced (#123345). Deriving the branch types here
+    lets the existing type-list machinery (the bare-value wrap branch, the null
+    guard, and ``_coerce_value``'s union path) handle unions unchanged.
+
+    Nullable MCP ``Optional[X]`` unions are collapsed to ``{type: X, nullable: true}``
+    by ``_normalize_mcp_input_schema`` before registration, so they already reach
+    coercion as a plain type; this helper covers the unions that survive normalization.
+
+    A branch that is a local ``$ref`` counts with the type it points at. Returns
+    ``None`` (leave the value alone) when the union node itself or a branch is constrained
+    by ``enum``/``const`` (even with a plain type — coercion does not validate members, so
+    it must not fabricate a disallowed value), when the node or a branch composes constraints
+    (``allOf``/``anyOf``/``oneOf``/``not``/``if``, or both ``anyOf`` and ``oneOf`` on the node),
+    has no plain scalar type (a nested type-list, an ``allOf`` wrapper, or a dangling/cyclic
+    ``$ref``), or when any branch accepts ``string``: a string value is then already valid
+    (or ambiguous) and must not be reinterpreted ("007" stays "007").
+
+    Scope of the guard (deliberate): only membership constraints (``enum``/``const``) and
+    composition stop coercion. Range/format keywords (``minimum``/``maximum``/``pattern``/
+    ``multipleOf``/``minLength`` ...) do NOT — parity with the plain-type path, which also
+    coerces through them and leaves enforcement to the handler. A known cost of the
+    presence-based guard: a *valid* member of a constrained union is left unrepaired too
+    ("2" stays "2" for ``enum: [1, 2, 3]``); validating membership after coercion, and the
+    pre-existing plain-type path's same fabrication, are tracked as a follow-up, not here.
+
+    A single remaining branch collapses to its scalar type, so pure ``anyOf[array]``
+    behaves like ``type: array`` (bare-string wrapping included); ``anyOf[array, null]``
+    stays a list and does NOT wrap a bare string, exactly like ``type: [array, null]``.
+    Types are emitted in a canonical order (scalars before containers) to keep log
+    noise deterministic; the order does not affect the coerced value.
+    """
+    # The union node itself may carry constraints (enum/const) or composition (allOf/not/if,
+    # or both anyOf+oneOf) that coerce past the branch types — the same fabrication class as a
+    # constrained branch, one level up. Coercion validates none of it, so leave the value alone.
+    if any(k in schema for k in ("enum", "const", "allOf", "not", "if")) or (
+        "anyOf" in schema and "oneOf" in schema
+    ):
+        return None
+    for union_key in ("anyOf", "oneOf"):
+        branches = schema.get(union_key)
+        if not isinstance(branches, list) or not branches:
+            continue
+        types: list[str] = []
+        for branch in branches:
+            resolved = resolve_local_schema_ref(branch, root_schema)
+            if not isinstance(resolved, dict):
+                return None
+            if "enum" in resolved or "const" in resolved or any(
+                k in resolved for k in ("allOf", "anyOf", "oneOf", "not", "if")
+            ):
+                # A constrained branch (enum/const, even with a plain type) or a composed
+                # branch (allOf/anyOf/oneOf/not carrying constraints): type coercion validates
+                # neither members nor composed constraints, so coercing to the branch type
+                # could fabricate a disallowed value that reaches the handler. Leave it alone.
+                return None
+            branch_type = resolved.get("type")
+            if not isinstance(branch_type, str):
+                return None  # nested type-list, allOf, dangling/cyclic $ref
+            types.append(branch_type)
+        if "string" in types:
+            return None  # string already valid; do not reinterpret
+        order = {"null": 0, "boolean": 1, "integer": 2, "number": 3, "array": 4, "object": 5}
+        unique = sorted(dict.fromkeys(types), key=lambda t: order.get(t, len(order)))
+        return unique[0] if len(unique) == 1 else unique
+    return None
 
 
 def _schema_accepts_kind(
@@ -215,14 +295,29 @@ def _coerce_json(value: str, expected_python_type: type):
 
 
 def _coerce_number(value: str, integer_only: bool = False):
-    """Parse *value* as a number; original string on failure, inf/nan, or decimals when integer_only."""
+    """Parse *value* as a number; original string on failure, inf/nan, or decimals when integer_only.
+
+    Integer literals are parsed with ``int`` directly so large integers (Discord
+    snowflakes, Telegram ids) keep full precision: a ``float`` round-trip silently
+    corrupts values beyond 2**53. This guards integer branches newly coerced through
+    type-less unions (#123345) and also fixes the pre-existing precision loss for a
+    plain ``type: integer`` (which already corrupted large ids on main). The set of
+    accepted strings is unchanged — ``float`` already accepted underscores and
+    unicode digits.
+    """
+    try:
+        return int(value.strip())
+    except (ValueError, OverflowError):
+        pass
     try:
         f = float(value)
     except (ValueError, OverflowError):
         return value
     if f != f or f in (float("inf"), float("-inf")):
         return value  # not JSON-serializable
-    return int(f) if f == int(f) else value if integer_only else f
+    if f == int(f):
+        return int(f)
+    return value if integer_only else f
 
 
 def _coerce_boolean(value: str):

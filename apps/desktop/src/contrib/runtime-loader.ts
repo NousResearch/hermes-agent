@@ -36,13 +36,13 @@
  */
 
 import { INSTALL_ORIGIN, PACKAGE_MARKER } from '@hermes/shared'
-import { atom } from 'nanostores'
 
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 import { forgetPluginPreviewAccess } from '@/store/plugin-preview-grants'
 
+import { $diskPluginsScanPending } from './disk-scan'
 import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, declaredCapabilities, type HermesPlugin } from './plugin'
 import {
@@ -1101,11 +1101,6 @@ export async function uninstallDiskPlugin(
 /** Manual rescan (the ⌘K "Reload desktop plugins" fallback) — re-reads
  *  known entries too, unlike the fs-watch/poll reconcile. */
 export const discoverRuntimePlugins = (): Promise<void> => scanDiskPlugins(true)
-
-/** True while the disk door's FIRST scan is in flight. Boot code that must
- *  not mistake a not-yet-registered plugin route for a stale one
- *  (remembered-route restore) waits on this instead of on timing. */
-export const $diskPluginsScanPending = atom(false)
 
 /** Start the self-maintaining disk door: initial scan, per-file hot reload,
  *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent. */

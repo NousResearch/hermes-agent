@@ -155,12 +155,26 @@ export async function waitForAction(
 
     if (!status.running) {
       if (status.exit_code !== 0) {
-        throw new Error(status.lines.slice(-3).join('\n') || `${name} failed.`)
+        throw new Error(failureText(status.lines) || `${name} failed.`)
       }
 
       return
     }
   }
+}
+
+/** What went wrong, from an action's log: the import's own warning list when it printed one (the
+ *  files it could not restore), else the last lines. */
+export function failureText(lines: string[]): string {
+  const start = lines.findIndex(line => /^\s*Warnings \(\d+ files? skipped\):/.test(line))
+
+  if (start >= 0) {
+    const listed = lines.slice(start + 1).filter(line => /^\s+\S/.test(line) && !/^\s+Target:/.test(line))
+
+    return [lines[start].trim(), ...listed.slice(0, 5).map(line => line.trim())].join('\n')
+  }
+
+  return lines.slice(-3).join('\n')
 }
 
 /** `hermes backup` on `owner`; resolves to the archive path on that backend. */

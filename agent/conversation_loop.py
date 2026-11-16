@@ -1801,7 +1801,7 @@ def run_conversation(
     """
     from agent.turn_context import export_current_turn_boundary
     from agent.turn_finalizer import fence_result_reply, settle_held_final
-    from agent.prompt_cache_warmer import cancel_prompt_cache_warming
+    from agent.prompt_cache_lifecycle import end_turn_prompt_cache_warming
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1830,9 +1830,9 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
-            # Every turn exit (early returns included) stops warming: between turns the next
-            # request is a guess, and a keep-alive would bet money on the user replying in time.
-            cancel_prompt_cache_warming(agent, "agent run settled")
+            # Every turn exit (early returns included): a machine session stops warming; a chat a
+            # person types into keeps its budget of keep-alives while idle (prompt_cache_lifecycle).
+            end_turn_prompt_cache_warming(agent)
     fence_result_reply(result)
     # Joined before settle_held_final so a held transform sees the lead, unless a collapsed partial already ran it.
     from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth

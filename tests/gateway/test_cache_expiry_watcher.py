@@ -62,10 +62,10 @@ class _Authority:
 
 @pytest.fixture
 def make_runner(monkeypatch):
-    import agent.cache_expiry_compaction as decision
+    import agent.prompt_cache_lifecycle as decision
     from gateway.run import GatewayRunner
 
-    monkeypatch.setattr(decision, "claim_cache_expiry_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
     monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
     runners = []
 

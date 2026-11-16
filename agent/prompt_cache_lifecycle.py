@@ -1,30 +1,33 @@
-"""Anthropic prompt-cache warming (port of earendil-works/pi#9668).
+"""The prompt-cache lifecycle: one controller per chat, driven by the shared prompt-cache clock.
 
-An Anthropic cache entry lives ``cache_ttl`` (5m or 1h) past its last *use*. A tool round that
-runs longer than that drops the entire prefix back to a full-price cache WRITE on the next
-request. While the turn is still running (the next request is certain), the warmer re-sends the
-last request with ``max_tokens=1`` shortly before the entry expires: one cache READ of the prompt
-(about 1/12 of the miss price) keeps the whole prefix warm for another TTL. It always stops when
-the turn ends: warming between turns would bet money on the user replying in time.
+When a chat's cache is about to expire the controller makes ONE decision, in this order:
 
-Every refresh is gated on expected savings ``miss_cost - warm_cost >= $0.05`` so a cheap,
-unpriced or subscription-included route never pays for one, the refreshes of one run never cost
-more in total than the single miss they prevent, and a one-hour age limit bounds the rest. That
-total is the estimated billed cost of the refreshes actually sent (from their own usage), and a
-refresh whose usage shows no cache read or any cache write ends the run: the entry is gone or was
-re-written, so further refreshes would pay write prices for nothing. Every stop reason is logged
-at INFO (once per change), so warming never ends silently.
+1. WARM: re-send the last request with a one-token output cap shortly before the entry expires
+   (port of earendil-works/pi#9668): one cache READ (about 1/12 of the miss price) keeps the whole
+   prefix warm for another TTL. Up to :data:`WARM_BUDGET` keep-alives per budget, while a tool runs
+   and, for chats a person types into, while the chat is idle. Machine-paced sessions (subagents,
+   cron, one-shots, /bg, /btw, the API server) warm only while a tool runs: their turn's end ends
+   warming. A keep-alive that misses the cache ends warming at once (step 3).
+2. COMPACT: once the budget is spent, an idle human chat compacts IF its window is at least
+   :data:`MIN_COMPACT_WINDOW_SECONDS` (never Nous's 5m today), its context is at least half of the
+   compaction threshold, and it grew since its last compaction. The compacted chat is primed (one
+   request writes its smaller prefix) and gets one fresh budget; at most one compaction per idle
+   stretch. The surface that owns the chat (CLI input loop, TUI ticker, gateway watcher) runs the
+   compaction through the normal pipeline, polling :func:`claim_compaction`.
+3. EXPIRE: otherwise nothing; the entry dies.
+4. COLD RETURN lives in ``agent.turn_proactive_prune``: the next request after a proven or
+   declared expiry offloads old tool results first.
 
-Requests that carry ``cache_control`` markers are warmed on the Anthropic Messages wire and on
-the Chat Completions wire (Nous Portal, OpenRouter and other gateways in front of Claude). A
-request whose thinking is budget-based is skipped because ``max_tokens=1`` would change
-``budget_tokens``, which Anthropic keys the message cache on (and which it rejects outright).
+An unknown or assumed clock means nothing acts. Every keep-alive is gated on expected savings
+``miss_cost - warm_cost >= $0.05`` and on known cache prices, and a budget's keep-alives never cost
+more in total than the single miss they prevent. A keep-alive is bound to the prompt and route it
+replays (``prompt_cache_clock.context_witness``), admitted under the lock ``cancel`` takes, and
+fires the auxiliary call hooks (``aux_task="cache_warm"``). Every stop reason is logged at INFO
+(once per change).
 
-When the entry expires is the shared prompt-cache clock's answer (``agent/prompt_cache_clock.py``),
-never the warmer's own: a refresh is due shortly before the clock's guaranteed-warm deadline, and a
-session whose window carries no guarantee (unknown route, a gateway asked for an untrusted ``1h``,
-the cache moved) is not warmed. Each refresh is folded back into the clock, so the next one is
-scheduled from the deadline the refresh itself bought.
+Requests that carry ``cache_control`` markers are warmed on the Anthropic Messages wire and on the
+Chat Completions wire (Nous Portal, OpenRouter and other gateways in front of Claude). A request
+whose thinking is budget-based is skipped because ``max_tokens=1`` would change ``budget_tokens``.
 """
 
 from __future__ import annotations
@@ -42,8 +45,18 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-#: Warming never continues past this long after the real request that started it.
-MAX_WARMING_AGE_S = 60 * 60
+#: Keep-alives per budget: a real request starts one, and so does a cache-edge compaction (once).
+WARM_BUDGET = 3
+#: Shortest cache window a chat is compacted before: below it, ordinary pauses outlast the window.
+MIN_COMPACT_WINDOW_SECONDS = 30 * 60
+#: A chat is compacted only once its context is at least this share of the compaction threshold.
+COMPACT_CONTEXT_FRACTION = 0.5
+#: How often the surface owners poll :func:`claim_compaction`.
+CHECK_INTERVAL_SECONDS = 30.0
+#: Telemetry trigger name for cache-edge compactions.
+TRIGGER = "cache_expiry"
+#: The user message that primes a compacted chat's prefix (its reply is capped at one token).
+PRIME_PROMPT = "."
 #: A refresh is sent only when it is expected to save at least this many dollars.
 MINIMUM_EXPECTED_SAVINGS_USD = 0.05
 #: Wires the warmer can replay a request on.
@@ -195,12 +208,29 @@ class _Run:
     #: compression rotates the session is booked in state.db where it was sent.
     billing: dict[str, Any] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    #: A chat a person types into keeps warming after its turn ends; a machine session does not.
+    idle_ok: bool = False
+    #: The budget a cache-edge compaction granted: when it is spent the cache expires.
+    after_compaction: bool = False
+    #: A priming request writes the compacted prefix: its write is the point, not a miss.
+    priming: bool = False
+
+
+@dataclass(frozen=True)
+class _Spent:
+    """A warm budget that ran out with the entry still warm: the moment step 2 decides."""
+
+    due_at: float  # when the next keep-alive would have gone out
+    deadline_at: float  # the clock's guaranteed-warm end
+    tier_s: float
+    witness: tuple
+    after_compaction: bool
 
 
 class PromptCacheWarmer:
-    """Keeps one prompt-cache entry alive per agent by replaying its request with a one-token
-    output cap before the entry expires. ``start`` replaces any previous run; warm requests never
-    extend the fixed safety windows."""
+    """The per-chat lifecycle controller: keeps one prompt-cache entry alive by replaying its
+    request with a one-token output cap before the entry expires (``WARM_BUDGET`` per budget), then
+    hands the spent budget to step 2 (:func:`compaction_due`). ``start`` replaces any previous run."""
 
     def __init__(self, agent: Any):
         self.agent = agent
@@ -210,6 +240,10 @@ class PromptCacheWarmer:
         self._inactive_reason = "waiting for first request"
         self._logged_reason: Optional[str] = None
         self._last_decision: Optional[CacheWarmingDecision] = None
+        #: Set when a budget ran out with the entry still warm; cleared by a real request, a miss
+        #: or a claim. At most one compaction per idle stretch (``_compacted``).
+        self._spent: Optional[_Spent] = None
+        self._compacted = False
 
     # -- read side ------------------------------------------------------------------------------
     @property
@@ -227,10 +261,15 @@ class PromptCacheWarmer:
         }
 
     # -- lifecycle ------------------------------------------------------------------------------
-    def start(self, api_kwargs: dict[str, Any], response: Any) -> Optional[str]:
-        """Arm a refresh for the request that just produced ``response``. Returns the reason
-        nothing was armed, ``None`` when a timer is scheduled."""
+    def start(self, api_kwargs: dict[str, Any], response: Any, *, after_compaction: bool = False) -> Optional[str]:
+        """Arm a budget of refreshes for the request that just produced ``response``. Returns the
+        reason nothing was armed, ``None`` when a timer is scheduled. A real request opens a new
+        idle stretch; ``after_compaction`` is the one fresh budget a cache-edge compaction grants."""
         self._clear_run()
+        with self._lock:
+            self._spent = None
+            if not after_compaction:
+                self._compacted = False
         agent = self.agent
         if getattr(agent, "_skip_prompt_cache_warming", False):
             return self._stop("the parent agent keeps this prefix warm")
@@ -286,13 +325,66 @@ class PromptCacheWarmer:
             cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
             deadline_at=window[0], is_current=_is_current, started_at=time.time(), api_mode=api_mode,
             witness=context_witness(agent), billing=self._billing_snapshot(),
+            idle_ok=human_paced(agent), after_compaction=after_compaction,
         )
         with self._lock:
             self._run = run
             self._schedule(run)
             return None if self._run is run else self._inactive_reason
 
+    def end_turn(self) -> None:
+        """The turn settled: a machine session stops warming (its next request is a guess nobody
+        is about to make); a chat a person types into keeps its budget and warms while idle."""
+        run = self._run
+        if run is None or not run.idle_ok:
+            self.cancel("agent run settled")
+
+    def prime(self, api_kwargs: dict[str, Any]) -> Optional[str]:
+        """Send *api_kwargs* (the compacted chat's opening request) once, now, as a one-token write,
+        then warm it on one fresh budget (``after_compaction``: when spent, the cache expires).
+        Gated like any keep-alive: priced, replayable, and worth at least the minimum saving."""
+        from agent.prompt_cache_clock import context_witness
+
+        self._clear_run()
+        agent = self.agent
+        api_mode = getattr(agent, "api_mode", None)
+        client = getattr(agent, "_anthropic_client" if api_mode == "anthropic_messages" else "client", None)
+        if api_mode not in WARMABLE_API_MODES or client is None or not has_cache_markers(api_kwargs):
+            return self._stop("compacted request cannot be primed")
+        if not is_replayable(api_kwargs):
+            return self._stop("request cannot be replayed safely (budget thinking)")
+        from agent.model_metadata import estimate_request_tokens_rough
+
+        cached = estimate_request_tokens_rough(list(api_kwargs.get("messages") or ()),
+                                               system_prompt=str(api_kwargs.get("system") or ""),
+                                               tools=api_kwargs.get("tools") or None)
+        decision = self._decide(cached, 0)
+        self._last_decision = decision
+        if decision.action != "warm":
+            return self._stop(f"compacted chat not primed: {decision.stop_reason}")
+        api_calls, model = getattr(agent, "session_api_calls", 0), getattr(agent, "model", "")
+        epoch = getattr(agent, "_session_reset_epoch", 0)
+        run = _Run(
+            api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=model, cached_tokens=cached,
+            uncached_tokens=0, ttl_s=0.0, deadline_at=0.0, started_at=time.time(), api_mode=api_mode,
+            is_current=lambda: (getattr(agent, "_session_reset_epoch", 0) == epoch
+                                and getattr(agent, "session_api_calls", None) == api_calls
+                                and getattr(agent, "model", None) == model),
+            witness=context_witness(agent), billing=self._billing_snapshot(), idle_ok=True,
+            after_compaction=True, priming=True,
+        )
+        with self._lock:
+            self._run, self._spent = run, None
+            ctx = contextvars.copy_context()
+            timer = threading.Timer(0.0, ctx.run, args=(self._refresh, run))
+            timer.daemon, timer.name = True, "prompt-cache-prime"
+            run.timer = timer
+            timer.start()
+        return None
+
     def cancel(self, reason: str = "inactive") -> None:
+        with self._lock:
+            self._spent = None  # a real request, a turn end or a close: no step 2 on this budget
         self._stop(reason, lifecycle=True)
 
     # -- internals ------------------------------------------------------------------------------
@@ -342,9 +434,11 @@ class PromptCacheWarmer:
         # A timer can fire late after sleep or a blocked interpreter. Keep half of the planned
         # pre-expiry margin for that: a late refresh is a full-price write, not a warm.
         run.refresh_deadline_at = run.next_warm_at + margin / 2
-        deadline = run.started_at + MAX_WARMING_AGE_S
-        if run.next_warm_at > deadline or now >= deadline:
-            self._stop("one-hour safety limit reached")
+        if run.warm_count >= WARM_BUDGET:
+            # Step 2 decides at the moment the next keep-alive would have gone out.
+            spent = _Spent(run.next_warm_at, run.deadline_at, run.ttl_s, run.witness, run.after_compaction)
+            self._stop("warm budget spent")
+            self._spent = spent
             return
         # Secret scope and other ContextVars live on the loop thread; the timer thread must
         # run inside a copy or every scoped read in the SDK client raises.
@@ -372,7 +466,7 @@ class PromptCacheWarmer:
             if self._run is not run or run.cancelled:
                 return False
             reason = self._stale_reason(run)
-            if reason is None and time.time() > run.refresh_deadline_at:
+            if reason is None and not run.priming and time.time() > run.refresh_deadline_at:
                 reason = "cache refresh deadline missed"
             if reason is not None:
                 self._stop(reason)
@@ -405,6 +499,9 @@ class PromptCacheWarmer:
         if miss is not None:
             self._stop_if_current(run, miss)
             return
+        if run.priming:  # the compacted prefix is written: the fresh budget starts from here
+            run.priming, run.warm_count, run.spent_usd, run.last_warm_usd = False, 0, 0.0, 0.0
+            run.cached_tokens, run.uncached_tokens = self._prompt_split(message)
         with self._lock:
             if self._run is not run:
                 return
@@ -528,7 +625,10 @@ class PromptCacheWarmer:
         except Exception:  # health: allow BLE001 -- unaccounted means stop warming; logged
             logger.debug("prompt cache warm accounting failed", exc_info=True)
             return "cache refresh usage unreadable"
-        if canonical.cache_read_tokens <= 0 or canonical.cache_write_tokens > 0:
+        if run.priming:
+            if canonical.cache_read_tokens + canonical.cache_write_tokens <= 0:
+                return "priming request touched no cache"
+        elif canonical.cache_read_tokens <= 0 or canonical.cache_write_tokens > 0:
             return (f"cache refresh missed (read={canonical.cache_read_tokens}, "
                     f"write={canonical.cache_write_tokens}, cost={f'${amount:.4f}' if amount is not None else '?'})")
         if amount is None:
@@ -651,6 +751,206 @@ class PromptCacheWarmer:
         return getattr(self.agent, "log_prefix", "") or ""
 
 
+# -- step 2: the cache-edge compaction decision ---------------------------------------------------
+
+def human_paced(agent: Any) -> bool:
+    """A chat a person types into (CLI, TUI, Desktop, messaging). Subagents, side agents (/bg),
+    forks (/btw) and machine-paced sources (cron, one-shots, the API server, ...) are not."""
+    from agent.prompt_caching import MACHINE_PACED_SOURCES
+    from agent.session_source import session_source_for
+
+    if int(getattr(agent, "_delegate_depth", 0) or 0) > 0 or getattr(agent, "side_agent", False) is True:
+        return False
+    if getattr(agent, "_skip_prompt_cache_warming", False):
+        return False
+    return session_source_for(getattr(agent, "platform", None)) not in MACHINE_PACED_SOURCES
+
+
+def _context_tokens(agent: Any) -> int:
+    tokens = getattr(getattr(agent, "context_compressor", None), "last_prompt_tokens", 0)
+    return tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else 0
+
+
+def _compressor_blocked(agent: Any) -> Optional[str]:
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return "no_compressor"
+    if getattr(compressor, "awaiting_real_usage_after_compression", False) is True:
+        return "awaiting_usage"
+    cooldown = getattr(compressor, "get_active_compression_failure_cooldown", None)
+    if callable(cooldown) and cooldown():
+        return "cooldown"
+    return None
+
+
+def _rough_tokens(agent: Any, messages: Optional[list] = None) -> int:
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    msgs = list(getattr(agent, "_session_messages", None) or ()) if messages is None else messages
+    return estimate_request_tokens_rough(msgs, system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+                                         tools=getattr(agent, "tools", None) or None)
+
+
+def _compaction_baseline(agent: Any) -> int:
+    """Rough size the last compaction left: the compressor's own figure or, on an agent rebuilt since
+    (the gateway evicts after compacting), the transcript through its newest summary handoff plus
+    the tail budget kept verbatim after it. 0 when the session never compacted."""
+    compressor = agent.context_compressor
+    last = getattr(compressor, "last_compression_rough_tokens", 0)
+    if isinstance(last, int) and not isinstance(last, bool) and last > 0:
+        return last
+    messages = list(getattr(agent, "_session_messages", None) or ())
+    is_summary = getattr(compressor, "_is_context_summary_message", None)
+    handoff = next((i for i in range(len(messages) - 1, -1, -1) if callable(is_summary) and is_summary(messages[i])), None)
+    if handoff is None:
+        return 0
+    kept_tail = getattr(compressor, "tail_token_budget", 0)
+    return _rough_tokens(agent, messages[:handoff + 1]) + (kept_tail if isinstance(kept_tail, int) else 0)
+
+
+def _grew_enough(agent: Any) -> bool:
+    """Growth guard: a chat that stays large after compacting must gain a floor's worth of new
+    content (the compressor's post-compaction target) before it is summarised again."""
+    compressor = agent.context_compressor
+    try:
+        floor = int(compressor.threshold_tokens * compressor.summary_target_ratio)
+    except (AttributeError, TypeError, ValueError):
+        floor = 0
+    baseline = _compaction_baseline(agent)
+    return baseline <= 0 or _rough_tokens(agent) > baseline + floor
+
+
+def _session_gate(agent: Any) -> Optional[str]:
+    """Why *agent*'s chat is never compacted at the cache edge, or None (cheap checks only)."""
+    if agent is None or not getattr(agent, "compression_enabled", False):
+        return "disabled"
+    if getattr(agent, "api_mode", None) == "codex_app_server":
+        return "codex_app_server"
+    if not human_paced(agent):
+        return "machine_paced"
+    threshold = getattr(getattr(agent, "context_compressor", None), "threshold_tokens", 0) or 0
+    if _context_tokens(agent) < COMPACT_CONTEXT_FRACTION * threshold or threshold <= 0:
+        return "small_context"
+    return _compressor_blocked(agent)
+
+
+def _window_gate(agent: Any, spent: _Spent, now: float) -> Optional[str]:
+    """Why the spent budget's window does not compact now, or None."""
+    from agent.prompt_cache_clock import DECLARED, PROVEN, cache_certainly_warm, cache_window, context_witness
+
+    if spent.after_compaction:
+        return "compacted_this_stretch"
+    if spent.tier_s < MIN_COMPACT_WINDOW_SECONDS:
+        return f"short_window:{int(spent.tier_s)}s"
+    if now < spent.due_at:
+        return "not_yet"
+    window = cache_window(agent)
+    if window is None or window.confidence not in (PROVEN, DECLARED):
+        return "window_not_proven"
+    if not cache_certainly_warm(window, now=now):
+        return "already_cold"
+    if context_witness(agent) != spent.witness:
+        return "context_changed"
+    return None
+
+
+def compaction_due(agent: Any, *, now: Optional[float] = None) -> tuple[bool, str]:
+    """``(due, reason)``: step 2. Due only when this chat's warm budget is spent, its entry is still
+    guaranteed warm on a proven/declared window of at least 30 minutes, its context is at least half
+    the compaction threshold and grew since the last compaction, and no compaction ran this stretch."""
+    now = time.time() if now is None else now
+    warmer = getattr(agent, "_prompt_cache_warmer", None)
+    spent = warmer._spent if warmer is not None else None
+    if spent is None:
+        return False, "budget_not_spent" if warmer is None or not warmer._compacted else "compacted_this_stretch"
+    reason = _session_gate(agent) or _window_gate(agent, spent, now)
+    if reason is None and not _grew_enough(agent):  # last: the estimate walks the transcript
+        reason = "no_growth"
+    return reason is None, reason or "due"
+
+
+def claim_compaction(agent: Any, *, now: Optional[float] = None) -> bool:
+    """:func:`compaction_due`, and when due, consume the spent budget so the stretch compacts once
+    (an attempt that commits nothing is not retried); the cache then expires unless the caller
+    primes the compacted chat (:func:`prime_after_compaction`)."""
+    due, _reason = compaction_due(agent, now=now)
+    if due:
+        warmer = agent._prompt_cache_warmer
+        with warmer._lock:
+            warmer._spent, warmer._compacted = None, True
+    return due
+
+
+def window_still_warm(agent: Any, *, now: Optional[float] = None) -> bool:
+    """Re-read at fire time: the claim happened a tick (and a slot wait) earlier, and a cold prefix
+    makes the compaction moot."""
+    from agent.prompt_cache_clock import cache_certainly_warm, cache_window
+
+    return cache_certainly_warm(cache_window(agent), now=now)
+
+
+def prime_after_compaction(agent: Any, history: list[dict[str, Any]]) -> Optional[str]:
+    """After a committed cache-edge compaction on the live *agent*: write the compacted prefix with
+    one one-token request, then give it one fresh budget of keep-alives. Returns why nothing was
+    armed, None when the priming request is scheduled. Never raises."""
+    try:
+        api_kwargs = _priming_request(agent, history)
+        if api_kwargs is None:
+            return "compacted request not buildable"
+        return get_prompt_cache_warmer(agent).prime(api_kwargs)
+    except Exception:  # health: allow BLE001 -- priming is optional; the cache then expires; logged
+        logger.info("prompt cache priming after compaction failed", exc_info=True)
+        return "priming failed"
+
+
+def _priming_request(agent: Any, history: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The provider payload the compacted chat's next request would open with: built on a
+    cache-parity fork (byte-identical system prompt and ``tools[]``) so the live agent's turn state
+    is untouched; :data:`PRIME_PROMPT` stands in for the user's next message."""
+    from agent.background_review import build_cache_parity_fork, release_cache_parity_fork
+    from agent.side_question import trim_snapshot_for_fork
+    from agent.turn_api_request import build_request_payload
+    from agent.turn_context import _PER_TURN_RESET_STATE
+    from agent.turn_request_assembly import assemble_api_request
+
+    messages = trim_snapshot_for_fork(history)
+    if not messages:
+        return None
+    fork, _rt, routed = build_cache_parity_fork(agent, {}, max_iterations=1, write_origin="cache_prime")
+    try:
+        if routed:
+            return None
+        # The marker TTL and the static/dynamic system split are part of the prefix being written.
+        fork._cache_ttl = getattr(agent, "_cache_ttl", fork._cache_ttl)
+        fork._cache_ttl_auto = getattr(agent, "_cache_ttl_auto", False)
+        fork._cached_system_prompt_static = getattr(agent, "_cached_system_prompt_static", None)
+        for name, value in _PER_TURN_RESET_STATE:
+            setattr(fork, name, value)
+        fork._current_turn_timestamp = time.time()
+        turn_id = f"cache-prime-{uuid.uuid4().hex}"
+        messages = messages + [{"role": "user", "content": PRIME_PROMPT}]
+        assembled = assemble_api_request(
+            fork, messages=messages, current_turn_user_idx=len(messages) - 1, _ext_prefetch_cache=None,
+            _plugin_user_context=None, moa_config=None, active_system_prompt=fork._cached_system_prompt,
+            original_user_message=PRIME_PROMPT, pending_moa_prepared_request=None, request_logger=logger,
+        )
+        built = build_request_payload(
+            fork, api_messages=assembled.api_messages, _moa_prepared_request=None,
+            tools_for_api=assembled.tools_for_api, system_message=None, api_call_count=1,
+            api_request_id=f"{turn_id}:api:1", effective_task_id=turn_id, turn_id=turn_id,
+        )
+        api_kwargs = dict(built.api_kwargs)
+        # The stand-in message must not carry a breakpoint: the entry to write ends at the last real
+        # message, where the compacted chat's next request puts its own.
+        from agent.prompt_caching import strip_anthropic_cache_control
+
+        api_kwargs["messages"] = [*api_kwargs["messages"][:-1],
+                                  *strip_anthropic_cache_control(copy.deepcopy(api_kwargs["messages"][-1:]))]
+        return api_kwargs
+    finally:
+        release_cache_parity_fork(agent, fork, task="cache_prime")
+
+
 # -- agent-facing seams (each a no-op when nothing is armed) ---------------------------------------
 
 def get_prompt_cache_warmer(agent: Any) -> PromptCacheWarmer:
@@ -678,6 +978,13 @@ def start_prompt_cache_warming(agent: Any, api_kwargs: Any, response: Any) -> No
         get_prompt_cache_warmer(agent).start(api_kwargs, response)
     except Exception:
         logger.debug("prompt cache warming did not arm", exc_info=True)
+
+
+def end_turn_prompt_cache_warming(agent: Any) -> None:
+    """Every turn exit: a machine session stops warming; a human chat keeps its budget idle."""
+    warmer = getattr(agent, "_prompt_cache_warmer", None)
+    if warmer is not None:
+        warmer.end_turn()
 
 
 def cancel_prompt_cache_warming(agent: Any, reason: str = "inactive") -> None:

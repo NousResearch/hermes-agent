@@ -83,7 +83,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
     def _cache_expiry_due_keys(self, skip=()) -> list[tuple[str, object]]:
         """Cached, idle, human-paced sessions whose warm cache window is about to close. *skip* (keys
         with a compaction in flight) is excluded before the claim, which latches the window."""
-        from agent.cache_expiry_compaction import claim_cache_expiry_compaction
+        from agent.prompt_cache_lifecycle import claim_compaction
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.run_agent_cache import _tuple_agent
         cache, lock = getattr(self, "_agent_cache", None), getattr(self, "_agent_cache_lock", None)
@@ -95,7 +95,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         for key, agent in entries:
             if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
                 continue
-            if claim_cache_expiry_compaction(agent):
+            if claim_compaction(agent):
                 due.append((key, agent))
         return due
 
@@ -116,7 +116,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
     async def _compact_before_cache_expiry(self, key: str, live_agent, slots: asyncio.Semaphore) -> None:
         """Compact one idle chat through the manual ``/compress`` pipeline (temporary agent,
         compression lease, persist, evict) with an automatic trigger, in the chat's profile scope."""
-        from agent.cache_expiry_compaction import window_still_warm
+        from agent.prompt_cache_lifecycle import window_still_warm
         async with slots:
             try:
                 authority, entry, owner = await asyncio.to_thread(self._cache_expiry_route, key)
@@ -144,7 +144,9 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         return authority, entry, authority.logical_owner(entry.session_id) if entry is not None else None
 
     async def _compact_claimed_session(self, key: str, entry, live_agent) -> None:
-        from agent.cache_expiry_compaction import TRIGGER
+        """The compaction runs on a temporary agent and evicts the cached one, so the next turn starts
+        on the compacted history with a cold cache (no priming here: nothing holds the new prefix)."""
+        from agent.prompt_cache_lifecycle import TRIGGER
         from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest
         if self._is_session_running(key):
             return

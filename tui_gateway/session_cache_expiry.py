@@ -1,5 +1,5 @@
 """Cache-expiry compaction owner for TUI / Desktop sessions: a daemon ticker that compacts an idle
-session while its prompt cache is still warm (decision: ``agent.cache_expiry_compaction``). It runs
+session while its prompt cache is still warm (decision: step 2 of ``agent.prompt_cache_lifecycle``), then primes the compacted chat for one fresh budget of keep-alives. It runs
 the manual-compress choke point (busy claim, snapshot fence, lease) with an automatic trigger, so a
 prompt arriving meanwhile queues behind it exactly as it does behind ``/compress``. Bodies are
 rebound onto server.py's globals (method_ctx.bind_module) and reference them bare."""
@@ -21,7 +21,7 @@ _cache_expiry_in_flight: set[str] = set()
 
 
 def _cache_expiry_candidates() -> list[tuple[str, dict]]:
-    from agent.cache_expiry_compaction import claim_cache_expiry_compaction
+    from agent.prompt_cache_lifecycle import claim_compaction
     with _sessions_lock:
         live = list(_sessions.items())
     with _cache_expiry_lock:
@@ -34,14 +34,14 @@ def _cache_expiry_candidates() -> list[tuple[str, dict]]:
         if _session_uses_compute_host(session):
             continue  # the compute host owns that transcript; it is not compacted from here
         with _session_profile_runtime_scope(session):
-            due = claim_cache_expiry_compaction(agent)
+            due = claim_compaction(agent)
         if due:
             picked.append((sid, session))
     return picked
 
 
 def _compact_before_cache_expiry(sid: str, session: dict) -> None:
-    from agent.cache_expiry_compaction import TRIGGER, window_still_warm
+    from agent.prompt_cache_lifecycle import TRIGGER, prime_after_compaction, window_still_warm
     from agent.conversation_compression import finalize_context_engine_compression_notification
     agent = session["agent"]
     with _session_profile_runtime_scope(session):
@@ -57,6 +57,9 @@ def _compact_before_cache_expiry(sid: str, session: dict) -> None:
             raise
         _sync_session_key_after_compress(sid, session, clear_pending_title=False)
         finalize_context_engine_compression_notification(agent, committed=True)
+        with session["history_lock"]:
+            compacted = list(session.get("history", []))
+        prime_after_compaction(agent, compacted)
     logger.info("Cache-expiry compaction: sid=%s removed=%d messages", sid, removed)
 
 
@@ -89,7 +92,7 @@ def _cache_expiry_tick() -> list:
 
 def _start_cache_expiry_compactor() -> None:
     """Start the ticker once per process (stdio entry and WS sidecar both call this)."""
-    from agent.cache_expiry_compaction import CHECK_INTERVAL_SECONDS
+    from agent.prompt_cache_lifecycle import CHECK_INTERVAL_SECONDS
     global _cache_expiry_started
     with _cache_expiry_lock:
         if _cache_expiry_started:

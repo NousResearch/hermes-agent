@@ -37,9 +37,10 @@ def _session(agent, *, running=False):
 
 
 def test_idle_due_session_compacts_with_the_cache_expiry_trigger_and_running_one_is_skipped(server, monkeypatch):
-    import agent.cache_expiry_compaction as decision
+    import agent.prompt_cache_lifecycle as decision
 
-    monkeypatch.setattr(decision, "claim_cache_expiry_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "prime_after_compaction", lambda agent, history: None)
     monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
     idle_agent, busy_agent = _Agent(), _Agent()
     idle, busy = _session(idle_agent), _session(busy_agent, running=True)
@@ -57,9 +58,10 @@ def test_idle_due_session_compacts_with_the_cache_expiry_trigger_and_running_one
 def test_a_slow_summary_does_not_delay_another_due_session_and_is_never_run_twice(server, monkeypatch):
     """Each due session compacts in its own job: a summary that runs for minutes must not hold the
     next chat past its window, and a tick while it runs never claims that session again."""
-    import agent.cache_expiry_compaction as decision
+    import agent.prompt_cache_lifecycle as decision
 
-    monkeypatch.setattr(decision, "claim_cache_expiry_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "prime_after_compaction", lambda agent, history: None)
     monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
     release, slow_started, fast_done = threading.Event(), threading.Event(), threading.Event()
     slow_returned = threading.Event()
@@ -97,9 +99,10 @@ def test_a_slow_summary_does_not_delay_another_due_session_and_is_never_run_twic
 
 
 def test_a_job_whose_window_closed_before_it_started_does_not_compact(server, monkeypatch):
-    import agent.cache_expiry_compaction as decision
+    import agent.prompt_cache_lifecycle as decision
 
-    monkeypatch.setattr(decision, "claim_cache_expiry_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "prime_after_compaction", lambda agent, history: None)
     monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: False)
     agent = _Agent()
     session = _session(agent)

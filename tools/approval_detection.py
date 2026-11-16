@@ -36,7 +36,6 @@ from tools.approval_applescript import OSASCRIPT_OPAQUE_DESCRIPTION, OSASCRIPT_R
 from tools.approval_quoted_newlines import _mask_quoted_newlines
 from tools.approval_variation_selectors import _EMOJI_RANGE, _HIDDEN_VARIATION_SELECTOR_RE
 from tools.approval_wmic import WmicShadowDeleteMatcher
-from tools.shell_heredoc import mask_heredoc_bodies_for_shell_scan
 
 logger = logging.getLogger("tools.approval")
 
@@ -439,10 +438,11 @@ def _detect_hardline_command(command: str) -> tuple:
     # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
     # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a
     # benign grep). Only quoted newlines are masked: they are data, and masking keeps quoting intact.
-    scan_command = expand_ansi_c_quotes(mask_heredoc_bodies_for_shell_scan(command, code_consumers=False))
-    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(scan_command))
-    if malformed_grep:
-        return (True, _MALFORMED_EXEC_DESCRIPTION)
+    # Read the floors' sources: the raw command (a body may be a script something runs later) and the
+    # body-dropped copies (a body quote can hide a grep after the terminator from the raw read).
+    for source in heredoc_scan_sources(command, _SHELL_NAMES_RE, floors=True):
+        if _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(source)))[1]:
+            return (True, _MALFORMED_EXEC_DESCRIPTION)
     from tools.approval_wrappers import hardline_detection_variants
 
     # The -WhatIf preview exemption holds only when every guarded statement previews on its own (judged on the raw

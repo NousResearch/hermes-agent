@@ -195,6 +195,24 @@ def test_running_another_script_after_a_written_doc_does_not_prompt(runner):
     assert _body_adds_no_prompt(command), runner
 
 
+@pytest.mark.parametrize("command", [
+    "cat > job.sh <<'EOF'\ngrep -P \"x\nrm -rf /\nEOF\nmv job.sh run.sh && bash run.sh",
+    "cat > job.sh <<'EOF'\ngrep -P 'x\nEOF\nbash job.sh",
+    "cat <<'EOF'\nit's\nEOF\ngrep -P 'x",
+])
+def test_malformed_grep_reaches_the_hardline_floor_in_or_after_a_heredoc_body(floors_off, command):
+    # The malformed-grep verdict reads the raw command like the other floors (a script body something runs
+    # later), and the body-dropped copy (a body quote hid the grep after the terminator).
+    command = command.replace("rm -rf /", "r" + "m -r" + "f /")
+    assert detect_hardline_command(command)[0] is True
+    assert approval.check_all_command_guards(command, "local")["approved"] is False
+
+
+@pytest.mark.parametrize("grep", ["grep -P 'foo' n.md", 'grep -o "[^\\"]*" n.md'])
+def test_valid_grep_after_a_doc_with_a_stray_quote_is_not_malformed(grep):
+    assert detect_hardline_command(f"cat > n.md <<'EOF'\nit's here\nEOF\n{grep}")[0] is False
+
+
 def test_unquoted_heredoc_keeps_command_substitution_visible_to_hardline():
     command = "cat > notes.txt <<EOF\n$(rm -rf /)\nEOF"
 

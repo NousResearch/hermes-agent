@@ -25,14 +25,9 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from agent.deadline import poll_until
-from agent.shell_hooks import (
-    _TOOL_EVENTS as _TOOL_SCOPED_EVENTS,
-    _ToolMatcherMixin,
-    _forget_home_registrations,
-    _home_key,
-    _payload_fields,
-    _utc_now_iso,
-)
+from agent.shell_hooks.registry import _forget_home_registrations, _home_key
+from agent.shell_hooks.spec import _TOOL_EVENTS as _TOOL_SCOPED_EVENTS, _ToolMatcherMixin
+from agent.shell_hooks.wire import _payload_fields, _utc_now_iso
 
 logger = logging.getLogger(__name__)
 

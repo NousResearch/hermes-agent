@@ -63,7 +63,7 @@ def test_gateway_resync_follows_config_and_allowlist_without_prompting(home, tmp
 
     # Approved on a client terminal after the gateway started (the allowlist is the hand-off).
     cfg["hooks"]["pre_tool_call"].append({"command": b})
-    shell_hooks._record_approval("pre_tool_call", b)
+    shell_hooks.record_approval("pre_tool_call", b)
     refresh_profile_hooks(policy)
     refresh_profile_hooks(policy)  # idempotent
     assert _wired() == [f"shell_hook[pre_tool_call:{a}]", f"shell_hook[pre_tool_call:{b}]"]
@@ -117,7 +117,7 @@ def test_resync_keeps_in_memory_consent_and_never_disarms_on_bad_input(home, tmp
     policy = build_policy({"source": "cli", "cwd": str(tmp_path)}, {})
     # Unwritable allowlist: the launch's consent is kept in memory, as main registered it.
     with monkeypatch.context() as unwritable:
-        unwritable.setattr(shell_hooks, "atomic_json_write", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
+        unwritable.setattr(shell_hooks.consent, "atomic_json_write", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
         accept_launch_hooks(build_policy({"source": "cli", "cwd": str(tmp_path), "accept_hooks": True}, {}))
         refresh_profile_hooks(policy)
         refresh_profile_hooks(policy)
@@ -180,7 +180,7 @@ def test_saved_launch_approval_stays_revocable_and_bad_records_are_skipped(home,
 def test_unsaved_launch_consent_ends_with_the_config_entry(home, tmp_path, monkeypatch):
     a = _script(tmp_path, "a.sh")
     with monkeypatch.context() as unwritable:
-        unwritable.setattr(shell_hooks, "atomic_json_write", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
+        unwritable.setattr(shell_hooks.consent, "atomic_json_write", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
         shell_hooks.accept_for_launch(_cfg(a))
     shell_hooks.sync_from_config(lambda: _cfg(a))
     assert _wired() == [f"shell_hook[pre_tool_call:{a}]"]

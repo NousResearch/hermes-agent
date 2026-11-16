@@ -39,7 +39,7 @@ def _reset_registration_state():
 
 class TestParseResponse:
     def test_block_claude_code_style(self):
-        r = shell_hooks._parse_response(
+        r = shell_hooks.wire._parse_response(
             "pre_tool_call",
             '{"decision": "block", "reason": "nope"}',
         )
@@ -56,11 +56,11 @@ class TestParseResponse:
     def test_approve_is_parsed_like_the_plugin_directive(self, stdout, expected):
         """The documented ``approve`` action used to parse to None, so the tool ran with no
         approval prompt (#92553). It now yields the same shape Python plugins return."""
-        assert shell_hooks._parse_response("pre_tool_call", stdout) == expected
+        assert shell_hooks.wire._parse_response("pre_tool_call", stdout) == expected
 
     def test_empty_stdout_returns_none(self):
-        assert shell_hooks._parse_response("pre_tool_call", "") is None
-        assert shell_hooks._parse_response("pre_tool_call", "   ") is None
+        assert shell_hooks.wire._parse_response("pre_tool_call", "") is None
+        assert shell_hooks.wire._parse_response("pre_tool_call", "   ") is None
 
 
 # ── _serialize_payload ────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ class TestParseResponse:
 class TestSerializePayload:
 
     def test_args_not_dict_becomes_null(self):
-        raw = shell_hooks._serialize_payload(
+        raw = shell_hooks.wire._serialize_payload(
             "pre_tool_call", {"args": ["not", "a", "dict"]},
         )
         payload = json.loads(raw)
@@ -191,7 +191,7 @@ class TestCallbackSubprocess:
             command=str(script),
             matcher="terminal",
         )
-        cb = shell_hooks._make_callback(spec)
+        cb = shell_hooks.runner._make_callback(spec)
         cb(tool_name="terminal", args={"command": "ls"})
         cb(tool_name="web_search", args={"q": "x"})
         cb(tool_name="file_read", args={"path": "x"})
@@ -208,7 +208,7 @@ class TestCallbackSubprocess:
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command=str(script),
         )
-        cb = shell_hooks._make_callback(spec)
+        cb = shell_hooks.runner._make_callback(spec)
         cb(
             tool_name="terminal",
             args={"command": "echo hi"},
@@ -234,7 +234,7 @@ class TestCallbackSubprocess:
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command=str(script),
         )
-        cb = shell_hooks._make_callback(spec)
+        cb = shell_hooks.runner._make_callback(spec)
         result = cb(tool_name="write_file", args={"path": "/unsafe"})
         assert result == {"action": "modify", "args": {"path": "/safe"}}
 
@@ -248,7 +248,7 @@ class TestCallbackSubprocess:
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command=str(script),
         )
-        cb = shell_hooks._make_callback(spec)
+        cb = shell_hooks.runner._make_callback(spec)
         result = cb(tool_name="write_file", args={"content": "danger"})
         assert result == {"action": "modify", "args": {"content": "safe"}}
 
@@ -258,7 +258,7 @@ class TestCallbackSubprocess:
 
 class TestParseHooksBlock:
     def test_valid_entry(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "pre_tool_call": [
                 {"matcher": "terminal", "command": "/tmp/hook.sh", "timeout": 30},
             ],
@@ -274,7 +274,7 @@ class TestParseHooksBlock:
         # transform_api_error_classification returns a classification directive that
         # _parse_response has no channel for — a shell registration would
         # be silently ignored, so it must be refused with a warning.
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "transform_api_error_classification": [
                 {"command": "/tmp/hook.sh"},
             ],
@@ -282,7 +282,7 @@ class TestParseHooksBlock:
         assert specs == []
 
     def test_timeout_clamped_to_max(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "post_tool_call": [
                 {"command": "/tmp/slow.sh", "timeout": 9999},
             ],
@@ -291,15 +291,15 @@ class TestParseHooksBlock:
 
 
     def test_none_hooks_block(self):
-        assert shell_hooks._parse_hooks_block(None) == []
-        assert shell_hooks._parse_hooks_block("string") == []
-        assert shell_hooks._parse_hooks_block([]) == []
+        assert shell_hooks.spec._parse_hooks_block(None) == []
+        assert shell_hooks.spec._parse_hooks_block("string") == []
+        assert shell_hooks.spec._parse_hooks_block([]) == []
 
     def test_non_tool_event_matcher_warns_and_drops(self):
         """matcher: is only honored for pre/post_tool_call; must drop it
         on other events so the spec reflects runtime."""
         cfg = {"pre_llm_call": [{"matcher": "terminal", "command": "/bin/echo"}]}
-        specs = shell_hooks._parse_hooks_block(cfg)
+        specs = shell_hooks.spec._parse_hooks_block(cfg)
         assert len(specs) == 1 and specs[0].matcher is None
 
 
@@ -361,7 +361,7 @@ class TestIdempotentRegistration:
 
 class TestAllowlistConcurrency:
     """Regression tests for the Codex#1 finding: simultaneous
-    _record_approval() calls used to collide on a fixed tmp path and
+    record_approval() calls used to collide on a fixed tmp path and
     silently lose entries under read-modify-write races."""
 
 
@@ -395,7 +395,7 @@ class TestAllowlistConcurrency:
 
 class TestFailClosedParsing:
     def test_fail_closed_parsed(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "pre_tool_call": [
                 {"command": "/tmp/h.sh", "fail_closed": True},
             ],
@@ -404,14 +404,14 @@ class TestFailClosedParsing:
         assert specs[0].fail_closed is True
 
     def test_fail_closed_defaults_false(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "pre_tool_call": [{"command": "/tmp/h.sh"}],
         })
         assert specs[0].fail_closed is False
 
     def test_failclosed_camel_alias(self):
         """Cursor/Claude Code configs spell it failClosed."""
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "pre_tool_call": [
                 {"command": "/tmp/h.sh", "failClosed": True},
             ],
@@ -419,7 +419,7 @@ class TestFailClosedParsing:
         assert specs[0].fail_closed is True
 
     def test_canonical_wins_over_alias(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "pre_tool_call": [
                 {"command": "/tmp/h.sh", "fail_closed": False,
                  "failClosed": True},
@@ -428,7 +428,7 @@ class TestFailClosedParsing:
         assert specs[0].fail_closed is False
 
     def test_non_bool_warns_and_defaults_false(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "pre_tool_call": [
                 {"command": "/tmp/h.sh", "fail_closed": "yes"},
             ],
@@ -436,7 +436,7 @@ class TestFailClosedParsing:
         assert specs[0].fail_closed is False
 
     def test_fail_closed_on_non_blocking_event_warns_and_ignores(self):
-        specs = shell_hooks._parse_hooks_block({
+        specs = shell_hooks.spec._parse_hooks_block({
             "on_session_start": [
                 {"command": "/tmp/h.sh", "fail_closed": True},
             ],
@@ -469,23 +469,23 @@ class TestEvaluateResult:
     # -- exit code 2 = block --------------------------------------------
 
     def test_exit_2_blocks_with_stderr_message(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(),
             _spawn_result(returncode=2, stderr="policy violation\n"),
         )
         assert r == {"action": "block", "message": "policy violation"}
 
     def test_exit_2_blocks_with_default_message(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(), _spawn_result(returncode=2),
         )
         assert r == {
             "action": "block",
-            "message": shell_hooks._DEFAULT_BLOCK_MESSAGE,
+            "message": shell_hooks.wire._DEFAULT_BLOCK_MESSAGE,
         }
 
     def test_exit_2_stdout_block_json_wins(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(),
             _spawn_result(
                 returncode=2,
@@ -496,14 +496,14 @@ class TestEvaluateResult:
         assert r == {"action": "block", "message": "from stdout"}
 
     def test_exit_2_on_non_blocking_event_does_not_block(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(event="on_session_start"),
             _spawn_result(returncode=2, stderr="boom"),
         )
         assert r is None
 
     def test_other_nonzero_exit_still_parses_stdout(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(),
             _spawn_result(
                 returncode=1,
@@ -513,7 +513,7 @@ class TestEvaluateResult:
         assert r == {"action": "block", "message": "nope"}
 
     def test_nonzero_exit_without_directive_is_none(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(), _spawn_result(returncode=1, stderr="oops"),
         )
         assert r is None
@@ -521,13 +521,13 @@ class TestEvaluateResult:
     # -- fail_closed ------------------------------------------------------
 
     def test_spawn_error_fails_open_by_default(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(), _spawn_result(error="No such file"),
         )
         assert r is None
 
     def test_spawn_error_fail_closed_blocks(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(fail_closed=True), _spawn_result(error="No such file"),
         )
         assert r["action"] == "block"
@@ -535,19 +535,19 @@ class TestEvaluateResult:
         assert "No such file" in r["message"]
 
     def test_timeout_fails_open_by_default(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(), _spawn_result(timed_out=True),
         )
         assert r is None
 
     def test_timeout_fail_closed_blocks(self):
         spec = self._spec(fail_closed=True)
-        r = shell_hooks._evaluate_result(spec, _spawn_result(timed_out=True))
+        r = shell_hooks.runner._evaluate_result(spec, _spawn_result(timed_out=True))
         assert r["action"] == "block"
         assert f"timed out after {spec.timeout}s" in r["message"]
 
     def test_unparseable_stdout_fail_closed_blocks(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(fail_closed=True),
             _spawn_result(stdout="Traceback (most recent call last): ..."),
         )
@@ -555,7 +555,7 @@ class TestEvaluateResult:
         assert "unparseable stdout" in r["message"]
 
     def test_nonzero_exit_without_directive_fail_closed_blocks(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(fail_closed=True),
             _spawn_result(returncode=1, stderr="Traceback: hook crashed"),
         )
@@ -563,7 +563,7 @@ class TestEvaluateResult:
         assert "hook exited 1 with no directive" in r["message"]
 
     def test_unparseable_stdout_fails_open_by_default(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(),
             _spawn_result(stdout="Traceback (most recent call last): ..."),
         )
@@ -571,13 +571,13 @@ class TestEvaluateResult:
 
     def test_valid_noop_json_passes_fail_closed(self):
         """A clean {} no-op must NOT be blocked by fail_closed."""
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(fail_closed=True), _spawn_result(stdout="{}"),
         )
         assert r is None
 
     def test_empty_stdout_passes_fail_closed(self):
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(fail_closed=True), _spawn_result(stdout=""),
         )
         assert r is None
@@ -585,7 +585,7 @@ class TestEvaluateResult:
     def test_fail_closed_on_non_blocking_event_still_fails_open(self):
         """Defense in depth: even if a spec sneaks past parsing with
         fail_closed on a non-blocking event, runtime fails open."""
-        r = shell_hooks._evaluate_result(
+        r = shell_hooks.runner._evaluate_result(
             self._spec(event="on_session_start", fail_closed=True),
             _spawn_result(error="boom"),
         )
@@ -605,7 +605,7 @@ class TestFailSemanticsEndToEnd:
             command=f'"{sys.executable}" "{script}"',
             fail_closed=True,
         )
-        cb = shell_hooks._make_callback(spec)
+        cb = shell_hooks.runner._make_callback(spec)
         result = cb(tool_name="terminal", args={"command": "rm -rf /"})
         assert result is not None and result["action"] == "block"
         assert "hook exited 1 with no directive" in result["message"]
@@ -621,7 +621,7 @@ class TestFailSemanticsEndToEnd:
         spec = shell_hooks.ShellHookSpec(
             event="pre_tool_call", command=str(script),
         )
-        cb = shell_hooks._make_callback(spec)
+        cb = shell_hooks.runner._make_callback(spec)
         result = cb(tool_name="terminal", args={"command": "rm -rf /"})
         assert result == {
             "action": "block", "message": "rm -rf is not permitted",
@@ -633,7 +633,7 @@ class TestFailSemanticsEndToEnd:
             command=str(tmp_path / "does-not-exist.sh"),
             fail_closed=True,
         )
-        cb = shell_hooks._make_callback(spec)
+        cb = shell_hooks.runner._make_callback(spec)
         result = cb(tool_name="terminal", args={"command": "ls"})
         assert result is not None and result["action"] == "block"
         assert "failed closed" in result["message"]
@@ -697,8 +697,8 @@ class TestRoutedProfileEnv:
         spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
         token = set_hermes_home_override(str(routed))
         try:
-            result = shell_hooks._spawn(spec, shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
-            payload = json.loads(shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+            result = shell_hooks.spawn.spawn_hook(spec, shell_hooks.wire._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+            payload = json.loads(shell_hooks.wire._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
         finally:
             reset_hermes_home_override(token)
         seen = json.loads(result["stdout"])
@@ -725,12 +725,12 @@ def test_bare_script_hook_path_executes_on_windows(tmp_path):
     def spec(command):
         return shell_hooks.ShellHookSpec(event="pre_tool_call", command=command)
 
-    result = shell_hooks._spawn(spec(str(script)), "{}")
+    result = shell_hooks.spawn.spawn_hook(spec(str(script)), "{}")
     assert result["error"] is None, result["error"]
     assert result["returncode"] == 7, "the script's own exit code must reach a fail_closed gate"
     assert "ran" in result["stderr"]
 
-    missing = shell_hooks._spawn(spec(str(tmp_path / "gone.sh")), "{}")
+    missing = shell_hooks.spawn.spawn_hook(spec(str(tmp_path / "gone.sh")), "{}")
     assert missing["error"] == "command not found"
 
 
@@ -741,7 +741,7 @@ def test_unroutable_script_hook_names_the_remediation(tmp_path):
     script = _write_script(tmp_path, "hook.zsh", "#!/bin/zsh\necho hi\n")
     spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
 
-    result = shell_hooks._spawn(spec, "{}")
+    result = shell_hooks.spawn.spawn_hook(spec, "{}")
 
     assert result["returncode"] is None
     assert "interpreter" in result["error"] and "bash" in result["error"]

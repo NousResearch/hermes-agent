@@ -22,7 +22,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   e2e:
@@ -95,7 +95,7 @@ jobs:
       # `pnpm run test:e2e` builds dist/ as a pretest hook so the renderer
       # is always fresh — no separate build step needed.
       - name: Run Playwright E2E tests
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         run: |
           # A stable run is on main too, but it tests a candidate. It compares and never rewrites baselines.
           if [ "${{ github.ref_name }}" = "main" ] && [ -z "${{ inputs.commit }}" ]; then
@@ -162,7 +162,7 @@ jobs:
       - name: Build screenshot review status
         id: review-status
         if: always()
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         env:
           RESULTS_URL: ${{ steps.upload-results.outputs.artifact-url }}
         run: |
@@ -196,7 +196,7 @@ jobs:
       # the artifact download URLs from their step outputs.
       - name: Generate visual diff summary
         if: always()
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         env:
           REPORT_URL: ${{ steps.upload-report.outputs.artifact-url }}
           RESULTS_URL: ${{ steps.upload-results.outputs.artifact-url }}

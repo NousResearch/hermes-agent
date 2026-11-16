@@ -1,1 +1,0 @@
-hadialjurdi7-dot

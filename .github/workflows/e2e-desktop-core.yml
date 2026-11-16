@@ -29,7 +29,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   core:
@@ -73,12 +73,12 @@ jobs:
       # webapp-gateway-attach.spec.ts drives the Webapp from a real browser: it needs the
       # Webapp renderer and a Chromium Playwright can launch.
       - name: Build the Webapp renderer
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         run: pnpm run build:webapp
 
       - uses: ./.github/actions/retry
         with:
-          working-directory: hermes-agent/apps/desktop
+          working-directory: pdr-hermes-agent/apps/desktop
           command: pnpm exec playwright install --with-deps chromium
 
       # Package the Linux app the way users get it (electron-builder --dir; no
@@ -86,11 +86,11 @@ jobs:
       # pinned archive separately. packaged-smoke.spec.ts asserts the asarUnpack contract
       # on this output (#121097) and boots the packaged binary to a first chat.
       - name: Package the desktop app (electron-builder --dir)
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         run: pnpm run builder --dir --publish never --linux
 
       - name: Run the core suite under xvfb
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         run: |
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
             pnpm exec playwright test -c e2e/core/playwright.config.ts

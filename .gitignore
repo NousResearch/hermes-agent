@@ -1,4 +1,4 @@
-# 根目录只放 start_run.py；hermes-agent/ 与 pdr/ 各自维护自己的 .gitignore
+# 根目录只放 start_run.py；pdr-hermes-agent/ 与 pdr/ 各自维护自己的 .gitignore
 __pycache__/
 *.pyc
 .DS_Store

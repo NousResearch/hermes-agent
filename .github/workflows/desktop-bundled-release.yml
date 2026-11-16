@@ -212,7 +212,7 @@ env:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   validate:
@@ -532,7 +532,7 @@ jobs:
       - name: Retrieve pinned channel request
         if: needs.validate.outputs.channel-build != ''
         shell: bash
-        working-directory: hermes-agent/.build/channel-controller
+        working-directory: pdr-hermes-agent/.build/channel-controller
         env:
           CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
           CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
@@ -674,7 +674,7 @@ jobs:
       - name: Verify native signature cache contracts
         if: inputs.skip-tests != true
         shell: bash
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         run: node node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
 
       # Commit jobs share these steps but have read-only cache tokens.
@@ -695,7 +695,7 @@ jobs:
       - name: Record and stage channel windows packages
         if: needs.validate.outputs.channel-build != ''
         shell: bash
-        working-directory: hermes-agent/.build/channel-controller
+        working-directory: pdr-hermes-agent/.build/channel-controller
         env:
           TARGET: ${{ matrix.target.label }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
@@ -916,7 +916,7 @@ jobs:
       - name: Retrieve pinned channel request
         if: needs.validate.outputs.channel-build != ''
         shell: bash
-        working-directory: hermes-agent/.build/channel-controller
+        working-directory: pdr-hermes-agent/.build/channel-controller
         env:
           CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
           CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
@@ -1123,7 +1123,7 @@ jobs:
       - name: Record and stage channel macos packages
         if: needs.validate.outputs.channel-build != ''
         shell: bash
-        working-directory: hermes-agent/.build/channel-controller
+        working-directory: pdr-hermes-agent/.build/channel-controller
         env:
           TARGET: ${{ matrix.target.label }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}

@@ -6,12 +6,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'hermes-agent/website/**'
-      - 'hermes-agent/skills/**'
-      - 'hermes-agent/optional-skills/**'
+      - 'pdr-hermes-agent/website/**'
+      - 'pdr-hermes-agent/skills/**'
+      - 'pdr-hermes-agent/optional-skills/**'
       # Catalog entry/removal merges must republish /docs/api/plugin-catalog.json —
       # installed clients fetch it for live catalog refresh.
-      - 'hermes-agent/plugin-catalog/**'
+      - 'pdr-hermes-agent/plugin-catalog/**'
       - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
     inputs:
@@ -37,7 +37,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   deploy-vercel:
@@ -187,7 +187,7 @@ jobs:
 
       - name: Build Docusaurus
         run: npm run build
-        working-directory: hermes-agent/website
+        working-directory: pdr-hermes-agent/website
         env:
           # prebuild renders icons on a Hermes runtime interpreter; the ci-tools
           # step above re-exports HERMES_PYTHON to a tools-only environment.

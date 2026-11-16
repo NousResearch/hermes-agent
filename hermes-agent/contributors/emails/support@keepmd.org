@@ -1,2 +1,0 @@
-keepmd-medical
-# Plugin catalog entry keepmd-mcp-eob-decoder

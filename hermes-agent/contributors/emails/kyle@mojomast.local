@@ -1,2 +1,0 @@
-mojomast
-# PR catalog submission

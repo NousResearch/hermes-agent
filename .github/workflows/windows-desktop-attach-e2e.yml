@@ -24,7 +24,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   attach:
@@ -59,7 +59,7 @@ jobs:
 
       - name: Attach spec on the dev tree
         id: dev
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         shell: bash
         timeout-minutes: 15
         run: pnpm exec playwright test -c e2e/core/playwright.config.ts local-gateway-attach.spec.ts
@@ -75,14 +75,14 @@ jobs:
       # main bundle, asar and preload, attaching through the same ensure + pipe-ticket path.
       - name: Package the desktop app (electron-builder --dir)
         if: always() && steps.dev.outcome != 'skipped'
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         shell: bash
         timeout-minutes: 15
         run: pnpm run builder --dir --publish never --win --x64
 
       - name: Attach spec on the packaged build
         if: always() && steps.dev.outcome != 'skipped'
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         shell: pwsh
         timeout-minutes: 15
         run: |

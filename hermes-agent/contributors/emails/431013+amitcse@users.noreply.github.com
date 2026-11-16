@@ -1,2 +1,0 @@
-amitcse
-# WhatsApp group-intake / LID salvage (#63416, #73465, #72592)

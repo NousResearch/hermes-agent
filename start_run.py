@@ -6,7 +6,7 @@
     python start_run.py --no-docker 不用 Docker，连接本机已运行的 PostgreSQL / Redis
     python start_run.py stop       停止 Docker 基础服务
 
-目录约定：pdr/ 是 PDR 工程（配置唯一入口 pdr/config.yaml），hermes-agent/ 是智能体引擎源码。
+目录约定：pdr/ 是 PDR 工程（配置唯一入口 pdr/config.yaml），pdr-hermes-agent/ 是智能体引擎源码。
 每一步都可重复执行，已完成的会跳过；失败修好后重跑即可。
 """
 
@@ -26,7 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PDR = ROOT / "pdr"
-HERMES = ROOT / "hermes-agent"
+HERMES = ROOT / "pdr-hermes-agent"
 RUNTIME = PDR / ".pdr"
 VENV = RUNTIME / "venv"
 ENV_FILE = PDR / ".env"
@@ -233,7 +233,7 @@ END $$;
 
 PENDING = [
     ("MinerU 解析服务", "mineru-kit api-server"),
-    ("hermes 智能体网关", "hermes-agent/ 下的 gateway（api_server 平台）"),
+    ("hermes 智能体网关", "pdr-hermes-agent/ 下的 gateway（api_server 平台）"),
     ("PDR 后端与 worker", "pdr/server"),
     ("管理端前端", "pdr/web/admin"),
 ]

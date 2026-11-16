@@ -254,7 +254,7 @@ logging:
 # 生效方式默认「下一会话」——进行中的会话不重建系统提示，以保护提示缓存。
 # ============================================================================
 # >>> hermes:begin
-# 以下由 pdr/scripts/gen_config_yaml.py 依据 hermes-agent DEFAULT_CONFIG 生成；可直接修改取值，
+# 以下由 pdr/scripts/gen_config_yaml.py 依据 pdr-hermes-agent 的 DEFAULT_CONFIG 生成；可直接修改取值，
 # 重新生成时保留已修改的值。租户级覆盖存于 src.src_opr_config_value_f，不写入本文件。
 hermes:
 

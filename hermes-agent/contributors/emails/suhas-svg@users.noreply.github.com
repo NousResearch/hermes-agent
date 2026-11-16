@@ -1,1 +1,0 @@
-suhas-svg

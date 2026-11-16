@@ -1,1 +1,0 @@
-neta-gym

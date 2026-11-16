@@ -31,7 +31,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   bootstrap-installer:
@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        working-directory: hermes-agent/apps/bootstrap-installer/src-tauri
+        working-directory: pdr-hermes-agent/apps/bootstrap-installer/src-tauri
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -52,7 +52,7 @@ jobs:
       # Tauri links against the system webkit2gtk on Linux, so the crate does
       # not compile without these even for `cargo test --lib`.
       - name: Install Tauri system dependencies
-        working-directory: hermes-agent
+        working-directory: pdr-hermes-agent
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \

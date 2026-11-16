@@ -4,10 +4,10 @@ on:
   push:
     branches: [main]
     paths:
-      - 'hermes-agent/pm/lock.json'
-      - 'hermes-agent/pm/artifact-mirror.json'
-      - 'hermes-agent/scripts/termux/runtime_libs.json'
-      - 'hermes-agent/scripts/ci/archive_inputs.py'
+      - 'pdr-hermes-agent/pm/lock.json'
+      - 'pdr-hermes-agent/pm/artifact-mirror.json'
+      - 'pdr-hermes-agent/scripts/termux/runtime_libs.json'
+      - 'pdr-hermes-agent/scripts/ci/archive_inputs.py'
       - '.github/workflows/archive-inputs.yml'
   workflow_call:
     inputs:
@@ -22,7 +22,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   archive-inputs:

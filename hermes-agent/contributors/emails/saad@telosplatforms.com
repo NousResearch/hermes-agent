@@ -1,1 +1,0 @@
-TelosPlatforms

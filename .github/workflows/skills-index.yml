@@ -8,7 +8,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "hermes-agent/scripts/build_skills_index.py"
+      - "pdr-hermes-agent/scripts/build_skills_index.py"
       - ".github/workflows/skills-index.yml"
 
 permissions:
@@ -17,7 +17,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   build-index:

@@ -5,14 +5,14 @@ name: Windows bundle SDK
 on:
   pull_request:
     paths:
-      - 'hermes-agent/apps/desktop/scripts/windows-bundle-tools.mjs'
-      - 'hermes-agent/apps/desktop/scripts/windows-bundle-tools.test.mjs'
-      - 'hermes-agent/scripts/msix-shared.mjs'
-      - 'hermes-agent/apps/desktop/scripts/msix-shared.test.mjs'
-      - 'hermes-agent/apps/desktop/scripts/sign-msix.mjs'
-      - 'hermes-agent/apps/desktop/scripts/sign-msix.test.mjs'
-      - 'hermes-agent/apps/desktop/scripts/batch-sign-binaries.mjs'
-      - 'hermes-agent/apps/desktop/scripts/batch-sign-binaries.test.mjs'
+      - 'pdr-hermes-agent/apps/desktop/scripts/windows-bundle-tools.mjs'
+      - 'pdr-hermes-agent/apps/desktop/scripts/windows-bundle-tools.test.mjs'
+      - 'pdr-hermes-agent/scripts/msix-shared.mjs'
+      - 'pdr-hermes-agent/apps/desktop/scripts/msix-shared.test.mjs'
+      - 'pdr-hermes-agent/apps/desktop/scripts/sign-msix.mjs'
+      - 'pdr-hermes-agent/apps/desktop/scripts/sign-msix.test.mjs'
+      - 'pdr-hermes-agent/apps/desktop/scripts/batch-sign-binaries.mjs'
+      - 'pdr-hermes-agent/apps/desktop/scripts/batch-sign-binaries.test.mjs'
       - '.github/workflows/windows-bundle-sdk.yml'
   workflow_dispatch:
 permissions:
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   windows-bundle-tools:
@@ -47,5 +47,5 @@ jobs:
       - name: Install the locked bundle tooling without native postinstalls
         run: pnpm install --frozen-lockfile --filter "{./apps/desktop}..." --filter "{./tests-js}..." --ignore-scripts
       - name: Provision from an empty cache and execute the SDK
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         run: pnpm exec vitest run --project electron scripts/windows-bundle-tools.test.mjs scripts/msix-shared.test.mjs scripts/sign-msix.test.mjs scripts/batch-sign-binaries.test.mjs

@@ -1,0 +1,67 @@
+# PDR 自身的检查：表命名规范与 DDL、config.yaml 与引擎默认配置一致、用户端构建、引擎核心测试。
+# 上游 hermes-agent 的其余 workflow 依赖 Nous Research 的发布流程与密钥，在本仓库中不作为 PDR 的质量门槛。
+name: PDR CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pdr-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pdr:
+    name: PDR 检查（命名规范 / DDL / 配置 / 用户端）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: 安装 PyYAML
+        run: python -m pip install "pyyaml>=6,<7"
+      - name: 表命名规范检查并确认 DDL 已重新生成
+        working-directory: pdr/server
+        run: |
+          python -m pdr_server.db.render
+          git diff --exit-code -- ../deploy/sql
+      - name: config.yaml 与引擎默认配置一致（含中文元数据）
+        run: |
+          python pdr/scripts/gen_config_yaml.py
+          git diff --exit-code -- pdr/config.yaml
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
+        with:
+          node-version: "22"
+      - name: 用户端类型检查与构建
+        working-directory: pdr/web/portal
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+
+  engine:
+    name: pdr-hermes-agent 核心测试
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: pdr-hermes-agent
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: 构建测试环境（docs/CONTRIBUTING.md 的手动开发与测试环境流程）
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
+        run: python -m pm.build_env --source . --out "${{ runner.temp }}/hermes-dev" --group dev --group test --extra messaging
+      - name: 会话存储与网关 api_server 测试
+        env:
+          HERMES_PYTHON: ${{ runner.temp }}/hermes-dev/bin/python
+        run: scripts/run_tests.sh -j 4 tests/hermes_state tests/gateway/test_api_server.py -q

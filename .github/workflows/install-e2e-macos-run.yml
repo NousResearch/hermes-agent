@@ -85,7 +85,7 @@ env:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   # ---- arm 1: script installs (the shared OS-agnostic driver) --------------

@@ -1,2 +1,0 @@
-johnkattenhorn
-# C17 Slack reaction events salvage (#33111/#44508/#45265)

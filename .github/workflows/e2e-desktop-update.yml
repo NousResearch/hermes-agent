@@ -31,7 +31,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: hermes-agent
+    working-directory: pdr-hermes-agent
 
 jobs:
   update:
@@ -86,7 +86,7 @@ jobs:
           command: just js-install
 
       - name: Run the update suite under xvfb
-        working-directory: hermes-agent/apps/desktop
+        working-directory: pdr-hermes-agent/apps/desktop
         run: |
           git --version
           # Resource trail in the log, so a runner that dies mid-run leaves its last state behind.

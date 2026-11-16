@@ -137,7 +137,7 @@ from agent.codex_responses_adapter import (
 )
 from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
 from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
-from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
+from utils import base_url_host_matches, base_url_hostname, env_float
 
 
 _MAX_TOOL_WORKERS = 8
@@ -672,7 +672,7 @@ class AIAgent(
         else ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
         if self._is_direct_openai_url() or self._is_azure_openai_url():
             return {"max_completion_tokens": value}
-        from agent.provider_route_hooks import route_answer
+        from agent.provider_route_hooks import model_forces_max_completion_tokens, route_answer
         declared = route_answer("max_tokens_param", provider=getattr(self, "provider", "") or "", scope=self,
                                 base_url=getattr(self, "base_url", "") or "", model=self.model or "")
         if declared:
@@ -1484,10 +1484,12 @@ def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[list[str]]:
 def _save_sample_trajectory(agent: AIAgent, result: dict, user_query: str, model: str) -> None:
     """``--save_sample``: write one trajectory (same format as batch_runner) to a UUID-named JSON file."""
     sample_filename = f"sample_{str(uuid.uuid4())[:8]}.json"
-    entry = {
+    from agent.trajectory import redact_trajectory_value
+
+    entry = redact_trajectory_value({
         "conversations": agent._convert_to_trajectory_format(result['messages'], user_query, result['completed']),
         "timestamp": datetime.now().isoformat(), "model": model, "completed": result['completed'], "query": user_query,
-    }
+    })
     try:
         with open(sample_filename, "w", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False, indent=2))

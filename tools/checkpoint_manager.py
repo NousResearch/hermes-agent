@@ -61,10 +61,9 @@ import time
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
-from hermes_cli.gitlock import clear_stale_tmp_packs
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Optional
 
-from utils import env_int, rmtree_readonly
+from utils import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -526,11 +525,6 @@ def _ref_tip(store: Path, working_dir: str, ref: str) -> Optional[str]:
     return _git_out(["rev-parse", "--verify", ref + "^{commit}"], store, working_dir, {128}) or None
 
 
-def _list_project_refs(store: Path, working_dir: str) -> list[str]:
-    out = _git_out(["for-each-ref", "--format=%(refname)", _REFS_PREFIX], store, working_dir, {128})
-    return [r for r in out.splitlines() if r.strip()]
-
-
 def _unlink_quiet(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -556,7 +550,6 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     """
     if not base.exists():
         return None
-    store = _store_path(base)
     legacy_root: Optional[Path] = None
     # Reserved top-level entries managed by v2.
     reserved = {_STORE_DIRNAME, _PRUNE_MARKER_NAME}
@@ -579,8 +572,6 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
             shutil.move(str(child), str(dest))
         except OSError as exc:
             logger.warning("Could not archive legacy checkpoint %s: %s", child, exc)
-    # If the store still hasn't been created, create it here.
-    _ = store
     if legacy_root is not None:
         logger.info(
             "Migrated pre-v2 checkpoint repos to %s. "

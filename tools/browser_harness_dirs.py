@@ -58,14 +58,49 @@ def fits_socket_budget(resolved_dir: str, budget: Optional[int]) -> bool:
     return budget is None or len(resolved_dir.encode()) <= budget
 
 
-def harness_pid_file(env: dict) -> Path:
+def harness_pid_file(env: dict, suffix: str = ".pid") -> Path:
     """Where the harness publishes the pid of the daemon a call with ``env`` drives
     (browser_harness ``_ipc``): ``<runtime dir>/bu-<BU_NAME>.pid``, or ``bu.pid`` in an isolated
-    runtime dir that is not shared between names."""
+    runtime dir that is not shared between names. ``suffix`` names its sibling endpoint files
+    (``.sock`` on POSIX, ``.port`` on Windows)."""
     isolated = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
     runtime = Path(isolated).expanduser() if isolated else Path(_harness_home(env)) / "runtime"
     shared = not isolated or env.get("BH_RUNTIME_DIR_SHARED") == "1"
-    return runtime / (f"bu-{env.get('BU_NAME', 'default')}.pid" if shared else "bu.pid")
+    return runtime / (f"bu-{env.get('BU_NAME', 'default')}{suffix}" if shared else f"bu{suffix}")
+
+
+def harness_current_target(env: dict, timeout: float = 2.0) -> Optional[str]:
+    """The CDP ``targetId`` of the tab the daemon behind ``env`` is attached to (the harness's own
+    ``current_tab`` IPC request), or None when no daemon answers. browser_vault fills prefer this tab:
+    on a shared CDP browser the first same-origin tab can be another session's."""
+    import json
+    import socket
+
+    token = None
+    try:
+        if sys.platform == "win32":  # loopback TCP + token from the port file
+            record = json.loads(harness_pid_file(env, ".port").read_text(encoding="utf-8-sig"))
+            token = record.get("token")
+            conn = socket.create_connection(("127.0.0.1", int(record["port"])), timeout=timeout)
+        else:
+            conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # windows-footgun: ok — POSIX branch
+            conn.settimeout(timeout)
+            conn.connect(str(harness_pid_file(env, ".sock").resolve()))
+        with conn:
+            conn.settimeout(timeout)
+            req = {"meta": "current_tab", **({"token": token} if token else {})}
+            conn.sendall((json.dumps(req) + "\n").encode())
+            data = b""
+            while not data.endswith(b"\n") and len(data) < 1 << 16:
+                chunk = conn.recv(1 << 12)
+                if not chunk:
+                    break
+                data += chunk
+        reply = json.loads(data or b"{}")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    target = reply.get("targetId") if isinstance(reply, dict) else None
+    return target if isinstance(target, str) and target else None
 
 
 def namespace_harness_dirs(env: dict, tag: str) -> None:

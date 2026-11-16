@@ -457,10 +457,15 @@ def restart_wait_verdict(inst: Install, slack_s: float = 15.0) -> str:
 
 
 def settle_gateway(inst: Install, old_pid: int, *, timeout: float = 180) -> dict | None:
-    """Wait for a gateway serving ``inst.target`` under a new PID; None if none shows up."""
+    """Wait for a gateway serving ``inst.target`` under a new PID; None if none shows up.
+
+    Serving means what ``start_gateway`` waits for: the control socket answers ``identify``
+    (it does from early boot, ``state: starting``) AND the API server answers ``/health``."""
     def serving():
         ident = identify(inst.hermes_home)
-        return ident if ident and ident.get("pid") != old_pid and ident.get("code_sha") == inst.target else None
+        if not (ident and ident.get("pid") != old_pid and ident.get("code_sha") == inst.target):
+            return None
+        return ident if health(inst.port) else None
     try:
         return wait_for(serving, timeout=timeout, what="a relaunched gateway", interval=1.0)
     except AssertionError:

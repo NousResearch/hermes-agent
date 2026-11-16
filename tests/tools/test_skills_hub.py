@@ -14,7 +14,7 @@ from tools.skills_hub_github import GitHubAuth, GitHubSource
 from tools.skills_hub_install import (
     bundle_content_hash, check_for_skill_updates, install_from_quarantine, quarantine_bundle,
 )
-from tools.skills_hub_models import SkillBundle, SkillMeta, SkillSource, _referenced_support_paths
+from tools.skills_hub_models import SkillBundle, SkillMeta, SkillSource, _parse_frontmatter, _referenced_support_paths
 from tools.skills_hub_official import OptionalSkillSource
 from tools.skills_hub_search import (
     HERMES_INDEX_TTL, _load_hermes_index, create_source_router, parallel_search_sources, unified_search,
@@ -23,18 +23,18 @@ from tools.skills_hub_skillssh import SkillsShSource
 from tools.skills_hub_sources import LobeHubSource, UrlSource, WellKnownSkillSource
 
 # ---------------------------------------------------------------------------
-# GitHubSource._parse_frontmatter_quick
+# skills_hub_models._parse_frontmatter
 # ---------------------------------------------------------------------------
 
-class TestParseFrontmatterQuick:
+class TestParseFrontmatter:
     def test_valid_frontmatter_including_nested_yaml(self):
         content = "---\nname: test-skill\ndescription: A test.\n---\n\n# Body\n"
-        fm = GitHubSource._parse_frontmatter_quick(content)
+        fm = _parse_frontmatter(content)
         assert fm["name"] == "test-skill"
         assert fm["description"] == "A test."
 
         nested = "---\nname: test\nmetadata:\n  hermes:\n    tags: [a, b]\n---\n\nBody.\n"
-        assert GitHubSource._parse_frontmatter_quick(nested)["metadata"]["hermes"]["tags"] == ["a", "b"]
+        assert _parse_frontmatter(nested)["metadata"]["hermes"]["tags"] == ["a", "b"]
 
     def test_degenerate_frontmatter_returns_empty(self):
         for content in (
@@ -44,7 +44,7 @@ class TestParseFrontmatterQuick:
             "---\n: : : invalid{{\n---\n\nBody.\n",     # unparseable YAML
             "---\n- just a list\n- of items\n---\n\nBody.\n",  # non-dict YAML
         ):
-            assert GitHubSource._parse_frontmatter_quick(content) == {}, repr(content)
+            assert _parse_frontmatter(content) == {}, repr(content)
 
 # ---------------------------------------------------------------------------
 # GitHubSource skills.sh.json grouping sidecar (category support)

@@ -49,6 +49,8 @@ def _token_update_sql(delta: bool) -> str:
 
 _TOKEN_UPDATE_ABSOLUTE_SQL = _token_update_sql(delta=False)
 _TOKEN_UPDATE_DELTA_SQL = _token_update_sql(delta=True)
+# Rows a compaction or prune archived: the prompt-cache clock's durable context generation.
+_ARCHIVED_ROWS_SQL = "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0 AND compacted = 1"
 
 _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
@@ -309,14 +311,15 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
-        source: Optional[str]=None, task: str = "",
+        source: Optional[str]=None, task: str = "", prompt_cache_clock: Optional[str]=None,
     ) -> None:
         """Update totals and route attribution, ensuring the legacy missing-row backfill.
         *absolute*=False increments (per-API-call deltas, CLI path); *absolute*=True sets directly
         (gateway path, where the cached agent holds cumulative totals). ``source`` is the session's
         real surface for the row-existence guard; callers that don't know it leave the placeholder.
         ``task`` names a per-turn route (``voice_chat``): its calls count in the session totals and
-        land in ``session_model_usage`` under that task, but never become the session's recorded route."""
+        land in ``session_model_usage`` under that task, but never become the session's recorded route.
+        ``prompt_cache_clock`` (JSON of the latest prompt-cache event) replaces the stored one when given."""
         values = dict(locals())
         values.pop('self')
         values.pop('session_id')
@@ -335,6 +338,7 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False, task: str="",
+        prompt_cache_clock: Optional[str]=None,
     ) -> None:
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         sql = _TOKEN_UPDATE_ABSOLUTE_SQL if absolute else _TOKEN_UPDATE_DELTA_SQL
@@ -377,8 +381,31 @@ class SessionUsageMixin:
                    billing_base_url = ?, billing_mode = ?
                    WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
         conn.execute(sql, params)
+        if prompt_cache_clock is not None:
+            conn.execute("UPDATE sessions SET prompt_cache_clock = ? WHERE id = ?", (prompt_cache_clock, session_id))
         if record_model_usage:
             self._record_model_usage(conn, session_id, task=task, **usage)
+
+    def get_prompt_cache_clock(self, session_id: str) -> dict[str, Any]:
+        """``{"clock": <stored JSON or None>, "last_assistant_at": <newest assistant row time or None>,
+        "generation": prompt_cache_generation}``. ``last_assistant_at`` is the resume fallback for
+        sessions stored before the clock existed, and only for sessions whose counters show the cache
+        was ever read or written."""
+        self.flush_for_read()
+        row = self._read_one(
+            "SELECT s.prompt_cache_clock, CASE WHEN COALESCE(s.cache_read_tokens, 0) + COALESCE(s.cache_write_tokens, 0) > 0"
+            " THEN (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id AND m.role = 'assistant'"
+            f" AND m.active = 1) END, ({_ARCHIVED_ROWS_SQL}) FROM sessions s WHERE s.id = ?", (session_id, session_id))
+        return {"clock": row[0], "last_assistant_at": row[1], "generation": int(row[2])} if row else {}
+
+    def prompt_cache_generation(self, session_id: str) -> int:
+        """Durable context generation of *session_id* for the prompt-cache clock: how many rows a
+        compaction, micro-compaction or tool-result prune archived (``active = 0, compacted = 1``).
+        Every committed in-place rewrite of what the model sees archives at least one row and none
+        is ever un-archived, so it only grows and survives restarts, unlike a compressor's
+        in-process ``compression_count``. A rotating compaction moves to a new session id instead."""
+        row = self._read_one(_ARCHIVED_ROWS_SQL, (session_id,))
+        return int(row[0]) if row else 0
 
     def _record_model_usage(
         self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

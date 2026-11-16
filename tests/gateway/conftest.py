@@ -321,10 +321,32 @@ def _ensure_discord_mock() -> None:
             pass
     discord_mod.AudioSource = _FakeAudioSource
 
+    class _FakeModal(_FakeView):
+        def __init__(self, *, title=None, timeout=None, custom_id=None):
+            super().__init__(timeout=timeout)
+            self.title = title
+
+    class _FakeTextInput:
+        def __init__(self, *, label=None, placeholder=None, min_length=None, max_length=None, **_):
+            self.label = label
+            self.placeholder = placeholder
+            self.min_length = min_length
+            self.max_length = max_length
+            self.value = ""
+
+    class _FakeLabel:
+        def __init__(self, *, text=None, component=None, description=None, **_):
+            self.text = text
+            self.component = component
+            self.description = description
+
     discord_mod.ui = SimpleNamespace(
         View=_FakeView,
         Select=_FakeSelect,
         Button=_FakeButton,
+        Modal=_FakeModal,
+        TextInput=_FakeTextInput,
+        Label=_FakeLabel,
         button=lambda *a, **k: (lambda fn: fn),
     )
     discord_mod.ButtonStyle = SimpleNamespace(

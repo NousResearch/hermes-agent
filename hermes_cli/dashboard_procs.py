@@ -790,8 +790,8 @@ def _detect_concurrent_hermes_instances(
     PM stages a fresh generation instead of replacing a mapped hermes.exe.
     Returning an empty list would let old callers continue into that mutation.
     """
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import stop_historical_updater
+    stop_historical_updater("hermes_cli.dashboard_procs._detect_concurrent_hermes_instances")
 
 
 def _is_desktop_local_serve_cmdline(command: str) -> bool:

@@ -146,6 +146,23 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
         return filepath
 
 
+def _writes_host_filesystem(task_id: str) -> bool:
+    """Whether this task's writes land on THIS host's disk: only then may a guard stat the target.
+    A hosted path names the tenant's sandbox and an SSH/container path the backend's filesystem;
+    probing the same string here would judge an unrelated host file."""
+    from tools.environments.sandbox_scope import hosted_scope
+    return hosted_scope() is None and _terminal_env_type_for_task(task_id) == "local"
+
+
+def _same_existing_file(path: str, other: str) -> bool:
+    """Whether *path* names the existing file *other*: on a case-insensitive filesystem
+    ``Config.YAML`` is ``config.yaml`` even though the strings differ."""
+    try:
+        return os.path.samefile(path, other)
+    except (OSError, ValueError):
+        return False
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     # NT/device-namespace guard on the RAW string, BEFORE the task-base join:
@@ -173,7 +190,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and deny_key(hermes_config) in keys:
+    if hermes_config and (deny_key(hermes_config) in keys or (
+            _writes_host_filesystem(task_id) and _same_existing_file(candidates[0], hermes_config))):
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
@@ -381,52 +399,65 @@ def _check_protected_instruction_write(paths: list[str], task_id: str = "default
     return _request_protected_instruction_approval(reasons, task_id)
 
 
+# Approval key -> (prompt noun, why it is gated). One key per class so an approve-always for one
+# class never authorizes the other.
+_APPROVAL_WRITE_CLASSES = {
+    "ssh_config_write": ("SSH client config file(s)",
+                         "The SSH config can carry ProxyCommand / Match exec directives that run commands"),
+    "shell_rc_write": ("shell startup file(s)", "Shell startup files run their commands in every new login shell"),
+}
+
+
 def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:
     """Gate a write/patch touching an approval-required path (``~/.ssh/config`` can steer
-    execution via ``ProxyCommand``). Routine gate: once/session/always, honors --yolo,
-    fail-closed without an interactive/gateway channel."""
+    execution via ``ProxyCommand``; shell rc files run at login). Routine gate: once/session/always,
+    honors --yolo, fail-closed without an interactive/gateway channel. Each class is gated under
+    its own key, so a batch spanning both classes must pass both gates."""
     try:
-        from agent.file_safety import is_write_approval_required
+        from agent.file_safety import get_write_denied_error, write_approval_key
     except Exception:
         return None
 
     # Resolve against the task's cwd, not the process's: a gateway-hosted turn runs in a
     # process whose cwd is not the session workspace, so a relative path would miss the gate.
-    targets = [p for p in paths if is_write_approval_required(_resolved_or_raw(p, task_id))]
-    if not targets:
-        return None
+    by_key: dict[str, list[str]] = {}
+    for p in paths:
+        resolved = _resolved_or_raw(p, task_id)
+        if denied := get_write_denied_error(resolved):
+            return denied  # ~/.bashrc -> ~/.ssh/authorized_keys: refuse before prompting
+        if key := write_approval_key(resolved):
+            by_key.setdefault(key, []).append(p)
 
-    display_targets = ", ".join(dict.fromkeys(targets))
-    description = (
-        f"Write to SSH client config file(s): {display_targets}. "
-        "The SSH config can carry ProxyCommand / Match exec directives that "
-        "run commands, so writes require your approval.")
-    blocked = (
-        f"BLOCKED: write to SSH config file(s) ({display_targets}) "
-        "{why} Do NOT retry it via another path (terminal, execute_code) "
-        "without the user's explicit consent.")
+    for pattern_key, targets in by_key.items():
+        noun, why_gated = _APPROVAL_WRITE_CLASSES[pattern_key]
+        display_targets = ", ".join(dict.fromkeys(targets))
+        description = f"Write to {noun}: {display_targets}. {why_gated}, so writes require your approval."
+        blocked = (
+            f"BLOCKED: write to {noun} ({display_targets}) "
+            "{why} Do NOT retry it via another path (terminal, execute_code) "
+            "without the user's explicit consent.")
 
-    try:
-        import tools.approval as _approval
-    except Exception:
-        return blocked.format(why=_APPROVAL_UNAVAILABLE)
+        try:
+            import tools.approval as _approval
+        except Exception:
+            return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
-    result = _approval._run_approval_gate(
-        pattern_key="ssh_config_write",
-        description=description,
-        display_target=f"<write to {display_targets}>",
-        cron_deny_message=blocked.format(why="requires approval but this cron session denies it."),
-        single_query_deny_message=blocked.format(
-            why="requires approval but single-query (-q) sessions run "
-                "without a user present to approve it. To allow flagged "
-                "actions in single-query mode, set approvals.single_query_mode: "
-                "approve in config.yaml."),
-        autoapprove_log_prefix="ssh_config_write",
-        fail_closed_when_no_human=True,
-        no_human_block_message=blocked.format(why=_NO_HUMAN))
-    if result.get("approved"):
-        return None
-    return result.get("message") or blocked.format(why="was denied.")
+        result = _approval._run_approval_gate(
+            pattern_key=pattern_key,
+            description=description,
+            display_target=f"<write to {display_targets}>",
+            cron_deny_message=blocked.format(why="requires approval but this cron session denies it."),
+            single_query_deny_message=blocked.format(
+                why="requires approval but single-query (-q) sessions run "
+                    "without a user present to approve it. To allow flagged "
+                    "actions in single-query mode, set approvals.single_query_mode: "
+                    "approve in config.yaml."),
+            autoapprove_log_prefix=pattern_key,
+            fail_closed_when_no_human=True,
+            no_human_block_message=blocked.format(why=_NO_HUMAN))
+        if not result.get("approved"):
+            return result.get("message") or blocked.format(why="was denied.")
+    return None
 
 
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:

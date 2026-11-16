@@ -59,9 +59,9 @@ _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exe
 
 def run(cmd, **kwargs) -> NoReturn:
     # Shim to suppress old updater work until relaunch. Do not start its installer.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli._subprocess_compat.run")
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
@@ -682,6 +682,17 @@ def pid_exists_stdlib(pid: int) -> bool:
     except OSError:  # ProcessLookupError included
         return False
     return True
+
+
+def process_start_time_stdlib(pid: int) -> int | None:
+    """``/proc/<pid>/stat`` field 22 (start time in clock ticks since boot), stdlib only; None
+    without /proc (macOS, Windows) or when the process is gone. ``gateway.status``'s start-time
+    fingerprint reads the same field first, so the two agree on Linux."""
+    try:
+        # Field 22 counted after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
+        return int(Path(f"/proc/{int(pid)}/stat").read_bytes().rsplit(b")", 1)[1].split()[19])
+    except (IndexError, ValueError, OSError):
+        return None
 
 
 def _process_start_time(pid: int) -> int | None:

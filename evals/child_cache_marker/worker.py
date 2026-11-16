@@ -22,16 +22,16 @@ home, ws = os.path.join(root, ".hermes"), os.path.join(root, "ws")
 os.makedirs(home); os.makedirs(ws)
 isolate_host(root, home)
 NONCE = uuid.uuid4().hex[:10]
-with open(os.path.join(home, "config.yaml"), "w") as f:
+with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as f:
     f.write(f"model:\n  provider: custom\n  base_url: {URL}\n  model: {MODEL}\n")
 # A per-run SOUL line keeps every other live session's cache entries out of this run.
-with open(os.path.join(home, "SOUL.md"), "w") as f:
+with open(os.path.join(home, "SOUL.md"), "w", encoding="utf-8") as f:
     f.write(f"You are Hermes. Probe run {NONCE}.\n")
 # A repo-shaped workspace: the child prompt carries its AGENTS.md, as in real in-repo delegation.
-with open(os.path.join(ws, "AGENTS.md"), "w") as f:
-    f.write(open(os.path.join(TREE, "AGENTS.md")).read())
+with open(os.path.join(ws, "AGENTS.md"), "w", encoding="utf-8") as f:
+    f.write(open(os.path.join(TREE, "AGENTS.md"), encoding="utf-8").read())
 for name, n in (("alpha", 4127), ("beta", 9310), ("gamma", 5586)):
-    with open(os.path.join(ws, f"{name}.txt"), "w") as f:
+    with open(os.path.join(ws, f"{name}.txt"), "w", encoding="utf-8") as f:
         f.write(f"The {name} number is {n}.\n")
 os.environ["HERMES_HOME"] = home
 os.environ["TERMINAL_CWD"] = ws
@@ -47,7 +47,7 @@ calls = []
 def task_tail(context):
     """A per-session tail appended to the system prompt at request time (a task brief, a personality)."""
     return ("You are a focused subagent working on a specific delegated task.\n\nCONTEXT:\n" + context
-            + "\n\n# Project Context\n\n" + open(os.path.join(ws, "AGENTS.md")).read()
+            + "\n\n# Project Context\n\n" + open(os.path.join(ws, "AGENTS.md"), encoding="utf-8").read()
             + "\n\nComplete this task using the tools available to you. When finished, provide a clear, concise summary.")
 
 _orig = trc.record_response_usage
@@ -81,7 +81,7 @@ for name, context, fname, want in CHILDREN:
     rec = {"arm": ARM, "rep": REP, "child": name, "ok": want in final, "n_calls": len(calls), "calls": list(calls),
            "session_prompt_tokens_est": len(child._cached_system_prompt or "") // 4, "nonce": NONCE,
            "wall": round(time.time() - t0, 1)}
-    with open(OUT, "a") as f:
+    with open(OUT, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
     print(json.dumps(rec))
     child.close()

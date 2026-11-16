@@ -217,12 +217,8 @@ def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
 
 def _auth_store(home: Path) -> dict:
     """*home*'s ``auth.json``; ``{}`` when missing, unreadable or invalid (no login we can see)."""
-    import json
-    try:
-        store = json.loads((home / "auth.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
-    return store if isinstance(store, dict) else {}
+    from utils import read_json_or_empty
+    return read_json_or_empty(home / "auth.json")
 
 
 def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:

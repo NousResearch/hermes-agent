@@ -46,6 +46,8 @@ from hermes_constants import LAUNCH_ONLY_ENV_KEYS, get_hermes_home, is_launch_on
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
 from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
+from hermes_cli.config_credential_values import (
+    _check_non_ascii_credential, refuse_redacted_config_credentials, refuse_redacted_env_value)
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
     get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
@@ -613,6 +615,7 @@ from hermes_cli.personality import (
 
 from hermes_cli.config_version_stamp import (
     check_config_version, newer_stamp_message, note_first_stamp, read_config_version_stamp, stamp_missing_config)
+from hermes_cli.config_secret_display import _maskable_secret_text, redact_config_value
 
 
 # ---- Config Migration System ----
@@ -1061,7 +1064,7 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
             return [config_load_issue(exc)]
 
     from hermes_cli.config_value_checks import (
-        _validate_quoted_containers, _validate_timezone, _validate_voice, _validate_web_backends)
+        _validate_quoted_containers, _validate_timezone, _validate_voice)
     issues: list[ConfigIssue] = []
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
@@ -1090,7 +1093,6 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
                    f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                    f"Move '{key}' under the appropriate section")
 
-    _validate_web_backends(config, issues)
     _validate_quoted_containers(config, issues)
     return issues
 
@@ -1826,10 +1828,11 @@ def _write_config_state(
 ) -> None:
     """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
     _refuse_failed_read(config_path, data)
+    from hermes_cli.config_backend import keeping_read_base
+    refuse_redacted_config_credentials(data, lambda: keeping_read_base(lambda: read_user_config_raw(config_path)))
     if not allow_omissions:
         # A guard read, not the caller's read: *data* came from the caller's own earlier read, so a
         # Remote Config save must still be diffed against THAT read, not a poll that landed since.
-        from hermes_cli.config_backend import keeping_read_base
         existing = keeping_read_base(lambda: require_readable_config_before_write(config_path))
         omitted = _omitted_config_paths(existing, data)
         if omitted:
@@ -2459,27 +2462,6 @@ def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> Non
         _secure_file(env_path)
 
 
-def _check_non_ascii_credential(key: str, value: str) -> str:
-    """Strip non-ASCII characters from a credential (HTTP header values must be ASCII) and warn.
-    Lookalike glyphs typically come from copy-pasting out of a PDF or rich-text editor."""
-    if value.isascii():
-        return value
-
-    bad_chars = [f"  position {i}: {ch!r} (U+{ord(ch):04X})" for i, ch in enumerate(value) if ord(ch) > 127]
-    sanitized = value.encode("ascii", errors="ignore").decode("ascii")
-
-    print(
-        f"\n  Warning: {key} contains non-ASCII characters that will break API requests.\n"
-        f"  This usually happens when copy-pasting from a PDF, rich-text editor,\n"
-        f"  or web page that substitutes lookalike Unicode glyphs for ASCII letters.\n\n"
-        + "\n".join(f"  {line}" for line in bad_chars[:5])
-        + ("\n  ... and more" if len(bad_chars) > 5 else "")
-        + "\n\n  The non-ASCII characters have been stripped automatically.\n"
-        "  If authentication fails, re-copy the key from the provider's dashboard.\n",
-        file=sys.stderr)
-    return sanitized
-
-
 def _quote_env_value(value: str) -> str:
     """Quote .env values containing characters with special dotenv meaning. Any whitespace
     (including internal runs) is quoted so ``set -a; . file`` word-splitting keeps paths intact."""
@@ -2585,6 +2567,7 @@ def save_env_value(key: str, value: str):
         return
     validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")
+    refuse_redacted_env_value(key, value)
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
@@ -2763,25 +2746,6 @@ def _is_secret_config_key(key: str) -> bool:
     if _is_env_config_key(key):
         return not leaf.endswith(_NON_SECRET_KEY_SUFFIXES)
     return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
-
-
-def redact_config_value(value: Any, _depth: int = 0) -> Any:
-    """Copy of ``value`` with credential-shaped keys masked. ``print`` bypasses the logging
-    redactor and opaque tokens miss the vendor-prefix regexes, so structural masking is required."""
-    from agent.redact import mask_secret
-
-    if _depth > 20:  # bound recursion for pathological/cyclic configs
-        return value
-    if isinstance(value, dict):
-        return {
-            k: mask_secret(v)
-            if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v
-            and not _ENV_PLACEHOLDER_RE.match(v)
-            else redact_config_value(v, _depth + 1)
-            for k, v in value.items()}
-    if isinstance(value, list):
-        return [redact_config_value(v, _depth + 1) for v in value]
-    return value
 
 
 def edit_config():
@@ -3335,9 +3299,9 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
 
     from agent.redact import _redact_enabled, mask_secret
     if not raw and _redact_enabled():
-        if isinstance(value, str):
-            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(value):
-                value = mask_secret(value)
+        if text := _maskable_secret_text(value):
+            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(text):
+                value = mask_secret(text)
         else:
             value = redact_config_value(value)
 

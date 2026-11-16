@@ -281,3 +281,59 @@ async def test_a_double_quoted_value_holding_an_apostrophe_is_held_to_its_closin
     adapter = _adapter()
     await _stream(adapter, *('Config: {"pass' + 'word": "' + value + '", "user": "bob"} done'))
     assert not _raw_runs([content for _op, _id, content in adapter.ops], value)
+
+
+@pytest.mark.asyncio
+async def test_a_google_refresh_token_streamed_char_by_char_is_never_shown_raw():
+    # A bare leading digit may settle (the mask keeps ``1//0gL`` visible); the token never does.
+    body = "gLx7z_P2mX9vLk4n-Rt8wYb1cDf6gHj3sA0qWeRtYuIoP"
+    frames = []
+    adapter = _draft_adapter(frames)
+    await _stream(adapter, "Refresh: ", *("1//0" + body), " done", transport="auto", chat_type="dm")
+    assert all(later.startswith(earlier) for earlier, later in pairwise(frames)), frames
+    assert not _raw_runs([*frames, *(content for _op, _id, content in adapter.ops)], body, width=5)
+
+
+@pytest.mark.asyncio
+async def test_a_google_refresh_token_split_by_a_newline_is_never_shown_raw():
+    # The redactor joins ``1//0…<LF>…`` (#77484) like ``ghp_…<LF>…``; its ``/`` must not end the held run.
+    head, tail = "gLx7z_P2mX9v", "Lk4n-Rt8wYb1cDf6gHj3sA0qWeRtYuIoP"
+    frames = []
+    adapter = _draft_adapter(frames)
+    await _stream(adapter, "Refresh: ", "1//0" + head, "\n", tail, " done", transport="auto", chat_type="dm")
+    assert not _raw_runs([*frames, *(content for _op, _id, content in adapter.ops)], head + tail, width=5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("word", ["stream_accepted.", "program_id", "diagram_v2", "<</A-tg.stream_accepted>>"])
+async def test_a_word_holding_a_key_prefix_mid_word_is_shown_before_the_stream_ends(word):
+    # The prefix rules only match a key that does not follow a letter or digit, so ``am_`` inside
+    # ``stream_accepted`` can never become one. Holding it kept the reply's last word off screen
+    # for as long as the provider stream stayed open (a crash then lost the visible answer).
+    adapter = _adapter()
+    consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig(
+        edit_interval=0.01, buffer_threshold=5, cursor=""))
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta("The answer is " + word)
+    await async_wait_until(lambda: any(word in c for _op, _id, c in adapter.ops), timeout=5,
+                           what="the whole last word on screen while the stream is open")
+    consumer.finish()
+    await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["am_" + _BODY, "x-" + _KEY, "backup_" + _KEY, "\x1b[1;31mam_" + _BODY])
+async def test_a_key_prefix_at_a_word_start_or_after_a_separator_is_still_held(key):
+    adapter = _adapter()
+    await _stream(adapter, "Your key is ", *[key[i:i + 3] for i in range(0, len(key), 3)], " - keep it safe.")
+    assert not _raw_runs([content for _op, _id, content in adapter.ops], _BODY, width=8)
+
+
+@pytest.mark.asyncio
+async def test_a_colored_key_start_is_held_like_the_redactor_sees_it():
+    # The redactor drops CSI sequences before matching, so ``\x1b[32mAKIA`` starts an AWS ID
+    # there although the raw char before ``AKIA`` is ``m``: the hold must judge the same text.
+    aws = "AKIA" + "QZ7XW3RT4KL8VB3N"
+    adapter = _adapter()
+    await _stream(adapter, "The id is \x1b[32m", *[aws[i:i + 4] for i in range(0, len(aws), 4)], "\x1b[0m ok.")
+    assert not _raw_runs([content for _op, _id, content in adapter.ops], aws, width=8)

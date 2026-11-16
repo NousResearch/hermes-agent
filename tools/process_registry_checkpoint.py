@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +27,10 @@ class ProcessCheckpointMixin:
         # it has no host change to write: it neither takes the lock nor rewrites this host's file.
         if hosted_scope() is not None:
             return
+        from agent.runtime_session_store import is_worker_process
+        # Every interpreter on the home writes this file; ``hermes update --force`` sweeps only what
+        # the gateway it killed owns (update_cmd_force_stop): a managed worker's jobs are its owner's.
+        owner_pid = os.getppid() if is_worker_process() else os.getpid()  # windows-footgun: ok — getppid exists on Windows
         try:
             with self._lock:
                 entries = []
@@ -45,6 +50,7 @@ class ProcessCheckpointMixin:
                     # See #77484.
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
+                    entry["owner_pid"] = owner_pid
                     entries.append(entry)
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}

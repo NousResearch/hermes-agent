@@ -1306,6 +1306,15 @@ DEFAULT_CONFIG = {
         "compression_threshold_tokens": 0,
         # Narrowed child toolsets keep the parent's MCP toolsets (toolsets=["web"] keeps MCP); false = strict
         "inherit_mcp_toolsets": True,
+        # Read-only long-term memory for subagents. true = each child may SEARCH the external memory
+        # provider (e.g. hindsight_recall) but never write: no save/edit/delete tools, no auto-retain,
+        # no turn sync or prefetch, no MEMORY.md/USER.md, and the built-in memory tool stays blocked.
+        # memory_read_tools names the tools; [] = the ones the provider marks read-only
+        # (MemoryProvider.read_only_tool_names). A provider that marks tools read-only can be narrowed
+        # here, never widened. Children only get tools the parent exposes. Cost: one provider
+        # initialize() per spawn.
+        "memory_read": False,
+        "memory_read_tools": [],
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,
         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each

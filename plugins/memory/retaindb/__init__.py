@@ -340,6 +340,8 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._client = _Client(get_secret("RETAINDB_API_KEY", "") or "", base_url, project)
         self._session_id, self._user_id = session_id, kwargs.get("user_id", "default") or "default"
         self._agent_id = kwargs.get("agent_id", "hermes") or "hermes"
+        if kwargs.get("read_only"):
+            return  # No durable queue replay or SOUL identity seed in read-only children.
         # Bind to the profile the manager names, not the ambient one (multiplexing contract, MemoryProvider).
         from hermes_constants import get_hermes_home
         home = Path(kwargs["hermes_home"]) if kwargs.get("hermes_home") else get_hermes_home()

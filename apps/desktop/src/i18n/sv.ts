@@ -522,15 +522,24 @@ export const svOverrides: TranslationOverrides = {
     details: 'Detaljer',
     copyDetail: 'Kopiera detalj',
     copyDetailFailed: 'Det gick inte att kopiera aviseringsdetalj',
+    sharedProfileWarning:
+      'En annan Hermes-installation använder den här profilen. Båda installationerna delar inställningar och data, så ändringar kan hamna i konflikt. Du kan fortsätta eller stänga den andra installationen innan du gör ändringar.',
+    compressDeferredDone: 'Kontextkomprimeringen är klar',
     backendOutOfDateTitle: 'Serverdelen är inaktuell',
     backendOutOfDateMessage:
       'Din Hermes-serverdel är äldre än denna skrivbordsversion och kanske inte fungerar korrekt. Uppdatera dem så att de matchar.',
+    desktopOutOfDateTitle: 'Hermes-appen är inaktuell',
+    desktopOutOfDateMessage:
+      'Den här Hermes-appen är äldre än serverdelen den är ansluten till och kanske inte fungerar korrekt. Uppdatera appen så att versionerna matchar.',
+    updateDesktopApp: 'Uppdatera appen',
     installMethodUnsupportedTitle: 'Installationsmetoden stöds inte',
     updateHermes: 'Uppdatera Hermes',
     updateReadyTitle: 'Uppdatering redo',
     updateReadyMessage: count =>
       `${count} ny${count === 1 ? '' : 'a'} ändring${count === 1 ? '' : 'ar'} är tillgänglig${count === 1 ? '' : 'a'}.`,
     updateReadyMessageUnknown: 'En ny uppdatering är tillgänglig.',
+    updateReadyMessageAppInstaller:
+      'En ny version av Hermes är klar. Uppdatera nu så slutför Windows uppdateringen åt dig.',
     seeWhatsNew: 'Se vad som är nytt',
     mcp: {
       needsAuthTitle: 'MCP-server behöver autentiseras igen',
@@ -596,9 +605,11 @@ export const svOverrides: TranslationOverrides = {
     },
     native: {
       approvalTitle: 'Godkännande krävs',
+      approvalTitleNamed: session => `Godkännande krävs — ${session}`,
       approveAction: 'Godkänn',
       rejectAction: 'Avvisa',
       inputTitle: 'Inmatning krävs',
+      inputTitleNamed: session => `Inmatning krävs — ${session}`,
       inputBody: 'Hermes väntar på ditt svar.',
       turnDoneTitle: 'Hermes är klar',
       turnDoneBody: '',

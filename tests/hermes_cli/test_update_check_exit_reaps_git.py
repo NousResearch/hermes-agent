@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli._subprocess_compat import pid_exists_stdlib
 from tests.waiting import wait_until
 
 pytestmark = [
@@ -53,17 +54,6 @@ _CHILD = textwrap.dedent('''
 ''').replace("@SHA@", SHA)
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
-            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except OSError:
-        return True  # macOS: kill(0) succeeded, no /proc to tell a zombie apart
-
 
 def test_exit_during_the_stable_tag_lookup_leaves_no_git_behind(tmp_path):
     marker = tmp_path / "pids"
@@ -87,7 +77,7 @@ def test_exit_during_the_stable_tag_lookup_leaves_no_git_behind(tmp_path):
         pids = [int(p) for p in marker.read_text().split()]
         assert child.returncode == 0, child.stderr
         assert len(pids) == 2, f"the fake git never ran: {child.stderr}"
-        wait_until(lambda: not any(map(_alive, pids)), timeout=15,
+        wait_until(lambda: not any(map(pid_exists_stdlib, pids)), timeout=15,
                    what="the update check's git and its helper to die with the CLI")
     finally:
         for pid in pids:

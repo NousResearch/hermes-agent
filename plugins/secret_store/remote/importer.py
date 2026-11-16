@@ -26,7 +26,7 @@ import os
 import stat
 
 from dotenv.parser import parse_stream
-from agent.secret_scope import _is_global_env, invalidate_env_file_cache
+from agent.secret_scope import _is_global_env, _parse_env_text, invalidate_env_file_cache
 from utils import atomic_json_write, atomic_replace, fsync_directory, mkstemp_beside
 from pathlib import Path
 from typing import Any
@@ -258,9 +258,11 @@ def _keep_bootstrap_only(home: Path, provider) -> None:
 def _frozen_kept_lines(bindings: list, lookup: dict[str, str], keeps) -> dict[int, str]:
     """``{id(binding): replacement line}`` for each kept assignment whose value references a name
     that does not stay local: ``KEY=<value>`` with the value the launch load resolves for that line
-    (file order, duplicates, defaults, *lookup*), written as ``save_env_value`` writes a value so
-    the local loader reads it back unchanged. A kept line referencing only names that stay local
-    keeps its text: those still resolve, as before, against the lines that remain."""
+    (file order, duplicates, defaults, *lookup*), written as ``save_env_value`` writes a value, and
+    only when both local readers read that line back as exactly that value
+    (:func:`_reads_back_as`). A line no written form carries through both (a value with a line
+    break, or a reference left in it) keeps its text and resolves at each start as before; so
+    does a kept line referencing only names that stay local, against the lines that remain."""
     from dotenv.variables import Variable, parse_variables
     from hermes_cli.config import _quote_env_value
     from hermes_cli.env_loader import resolve_dotenv_lines
@@ -271,9 +273,22 @@ def _frozen_kept_lines(bindings: list, lookup: dict[str, str], keeps) -> dict[in
         if binding.value is None or not keeps(binding.key):
             continue
         names = [a.name for a in parse_variables(binding.value) if isinstance(a, Variable)]
-        if any(not keeps(n) for n in names):
-            frozen[id(binding)] = f"{binding.key}={_quote_env_value(value or '')}\n"
+        line = f"{binding.key}={_quote_env_value(value or '')}\n"
+        if any(not keeps(n) for n in names) and _reads_back_as(line, binding.key, value or ""):
+            frozen[id(binding)] = line
     return frozen
+
+
+def _reads_back_as(line: str, key: str, value: str) -> bool:
+    """Does *line* define *key* as exactly *value*, and nothing else, through BOTH local readers:
+    the launch load's (python-dotenv's parser, then its ``${VAR}`` resolver) and the scope's
+    one-physical-line tokenizer (scopes and bound ``get_secret``)? The resolver runs against an
+    empty environment: a reference always resolves to text shorter than itself there, so equality
+    means the line holds no reference and reads the same against any environment."""
+    from hermes_cli.env_loader import resolve_dotenv_lines
+    bindings = [(b.key, b.value) for b in parse_stream(io.StringIO(line)) if b.key is not None]
+    return (resolve_dotenv_lines(bindings, {}, override=True) == [(key, value)]
+            and _parse_env_text(line) == {key: value})
 
 
 def _remove(path: Path) -> None:

@@ -257,6 +257,67 @@ def test_a_frozen_kept_line_reads_back_as_the_value_it_froze(plane, monkeypatch,
     assert set(_readers(plane.home, "TERMINAL_RV_REF").values()) == {value}
 
 
+# A value no single physical line carries through BOTH local readers (python-dotenv for the launch
+# load, the one-line tokenizer for scopes and bound get_secret) cannot be frozen: the import leaves
+# that kept line exactly as written, and it resolves at each start as before. Expected values were
+# produced by executing the base loader (06189b9508, local store) on each text.
+MULTILINE = {
+    "escaped_newline": ('RV_DIR="l1\\nl2"\nTERMINAL_RV_REF=${RV_DIR}|\n', "l1\nl2|"),
+    "physical_newline": ('RV_DIR=/x\nTERMINAL_RV_REF="${RV_DIR}\nsecond"\n', "/x\nsecond"),
+}
+
+
+@pytest.mark.parametrize("store", ["local", "remote"])
+@pytest.mark.parametrize("case", MULTILINE)
+def test_a_kept_line_resolving_to_a_multiline_value_is_served_whole(plane, monkeypatch, store, case):
+    text, expected = MULTILINE[case]
+    _fresh_start(monkeypatch, {})
+    if store == "local":
+        monkeypatch.delenv("HERMES_SECRET_STORE")
+        routing.reset_for_tests()
+    (plane.home / ".env").write_text(text, encoding="utf-8")
+    _boot(plane.home)
+    assert set(_readers(plane.home, "TERMINAL_RV_REF").values()) == {expected}
+    if store == "remote":   # the kept line is left exactly as written
+        assert (plane.home / ".env").read_text(encoding="utf-8") == text.split("\n", 1)[1]
+    _fresh_start(monkeypatch, {})
+    _boot(plane.home)
+    assert set(_readers(plane.home, "TERMINAL_RV_REF").values()) == {expected}
+
+
+def _generated_values():
+    import random
+    rng = random.Random(0x5EC2)
+    alphabet = ["a", "Z", "0", " ", "\t", "\n", "\r", '"', "'", "\\", "$", "{", "}", "${", "${RV_DIR}",
+                "${X:-d}", "#", "=", "n", "\u2028", "\x0c", "\u00e9", "export "]
+    values = {"".join(rng.choice(alphabet) for _ in range(rng.randint(1, 6))) for _ in range(160)}
+    return sorted(values | {"\n", "\r", "a\r\nb", "\\n", '"\n"', "${", "$", "${RV_DIR}", "x\ty", "\u2028"})
+
+
+_BREAKS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"   # str.splitlines() boundaries
+
+
+@pytest.mark.parametrize("value", _generated_values(), ids=lambda v: repr(v)[1:-1][:40])
+def test_a_kept_line_is_frozen_only_when_both_readers_read_back_the_frozen_value(plane, monkeypatch, value):
+    """Generated values reach a kept line through a launch reference. Either the line was frozen and
+    every reader (the launch load, the scope tokenizer, bound get_secret, ...) serves exactly the
+    value at every later start, or the import left the line byte for byte as written. A one-line
+    value with no reference in it always freezes."""
+    from dotenv.variables import Variable, parse_variables
+    _fresh_start(monkeypatch, {"RV_SHELL": value})
+    (plane.home / ".env").write_text("TERMINAL_RV_REF=${RV_SHELL}\nRV_DIR=/x\n", encoding="utf-8")
+    _boot(plane.home)
+    left = (plane.home / ".env").read_text(encoding="utf-8")
+    if left == "TERMINAL_RV_REF=${RV_SHELL}\n":
+        assert any(c in value for c in _BREAKS) or any(isinstance(a, Variable) for a in parse_variables(value))
+        return
+    assert "${RV_SHELL}" not in left
+    _fresh_start(monkeypatch, {})
+    monkeypatch.delenv("RV_SHELL", raising=False)
+    _boot(plane.home)
+    assert set(_readers(plane.home, "TERMINAL_RV_REF").values()) == {value}
+
+
 @pytest.mark.parametrize("store", ["local", "remote"])
 def test_a_satellite_import_sees_process_globals_as_they_are_after_the_launch_load(plane, monkeypatch, store):
     """The original satellite builder resolves a satellite ``.env`` against the process-global names

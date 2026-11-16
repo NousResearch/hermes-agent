@@ -108,6 +108,7 @@ def reset_for_tests() -> None:
     with _RESTART_LOCK:
         _RESTART_WANTED.clear()
         _RESTART_TAKEN.clear()
+        _RESTART_DEFERRED.clear()
 
 
 # --- bootstrap and deployment ------------------------------------------------------------------
@@ -512,6 +513,7 @@ def auth_json_exists(auth_file: Path) -> bool:
 _RESTART_HANDLER: list = []   # [callable] the running process's graceful restart, when it has one
 _RESTART_WANTED: list = []    # [reason] a restart asked for; it stays wanted until a handler takes it
 _RESTART_TAKEN: list = []     # [True] once a handler took it: the process is restarting
+_RESTART_DEFERRED: list = []  # [True] once told it waits for the next start (no handler at all)
 _RESTART_LOCK = threading.Lock()
 
 
@@ -534,13 +536,19 @@ def request_restart(reason: str) -> bool:
     level, not an event: it stays wanted until a handler takes it, and every later call (a store's
     poller asks again on each tick) or handler registration hands it to the current handler. True
     once a handler has taken it, now or before; False while none has (an interactive CLI never
-    registers one: the change then applies the next time the process starts)."""
+    registers one: the change then applies the next time the process starts, said once). A
+    registered handler that could not take it (its loop closed) says nothing: a new handler or a
+    later ask still takes it."""
     with _RESTART_LOCK:
-        first = not _RESTART_WANTED
-        if first:
+        if not _RESTART_WANTED:
             _RESTART_WANTED.append(reason)
     taken = _deliver_restart()
-    if first and not taken:
+    with _RESTART_LOCK:
+        deferred = not taken and not _RESTART_TAKEN and not _RESTART_HANDLER and not _RESTART_DEFERRED
+        if deferred:
+            _RESTART_DEFERRED.append(True)
+            reason = _RESTART_WANTED[0]
+    if deferred:
         import logging
         logging.getLogger(__name__).warning(
             "Secrets changed outside this process (%s); they apply when Hermes next starts", reason)

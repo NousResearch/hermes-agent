@@ -373,6 +373,38 @@ def test_a_closed_loop_then_a_working_gateway_restarts_once(plane, supervised):
     assert runner.stopped == _PLANNED
 
 
+def test_a_closed_loop_never_says_the_change_waits_for_the_next_start(plane, supervised, caplog):
+    """The old gateway's closed loop cannot take the restart, but a handler is registered: nothing
+    says the change waits for the next start, and the new gateway's restart is the one log line.
+    Only a process with no handler at all says it, once."""
+    from gateway.restart_when_idle import install_secret_store_restart
+    plane.set_level(plane.profile("default"), env={"CLOSED_LOG": "before"})
+    _boot(plane.home)
+    install_secret_store_restart(_ClosedLoop(), _Runner())
+    plane.set_level(plane.profile("default"), env={"CLOSED_LOG": "after"})
+    runner = _Runner()
+    with caplog.at_level(logging.WARNING), _GatewayLoop() as loop:
+        _poll()
+        _poll()
+        install_secret_store_restart(loop, runner)
+        wait_until(lambda: bool(runner.stopped), timeout=10)
+    assert "they apply when Hermes next starts" not in caplog.text
+    assert caplog.text.count("restarting gracefully to apply them") == 1
+    assert runner.stopped == _PLANNED
+
+
+def test_with_no_handler_the_next_start_is_said_once(plane, caplog):
+    routing.set_restart_handler(None)
+    plane.set_level(plane.profile("default"), env={"CLI_ONCE": MARK})
+    _boot(plane.home)
+    plane.set_level(plane.profile("default"), env={"CLI_ONCE": "changed"})
+    with caplog.at_level(logging.WARNING):
+        _poll()
+        _poll()
+        routing.request_restart("again")
+    assert caplog.text.count("they apply when Hermes next starts") == 1
+
+
 def test_the_poller_asks_again_on_every_tick_until_the_handler_takes_the_restart(plane):
     """A handler that cannot take the restart the first time (no new registration follows): only
     the poller asking again on its next tick delivers it, and once taken it is never asked again."""

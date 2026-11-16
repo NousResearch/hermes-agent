@@ -2,7 +2,11 @@
 import asyncio
 import hashlib
 import json
+import logging
+import sqlite3
 import uuid
+
+logger = logging.getLogger(__name__)
 
 
 class CronExecutionUnknown(RuntimeError):
@@ -120,7 +124,14 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 # the run's silence. A wedged owner stops stamping and the sweep still fires.
                 from cron.executions import touch_execution_progress
                 progress = state['progress_at']
-                await asyncio.to_thread(touch_execution_progress, request_id)
+                try:
+                    await asyncio.to_thread(touch_execution_progress, request_id)
+                except sqlite3.OperationalError as exc:
+                    # Informational only: another writer holding the ledger past its busy timeout
+                    # must not cost a live run its supervision. The next owner stamp retries.
+                    if 'locked' not in str(exc):
+                        raise
+                    logger.warning('Cron %s progress stamp skipped: %s', job['id'], exc)
             if state['status'] == 'terminal':
                 job.update(state.get('job_flags') or {})
                 return tuple(state['result'])

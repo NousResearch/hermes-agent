@@ -138,9 +138,26 @@ def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
 
 def _whatsapp_install_bridge(bridge_dir) -> bool:
     """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready, bridge_dependency_install_lock
+    if bridge_dependencies_ready(bridge_dir):
+        print("✓ Bridge dependencies already installed")
+        return True
+    try:
+        with bridge_dependency_install_lock(bridge_dir):
+            if bridge_dependencies_ready(bridge_dir):
+                return True
+            return _whatsapp_install_bridge_unlocked(bridge_dir)
+    except (OSError, TimeoutError) as exc:
+        print(f"  ✗ Bridge dependency lock failed: {exc}")
+        return False
+
+
+def _whatsapp_install_bridge_unlocked(bridge_dir) -> bool:
     from hermes_constants import find_node_executable, with_hermes_node_path
+    from plugins.platforms.whatsapp.bridge_dependencies import bridge_dependencies_ready, stamp_bridge_dependencies
     from utils import env_int
-    if _whatsapp_bridge_dependencies_current(bridge_dir):
+    if bridge_dependencies_ready(bridge_dir) or _whatsapp_bridge_dependencies_current(bridge_dir):
+        stamp_bridge_dependencies(bridge_dir)
         print("✓ Bridge dependencies already installed")
         return True
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
@@ -158,9 +175,12 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
-            encoding="utf-8", errors="replace", env=env, check=False)
-    except (pm.InstallError, OSError, subprocess.TimeoutExpired) as exc:
+            encoding="utf-8", errors="replace", env=env, check=False,
+            timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300))
+    except subprocess.TimeoutExpired:
+        print("  ✗ Bridge dependency install timed out")
+        return False
+    except (pm.InstallError, OSError) as exc:
         print(f"  ✗ Bridge dependency preparation failed: {exc}")
         return False
     except KeyboardInterrupt:
@@ -171,6 +191,7 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
         _say("  ✗ npm install failed:", preview)
         return False
+    stamp_bridge_dependencies(bridge_dir)
     print("  ✓ Dependencies installed")
     return True
 

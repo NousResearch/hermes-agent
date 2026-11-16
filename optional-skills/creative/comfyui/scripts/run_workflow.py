@@ -171,7 +171,12 @@ class ComfyRunner:
 
     # ---------- submit ----------
     def submit(self, workflow: dict) -> dict:
-        payload: dict[str, Any] = {"prompt": workflow, "client_id": self.client_id}
+        prompt = {
+            node_id: node
+            for node_id, node in workflow.items()
+            if isinstance(node, dict) and "class_type" in node
+        }
+        payload: dict[str, Any] = {"prompt": prompt, "client_id": self.client_id}
         if self.partner_key:
             payload["extra_data"] = {"api_key_comfy_org": self.partner_key}
 

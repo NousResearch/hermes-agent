@@ -5,6 +5,34 @@ import { svUpdateChannel } from './sv_update_channel'
 // Swedish desktop translation. Keep the English fallback for keys introduced
 // between translation updates.
 export const svOverrides: TranslationOverrides = {
+  promptNotices: {
+    sessionCommands: {
+      undoUsage: 'användning: /undo [N]',
+      undoNothing: 'inget att ångra',
+      undidOne: count => `ångrade ${count} meddelande – det borttagna meddelandet finns i skrivfältet`,
+      undidOther: count => `ångrade ${count} meddelanden – de borttagna meddelandena finns i skrivfältet`,
+      retryNothing: 'inget att försöka igen med',
+      retryUnsupported: '/retry: försök igen har inte stöd för medier eller okända innehållsdelar',
+      busy: command =>
+        `sessionen är upptagen – Hermes svarar fortfarande. Stoppa först det aktuella svaret med stoppknappen eller Ctrl+C i en terminal och kör sedan /${command}.`,
+      busyCompressing: command =>
+        `sessionen är upptagen – /compress körs. Kör /${command} när komprimeringen är klar.`,
+      steerUsage: 'användning: /steer <prompt>',
+      steerQueued: preview => `styrning köad – kommer efter nästa verktygsanrop: ”${preview}”`,
+      steerNoActiveTurn: preview => `ingen aktiv tur – köad till nästa: ”${preview}”`,
+      steerRejected: 'styrning avvisades – ingen aktiv tur, köad till nästa tur',
+      queued: preview => `köad: ”${preview}”`,
+      queueFailed: 'kunde inte köa meddelandet',
+      countOne: count => `${count} köat meddelande`,
+      countOther: count => `${count} köade meddelanden`,
+      queueEditKeptTitle: 'Det köade meddelandet ändrades inte',
+      queueEditKept:
+        'Det startade eller avvisades innan ändringen sparades. Din redigerade text finns i skrivfältet.',
+      queueEditUnconfirmedTitle: 'Ändringen bekräftades inte',
+      queueEditUnconfirmed:
+        'Hermes kunde inte bekräfta ändringen. Spara igen för att försöka med samma ändring; den köas aldrig två gånger.'
+    }
+  },
   common: {
     apply: 'Tillämpa',
     back: 'Tillbaka',

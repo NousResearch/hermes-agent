@@ -1191,9 +1191,15 @@ export const svOverrides: TranslationOverrides = {
       'memory.userProfileEnabled': 'Upprätthåll en kompakt profil över användarens inställningar.',
       'context.engine': 'Strategi för att hantera långa konversationer nära kontextgränsen.',
       'compression.enabled': 'Sammanfatta äldre kontext när konversationer blir stora.',
+      'compression.codexGpt55Autoraise':
+        'Höj komprimeringen till 85 % för ChatGPT Codex OAuth-modeller som stöds.',
+      'auxiliary.compression.timeout':
+        'Antal sekunder att vänta på den sekundära komprimeringsmodellen per anrop (standard: 120). Höj värdet för långsamma lokala modeller.',
       'voice.autoTts': 'Läs automatiskt upp assistentens svar.',
       'stt.enabled': 'Aktivera lokal eller leverantörsbaserad taltranskribering.',
       'stt.echoTranscripts': 'Skicka råa 🎙️-transkriptioner av röstmeddelanden tillbaka till chatten.',
+      'stt.streaming':
+        'Visa text medan du talar (OpenAI, xAI, ElevenLabs). Återgår till inspelningen om något misslyckas.',
       'stt.elevenlabs.languageCode':
         'Valfri ISO-639-3-språkkod. Tomt låter ElevenLabs identifiera språket automatiskt.',
       'tts.xai.voiceId': 'xAI-röst-ID (t.ex. eve) eller ett eget röst-ID.',

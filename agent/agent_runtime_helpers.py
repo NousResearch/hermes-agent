@@ -20,7 +20,7 @@ from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
 from agent.message_metadata import (
-    TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
+    MERGED_TURN_PREFIX, TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.cache_bounds import publish_lru
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
@@ -33,7 +33,6 @@ from agent.credential_pool import (
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
-from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
@@ -664,11 +663,12 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
     from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
+    from agent.session_persistence import _is_ephemeral_scaffolding
     from hermes_state import SessionDB
 
-    def _plain_text(content: Any) -> bool:
-        # never rewrite the persisted row around undecodable content
-        return isinstance(content, str) and not content.startswith(SessionDB._CONTENT_JSON_PREFIX)
+    def _mergeable(row: dict) -> bool:
+        # Never rewrite the persisted row around undecodable content, nor fold request-only scaffolding into it.
+        return isinstance(c := row.get("content", ""), str) and not c.startswith(SessionDB._CONTENT_JSON_PREFIX) and not _is_ephemeral_scaffolding(row)
 
     repairs = 0
     merged: list[dict] = []
@@ -684,7 +684,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             and prev.get("display_kind") != STEER_DISPLAY_KIND
             # Plain-text only, and never a passive (``observed``) row into an addressed turn: the merged
             # row keeps observed=True, so replay would fold the addressed text into the group context (#154180).
-            and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
+            and _mergeable(prev) and _mergeable(msg)
             and bool(prev.get("observed")) == bool(msg.get("observed"))
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")

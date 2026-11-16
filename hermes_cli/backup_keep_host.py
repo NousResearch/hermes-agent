@@ -4,24 +4,34 @@ A Hermes Cloud agent is provisioned by its platform: it is signed in to Nous Por
 tools route through Nous, its dashboard is gated by the portal's OAuth client, and its scheduler is
 tuned for the container. Replacing that agent with someone's local backup must bring over
 everything that makes the agent theirs (memory, persona, skills, conversations, jobs, settings, and
-their other API keys and logins) while the host-owned pieces stay as the host set them:
+their other API keys and logins) while the host-owned pieces stay as the host set them.
 
-* ``auth.json``: the destination's Nous Portal entries (``providers.nous``, the ``nous`` pool rows,
-  ``active_provider`` when either side used ``nous``); every other provider comes from the archive.
-  Merged under the auth-store lock against the LIVE store, so a Nous token refresh racing the
-  restore is never rolled back, and the archive's own Nous refresh token never lands on disk.
-* ``config.yaml``: the top-level sections in :data:`HOST_CONFIG_KEYS` keep the destination's value
-  (or stay absent); every other key comes from the archive.
-* ``.env``: keys :func:`host_env_key` names keep the destination's value; the rest come over.
-* ``shared/nous_auth.json`` (the cross-profile Nous token store) is never taken from the archive.
-* ``skills/`` and ``memories/`` become exactly the archive's: a destination file the archive does
-  not carry is removed, so the result is a replacement, not a merge.
+This is not a second restore. :class:`KeepHostImport` is a per-member policy that
+``hermes import`` applies inside its own checked restore (the traversal and resolved-root checks
+included), under the same ``exclusive_maintenance`` reservation, so nothing here writes outside it.
 
-Messaging bot tokens come over like any other key. A bot token answers to one running Hermes at a
-time, so the user stops the old one; the Desktop says so before the transfer.
+* The root home's ``config.yaml``: the top-level sections in :data:`HOST_CONFIG_KEYS` keep the
+  destination's value (or stay absent); every other key comes from the archive. Written with the
+  comment-preserving config writer onto the archive's own document.
+* The root home's ``.env``: names :func:`host_env_key` matches keep the destination's line.
+* ``auth.json`` at the root and at each ``profiles/<name>/``: the destination's Nous Portal rows
+  (``providers.nous``, the ``nous`` pool rows, ``active_provider`` when either side used ``nous``);
+  every other provider comes from the archive. Merged under the auth-store lock against the live
+  store, so a token refresh racing the restore is never rolled back.
+* A named profile's ``config.yaml`` and ``.env`` arrive whole: only the root home is the host's.
+* Never taken from the archive: ``shared/nous_auth.json``, ``webapp/`` (the Webapp's sign-in
+  state), ``install_id`` and lock files.
+* Replace, not merge: in the root home and in every profile the archive carries, a file the archive
+  lacks is removed, and the root's ``config.yaml``/``.env``/``auth.json`` keep only their host-owned
+  part. Kept: databases (restored page by page, never unlinked under a live reader), logs and the
+  host's runtime records. A profile only the destination has is left exactly as it is.
 
-Before anything is written a full backup of the destination lands in ``backups/pre-transfer-*.zip``:
-``hermes import <it> --force --keep-host`` puts the agent back (its host keys are the archive's then).
+The undo point is a full ``hermes backup`` of the destination (memory-provider files outside the
+home included), taken under the reservation after the gateway drained, in
+``backups/pre-transfer-*.zip`` (the last three are kept). An import that wrote files and did not
+finish leaves a marker naming its undo point, and the next keep-host import (a retry) reuses it
+instead of backing up a half-restored agent. ``hermes import <undo point> --force --keep-host`` puts
+the agent back.
 
 In an s6 container (the image Hermes Cloud runs) the gateway owns the profile, and ``hermes import``
 refuses ``state.db`` while it does. :func:`gateway_paused` asks the gateway to drain and exit through
@@ -32,13 +42,14 @@ run-once so the supervisor does not bring it back mid-restore, then starts the s
 from __future__ import annotations
 
 import copy
-import io
 import json
 import logging
+import secrets
 import zipfile
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli.archive_safe import normalize_archive_parts
 
@@ -59,11 +70,35 @@ HOST_CONFIG_KEYS = (
 _HOST_ENV_PREFIXES = ("NOUS_", "HERMES_", "TOOL_GATEWAY_")
 _HOST_ENV_NAMES = frozenset({"API_SERVER_KEY"})
 
-_SHARED_NOUS_STORE = "shared/nous_auth.json"
-_REPLACED_TREES = ("skills", "memories")
+_SHARED_NOUS_STORE = ("shared", "nous_auth.json")
+# The machine's identity: a copy would make two installs report as one.
+_HOST_ROOT_FILES = frozenset({"install_id"})
+# The Webapp's sign-in state (its browser credential, native grants, the Portal callback): the
+# host's Web Access, like the ``webapp`` config section.
+_HOST_ROOT_DIRS = frozenset({"webapp"})
+# Written by the host's running services, so a replace leaves them.
+_RUNTIME_ENTRIES = frozenset({
+    "logs", "state", "runtime", ".local", "spawn-ledger.json", "channel_directory.json",
+    "gateway-starts.log", "plugin-update-checks",
+})
+_RUNTIME_FILES = frozenset({("cron", "ticker_last_success"), ("cron", "ticker_heartbeat")})
+# A skill's or plugin's own *.lock is content; every other lock file is a kernel-lock inode that
+# other processes hold, never restored or removed.
+_CONTENT_TREES = frozenset({"skills", "plugins"})
+_ROOT_HOST_FILES = frozenset({("config.yaml",), (".env",), ("auth.json",)})
+_DB_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db-journal")
+
 _UNDO_PREFIX = "pre-transfer-"
 _UNDO_KEEP = 3
+_UNFINISHED_MARKER = ".transfer-unfinished"
+# The line the dashboard's action status reads the undo point from.
+UNDO_POINT_LINE = "Undo point: "
+_EXTERNAL = "_external/"
 _NOUS = "nous"
+
+
+class KeepHostRefused(RuntimeError):
+    """The keep-host import stopped before it wrote anything."""
 
 
 def host_env_key(name: str) -> bool:
@@ -77,10 +112,20 @@ def _env_name(line: str) -> str:
     return body.removeprefix("export ").split("=", 1)[0].strip()
 
 
+def _host_lines(text: str) -> dict[str, str]:
+    lines: dict[str, str] = {}
+    for line in text.splitlines():
+        if host_env_key(_env_name(line)):
+            lines.setdefault(_env_name(line), line)
+    return lines
+
+
 def merge_env(archive_text: str, host_text: str) -> str:
-    """The archive's .env with every host-owned name set to the destination's line (in place, so an
-    undo reproduces the file byte for byte), dropped when the destination lacks it, and the
-    destination's other host-owned lines appended."""
+    """The archive's .env with every host-owned name set to the destination's line (in place),
+    dropped when the destination lacks it, and the destination's other host-owned lines appended.
+    The archive's text unchanged when both already agree on the host-owned lines (an undo)."""
+    if _host_lines(archive_text) == _host_lines(host_text):
+        return archive_text
     host = {_env_name(line): line for line in host_text.splitlines() if host_env_key(_env_name(line))}
     out = []
     for line in archive_text.splitlines():
@@ -107,30 +152,35 @@ def merge_auth(archive_store: dict[str, Any], host_store: dict[str, Any]) -> dic
     """The archive's auth store with the destination's Nous Portal sign-in in place of its own."""
     merged = copy.deepcopy(archive_store)
     for section in ("providers", "credential_pool"):
-        raw_theirs, raw_ours = merged.get(section), host_store.get(section)
-        theirs: dict[str, Any] = raw_theirs if isinstance(raw_theirs, dict) else {}
+        raw_ours = host_store.get(section)
         ours: dict[str, Any] = raw_ours if isinstance(raw_ours, dict) else {}
+        theirs = merged.get(section)
+        if not isinstance(theirs, dict):
+            if _NOUS not in ours:
+                continue
+            theirs = merged[section] = {}
         theirs.pop(_NOUS, None)
         if _NOUS in ours:
             theirs[_NOUS] = copy.deepcopy(ours[_NOUS])
-        merged[section] = theirs
     if _NOUS in (merged.get("active_provider"), host_store.get("active_provider")):
         merged["active_provider"] = host_store.get("active_provider")
     return merged
 
 
-def _yaml(raw: Optional[bytes]) -> dict[str, Any]:
+def _yaml_map(raw: bytes, what: str) -> dict[str, Any]:
     import hermes_yaml as yaml
-    data = yaml.safe_load(raw.decode("utf-8-sig")) if raw else None  # config-reader: ok — raw keep-host merge of one file
-    return data if isinstance(data, dict) else {}
+    text = raw.decode("utf-8-sig")
+    data = yaml.safe_load(text) if text.strip() else None  # config-reader: ok — raw keep-host merge of one file
+    if data is not None and not isinstance(data, dict):
+        raise ValueError(f"{what} is not a mapping")
+    return dict(data or {})
 
 
-def _json(raw: Optional[bytes]) -> dict[str, Any]:
-    try:
-        data = json.loads(raw.decode("utf-8-sig")) if raw else None
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
+def _auth_store(raw: bytes) -> dict[str, Any]:
+    data = json.loads(raw.decode("utf-8-sig") or "{}")
+    if not isinstance(data, dict):
+        raise ValueError("the backup's auth.json is not an auth store")
+    return data
 
 
 def _live(path: Path) -> bytes:
@@ -140,135 +190,289 @@ def _live(path: Path) -> bytes:
         return b""
 
 
-class _KeepHostZip:
-    """The archive as the import reads it, with config.yaml and .env members merged against the
-    destination's live file at the moment each is published. Everything else passes through."""
-
-    def __init__(self, zf, prefix: str, root: Path):
-        self._zf, self._prefix, self._root = zf, prefix, root
-
-    def __getattr__(self, name):
-        return getattr(self._zf, name)
-
-    def open(self, member, *args, **kwargs):
-        # Only the root home is the host's: a named profile or a skill's own config.yaml arrives whole.
-        rel = _rel(member, self._prefix)
-        if rel not in ("config.yaml", ".env"):
-            return self._zf.open(member, *args, **kwargs)
-        archive, live = self._zf.read(member), _live(self._root / rel)
-        if rel == ".env":
-            data = merge_env(archive.decode("utf-8-sig", "replace"), live.decode("utf-8", "replace")).encode()
-        else:
-            import hermes_yaml as yaml
-            data = yaml.safe_dump(merge_config(_yaml(archive), _yaml(live)), sort_keys=False).encode()
-        return io.BytesIO(data)
+def _home_parts(parts: tuple[str, ...]) -> tuple[str, ...]:
+    """``parts`` relative to the profile home they sit in (the root or ``profiles/<name>``)."""
+    return parts[2:] if len(parts) >= 3 and parts[0] == "profiles" else parts
 
 
-def _rel(member: str, prefix: str) -> str:
-    return member[len(prefix):] if prefix and member.startswith(prefix) else member
-
-
-def _is_auth_store(rel: str) -> bool:
-    """``auth.json`` at the root or a named profile's root; anything else (a traversal included) is
-    an ordinary member the import checks and restores."""
-    try:
-        parts = normalize_archive_parts(rel)
-    except ValueError:
-        return False
-    return parts == ["auth.json"] or (len(parts) == 3 and parts[0] == "profiles" and parts[2] == "auth.json")
-
-
-def _restore_auth_members(zf, members: list[str], prefix: str, root: Path) -> list[str]:
-    """Merge each archived auth.json into the live one under its lock; return per-file errors."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
-    errors = []
-    for member in members:
-        target = root.joinpath(*normalize_archive_parts(_rel(member, prefix)))
-        try:
-            if not target.resolve().is_relative_to(root.resolve()):
-                raise OSError("path traversal blocked")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with _auth_store_lock(target_path=target):
-                _save_auth_store(merge_auth(_json(zf.read(member)), _load_auth_store(target)), target_path=target)
-        except Exception as exc:  # health: allow BLE001 -- reported like any other unrestored member
-            errors.append(f"  {_rel(member, prefix)}: {exc}")
-    return errors
-
-
-def _prune_replaced_trees(root: Path, archive_rels: set[str]) -> int:
-    """Remove destination files under ``skills/`` and ``memories/`` the archive did not carry."""
-    from hermes_cli.backup import _should_exclude
-    profiles = root / "profiles"
-    homes = [root, *(p for p in profiles.iterdir() if p.is_dir())] if profiles.is_dir() else [root]
-    removed = 0
-    for home in homes:
-        for base in (home / tree for tree in _REPLACED_TREES):
-            for path in sorted(base.rglob("*"), reverse=True) if base.is_dir() else ():
-                rel = path.relative_to(root)
-                if path.is_dir() and not path.is_symlink():
-                    if not any(path.iterdir()):
-                        path.rmdir()
-                elif rel.as_posix() not in archive_rels and not _should_exclude(rel.relative_to(home.relative_to(root))):
-                    path.unlink()
-                    removed += 1
-    return removed
+def _is_auth_store(parts: tuple[str, ...]) -> bool:
+    return parts == ("auth.json",) or (len(parts) == 3 and parts[0] == "profiles" and parts[2] == "auth.json")
 
 
 def kept_summary(root: Path) -> list[str]:
     """Human lines for what a keep-host restore leaves as the destination has it."""
-    cfg, env = _yaml(_live(root / "config.yaml")), _live(root / ".env").decode("utf-8", "replace")
+    try:
+        cfg = _yaml_map(_live(root / "config.yaml"), "config.yaml")
+        store = _auth_store(_live(root / "auth.json"))
+    except (OSError, ValueError) as exc:
+        return [f"  (this agent's settings could not be read: {exc})"]
+    env = _live(root / ".env").decode("utf-8", "replace")
     names = sorted({n for n in map(_env_name, env.splitlines()) if n and host_env_key(n)})
-    signed_in = _NOUS in (_json(_live(root / "auth.json")).get("providers") or {})
+    signed_in = _NOUS in (store.get("providers") or {})
     return [f"  config.yaml: {', '.join(k for k in HOST_CONFIG_KEYS if k in cfg) or '(none set here)'}",
             f"  .env: {', '.join(names) or '(none set here)'}",
             f"  auth.json: {'its Nous Portal sign-in' if signed_in else '(not signed in to Nous Portal)'}"]
 
 
-def create_undo_point(
-    root: Path, out_path: Optional[Path] = None, external_members: tuple[str, ...] = (),
-) -> Optional[Path]:
-    """Back up the destination, including existing external files this import will overwrite.
+def create_undo_point(root: Path, external_members: tuple[str, ...] = ()) -> Optional[Path]:
+    """A full backup of ``root`` as ``hermes backup`` collects it (the memory provider's files outside
+    the home included), plus the existing files the archive's ``_external/`` members will overwrite.
+    None when it could not be written whole."""
+    from hermes_cli.backup import _collect_external_entries, _write_full_zip_backup
+    entries = {arcname: path for path, arcname in _collect_external_entries()[0]}
+    home = Path.home().resolve()
+    for member in external_members:
+        target = home / member.removeprefix(_EXTERNAL)
+        try:
+            inside = target.resolve().is_relative_to(home)
+        except (OSError, ValueError):
+            continue  # the import refuses the member too
+        if inside and target.is_symlink():
+            logger.warning("Undo point cannot include linked external state: %s", member)
+            return None
+        if inside and target.is_file():
+            entries.setdefault(member, target)
+    backups = root / "backups"
+    backups.mkdir(parents=True, exist_ok=True, mode=0o700)
+    out = backups / f"{_UNDO_PREFIX}{datetime.now():%Y-%m-%d-%H%M%S}-{secrets.token_hex(3)}.zip"
+    return _write_full_zip_backup(out, root, [(path, Path(arc)) for arc, path in entries.items()])
 
-    The ordinary automatic full backup only walks HERMES_HOME. Normal ``hermes backup``
-    archives may also contain ``_external/`` memory-provider files under the user's home,
-    which the import publishes outside HERMES_HOME. Without these files the Undo cannot
-    restore their previous contents.
-    """
-    from hermes_cli.backup import _create_prefixed_full_backup, _write_full_zip_backup, _write_zip_file
 
-    if out_path is None:
-        undo = _create_prefixed_full_backup(root, _UNDO_PREFIX, _UNDO_KEEP, "pre-transfer", "pre-transfer backup")
-    else:
-        out_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        undo = _write_full_zip_backup(out_path, root)
-    if undo is None or not external_members:
+def _merge_auth_store(target: Path, archive: dict[str, Any], publish_archive: Optional[Callable[[Path], None]]) -> None:
+    """``merge_auth`` against the live store under its lock, written by the auth store's writer;
+    ``publish_archive`` writes the archive's own bytes when the merge changes nothing (an undo)."""
+    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    from hermes_cli.backup_restore import _auth_restore_target
+    store = _auth_restore_target(target)
+    if store is None:
+        raise OSError("auth.json is hard-linked or cannot be resolved; it was left as it is")
+    with _auth_store_lock(target_path=store):
+        merged = merge_auth(archive, _load_auth_store(store) if store.exists() else {})
+        if publish_archive is not None and merged == archive:
+            publish_archive(store)
+        else:
+            _save_auth_store(merged, target_path=store)
+
+
+class KeepHostImport:
+    """The keep-host policy ``_import_members_exclusive`` applies to each member it has checked,
+    plus :meth:`begin` (before the first write) and :meth:`finish` (after the last), all under the
+    import's reservation."""
+
+    def __init__(self, root: Path, members: list[str], prefix: str, source: Path):
+        self.root, self.source = root, source.resolve()
+        self.rels: set[str] = set()
+        self.profiles: set[str] = set()
+        self.external = tuple(m for m in members if m.startswith(_EXTERNAL))
+        self.undo: Optional[Path] = None
+        for member in members:
+            if member in self.external:
+                continue
+            try:
+                parts = normalize_archive_parts(member[len(prefix):] if prefix and member.startswith(prefix) else member)
+            except ValueError:
+                continue  # reported by the import as a blocked traversal
+            self.rels.add("/".join(parts))
+            if len(parts) >= 3 and parts[0] == "profiles":
+                self.profiles.add(parts[1])
+        # Where HOME is the Hermes home (the Cloud image), external files land inside it.
+        home, base = Path.home().resolve(), root.resolve()
+        for member in self.external:
+            target = home / member.removeprefix(_EXTERNAL)
+            if target.is_relative_to(base):
+                self.rels.add(target.relative_to(base).as_posix())
+
+    def homes(self) -> list[Path]:
+        """Every profile home the archive writes into, reserved with the root for the whole import."""
+        return [self.root / "profiles" / name for name in sorted(self.profiles)]
+
+    def around(self, restore: Callable[..., tuple]) -> Callable[..., tuple]:
+        """``restore`` with this policy: the undo point first, the replace after the last write."""
+        def run(*args):
+            self.begin()
+            result = restore(*args, self)
+            result[2].extend(self.finish(result[2]))
+            return result
+        return run
+
+    def refuse_linked_folders(self) -> None:
+        """Every folder the archive writes into must be a real folder of this home: through a link the
+        restore would land elsewhere, and a backup never carries what is behind one."""
+        from hermes_cli.backup import _is_link_path
+        folders = {Path(rel).parent for rel in self.rels}
+        for folder in {Path(*f.parts[:n]) for f in folders for n in range(1, len(f.parts) + 1)}:
+            if _is_link_path(self.root / folder):
+                raise KeepHostRefused(f"{folder.as_posix()} is a linked folder; nothing was restored. "
+                                      "Replace the link with a real folder, or import without --keep-host")
+
+    def _marker(self) -> Path:
+        return self.root / "backups" / _UNFINISHED_MARKER
+
+    def _unfinished_undo(self) -> Optional[Path]:
+        try:
+            undo = Path(self._marker().read_text(encoding="utf-8-sig").strip())
+        except (OSError, ValueError):
+            return None
+        # Undoing the unfinished import itself takes a fresh undo point of the half-restored agent.
+        if not undo.name.startswith(_UNDO_PREFIX) or undo.resolve() == self.source or not zipfile.is_zipfile(undo):
+            return None
         return undo
 
-    home = Path.home().resolve()
+    def begin(self) -> None:
+        """Take the undo point (or reuse an unfinished import's) and mark the import unfinished."""
+        from utils import atomic_write_text
+        reused = self._unfinished_undo()
+        try:
+            self.undo = reused or create_undo_point(self.root, self.external)
+            if self.undo is not None:
+                atomic_write_text(self._marker(), str(self.undo), mode=0o600)
+        except OSError as exc:
+            raise KeepHostRefused(f"could not back up this agent first (the undo point): {exc}; "
+                                  "nothing was restored") from exc
+        if self.undo is None:
+            raise KeepHostRefused("could not back up this agent first (the undo point); nothing was restored")
+        if reused:
+            print("  An earlier transfer into this agent did not finish; its undo point still applies.")
+        print(f"{UNDO_POINT_LINE}{self.undo}\n  To put this agent back: hermes import {self.undo} --force --keep-host")
+
+    def skips(self, parts: tuple[str, ...]) -> bool:
+        """Members the destination keeps its own copy of."""
+        home = _home_parts(parts)
+        return (parts[-2:] == _SHARED_NOUS_STORE or (len(parts) == 1 and parts[0] in _HOST_ROOT_FILES)
+                or (len(parts) > 1 and parts[0] in _HOST_ROOT_DIRS)
+                or (parts[-1].endswith(".lock") and home[0] not in _CONTENT_TREES))
+
+    def publish(self, zf: zipfile.ZipFile, member: str, parts: tuple[str, ...], target: Path,
+                mode: Optional[int]) -> bool:
+        """Write a host-owned member merged with the destination's copy; False for any other member."""
+        from hermes_yaml import YAMLError
+        if parts == ("config.yaml",):
+            handler = _publish_config
+        elif parts == (".env",):
+            handler = _publish_env
+        elif _is_auth_store(parts):
+            handler = _publish_auth
+        else:
+            return False
+        try:
+            handler(zf, member, target, mode)
+        except (ValueError, RuntimeError, YAMLError) as exc:
+            raise OSError(str(exc)) from exc
+        return True
+
+    def finish(self, errors: list[str]) -> list[str]:
+        """After a restore with no errors, clear what the archive lacks; return problems."""
+        problems = [] if errors else self._clear_absent_host_files()
+        if not errors and not problems:
+            try:
+                removed = self._prune()
+            except OSError as exc:
+                problems.append(f"  removing files the backup does not have: {exc}")
+            else:
+                if removed:
+                    print(f"  Removed {removed} file(s) the backup does not have.")
+        left = sorted(p.name for p in (self.root / "profiles").glob("*")
+                      if p.is_dir() and p.name not in self.profiles)
+        if left:
+            print(f"  Left as they are (not in this backup): profile(s) {', '.join(left)}")
+        if errors or problems:
+            print(f"\n  The restore did not finish. To put this agent back: hermes import {self.undo} --force --keep-host")
+            return problems
+        from hermes_cli.backup import _prune_prefixed_zips
+        self._marker().unlink(missing_ok=True)
+        _prune_prefixed_zips(self.root / "backups", _UNDO_PREFIX, _UNDO_KEEP, "pre-transfer backup")
+        return []
+
+    def _clear_absent_host_files(self) -> list[str]:
+        """A host file the archive does not carry keeps only its host-owned part."""
+        from hermes_cli.config import _env_write_lock, atomic_config_replace
+        from hermes_yaml import YAMLError
+        from utils import atomic_write_text
+        config, env = self.root / "config.yaml", self.root / ".env"
+        steps = [(f"profiles/{name}/auth.json", self.root / "profiles" / name / "auth.json")
+                 for name in sorted(self.profiles)]
+        problems = []
+        for rel, target in [("auth.json", self.root / "auth.json"), *steps, ("config.yaml", config), (".env", env)]:
+            if rel in self.rels or not _live(target):
+                continue
+            try:
+                if target is config:
+                    atomic_config_replace(config, merge_config({}, _yaml_map(_live(config), "config.yaml")))
+                elif target is env:
+                    with _env_write_lock(env):
+                        atomic_write_text(env, merge_env("", _live(env).decode("utf-8")), preserve_mode=True)
+                else:
+                    _merge_auth_store(target, {}, None)
+            except (OSError, ValueError, RuntimeError, YAMLError) as exc:
+                problems.append(f"  {rel}: {exc}")
+        return problems
+
+    def _replaceable(self, parts: tuple[str, ...]) -> bool:
+        """Whether a destination file the archive lacks goes."""
+        from hermes_cli.backup import _import_skipped
+        if parts[0] == "profiles" and (len(parts) < 3 or parts[1] not in self.profiles):
+            return False
+        home = _home_parts(parts)
+        return not (parts in _ROOT_HOST_FILES or _is_auth_store(parts) or self.skips(parts)
+                    or home[0] in _RUNTIME_ENTRIES or home in _RUNTIME_FILES
+                    or parts[-1].endswith(_DB_SUFFIXES) or _import_skipped("/".join(parts)))
+
+    def _prune(self) -> int:
+        """Remove what the archive does not carry. The walk is the backup's own: it never enters a
+        linked folder and yields regular files only, so nothing behind a link is touched."""
+        from hermes_cli.backup import _iter_backup_files
+        homes = {self.root, self.root / "profiles", *(self.root / "profiles" / n for n in self.profiles)}
+        stale = [path for path, rel in _iter_backup_files(self.root, self.root / "backups" / "none.zip")
+                 if rel.as_posix() not in self.rels and self._replaceable(rel.parts)]
+        for path in stale:
+            path.unlink()
+        for folder in sorted({p.parent for p in stale}, key=lambda p: len(p.parts), reverse=True):
+            while folder not in homes and folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
+                folder = folder.parent
+        return len(stale)
+
+
+def _publish_config(zf: zipfile.ZipFile, member: str, target: Path, mode: Optional[int]) -> None:
+    from hermes_cli.backup_restore import _extract_member_atomically
+    from hermes_cli.config import atomic_config_replace
+    from utils import atomic_replace
+    archive = _yaml_map(zf.read(member), "the backup's config.yaml")
+    merged = merge_config(archive, _yaml_map(_live(target), "this agent's config.yaml"))
+    if merged == archive:
+        _extract_member_atomically(zf, member, target, mode)
+        return
+    # The archive's own document (and its comments) with the host's sections written into it.
+    staged = target.with_name(".config.yaml.keep-host")
     try:
-        old_files: list[tuple[Path, str]] = []
-        for member in external_members:
-            rel = member.removeprefix("_external/")
-            target = home / rel
-            if not target.resolve().is_relative_to(home):
-                continue  # The import rejects paths outside the home as well.
-            if target.is_symlink():
-                raise OSError(f"cannot snapshot linked external state: {member}")
-            if target.is_file():
-                old_files.append((target, member))
-        if old_files:
-            with zipfile.ZipFile(undo, "a", zipfile.ZIP_DEFLATED) as archive:
-                for source, member in old_files:
-                    _write_zip_file(archive, source, member)
-    except (OSError, ValueError, zipfile.BadZipFile) as exc:
-        logger.warning("Undo point could not include external state: %s", exc)
-        undo.unlink(missing_ok=True)
-        return None
-    return undo
+        _extract_member_atomically(zf, member, staged, mode)
+        atomic_config_replace(staged, merged)
+        atomic_replace(staged, target)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _publish_env(zf: zipfile.ZipFile, member: str, target: Path, mode: Optional[int]) -> None:
+    from hermes_cli.backup_restore import _extract_member_atomically
+    from hermes_cli.config import _env_write_lock
+    from utils import atomic_write_text
+    archive = zf.read(member).decode("utf-8-sig")
+    with _env_write_lock(target):
+        merged = merge_env(archive, _live(target).decode("utf-8"))
+        if merged == archive:
+            _extract_member_atomically(zf, member, target, mode)
+        else:
+            atomic_write_text(target, merged, preserve_mode=True)
+
+
+def _publish_auth(zf: zipfile.ZipFile, member: str, target: Path, mode: Optional[int]) -> None:
+    from hermes_cli.backup_restore import _extract_member_atomically
+    _merge_auth_store(target, _auth_store(zf.read(member)),
+                      lambda store: _extract_member_atomically(zf, member, store, mode))
 
 
 def _s6_slot(home: Path) -> Optional[str]:
-    """The s6 slot whose gateway serves ``home`` and is up, else None (not an s6 container)."""
+    """The s6 slot whose gateway serves ``home`` and is up; None outside an s6 container."""
     from hermes_cli.service_manager import S6_SERVICE_PREFIX, detect_service_manager, get_service_manager
     from hermes_constants import profile_name_for_home
     if detect_service_manager() != "s6":
@@ -276,8 +480,9 @@ def _s6_slot(home: Path) -> Optional[str]:
     slot = f"{S6_SERVICE_PREFIX}{profile_name_for_home(home) or 'default'}"
     try:
         return slot if get_service_manager().is_running(slot) else None
-    except Exception:  # health: allow BLE001 -- an unprobeable slot is not a running gateway
-        return None
+    except Exception as exc:  # health: allow BLE001 -- a failed probe refuses; it never means "not running"
+        raise KeepHostRefused(f"could not tell whether the gateway ({slot}) is running: {exc}; "
+                              "nothing was restored") from exc
 
 
 @contextmanager
@@ -291,15 +496,15 @@ def gateway_paused(home: Path):
     from gateway.control_socket import pause_gateway_for_update
     from gateway.runtime_ownership import OwnershipConflict
     from hermes_cli.profiles_remove import wait_profile_unowned
-    from hermes_cli.service_manager import S6ServiceManager
+    from hermes_cli.service_manager import S6Error, S6ServiceManager
 
     slot = _s6_slot(home)
     if slot is None:
         yield
         return
     manager = S6ServiceManager()
-    manager._run_svc("-O", "pause", slot)
     try:
+        manager._run_svc("-O", "pause", slot)
         ack = pause_gateway_for_update(home, timeout=8)
         if not (ack and (ack.get("pausing") or ack.get("already_stopping"))):
             raise OwnershipConflict("the gateway did not accept the pause; nothing was restored")
@@ -308,36 +513,23 @@ def gateway_paused(home: Path):
             raise OwnershipConflict("the gateway is still finishing work; nothing was restored. Retry shortly")
         yield
     finally:
-        manager.start(slot)
-        print(f"Started the gateway ({slot}) again.")
+        try:
+            manager.start(slot)
+            print(f"Started the gateway ({slot}) again.")
+        except (S6Error, OSError) as exc:
+            print(f"Warning: the gateway ({slot}) did not start again: {exc}\n  Start it with: hermes gateway start")
 
 
 @contextmanager
-def import_source(args, zf, members: list[str], prefix: str, root: Path):
-    """``(zip, members)`` ``run_import`` restores from, plus the keep-host before/after steps.
-
-    Without ``--keep-host`` the archive is restored as it is. With it: print what is kept, write
-    the undo point, pause the gateway, publish the merged host files, then prune the replaced trees.
-    """
+def keep_host_import(args, members: list[str], prefix: str, root: Path):
+    """The :class:`KeepHostImport` ``run_import`` restores with (None without ``--keep-host``), the
+    profile's gateway drained around it. :class:`KeepHostRefused` means nothing was written."""
     if not getattr(args, "keep_host", False):
-        yield zf, members, []
+        yield None
         return
+    policy = KeepHostImport(root, members, prefix, Path(args.zipfile).expanduser())
+    policy.refuse_linked_folders()
     print("\nKeeping what this host set up (--keep-host):")
     print("\n".join(kept_summary(root)))
-    undo = create_undo_point(
-        root, Path(args.undo_point) if getattr(args, "undo_point", None) else None,
-        tuple(m for m in members if m.startswith("_external/")),
-    )
-    if undo is None:
-        raise OSError("could not back up this agent first (the undo point); nothing was restored")
-    print(f"Undo point: {undo}\n  To put this agent back: hermes import {undo} --force --keep-host")
-    auth = [m for m in members if _is_auth_store(_rel(m, prefix))]
-    shared = {m for m in members if _rel(m, prefix).endswith(_SHARED_NOUS_STORE)}
-    rest = [m for m in members if m not in shared and m not in auth]
     with gateway_paused(root):
-        errors: list[str] = []
-        yield _KeepHostZip(zf, prefix, root), rest, errors
-        errors.extend(_restore_auth_members(zf, auth, prefix, root))
-        removed = _prune_replaced_trees(root, {_rel(m, prefix) for m in members})
-        if removed:
-            print(f"  Removed {removed} skill/memory file(s) the backup does not have.")
+        yield policy

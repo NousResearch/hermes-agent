@@ -4,6 +4,7 @@ Real ``hermes backup`` of a source home, real ``hermes import --keep-host`` into
 that looks like a Hermes Cloud agent (Nous sign-in, platform config, NOUS_* keys), then the undo.
 """
 
+import hashlib
 import json
 import sqlite3
 import zipfile
@@ -38,6 +39,11 @@ def _write(root: Path, rel: str, text: str) -> None:
     (root / rel).write_text(text)
 
 
+DST_CONFIG = ("# Provisioned by Hermes Cloud\nmodel:\n  provider: nous  # host routing\n  default: Hermes-4\n"
+              "nous:\n  guest: false\ncron:\n  preflight: true\ndashboard:\n  oauth:\n    client_id: agent:abc\n"
+              "display:\n  skin: mono  # my pick\n")
+
+
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -54,9 +60,7 @@ def homes(tmp_path, monkeypatch):
     _write(src, "cron/jobs.json", json.dumps({"jobs": [{"id": "srcjob"}]}))
     _db(src / "state.db", ["src-chat"])
 
-    _write(dst, "config.yaml", "model:\n  provider: nous\n  default: Hermes-4\nnous:\n  guest: false\n"
-                               "cron:\n  preflight: true\ndashboard:\n  oauth:\n    client_id: agent:abc\n"
-                               "display:\n  skin: mono\n")
+    _write(dst, "config.yaml", DST_CONFIG)
     _write(dst, ".env", "NOUS_API_KEY=DST-NOUS\nAPI_SERVER_KEY=DST-API\nOPENROUTER_API_KEY=DST-OR\n")
     _write(dst, "auth.json", json.dumps({"version": 1, "active_provider": "nous", "providers": {
         "nous": {"access_token": "DST-NOUS", "refresh_token": "DST-NOUS-RT"}}}))
@@ -74,10 +78,18 @@ def _backup(monkeypatch, home: Path, out: Path) -> Path:
     return out
 
 
-def _import(monkeypatch, home: Path, archive: Path, **flags) -> None:
+def _run(monkeypatch, home: Path, archive: Path, **flags):
     from hermes_cli.backup import run_import
     monkeypatch.setenv("HERMES_HOME", str(home))
-    assert run_import(Namespace(zipfile=str(archive), force=True, **flags)) is None
+    return run_import(Namespace(zipfile=str(archive), force=True, **flags))
+
+
+def _import(monkeypatch, home: Path, archive: Path, **flags) -> None:
+    assert _run(monkeypatch, home, archive, **flags) is None
+
+
+def _undo_point(dst: Path) -> Path:
+    return max((dst / "backups").glob("pre-transfer-*.zip"))
 
 
 def _yaml(path: Path) -> dict:
@@ -85,29 +97,35 @@ def _yaml(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
 
 
+def _tree(root: Path) -> dict[str, str]:
+    """Every file the agent owns, by hash (backups and the host's own logs aside)."""
+    out = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if path.is_file() and rel.parts[0] not in {"backups", "logs"} and not path.name.endswith(".lock"):
+            out[rel.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return out
+
+
 def test_keep_host_replaces_the_agent_but_keeps_its_nous_signin_and_platform_settings(homes, monkeypatch):
     src, dst, tmp = homes
     archive = _backup(monkeypatch, src, tmp / "src.zip")
     host_cfg = _yaml(dst / "config.yaml")
 
-    _import(monkeypatch, dst, archive, keep_host=True, undo_point=str(tmp / "undo.zip"))
+    _import(monkeypatch, dst, archive, keep_host=True)
 
-    # The source's agent arrived: persona, memory, skills (and only its skills), jobs, chats.
     assert (dst / "SOUL.md").read_text() == "source persona\n"
     assert (dst / "memories/MEMORY.md").read_text() == "source memory\n"
     assert (dst / "skills/mine/SKILL.md").exists() and not (dst / "skills/cloud-only").exists()
     assert json.loads((dst / "cron/jobs.json").read_text())["jobs"][0]["id"] == "srcjob"
     assert _ids(dst / "state.db") == ["src-chat"]
-    # Config: the source's own settings, the host's platform sections.
     cfg = _yaml(dst / "config.yaml")
     assert cfg["display"] == {"skin": "ares"} and cfg["platforms"] == {"telegram": {"enabled": True}}
     for key in ("model", "nous", "cron", "dashboard"):
         assert cfg[key] == host_cfg[key]
-    # .env: the source's other keys (incl. its bot token) come over; NOUS_*/API_SERVER_KEY stay.
     env = dict(line.split("=", 1) for line in (dst / ".env").read_text().split())
     assert env == {"OPENROUTER_API_KEY": "SRC-OR", "TELEGRAM_BOT_TOKEN": "SRC-TG",
                    "NOUS_API_KEY": "DST-NOUS", "API_SERVER_KEY": "DST-API"}
-    # auth.json: the source's other logins, the destination's Nous sign-in (never the source's).
     auth = json.loads((dst / "auth.json").read_text())
     assert auth["providers"]["anthropic"] == {"access_token": "SRC-ANT"}
     assert auth["providers"]["nous"] == {"access_token": "DST-NOUS", "refresh_token": "DST-NOUS-RT"}
@@ -126,10 +144,9 @@ def test_keep_host_only_merges_the_root_home(homes, monkeypatch):
     _write(src, "skills/tool/templates/config.yaml", "model: gpt-x\nweb: true\n")
     _write(src, "skills/tool/auth.json", '{"providers": {"nous": {}}}')
 
-    _import(monkeypatch, dst, _backup(monkeypatch, src, tmp / "src.zip"), keep_host=True,
-            undo_point=str(tmp / "undo.zip"))
+    _import(monkeypatch, dst, _backup(monkeypatch, src, tmp / "src.zip"), keep_host=True)
 
-    assert _yaml(dst / "profiles/writer/config.yaml") == _yaml(src / "profiles/writer/config.yaml")
+    assert (dst / "profiles/writer/config.yaml").read_bytes() == (src / "profiles/writer/config.yaml").read_bytes()
     assert (dst / "profiles/writer/.env").read_text() == (src / "profiles/writer/.env").read_text()
     assert (dst / "skills/tool/templates/config.yaml").read_text() == "model: gpt-x\nweb: true\n"
     assert (dst / "skills/tool/auth.json").read_text() == '{"providers": {"nous": {}}}'
@@ -145,79 +162,127 @@ def test_keep_host_refuses_an_auth_member_outside_the_home(homes, monkeypatch, m
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("config.yaml", "display:\n  skin: ares\n")
         zf.writestr(member, json.dumps({"version": 1, "providers": {"x": {"access_token": "CRAFTED"}}}))
-    from hermes_cli.backup import run_import
-    monkeypatch.setenv("HERMES_HOME", str(dst))
 
-    result = run_import(Namespace(zipfile=str(archive), force=True, keep_host=True,
-                                  undo_point=str(tmp / "undo.zip")))
+    result = _run(monkeypatch, dst, archive, keep_host=True)
 
     target = (dst / member).resolve()
     assert result == 1 and not (target.exists() and "CRAFTED" in target.read_text())
 
 
-@pytest.mark.platforms("posix")  # on Windows a backslash is a separator and a symlink needs a privilege
-def test_keep_host_writes_a_profile_auth_store_only_inside_the_home(homes, monkeypatch):
-    """A Windows-spelled member lands at its real path; a profile dir linked out of the home is refused."""
-    _src, dst, tmp = homes
-    (tmp / "outside").mkdir()
-    (dst / "profiles").mkdir()
-    (dst / "profiles" / "linked").symlink_to(tmp / "outside", target_is_directory=True)
-    archive = tmp / "crafted.zip"
-    store = json.dumps({"version": 1, "providers": {"x": {"access_token": "CRAFTED"}}})
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("config.yaml", "display:\n  skin: ares\n")
-        zf.writestr("profiles\\writer\\auth.json", store)
-        zf.writestr("profiles/linked/auth.json", store)
-    from hermes_cli.backup import run_import
-    monkeypatch.setenv("HERMES_HOME", str(dst))
-
-    result = run_import(Namespace(zipfile=str(archive), force=True, keep_host=True,
-                                  undo_point=str(tmp / "undo.zip")))
-
-    assert "CRAFTED" in (dst / "profiles/writer/auth.json").read_text()
-    assert not (dst / "profiles\\writer\\auth.json").exists()
-    assert result == 1 and not (tmp / "outside/auth.json").exists()
-
-
-def test_the_undo_point_puts_the_agent_back(homes, monkeypatch):
+@pytest.mark.platforms("posix")  # a symlink needs a privilege on Windows
+def test_keep_host_refuses_a_linked_folder_and_deletes_nothing(homes, monkeypatch, capsys):
+    """A linked skills/ (or profile) folder: refused before any write, nothing behind it touched."""
     src, dst, tmp = homes
     archive = _backup(monkeypatch, src, tmp / "src.zip")
-    before = {rel: (dst / rel).read_bytes() for rel in ("SOUL.md", "memories/MEMORY.md", ".env",
-                                                        "skills/cloud-only/SKILL.md")}
-    before_cfg, before_auth = _yaml(dst / "config.yaml"), json.loads((dst / "auth.json").read_text())
-    undo = tmp / "undo.zip"
+    outside = tmp / "outside-skills"
+    _write(outside, "precious/SKILL.md", "# precious\n")
+    (dst / "skills").rename(tmp / "old-skills")
+    (dst / "skills").symlink_to(outside, target_is_directory=True)
+    before = _tree(dst)
 
-    _import(monkeypatch, dst, archive, keep_host=True, undo_point=str(undo))
-    assert zipfile.is_zipfile(undo)
-    _import(monkeypatch, dst, undo, keep_host=True, undo_point=str(tmp / "undo2.zip"))
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, dst, archive, keep_host=True)
 
-    assert {rel: (dst / rel).read_bytes() for rel in before} == before
-    assert not (dst / "skills/mine").exists()
+    assert exc.value.code == 1 and "skills is a linked folder" in capsys.readouterr().out
+    assert (outside / "precious/SKILL.md").read_text() == "# precious\n"
+    assert _tree(dst) == before
+
+
+def test_keep_host_clears_logins_the_backup_does_not_carry(homes, monkeypatch):
+    """Replace: a backup without auth.json/.env leaves only the host's Nous sign-in and keys."""
+    src, dst, tmp = homes
+    (src / "auth.json").unlink()
+    (src / ".env").unlink()
+    store = json.loads((dst / "auth.json").read_text())
+    store["providers"]["openai-codex"] = {"tokens": {"access_token": "DST-CODEX"}}
+    (dst / "auth.json").write_text(json.dumps(store))
+
+    _import(monkeypatch, dst, _backup(monkeypatch, src, tmp / "src.zip"), keep_host=True)
+
+    assert json.loads((dst / "auth.json").read_text())["providers"] == {
+        "nous": {"access_token": "DST-NOUS", "refresh_token": "DST-NOUS-RT"}}
+    assert (dst / ".env").read_text() == "NOUS_API_KEY=DST-NOUS\nAPI_SERVER_KEY=DST-API\n"
+
+
+def test_keep_host_keeps_the_backups_config_comments(homes, monkeypatch):
+    """The merged config.yaml is the backup's own document, comments included, with the host's
+    sections written into it."""
+    src, dst, tmp = homes
+    _write(src, "config.yaml", "# my agent\nmodel:\n  provider: openrouter\ndisplay:\n  skin: ares  # dark\n")
+
+    _import(monkeypatch, dst, _backup(monkeypatch, src, tmp / "src.zip"), keep_host=True)
+
+    text = (dst / "config.yaml").read_text()
+    assert text.startswith("# my agent\n") and "skin: ares  # dark" in text
+    assert _yaml(dst / "config.yaml")["model"] == {"provider": "nous", "default": "Hermes-4"}
+
+
+def test_transfer_then_undo_returns_the_agent_byte_for_byte(homes, monkeypatch):
+    """Undo restores the undo point with replace semantics: files the transfer brought (the source's
+    cron/jobs.json, its skills, a new profile) go, and config.yaml keeps its comments."""
+    src, dst, tmp = homes
+    _write(src, "profiles/writer/config.yaml", "display:\n  skin: ares\n")
+    _write(dst, "profiles/solo/SOUL.md", "a profile only the cloud agent has\n")
+    before = _tree(dst)
+    archive = _backup(monkeypatch, src, tmp / "src.zip")
+
+    _import(monkeypatch, dst, archive, keep_host=True)
+    assert (dst / "cron/jobs.json").exists() and (dst / "profiles/writer").is_dir()
+    assert (dst / "profiles/solo/SOUL.md").exists()  # not in the backup: left as it is
+    _import(monkeypatch, dst, _undo_point(dst), keep_host=True)
+
+    after = _tree(dst)
+    after.pop("state.db"), before.pop("state.db")  # restored page by page: compared by content
+    assert after == before
+    assert (dst / "config.yaml").read_text() == DST_CONFIG
     assert _ids(dst / "state.db") == ["cloud-chat"]
-    assert _yaml(dst / "config.yaml") == before_cfg
-    assert json.loads((dst / "auth.json").read_text())["providers"] == before_auth["providers"]
 
 
-def test_undo_restores_existing_external_memory_provider_file(homes, monkeypatch):
+def test_undo_point_holds_the_memory_provider_files_outside_the_home(homes, monkeypatch):
     """A source's external memory file must not irreversibly replace the cloud copy."""
     src, dst, tmp = homes
     archive = _backup(monkeypatch, src, tmp / "src.zip")
     member = "_external/memory-provider/store.json"
-    # The source and cloud homes are on different hosts; emulate the source's
-    # real ``hermes backup`` external member in this shared-filesystem fixture.
     with zipfile.ZipFile(archive, "a") as zf:
         zf.writestr(member, '{"memory": "source"}\n')
     _write(tmp, "memory-provider/store.json", '{"memory": "cloud"}\n')
     external_file = tmp / "memory-provider/store.json"
-    undo = tmp / "undo.zip"
 
-    _import(monkeypatch, dst, archive, keep_host=True, undo_point=str(undo))
+    _import(monkeypatch, dst, archive, keep_host=True)
     assert external_file.read_text() == '{"memory": "source"}\n'
-    with zipfile.ZipFile(undo) as zf:
+    with zipfile.ZipFile(_undo_point(dst)) as zf:
         assert zf.read(member) == b'{"memory": "cloud"}\n'
 
-    _import(monkeypatch, dst, undo, keep_host=True, undo_point=str(tmp / "undo2.zip"))
+    _import(monkeypatch, dst, _undo_point(dst), keep_host=True)
     assert external_file.read_text() == '{"memory": "cloud"}\n'
+
+
+def test_a_retry_after_a_failed_restore_keeps_the_first_undo_point(homes, monkeypatch, capsys):
+    """A restore that wrote files and failed names its undo point; the retry reuses it instead of
+    backing up the half-restored agent, and the refusal message is never claimed."""
+    from hermes_cli import backup
+    src, dst, tmp = homes
+    archive = _backup(monkeypatch, src, tmp / "src.zip")
+    real = backup._extract_member_atomically
+
+    def failing(zf, member, target, mode=None):
+        if member == "SOUL.md":
+            raise OSError("disk full")
+        return real(zf, member, target, mode)
+
+    monkeypatch.setattr(backup, "_extract_member_atomically", failing)
+    assert _run(monkeypatch, dst, archive, keep_host=True) == 1
+    out = capsys.readouterr().out
+    first = _undo_point(dst)
+    assert f"Undo point: {first}" in out and "no files restored" not in out
+    assert (dst / "skills/cloud-only/SKILL.md").exists()  # nothing pruned after a failed restore
+
+    monkeypatch.setattr(backup, "_extract_member_atomically", real)
+    _import(monkeypatch, dst, archive, keep_host=True)
+    assert f"Undo point: {first}" in capsys.readouterr().out
+    assert sorted((dst / "backups").glob("pre-transfer-*.zip")) == [first]
+    _import(monkeypatch, dst, first, keep_host=True)
+    assert (dst / "SOUL.md").read_text() == "cloud persona\n"
 
 
 def test_plain_import_is_unchanged(homes, monkeypatch):
@@ -227,3 +292,4 @@ def test_plain_import_is_unchanged(homes, monkeypatch):
     assert _yaml(dst / "config.yaml")["model"]["provider"] == "openrouter"
     assert "NOUS_API_KEY=SRC-NOUS" in (dst / ".env").read_text()
     assert (dst / "skills/cloud-only/SKILL.md").exists()  # a plain import never removes files
+    assert not (dst / "backups").exists() or not list((dst / "backups").glob("pre-transfer-*"))

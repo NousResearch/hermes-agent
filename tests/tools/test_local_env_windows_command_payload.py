@@ -90,7 +90,13 @@ def test_real_git_bash_executes_payload_larger_than_cmd_limit(local_env, tmp_pat
 @pytest.mark.windows_only
 def test_real_git_bash_preserves_literal_heredoc(local_env, tmp_path):
     destination = tmp_path / "literal-heredoc.txt"
-    payload = "literal $HOME $(printf expanded) `printf expanded`\nC:\\path\\file\n引号 ' \" Ω\n"
+    payload = (
+        "literal $HOME $(printf expanded) `printf expanded`\n"
+        "C:\\path\\file\n"
+        r"a\\b" "\n"
+        r"a\\\\b" "\n"
+        "引号 ' \" Ω\n"
+    )
     before = _staged_files(local_env)
     command = (
         f"cat > {shlex.quote(_bash_safe_path(str(destination)))} <<'LITERAL_PAYLOAD'\n"

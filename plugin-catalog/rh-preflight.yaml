@@ -1,15 +1,15 @@
 name: rh-preflight
 repo: https://github.com/quotumorg/rh-preflight
-sha: 41b54e16bd36c07a9b0ec62f7078ed21d8db3cf9
+sha: 42aa691fbe2a79a12b2d121e3a9e329ac02c98f3
 title: rh-preflight
 description: "rh-preflight by quotum with HEY Research Lab. Before Hermes Agent acts on Robinhood Chain (chain 4663), a pre_tool_call hook reads HEY Research Lab's builder record and ten Robinhood Chain projects for the addresses, agent ids, pools or repositories in the call, then applies your own rules: go, ask (a human approval prompt) or stop in detected cron by default; other asks use Hermes Agent approval, including its YOLO bypass. Unsigned transactions and wallet signing requests get a Toll simulation card with sender balance changes. The card lists each source's line with its link; builder_card and /rh-preflight read a card without acting. Desktop page shows recent checks and human answers. Disclosure — sends only the identifiers you act on to the source hosts listed in the README, plus read-only Robinhood Chain RPC, DexScreener and GeckoTerminal reads; when transaction simulation is on, the detected unsigned transaction or signing request goes to Toll (t0ll.xyz) and HookrRouter trades get a read-only Hookr pool check. Keyless and free (an optional TOLL_API_KEY, read from your Hermes Agent profile secrets, is sent only to Toll); no payments, signatures, subprocesses or writes. Stores a local SQLite ledger of checks in its own plugin data folder. Source records describe what each project published; rh-preflight does not call a token good or bad."
 maintainer: quotumorg
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.5.7"
-docs_url: https://github.com/quotumorg/rh-preflight/blob/41b54e16bd36c07a9b0ec62f7078ed21d8db3cf9/README.md
-image: https://raw.githubusercontent.com/quotumorg/rh-preflight/41b54e16bd36c07a9b0ec62f7078ed21d8db3cf9/docs/banner.png
+version: "0.5.8"
+docs_url: https://github.com/quotumorg/rh-preflight/blob/42aa691fbe2a79a12b2d121e3a9e329ac02c98f3/README.md
+image: https://raw.githubusercontent.com/quotumorg/rh-preflight/42aa691fbe2a79a12b2d121e3a9e329ac02c98f3/docs/banner.png
 readme: true
 platforms: [linux, macos]
 known_issues:

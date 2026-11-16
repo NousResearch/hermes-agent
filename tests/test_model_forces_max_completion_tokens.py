@@ -19,6 +19,14 @@ class TestPositiveCases:
     def test_gpt_5_bare(self):
         assert model_forces_max_completion_tokens("gpt-5") is True
 
+    def test_gpt_6(self):
+        # gpt-6.x reasoning models reject max_tokens the same way as gpt-5.x
+        # (seen on Azure Foundry gpt-6.1-sol-1: 400 unsupported_parameter).
+        assert model_forces_max_completion_tokens("gpt-6") is True
+        assert model_forces_max_completion_tokens("gpt-6.1-sol-1") is True
+        assert model_forces_max_completion_tokens("gpt-6-luna-1") is True
+        assert model_forces_max_completion_tokens("openai/gpt-6.1-sol-1") is True
+
 
 
 
@@ -84,3 +92,20 @@ class TestEdgeCases:
     def test_gpt_5_substring_in_middle_not_matched(self):
         # Only a prefix should match — "local-gpt-5-clone" is a different model.
         assert model_forces_max_completion_tokens("local-gpt-5-clone") is False
+
+    def test_family_prefix_requires_a_model_boundary(self):
+        # Custom model names that merely begin with a known family must keep
+        # using max_tokens. Only the bare family, dotted releases, and hyphen
+        # variants are part of the documented OpenAI model families.
+        for model in (
+            "gpt-4ocean",
+            "gpt-4.1custom",
+            "gpt-5clone",
+            "o123",
+            "o3mega",
+            "o4custom",
+            "vendor/o1clone",
+            "gpt-55",  # a dotless two-digit version is not the gpt-5 family
+            "gpt-6o",
+        ):
+            assert model_forces_max_completion_tokens(model) is False

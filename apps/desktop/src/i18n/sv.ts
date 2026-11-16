@@ -5594,6 +5594,11 @@ export const svOverrides: TranslationOverrides = {
         title: 'Profiler är separata',
         text: 'Var och en är sin egen Hermes — egna nycklar, eget minne, egna sessioner.'
       },
+      'local-runtime-update': {
+        title: 'En uppdatering av den lokala motorn är tillgänglig',
+        text: 'Uppdatera motorn som kör dina lokala modeller. Aktiva lokala begäranden kan avbrytas.',
+        action: 'Uppdatera nu'
+      },
       'composer-mentions': {
         title: 'Bifoga och kommendera',
         text: 'Skriv @ för att ta med en fil i konversationen, / för att köra ett kommando.'

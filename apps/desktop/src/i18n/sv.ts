@@ -1458,6 +1458,7 @@ export const svOverrides: TranslationOverrides = {
       loading: 'Läser in leverantörer…'
     },
     localModels: {
+      connectionChanged: 'Anslutningen för lokala modeller ändrades',
       title: 'Lokala modeller',
       runtimeTitle: 'Lokal körmiljö',
       runtimeReady: backend => `Klar · ${backend}`,
@@ -1479,6 +1480,7 @@ export const svOverrides: TranslationOverrides = {
       modelsTitle: 'Modeller',
       recommended: 'Rekommenderas',
       recommendedReason: {
+        'product-default': 'Standardmodellen för den här datorn, vald av tillverkaren.',
         'best-quality-resident':
           'Modellen med högst kvalitet som körs helt på din GPU i full hastighet. Valet väger kvalitet mot förväntad hastighet på denna maskinvara.',
         'speed-gated-quality':
@@ -1489,6 +1491,17 @@ export const svOverrides: TranslationOverrides = {
       downloaded: 'Hämtad',
       downloadAction: size => `Hämta · ${size}`,
       downloadProgress: (done, total) => `Hämtar ${done} av ${total}`,
+      downloadStatusRunning: 'Hämtar',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `~${time} kvar`,
+      downloadEtaSeconds: count => `${count} sek`,
+      downloadEtaMinutes: count => `${count} min`,
+      downloadEtaHours: (hours, minutes) => (minutes ? `${hours} h ${minutes} min` : `${hours} h`),
+      downloadPausedLabel: 'Pausad',
+      downloadPauseAction: 'Pausa',
+      downloadResumeAction: 'Återuppta',
+      downloadPauseFailed: 'Kunde inte pausa hämtningen',
+      downloadResumeFailed: 'Kunde inte återuppta hämtningen',
       downloadDoneToast: model => `${model} är klar.`,
       installDoneToast: 'Lokal körmiljö är installerad och klar.',
       quickstartTitle: 'Kör en modell på denna dator',
@@ -1507,6 +1520,8 @@ export const svOverrides: TranslationOverrides = {
       updateTitle: 'Motoruppdatering är tillgänglig',
       updateDetail: (next, current) =>
         `En nyare llama.cpp-version (${next}) är redo att installeras – du använder ${current}. Modeller fortsätter fungera under hämtningen.`,
+      updateSameBuildDetail: tag =>
+        `Hermes levererar nu llama.cpp ${tag} med filer som behövs för körning. Vid uppdatering hämtas motorn igen, medan modellerna fortsätter fungera under tiden.`,
       updateAction: 'Uppdatera motor',
       updating: 'Uppdaterar motor…',
       upToDateTitle: 'Motorn är uppdaterad',

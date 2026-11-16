@@ -725,6 +725,14 @@ export const svOverrides: TranslationOverrides = {
         successTitle: 'Verifieringen är klar',
         successBody: 'Remote Spending är tillåtet för den här terminalen.'
       },
+      amountValidation: {
+        reloadTo: 'Fyll på till',
+        greaterThanThreshold: 'Beloppet för påfyllning måste vara större än tröskelvärdet.',
+        decimal: label => `${label}: ange ett dollarbelopp med högst två decimaler.`,
+        positive: label => `${label}: beloppet måste vara större än 0 $.`,
+        minimum: (label, amount) => `${label}: minsta belopp är ${amount}.`,
+        maximum: (label, amount) => `${label}: högsta belopp är ${amount}.`
+      },
       state: {
         notice: {
           loggedOut: {

@@ -14,10 +14,12 @@ import shlex
 import time
 import uuid
 from tools import approval_context as _ctx
+from tools import approval_parser_budget as _parser_budget
 from tools.approval_ansi_c import expand_ansi_c_quotes
 from utils import unlink_files_older_than
 from tools.approval_detection import (
-    _FALLBACK_MATCH_SUFFIX, _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
+    _FALLBACK_MATCH_SUFFIX, _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _command_detection_variants,
+    _deny_projection_variants)
 
 logger = logging.getLogger("tools.approval")
 
@@ -36,16 +38,34 @@ def _match_user_deny_rule(command: str) -> str | None:
     globs = [p.strip() for p in deny_patterns if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _deny_command_variants(command):
-        candidate = command_variant.lower().strip()
-        for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
-                return pattern
-    return None
+    # Two reads of the command: the floors' detection variants (the walk the hardline scan runs under an
+    # equal budget) and the deny projections. Each gets its own budget: sharing one left the projections
+    # only what the first read had not spent, refusing benign commands the hardline scan reads in full.
+    # Code a read did not inspect (eval nested past the limit, a spent budget) refuses, not "no rule matched".
+    capped: list[str] = []
+    walks = (lambda: _command_detection_variants(command, floors=True, capped=capped),
+             lambda: _deny_projection_variants(command, capped))
+    try:
+        for walk in walks:
+            with _parser_budget.parser_budget(command):
+                for command_variant in walk():
+                    candidate = command_variant.lower().strip()
+                    for pattern in globs:
+                        if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                            return pattern
+    except (_parser_budget.ParserBudgetExceeded, RecursionError):
+        return _PARSER_LIMIT_DESCRIPTION
+    return _PARSER_LIMIT_DESCRIPTION if capped else None
 
 
 def _user_deny_block_result(pattern: str) -> dict:
-    """Build the standard block result for an ``approvals.deny`` match."""
+    """Build the standard block result for an ``approvals.deny`` match, or for a command the deny
+    matcher could not finish reading (*pattern* is then the parser-limit description)."""
+    if pattern == _PARSER_LIMIT_DESCRIPTION:
+        return {"approved": False, "user_deny": True, "message": (
+            "BLOCKED: this command is too deeply nested or too large for the approvals.deny rules to be "
+            "checked against all of it, so it cannot be executed via the agent — not even with --yolo, /yolo, "
+            "or approvals.mode=off. Do NOT retry or rephrase it: run smaller, simpler commands.")}
     return {"approved": False, "user_deny": True, "message": (
         f"BLOCKED: this command matches the user-defined deny rule "
         f"'{pattern}' (approvals.deny in config.yaml). It cannot be "

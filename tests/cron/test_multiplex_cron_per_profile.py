@@ -148,3 +148,123 @@ def test_multiplex_off_script_env_unchanged(profiles):
     got = json.loads(out.strip().splitlines()[-1])
     assert got["JIRA_API_TOKEN"] == expected.get("JIRA_API_TOKEN") == "jira-default"
     assert got["NOTION_API_KEY"] == expected.get("NOTION_API_KEY")
+
+
+# ── The per-run .env reload must not rewrite the shared os.environ ─────────
+#
+# cron/scheduler.py reloaded <profile home>/.env into os.environ on every run
+# (agent path: override=True + clearing known keys). Under multiplex that
+# handed a secondary profile's credentials to the default bot.
+
+
+class _StopAfterReload(Exception):
+    pass
+
+
+def _run_no_agent(home):
+    from cron.scheduler import run_job
+
+    with as_cron_of(home):
+        return run_job({"id": "job1", "name": "dump", "no_agent": True, "script": "dump_env.py"})
+
+
+def _run_agent_path(home, monkeypatch):
+    """Run the agent path up to the line right after the .env reload."""
+    import cron.scheduler as sched
+
+    def stop(job):
+        raise _StopAfterReload()
+
+    monkeypatch.setattr(sched, "_resolve_delivery_target", stop)
+    with as_cron_of(home):
+        try:
+            sched.run_job({"id": "job1", "name": "agent", "prompt": "hi"})
+        except _StopAfterReload:
+            pass
+
+
+def _unscoped_default_reads():
+    from gateway.config import _getenv
+
+    return {
+        "os.environ": {k: os.environ.get(k) for k in ("JIRA_API_TOKEN", "NOTION_API_KEY", "EDU_ONLY_KEY")},
+        "gateway._getenv": _getenv("JIRA_API_TOKEN"),
+    }
+
+
+def test_educator_runs_leave_the_default_environment_alone(profiles, monkeypatch):
+    root, edu = profiles
+    ss.set_multiplex_active(True)
+    env_before = dict(os.environ)
+    reads_before = _unscoped_default_reads()
+
+    ok, output, final, err = _run_no_agent(edu)
+    assert ok, err
+    assert "jira-edu" in output
+    _run_agent_path(edu, monkeypatch)
+
+    assert dict(os.environ) == env_before
+    assert _unscoped_default_reads() == reads_before
+    assert reads_before["os.environ"]["JIRA_API_TOKEN"] == "jira-default"
+    assert reads_before["os.environ"]["EDU_ONLY_KEY"] is None
+
+
+def test_default_runs_leak_nothing_into_an_educator_turn(profiles, monkeypatch):
+    root, edu = profiles
+    ss.set_multiplex_active(True)
+    ok, output, _final, err = _run_no_agent(root)
+    assert ok, err and "jira-default" in output
+    _run_agent_path(root, monkeypatch)
+
+    # The educator's script and its in-turn reads see only educator values.
+    edu_env = _script_env(edu)
+    assert edu_env["JIRA_API_TOKEN"] == "jira-edu"
+    assert edu_env["NOTION_API_KEY"] is None
+    from agent.fork_secrets import read_secret
+
+    with as_cron_of(edu):
+        assert read_secret("JIRA_API_TOKEN", tool="t") == "jira-edu"
+        assert read_secret("NOTION_API_KEY", tool="t") == ""
+
+
+def test_multiplex_off_still_reloads_dotenv_on_both_paths(profiles, monkeypatch):
+    """Regression: single-profile cron keeps its per-run .env reload."""
+    root, _ = profiles
+    import hermes_cli.env_loader as el
+
+    calls = []
+    monkeypatch.setattr(el, "load_hermes_dotenv", lambda **kw: calls.append(kw.get("hermes_home")))
+    ok, _out, _final, err = _run_no_agent(root)
+    assert ok, err
+    _run_agent_path(root, monkeypatch)
+    assert len(calls) == 2
+    assert all(str(c) == str(root) for c in calls)
+
+
+def test_multiplex_on_never_calls_the_reload(profiles, monkeypatch):
+    root, edu = profiles
+    import hermes_cli.env_loader as el
+
+    calls = []
+    monkeypatch.setattr(el, "load_hermes_dotenv", lambda **kw: calls.append(kw))
+    ss.set_multiplex_active(True)
+    for home in (edu, root):
+        _run_no_agent(home)
+        _run_agent_path(home, monkeypatch)
+    assert calls == []
+
+
+def test_run_agent_import_loads_the_process_home_under_multiplex(profiles):
+    """run_agent loads a .env into os.environ at import; a first import inside
+    a secondary profile's scope must load the process (default) home."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    import run_agent
+
+    root, edu = profiles
+    tok = set_hermes_home_override(str(edu))
+    try:
+        assert run_agent._import_time_env_home() == edu  # multiplex off: unchanged
+        ss.set_multiplex_active(True)
+        assert run_agent._import_time_env_home() == root
+    finally:
+        reset_hermes_home_override(tok)

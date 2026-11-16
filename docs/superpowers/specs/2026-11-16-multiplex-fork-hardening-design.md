@@ -232,6 +232,35 @@ scoped environment: its `.env` over the global environment, never the
 default profile's credentials. Add an assertion to the cron-per-profile
 test.
 
+### 4g. Cron's per-run `.env` reload must not rewrite `os.environ`
+
+Added 2026-11-16 during implementation (approved by the designer). The
+"already correct" verdict on cron's secret handling was wrong.
+
+- **Bug.** `cron/scheduler.py` `run_job` reloads the job's profile `.env`
+  into the process environment on every run:
+  `load_hermes_dotenv(hermes_home=_get_hermes_home())` on the agent path
+  (~6128: `override=True`, and it also clears known keys the `.env` lacks)
+  and on the `no_agent` path (~5677). Under multiplex every secondary-profile
+  run rewrote the shared `os.environ` with that profile's credentials, so the
+  default bot's unscoped reads and its subprocesses (MCP, terminal) picked up
+  the educator's values. That breaks the Credentials row in the
+  educator → default direction.
+- **Fix.** Skip both reloads when `is_multiplex_active()`. Both paths already
+  run inside `set_secret_scope(build_profile_secret_scope(home))`, installed
+  by `_run_one_job_body` (the only caller of `run_job`) from the same `.env`
+  and secret sources. The script subprocess env comes from that scope (4f).
+  With multiplex off both reloads run exactly as before.
+- **Same class, second site.** `run_agent.py` loads a `.env` into
+  `os.environ` at import, from `get_hermes_home()`. The gateway imports it
+  lazily, so the first import can happen inside a secondary profile's turn or
+  cron run. Under multiplex it now loads the process (default) home's
+  `.env`, which the gateway already loaded at startup.
+- **Tests.** The cron-per-profile test asserts both directions: after an
+  educator run, `os.environ` and the default's unscoped reads are unchanged;
+  after a default run, nothing of the default reaches an educator script or
+  turn. A multiplex-off regression asserts both reloads still run.
+
 ### Known limitation (not fixed here)
 
 `terminal.cwd` is bridged once into the process-wide `TERMINAL_CWD` from the
@@ -318,8 +347,9 @@ on the same profiles, with no profile changes needed.
 ## Already correct (verified, no change)
 
 - Cron: per-profile scheduling, delivery through the owning profile's adapter,
-  the secret scope around each run, and the RBAC ceiling's registry lookup.
-  The ceiling also depends on fix 1.
+  and the RBAC ceiling's registry lookup. The ceiling also depends on fix 1.
+  (The secret scope around each run is installed, but the per-run `.env`
+  reload leaked through `os.environ`. That is fixed as 4g.)
 - The automation-ownership registry and the `data_access_audit` paths, which
   use `get_hermes_home()`.
 - `_is_quiet_channel`, the relevance-gate config, and `channel_prompts`, which

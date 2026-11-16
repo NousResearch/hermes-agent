@@ -561,6 +561,16 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         return None
 
 
+def _cron_multiplex_active() -> bool:
+    """True when this process is a profile multiplexer (fork)."""
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        return is_multiplex_active()
+    except Exception:
+        return False
+
+
 def _cron_enabled_toolsets_with_ceiling(job: dict, cfg: dict) -> list[str] | None:
     """RBAC-capped toolsets (below), minus the default profile's MCP servers
     when the job belongs to a secondary profile under multiplex (4c). The
@@ -5704,14 +5714,22 @@ def run_job(
         # no_agent jobs — every deliver=telegram/all script job failed with
         # "no delivery target resolved". load_hermes_dotenv does not override
         # already-set vars, so the gateway's in-process tick is unaffected.
-        try:
-            from hermes_cli.env_loader import load_hermes_dotenv
+        #
+        # Fork (multiplex): skipped under gateway.multiplex_profiles. The
+        # reload writes into os.environ — the DEFAULT profile's environment —
+        # so a secondary profile's job would leak its credentials into the
+        # default bot. The job already runs inside its profile's secret scope
+        # (_run_one_job_body installs build_profile_secret_scope(home), built
+        # from the same .env), and the script env comes from that scope (4f).
+        if not _cron_multiplex_active():
+            try:
+                from hermes_cli.env_loader import load_hermes_dotenv
 
-            load_hermes_dotenv(hermes_home=_get_hermes_home())
-        except Exception:
-            logger.debug(
-                "Job '%s': no_agent .env reload failed", job_id, exc_info=True
-            )
+                load_hermes_dotenv(hermes_home=_get_hermes_home())
+            except Exception:
+                logger.debug(
+                    "Job '%s': no_agent .env reload failed", job_id, exc_info=True
+                )
 
         script_path = job.get("script")
         # Legacy/hand-edited records can still carry no_agent with a missing or
@@ -6158,7 +6176,13 @@ def run_job(
             reset_secret_source_cache,
         )
         reset_secret_source_cache()
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        # Fork (multiplex): never under gateway.multiplex_profiles — with
+        # override=True (plus clearing known keys the .env lacks) it rewrote
+        # the process-wide os.environ with THIS profile's .env, so every
+        # secondary-profile run handed its credentials to the default bot.
+        # The run is already inside its profile's secret scope.
+        if not _cron_multiplex_active():
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

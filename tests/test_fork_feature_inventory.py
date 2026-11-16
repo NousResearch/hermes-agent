@@ -167,6 +167,9 @@ WIRING = [
     ("Multiplex 4e: write guard", "tools/skill_manager_tool.py", "_profile_write_guard_error(action, name", "skill_manage"),
     ("Multiplex 4f: cron script env", "cron/scheduler.py", "env = build_subprocess_env(base=scoped_subprocess_env())", "script runs as its profile"),
     ("Multiplex sweep: notepad", "cron/notepad.py", "def _notepad_file", "per-call home"),
+    ("Multiplex 4g: cron .env reload", "cron/scheduler.py", "        if not _cron_multiplex_active():\n            load_hermes_dotenv(hermes_home=_get_hermes_home())", "agent path skips reload"),
+    ("Multiplex 4g: cron .env reload", "cron/scheduler.py", "        if not _cron_multiplex_active():\n            try:\n                from hermes_cli.env_loader import load_hermes_dotenv", "no_agent path skips reload"),
+    ("Multiplex 4g: import-time .env", "run_agent.py", "_hermes_home = _import_time_env_home()", "process home under multiplex"),
 ]
 
 

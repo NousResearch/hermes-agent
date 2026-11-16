@@ -75,3 +75,13 @@ def test_one_hour_cache_write_is_billed_at_twice_input():
     one_hour = estimate_usage_cost("claude-sonnet-4-6", split, provider="anthropic").amount_usd
     default = estimate_usage_cost("claude-sonnet-4-6", five_minute, provider="anthropic").amount_usd
     assert (one_hour, default) == (Decimal("6.00"), Decimal("3.75"))  # $3/M input: 2x vs 1.25x
+
+
+def test_a_chat_still_large_after_compacting_waits_for_new_content(monkeypatch):
+    """A compaction that left 140k (protected history) is not re-run each idle hour on the same 140k."""
+    agent = _idle_chat(monkeypatch)
+    agent._session_messages = [{"role": "user", "content": "short follow-up"}]
+    agent.context_compressor.last_compression_rough_tokens = 140_000
+    assert cache_expiry_compaction_due(agent, now=_SENT + 54 * 60) == (False, "no_growth")
+    agent._session_messages = [{"role": "user", "content": "x" * 4 * 250_000}]  # a floor's worth more
+    assert cache_expiry_compaction_due(agent, now=_SENT + 54 * 60) == (True, "due")

@@ -100,6 +100,77 @@ def test_cache_expiry_summary_request_extends_the_last_conversation_request(prov
     assert [m["role"] for m in summary_msgs[len(turn_msgs):]] == ["assistant", "user"]
     assert "context checkpoint" in summary_msgs[-1]["content"]
     assert summary_call.get("max_tokens")  # output bounded by the compressor's summary budget
+    # No new cache entry: the breakpoints sit exactly where the last conversation request had them
+    # (same rows, same TTL), and the appended reply + instruction carry none, so they are read, never written.
+    assert _markers(summary_call["messages"][:len(last_turn["messages"])]) == _markers(last_turn["messages"])
+    assert _markers(summary_call["messages"][len(last_turn["messages"]):]) == []
+
+
+def _markers(messages):
+    found = []
+    for i, m in enumerate(messages):
+        if "cache_control" in m:
+            found.append((i, None, m["cache_control"]))
+        for j, part in enumerate(m.get("content") if isinstance(m.get("content"), list) else ()):
+            if isinstance(part, dict) and "cache_control" in part:
+                found.append((i, j, part["cache_control"]))
+    return found
+
+
+def _read_rounds(n):
+    rows = [{"role": "user", "content": "Please inspect the files"}]
+    for i in range(n):  # the same call each round: identical openings, bodies the prune rewrites
+        rows += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"call_{i}", "type": "function",
+                  "function": {"name": "read_file", "arguments": '{"path": "file.py"}'}}]},
+                 {"role": "tool", "tool_call_id": f"call_{i}", "content": f"1|unique file {i}\n" + "many distinct lines\n" * 1000}]
+    return rows + [{"role": "assistant", "content": "done"}, {"role": "user", "content": "continue"},
+                   {"role": "assistant", "content": "OK"}]
+
+
+def test_warm_summary_names_its_window_by_rows_the_replayed_history_contains(monkeypatch):
+    """Repeated tool reads, pruned in the compressor's copy: the instruction names the window's first and
+    last rows by their position and call ids in the replayed (unpruned) history, unambiguously."""
+    from agent.context_compressor import ContextCompressor
+    from agent.context_compressor_summary import SummaryDispatchMixin
+
+    compressor = ContextCompressor(model="claude-sonnet-4-6", quiet_mode=True, protect_first_n=1, protect_last_n=3)
+    compressor.tail_mode, compressor._tail_token_budget = "legacy", 800
+    history = [{"role": "system", "content": "sys"}] + _read_rounds(15)
+    work, pruned, start, end = compressor._plan_compaction_window(history[1:])
+    assert pruned and end - start >= 2
+    sent = {}
+    monkeypatch.setattr("agent.side_question_request.ask_on_live_prefix",
+                        lambda agent, hist, prompt, **k: (sent.update(prompt=prompt) or None, {}))
+    warm = SimpleNamespace(agent=SimpleNamespace(model=MODEL), history=history)
+    SummaryDispatchMixin._warm_prefix_summary(compressor, warm, work[start:end], (2000, None, "", True))
+    first, last = history[1:][start], history[1:][end - 1]
+    assert f"messages #{start + 1} through #{end}" in sent["prompt"]
+    for row in (first, last):
+        call_id = row.get("tool_call_id") or row["tool_calls"][0]["id"]
+        assert call_id in sent["prompt"]
+    assert "read file.py from line 1" not in sent["prompt"]  # never a pruned stub's text
+
+
+def test_warm_summary_is_skipped_when_the_summary_model_is_cheaper(monkeypatch):
+    """A huge cached prefix on an expensive model vs a small window on a cheap summary model: the normal
+    summary call wins, and no warm request is sent."""
+    from agent.context_compressor_summary import SummaryDispatchMixin
+    import agent.cache_expiry_compaction as cec
+
+    calls = []
+    monkeypatch.setattr("agent.auxiliary_client._resolve_task_provider_model",
+                        lambda task: ("anthropic", "claude-haiku-4-5", None, None, None))
+    live = SimpleNamespace(model="claude-sonnet-4-6", provider="anthropic", base_url="https://api.anthropic.com",
+                           context_compressor=SimpleNamespace(last_prompt_tokens=900_000))
+    compressor = SimpleNamespace(_compression_cancelled=lambda: False,
+                                 _call_summary_llm=lambda messages, started: calls.append("aux") or SUMMARY,
+                                 _warm_prefix_summary=lambda warm, turns, args: calls.append("warm") or SUMMARY)
+    compressor._warm_prefix_is_cheaper = lambda warm, msgs: SummaryDispatchMixin._warm_prefix_is_cheaper(compressor, warm, msgs)
+    messages = [{"role": "system", "content": "summarize"}, {"role": "user", "content": "turns " * 2000}]
+    with cec.warm_prefix_summary(live, [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}]):
+        out = SummaryDispatchMixin._summary_content(compressor, messages, 0.0, [{"role": "user", "content": "hi"}],
+                                                    (2000, None, "", True))
+    assert (out, calls) == (SUMMARY, ["aux"])
 
 
 def test_an_explicitly_refused_warm_summary_never_replaces_history(monkeypatch):
@@ -112,7 +183,8 @@ def test_an_explicitly_refused_warm_summary_never_replaces_history(monkeypatch):
     monkeypatch.setattr("agent.side_question_request.ask_on_live_prefix", lambda *a, **k: (refused, {}))
     compressor = SimpleNamespace(_build_summary_prompt=lambda *a: [{"content": "i"}, {"content": "s"}],
                                  _compression_cancelled=lambda: False, tail_mode="legacy")
-    warm = SimpleNamespace(agent=SimpleNamespace(model=MODEL), history=[])
+    warm = SimpleNamespace(agent=SimpleNamespace(model=MODEL), history=[{"role": "user", "content": "x"},
+                                                                      {"role": "assistant", "content": "ok"}])
     with pytest.raises(RuntimeError, match="refusal"):
         SummaryDispatchMixin._warm_prefix_summary(compressor, warm, [{"role": "user", "content": "x"}],
                                                   (2000, None, "", True))

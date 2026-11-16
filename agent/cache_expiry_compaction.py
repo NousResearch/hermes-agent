@@ -85,6 +85,42 @@ def _floor_tokens(agent: Any) -> int:
         return 0
 
 
+def _rough_tokens(agent: Any) -> int:
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    return estimate_request_tokens_rough(list(getattr(agent, "_session_messages", None) or ()),
+                                         system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+                                         tools=getattr(agent, "tools", None) or None)
+
+
+def _compaction_baseline(agent: Any) -> int:
+    """Rough size the last compaction left: the compressor's own figure (the idle path's growth
+    guard) or, on an agent rebuilt since (the gateway evicts after compacting), the transcript up to
+    and including its newest summary handoff plus the tail budget the compaction kept verbatim after
+    it. 0 when the session never compacted."""
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    last = getattr(agent.context_compressor, "last_compression_rough_tokens", 0)
+    if isinstance(last, int) and not isinstance(last, bool) and last > 0:
+        return last
+    messages = list(getattr(agent, "_session_messages", None) or ())
+    is_summary = getattr(agent.context_compressor, "_is_context_summary_message", None)
+    handoff = next((i for i in range(len(messages) - 1, -1, -1) if callable(is_summary) and is_summary(messages[i])), None)
+    if handoff is None:
+        return 0
+    kept_tail = getattr(agent.context_compressor, "tail_token_budget", 0)
+    return estimate_request_tokens_rough(messages[:handoff + 1], system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+                                         tools=getattr(agent, "tools", None) or None) + (kept_tail if isinstance(kept_tail, int) else 0)
+
+
+def _grew_enough(agent: Any) -> bool:
+    """A chat that stays large after compacting must gain a floor's worth of new content before it
+    is summarised again (``agent.turn_context._should_idle_compact``): otherwise every idle hour
+    pays for a summary that reclaims next to nothing. Both figures are the same rough estimate."""
+    baseline = _compaction_baseline(agent)
+    return baseline <= 0 or _rough_tokens(agent) > baseline + _floor_tokens(agent)
+
+
 def _window_due(agent: Any, now: float) -> tuple[bool, str]:
     from agent.prompt_cache_clock import DECLARED, PROVEN, cache_certainly_warm, cache_window
     from agent.prompt_caching import TTL_SECONDS
@@ -124,7 +160,10 @@ def cache_expiry_compaction_due(agent: Any, *, now: Optional[float] = None) -> t
         return False, "small_context"
     if blocked := _compressor_blocked(agent):
         return False, blocked
-    return _window_due(agent, now)
+    due, reason = _window_due(agent, now)
+    if due and not _grew_enough(agent):  # last: the estimate walks the transcript
+        return False, "no_growth"
+    return due, reason
 
 
 def claim_cache_expiry_compaction(agent: Any, *, now: Optional[float] = None) -> bool:

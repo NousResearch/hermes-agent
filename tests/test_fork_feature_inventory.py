@@ -46,6 +46,11 @@ WIRING = [
     ("webflow_asset_upload", "tools/webflow_asset_tool.py", "is_protected_data_path", "credential-read guard"),
     ("ownership tool", "tools/ownership_tool.py", 'toolset="ownership"', "floor toolset"),
     ("pdf_pages", "tools/pdf_pages_tool.py", 'toolset="pdf_pages"', "own toolset, fixed argv"),
+    ("zendesk_api", "tools/zendesk_tool.py", "_READ_ALLOWLIST", "Help Center-only read allowlist (no tickets)"),
+    ("zendesk_create_draft", "tools/zendesk_tool.py", "_WRITE_ALLOWLIST", "curated write allowlist"),
+    ("zendesk_create_draft", "tools/zendesk_tool.py", 'article.get("draft") is not True', "forced unpublished draft"),
+    ("zendesk_create_draft", "tools/zendesk_tool.py", "autonomy.resolve_level(_ACTION, cfg)", "autonomy level gates the write"),
+    ("autonomy levels", "agent/autonomy.py", "BUILT_LEVELS", "levels only unlock built code paths"),
     ("allow_bots_channels", "plugins/platforms/slack/adapter.py", "def _slack_allow_bots_channels", "per-channel app admission"),
     ("allow_bots_channels", "gateway/authz_mixin.py", "_slack_allow_bots_channels(source)", "gate admits listed channels; RBAC outranks bypass"),
     # ── Cost attribution ──────────────────────────────────────────────────
@@ -184,7 +189,8 @@ def test_fork_toolsets_are_registered():
 
     all_toolsets = set(toolsets.get_all_toolsets())
     for name in ("notion", "jira", "jira_write", "slack_post", "webflow_assets",
-                 "ownership", "slack", "video_frames", "pdf_pages"):
+                 "ownership", "slack", "video_frames", "pdf_pages",
+                 "zendesk", "zendesk_write"):
         assert name in all_toolsets, (
             f"toolset '{name}' is not registered — RBAC cannot gate it, and any "
             f"role granting it becomes a no-op."

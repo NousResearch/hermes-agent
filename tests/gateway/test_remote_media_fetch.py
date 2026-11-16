@@ -65,6 +65,42 @@ def test_sandbox_project_env_file_is_not_fetched(remote_env):
     assert remote_env.fetched == []
 
 
+@pytest.mark.parametrize("name", [".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials"])
+@pytest.mark.parametrize("home", ["/root", "/home/agent", None])
+def test_remote_home_credentials_and_symlinks_are_not_fetched(remote_env, name, home):
+    remote_env._remote_home = home
+    prefix = home or "/home/agent"
+    secret = prefix + "/" + name
+    ordinary = secret + "backup"
+    alias = prefix + "/out/alias.txt"
+    remote_env.files = {secret: b"placeholder", ordinary: b"artifact"}
+    remote_env.links = {alias: secret}
+    delivered = BasePlatformAdapter.filter_media_delivery_paths([(secret, False), (alias, False), (ordinary, True)])
+    assert [(Path(path).read_bytes(), voice) for path, voice in delivered] == [(b"artifact", True)]
+    assert remote_env.fetched == [ordinary]
+
+
+@pytest.mark.parametrize("spelling", ["{}", '"{}"', "'{}'", "`{}`", "{},"])
+def test_rejected_local_file_is_not_retried_remotely(remote_env, tmp_path, monkeypatch, spelling):
+    import os
+    from gateway.platforms import base
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    secret = home / ".netrc"
+    secret.write_bytes(b"placeholder")
+    alias = tmp_path / "cache" / "documents" / "alias.txt"
+    alias.parent.mkdir(parents=True)
+    os.link(secret, alias)
+    remote_env._remote_home = str(tmp_path)
+    remote_env.files = {str(alias): b"placeholder", str(tmp_path / "remote.txt"): b"artifact"}
+    delivered = base.BasePlatformAdapter.filter_media_delivery_paths([
+        (spelling.format(alias), False), (str(tmp_path / "remote.txt"), True)])
+    assert [(Path(path).read_bytes(), voice) for path, voice in delivered] == [(b"artifact", True)]
+    assert remote_env.fetched == [str(tmp_path / "remote.txt")]
+
+
 def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remote_env):
     """Strict mode keeps its recency gate: a fetched copy would land in an allowlisted root and skip it."""
     monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
@@ -104,3 +140,36 @@ def test_fetch_file_round_trips_bytes_and_enforces_the_in_sandbox_size_cap(tmp_p
         env.fetch_file(str(src), dest, max_bytes=100)
     with pytest.raises(FileFetchError, match="could not read"):
         env.fetch_file(str(tmp_path), dest, max_bytes=100)  # a directory is not a regular file
+
+
+def test_translated_docker_credential_alias_is_not_retried_remotely(remote_env, tmp_path, monkeypatch):
+    import os
+    from gateway.platforms import base
+
+    home = tmp_path / "container-home"
+    workspace = tmp_path / "workspace"
+    home.mkdir()
+    workspace.mkdir()
+    secret = home / ".netrc"
+    secret.write_bytes(b"placeholder")
+    os.link(secret, workspace / "alias.txt")
+    monkeypatch.setattr(base, "_parse_docker_volume_mounts", lambda: [(home, Path("/root")), (workspace, Path("/workspace"))])
+    monkeypatch.setattr(base, "_cache_dir_container_mounts", list)
+    remote_env.files = {"/workspace/alias.txt": b"placeholder"}
+    assert base.BasePlatformAdapter.filter_media_delivery_paths([("/workspace/alias.txt", False)], session_key="s") == []
+    assert remote_env.fetched == []
+
+
+def test_distinct_remote_artifact_survives_rejected_host_path_collision(remote_env, tmp_path, monkeypatch):
+    from gateway.platforms import base
+
+    host = tmp_path / "host"
+    host.mkdir()
+    collision = host / "artifact.txt"
+    collision.write_bytes(b"local")
+    monkeypatch.setattr(base, "_path_under_denied_prefix", lambda path: path == collision)
+    remote_env._remote_home = str(tmp_path)
+    remote_env.files = {str(collision): b"remote artifact"}
+    delivered = base.BasePlatformAdapter.filter_media_delivery_paths([(str(collision), False)])
+    assert [(Path(path).read_bytes(), voice) for path, voice in delivered] == [(b"remote artifact", False)]
+    assert remote_env.fetched == [str(collision)]

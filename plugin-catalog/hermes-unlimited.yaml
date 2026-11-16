@@ -1,18 +1,19 @@
 name: hermes-unlimited
 repo: https://github.com/rrglab/hermes-unlimited
-sha: d2207de01d1f843dfd0d46ed0c677db637693cc8
+sha: 33c08bf90489ff64a53338e0b5e6eb1f2135b935
 description: "Create and operate AI-native provider organizations with scoped services and Hermes tasks. Disclosure — Creates and reads Hermes Kanban tasks (run by your Hermes workers as the current profile) through the local `hermes kanban` CLI on a per-tenant board, and stores company, service and request records in a local SQLite file you configure; sends your JustYou session token only to a loopback JustYou validator you configure."
 maintainer: rrglab
 tier: community
 category: platform
 requires_hermes: ">=0.21.5"
-version: "0.2.0-beta.2"
+version: "0.2.0-beta.3"
 title: "Hermes Unlimited"
 readme: true
 known_issues:
   - "Experimental public core; no live billing, payment settlement or independently attested customer fulfillment."
   - "Human oversight/AI recovery cost inputs are MODEL_SUBMITTED_UNVERIFIED; no independent financial value or ROI is established."
   - "Community adapter discovery is catalog-only metadata; no external provider integration is activated or independently verified."
+  - "Company Memory recall is read-only; stored verification labels are not independently attested by the plugin."
   - "Requires a configured JustYou session validator, signed Ed25519 profile bindings and provisioned tenant boards."
 capabilities:
   provides_tools:
@@ -30,6 +31,7 @@ capabilities:
     - unlimited_oversight_costs
     - unlimited_oversight_report
     - unlimited_adapter_discover
+    - unlimited_memory_recall
   provides_hooks: []
   provides_middleware: []
   requires_env:

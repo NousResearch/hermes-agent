@@ -8,9 +8,9 @@ and hands back the host copy. Backends without a known remote home (docker outsi
 modal, plugin sandboxes) still get the conservative any-component denylist, so a ``/root/...`` artifact
 there is not fetched — set ``_remote_home`` on the environment to opt in.
 
-The remote path is screened against the same denylist as local deliveries BEFORE any bytes move,
-and again after ``readlink -f`` (fail closed when it cannot resolve) — a remote fetch must never
-become a bypass of the host denylist. Strict mode (``HERMES_MEDIA_DELIVERY_STRICT``) keeps its
+The remote path is screened lexically against the denylist BEFORE any bytes move and again after
+``readlink -f`` (fail closed when it cannot resolve). This is not filesystem containment: the
+backend API exposes no inode identity, so remote hardlink aliases cannot be identified. Strict mode (``HERMES_MEDIA_DELIVERY_STRICT``) keeps its
 pre-existing behaviour: nothing is fetched, since a fetched copy would land in an allowlisted root
 and skip the recency gate strict mode exists for.
 """
@@ -27,7 +27,8 @@ from typing import Optional
 
 from agent.file_safety import is_project_env_basename
 from gateway.platforms.base import (
-    _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS, _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
+    _MEDIA_DELIVERY_DENIED_HOME_FILES, _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS,
+    _MEDIA_DELIVERY_DENIED_PREFIXES, _ROOT_CREDENTIAL_PATHS)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,8 @@ _FETCH_MAX_BYTES = 50 * 1024 * 1024
 
 _DENIED_PREFIXES = tuple(PurePosixPath(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES)
 # Credential dirs under the sandbox home plus the Hermes stores, which live at ``~/.hermes`` there.
-_DENIED_HOME_RELATIVE = tuple(PurePosixPath(s) for s in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS) + tuple(
+_DENIED_HOME_RELATIVE = tuple(PurePosixPath(s) for s in (*_MEDIA_DELIVERY_DENIED_HOME_SUBPATHS,
+                                                           *_MEDIA_DELIVERY_DENIED_HOME_FILES)) + tuple(
     PurePosixPath(".hermes", *PurePosixPath(rel.replace(os.sep, "/")).parts) for rel in _ROOT_CREDENTIAL_PATHS)
 
 

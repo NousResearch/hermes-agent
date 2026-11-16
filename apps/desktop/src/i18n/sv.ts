@@ -202,6 +202,12 @@ export const svOverrides: TranslationOverrides = {
       submit: 'Skicka in mod',
       docs: 'Utvecklardokumentation'
     },
+    tier: 'Nivå',
+    tierLabels: { official: 'Officiell', verified: 'Verifierad', community: 'Community' },
+    tiers: {
+      official: { title: 'Officiella insticksprogram', blurb: 'Byggda och underhållna av Nous Research.' },
+      verified: { title: 'Verifierade insticksprogram', blurb: 'Från företaget bakom integrationen och verifierade av Nous.' }
+    },
     toolsets: {
       mostUsed: 'Mest använda',
       mostUsedBlurb: 'De verktygsuppsättningar Hermes oftast använder i den här profilen.',

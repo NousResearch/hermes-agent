@@ -222,6 +222,7 @@ def session_record(row: Mapping[str, Any]) -> SessionRecord:
         model_config_json=row.get("model_config"),
         origin_json=row.get("origin_json"),
         tool_names=row.get("tool_names"),
+        prompt_cache_clock=row.get("prompt_cache_clock"),
     )
 
 

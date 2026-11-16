@@ -4,7 +4,11 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import {
-  answerGroupRequests, CANONICAL_GROUP_CAPABILITIES, PEER_HOME as HOME, PEER_MINI as MINI, peerRosterRow
+  answerGroupRequests,
+  CANONICAL_GROUP_CAPABILITIES,
+  PEER_HOME as HOME,
+  PEER_MINI as MINI,
+  peerRosterRow
 } from './canonical-group-contract-test-utils'
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { PeerJoinError, peerJoinText, peerSetupText, peerTargetState } from './canonical-group-peers'
@@ -17,13 +21,24 @@ import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
 const { request } = vi.hoisted(() => ({ request: vi.fn() }))
-vi.mock('@hermes/plugin-sdk', async importOriginal => (await import('./canonical-group-contract-test-utils'))
-  .localGatewaySdkMock(await importOriginal<typeof HermesSdk>(), request, () => translateBots))
-vi.mock('./group-chat-parts', async importOriginal => ({ ...await importOriginal<typeof GroupChatParts>(), GroupImageControls: () => null }))
+vi.mock('@hermes/plugin-sdk', async importOriginal =>
+  (await import('./canonical-group-contract-test-utils')).localGatewaySdkMock(
+    await importOriginal<typeof HermesSdk>(),
+    request,
+    () => translateBots
+  )
+)
+vi.mock('./group-chat-parts', async importOriginal => ({
+  ...(await importOriginal<typeof GroupChatParts>()),
+  GroupImageControls: () => null
+}))
 
 const roster: RosterRow[] = [{ name: 'default', connectionId: 'local' }, peerRosterRow('mini', 'Mac Mini')]
 const link = (reason: string) => ({ ...MINI, room_link: { enabled: false, reason } })
-const catalog = (change: Record<string, unknown>) => ({ ...MINI, room_link: { ...MINI.room_link, catalog: { ...MINI.room_link.catalog, ...change } } })
+const catalog = (change: Record<string, unknown>) => ({
+  ...MINI,
+  room_link: { ...MINI.room_link, catalog: { ...MINI.room_link.catalog, ...change } }
+})
 
 /** Every refusal a lender's `groups.capabilities` can produce, as its gateway sends it: `room_link.reason`
  *  from gateway/session_group_peers.py `room_link` and tui_gateway/methods_groups.py, and the catalog
@@ -55,32 +70,42 @@ beforeEach(() => {
   request.mockReset()
   Element.prototype.scrollIntoView = vi.fn()
 })
-afterEach(() => { cleanup(); localStorage.clear() })
-
-const box = (row: Element | undefined) => row?.closest('label')?.querySelector('button[role="checkbox"]') as HTMLButtonElement
-
-it.each(REFUSALS)('explains a lender refusing with %s in words, not its code, and never falls back to Desktop', async (code, capabilities, key) => {
-  expect((peerTargetState(capabilities, 'default') as { reason?: string }).reason).toBe(code)
-  answerGroupRequests(request, {
-    local: method => method === 'groups.capabilities' ? { ...HOME, room_link: { enabled: false } } : undefined,
-    mini: method => method === 'groups.capabilities' ? capabilities : undefined
-  })
-  const { baseElement } = render(<CreateGroupChatDialog onClose={vi.fn()} open roster={roster} />)
-  await waitFor(() => expect(request.mock.calls.some(call => call[0]?.connectionId === 'mini')).toBe(true))
-  await act(async () => {})
-  const rows = [...baseElement.querySelectorAll('[data-bot-face="default"]')]
-  fireEvent.click(box(rows[0]))
-  fireEvent.click(box(rows[1]))
-  const note = await waitFor(() => baseElement.querySelector('[data-group-engine="unavailable"]')!)
-  const words = CANONICAL_GROUP_LOCALES.en
-  expect(baseElement.querySelector('[data-group-engine="desktop"]')).toBeNull()
-  expect(note.textContent).toContain(words.peerTargetSetup.replace('{connection}', 'Mac Mini').replace('{reason}', words[key]))
-  expect(note.textContent).not.toMatch(rawCode)
-  expect(note.textContent).not.toMatch(/[{}]/)
+afterEach(() => {
+  cleanup()
+  localStorage.clear()
 })
 
+const box = (row: Element | undefined) =>
+  row?.closest('label')?.querySelector('button[role="checkbox"]') as HTMLButtonElement
+
+it.each(REFUSALS)(
+  'explains a lender refusing with %s in words, not its code, and never falls back to Desktop',
+  async (code, capabilities, key) => {
+    expect((peerTargetState(capabilities, 'default') as { reason?: string }).reason).toBe(code)
+    answerGroupRequests(request, {
+      local: method => (method === 'groups.capabilities' ? { ...HOME, room_link: { enabled: false } } : undefined),
+      mini: method => (method === 'groups.capabilities' ? capabilities : undefined)
+    })
+    const { baseElement } = render(<CreateGroupChatDialog onClose={vi.fn()} open roster={roster} />)
+    await waitFor(() => expect(request.mock.calls.some(call => call[0]?.connectionId === 'mini')).toBe(true))
+    await act(async () => {})
+    const rows = [...baseElement.querySelectorAll('[data-bot-face="default"]')]
+    fireEvent.click(box(rows[0]))
+    fireEvent.click(box(rows[1]))
+    const note = await waitFor(() => baseElement.querySelector('[data-group-engine="unavailable"]')!)
+    const words = CANONICAL_GROUP_LOCALES.en
+    expect(baseElement.querySelector('[data-group-engine="desktop"]')).toBeNull()
+    expect(note.textContent).toContain(
+      words.peerTargetSetup.replace('{connection}', 'Mac Mini').replace('{reason}', words[key])
+    )
+    expect(note.textContent).not.toMatch(rawCode)
+    expect(note.textContent).not.toMatch(/[{}]/)
+  }
+)
+
 it.each(Object.keys(CANONICAL_GROUP_LOCALES) as Array<keyof typeof CANONICAL_GROUP_LOCALES>)(
-  'gives each lender refusal its own advice, without codes, in %s', locale => {
+  'gives each lender refusal its own advice, without codes, in %s',
+  locale => {
     const words = CANONICAL_GROUP_LOCALES[locale]
     const texts = new Map<string, string>()
 
@@ -93,10 +118,15 @@ it.each(Object.keys(CANONICAL_GROUP_LOCALES) as Array<keyof typeof CANONICAL_GRO
       texts.set(key, text)
       // A Retry that meets the same known refusal gives the same advice, in the room (a pinned member
       // whose computer no longer speaks its protocol keeps the room's own "settings changed" copy).
-      const joined = code === 'peer_target_unsupported' ? words.peerJoinChanged : words.peerJoinFailed.replace('{reason}', words[key])
+      const joined =
+        code === 'peer_target_unsupported'
+          ? words.peerJoinChanged
+          : words.peerJoinFailed.replace('{reason}', words[key])
 
       if (key !== 'peerSetupGeneric') {
-        expect(peerJoinText(new PeerJoinError(code), 'Hermes · Mac Mini', words), `${locale} ${code}`).toBe(joined.replace('{name}', 'Hermes · Mac Mini'))
+        expect(peerJoinText(new PeerJoinError(code), 'Hermes · Mac Mini', words), `${locale} ${code}`).toBe(
+          joined.replace('{name}', 'Hermes · Mac Mini')
+        )
       }
     }
 

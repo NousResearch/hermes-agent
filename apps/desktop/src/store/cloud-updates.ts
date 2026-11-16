@@ -21,7 +21,10 @@ function connectedToHermesCloud(connection: HermesConnection | null): boolean {
 }
 
 /** Whether Hermes Cloud owns updates for `target` under `connection`. */
-export function cloudOwnsUpdates(target: UpdateTarget, connection: HermesConnection | null = $connection.get()): boolean {
+export function cloudOwnsUpdates(
+  target: UpdateTarget,
+  connection: HermesConnection | null = $connection.get()
+): boolean {
   return servedByHermesCloud() || (target === 'backend' && connectedToHermesCloud(connection))
 }
 

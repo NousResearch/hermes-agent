@@ -40,8 +40,21 @@ function storedStoppedTurn(n: number, first: number, at: number): SessionMessage
       timestamp: at + 0.2,
       tool_calls: [{ id: call, type: 'function', function: { name: 'terminal', arguments: '{"command":"echo"}' } }]
     },
-    { id: first + 2, role: 'tool', content: '{"output": "ok"}', tool_call_id: call, tool_name: 'terminal', timestamp: at + 0.3 },
-    { id: first + 3, role: 'assistant', content: `A${n} partial`, timestamp: at + 1.2, display_metadata: { interrupted: true } }
+    {
+      id: first + 2,
+      role: 'tool',
+      content: '{"output": "ok"}',
+      tool_call_id: call,
+      tool_name: 'terminal',
+      timestamp: at + 0.3
+    },
+    {
+      id: first + 3,
+      role: 'assistant',
+      content: `A${n} partial`,
+      timestamp: at + 1.2,
+      display_metadata: { interrupted: true }
+    }
   ] as SessionMessage[]
 }
 

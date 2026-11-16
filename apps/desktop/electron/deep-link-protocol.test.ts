@@ -8,9 +8,13 @@ function run(env: NodeJS.ProcessEnv, defaultApp = true) {
   const calls: unknown[][] = []
   const log: string[] = []
   registerDeepLinkProtocol({
-    app: { setAsDefaultProtocolClient: (...args: unknown[]) => { calls.push(args);
+    app: {
+      setAsDefaultProtocolClient: (...args: unknown[]) => {
+        calls.push(args)
 
- return true } },
+        return true
+      }
+    },
     protocol: 'hermes',
     env,
     defaultApp,

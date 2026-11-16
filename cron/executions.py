@@ -180,12 +180,20 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None,
+    delivery_outcome: Optional[str] = None, note: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Write a terminal result once; terminal attempts cannot be rewritten."""
+    """Write a terminal result once; terminal attempts cannot be rewritten.
+
+    ``note`` (fork): detail recorded on a *completed* row, in the ``error``
+    column — e.g. ``skipped: over budget`` from the cost budget, so the ledger
+    shows why a successful attempt did nothing.
+    """
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
-    detail = None if success else (str(error) if error else "unknown failure")
+    if success:
+        detail = str(note) if note else None
+    else:
+        detail = str(error) if error else "unknown failure"
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions SET status=?, finished_at=?, error=?

@@ -473,6 +473,47 @@ def watch(*, adapters=None, loop=None) -> None:
         logger.warning("cost_budget: budget watch failed", exc_info=True)
 
 
+def preflight_cron_job(job: dict, *, adapters=None, loop=None) -> Optional[str]:
+    """Called by the cron scheduler before a job's script or agent runs.
+
+    Returns a skip reason for a discretionary job while the profile is over
+    its daily or monthly budget. A non-discretionary job over budget runs
+    anyway, and its first run per period sends a loud alert. None in every
+    other case — including no ``cost_budget:`` block and any internal error
+    (fail open: a budget bug must never stop release work).
+    """
+    try:
+        cfg = load_budget_config()
+        if cfg is None:
+            return None
+        status = budget_status(cfg, get_spend(cfg))
+        if not status.over_budget:
+            return None
+        snap = status.snap
+        if status.over_daily:
+            which, spent, budget, period = "daily", snap.day_usd, cfg.daily_usd, snap.day_key
+        else:
+            which, spent, budget, period = "monthly", snap.month_usd, cfg.monthly_usd, snap.month_key
+        job_id = str(job.get("id") or "")
+        name = str(job.get("name") or job_id)
+        if is_discretionary(job, cfg):
+            reason = f"skipped: over budget ({which} {_money(spent)} of {_money(budget)})"
+            logger.info("cost_budget: job '%s' %s", name, reason)
+            return reason
+        send_once([Alert(
+            key=f"overrun:{period}:{job_id}",
+            text=(f"🚨 Over budget ({which} {_money(spent)} of {_money(budget)}), but `{name}` "
+                  "is not discretionary, so it is running anyway. Raise the budget or mark "
+                  "the job discretionary to stop it."),
+            loud=True,
+        )], cfg, adapters=adapters, loop=loop)
+        return None
+    except Exception:
+        logger.warning("cost_budget: preflight for job %s failed — running it",
+                       job.get("id"), exc_info=True)
+        return None
+
+
 def _reset_for_tests() -> None:
     with _cache_lock:
         _spend_cache.clear()

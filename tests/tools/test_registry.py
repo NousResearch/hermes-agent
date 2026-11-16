@@ -615,6 +615,20 @@ class TestToolsetAvailabilityAggregation:
         assert "terminal" not in available
         assert any(item["name"] == "terminal" for item in unavailable)
 
+    def test_toolset_requirements_drop_check_of_deregistered_tool(self):
+        """A toolset's requirements name only checks of tools still registered in it."""
+        reg = ToolRegistry()
+        reg.register(name="gated", toolset="mixed", schema=_make_schema("gated"),
+                     handler=_dummy_handler, check_fn=lambda: False)
+        reg.register(name="plain", toolset="mixed", schema=_make_schema("plain"),
+                     handler=_dummy_handler)
+
+        reg.deregister("gated")
+
+        requirements = reg.get_toolset_requirements()["mixed"]
+        assert requirements["tools"] == ["plain"]
+        assert requirements["check_fn"] is None
+
 
 class TestDeregisterAuthorization:
     """deregister() must apply the same plugin opt-in gate as register().

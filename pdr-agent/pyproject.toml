@@ -3,7 +3,7 @@
 
 
 [project]
-name = "pdr-hermes-agent"
+name = "pdr-agent"
 version = "0.0.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
@@ -473,20 +473,20 @@ azure-identity = ["azure-identity==1.26.0"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.8",
-  "pdr-hermes-agent[cron]",
-  "pdr-hermes-agent[mcp]",
-  "pdr-hermes-agent[acp]",
+  "pdr-agent[cron]",
+  "pdr-agent[mcp]",
+  "pdr-agent[acp]",
 ]
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
   # only includes extras that are not prepared on demand by PM.
   # Backends like telegram/slack/dingtalk/feishu lazy-install at
   # first use, so they're no longer eager-installed here.
-  "pdr-hermes-agent[termux]",
-  "pdr-hermes-agent[google]",
-  "pdr-hermes-agent[sms]",
-  "pdr-hermes-agent[web]",
-  "pdr-hermes-agent[pty]",
+  "pdr-agent[termux]",
+  "pdr-agent[google]",
+  "pdr-agent[sms]",
+  "pdr-agent[web]",
+  "pdr-agent[pty]",
 ]
 dingtalk = [
   "dingtalk-stream==0.24.3",
@@ -550,15 +550,15 @@ all = [
   # [all], `uv sync --locked` on Windows tried to build it from sdist
   # and failed on `make`. Lazy-install routes that build to first use,
   # where the user is expected to have a toolchain available.
-  "pdr-hermes-agent[cron]",
-  "pdr-hermes-agent[pty]",
-  "pdr-hermes-agent[mcp]",
-  "pdr-hermes-agent[uvloop]",
-  "pdr-hermes-agent[sms]",
-  "pdr-hermes-agent[acp]",
-  "pdr-hermes-agent[google]",
-  "pdr-hermes-agent[web]",
-  "pdr-hermes-agent[youtube]",
+  "pdr-agent[cron]",
+  "pdr-agent[pty]",
+  "pdr-agent[mcp]",
+  "pdr-agent[uvloop]",
+  "pdr-agent[sms]",
+  "pdr-agent[acp]",
+  "pdr-agent[google]",
+  "pdr-agent[web]",
+  "pdr-agent[youtube]",
 ]
 
 [dependency-groups]

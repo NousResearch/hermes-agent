@@ -21,37 +21,38 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-      - name: 安装 PyYAML
-        run: python -m pip install "pyyaml>=6,<7"
-      - name: 表命名规范检查并确认 DDL 已重新生成
-        working-directory: pdr/server
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+      - name: 后端环境（uv，根目录 pyproject.toml / uv.lock）
         run: |
-          python -m pdr_server.db.render
-          git diff --exit-code -- ../deploy/sql
+          # 锁文件必须与 pyproject.toml 一致：重新解析后不应产生差异
+          # （引擎以路径依赖引入、元数据由 setup.py 动态生成，uv lock --check 对这种情况总是报需更新）
+          uv lock
+          git diff --exit-code -- uv.lock
+          uv sync --frozen
+      - name: 表命名规范检查并确认 DDL 已重新生成
+        run: |
+          uv run python -m pdr_server.db.render
+          git diff --exit-code -- pdr/deploy/sql
       - name: config.yaml 与引擎默认配置一致（含中文元数据）
         run: |
-          python pdr/scripts/gen_config_yaml.py
+          uv run python pdr/scripts/gen_config_yaml.py
           git diff --exit-code -- pdr/config.yaml
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
           node-version: "22"
-      - name: 用户端类型检查与构建
-        working-directory: pdr/web/portal
+      - name: 前端（pnpm 工作区）：用户端类型检查与构建
         run: |
           corepack enable
           pnpm install --frozen-lockfile
-          pnpm build
+          pnpm build:portal
 
   engine:
-    name: pdr-hermes-agent 核心测试
+    name: pdr-agent 核心测试
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
       run:
-        working-directory: pdr-hermes-agent
+        working-directory: pdr-agent
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

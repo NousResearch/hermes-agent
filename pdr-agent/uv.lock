@@ -4091,7 +4091,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pdr-hermes-agent"
+name = "pdr-agent"
 version = "0.0.0"
 source = { editable = "." }
 default-groups = []
@@ -4484,23 +4484,23 @@ requires-dist = [
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.6.0" },
     { name = "pathspec", marker = "python_full_version >= '3.14'", specifier = "==1.1.1" },
     { name = "pdfplumber", marker = "extra == 'documents-pdf'", specifier = "==0.11.10" },
-    { name = "pdr-hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
-    { name = "pdr-hermes-agent", extras = ["acp"], marker = "extra == 'termux'" },
-    { name = "pdr-hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
-    { name = "pdr-hermes-agent", extras = ["cron"], marker = "extra == 'termux'" },
-    { name = "pdr-hermes-agent", extras = ["google"], marker = "extra == 'all'" },
-    { name = "pdr-hermes-agent", extras = ["google"], marker = "extra == 'termux-all'" },
-    { name = "pdr-hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
-    { name = "pdr-hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
-    { name = "pdr-hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
-    { name = "pdr-hermes-agent", extras = ["pty"], marker = "extra == 'termux-all'" },
-    { name = "pdr-hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
-    { name = "pdr-hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
-    { name = "pdr-hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
-    { name = "pdr-hermes-agent", extras = ["uvloop"], marker = "extra == 'all'" },
-    { name = "pdr-hermes-agent", extras = ["web"], marker = "extra == 'all'" },
-    { name = "pdr-hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
-    { name = "pdr-hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["acp"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["acp"], marker = "extra == 'termux'" },
+    { name = "pdr-agent", extras = ["cron"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["cron"], marker = "extra == 'termux'" },
+    { name = "pdr-agent", extras = ["google"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["google"], marker = "extra == 'termux-all'" },
+    { name = "pdr-agent", extras = ["mcp"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["mcp"], marker = "extra == 'termux'" },
+    { name = "pdr-agent", extras = ["pty"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["pty"], marker = "extra == 'termux-all'" },
+    { name = "pdr-agent", extras = ["sms"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
+    { name = "pdr-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
+    { name = "pdr-agent", extras = ["uvloop"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["web"], marker = "extra == 'all'" },
+    { name = "pdr-agent", extras = ["web"], marker = "extra == 'termux-all'" },
+    { name = "pdr-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "pilk", marker = "extra == 'silk'", specifier = "==0.2.4" },
     { name = "pillow", marker = "python_full_version >= '3.14'", specifier = "==13.0.0" },
     { name = "pillow-heif", marker = "python_full_version >= '3.14'", specifier = ">=1.4.0,<2" },

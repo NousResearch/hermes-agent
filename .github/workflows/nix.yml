@@ -49,7 +49,7 @@ env:
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   # A `paths:` filter cannot gate this workflow: a push to main must run it

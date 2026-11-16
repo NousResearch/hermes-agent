@@ -1,0 +1,4 @@
+# PDR 前端工作区：管理端（pdr/web/admin，待建）与用户端（pdr/web/portal）。
+# 引擎 pdr-agent/ 的终端界面有自己独立的 pnpm 工作区，不在这里。
+packages:
+  - "pdr/web/*"

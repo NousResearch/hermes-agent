@@ -1,0 +1,79 @@
+# PDR 后端 Python 环境：由 uv 统一管理，在仓库根目录执行 `uv sync` 即生成 .venv。
+#   - pdr/server   PDR 业务后端（工作区成员）
+#   - pdr-agent    智能体引擎（以可编辑路径依赖引入；它保留自己的 pyproject.toml 与 uv.lock，
+#                  供引擎自身的开发、测试与镜像构建使用）
+[project]
+name = "pdr"
+version = "0.1.0"
+description = "PDR：多租户多模态内容与智能体平台（后端 Python 环境）"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "pdr-server",
+  # messaging 提供网关 api_server 所需的 aiohttp（PDR 后端经它接入引擎）
+  "pdr-agent[messaging]",
+]
+
+[tool.uv]
+# 根项目只聚合依赖，自身不打包
+package = false
+# 以下与 pdr-agent/pyproject.toml 的 [tool.uv] 保持一致（路径依赖不会继承引擎的这些设置）：
+# 只解析 Python 3.14、安全相关的依赖覆盖、依赖发布满 3 天才采用。修改引擎这张表时同步修改这里。
+# 3.11 is an install bridge for pre-PM updaters, never a runtime, so the lock
+# covers 3.14 only. Without this the lock must resolve every supported version,
+# where extras that only ever coexist on 3.14 (kittentts vs neutts) conflict.
+environments = ["python_version >= '3.14'"]
+override-dependencies = [
+  # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.
+  # discord.py has updated pynacl to 1.6 on `main`, but has not yet published a patch release.
+  # so, we force-override this to pynacl 1.6. here.
+  # remove this when we update discord.py
+  "pynacl>=1.6,<1.7",
+  # alibabacloud-tea-openapi caps cryptography<49, and its latest release
+  # still does. Without this override, that cap holds cryptography at 48.0.1
+  # and its three advisories (see the cryptography pin in
+  # [project].dependencies). The package uses cryptography only to sign
+  # requests with RSA and AES, and that API did not break in 49 or 50.
+  # Keep this exact version equal to the direct dependency. uv overrides
+  # replace that requirement too, not only the vendor's upper bound.
+  # Remove this line when alibabacloud-tea-openapi lifts the cap.
+  "cryptography==50.0.2",
+  # browser-harness 0.1.13 (core dependency, latest release) pins
+  # pillow==12.3.0 exactly, which holds Pillow below 13.0.0, the first
+  # release fixing GHSA-8g5g-8vmr-9782, GHSA-w889-685w-c8fh and the rest of
+  # the 13.0.0 advisory set. browser-harness only opens, converts, composes
+  # and draws images (Image.open/new/convert, ImageDraw, ImageFont,
+  # ImageOps.contain), none of which changed in 13. Keep this exact version
+  # equal to the direct dependency (uv overrides replace that requirement
+  # too). PM's install-time `uv pip check` accepts the resulting mismatch
+  # because uv.lock records this override (pm/pip_check.py).
+  # Remove this line when browser-harness allows Pillow 13. Plugin workspaces
+  # inherit [tool.uv], so a plugin requiring pillow<13 also gets 13.0.0.
+  "Pillow==13.0.0",
+  # misaki[en] (pulled by [kittentts]) lists spacy-curated-transformers.
+  # The newest release that fits spacy 3.8 (2.x needs thinc 9), 0.3.1, caps
+  # Python below 3.14, so PM's `uv pip check` rejects the venv. Nothing
+  # imports it: only transformer spaCy models (trf=True) do, and KittenTTS
+  # never builds a misaki G2P. The never-true marker removes it from the lock.
+  # Remove this line when misaki drops it or a 3.14-capable release fits.
+  "spacy-curated-transformers; sys_platform == 'never'",
+]
+# Release-age check: Hermes's dependencies must be at least 3 days old when Hermes
+# locks them. It runs where uv.lock is resolved (`hermes pm lock`, and CI's lock
+# check), never on users' machines: PM installs from this vetted lock and drops the
+# cutoff from what it generates (pm/workspace.py::_trust_core_lock), because many
+# package mirrors publish no upload times and uv rejects a file it cannot date
+# (#135589). Exact pins follow the same 3-day rule. The one exemption is CA
+# trust stores: a release that revokes or distrusts a compromised CA must reach
+# the lock the day it ships, because holding it back keeps the bad root trusted.
+# Only packages whose job is CA trust belong in exclude-newer-package.
+exclude-newer = "3 days"
+exclude-newer-package = { certifi = false }
+
+[tool.uv.workspace]
+members = ["pdr/server"]
+# 引擎是独立项目：在 pdr-agent/ 内运行 uv 时使用它自己的锁文件
+exclude = ["pdr-agent"]
+
+[tool.uv.sources]
+pdr-server = { workspace = true }
+pdr-agent = { path = "pdr-agent", editable = true }

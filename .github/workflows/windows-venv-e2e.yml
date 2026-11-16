@@ -41,7 +41,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   venv-holder-e2e:

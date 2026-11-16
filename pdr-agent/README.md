@@ -1,4 +1,4 @@
-# pdr-hermes-agent
+# pdr-agent
 
 PDR 的智能体引擎，由 PDR 团队自行维护和开发。
 
@@ -9,8 +9,10 @@ PDR 的智能体引擎，由 PDR 团队自行维护和开发。
 ```
 <仓库根>/
 ├── start_run.py          # 一键启动 PDR（安装依赖、起基础服务、建表、拉起引擎与前端）
+├── pyproject.toml        # 后端 Python 环境（uv 管理）：uv sync 安装 PDR 服务 + 本引擎（可编辑）
+├── package.json          # 前端工作区（pnpm 管理）：pdr/web/*
 ├── pdr/                  # PDR 业务后端、管理端、用户端、配置（pdr/config.yaml）
-└── pdr-hermes-agent/     # 本目录：智能体引擎
+└── pdr-agent/            # 本目录：智能体引擎
 ```
 
 PDR 后端通过引擎的消息网关（`gateway/`，api_server 平台，默认端口 8642）调用智能体。每个租户对应一个 profile，请求走 `/p/<profile>/` 前缀。PDR 管理端「智能体配置」页里的 967 个配置项，来自本目录的 `hermes_cli/config_defaults.py`，由 `pdr/scripts/gen_config_yaml.py` 同步到 `pdr/config.yaml`。
@@ -40,7 +42,7 @@ PDR 后端通过引擎的消息网关（`gateway/`，api_server 平台，默认�
 
 ## 本版本相对上游的变化
 
-- 项目名改为 `pdr-hermes-agent`（`pyproject.toml`、`package.json`）。
+- 项目名改为 `pdr-agent`（`pyproject.toml`、`package.json`）。
 - 移除与 PDR 无关的部分：桌面客户端（`apps/`）、网页仪表盘前端（`web/`）及对应的打包脚本、测试和 CI，还有贡献者名录、外语翻译、Nix 打包、独立安装脚本、上游评审机器人配置。
 - 文件归类：
   - 根目录 20 个单文件模块移入 `hermes_agent/`，例如 `import run_agent` 改为 `from hermes_agent import run_agent`；
@@ -50,10 +52,12 @@ PDR 后端通过引擎的消息网关（`gateway/`，api_server 平台，默认�
 
 ## 开发
 
-需要 Python 3.14。按 `docs/CONTRIBUTING.md` 的「手动开发与测试环境」构建独立的测试环境：
+日常在 PDR 中使用引擎：在仓库根目录执行 `uv sync`，根目录的 `.venv` 里即可直接 `import hermes_agent`、运行 `hermes` 命令。
+
+单独开发、测试引擎本身时，需要 Python 3.14。按 `docs/CONTRIBUTING.md` 的「手动开发与测试环境」构建独立的测试环境：
 
 ```bash
-cd pdr-hermes-agent
+cd pdr-agent
 python -m pm.build_env --source . --out .venv --group dev --group test --extra messaging
 ```
 

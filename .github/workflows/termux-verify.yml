@@ -4,17 +4,17 @@ on:
   push:
     branches: [main]
     paths:
-      - 'pdr-hermes-agent/scripts/termux/**'
-      - 'pdr-hermes-agent/pm/**'
-      - '!pdr-hermes-agent/pm/**/*.md'
-      - 'pdr-hermes-agent/tests/scripts/test_termux*'
+      - 'pdr-agent/scripts/termux/**'
+      - 'pdr-agent/pm/**'
+      - '!pdr-agent/pm/**/*.md'
+      - 'pdr-agent/tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   pull_request:
     paths:
-      - 'pdr-hermes-agent/scripts/termux/**'
-      - 'pdr-hermes-agent/pm/**'
-      - '!pdr-hermes-agent/pm/**/*.md'
-      - 'pdr-hermes-agent/tests/scripts/test_termux*'
+      - 'pdr-agent/scripts/termux/**'
+      - 'pdr-agent/pm/**'
+      - '!pdr-agent/pm/**/*.md'
+      - 'pdr-agent/tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   workflow_dispatch:
   workflow_call:
@@ -41,7 +41,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   contracts:

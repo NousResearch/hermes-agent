@@ -6,7 +6,9 @@
     python start_run.py --no-docker 不用 Docker，连接本机已运行的 PostgreSQL / Redis
     python start_run.py stop       停止 Docker 基础服务
 
-目录约定：pdr/ 是 PDR 工程（配置唯一入口 pdr/config.yaml），pdr-hermes-agent/ 是智能体引擎源码。
+目录约定：pdr/ 是 PDR 工程（配置唯一入口 pdr/config.yaml），pdr-agent/ 是智能体引擎。
+后端 Python 环境由 uv 管理（根目录 pyproject.toml / uv.lock → .venv），前端由 pnpm 管理
+（根目录 package.json / pnpm-workspace.yaml / pnpm-lock.yaml）。
 每一步都可重复执行，已完成的会跳过；失败修好后重跑即可。
 """
 
@@ -26,12 +28,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PDR = ROOT / "pdr"
-HERMES = ROOT / "pdr-hermes-agent"
-RUNTIME = PDR / ".pdr"
-VENV = RUNTIME / "venv"
+HERMES = ROOT / "pdr-agent"
+VENV = ROOT / ".venv"
 ENV_FILE = PDR / ".env"
 COMPOSE = PDR / "deploy" / "docker-compose.yml"
-MIN_PY = (3, 11)
+MIN_PY = (3, 9)  # 只用于引导本脚本；后端运行在 uv 准备的 Python 3.14 上
 
 
 def say(msg: str) -> None:
@@ -90,8 +91,8 @@ def _version(cmd: list[str]) -> str | None:
 TOOLS = [
     # 名称, 检查命令, 是否必需, 缺失时的说明
     ("Node.js ≥ 20", ["node", "--version"], True, "前端构建需要，见 https://nodejs.org 或使用 nvm"),
-    ("pnpm", ["pnpm", "--version"], False, "可用 corepack enable 启用；缺失时用 npm"),
-    ("uv", ["uv", "--version"], False, "推荐安装以加速 Python 依赖安装：pip install uv"),
+    ("pnpm", ["pnpm", "--version"], True, "前端依赖管理：corepack enable，或 npm install -g pnpm"),
+    ("uv", ["uv", "--version"], True, "后端 Python 环境管理：pip install uv，或见 https://docs.astral.sh/uv/"),
     ("Docker", ["docker", "--version"], False, "用于一键拉起 PostgreSQL/Redis/MySQL；没有时加 --no-docker"),
     ("Docker Compose", ["docker", "compose", "version"], False, "Docker Desktop 自带；Linux 安装 docker-compose-plugin"),
     ("ffmpeg", ["ffmpeg", "-version"], False, "音视频解析需要（抽帧、抽音轨）"),
@@ -112,7 +113,7 @@ def check_env() -> dict[str, bool]:
     found["Docker Compose"] = found["Docker Compose"] and daemon
     if found["Docker"]:
         say(f"  {'✓' if daemon else '–'} {'Docker 服务':<14} {'运行中' if daemon else '未运行：请启动 Docker，或加 --no-docker'}")
-    if not py_ok or not found["Node.js ≥ 20"]:
+    if not py_ok or not all(found[name] for name, _, required, _ in TOOLS if required):
         say("\n缺少必需环境（标 ✗ 的项），请安装后重试。")
     return found
 
@@ -154,28 +155,15 @@ def _read_env(path: Path) -> dict[str, str]:
 
 # --------------------------------------------------------------------------- 3. Python 环境
 
-def ensure_venv(cfg_install: dict, has_uv: bool) -> None:
-    step("3/7 Python 环境（pdr/.pdr/venv）")
-    if not venv_python().exists():
-        RUNTIME.mkdir(parents=True, exist_ok=True)
-        if has_uv:
-            run(["uv", "venv", str(VENV), "--python", f"{sys.version_info[0]}.{sys.version_info[1]}"])
-        else:
-            run([sys.executable, "-m", "venv", str(VENV)])
+def uv_sync(cfg_install: dict) -> None:
+    """按根目录 uv.lock 同步 .venv（PDR 服务 + pdr-agent 引擎）；uv 会按需下载 Python 3.14。"""
+    step("3/7 Python 环境（uv sync → .venv）")
     index = pick_mirror(cfg_install.get("pip_index", ""), cfg_install.get("pip_candidates", []),
                         cfg_install.get("strategy", "fastest"), float(cfg_install.get("probe_timeout_seconds", 3)))
     say(f"  Python 包源：{index or '默认'}")
-    reqs = ["pyyaml>=6,<7"]
-    req_file = PDR / "server" / "requirements.txt"
-    args = ["-r", str(req_file)] if req_file.exists() else reqs
-    if has_uv:
-        cmd = ["uv", "pip", "install", "--python", str(venv_python()), *args]
-        cmd += ["--index-url", index] if index else []
-    else:
-        cmd = [str(venv_python()), "-m", "pip", "install", "-q", *args]
-        cmd += ["-i", index] if index else []
-    run(cmd)
-    say("  依赖已就绪" + ("" if req_file.exists() else "（后端依赖清单 pdr/server/requirements.txt 将在编码阶段加入）"))
+    env = {**os.environ, **({"UV_DEFAULT_INDEX": index} if index else {})}
+    run(["uv", "sync", "--frozen"], cwd=ROOT, env=env)
+    say("  依赖已就绪")
 
 
 # --------------------------------------------------------------------------- 4. DDL
@@ -233,7 +221,7 @@ END $$;
 
 PENDING = [
     ("MinerU 解析服务", "mineru-kit api-server"),
-    ("hermes 智能体网关", "pdr-hermes-agent/ 下的 gateway（api_server 平台）"),
+    ("hermes 智能体网关", "pdr-agent/ 下的 gateway（api_server 平台）"),
     ("PDR 后端与 worker", "pdr/server"),
     ("管理端前端", "pdr/web/admin"),
 ]
@@ -245,23 +233,21 @@ def start_portal(cfg: dict) -> subprocess.Popen | None:
     if not (PORTAL / "package.json").exists():
         return None
     pnpm = shutil.which("pnpm")
-    npm = shutil.which("npm")
-    if not pnpm and not npm:
-        say("  – 用户端：未找到 pnpm / npm，跳过（安装 Node.js ≥ 20 后重试）")
+    if not pnpm:
+        say("  – 用户端：未找到 pnpm，跳过（corepack enable 或 npm install -g pnpm 后重试）")
         return None
     inst = cfg.get("install", {})
     registry = pick_mirror(inst.get("npm_registry", ""), inst.get("npm_candidates", []),
                            inst.get("strategy", "fastest"), float(inst.get("probe_timeout_seconds", 3)))
     say(f"  用户端依赖源：{registry or '默认'}")
-    tool = pnpm or npm
-    run([tool, "install", *(["--registry", registry] if registry else [])], cwd=PORTAL)
+    run([pnpm, "install", "--frozen-lockfile", *(["--registry", registry] if registry else [])], cwd=ROOT)
     web = cfg["portal_web"]
     env = {**os.environ, "PDR_PORTAL_PORT": str(web["port"]),
            "PDR_API_URL": f"http://{cfg['app']['host']}:{cfg['app']['port']}",
            "VITE_PORTAL_MOCK": "true" if web.get("mock_api", True) else "false"}
     # 子进程单独成组，退出时整组结束（包括 pnpm 拉起的 vite）
     group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-    proc = subprocess.Popen([tool, "run", "dev"], cwd=PORTAL, env=env, **group)
+    proc = subprocess.Popen([pnpm, "--filter", "pdr-portal", "dev"], cwd=ROOT, env=env, **group)
     mode = "示例数据" if web.get("mock_api", True) else "连接后端"
     say(f"  ✓ 用户端已启动（{mode}）：http://127.0.0.1:{web['port']}")
     return proc
@@ -325,11 +311,9 @@ def load_config() -> dict:
 
 
 def reexec_in_venv(argv: list[str]) -> None:
-    """系统 Python 缺 PyYAML 时：先建虚拟环境装好，再用虚拟环境的 Python 重新执行本脚本。"""
+    """系统 Python 缺 PyYAML 时：先用 uv 同步 .venv，再用 .venv 的 Python 重新执行本脚本。"""
     if not venv_python().exists():
-        RUNTIME.mkdir(parents=True, exist_ok=True)
-        run([sys.executable, "-m", "venv", str(VENV)])
-    run([str(venv_python()), "-m", "pip", "install", "-q", "pyyaml>=6,<7"])
+        run(["uv", "sync", "--frozen"], cwd=ROOT)
     os.execv(str(venv_python()), [str(venv_python()), str(Path(__file__).resolve()), *argv])
 
 
@@ -343,7 +327,7 @@ def main(argv: list[str]) -> int:
     found = check_env()
     if args.check:
         return 0 if found["python"] else 1
-    if not found["python"]:
+    if not found["python"] or not found["uv"]:
         return 1
     try:
         cfg = load_config()
@@ -356,7 +340,7 @@ def main(argv: list[str]) -> int:
     if not args.no_docker and not use_docker:
         say("\n未检测到 Docker Compose，改为 --no-docker 模式。")
     env = ensure_env_file()
-    ensure_venv(cfg.get("install", {}), found["uv"])
+    uv_sync(cfg.get("install", {}))
     render_ddl()
     start_services(env, cfg, use_docker)
     apply_schema(env, cfg, use_docker)

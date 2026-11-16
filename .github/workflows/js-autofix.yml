@@ -38,13 +38,13 @@ on:
   push:
     branches: [main]
     paths:
-      - 'pdr-hermes-agent/**/*.js'
-      - 'pdr-hermes-agent/**/*.cjs'
-      - 'pdr-hermes-agent/**/*.mjs'
-      - 'pdr-hermes-agent/**/*.ts'
-      - 'pdr-hermes-agent/**/*.tsx'
-      - 'pdr-hermes-agent/package.json'
-      - 'pdr-hermes-agent/pnpm-lock.yaml'
+      - 'pdr-agent/**/*.js'
+      - 'pdr-agent/**/*.cjs'
+      - 'pdr-agent/**/*.mjs'
+      - 'pdr-agent/**/*.ts'
+      - 'pdr-agent/**/*.tsx'
+      - 'pdr-agent/package.json'
+      - 'pdr-agent/pnpm-lock.yaml'
   workflow_dispatch:
 
 permissions:
@@ -56,7 +56,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   generate-patch:

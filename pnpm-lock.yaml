@@ -6,7 +6,9 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  pdr/web/portal:
     dependencies:
       pinia:
         specifier: ^3.0.4

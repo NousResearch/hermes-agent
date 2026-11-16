@@ -1,0 +1,15 @@
+[project]
+name = "pdr-server"
+version = "0.1.0"
+description = "PDR 业务后端：配置中心、内容流水线、权限与数仓表结构"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "pyyaml>=6,<7",
+]
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pdr_server"]

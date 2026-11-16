@@ -75,7 +75,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   os-tests:

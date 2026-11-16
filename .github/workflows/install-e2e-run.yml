@@ -84,7 +84,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   e2e:

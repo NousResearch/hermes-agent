@@ -33,16 +33,16 @@ on:
         default: ''
   pull_request:
     paths:
-      - 'pdr-hermes-agent/pm/**'
-      - '!pdr-hermes-agent/pm/**/*.md'
-      - 'pdr-hermes-agent/scripts/bundles/**'
-      - 'pdr-hermes-agent/scripts/ci/desktop_build_cache.py'
+      - 'pdr-agent/pm/**'
+      - '!pdr-agent/pm/**/*.md'
+      - 'pdr-agent/scripts/bundles/**'
+      - 'pdr-agent/scripts/ci/desktop_build_cache.py'
       - '.github/actions/desktop-build-cache/**'
-      - 'pdr-hermes-agent/scripts/windows-build-deps.ps1'
-      - 'pdr-hermes-agent/scripts/build/windows-deps.ps1'
+      - 'pdr-agent/scripts/windows-build-deps.ps1'
+      - 'pdr-agent/scripts/build/windows-deps.ps1'
       - '.github/actions/setup-windows-build-deps/**'
-      - 'pdr-hermes-agent/uv.lock'
-      - 'pdr-hermes-agent/pyproject.toml'
+      - 'pdr-agent/uv.lock'
+      - 'pdr-agent/pyproject.toml'
       - '.github/workflows/pm-bundle.yml'
 
 permissions:
@@ -56,7 +56,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   bundle:

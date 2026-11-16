@@ -10,12 +10,11 @@
 python start_run.py
 ```
 
-只看用户端界面时，也可以单独运行：
+只看用户端界面时，也可以在仓库根目录（pnpm 工作区）单独运行：
 
 ```bash
-cd pdr/web/portal
 pnpm install
-pnpm dev
+pnpm dev:portal
 ```
 
 打开 http://127.0.0.1:5174 。

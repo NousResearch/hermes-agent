@@ -1,5 +1,5 @@
 #
-# docker/docker-compose.yml for pdr-hermes-agent（在项目根目录执行：docker compose -f docker/docker-compose.yml up -d）
+# docker/docker-compose.yml for pdr-agent（在项目根目录执行：docker compose -f docker/docker-compose.yml up -d）
 #
 # Usage:
 #   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d

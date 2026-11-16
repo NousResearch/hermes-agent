@@ -13,14 +13,14 @@ name: Plugin Catalog CI
 on:
   pull_request:
     paths:
-      - "pdr-hermes-agent/plugin-catalog/**"
+      - "pdr-agent/plugin-catalog/**"
 
 permissions:
   contents: read
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   structural:

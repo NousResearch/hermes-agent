@@ -1,6 +1,6 @@
-"""把 pdr-hermes-agent 的 DEFAULT_CONFIG 连同中文元数据写入 pdr/config.yaml 的 hermes 段。
+"""把 pdr-agent 的 DEFAULT_CONFIG 连同中文元数据写入 pdr/config.yaml 的 hermes 段。
 
-用法（仓库根目录）：python pdr/scripts/gen_config_yaml.py（pdr-hermes-agent 源码位于 pdr-hermes-agent/）
+用法（仓库根目录）：python pdr/scripts/gen_config_yaml.py（pdr-agent 源码位于 pdr-agent/）
 - 只替换 config.yaml 中 `# >>> hermes:begin` 与 `# <<< hermes:end` 之间的内容，PDR 段保持手写。
 - 已有的 hermes 取值会保留（用户在页面或文件里改过的值不被默认值覆盖）。
 - 每个配置项上方写一行元数据注释，格式与 PDR 段相同，配置页面直接解析这些注释：
@@ -18,7 +18,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 PDR = ROOT / "pdr"
-HERMES = ROOT / "pdr-hermes-agent"
+HERMES = ROOT / "pdr-agent"
 CONFIG = PDR / "config.yaml"
 ZH = PDR / "server" / "pdr_server" / "agent" / "config_zh.json"
 BEGIN, END = "# >>> hermes:begin", "# <<< hermes:end"
@@ -125,7 +125,7 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 def main() -> int:
     sys.path.insert(0, str(HERMES))
-    from hermes_cli.config_defaults import DEFAULT_CONFIG  # noqa: PLC0415 - 需要先把 pdr-hermes-agent/ 加入 sys.path
+    from hermes_cli.config_defaults import DEFAULT_CONFIG  # noqa: PLC0415 - 需要先把 pdr-agent/ 加入 sys.path
 
     zh = json.loads(ZH.read_text(encoding="utf-8"))
     text = CONFIG.read_text(encoding="utf-8")
@@ -137,7 +137,7 @@ def main() -> int:
     general = {k: v for k, v in values.items() if not (isinstance(v, dict) and v)}
     sections = {k: v for k, v in values.items() if isinstance(v, dict) and v}
 
-    out = [BEGIN, "# 以下由 pdr/scripts/gen_config_yaml.py 依据 pdr-hermes-agent 的 DEFAULT_CONFIG 生成；可直接修改取值，",
+    out = [BEGIN, "# 以下由 pdr/scripts/gen_config_yaml.py 依据 pdr-agent 的 DEFAULT_CONFIG 生成；可直接修改取值，",
            "# 重新生成时保留已修改的值。租户级覆盖存于 src.src_opr_config_value_f，不写入本文件。", "hermes:",
            "", "  # ---- 通用 ----"]
     emit(general, zh, "", 1, out)

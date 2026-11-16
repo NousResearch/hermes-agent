@@ -68,7 +68,7 @@ env:
 
 defaults:
   run:
-    working-directory: pdr-hermes-agent
+    working-directory: pdr-agent
 
 jobs:
   # Resolve the release phase, then (outside release phases) classify the PR's

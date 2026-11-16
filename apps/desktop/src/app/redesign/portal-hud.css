@@ -1,0 +1,36 @@
+/* HUD mode in the redesign (`?win=hud`). The HUD is the app's own composer and transcript in a
+   chrome-free floating window, so the redesign's composer, type and controls reach it through the
+   shared components; this file is only what the HUD's floating layout (styles.css › HUD mode) has
+   to restate. Its mechanics stand untouched: the bar, the band that shows and melts, click-through,
+   edge mirroring. */
+
+/* The band is the redesign's dark canvas, not a neutral grey, at the HUD's own alphas. Your own
+   lines take the brand ink lightened for body text on it; the agent's stay white. */
+:root[data-shell='portal'] [data-hud-shell] {
+  --hud-sheet: var(--portal-raw-navy-channels);
+}
+
+:root[data-shell='portal'] [data-hud-shell] [data-slot='composer-bounds'] {
+  --hud-overlay-ink-user: var(--portal-hud-ink-user);
+}
+
+/* The band is a few lines tall: a prompt and its reply keep the HUD's tight rhythm, not the
+   stage's. */
+:root[data-shell='portal'] [data-hud-shell] [data-slot='aui_turn-pair'] {
+  gap: var(--turn-block-gap);
+}
+
+:root[data-shell='portal'] [data-hud-shell] [data-slot='aui_user-message-root'] {
+  padding-block: 0;
+}
+
+/* One bar, so the model stays on it (composer/controls.tsx) and Send is its glyph alone: the
+   written label would take the room the message is typed in. Its name stays for assistive tech. */
+:root[data-shell='portal'] [data-hud-shell] [data-redesigned-composer] .composer-send-label > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

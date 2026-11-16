@@ -68,7 +68,8 @@ const LAUNCH_ID = window.hermesDesktop?.launchId ?? randomUuid()
 
 /** Picks the launch's artwork the first time this window renders the redesign, and mirrors it onto
  *  `<html data-artwork-dark/-light>` before the first paint, so a theme switch is a class flip with
- *  nothing to decide. Classic windows (and the HUD and Browser, which render classic) get none. */
+ *  nothing to decide. Classic windows (and the Browser, which renders classic) get none; the
+ *  transparent HUD has no canvas to show its pick on. */
 export function installArtworkAttributes(root: HTMLElement = document.documentElement): () => void {
   let pick: Artwork | null = null
 

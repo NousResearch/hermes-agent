@@ -177,8 +177,8 @@ merges `src/i18n/redesign/<locale>.ts` over the base catalog — before backend/
 language packs, which still win. Each overlay holds ONLY the keys whose wording differs,
 typed against `Translations`; a locale inherits the English overlay where its base still
 shows English. Call sites keep reading `t.x.y` / `translateNow(...)`; never branch a string on
-the shell. The HUD and popped-out Browser always render classic, so they read classic
-wording. **New shell wording goes in the overlay, never in the base catalog.** Redesign-only
+the shell. The popped-out Browser always renders classic, so it reads classic
+wording; the HUD follows the shell. **New shell wording goes in the overlay, never in the base catalog.** Redesign-only
 surfaces with their own copy modules (`src/i18n/simplified-agents.ts`, `src/app/**/*-copy.ts`)
 use the redesign terms directly. `src/i18n/redesign/terminology-guard.test.ts` fails on a
 classic noun left in the redesign and on a redesign-only word reaching classic.
@@ -372,8 +372,11 @@ the shell. One seam owns it (`src/store/shell-variant.ts`): `usePortalShell()` /
 (main.tsx, before first render) mirrors it to `<html data-shell="portal">` and follows
 every toggle (absent in classic). Every redesign selector is gated
 `:root[data-shell='portal'] …`; never gate on a mounted component
-(`:has(.portal-sidebar)`) or on a shell ancestor. The chromeless HUD and
-popped-out Browser windows stay classic in both modes. `$portalPreferred`, the
+(`:has(.portal-sidebar)`) or on a shell ancestor. The popped-out Browser
+window stays classic in both modes. The chromeless HUD renders the redesign with it: the same
+composer and transcript, so their look carries over, and `redesign/portal-hud.css` restates only
+what its floating layout needs (a navy transcript sheet, its own turn rhythm, the model kept on the
+one bar, Send as its glyph). `$portalPreferred`, the
 window-independent preference, is only for behaviour every window must agree on
 (setup flow, metrics, session scope, the plugin SDK). Brand marks, floating
 surfaces (`app/redesign/portal-floating.css`) and the control scale (`portal-controls.css`, 36px
@@ -575,7 +578,7 @@ localStorage), so two launches in a row never repeat; every window of one launch
 through the main process's launch id (`hermesDesktop.launchId`), and in a browser each page load
 is a launch. A theme switch keeps the same artwork when the other theme draws it, else the next
 one it does. The pick is mirrored onto `<html data-artwork-dark/-light>` before the first paint;
-classic, the HUD and the popped-out Browser get none.
+classic and the popped-out Browser get none, and the transparent HUD has no canvas to show its on.
 
 `app/redesign/portal-artwork.css` holds the art: Figma's geometry in frame pixels (the 1270×870
 Background), scaled to cover the window and centred, plus its ground (`--portal-artwork-ground-*`,
@@ -629,6 +632,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-raw-spectrum-red` | `#aa1515` | ″ | The composer's spectrum edge (906:19872). |
 | `--portal-raw-spectrum-yellow` | `#ddd61c` | ″ |  |
 | `--portal-raw-gray` | `#797979` | ″ | The neutral of a hovered sidebar row's gradient (1089:8351): the selected row's brand ramp in grayscale. |
+| `--portal-raw-navy-channels` | `11 11 36` | ″ | The HUD's transcript sheet: the dark canvas navy as channels, laid at the HUD's own alphas (styles.css). Always dark, in both modes: its ink is white over someone else's window. |
 | `--portal-raw-shadow-4` | `rgb(0 0 0 / 0.04)` | ″ | Shadow inks. |
 | `--portal-raw-shadow-8` | `rgb(0 0 0 / 0.08)` | ″ |  |
 | `--portal-raw-shadow-20` | `rgb(0 0 0 / 0.2)` | ″ |  |
@@ -700,6 +704,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-surface-chrome-pressed` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent)) )` | `var(--portal-raw-ink-10)` |  |
 | `--portal-text-chrome` | `var(--portal-raw-ink-40)` | `color-mix(in srgb, var(--ui-base) 48%, transparent)` |  |
 | `--portal-status-chip-fill` | `var(--portal-surface-chrome)` | `color-mix(in srgb, var(--portal-raw-pure-white) 60%, transparent)` | The status bar's chips (tab 1262:39845): the band's chrome tile in dark, white .6 in light. |
+| `--portal-hud-ink-user` | `color-mix(in srgb, var(--portal-raw-blue-ink-dark) 55%, var(--portal-raw-pure-white))` | ″ | Your own lines in the HUD's transcript: the brand ink lightened to body-text contrast on its navy sheet. One value in both modes; the sheet is always dark. |
 | `--portal-rail-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 20%, transparent)` | The global rail's buttons (ico 16292:15253): a navy tile, white .05 / black .60 / blue .20, the glyph at .4; the open destination white .10 / black .60 / blue .40 (16292:15245) with its glyph in full ink. Hover takes the step between them. |
 | `--portal-rail-fill-hover` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 30%, transparent)) )` | `var(--portal-raw-ink-5)` |  |
 | `--portal-rail-fill-selected` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent)) )` | `var(--portal-raw-ink-10)` |  |

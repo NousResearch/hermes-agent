@@ -232,8 +232,8 @@ export function registeredLocaleMeta(locale: Locale): RegisteredLocaleMeta[] {
   }))
 }
 
-/** The wording a window renders: the redesign's when it shows the portal shell (never the HUD or
- *  a popped-out Browser, which always render classic). */
+/** The wording a window renders: the redesign's when it shows the portal shell (never a popped-out
+ *  Browser, which always renders classic). */
 export function shellWordingFor(portalShell: boolean): ShellWording {
   return portalShell ? 'redesign' : 'classic'
 }

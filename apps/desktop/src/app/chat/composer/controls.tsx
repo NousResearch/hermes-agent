@@ -145,7 +145,8 @@ export function ComposerControls({
     >
       {minimal && !redesigned ? null : (
         <>
-          {redesigned || hideModelPill ? null : (
+          {/* The redesign lifts the model to its own row; the HUD is one bar, so it stays here. */}
+          {(redesigned && !hudMode) || hideModelPill ? null : (
             <>
               <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
               {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}

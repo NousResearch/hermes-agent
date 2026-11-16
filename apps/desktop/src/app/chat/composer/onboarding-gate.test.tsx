@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
-import { $portalShell, $shellChoice } from '@/store/shell-variant'
+import { $shellChoice } from '@/store/shell-variant'
 import type * as Windows from '@/store/windows'
 
 import type { ChatBarState } from './types'
@@ -71,11 +71,10 @@ afterEach(() => {
 })
 
 describe('composer onboarding rules in the HUD', () => {
-  it('follow the redesign preference, not the classic look', () => {
+  it('follow the redesign preference', () => {
     $shellChoice.set(null)
     render(<Harness />)
 
-    expect($portalShell.get()).toBe(false)
     expect(skip()).toBeNull()
 
     act(() => $shellChoice.set(false))

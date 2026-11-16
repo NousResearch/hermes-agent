@@ -166,6 +166,9 @@
   --portal-text-chrome: var(--portal-raw-ink-40);
   /* The status bar's chips (tab 1262:39845): the band's chrome tile in dark, white .6 in light. */
   --portal-status-chip-fill: var(--portal-surface-chrome);
+  /* Your own lines in the HUD's transcript: the brand ink lightened to body-text contrast on its
+     navy sheet. One value in both modes; the sheet is always dark. */
+  --portal-hud-ink-user: color-mix(in srgb, var(--portal-raw-blue-ink-dark) 55%, var(--portal-raw-pure-white));
   /* The global rail's buttons (ico 16292:15253): a navy tile, white .05 / black .60 / blue .20, the
      glyph at .4; the open destination white .10 / black .60 / blue .40 (16292:15245) with its glyph in
      full ink. Hover takes the step between them. */

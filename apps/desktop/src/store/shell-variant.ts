@@ -5,7 +5,7 @@ import { persistentAtom } from '@/lib/persisted'
 
 import { DESKTOP_BUTTON_ACTIONS, recordAction, recordFeatureToggle } from './desktop-metrics'
 import { providePortalPresentation } from './shell-presentation'
-import { isBrowserWindow, isHudWindow } from './windows'
+import { isBrowserWindow } from './windows'
 
 /** The persisted explicit choice: null until the user picks, `false` = classic rollback. */
 export const $shellChoice = persistentAtom<boolean | null>('hermes.desktop.agentShell.v1', null, {
@@ -17,10 +17,10 @@ export const $shellChoice = persistentAtom<boolean | null>('hermes.desktop.agent
  *  behaviour every window must agree on — `shell-policy.ts` names each such behaviour. */
 export const $portalPreferred = computed($shellChoice, choice => choice !== false)
 
-/** Whether THIS window renders the portal shell for a stored choice. The chromeless HUD and
- *  popped-out Browser keep the classic look in every mode; their layouts were never redesigned. */
-export const rendersPortalShell = (choice: boolean | null): boolean =>
-  choice !== false && !isHudWindow() && !isBrowserWindow()
+/** Whether THIS window renders the portal shell for a stored choice. The HUD does: it is the same
+ *  composer and transcript, so it takes the redesign's look (app/redesign/portal-hud.css) while its
+ *  own layout stands. The popped-out Browser keeps the classic look; it was never redesigned. */
+export const rendersPortalShell = (choice: boolean | null): boolean => choice !== false && !isBrowserWindow()
 
 /** Whether THIS window renders the redesigned (portal) shell — the one presentation read, mirrored
  *  to `<html data-shell="portal">` for CSS. */

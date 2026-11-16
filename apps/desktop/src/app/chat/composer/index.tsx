@@ -1463,7 +1463,7 @@ export function ChatBar({
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
-                  <ComposerModelRow disabled={disabled} model={state.model} redesigned={redesigned} />
+                  <ComposerModelRow disabled={disabled} model={state.model} redesigned={redesigned && !hudMode} />
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
                   <div
                     className={cn(

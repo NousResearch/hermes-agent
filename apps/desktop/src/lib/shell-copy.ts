@@ -11,7 +11,7 @@ export interface ShellCopy<T = string> {
   redesign: T
 }
 
-/** THIS window's wording of `copy`, read per call (the HUD and popped-out Browser render classic).
+/** THIS window's wording of `copy`, read per call (the popped-out Browser renders classic).
  *  Depends only on the presentation leaf, so dependency-free modules can use it. */
 export function shellCopy<T>(copy: ShellCopy<T>): T {
   return portalPresentation() ? copy.redesign : copy.classic

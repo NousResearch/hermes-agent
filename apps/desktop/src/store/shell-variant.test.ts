@@ -63,12 +63,19 @@ it('marks <html> on load and follows runtime toggles both ways; classic leaves n
   expect(paintedShell()).toBe('portal')
 })
 
-it.each(['?win=hud', '?win=browser&tab=t1'])(
-  'keeps the chromeless %s window classic without changing the preference',
-  async search => {
-    const hud = await launch(search)
-    expect(hud.$portalPreferred.get()).toBe(true)
-    expect(hud.$portalShell.get()).toBe(false)
-    expect(paintedShell()).toBeNull()
-  }
-)
+it('keeps the popped-out Browser window classic without changing the preference', async () => {
+  const browser = await launch('?win=browser&tab=t1')
+  expect(browser.$portalPreferred.get()).toBe(true)
+  expect(browser.$portalShell.get()).toBe(false)
+  expect(paintedShell()).toBeNull()
+})
+
+it('renders the redesign in the chromeless HUD window, and classic there once it is rolled back', async () => {
+  const hud = await launch('?win=hud')
+  expect(hud.$portalShell.get()).toBe(true)
+  expect(paintedShell()).toBe('portal')
+
+  hud.setPortalPreferred(false)
+  expect(hud.$portalShell.get()).toBe(false)
+  expect(paintedShell()).toBeNull()
+})

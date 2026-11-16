@@ -169,7 +169,7 @@ print(json.dumps({
 """
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="job objects are Windows only")
+@pytest.mark.platforms("windows")
 def test_bridge_starts_inside_a_job_that_forbids_breakaway(tmp_path):
     root = str(Path(__file__).resolve().parents[2])
     done = subprocess.run([sys.executable, "-c", _CHILD, root], capture_output=True, text=True, timeout=120,

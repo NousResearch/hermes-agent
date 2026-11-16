@@ -502,6 +502,8 @@ def _is_process_home(hermes_home: Path) -> bool:
 # a finished activity's scope is dropped from here when the last context holding it goes.
 _INSTALLED_SCOPES: dict[str, list] = {}
 _INSTALLED_SCOPES_LOCK = threading.RLock()
+_INSTALLED_SCOPE_GENERATIONS: dict[str, int] = {}
+_SCOPE_REBUILD_ATTEMPTS = 8
 
 
 def installed_scope_view_version(home):
@@ -546,19 +548,25 @@ def track_installed_scope(bound, profile_home, *, builder=None, view_version=Non
         builder = lambda: {**owner_builder(), **overlay}
 
     ref = weakref.ref(bound, _forget)
-    while True:
+    from hermes_scope import push_state
+    for _attempt in range(_SCOPE_REBUILD_ATTEMPTS):
+        with _INSTALLED_SCOPES_LOCK:
+            generation = _INSTALLED_SCOPE_GENERATIONS.get(key, 0)
         current = installed_scope_view_version(home)
         if current != view_version:
-            from hermes_scope import push_state
             with push_state(home=str(home)):
                 rebuilt = builder()
-            _replace_scope_mapping(bound.mapping, rebuilt)
-            view_version = current
+        else:
+            rebuilt = dict(bound.mapping)
         with _INSTALLED_SCOPES_LOCK:
-            if installed_scope_view_version(home) != view_version:
+            if _INSTALLED_SCOPE_GENERATIONS.get(key, 0) != generation:
                 continue
-            _INSTALLED_SCOPES.setdefault(key, []).append((ref, builder, view_version))
+            _replace_scope_mapping(bound.mapping, rebuilt)
+            _INSTALLED_SCOPES.setdefault(key, []).append((ref, builder, current))
             return
+    with _INSTALLED_SCOPES_LOCK:
+        _INSTALLED_SCOPES.setdefault(key, []).append((ref, builder, view_version))
+    _warn_scope_rebuild_deferred()
 
 
 def _replace_scope_mapping(scope, rebuilt):
@@ -567,26 +575,50 @@ def _replace_scope_mapping(scope, rebuilt):
         scope.pop(name, None)
 
 
-def update_installed_scopes(hermes_home: Path, old: Mapping[str, str], new: Mapping[str, str]) -> int:
-    """Recompose each installed owner's mapping, preserving policy through its normal builder.
+def mark_installed_scope_view_changed(key: str) -> None:
+    """Advance publication's fence under the install lock, before replacing the store view."""
+    _INSTALLED_SCOPE_GENERATIONS[key] = _INSTALLED_SCOPE_GENERATIONS.get(key, 0) + 1
 
-    The view installer holds the same lock as registration. Updates precede removals, so readers
-    never observe a temporarily empty mapping. No value comparison can infer provenance safely.
-    """
+
+def _warn_scope_rebuild_deferred() -> None:
+    import logging
+    logging.getLogger(__name__).warning("Secret scope rebuild deferred after concurrent view changes")
+
+
+def update_installed_scopes(hermes_home: Path, old: Mapping[str, str], new: Mapping[str, str]) -> int:
+    """Snapshot under the publication fence; build without locks and publish only if still current."""
     from hermes_constants import hermes_home_key
     from hermes_scope import push_state
-    updated = 0
-    with _INSTALLED_SCOPES_LOCK:
-        entries = _INSTALLED_SCOPES.get(hermes_home_key(Path(hermes_home)), ())
-        for ref, builder, _version in list(entries):
+    key = hermes_home_key(hermes_home)
+    for _attempt in range(_SCOPE_REBUILD_ATTEMPTS):
+        with _INSTALLED_SCOPES_LOCK:
+            generation = _INSTALLED_SCOPE_GENERATIONS.get(key, 0)
+            entries = list(_INSTALLED_SCOPES.get(key, ()))
+        version = installed_scope_view_version(hermes_home)
+        candidates = []
+        for entry in entries:
+            ref, builder, _version = entry
             bound = ref()
             if bound is None or not isinstance(bound.mapping, dict):
                 continue
             with push_state(home=str(hermes_home)):
                 rebuilt = builder()
-            updated += bound.mapping != rebuilt
-            _replace_scope_mapping(bound.mapping, rebuilt)
-    return updated
+            candidates.append((entry, bound, rebuilt))
+        with _INSTALLED_SCOPES_LOCK:
+            if _INSTALLED_SCOPE_GENERATIONS.get(key, 0) != generation:
+                continue
+            updated = 0
+            live = _INSTALLED_SCOPES.get(key, [])
+            for entry, bound, rebuilt in candidates:
+                index = next((i for i, candidate in enumerate(live) if candidate is entry), None)
+                if index is None:
+                    continue
+                updated += bound.mapping != rebuilt
+                _replace_scope_mapping(bound.mapping, rebuilt)
+                live[index] = (entry[0], entry[1], version)
+            return updated
+    _warn_scope_rebuild_deferred()
+    return 0
 
 
 def refresh_installed_secret_scope(hermes_home: Path) -> bool:

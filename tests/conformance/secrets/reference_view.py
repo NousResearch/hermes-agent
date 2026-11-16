@@ -61,25 +61,20 @@ class MemoryViewProvider(SecretStoreProvider):
         return self.remote.setdefault(self._key(home), {"env": {}, "auth": {}, "version": 1})
 
     def refresh(self, home: Any = None) -> None:
-        """Serialize view publication with installed-scope registration."""
-        from agent.secret_scope import _INSTALLED_SCOPES_LOCK
-        with _INSTALLED_SCOPES_LOCK:
-            self._refresh(home)
-
-    def _refresh(self, home: Any = None) -> None:
-        """Re-read the "remote" side, telling the router (``view_changed``) about each home whose
-        env names moved, as a store's poller does."""
+        """Re-read the remote snapshot and notify after releasing publication locks."""
+        from agent.secret_scope import _INSTALLED_SCOPES_LOCK, mark_installed_scope_view_changed
+        from hermes_secret_routing import view_changed
+        keys = [self._key(home)] if home is not None else list(self.remote)
         moved = []
-        with self._lock:
-            keys = [self._key(home)] if home is not None else list(self.remote)
+        with _INSTALLED_SCOPES_LOCK, self._lock:
             if home is not None:
                 self.homes[keys[0]] = Path(home)
             for key in keys:
                 before = self.seen.get(key)
+                mark_installed_scope_view_changed(key)
                 self.seen[key] = copy.deepcopy(self.remote.get(key) or {"env": {}, "auth": {}, "version": 1})
                 if before is not None and before["env"] != self.seen[key]["env"] and key in self.homes:
                     moved.append((self.homes[key], dict(before["env"]), dict(self.seen[key]["env"])))
-        from hermes_secret_routing import view_changed
         for path, old_env, new_env in moved:
             view_changed(path, old_env, new_env)
 

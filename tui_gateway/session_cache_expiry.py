@@ -21,6 +21,8 @@ _cache_expiry_lock = threading.Lock()
 _CACHE_EXPIRY_CONCURRENCY = 3
 _cache_expiry_slots = threading.BoundedSemaphore(_CACHE_EXPIRY_CONCURRENCY)
 _cache_expiry_in_flight: set[str] = set()
+# Sessions a reaper is releasing behind their release-time compaction: the session cap counts them as gone.
+_cache_expiry_releasing: set[str] = set()
 
 
 def _cache_expiry_candidates() -> list[tuple[str, dict]]:
@@ -104,10 +106,17 @@ def _cache_expiry_tick() -> list:
     return threads
 
 
-def _compact_then_close(sid: str, session: dict, *, end_reason: str):
+def _pending_release_closes() -> int:
+    """Sessions whose reaper close waits behind its release-time compaction (still in ``_sessions``)."""
+    with _cache_expiry_lock:
+        return len(_cache_expiry_releasing)
+
+
+def _compact_then_close(sid: str, session: dict, *, end_reason: str, still_due=None):
     """A reaper's release: when step 2 is due at release (``claim_compaction_at_release`` ends the budget
     now, so nothing is warmed after it), compact on a job thread first and close afterwards if the session
-    is still reapable then. Returns that thread, or None when the caller closes the session now as before."""
+    is still reapable then and ``still_due()`` (the session cap: other closes may have brought it under)
+    still holds. Returns that thread, or None when the caller closes the session now as before."""
     from agent.memory_provider import spawn_context_thread
     from agent.prompt_cache_lifecycle import claim_compaction_at_release
     agent = session.get("agent")
@@ -121,13 +130,20 @@ def _compact_then_close(sid: str, session: dict, *, end_reason: str):
             return None
     with _cache_expiry_lock:
         _cache_expiry_in_flight.add(sid)
+        _cache_expiry_releasing.add(sid)
+
+    def _closable(current: dict) -> bool:
+        with _cache_expiry_lock:
+            _cache_expiry_releasing.discard(sid)  # under _sessions_lock: no longer counted as pending
+        return _session_is_reapable(sid, current) and (still_due is None or still_due())
 
     def _job() -> None:
         try:
             _cache_expiry_job(sid, session, prime=False)
         finally:
-            _close_session_by_id(sid, end_reason=end_reason,
-                                 predicate=lambda current: _session_is_reapable(sid, current))
+            if not _close_session_by_id(sid, end_reason=end_reason, predicate=_closable):
+                with _cache_expiry_lock:
+                    _cache_expiry_releasing.discard(sid)
 
     thread = spawn_context_thread(_job, name=f"cache-expiry-release-{sid}")
     thread.start()

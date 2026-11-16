@@ -412,13 +412,18 @@ def _enforce_session_cap() -> None:
             return
         evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_reapable(sid, s)]
     # Oldest-touched first; evict only down to the cap (may stop short: live sessions are never eligible).
+    # A close deferred behind its release-time compaction still sits in ``_sessions``: it counts as gone.
     evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
-    for sid, _s in evictable:
+
+    def over_cap() -> bool:
         with _sessions_lock:
-            if len(_sessions) <= cap:
-                break
-        if _compact_then_close(sid, _s, end_reason="lru_evict") is not None:
-            continue  # step 2 at release: that job compacts, then closes it
+            return len(_sessions) - _pending_release_closes() > _max_live_sessions()
+
+    for sid, _s in evictable:
+        if not over_cap():
+            break
+        if _compact_then_close(sid, _s, end_reason="lru_evict", still_due=over_cap) is not None:
+            continue  # step 2 at release: that job compacts, then closes it if the cap still needs it
         _close_session_by_id(
             sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_reapable(vs, session))
 

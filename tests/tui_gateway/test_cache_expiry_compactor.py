@@ -194,3 +194,49 @@ def test_the_idle_reaper_compacts_a_due_chat_before_it_closes_it(server, monkeyp
 
     assert [c["trigger"] for c in agent.calls] == ["cache_expiry"] and len(session["history"]) == 2
     assert order == ["claimed", ("closed", "s")] and primed == []
+
+
+def test_the_session_cap_defers_only_the_excess_and_never_overshoots(server, monkeypatch):
+    """Three reapable chats over a cap of 2, each due at release: one slow release-time compaction must
+    count as the close the cap needs, so the cap loop stops there and closes nothing else."""
+    import agent.prompt_cache_lifecycle as decision
+
+    release = threading.Event()
+    monkeypatch.setattr(decision, "claim_compaction_at_release", lambda agent, **k: True)
+    monkeypatch.setattr(decision, "window_still_warm", lambda agent, **k: True)
+    monkeypatch.setattr(server, "_max_live_sessions", lambda: 2)
+    monkeypatch.setattr(server, "_session_is_reapable", lambda sid, session: True)
+
+    class _Slow(_Agent):
+        def _compress_context(self, messages, system_message, **kwargs):
+            assert release.wait(timeout=10)
+            return super()._compress_context(messages, system_message, **kwargs)
+
+    sessions = {}
+    for i in range(3):
+        session = _session(_Slow())
+        session["last_active"] = float(i)
+        sessions[f"s{i}"] = session
+    monkeypatch.setattr(server, "_sessions", sessions)
+    closed = []
+
+    def close(sid, *, end_reason, predicate=None):
+        with server._sessions_lock:
+            current = server._sessions.get(sid)
+            if current is None or (predicate is not None and not predicate(current)):
+                return False
+            server._sessions.pop(sid)
+        closed.append(sid)
+        return True
+    monkeypatch.setattr(server, "_close_session_by_id", close)
+    started = []
+    real = server._compact_then_close
+    monkeypatch.setattr(server, "_compact_then_close",
+                        lambda sid, s, **kw: started.append(sid) or real(sid, s, **kw))
+
+    server._enforce_session_cap()
+    assert started == ["s0"] and closed == []  # the deferred close already covers the one excess chat
+    release.set()
+    for thread in [t for t in threading.enumerate() if t.name.startswith("cache-expiry-release-")]:
+        thread.join(timeout=10)
+    assert closed == ["s0"] and sorted(server._sessions) == ["s1", "s2"]

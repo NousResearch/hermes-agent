@@ -331,9 +331,34 @@ def _compression_count(agent: Any) -> int:
 
 
 def _storage_errors() -> tuple[type[BaseException], ...]:
-    """What a store read can raise: SQLite and the filesystem on the owner, the owner RPC in a worker."""
+    """What a store read can raise: SQLite and the filesystem on the owner, the storage interface's
+    errors through a handle, the owner RPC in a worker."""
     from agent.runtime_session_store import WorkerPersistenceError
-    return sqlite3.Error, OSError, WorkerPersistenceError
+    from persistence.core.errors import PersistenceError
+    return sqlite3.Error, OSError, PersistenceError, WorkerPersistenceError
+
+
+def _clock_store(agent: Any) -> Any:
+    """Where the agent's clock reads go: its storage interface handle's usage repository, else its own
+    store (a worker's ``RuntimeSessionStore``, which serves neither read)."""
+    from agent.agent_init_session import agent_interface
+    handle = agent_interface(agent)
+    return handle.usage if handle is not None else getattr(agent, "_session_db", None)
+
+
+def _stored_clock(store: Any) -> Optional[Callable[[str], Any]]:
+    """The store's clock read as a ``{"clock", "last_assistant_at", "generation"}`` mapping, or None."""
+    reader: Any = getattr(store, "prompt_cache_clock", None)
+    if callable(reader):
+        def read(session_id: str) -> dict[str, Any]:
+            record = reader(session_id)
+            if record is None:
+                return {}
+            return {"clock": record.clock, "last_assistant_at": record.last_assistant_at,
+                    "generation": record.generation}
+        return read
+    reader = getattr(store, "get_prompt_cache_clock", None)
+    return reader if callable(reader) else None
 
 
 def current_generation(db: Any, session_id: Any) -> Optional[int]:
@@ -365,7 +390,7 @@ def _invalid_reason(event: CacheEvent, *, session_id: str, generation: Optional[
 
 
 def _agent_generation(agent: Any) -> Optional[int]:
-    return current_generation(getattr(agent, "_session_db", None), getattr(agent, "session_id", None))
+    return current_generation(_clock_store(agent), getattr(agent, "session_id", None))
 
 
 def _agent_invalid_reason(agent: Any, event: CacheEvent, generation: Optional[int]) -> Optional[str]:
@@ -511,9 +536,9 @@ def restore_cache_clock(agent: Any) -> Optional[CacheEvent]:
     """Load the session's stored clock once per agent (resume, gateway re-creation). The saved
     generation is kept as saved: a compaction committed since then invalidates it. A failed read
     restores nothing and is retried on the next consumer."""
-    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
-    reader = getattr(db, "get_prompt_cache_clock", None)
-    if not session_id or not callable(reader):
+    session_id = getattr(agent, "session_id", None)
+    reader = _stored_clock(_clock_store(agent))
+    if not session_id or reader is None:
         agent._prompt_cache_clock_restored = True
         return None
     try:

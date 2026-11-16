@@ -9,6 +9,7 @@ Local viewers are unaffected (they read reasoning off their event stream).
 """
 
 import pytest
+from types import SimpleNamespace
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType, SessionSource
@@ -65,6 +66,64 @@ async def test_show_reasoning_suppresses_live_answer_streaming(monkeypatch):
     assert runner._show_reasoning_for_source(tg) is True
     # Local viewers read reasoning off their event stream, never the projected block: never gated.
     assert runner._show_reasoning_for_source(local) is False
+
+
+class _Consumer:
+    """Captures stream_deltas_enabled the way the real consumer carries it."""
+
+    def __init__(self, **kwargs):
+        self.config = kwargs["config"]
+        self.stream_deltas_enabled = True
+
+
+def _stream_runner(adapter, show_reasoning):
+    """A runner wired to drive the real _setup_stream_consumer: streaming on globally, with the
+    live _show_reasoning_for_source resolver bound from the mixin over this show_reasoning default."""
+    from gateway.config import GatewayConfig, StreamingConfig
+    from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+
+    cfg = GatewayConfig(streaming=StreamingConfig(enabled=True))
+    cfg.multiplex_profiles = False
+    runner = SimpleNamespace(
+        config=cfg, _primary_profile_name="default", _profile_configs={},
+        _show_reasoning=show_reasoning,
+        _delivery_adapter_for=lambda _s: adapter,
+        _build_stream_consumer_config=lambda _s, c, _a, **_k: (SimpleNamespace(transport=c.transport), None),
+    )
+    runner._show_reasoning_for_source = GatewayTurnPersistenceMixin._show_reasoning_for_source.__get__(runner)
+    return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("show_reasoning, platform, expect_stream", [
+    (True, Platform.TELEGRAM, False),   # reasoning leads → the answer is NOT streamed live
+    (False, Platform.TELEGRAM, True),   # no reasoning → the answer streams as before
+    (True, Platform.LOCAL, True),       # LOCAL always streams (reasoning rides the event stream)
+])
+async def test_setup_stream_consumer_gates_on_reasoning(monkeypatch, show_reasoning, platform, expect_stream):
+    """Drive the REAL _setup_stream_consumer: dropping the ``not _reasoning_leads`` term would make
+    a Telegram turn stream the answer with no reasoning, so this asserts the gate's effect directly.
+    """
+    import gateway.run as gateway_run
+    from gateway.run_turn_runner import TurnRunner
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config",
+                        lambda: {"display": {"show_reasoning": show_reasoning}})
+    monkeypatch.setattr("gateway.stream_consumer.GatewayStreamConsumer", _Consumer)
+    adapter = ProgressCaptureAdapter(platform=platform)
+    runner = _stream_runner(adapter, show_reasoning)
+    ctx = SimpleNamespace(
+        mute_notification_reply=False, streaming_tts_consumer_holder=[None], user_config={},
+        resolve_display_setting=lambda *_a: None, scheduled_heartbeat=False,
+        interim_assistant_messages_enabled=False,
+        source=SessionSource(platform=platform, chat_id="42", chat_type="dm"),
+        _status_thread_metadata=None, progress_queue=None, event_message_id=None,
+        _run_still_current=lambda: True, stream_consumer_holder=[None],
+    )
+    consumer, callback, _interim, _want = TurnRunner(runner, ctx)._setup_stream_consumer(
+        "telegram" if platform is Platform.TELEGRAM else "cli")
+    streamed = consumer is not None and consumer.stream_deltas_enabled and callback is not None
+    assert streamed is expect_stream
 
 
 @pytest.mark.asyncio

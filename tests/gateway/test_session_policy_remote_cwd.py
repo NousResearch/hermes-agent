@@ -35,3 +35,77 @@ def test_terminal_cwd_follows_the_backend(tmp_path, monkeypatch, terminal, param
     with policy_scope(restore_policy(asdict(policy))):
         config = _get_env_config()
     assert (config["cwd"], config.get("host_cwd")) == tuple(str(launch) if v is LAUNCH else v for v in expected)
+
+
+def _remote_home(tmp_path, monkeypatch, backend):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(json.dumps({"terminal": {"backend": backend}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+
+def test_ssh_backend_accepts_a_cwd_that_only_exists_remotely(tmp_path, monkeypatch):
+    """An ACP editor on an ssh backend names a folder on the remote host: this host cannot probe it."""
+    from pathlib import Path
+
+    from gateway.session_policy import build_policy, workspace_ready
+
+    _remote_home(tmp_path, monkeypatch, "ssh")
+    remote = "/srv/remote/project"
+    assert not Path(remote).exists()
+    policy = build_policy({"source": "acp", "cwd": remote, "cwd_explicit": True, "model": "m"}, {})
+    assert policy.cwd == remote
+    assert json.loads(policy.terminal_json)["TERMINAL_CWD"] == remote
+    assert workspace_ready(policy)
+
+
+@pytest.mark.parametrize("backend,cwd", [("ssh", "relative/dir"), ("local", "/srv/remote/project")])
+def test_cwd_still_refused_when_relative_or_missing_on_a_local_backend(tmp_path, monkeypatch, backend, cwd):
+    from gateway.session_policy import build_policy
+    from hermes_state_runtime import RuntimeStoreError
+
+    _remote_home(tmp_path, monkeypatch, backend)
+    with pytest.raises(RuntimeStoreError):
+        build_policy({"source": "acp", "cwd": cwd, "model": "m"}, {})
+
+
+async def _move(tmp_path, monkeypatch, backend, cwd):
+    """Run Move to project's prepare step against a policy frozen under *backend*."""
+    from dataclasses import asdict
+
+    from gateway import session_mutation_policy as mutation
+    from gateway.session_policy import build_policy
+
+    _remote_home(tmp_path, monkeypatch, backend)
+    start = tmp_path / "start"
+    start.mkdir()
+    policy = build_policy({"source": "gui", "cwd": str(start), "model": "m"}, {})
+    prepared = {"snapshot": {"receipt": {"policy": asdict(policy)}}}
+    monkeypatch.setattr(mutation, "_rebind", lambda authority, prepared, old, new, **extra: (new, extra))
+    return await mutation.prepare_workspace(None, None, {"cwd": cwd}, prepared)
+
+
+@pytest.mark.asyncio
+async def test_move_to_project_accepts_a_remote_only_folder_on_ssh(tmp_path, monkeypatch):
+    remote = "/srv/remote/project"
+    policy, extra = await _move(tmp_path, monkeypatch, "ssh", remote)
+    assert policy.cwd == remote
+    assert json.loads(policy.terminal_json)["TERMINAL_CWD"] == remote
+    assert extra == {"git": {"branch": "", "root": ""}}  # no host git probe for a remote folder
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cwd", ["~/project", "relative/project"])
+async def test_move_to_project_on_ssh_still_requires_an_absolute_path(tmp_path, monkeypatch, cwd):
+    from hermes_state_runtime import RuntimeStoreError
+
+    with pytest.raises(RuntimeStoreError):
+        await _move(tmp_path, monkeypatch, "ssh", cwd)
+
+
+@pytest.mark.asyncio
+async def test_move_to_project_on_local_backend_still_requires_an_existing_folder(tmp_path, monkeypatch):
+    from hermes_state_runtime import RuntimeStoreError
+
+    with pytest.raises(RuntimeStoreError):
+        await _move(tmp_path, monkeypatch, "local", "/srv/remote/project")

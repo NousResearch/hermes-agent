@@ -102,3 +102,11 @@ async def test_cli_only_acp_flags_reach_the_session(monkeypatch, tmp_path):
     await _agent(created).new_session(cwd=str(tmp_path))
     assert created[0].get('accept_hooks') is True and created[0].get('ignore_rules') is True
     assert 'yolo' not in created[0] and 'safe_mode' not in created[0]
+
+
+@pytest.mark.asyncio
+async def test_acp_session_marks_the_editor_cwd_explicit(tmp_path):
+    """The editor's folder is the user's pick, so a non-local backend (ssh) uses it, not its own cwd."""
+    created = []
+    await _agent(created).new_session(cwd=str(tmp_path))
+    assert created[0]['cwd_explicit'] is True

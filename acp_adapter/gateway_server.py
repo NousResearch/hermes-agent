@@ -281,7 +281,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if flags.get("safe_mode") or flags.get("ignore_user_config"):
             flags.update(_bypass_route())
         snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex,
-            source="acp", cwd=_translate_acp_cwd(cwd),
+            source="acp", cwd=_translate_acp_cwd(cwd), cwd_explicit=True,
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
                     "edit_approval_policy": "ask"}, **flags)
         session_id = snapshot["session_id"]

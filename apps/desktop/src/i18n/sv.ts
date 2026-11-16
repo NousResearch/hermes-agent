@@ -291,9 +291,12 @@ export const svOverrides: TranslationOverrides = {
       title: 'Hermes kunde inte starta',
       description:
         'Gatewayen i bakgrunden startade inte. Prova ett av återställningsstegen nedan. Inget här tar bort dina chattar eller inställningar.',
+      details: 'Detaljer',
       remoteTitle: 'Inloggning till fjärrgateway krävs',
       remoteDescription:
         'Din session för fjärrgatewayen har löpt ut. Logga in igen för att återansluta. Inget här tar bort dina chattar eller inställningar.',
+      webappTitle: 'Logga in på Hermes',
+      webappDescription: 'Kör Hermes webbapp på den här datorn för att logga in den här webbläsaren.',
       retry: 'Försök igen',
       repairInstall: 'Reparera installation',
       useLocalGateway: 'Använd lokal gateway',
@@ -301,6 +304,9 @@ export const svOverrides: TranslationOverrides = {
       back: 'Tillbaka',
       openLogs: 'Öppna loggar',
       repairHint: 'Reparation kör installationsprogrammet på nytt och kan ta några minuter på en ny dator.',
+      bundledReinstallHint:
+        'Den här medföljande installationen kan inte reparera sig själv inifrån appen. Installera om appen för att återställa dess serverdel.',
+      reinstallApp: 'Installera om appen',
       remoteSignInHint: signInLabel =>
         `Loggar ut från den sparade fjärrsessionen i webbläsaren och öppnar sedan ${signInLabel}. Använd lokal gateway för att växla till den medföljande serverdelen i stället.`,
       signOutAndSignIn: 'Logga ut och logga in',

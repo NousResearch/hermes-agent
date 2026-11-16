@@ -103,3 +103,43 @@ def test_marking_root_unread_marks_projected_conversation(db):
     rows = db.list_sessions_rich(order_by_last_active=True)
     assert [s["id"] for s in rows] == ["tip"]
     assert rows[0]["unread"] is True
+
+def _last_read_message(db, sid):
+    row = db._conn.execute(
+        "SELECT last_read_message_id FROM sessions WHERE id = ?", (sid,)
+    ).fetchone()
+    return row["last_read_message_id"] if row is not None else None
+
+
+def test_mark_read_stamps_the_last_message_id(db):
+    """Message-level half of the watermark: the id of the newest message the
+    user actually read, so a client can draw the "new messages" divider there."""
+    db.create_session(session_id="s1", source="cli")
+    db.append_message(session_id="s1", role="user", content="un")
+    db.append_message(session_id="s1", role="assistant", content="deux")
+
+    assert db.set_session_read("s1") is True
+    ids = [
+        r["id"]
+        for r in db._conn.execute(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY id", ("s1",)
+        ).fetchall()
+    ]
+    assert _last_read_message(db, "s1") == ids[-1]
+
+
+def test_mark_unread_clears_the_message_watermark(db):
+    db.create_session(session_id="s1", source="cli")
+    db.append_message(session_id="s1", role="user", content="hi")
+    db.set_session_read("s1")
+
+    assert db.set_session_read("s1", read=False) is True
+    assert not _last_read_message(db, "s1")
+
+
+def test_session_rows_expose_the_message_watermark(db):
+    db.create_session(session_id="s1", source="cli")
+    db.append_message(session_id="s1", role="user", content="hi")
+    db.set_session_read("s1")
+
+    assert _row(db, "s1").get("last_read_message_id") == _last_read_message(db, "s1")

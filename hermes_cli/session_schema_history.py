@@ -215,6 +215,9 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         )),
         # GW-18 (package 10, #140968): write-side revision a transcript-derived cache keys on.
         ('32 2026-10-18T10:11Z 1fc1999769', (('+', 'transcript_revision', 'tool_names'),)),
+        # Message-level read watermark (issue #150661): the id of the last message the user has
+        # actually read, so the desktop can draw a "new messages" divider inside a conversation.
+        ('33 2026-11-16T09:00Z lastreadmsgid', (('+', 'last_read_message_id', 'last_read_at'),)),
         ),
     ),
     "messages": _TableHistory(

@@ -1069,8 +1069,24 @@ class SessionSessionsMixin:
 
     def set_session_read(self, session_id: str, read: bool = True) -> bool:
         """Mark read/unread across the compression lineage. ``last_read_at`` is a watermark: unread when
-        activity postdates it (no write on the message path). NULL = never tracked = read; 0 = unread."""
-        return self._set_lineage_column("last_read_at", session_id, time.time() if read else 0.0)
+        activity postdates it (no write on the message path). NULL = never tracked = read; 0 = unread.
+
+        Marking READ also stamps ``last_read_message_id`` with the newest message id of the session:
+        that is the message-level half of the same watermark, and it is what lets a client draw the
+        "new messages start here" divider inside a conversation (issue #150661). Marking UNREAD clears
+        it, because there is no boundary left to draw once the whole thread counts as unread.
+        """
+        extra = ", last_read_message_id = NULL"
+        if read:
+            ligne = self._read_one(
+                "SELECT MAX(id) AS dernier FROM messages WHERE session_id = ?", (session_id,)
+            )
+            dernier = ligne["dernier"] if ligne is not None else None
+            if dernier is not None:
+                extra = f", last_read_message_id = {int(dernier)}"
+        return self._set_lineage_column(
+            "last_read_at", session_id, time.time() if read else 0.0, extra_set_sql=extra
+        )
 
     @staticmethod
     def session_unread(session_row: dict[str, Any]) -> bool:

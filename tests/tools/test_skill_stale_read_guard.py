@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from contextlib import contextmanager, suppress
+from pathlib import Path
 
 import pytest
 
@@ -431,3 +432,66 @@ def test_a_read_file_replaced_by_a_fifo_is_refused_without_hanging(skills):
             worker.join(timeout=10)
     assert not hung, "the stale check blocked on the FIFO while holding the skill lock"
     assert box["result"].get("_stale_read") is True, box["result"]
+
+
+def test_a_write_does_not_mark_an_outside_edit_landing_after_publication(skills, monkeypatch):
+    """An editor that ignores skill locks can change the published file before the mark refresh.
+    A second review patch must not treat those unseen bytes as if the fork wrote them.
+    (Regression contributed by @kvnloo on #156289.)"""
+    import tools.skill_manager_tool as smt
+
+    target = skills / "bg-skill" / "SKILL.md"
+    real_scan = smt._security_scan_skill
+    intervened = []
+
+    def edit_between_scan_and_mark(*args, **kwargs):
+        error = real_scan(*args, **kwargs)
+        if error is None and not intervened:
+            intervened.append(True)
+            _other_writer_appends(target)
+        return error
+
+    with _fork():
+        _view("SKILL.md")
+        monkeypatch.setattr(smt, "_security_scan_skill", edit_between_scan_and_mark)
+        first = _dispatch({**WRITES["patch"][0], "name": "bg-skill"})
+        second = _dispatch({"action": "patch", "name": "bg-skill",
+                            "old_string": "Step 1: Do it well.", "new_string": "Step 1: Do it very well."})
+
+    assert intervened and first["success"] is True, first
+    assert second.get("_stale_read") is True, second
+    assert b"Added by someone else." in target.read_bytes()
+
+
+def test_the_forks_second_write_needs_no_reread_when_nothing_else_wrote(skills):
+    """The published-bytes mark must equal what is on disk after the fork's own write (newline and
+    encoding as atomic_write_text writes them), or every second write would be refused."""
+    with _fork():
+        _view("SKILL.md")
+        first = _dispatch({**WRITES["patch"][0], "name": "bg-skill"})
+        second = _dispatch({"action": "patch", "name": "bg-skill",
+                            "old_string": "Step 1: Do it well.", "new_string": "Step 1: Do it very well."})
+    assert first["success"] is True and second["success"] is True, (first, second)
+
+
+def test_a_removal_does_not_mark_a_file_put_back_before_the_mark_is_dropped(skills, monkeypatch):
+    """Someone recreates the file between the fork's unlink and its mark update. The fork removed
+    the file, so it knows nothing of the new one: a write over it needs a read first."""
+    import tools.skill_manager_tool as smt
+
+    target = skills / "bg-skill" / REF
+    real = getattr(smt, "_refresh_background_review_read_mark", None)
+    assert real is not None, "skill_manage has no read-mark refresh to observe"
+
+    def put_back_then_refresh(path, *args, **kwargs):
+        if Path(path) == target:
+            target.write_bytes(b"Put back by someone else.\n")
+        return real(path, *args, **kwargs)
+
+    with _fork():
+        _view(REF)
+        monkeypatch.setattr(smt, "_refresh_background_review_read_mark", put_back_then_refresh)
+        assert _dispatch({**WRITES["remove_file"][0], "name": "bg-skill"})["success"] is True
+        result = _dispatch({**WRITES["write_file"][0], "name": "bg-skill"})
+    assert result["success"] is False and result.get("_read_before_write_required") is True, result
+    assert target.read_bytes() == b"Put back by someone else.\n"

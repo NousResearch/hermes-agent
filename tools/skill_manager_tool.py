@@ -12,6 +12,7 @@ import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
+import os
 import re
 import shutil
 from collections import Counter
@@ -423,8 +424,8 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir, baseline, scope)
-    if not scan_error:
-        _refresh_background_review_read_mark(target, mark)
+    if not scan_error:  # the bytes atomic_write_text published (text mode: "\n" -> os.linesep, utf-8)
+        _refresh_background_review_read_mark(target, mark, content.replace("\n", os.linesep).encode("utf-8"))
         return None
     if original_bytes is not None:  # exact bytes: a BOM or CRLF original stays as it was
         atomic_write_bytes(target, original_bytes, preserve_owner=True)
@@ -663,7 +664,7 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
         return read_guard
     mark = _read_mark_entry(target)
     target.unlink()
-    _refresh_background_review_read_mark(target, mark)  # gone: drops the fork's read mark
+    _refresh_background_review_read_mark(target, mark, None)  # removed: drops the fork's read mark
     _rmdir_if_empty(target.parent, skill_dir)
     return {"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}
 

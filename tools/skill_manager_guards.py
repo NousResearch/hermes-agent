@@ -142,20 +142,22 @@ def _read_mark_entry(path: Path) -> Optional[tuple[str, int]]:
     return None if marks is None else marks.entry(_resolved_str(path))
 
 
-def _refresh_background_review_read_mark(path: Path, expected: Optional[tuple[str, int]]) -> None:
+def _refresh_background_review_read_mark(path: Path, expected: Optional[tuple[str, int]],
+                                          published: Optional[bytes]) -> None:
     """After the fork's own write: what it knows is now the bytes it wrote, so a second write to
-    the same file needs no re-read. ``expected`` is the mark captured (under the skill lock) BEFORE
-    the write was published; only that exact update moves, so a read another worker recorded since
-    stands. Only a live mark moves (a create is not a read); a file that is gone or unreadable
-    loses its mark (remove_file relies on this)."""
+    the same file needs no re-read. ``published`` is exactly those bytes; the mark records them, never
+    what is on disk afterwards: a writer outside the skill lock (an editor, a sync) can change the file
+    between the atomic publish and this refresh, and its bytes must stay unseen, so the next write
+    is refused as stale. ``expected`` is the mark captured (under the skill lock) BEFORE the write was
+    published; only that exact update moves, so a read another worker recorded since stands. Only a
+    live mark moves (a create is not a read). ``published=None`` means the fork removed the file: the
+    mark is dropped without looking at the disk, so a file someone puts back in the meantime stays
+    unread."""
     marks = _background_review_read_paths.get()
     if marks is None or expected is None:
         return
     key = _resolved_str(path)
-    try:
-        digest: Optional[str] = _file_sha256(path)
-    except OSError:
-        digest = None
+    digest = hashlib.sha256(published).hexdigest() if published is not None else None
     applied, now = marks.compare_and_set(key, expected, digest)
     if applied and (journal := _batch_mark_journal.get()) is not None:
         journal[key] = now  # the update the batch's own write left

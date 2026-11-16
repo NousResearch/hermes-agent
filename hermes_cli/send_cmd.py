@@ -172,14 +172,11 @@ def _load_hermes_env() -> None:
     else:
         target = os.environ
         env_path = home / ".env"
-        from hermes_secret_routing import env_file_exists, read_profile_env, routed_provider
+        from hermes_secret_routing import env_file_exists
         if env_file_exists(env_path):
             try:
-                from hermes_cli.env_loader import _load_dotenv_with_fallback, publish_routed_env
-                if routed_provider() is None:
-                    _load_dotenv_with_fallback(env_path, override=True)
-                else:  # the selected secret store's view of the profile, not the local file
-                    publish_routed_env(read_profile_env(env_path))
+                from hermes_cli.env_loader import _load_dotenv_with_fallback
+                _load_dotenv_with_fallback(env_path, override=True)
             except Exception:
                 pass
 

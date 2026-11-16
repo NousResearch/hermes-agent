@@ -101,7 +101,6 @@ def reset_for_tests() -> None:
     """Forget resolved providers and published views (tests only)."""
     with _PROVIDERS_LOCK:
         _PROVIDERS.clear()
-        _BOOTSTRAP_LAYERS.clear()
         _BOOTSTRAP_GENERATIONS.clear()
     with _PUBLISH_LOCK:
         _PUBLISHED.clear()
@@ -187,13 +186,6 @@ def _routed_env_home(env_path: Path) -> tuple[Optional[SecretStoreProvider], Opt
     home = _profile_home_of(env_path, ENV_FILENAME)
     return (provider, home) if home is not None else (None, None)
 
-def local_bootstrap_env(home: Path, provider: SecretStoreProvider) -> dict[str, str]:
-    """Only the file-backed deployment layer of a non-file-backed profile scope."""
-    from agent.secret_scope import load_env_file
-    return {k: v for k, v in load_env_file(Path(home) / ENV_FILENAME).items() if stays_local(provider, k)}
-
-
-_BOOTSTRAP_LAYERS = {}
 _BOOTSTRAP_GENERATIONS = {}
 _PROFILE_SNAPSHOT = ContextVar("raw_profile_snapshot", default=None)
 
@@ -212,17 +204,8 @@ def bootstrap_generation(home):
 
 
 def live_bootstrap_env(home, provider):
-    """Shared local layer refreshed by local credential writes, never by hot lookups."""
-    from hermes_constants import hermes_home_key
-    key = hermes_home_key(home)
-    values = local_bootstrap_env(home, provider)
+    """Invalidate cached ordinary builders after a local bootstrap credential write."""
     _BOOTSTRAP_GENERATIONS[Path(home)] = bootstrap_generation(home) + 1
-    layer = _BOOTSTRAP_LAYERS.setdefault(key, {})
-    layer.update(values)
-    for name in tuple(layer):
-        if name not in values:
-            del layer[name]
-    return layer
 
 
 def read_profile_env(env_path: Path) -> dict[str, str]:
@@ -264,17 +247,6 @@ def env_file_exists(env_path: Path) -> bool:
     if provider is None or home is None:
         return Path(env_path).exists()
     return True  # an authoritative empty profile still occupies the dotenv layer
-
-
-def routed_bootstrap_env(env_path: Path) -> Optional[dict[str, str]]:
-    """For the launch ``.env`` load into ``os.environ``: None with the local store (load the file as
-    today); with any other store, the only assignments the file may publish — its bootstrap names.
-    Every other name in the file is not the store's view and must never reach the environment."""
-    provider, home = _routed_env_home(env_path)
-    if provider is None or home is None:
-        return None
-    from agent import secret_scope
-    return {k: v for k, v in secret_scope.load_env_file(env_path).items() if stays_local(provider, k)}
 
 
 _PUBLISHED: dict[str, dict[str, str]] = {}   # home key -> the view boot published into os.environ

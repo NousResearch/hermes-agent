@@ -739,17 +739,6 @@ def dotenv_unreadable(path: Path) -> bool:
         return False
 
 
-def publish_routed_env(values: dict[str, str]) -> None:
-    """Publish a secret store's env view (or the bootstrap names of a store-backed ``.env``) into
-    ``os.environ`` the way a ``.env`` load does: override, recorded as launch-profile keys (so a
-    child acting for another profile drops them), credentials ASCII-sanitized."""
-    for name, value in values.items():
-        if os.environ.get(name) != value:
-            os.environ[name] = value
-    _LOADED_DOTENV_KEYS.update(values)
-    _sanitize_loaded_credentials()
-
-
 def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     """Load the profile ``.env``; False when it exists but cannot be read and managed scope pins
     ``terminal.backend``. A sandbox launcher withholds the file, passes the keys it allows in as

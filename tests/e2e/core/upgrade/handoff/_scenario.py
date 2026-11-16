@@ -313,8 +313,12 @@ def run(column: str, root: Path) -> SimpleNamespace:
             o.sha_after = inst.sha()
             o.layout_after = {rel: (inst.checkout / rel).is_file() for rel in X.NEXT_MOVE}
 
-            o.ident = X.settle_gateway(inst, o.old_pid)
+            # The held worker has now spanned the whole update. A non-forced update never interrupts
+            # live work (#155532): the gateway stays up with its restart pending and relaunches on
+            # the new commit once that worker finishes, so let it finish before looking for the
+            # relaunched gateway.
             model.release.set()
+            o.ident = X.settle_gateway(inst, o.old_pid)
             o.chat_after = X.chat(inst.port, "hello after the update") if o.ident else (0, "")
             o.card2 = create_card(inst, "created after the update")
 

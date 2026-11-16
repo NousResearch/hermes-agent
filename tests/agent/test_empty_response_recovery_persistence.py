@@ -292,7 +292,7 @@ def test_empty_first_reply_after_a_previous_turns_tool_call_gets_no_post_tool_nu
         real_loop.agent.run_conversation("thanks", conversation_history=history)
 
     assert len(requests) >= 2
-    assert _EMPTY_TOOL_RESPONSE_NUDGE not in requests[1]
+    assert not _has_nudge(requests[1], _EMPTY_TOOL_RESPONSE_NUDGE)
 
 
 def test_housekeeping_fallback_names_its_final_a_reused_response(real_loop):
@@ -330,6 +330,11 @@ def test_same_words_in_a_second_response_are_not_a_reused_response(real_loop):
     assert result["response_reused"] is False
 
 
+def _has_nudge(contents, nudge):
+    # The retry hint is appended to the content of the last outgoing user/tool message.
+    return any(isinstance(c, str) and nudge in c for c in contents)
+
+
 def _requests_after(real_loop, script, user_message):
     requests = []
     pending = list(script)
@@ -355,7 +360,7 @@ def test_empty_reply_after_an_unknown_tool_error_still_gets_the_post_tool_nudge(
         _response("Here is the answer."),
     ], "do it")
 
-    assert any(_EMPTY_TOOL_RESPONSE_NUDGE in contents for contents in requests)
+    assert any(_has_nudge(contents, _EMPTY_TOOL_RESPONSE_NUDGE) for contents in requests)
     assert result["final_response"] == "Here is the answer."
 
 
@@ -374,5 +379,5 @@ def test_empty_reply_after_invalid_json_args_still_gets_the_post_tool_nudge(real
         _response("Here is the answer."),
     ], "read it")
 
-    assert any(_EMPTY_TOOL_RESPONSE_NUDGE in contents for contents in requests)
+    assert any(_has_nudge(contents, _EMPTY_TOOL_RESPONSE_NUDGE) for contents in requests)
     assert result["final_response"] == "Here is the answer."

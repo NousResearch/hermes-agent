@@ -5671,6 +5671,10 @@ export const svOverrides: TranslationOverrides = {
     }
   },
   rightSidebar: {
+    terminalReadOnly: 'Skrivskyddad utdata',
+    terminalReadOnlyHelp:
+      'För att svara på promptar stoppar du bakgrundskommandot och kör det i en ny terminal. Den nya terminalen öppnar ett separat skal och ansluter inte till den här processen.',
+    terminalOpenInteractive: 'Öppna ny terminal',
     aria: 'Högra sidofältet',
     panelsAria: 'Paneler i högra sidofältet',
     files: 'Filsystem',
@@ -5680,10 +5684,17 @@ export const svOverrides: TranslationOverrides = {
     remotePickerTitle: 'Välj fjärrmapp',
     remotePickerDescription: 'Bläddra bland mappar på den anslutna serverdelen.',
     remotePickerSelect: 'Välj mapp',
+    remotePickerNewFolder: 'Ny mapp',
+    remotePickerFolderName: 'Mappnamn',
+    remotePickerCreateFolder: 'Skapa mapp',
+    remotePickerInvalidFolderName: 'Ange ett enda mappnamn utan snedstreck.',
+    remotePickerCreateFolderFailed: error => `Det gick inte att skapa mappen (${error}).`,
     folderTip: cwd => cwd,
     openFolder: 'Öppna mapp',
     refreshTree: 'Uppdatera träd',
     collapseAll: 'Fäll ihop alla mappar',
+    showIgnored: 'Visa Git-ignorerade filer',
+    hideIgnored: 'Dölj Git-ignorerade filer',
     previewUnavailable: 'Förhandsvisning saknas',
     couldNotPreview: path => `Kunde inte förhandsvisa ${path}`,
     noProjectTitle: 'Inget projekt',
@@ -5704,6 +5715,22 @@ export const svOverrides: TranslationOverrides = {
     terminalNew: 'Ny terminal',
     terminalCloseOthers: 'Stäng övriga',
     terminalCloseAll: 'Stäng alla',
+    terminalNewOn: 'Ny terminal på…',
+    terminalGatewayRemoved: 'Borttagen gateway',
+    terminalGatewayRemovedBody:
+      'Gatewayen som den här terminalen kördes på har tagits bort och kan därför inte öppnas igen. Stäng fliken.',
+    terminalGatewayNoShellBody:
+      'Den här gatewayen har ingen skalåtkomst och terminalen kan därför inte öppnas igen. Stäng fliken.',
+    terminalDisconnectedBody:
+      'Terminalen kopplades från. Tryck på Retur för att starta ett nytt skal; terminalhistoriken bevaras.',
+    terminalDropUploadFailed: name => `Det gick inte att ladda upp ${name}`,
+    terminalDropTooLargeTitle: 'För stor för uppladdning',
+    terminalDropTooLarge: (names, limit) => `Varje fil får vara högst ${limit}. Inte uppladdade: ${names}`,
+    terminalDropControlTitle: 'Skrevs inte in i terminalen',
+    terminalDropControl: paths =>
+      `De här namnen innehåller kontrolltecken som skalet skulle tolka som tangenttryckningar: ${paths}`,
+    terminalDropUnquotable: (shell, paths) =>
+      `Det går inte att skriva in dessa namn säkert i ${shell}: ${paths}`,
     addToChat: 'Lägg till i chatten'
   },
   interfaceMode: {

@@ -107,7 +107,8 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def click(self, *, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None,
               button: str = "left", click_count: int = 1, modifiers: Optional[list[str]] = None,
-              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
+              delivery_mode: Optional[str] = None, bring_to_front: bool = False,
+              from_zoom: bool = False) -> ActionResult: ...
 
     @abstractmethod
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
@@ -144,6 +145,26 @@ class ComputerUseBackend(ABC):
     def wait(self, seconds: float) -> ActionResult:  # default implementation
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")
+
+    # System clipboard. Optional compatibility hooks: backends without clipboard access stay instantiable and
+    # refuse with a stable code instead of raising. ``meta`` on success carries the driver payload
+    # (``types`` list, ``text`` when plain text is present).
+    def clipboard_read(self) -> ActionResult:
+        return ActionResult(ok=False, action="clipboard_read", code="clipboard_unsupported",
+                            message="This computer_use backend has no clipboard access.")
+
+    def clipboard_write(self, *, text: Optional[str] = None, image_path: Optional[str] = None,
+                        file_path: Optional[str] = None) -> ActionResult:
+        return ActionResult(ok=False, action="clipboard_write", code="clipboard_unsupported",
+                            message="This computer_use backend has no clipboard access.")
+
+    # Region zoom and exact menu invocation: optional like the clipboard hooks above.
+    def zoom(self, region: tuple[float, float, float, float]) -> CaptureResult:
+        return CaptureResult(mode="vision", width=0, height=0, window_title="This computer_use backend cannot zoom.")
+
+    def invoke_menu(self, path: list[str]) -> ActionResult:
+        return ActionResult(ok=False, action="invoke_menu", code="unsupported_action",
+                            message="This computer_use backend cannot invoke application menus.")
 
 
 class ComputerUseProvider(ProviderBase):

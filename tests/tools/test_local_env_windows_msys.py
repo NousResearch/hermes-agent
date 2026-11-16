@@ -276,6 +276,18 @@ class TestGitBashCoreutilsOnPath:
         # Non-existent dirs (mingw32, usr/local/bin) are excluded.
         assert "/pg/mingw32/bin" not in norm
 
+    @pytest.mark.platforms("windows")
+    def test_derives_ucrt64_dirs_from_portablegit_2_56_layout(self, monkeypatch):
+        """Git for Windows 2.56 moved the MSYS2 tree from mingw64/ to ucrt64/."""
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: "/pg/usr/bin/bash.exe")
+        existing = {"/pg/ucrt64/bin", "/pg/usr/bin", "/pg/bin"}
+        monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
+
+        norm = [d.replace("\\", "/") for d in _git_bash_bin_dirs()]
+
+        assert norm.index("/pg/ucrt64/bin") < norm.index("/pg/usr/bin")
+
     @pytest.mark.platforms("linux")
     def test_empty_off_windows(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)

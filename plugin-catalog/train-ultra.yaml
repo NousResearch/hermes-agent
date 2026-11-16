@@ -1,0 +1,18 @@
+name: train-ultra
+title: Train Ultra
+repo: https://github.com/trainultra/coach
+sha: 01fcbf026de784ff315fa731a916fc0cfd9a1879
+version: "1.1.2"
+description: "Ask your Train Ultra endurance coach about your training through Train Ultra's hosted MCP server (Streamable HTTP at https://trainultra.app/mcp, OAuth sign-in, no keys in config): today's workout, how a run went, the training plan, goals and race readiness, recovery and nutrition. Bundles the train-ultra skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Train Ultra's hosted server (trainultra.app) and acts on the user's own Train Ultra account, which needs Train Ultra Pro or the 14-day trial; the tool set is served by that server at runtime and is not covered by the pinned sha. ask_train_ultra_coach is annotated read-only. ask_train_ultra_coach_to_change can add, move, update or remove planned workouts and rest days, change goals, the training plan, zones and nutrition targets, and save coach memories; the server is marked untrusted, so Hermes asks before each such call. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth."
+maintainer: Train Ultra
+tier: community
+category: tools
+docs_url: https://github.com/trainultra/coach#hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

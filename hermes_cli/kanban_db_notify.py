@@ -106,6 +106,10 @@ def add_notify_sub(
         merged_metadata = dict(existing_metadata)
         if delivery_metadata:
             merged_metadata.update(delivery_metadata)
+        if chat_type:
+            # The column defaults to 'dm' when no type is given; the metadata copy records that a
+            # caller really supplied one, which the notifier's route gate takes as evidence.
+            merged_metadata["chat_type"] = chat_type
         metadata_json = _encode_notify_delivery_metadata(merged_metadata) if merged_metadata else None
         conn.execute(
             """

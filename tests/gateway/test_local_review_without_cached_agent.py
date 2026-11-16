@@ -45,6 +45,9 @@ def test_local_review_reviews_the_stored_conversation_once_the_cached_agent_is_g
         'auxiliary': {'title_generation': {'enabled': False}},
         'provider_routing': {'only': ['daemon-start'], 'data_collection': 'allow'},
         'prefill_messages_file': 'prefill.json',
+        # /moa runs the default preset: its references and aggregator stay on the loopback model.
+        'moa': {'presets': {'default': {'reference_models': [{'provider': 'openrouter', 'model': 'openai/gpt-5'}],
+                                        'aggregator': {'provider': 'openrouter', 'model': 'openai/gpt-5'}}}},
     }
     (home / 'prefill.json').write_text(json.dumps([{'role': 'user', 'content': 'PREFILL_EXAMPLE'},
                                                   {'role': 'assistant', 'content': 'Noted.'}]))
@@ -70,7 +73,8 @@ def test_local_review_reviews_the_stored_conversation_once_the_cached_agent_is_g
         assert 'Review started' in json.dumps(result), (focus, result)
 
         def reviewer(request):
-            return any(m.get('content') == 'Review: ' + focus for m in request.get('messages', []))
+            # The reviewer's first user turn is the context the command passes, then its goal.
+            return any(str(m.get('content') or '').endswith('\n\nTASK:\nReview: ' + focus) for m in request.get('messages', []))
         await async_wait_until(lambda: any(reviewer(r) for r in peer.requests[before:]), timeout=45,
                                what=f'the {focus} reviewer reaching the model')
         request = next(r for r in peer.requests[before:] if reviewer(r))

@@ -75,7 +75,7 @@ class TestRunBackgroundTask:
         runner.adapters[Platform.TELEGRAM] = adapter
         parent = SimpleNamespace(_delegate_depth=0, _subagent_id=None)
         monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: SimpleNamespace(_subagent_id="child"))
-        monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: {
+        monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **kw: {
             "model": "test", "provider": None, "base_url": None, "api_key": None,
             "api_mode": None, "command": None, "args": None,
         })

@@ -109,6 +109,13 @@ def legacy_launch_params(row):
     if str(route.get('provider') or '').lower() == 'auto' and not (route.get('base_url') or route.get('api_mode')):
         # The saved automatic reset follows the profile route, including its endpoint and wire.
         route.pop('provider', None)
+    if route.get('provider', '').lower() == 'custom' and 'base_url' not in route:
+        # Bare ``custom`` with no endpoint is the billing class an older Desktop/TUI stamped when it
+        # could not name the entry, not a route: pre-authority resume dropped it and ran the profile's
+        # route. Frozen as a route it strips the profile's endpoint and key (AuthError every turn).
+        # Without a provider, adoption below heals it to the entry serving the model, else the profile.
+        route.pop('provider')
+        route.pop('api_mode', None)
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
     params.update({key: route[key] for key in ('provider', 'base_url') if key in route})

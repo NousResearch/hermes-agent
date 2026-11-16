@@ -143,7 +143,7 @@ def fast_children(monkeypatch):
     creds = dict.fromkeys(("provider", "base_url", "api_key", "api_mode", "command", "args"), None)
     monkeypatch.setattr(dt, "_build_child_agent", build_child)
     monkeypatch.setattr(dt, "_run_single_child", run_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: {**creds, "model": "m"})
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: {**creds, "model": "m"})
     set_session_vars(platform="whatsapp", chat_id="c1", session_key="agent:main:whatsapp:dm:c1", session_id="sess")
     return dt
 

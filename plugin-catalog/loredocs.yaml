@@ -1,10 +1,10 @@
 name: loredocs
 title: LoreDocs
 repo: https://github.com/labyrinth-analytics/loredocs
-sha: 1f15568c6edf2a2b1dbf9f3872f1de239c0e0069
+sha: cf391fa228b8036a4c3b7bb5b0173fd35b7fb7b8
 subdir: integrations/hermes
-version: "0.1.33"
-description: "LoreDocs knowledge vaults over MCP: store, version, tag and search project documents, and inject them into agent context. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only: Hermes runs `uvx loredocs==0.1.33` as a local stdio MCP server. Disclosure — runs the loredocs package (BUSL-1.1, with lancedb, fastembed and onnxruntime) via `uvx loredocs==0.1.33` as a local stdio MCP server; stores documents under ~/.loredocs (or LOREDOCS_ROOT), shared with other LoreDocs clients; its add-document tool can read any local file path the agent passes into a vault; no telemetry; a paid Pro license enables semantic search, which downloads a Hugging Face embedding model once."
+version: "0.1.34"
+description: "LoreDocs knowledge vaults over MCP: store, version, tag and search project documents, and inject them into agent context. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only: Hermes runs `uvx loredocs==0.1.34` as a local stdio MCP server. Disclosure — runs the loredocs package (BUSL-1.1, with lancedb, fastembed and onnxruntime) via `uvx loredocs==0.1.34` as a local stdio MCP server; stores documents under ~/.loredocs (or LOREDOCS_ROOT), shared with other LoreDocs clients; its add-document tool can read any local file path the agent passes into a vault; no telemetry; a paid Pro license enables semantic search, which downloads a Hugging Face embedding model once."
 maintainer: labyrinth-analytics
 tier: community
 category: tools
@@ -17,5 +17,4 @@ capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
-  requires_env:
-    - LOREDOCS_PRO
+  requires_env: []

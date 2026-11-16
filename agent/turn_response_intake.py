@@ -70,6 +70,11 @@ def _fire_post_api_request_hook(
 ) -> None:
     from agent.conversation_loop import _moa_reference_metrics_for_hook
 
+    if getattr(agent, "_loop_aux_task", None):  # a plugin session fork (begin_loop_aux_attempt)
+        from agent.auxiliary_hooks import end_loop_aux_attempt
+        end_loop_aux_attempt(agent, response, normalized=(
+            assistant_message, finish_reason, agent._usage_summary_for_api_request_hook(response)))
+        return
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("post_api_request"):

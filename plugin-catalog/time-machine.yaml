@@ -1,13 +1,13 @@
 name: time-machine
 repo: https://github.com/Prasad-PingFederate/hermes-time-machine
-sha: 9e02342fd088075395e6252699460e73b44b425a
-description: "Visual timeline scrubber, split diff inspector, surgical per-file rollback, and failure diagnosis for Hermes Agent and Desktop. Captures pre-mutation snapshots in an isolated store, diagnoses broken edits in dry-run mode, and restores files upon user approval via /tm restore or the Desktop UI. Disclosure — snapshots the session working directory (everything `git add -A` picks up there, including untracked files such as a workspace `.env`) into its own git store under HERMES_HOME/plugin-data/time-machine/ before file-mutating and command tool calls; model-called restores are preview-only, and workspace files are overwritten or deleted only when the user runs /tm restore or clicks restore in the dashboard/Desktop pane; no network, no telemetry."
+sha: a303d76ce750fbea0e5084de606b706ecc2c6373
+description: "Visual timeline scrubber, split diff inspector, surgical per-file rollback, and failure diagnosis for Hermes Agent and Desktop. Captures pre-mutation snapshots in an isolated store, diagnoses broken edits in dry-run mode, and restores files only after the user runs /tm restore or confirms in the Desktop/dashboard pane. Disclosure — snapshots the session working directory with git add -A into its own git store under HERMES_HOME/plugin-data/time-machine/ before file-mutating and command tool calls, excluding .env, *.pem, *.key, node_modules, and virtualenvs (.env.example is kept); model-called restores are preview-only; workspace files are overwritten or deleted only when the user runs /tm restore or confirms a restore in the UI, and a full-workspace restore stays unchecked until the user opts in; /tm commit, /tm comment, /tm clone, /tm push, and /tm pull are user-typed commands that write only a private checkpoint, a ledger note, a new directory the user names, or a .bundle file, and they never run git commit, git clone, git push, or git pull on the project repository; no network, no telemetry, no state.db."
 maintainer: Prasad-PingFederate
 tier: community
 category: desktop
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/Prasad-PingFederate/hermes-time-machine#readme
-version: "0.3.0"
+version: "0.4.1"
 platforms: []
 capabilities:
   provides_tools:

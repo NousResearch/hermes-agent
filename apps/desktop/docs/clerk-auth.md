@@ -28,11 +28,30 @@ For each Clerk instance used by the desktop app:
 - Allow `http://127.0.0.1:5174` and `http://localhost:5174` for development.
 - Allow `unitalk-app://renderer` for packaged builds.
 - Add `unitalk-app://renderer/` to the SSO redirect allowlist.
+- Add `unitalk-app-dev://renderer/` to the SSO redirect allowlist for Windows development.
 - Configure the sign-in methods and OAuth providers the app should offer.
 
 The `unitalk-app` scheme is registered by `electron-builder.config.cjs` and by
-`protocol.registerSchemesAsPrivileged` in the main process. OAuth deep-link
-transport is disabled when the app runs against the Vite dev server.
+`protocol.registerSchemesAsPrivileged` in the main process. Packaged builds serve
+the renderer from `unitalk-app://renderer/` and complete OAuth through the scheme
+deep link.
+
+## OAuth in development
+
+`@clerk/electron` completes OAuth in the system browser and returns through a
+custom-scheme deep link, so the scheme must be registered with the operating
+system:
+
+- **Windows:** works unpackaged. `pnpm dev` registers `unitalk-app-dev://` at
+  runtime with the Electron entry path, which is a separate scheme so a checkout
+  never steals the installed app's `unitalk-app://` handler.
+- **macOS / Linux:** Launch Services and `.desktop` entries only route custom
+  schemes to packaged apps, so OAuth sign-in requires a packaged build. Clerk
+  documents this beta limitation; use `pnpm build` and launch the packaged app
+  to test OAuth on those platforms.
+
+`HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION=1` (used by E2E harnesses) leaves OS
+handlers untouched and therefore disables OAuth deep links.
 
 ## Token storage
 

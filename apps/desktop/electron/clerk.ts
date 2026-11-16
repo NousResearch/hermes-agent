@@ -4,7 +4,7 @@ import { type ClerkBridge, createClerkBridge } from '@clerk/electron'
 import { storage } from '@clerk/electron/storage'
 import { app, net, protocol } from 'electron'
 
-import { CLERK_RENDERER_HOST, CLERK_RENDERER_SCHEME, CLERK_TOKEN_STORAGE_NAME, clerkEnabled } from './clerk-config'
+import { CLERK_RENDERER_SCHEME, CLERK_TOKEN_STORAGE_NAME, clerkEnabled, clerkOAuthRenderer } from './clerk-config'
 import { resolveRendererFileRequest } from './renderer-url'
 
 export interface ClerkRuntime {
@@ -24,10 +24,15 @@ export function installClerkBridge({
   }
 
   try {
+    const renderer = clerkOAuthRenderer({
+      devServer: Boolean(devServer),
+      platform: process.platform,
+      registerProtocol
+    })
+
     const bridge = createClerkBridge({
       manageSingleInstanceLock: false,
-      renderer:
-        devServer || !registerProtocol ? undefined : { scheme: CLERK_RENDERER_SCHEME, host: CLERK_RENDERER_HOST },
+      renderer,
       storage: storage({ name: CLERK_TOKEN_STORAGE_NAME }),
       userAgent: `Unitalk/${app.getVersion()}`
     })
@@ -38,9 +43,13 @@ export function installClerkBridge({
       return { bridge: null, enabled: false }
     }
 
-    console.log(
-      `[clerk] bridge installed${devServer ? ' (development: OAuth transport disabled)' : registerProtocol ? '' : ' (protocol registration skipped)'}`
-    )
+    const oauthMode = !registerProtocol
+      ? ' (protocol registration skipped)'
+      : renderer
+        ? ` (OAuth redirect ${renderer.scheme}://${renderer.host}/)`
+        : ' (development: OAuth needs a packaged build on this platform)'
+
+    console.log(`[clerk] bridge installed${oauthMode}`)
 
     return { bridge, enabled: true }
   } catch (error) {

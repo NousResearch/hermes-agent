@@ -791,13 +791,17 @@ class SessionAuthority:
 
     async def receipt(self, actor, ref, admission_id):
         self.authorize(actor, ref, 'session:submit')
-        row = get_session_admission(self.db, admission_id=admission_id)
+        live = self.sessions[ref.session_id]
+        row = await asyncio.to_thread(get_session_admission, self.db, admission_id=admission_id)
+        from gateway.session_authorities import require_serving
+        require_serving(self)
+        if self.sessions.get(ref.session_id) is not live:
+            raise RuntimeStoreError('not_found')
         if row is None or row['target_session_id'] != ref.session_id:
             raise RuntimeStoreError('not_found')
         from gateway.owner_identity import same_owner
         if not same_owner(row['principal_id'], actor.subject) and 'session:control' not in actor.capabilities:
             raise RuntimeStoreError('permission_denied')
-        live = self.sessions[ref.session_id]
         with live.event_stream.lock:
             # Read after the row: a terminal row whose completion is not yet published reads as
             # its claim, so a receipt poller never replays events that lack the completion frame.

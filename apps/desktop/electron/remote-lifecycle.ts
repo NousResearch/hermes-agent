@@ -144,12 +144,51 @@ function isLockfileSkew(lock) {
 // The spawn mutex is one kernel lock on this file. It is never unlinked: a lock
 // path that is removed and re-created is a new inode, and a second exclusive
 // lock on the new inode succeeds while the first holder is still live (#112974).
-// `flock(1)`/`lockf(1)` lock the open descriptor, and the kernel drops that lock
-// when the holding process exits — including SIGKILL — so there is no owner
-// record to outlive its owner and nothing to reclaim.
+// The kernel drops a descriptor lock when the holding process exits - including
+// SIGKILL - so there is no owner record to outlive its owner and nothing to
+// reclaim.
+//
+// The lock is `fcntl.flock` in the host's own Python, not `flock(1)` or
+// `lockf(1)`. `flock(1)` is util-linux, and `lockf(1)` has no descriptor mode in
+// Apple's shell_cmds 309.120.3 (`lockf -s -t 30 9` there fails and would take the
+// whole spawn down with it), so neither CLI exists everywhere this payload runs.
+// `fcntl.flock` is the same kernel primitive on Linux, macOS and FreeBSD with no
+// CLI in between, and it adds no dependency: `python3` is already required by
+// this payload - `withRemoteUpdateMutex` wraps every spawn in it, so the spawn
+// shell cannot be reached at all on a host without one.
 function connectSpawnLockPath(ownershipId) {
   return `${ownershipDirectory(ownershipId)}/.connect.spawn.lock`
 }
+
+/**
+ * Takes the spawn reservation and runs the body under it, on an SSH remote.
+ *
+ * `python3 -c RESERVATION <lock path> <marker fd or ''> <body> [args...]`: opens
+ * the lock file without truncating it, takes `LOCK_EX` for a bounded 30 s, then
+ * `exec`s the body as `sh` with the locked descriptor still open. The body's
+ * arguments are the marker descriptor as `$1`, the reservation descriptor as
+ * `$2`, then whatever followed it. The descriptor stays open for as long as that
+ * shell lives, which is the whole reservation window, and the kernel releases it
+ * when the shell exits. A refused reservation exits 75.
+ */
+export const REMOTE_SPAWN_RESERVATION_PY = `
+import fcntl,os,sys,time
+path=sys.argv[1]
+try:fd=os.open(path,os.O_RDWR|os.O_CREAT,0o644)
+except OSError as error:
+ print('the spawn reservation is unavailable: %s'%error,file=sys.stderr);sys.exit(75)
+deadline=time.monotonic()+30
+try:
+ while True:
+  try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+  except BlockingIOError:
+   if time.monotonic()>=deadline:raise OSError('another spawn holds it')
+   time.sleep(0.02)
+except OSError as error:
+ print('the spawn reservation is unavailable: %s'%error,file=sys.stderr);sys.exit(75)
+os.set_inheritable(fd,True)
+os.execvp('sh',['sh','-c',sys.argv[3],'hermes-spawn-reservation',sys.argv[2],str(fd)]+sys.argv[4:])
+`
 
 function spawnLogPath(ownershipId, spawnNonce) {
   return `${ownershipDirectory(ownershipId)}/${validateSpawnNonce(spawnNonce)}.log`
@@ -1149,10 +1188,13 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
     `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
 
-  const detachedShell: string = `eval "exec $1>&-"; exec 9>&-; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
+  const detachedShell: string = `eval "exec $1>&-"; [ -z "$2" ] || eval "exec $2>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   // The inner shell backgrounds Hermes and reports its PID; backgrounding the
   // launcher too adds its unrelated PID to the value published in the lock.
-  const detachedSpawn: string = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1")`
+  // Both inherited descriptors are closed first: the marker lock ($1) outlives
+  // this spawn, but the reservation ($2) must end with the spawning shell, and a
+  // backend that inherited it would hold the reservation for its whole life.
+  const detachedSpawn: string = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" "$2")`
 
   if (!opts.ownershipId || !opts.lockMetadata) {
     return withRemoteUpdateMutex(
@@ -1170,11 +1212,29 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const metadata = JSON.stringify({ schemaVersion: LOCKFILE_SCHEMA_VERSION, ...opts.lockMetadata, pid: '__PID__' })
   const reservationNonce = validateSpawnNonce(opts.reservationNonce || crypto.randomBytes(8).toString('hex'))
 
-  // `flock` is util-linux (and the BusyBox applet) on Linux; macOS and FreeBSD
-  // ship the fd form of `lockf`. Both lock the open descriptor, which is what
-  // `exec 9>>` above hands them.
-  const spawnLock: string =
-    String(opts.platform ?? process.platform).toLowerCase() === 'darwin' ? 'lockf -s -t 30 9' : 'flock -x -w 30 9'
+  // Everything the reservation holds a lock over: the ownership-record check,
+  // process creation and the initial lockfile publication. It runs under
+  // REMOTE_SPAWN_RESERVATION_PY as a fresh `sh`, so the lockfile path arrives as
+  // `$3` (a shell variable would not survive into the exec'd shell) and the
+  // kernel-held descriptor is `$2`.
+  const reserved =
+    `lock=$3; ` +
+    `if [ -f "$lock" ]; then ` +
+    `existing_pid=$(sed -n 's/.*"pid":\\([0-9][0-9]*\\).*/\\1/p' "$lock" | head -n 1); ` +
+    `case "$existing_pid" in ''|*[!0-9]*) rm -f "$lock";; *) ` +
+    `if kill -0 "$existing_pid" 2>/dev/null; then ${tokenPath ? `rm -f ${tokenPath}; ` : ''}printf EXISTING; exit 0; fi; rm -f "$lock";; esac; fi; ` +
+    `mkdir -p "$(dirname ${logPath})" && ` +
+    `${detachedSpawn}; ` +
+    `${markerAbsent} || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
+    // ${var//pat/rep} is a bashism — this payload runs under plain sh (dash
+    // on Ubuntu), which aborts the whole script on it with "Bad
+    // substitution" AFTER the child was spawned, orphaning the backend and
+    // skipping the lockfile publication. Replace the quoted PID field with
+    // a JSON number so readLockfile and concurrent spawns accept the record.
+    `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/\\"pid\\":\\"__PID__\\"/\\"pid\\":\${child}/"); ` +
+    `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
+    `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
+    `echo "$child"`
 
   return withRemoteUpdateMutex(
     `(umask 077 && mkdir -p "$(dirname ${lockPath})"); ` +
@@ -1185,35 +1245,18 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `lock=${lockPath}; ` +
       // ONE kernel lock replaces the reservation directory, the owner record
       // and every line that existed only to reclaim them. The reservation's
-      // lifetime is exactly this shell's lifetime: it ends when the lockfile is
-      // published and the backend runs on without us. A descriptor lock has
-      // that lifetime by construction — the kernel drops it on exit, on a killed
-      // ssh channel and on SIGKILL — so no record can outlive its owner, no
-      // waiter can act on a record it did not judge, and there is nothing to
-      // reclaim. Append, never truncate: the lock lives on the inode, and a
-      // removed and re-created lock path is a new inode that a second exclusive
-      // lock would take while the first holder is still live (#112974).
-      `exec 9>>${spawnLockPath} || exit 75; ` +
-      // Bounded wait. A live holder is mid-spawn and publishes its lockfile in
-      // seconds; on timeout, or on a host that has neither flock nor lockf, fail
-      // closed with EX_TEMPFAIL instead of spawning a second backend.
-      `${spawnLock} || { echo "the spawn reservation is unavailable: another spawn holds it, or this host has neither flock nor lockf" >&2; exit 75; }; ` +
-      `if [ -f "$lock" ]; then ` +
-      `existing_pid=$(sed -n 's/.*"pid":\\([0-9][0-9]*\\).*/\\1/p' "$lock" | head -n 1); ` +
-      `case "$existing_pid" in ''|*[!0-9]*) rm -f "$lock";; *) ` +
-      `if kill -0 "$existing_pid" 2>/dev/null; then ${tokenPath ? `rm -f ${tokenPath}; ` : ''}printf EXISTING; exit 0; fi; rm -f "$lock";; esac; fi; ` +
-      `mkdir -p "$(dirname ${logPath})" && ` +
-      `${detachedSpawn}; ` +
-      `${markerAbsent} || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
-      // ${var//pat/rep} is a bashism — this payload runs under plain sh (dash
-      // on Ubuntu), which aborts the whole script on it with "Bad
-      // substitution" AFTER the child was spawned, orphaning the backend and
-      // skipping the lockfile publication. Replace the quoted PID field with
-      // a JSON number so readLockfile and concurrent spawns accept the record.
-      `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/\\"pid\\":\\"__PID__\\"/\\"pid\\":\${child}/"); ` +
-      `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
-      `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
-      `echo "$child"`,
+      // lifetime is exactly the shell's lifetime: it ends when the lockfile is
+      // published and the backend runs on without us. A descriptor lock has that
+      // lifetime by construction — the kernel drops it on exit, on a killed ssh
+      // channel and on SIGKILL — so no record can outlive its owner, no waiter
+      // can act on a record it did not judge, and there is nothing to reclaim.
+      // The lock file is never truncated and never unlinked: the lock lives on
+      // the inode, and a removed and re-created lock path is a new inode that a
+      // second exclusive lock would take while the first holder is still live
+      // (#112974). `"$1"` is the marker descriptor the gate handed this shell
+      // and `"$lock"` the lockfile path; the reservation program passes both
+      // through to the body it execs.
+      `python3 -c ${shq(REMOTE_SPAWN_RESERVATION_PY)} ${spawnLockPath} "$1" ${shq(reserved)} "$lock"`,
     marker,
     hermes
   )
@@ -1309,7 +1352,6 @@ async function spawnRemoteDashboard(
     ownershipId,
     hermesHome = '~/.hermes',
     guestOnboarding = false,
-    platform = '',
     assertInstallClear = async () => {}
   }
 ) {
@@ -1382,7 +1424,6 @@ async function spawnRemoteDashboard(
         logPath,
         hermesHome,
         guestOnboarding,
-        platform,
         ownershipId,
         reservationNonce: spawnNonce,
         lockMetadata: {
@@ -1694,7 +1735,6 @@ async function connect(deps) {
     ownershipId,
     hermesHome,
     guestOnboarding,
-    platform: platform.os,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome, hermesPath)
   })
 

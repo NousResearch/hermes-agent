@@ -19,6 +19,7 @@ import {
   pidIsOurDashboard,
   PROTOCOL_VERSION,
   readLockfile,
+  REMOTE_SPAWN_RESERVATION_PY,
   spawnLogPath,
   spawnTokenPath
 } from './remote-lifecycle'
@@ -131,9 +132,10 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
     'ln',
     'env',
     'ps',
-    // The spawn reservation is one kernel lock: flock(1) on Linux, lockf(1) on
-    // macOS/FreeBSD. It is on the payload's PATH, so the fixture must ship it.
-    process.platform === 'darwin' ? 'lockf' : 'flock',
+    // Neither `flock(1)` nor `lockf(1)` is on the payload's PATH: the
+    // reservation is `fcntl.flock` in python3, which is already required by the
+    // marker gate that wraps every spawn. A payload that shelled out to either
+    // CLI would exit 75 here rather than reserve.
     launcher
   ]) {
     const executable: string = (await exec(`command -v ${tool}`, { shell })).stdout.trim()
@@ -214,10 +216,11 @@ async function reports(fixture: SpawnFixture): Promise<ChildReport[]> {
 function lockProbe(): string {
   // A lock file that does not exist holds nobody (the non-owned spawn path never
   // touches it). An existing one is free only when the kernel grants a fresh
-  // exclusive lock immediately — which no live holder allows, including one this
-  // probe did not create. The fd form of lockf is the macOS/FreeBSD equivalent
-  // of `flock -n`.
-  const exclusive: string = process.platform === 'darwin' ? 'lockf -s -t 0 -k "$1" true' : 'flock -n "$1" -c true'
+  // exclusive lock immediately - which no live holder allows, including one this
+  // probe did not create. The probe takes the same primitive as the payload,
+  // `fcntl.flock`, so it needs no CLI on the host either.
+  const exclusive: string =
+    `python3 -c "import fcntl,os,sys;fcntl.flock(os.open(sys.argv[1],os.O_RDWR),fcntl.LOCK_EX|fcntl.LOCK_NB)" "$1"`
 
   return `[ -e "$1" ] || exit 0\n${exclusive}`
 }
@@ -496,20 +499,36 @@ async function reservationRace(): Promise<ReservationRace> {
   return { root, home, payload, spawnLock }
 }
 
-/** The reservation block alone: everything the payload does before it spawns. */
-function reservationBlock(payload: string): string {
-  // The spawn begins at the log directory: the LAST `mkdir -p "$(dirname` in the
-  // payload. (A marker-era payload creates no other one before it; a kernel-lock
-  // payload also creates the ownership directory with the same shape, earlier.)
-  const spawned: number = payload.lastIndexOf('mkdir -p "$(dirname')
-  // The block starts at whichever primitive this payload reserves with, so the
-  // same racer runs the shipped bytes on both sides of the change.
-  const starts: number[] = ['exec 9>>', 'reservation='].map((needle: string): number => payload.indexOf(needle))
+/** shell-single-quote, the same escaping `remote-lifecycle.ts`'s shq() does. */
+function shq(value: string): string {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+/** Everything the payload does before it takes the reservation. */
+function reservationPrefix(payload: string): string {
+  // The reservation starts at whichever primitive the payload reserves with, so
+  // the same racer runs the shipped bytes on both sides of the change.
+  const starts: number[] = ['python3 -c', 'exec 9>>', 'reservation='].map((needle: string): number =>
+    payload.indexOf(needle)
+  )
+
   const reserve: number = Math.min(...starts.filter((at: number): boolean => at > 0))
 
-  assert.ok(spawned > 0 && spawned > reserve, 'the reservation block moved; teach this test its new shape')
+  assert.ok(reserve > 0, 'the reservation moved; teach this test its new shape')
 
-  return payload.slice(0, spawned)
+  return payload.slice(0, reserve)
+}
+
+/**
+ * A caller that runs the shipped reservation program with a racer's critical
+ * section instead of the spawn: the lock, its 30 s bound and its fail-closed
+ * exit are the bytes the app ships, and only the body differs.
+ */
+function reservationRacer(payload: string, spawnLock: string, body: string): string {
+  return (
+    `${reservationPrefix(payload)}` +
+    `python3 -c ${shq(REMOTE_SPAWN_RESERVATION_PY)} ${shq(spawnLock)} '' ${shq(`sh ${shq(body)}`)}`
+  )
 }
 
 /** The lock probe as a script the racers can run from inside their hold. */
@@ -522,7 +541,7 @@ async function lockProbeScript(root: string): Promise<string> {
 }
 
 /**
- * A caller that runs the shipped reservation block, then behaves like the
+ * A caller that runs the shipped reservation program, then behaves like the
  * holder: it records the reservation it took, proves the mutex is genuinely
  * held (an independent non-blocking lock on the same path must fail while it is
  * inside), holds long enough for a second holder to be observable, and records
@@ -531,11 +550,11 @@ async function lockProbeScript(root: string): Promise<string> {
 async function holderRacer(root: string, payload: string, spawnLock: string, name = 'race'): Promise<string> {
   const race: string = path.join(root, `${name}.sh`)
   const probe: string = await lockProbeScript(root)
+  const body: string = path.join(root, `${name}-body.sh`)
 
   await writeFile(
-    race,
-    `${reservationBlock(payload)}` +
-      `printf '%s\\n' "$$" >> "$MARK_DIR/entries"; ` +
+    body,
+    `printf '%s\\n' "$$" >> "$MARK_DIR/entries"; ` +
       `if [ -e "$MARK_DIR/held" ]; then : > "$MARK_DIR/double"; fi; ` +
       `: > "$MARK_DIR/held"; ` +
       // A lock probe that succeeds while this caller is inside is proof the
@@ -546,6 +565,8 @@ async function holderRacer(root: string, payload: string, spawnLock: string, nam
       `command -p rm -f "$MARK_DIR/held"; `,
     { mode: 0o755 }
   )
+
+  await writeFile(race, reservationRacer(payload, spawnLock, body), { mode: 0o755 })
 
   return race
 }
@@ -586,7 +607,7 @@ async function raceRound(race: string, home: string, mark: string, callers: numb
 test.skipIf(process.platform === 'win32')(
   'the ownership reservation admits one holder when a mkdir reports a create it lost',
   async (): Promise<void> => {
-    const { root, home, payload }: ReservationRace = await reservationRace()
+    const { root, home, payload, spawnLock }: ReservationRace = await reservationRace()
 
     try {
       const round: string = path.join(root, 'round')
@@ -609,13 +630,15 @@ test.skipIf(process.platform === 'win32')(
       // Racer protocol: whoever holds the reservation sleeps; a second holder
       // inside that window is the double-win the mkdir mutex allowed, and the
       // one the reaper's reservation delete raced against.
+      const body: string = path.join(root, 'race-body.sh')
+
       await writeFile(
-        race,
-        `${reservationBlock(payload)}` +
-          `if [ -e "$MARK_DIR/held" ]; then : > "$MARK_DIR/double"; fi; ` +
+        body,
+        `if [ -e "$MARK_DIR/held" ]; then : > "$MARK_DIR/double"; fi; ` +
           `: > "$MARK_DIR/held"; sleep 0.3; rm -f "$MARK_DIR/held"; `,
         { mode: 0o755 }
       )
+      await writeFile(race, reservationRacer(payload, spawnLock, body), { mode: 0o755 })
 
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PATH: `${raceShim}:${process.env.PATH}` }
 

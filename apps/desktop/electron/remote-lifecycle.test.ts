@@ -2097,14 +2097,13 @@ test.skipIf(process.platform === 'win32')(
         'marker path must reach python fully expanded, with no quote characters'
       )
 
-      // The payload assigns the lockfile path and opens the reservation's
-      // descriptor lock before it spawns. Evaluate only that prefix the way the
-      // remote sh does; never the lock or the spawn itself.
+      // The payload assigns the lockfile path and takes the reservation with one
+      // kernel lock before it spawns; evaluate only that prefix, never the spawn.
       const payload = argv[3]
-      const loopStart = payload.indexOf('exec 9>>')
-      assert.ok(loopStart > 0, 'payload prefix sentinel missing')
+      const reserveAt = payload.indexOf('python3 -c')
+      assert.ok(reserveAt > 0, 'payload prefix sentinel missing')
 
-      const { stdout } = await exec(`${payload.slice(0, loopStart)} printf '%s\\n' "$lock"`, {
+      const { stdout } = await exec(`${payload.slice(0, reserveAt)} printf '%s\\n' "$lock"`, {
         shell: 'sh',
         env: { ...process.env, HOME: fakeHome }
       })
@@ -2112,8 +2111,9 @@ test.skipIf(process.platform === 'win32')(
       const base = `${fakeHome}/.hermes/desktop-ssh/${OWNERSHIP_ID}`
       assert.equal(stdout.trim(), `${base}/backend.lock.json`)
       assert.ok(
-        payload.slice(loopStart).startsWith('exec 9>>') && payload.includes('/.connect.spawn.lock'),
-        'the reservation must open one descriptor lock on its own never-unlinked file'
+        payload.slice(reserveAt).includes('/.connect.spawn.lock') &&
+          payload.includes('fcntl.flock') && !/flock -x|lockf -s/.test(payload),
+        'the reservation must take one fcntl.flock on its own never-unlinked file, not a CLI'
       )
     } finally {
       await rm(root, { recursive: true, force: true })

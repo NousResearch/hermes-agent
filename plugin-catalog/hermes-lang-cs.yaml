@@ -1,15 +1,16 @@
 name: hermes-lang-cs
 repo: https://github.com/ostravajih/hermes-lang-cs
-sha: 989cd3a551e87f962e76811fa7b418f9d8af8fe7
+sha: dffcfdd272f844f6c35051f1a9b52b24c2f5865e
 title: Czech (Čeština) Language Pack
 description: >-
   Czech (Čeština) language pack for Hermes Agent covering all three UI surfaces — core
-  CLI/gateway/platforms (3,515/3,515 keys), the Ink TUI (1,390/1,390) and the Desktop app (5,404 of
-  5,523). Core and TUI keys match the English source of `main` at 40b566502a (2026-11-02) exactly: no
+  CLI/gateway/platforms (3,574/3,574 keys), the Ink TUI (1,443 of 1,445) and the Desktop app (5,489 of
+  5,611). Core keys match the English source of `main` at f65af53f28 (2026-11-15) exactly: no
   key upstream has since removed and no placeholder divergence, checked by flattening both sides.
-  The remaining 119 Desktop keys are 117 whose English value is a function with branching (plural
-  counts such as `cron.count`, conditional labels such as `assistant.thread.errorSwitchToModel`)
-  plus two array values, which the pack format cannot express as one template — they are omitted so
+  The remaining TUI keys are 2 whose English value is a function with branching (image plural
+  counts), and the remaining 122 Desktop keys are 120 of the same kind (plural counts such as
+  `cron.count`, conditional labels such as `assistant.thread.errorSwitchToModel`) plus two array
+  values, which the pack format cannot express as one template — they are omitted so
   they fall back to English instead of rendering a wrong Czech form. Ships the same text as upstream
   PR #105503, so if that PR lands the bundled locale and this pack agree. Manifest-only
   plugin: flat dotted YAML catalogs under locales/, no network, no dependencies. Disclosure — an

@@ -35,7 +35,7 @@ export const enBackupTransfer: BackupTransferTranslations = {
   keepsTitle: 'The cloud agent keeps',
   keeps: ['Its Nous Portal sign-in', 'Its model and provider', 'Hermes Cloud tools', 'Its scheduler settings'],
   botNote:
-    'Messaging bots (Telegram, Discord…) come over with their tokens; a bot token can only be used by one running Hermes, so stop the one on this computer if both would answer.',
+    'Messaging bots (Telegram, Discord…) come over with their tokens. Keep using them here until the transfer is done, then turn them off on this computer in Settings → Messaging so only the cloud agent answers.',
   undoNote: agent => `A backup of ${agent} is taken first, so you can undo.`,
   acknowledge: agent => `I understand this replaces ${agent}`,
   replace: agent => `Replace ${agent}`,
@@ -44,7 +44,8 @@ export const enBackupTransfer: BackupTransferTranslations = {
   stepUpload: 'Uploading',
   stepRestore: agent => `Restoring on ${agent}`,
   doneTitle: 'Transferred',
-  doneHelp: agent => `${agent} is now this agent.`,
+  doneHelp: agent =>
+    `${agent} is now this agent. If it runs your messaging bots, turn them off on this computer in Settings → Messaging.`,
   undo: 'Undo',
   undoing: 'Undoing…',
   openAgent: 'Open agent',

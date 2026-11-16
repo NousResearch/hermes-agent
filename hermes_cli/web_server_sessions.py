@@ -523,12 +523,12 @@ def _maybe_run_skill_maintenance(started_at: float) -> None:
     if _check_gateway_running(get_hermes_home()):
         return
 
-    from agent.curator import maybe_run_curator
+    from hermes_cli.plugins_idle_tasks import run_idle_jobs
 
     try:
         idle_for = _skill_maintenance_idle_for(started_at)
         if idle_for is not None:
-            maybe_run_curator(idle_for_seconds=idle_for)
+            run_idle_jobs(idle_for_seconds=idle_for)
     except Exception as exc:
         _log.debug("serve curator tick skipped: %s", exc)
 

@@ -143,15 +143,14 @@ def _parse_model_ids(resp: Any) -> list[str]:
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
                             has_env: bool, gateway_running: Callable[[], bool]) -> dict[str, Any]:
     model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
-    meta = lambda key, default: _safe(
-        lambda: profiles_mod.read_profile_meta(home).get(key, default), default)
+    meta = _safe(lambda: profiles_mod.read_profile_meta(home), {}).get
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
         "skill_count": _safe(lambda: profiles_mod._cached_skill_count(home), 0),
         "gateway_running": _safe(gateway_running, False),
         "description": meta("description", ""), "description_auto": meta("description_auto", False),
-        "bot_title": meta("bot_title", ""),
+        "bot_title": meta("bot_title", ""), "ui_meta": meta("ui_meta", {}),
         "distribution_name": None, "distribution_version": None, "distribution_source": None,
         "has_alias": False}
 
@@ -418,12 +417,13 @@ def _profile_cli_args(profile: Optional[str]) -> list[str]:
     return ["-p", profiles_mod.normalize_profile_name(requested)]
 
 
-def _hub_action_name(verb: str, key: str) -> str:
+def _hub_action_name(verb: str, key: str, profile: Optional[str] = None) -> str:
     """Unique per-skill hub action name (+ registered log file): ``_spawn_hermes_action``
     tracks one process/log per name, so a shared "skills-install" would make concurrent
     row-level actions overwrite each other. Slug (readable) + hash (collision-proof)."""
     slug = re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:48] or "skill"
-    digest = hashlib.sha1(key.encode()).hexdigest()[:8]
+    profile_key = (profile or "current").strip().lower()
+    digest = hashlib.sha1(f"{profile_key}:{key}".encode()).hexdigest()[:8]
     name = f"skills-{verb}-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(name, f"action-{name}.log")
     return name

@@ -29,6 +29,14 @@ def _agent_session_source(agent: Any) -> str:
     return session_source_for(getattr(agent, "platform", None))
 
 
+def _cache_clock_column(event: Any) -> dict[str, str]:
+    """``prompt_cache_clock`` kwarg for the token batch: only when this response moved the clock."""
+    if event is None:
+        return {}
+    from agent.prompt_cache_clock import event_to_json
+    return {"prompt_cache_clock": event_to_json(event)}
+
+
 @dataclass
 class ResponseUsageOutcome:
     """``compression_attempts`` is the (possibly rearmed-to-zero) budget counter;
@@ -240,6 +248,10 @@ def record_response_usage(
         _agg_cost_model = _agg_slot["model"]
         _agg_cost_provider = _agg_slot.get("provider") or agent.provider
         _agg_cost_base_url = _agg_slot.get("base_url") or agent.base_url
+    from agent.prompt_cache_clock import record_cache_response
+    _cache_event = record_cache_response(
+        agent, aggregator_usage, model=agent.model, provider=agent.provider, base_url=agent.base_url,
+        api_mode=agent.api_mode)
     cost_result = estimate_usage_cost(
         _agg_cost_model, aggregator_usage, provider=_agg_cost_provider,
         base_url=_agg_cost_base_url, api_key=getattr(agent, "api_key", ""),
@@ -290,6 +302,7 @@ def record_response_usage(
                 model=agent.model,
                 api_call_count=1,
                 task=getattr(agent, "_turn_route_task", "") or "",
+                **_cache_clock_column(_cache_event),
             )
         except Exception as e:  # silent loss here undercounts analytics
             logger.debug(

@@ -1835,7 +1835,7 @@ class TestHandleProcessTransformHook:
         from tools import process_registry as pr
         reg = ProcessRegistry()
         sess = _make_session(sid="proc_xform1", command="python app.py")
-        sess.output_buffer = output
+        sess.owner_task_id, sess.output_buffer = "task-bg", output  # owner = the caller (#108413)
         sess.exited = True
         sess.exit_code = 3
         reg._running[sess.id] = sess

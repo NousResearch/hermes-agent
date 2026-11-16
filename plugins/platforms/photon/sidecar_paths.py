@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # Files that define the sidecar; node_modules is deliberately absent (baked on managed
 # images or installed by pnpm in the mirror).
-_MIRROR_FILES = ("index.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "patch-spectrum-mixed-attachments.mjs")
+_MIRROR_FILES = ("index.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", "patch-spectrum-mixed-attachments.mjs")
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
 # Written by `hermes photon install-sidecar` on pnpm failure so check_requirements() can

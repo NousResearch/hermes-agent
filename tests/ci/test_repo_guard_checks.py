@@ -27,7 +27,7 @@ def _git_env(name: str = "Main", email: str = "teknium@example.com") -> dict[str
 
 def git(repo: Path, *args: str, author: tuple[str, str] = ("Main", "teknium@example.com")) -> str:
     return subprocess.run(["git", *args], cwd=repo, env=_git_env(*author), capture_output=True,
-                          text=True, check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
+                          text=True, encoding="utf-8", check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
 
 
 def commit(repo: Path, files: dict[str, str | bytes], author=("Main", "teknium@example.com")) -> str:
@@ -108,6 +108,51 @@ def test_unrelated_history_fails_and_publishes_the_history_artifact(repo, step):
     assert "::error::This PR has no common ancestor with main." in failed.stdout
     assert step.artifact("history-check")[0]["source"] == "unrelated histories"
 
+
+
+def _merge_ref_checkout(repo: Path, branch: str) -> str:
+    """Check out what a pull_request run checks out: main merged with the PR head (refs/pull/N/merge)."""
+    head = git(repo, "rev-parse", branch).strip()
+    git(repo, "checkout", "-q", "--detach", "origin/main")
+    git(repo, "merge", "-q", "--no-ff", "--allow-unrelated-histories", "-m", "merge", head)
+    return head
+
+
+def test_orphan_pr_fails_even_when_the_checkout_is_the_merge_ref(repo, step):
+    git(repo, "checkout", "-q", "--orphan", "orphan")
+    commit(repo, {"b": "2"})
+    head = _merge_ref_checkout(repo, "orphan")
+    failed = step.run(repo, "check_common_ancestor.py", _HERMES_PR_HEAD_SHA=head)
+    assert failed.returncode == 1, failed.stdout
+    assert "::error::This PR has no common ancestor with main." in failed.stdout
+
+
+def test_pr_that_merged_an_unrelated_root_fails(repo, step):
+    git(repo, "checkout", "-q", "--orphan", "orphan")
+    commit(repo, {"b": "2"})
+    git(repo, "checkout", "-q", "-b", "graft", "main")
+    git(repo, "merge", "-q", "--no-ff", "--allow-unrelated-histories", "-m", "graft", "orphan")
+    orphan_root = git(repo, "rev-parse", "orphan").strip()
+    head = _merge_ref_checkout(repo, "graft")
+    failed = step.run(repo, "check_common_ancestor.py", _HERMES_PR_HEAD_SHA=head)
+    assert failed.returncode == 1, failed.stdout
+    [status] = step.artifact("history-check")
+    assert status["results"][0]["title"] == "Unrelated history merged into this PR"
+    assert status["results"][0]["detail"] == orphan_root
+
+
+def test_related_pr_passes_and_an_unresolvable_head_fails_closed(repo, step):
+    git(repo, "checkout", "-q", "-b", "feature")
+    commit(repo, {"a": "1"})
+    head = _merge_ref_checkout(repo, "feature")
+    passed = step.run(repo, "check_common_ancestor.py", _HERMES_PR_HEAD_SHA=head)
+    assert passed.returncode == 0, passed.stdout
+    assert step.artifact("history-check") == []
+
+    for missing in ("", "0" * 40):
+        failed = step.run(repo, "check_common_ancestor.py", _HERMES_PR_HEAD_SHA=missing)
+        assert failed.returncode == 1, failed.stdout
+        assert step.artifact("history-check")[0]["results"][0]["title"] == "PR head unavailable"
 
 def test_only_unmapped_human_emails_fail_the_contributor_check(repo, step):
     commit(repo, {"contributors/emails/mapped@x.org": "alice\n",
@@ -288,3 +333,30 @@ def test_uv_lock_retries_only_registry_failures(tmp_path, monkeypatch, capsys, p
     assert out.count("::warning::") == len(sleeps)
     if verdict == "timed-out":
         assert "Resolving dependencies" in out  # the stopped attempt's log is still shown
+
+
+def test_pr_head_counts_a_head_that_only_the_last_fetch_brings_in(repo, tmp_path, monkeypatch):
+    sys.path.insert(0, str(SCRIPTS.parents[1]))
+    from scripts.ci import check_common_ancestor as guard
+
+    remote = tmp_path / "remote"
+    git(tmp_path, "clone", "-q", str(repo), str(remote))
+    head = commit(remote, {"pr": "1"})
+    git(repo, "remote", "add", "origin", str(remote))
+    real_git, fetches = guard._git, []
+
+    def flaky_git(*args: str) -> subprocess.CompletedProcess:
+        if args[0] == "fetch":
+            fetches.append(args)
+            if len(fetches) < guard.FETCH_ATTEMPTS:
+                return subprocess.CompletedProcess(("git", *args), 128, "", "transient")
+        return real_git(*args)
+
+    for key in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(guard, "_git", flaky_git)
+    monkeypatch.setattr(guard.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("_HERMES_PR_HEAD_SHA", head)
+    assert guard.pr_head() == head
+    assert len(fetches) == guard.FETCH_ATTEMPTS

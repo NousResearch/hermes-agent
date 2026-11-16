@@ -1199,7 +1199,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
-        except Exception as e:
+        except Exception as e:  # health: allow BLE001 -- as before the split: a formatting failure is a failed send
             return SendResult(success=False, error=str(e))
         return await self._send_chunks(to_whatsapp_jid(chat_id), chunks, [], reply_to)
 

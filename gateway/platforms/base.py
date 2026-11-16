@@ -438,6 +438,7 @@ if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
+from gateway.platforms.base_chunking import is_partial_delivery, partial_tail_uncertain, with_partial_send
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
 from gateway.platforms.base_exec_approval import (
@@ -3513,7 +3514,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
 
         result = await _send(content)
-        if result.success or self._send_retry_is_final(result) or self._partial_tail_uncertain(result):
+        if result.success or self._send_retry_is_final(result) or partial_tail_uncertain(result):
             return result
         error_str = result.error or ""
         # A rate-limited / flood-capped send is transient: back off (honoring the server's retry_after) rather
@@ -3562,7 +3563,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
-                if self._send_retry_is_final(result) or self._partial_tail_uncertain(result):
+                if self._send_retry_is_final(result) or partial_tail_uncertain(result):
                     return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
@@ -3620,38 +3621,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         fallback can fix it (a structured auth/target refusal). Default: never."""
         return False
 
-    @staticmethod
-    def _is_partial_delivery(result: SendResult) -> bool:
-        """True when a split payload was PARTLY delivered (``raw_response["partial_overflow"]``, the
-        contract split-sending adapters set via :meth:`_with_partial_send` and the stream consumer reads): the visible
-        head must never be sent again."""
-        raw = getattr(result, "raw_response", None)
-        return isinstance(raw, dict) and bool(raw.get("partial_overflow"))
-
-    @classmethod
-    def _partial_tail_uncertain(cls, result: "SendResult") -> bool:
-        """A partial delivery whose remainder may already have landed (no ``undelivered_chunks``): no
-        retry can resume it and the plain-text fallback would repeat the head, so it is returned as-is."""
-        return cls._is_partial_delivery(result) and not result.raw_response.get("undelivered_chunks")
-
-    @staticmethod
-    def _with_partial_send(
-        result: SendResult, undelivered: List[str], delivered: List[str], *, tail_certain: bool = True) -> SendResult:
-        """Mark a split-send failure after earlier chunks landed with the ``partial_overflow`` contract (the key
-        ``_edit_overflow_split`` sets and the stream consumer reads), so no caller re-sends the visible head;
-        ``undelivered`` (for :meth:`_resume_partial_send`) is attached only when ``tail_certain``. An uncertain
-        failure reports ``unattempted_chunks``: the messages after the one in flight, which never left."""
-        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
-        if not tail_certain and len(undelivered) > 1:
-            raw["unattempted_chunks"] = tuple(undelivered[1:])
-        if delivered:
-            raw.update({
-                "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
-                "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
-            if tail_certain and undelivered:
-                raw["undelivered_chunks"], raw["delivered_message_ids"] = tuple(undelivered), tuple(delivered)
-        result.raw_response = raw or result.raw_response
-        return result
+    # The partial-delivery record of a split send (base_chunking): read by the retry loop and the stream consumer.
+    _is_partial_delivery = staticmethod(is_partial_delivery)
+    _with_partial_send = staticmethod(with_partial_send)
 
     async def _resume_partial_send(
         self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Any) -> Optional[SendResult]:

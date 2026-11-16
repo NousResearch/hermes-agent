@@ -115,6 +115,70 @@ def test_keep_host_replaces_the_agent_but_keeps_its_nous_signin_and_platform_set
     assert "SRC-NOUS" not in (dst / "auth.json").read_text() + (dst / ".env").read_text()
 
 
+def test_keep_host_only_merges_the_root_home(homes, monkeypatch):
+    """The host set up the root home only: a profile it never had and a skill's own config.yaml
+    arrive whole, while a profile's Nous tokens still never land."""
+    src, dst, tmp = homes
+    _write(src, "profiles/writer/config.yaml", "model:\n  provider: anthropic\ntts:\n  provider: elevenlabs\n")
+    _write(src, "profiles/writer/.env", "ANTHROPIC_API_KEY=SRC-ANT\nHERMES_MAX_ITERATIONS=200\n")
+    _write(src, "profiles/writer/auth.json", json.dumps({"version": 1, "providers": {
+        "nous": {"access_token": "SRC-NOUS-P"}, "anthropic": {"access_token": "SRC-ANT-P"}}}))
+    _write(src, "skills/tool/templates/config.yaml", "model: gpt-x\nweb: true\n")
+    _write(src, "skills/tool/auth.json", '{"providers": {"nous": {}}}')
+
+    _import(monkeypatch, dst, _backup(monkeypatch, src, tmp / "src.zip"), keep_host=True,
+            undo_point=str(tmp / "undo.zip"))
+
+    assert _yaml(dst / "profiles/writer/config.yaml") == _yaml(src / "profiles/writer/config.yaml")
+    assert (dst / "profiles/writer/.env").read_text() == (src / "profiles/writer/.env").read_text()
+    assert (dst / "skills/tool/templates/config.yaml").read_text() == "model: gpt-x\nweb: true\n"
+    assert (dst / "skills/tool/auth.json").read_text() == '{"providers": {"nous": {}}}'
+    profile_auth = json.loads((dst / "profiles/writer/auth.json").read_text())["providers"]
+    assert profile_auth == {"anthropic": {"access_token": "SRC-ANT-P"}}
+
+
+@pytest.mark.parametrize("member", ["../escaped/auth.json", "/abs/auth.json", "profiles/../auth.json"])
+def test_keep_host_refuses_an_auth_member_outside_the_home(homes, monkeypatch, member):
+    _src, dst, tmp = homes
+    member = str(tmp) + member if member.startswith("/") else member
+    archive = tmp / "crafted.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("config.yaml", "display:\n  skin: ares\n")
+        zf.writestr(member, json.dumps({"version": 1, "providers": {"x": {"access_token": "CRAFTED"}}}))
+    from hermes_cli.backup import run_import
+    monkeypatch.setenv("HERMES_HOME", str(dst))
+
+    result = run_import(Namespace(zipfile=str(archive), force=True, keep_host=True,
+                                  undo_point=str(tmp / "undo.zip")))
+
+    target = (dst / member).resolve()
+    assert result == 1 and not (target.exists() and "CRAFTED" in target.read_text())
+
+
+@pytest.mark.platforms("posix")  # on Windows a backslash is a separator and a symlink needs a privilege
+def test_keep_host_writes_a_profile_auth_store_only_inside_the_home(homes, monkeypatch):
+    """A Windows-spelled member lands at its real path; a profile dir linked out of the home is refused."""
+    _src, dst, tmp = homes
+    (tmp / "outside").mkdir()
+    (dst / "profiles").mkdir()
+    (dst / "profiles" / "linked").symlink_to(tmp / "outside", target_is_directory=True)
+    archive = tmp / "crafted.zip"
+    store = json.dumps({"version": 1, "providers": {"x": {"access_token": "CRAFTED"}}})
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("config.yaml", "display:\n  skin: ares\n")
+        zf.writestr("profiles\\writer\\auth.json", store)
+        zf.writestr("profiles/linked/auth.json", store)
+    from hermes_cli.backup import run_import
+    monkeypatch.setenv("HERMES_HOME", str(dst))
+
+    result = run_import(Namespace(zipfile=str(archive), force=True, keep_host=True,
+                                  undo_point=str(tmp / "undo.zip")))
+
+    assert "CRAFTED" in (dst / "profiles/writer/auth.json").read_text()
+    assert not (dst / "profiles\\writer\\auth.json").exists()
+    assert result == 1 and not (tmp / "outside/auth.json").exists()
+
+
 def test_the_undo_point_puts_the_agent_back(homes, monkeypatch):
     src, dst, tmp = homes
     archive = _backup(monkeypatch, src, tmp / "src.zip")

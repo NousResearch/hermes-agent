@@ -40,6 +40,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli.archive_safe import normalize_archive_parts
+
 logger = logging.getLogger(__name__)
 
 # Top-level config.yaml sections the hosting platform provisions. Hermes Cloud seeds the model and
@@ -149,12 +151,12 @@ class _KeepHostZip:
         return getattr(self._zf, name)
 
     def open(self, member, *args, **kwargs):
-        rel = member[len(self._prefix):] if self._prefix and member.startswith(self._prefix) else member
-        name = Path(rel).name
-        if name not in ("config.yaml", ".env"):
+        # Only the root home is the host's: a named profile or a skill's own config.yaml arrives whole.
+        rel = _rel(member, self._prefix)
+        if rel not in ("config.yaml", ".env"):
             return self._zf.open(member, *args, **kwargs)
         archive, live = self._zf.read(member), _live(self._root / rel)
-        if name == ".env":
+        if rel == ".env":
             data = merge_env(archive.decode("utf-8-sig", "replace"), live.decode("utf-8", "replace")).encode()
         else:
             import hermes_yaml as yaml
@@ -166,13 +168,25 @@ def _rel(member: str, prefix: str) -> str:
     return member[len(prefix):] if prefix and member.startswith(prefix) else member
 
 
+def _is_auth_store(rel: str) -> bool:
+    """``auth.json`` at the root or a named profile's root; anything else (a traversal included) is
+    an ordinary member the import checks and restores."""
+    try:
+        parts = normalize_archive_parts(rel)
+    except ValueError:
+        return False
+    return parts == ["auth.json"] or (len(parts) == 3 and parts[0] == "profiles" and parts[2] == "auth.json")
+
+
 def _restore_auth_members(zf, members: list[str], prefix: str, root: Path) -> list[str]:
     """Merge each archived auth.json into the live one under its lock; return per-file errors."""
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     errors = []
     for member in members:
-        target = root / _rel(member, prefix)
+        target = root.joinpath(*normalize_archive_parts(_rel(member, prefix)))
         try:
+            if not target.resolve().is_relative_to(root.resolve()):
+                raise OSError("path traversal blocked")
             target.parent.mkdir(parents=True, exist_ok=True)
             with _auth_store_lock(target_path=target):
                 _save_auth_store(merge_auth(_json(zf.read(member)), _load_auth_store(target)), target_path=target)
@@ -317,7 +331,7 @@ def import_source(args, zf, members: list[str], prefix: str, root: Path):
     if undo is None:
         raise OSError("could not back up this agent first (the undo point); nothing was restored")
     print(f"Undo point: {undo}\n  To put this agent back: hermes import {undo} --force --keep-host")
-    auth = [m for m in members if Path(_rel(m, prefix)).name == "auth.json"]
+    auth = [m for m in members if _is_auth_store(_rel(m, prefix))]
     shared = {m for m in members if _rel(m, prefix).endswith(_SHARED_NOUS_STORE)}
     rest = [m for m in members if m not in shared and m not in auth]
     with gateway_paused(root):

@@ -698,8 +698,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     """Return the result for an approval nobody can answer right now (no gateway notifier, no
     CLI panel): a refusal when the scanners could not read the command to the end (only a human
     may approve it), a fail-closed denial for a gateway background child no chat can prompt for
-    (#133514), ``approval_required`` for the action gate, and otherwise the backward-compatible
-    ``pending_approval`` shape (``pattern_keys`` + STOP text) for command/code gates."""
+    (#133514), ``approval_required`` for the action gate, and otherwise the ``pending_approval``
+    shape (STOP text, plus the one-shot/smart-deny capability flags) for command/code gates."""
     from tools.approval_notify_lease import stranded_denial
     if _SCAN_INCOMPLETE_DESCRIPTION in pattern_keys:
         return _scan_incomplete_block(_NO_REVIEWER_PRESENT)
@@ -865,8 +865,8 @@ class _GateSpec:
     transport: bool           # offer the selected plugin transport first
     user_approved: bool       # human approval resets the denial tally
     redact_cli: bool          # CLI prompt + hooks see the redacted copy
-    pending_keys: bool        # pending fallback: redacted ``pending_approval`` shape with
-                              # pattern_keys (True) vs raw ``approval_required`` (False)
+    pending_keys: bool        # pending fallback: redacted ``pending_approval`` shape (True)
+                              # vs raw ``approval_required`` (False)
     # Message templates. ``{breaker}`` = the denial circuit-breaker addendum,
     # read only where a template shows it (reading it logs when tripped).
     notify_failed: str

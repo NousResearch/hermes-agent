@@ -359,3 +359,11 @@ def test_plain_import_is_unchanged(homes, monkeypatch):
     assert "NOUS_API_KEY=SRC-NOUS" in (dst / ".env").read_text()
     assert (dst / "skills/cloud-only/SKILL.md").exists()  # a plain import never removes files
     assert not (dst / "backups").exists() or not list((dst / "backups").glob("pre-transfer-*"))
+
+
+def test_a_repeated_host_key_in_the_backup_never_replaces_the_cloud_key():
+    """.env loading takes the last assignment: a backup whose first one matches still gets merged."""
+    from hermes_cli.backup_keep_host import merge_env
+    merged = merge_env("API_SERVER_KEY=cloud\nOPENAI_API_KEY=mine\nAPI_SERVER_KEY=laptop\n", "API_SERVER_KEY=cloud\n")
+    assert [line for line in merged.splitlines() if line.startswith("API_SERVER_KEY=")][-1] == "API_SERVER_KEY=cloud"
+    assert "OPENAI_API_KEY=mine" in merged

@@ -517,6 +517,9 @@ class _Rewriter(cst.CSTTransformer):
             self._flag(node, MODULE_STRING, text, "module-name prefix outside any import; rewrite or confirm by hand")
         elif key in self.found.path_pieces and text in self.plan.moved.folders:
             self._flag(node, BY_PATH, text, "path built from a moved folder name; check the path arithmetic")
+        elif key in self.found.join_pieces and text in self.plan.moved.departed_files:
+            self._flag(node, BY_PATH, text, "path joined to the name of a file that left its folder; check the path "
+                                            "arithmetic")
         elif (found := self.plan.moved.find_path(text)) is not None:
             self._flag(node, BY_PATH, found[0], f"string names a moved path (now {found[1]})")
 

@@ -3671,9 +3671,15 @@ export const svOverrides: TranslationOverrides = {
   },
   preview: {
     tab: 'Förhandsvisning',
+    pin: 'Fäst på arbetsytan',
+    unpin: 'Lossa från arbetsytan',
     closePane: 'Stäng förhandsvisningspanel',
     loading: 'Läser in förhandsvisning',
     unavailable: 'Förhandsvisning saknas',
+    missingTarget: 'Sökvägen finns inte på den här datorn',
+    missingTitle: 'Filen finns inte längre',
+    missingBody: label =>
+      `${label} har tagits bort, flyttats eller fått sin tillfälliga plats rensad. Fliken återställs inte nästa gång appen startas.`,
     opening: 'Öppnar…',
     hide: 'Dölj',
     openPreview: 'Öppna förhandsvisning',
@@ -3699,6 +3705,7 @@ export const svOverrides: TranslationOverrides = {
     editing: 'Redigerar',
     unsavedChanges: 'Osparade ändringar',
     saveFailed: message => `Det gick inte att spara: ${message}`,
+    saveScopeChanged: 'Växla tillbaka till den ursprungliga anslutningen och profilen för att spara utkastet.',
     diskChangedTitle: 'Filen ändrades på disken',
     diskChangedBody:
       'Den här filen har ändrats sedan du öppnade den. Vill du skriva över den med din version eller förkasta redigeringarna och läsa in igen?',

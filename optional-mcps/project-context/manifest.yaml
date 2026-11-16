@@ -1,0 +1,41 @@
+# Proposed entry only. Approval requires a Nous maintainer review and merge.
+manifest_version: 1
+name: project-context
+description: Retrieve bounded project metadata, dependency scope and pending consumer acknowledgements.
+source: https://github.com/tiveroz/project-context-mcp
+install:
+  type: git
+  url: https://github.com/tiveroz/project-context-mcp.git
+  ref: 599d987a08aaab720c66f07edb1a6dc431e8af43
+  bootstrap:
+    - python bootstrap.py install
+transport:
+  type: stdio
+  command: python
+  args:
+    - ${INSTALL_DIR}/bootstrap.py
+    - run
+  env:
+    PROJECT_CONTEXT_REGISTRY: ${PROJECT_CONTEXT_REGISTRY}
+auth:
+  type: none
+  env:
+    - name: PROJECT_CONTEXT_REGISTRY
+      prompt: Absolute path to your local registry JSON, or demo for synthetic data
+      required: true
+      secret: false
+      default: demo
+tools:
+  default_enabled:
+    - list_projects
+    - resolve_project
+    - get_project_context
+    - get_record
+    - list_impacts
+    - list_pending
+post_install: |
+  Runs locally over stdio. The default demo contains invented records only.
+  Configure PROJECT_CONTEXT_REGISTRY with an operator-authorised absolute
+  JSON file path to use your data. Returned metadata is visible to your MCP
+  client and potentially its model provider. No registry writes, telemetry,
+  runtime network calls or automatic source updates are performed.

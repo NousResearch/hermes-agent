@@ -768,6 +768,16 @@ export const svOverrides: TranslationOverrides = {
             captionIncluded: 'Inkluderad användning',
             valueUsed: percent => `${percent} använt`
           }
+        },
+        planCard: {
+          freeTier: 'Kostnadsfri',
+          chooseAction: 'Välj ↗',
+          adjustPlanAction: 'Justera abonnemang ↗',
+          unavailableCaption: 'Abonnemangsuppgifterna är inte tillgängliga, men portalen kan fortfarande öppnas.',
+          downgradeCaption: (tierName, when) => `Byts till ${tierName} ${when}.`,
+          cancellationCaption: when => `Avslutas ${when}.`,
+          renewsCaption: date => `Förnyas ${date}`,
+          noSubscriptionCaption: 'Inget aktivt abonnemang – betalmodeller använder påfyllningskrediter.'
         }
       }
     },

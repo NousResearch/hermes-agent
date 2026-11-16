@@ -116,3 +116,16 @@ def test_a_tree_git_cannot_list_fails_closed(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mod, "ROOT", tmp_path)  # not a git checkout
     assert mod.main([]) == 2
     assert "cannot list the tracked files" in capsys.readouterr().err
+
+
+def test_a_git_timeout_fails_closed_with_a_message(tmp_path, monkeypatch, capsys):
+    import subprocess
+    from scripts.code_health import gitio
+    mod = _load()
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("git", 120)
+
+    monkeypatch.setattr(gitio.subprocess, "run", timeout)
+    assert mod.main([]) == 2
+    assert "cannot list the tracked files" in capsys.readouterr().err

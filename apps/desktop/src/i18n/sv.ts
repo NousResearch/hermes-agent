@@ -2800,6 +2800,7 @@ export const svOverrides: TranslationOverrides = {
       sentMessage: count => `${count} loggpost${count === 1 ? '' : 'er'} lades till i skrivfältet`
     },
     web: {
+      embeddedPreviewHint: 'Vissa webbplatser blockerar inbäddade förhandsvisningar. Öppna originalsidan i en webbläsarflik.',
       appFailedToBoot: 'Förhandsvisningsappen kunde inte starta',
       serverNotFound: 'Servern hittades inte',
       remoteLoopback:
@@ -2851,7 +2852,17 @@ export const svOverrides: TranslationOverrides = {
       commentPlaceholder: 'Lägg till en kommentar…',
       commentTitle: n => `Kommentar ${n}`,
       saveComment: 'Spara',
-      cancelComment: 'Avbryt kommentar'
+      cancelComment: 'Avbryt kommentar',
+      vaultFill: 'Fyll i en sparad inloggning',
+      vaultTitle: site => `Sparade inloggningar för ${site}`,
+      vaultLoading: 'Läser in sparade inloggningar…',
+      vaultEmpty: 'Ingen sparad inloggning för den här webbplatsen',
+      vaultUnlock: name => `Lås upp ${name}`,
+      vaultOpenSettings: 'Öppna inställningarna för lösenordsvalvet',
+      vaultFilled: label => `Fyllde i ${label}. Granska formuläret och logga sedan in.`,
+      vaultFillFailed: 'Kunde inte fylla i inloggningen',
+      vaultLoadFailed: 'Kunde inte läsa in sparade inloggningar',
+      vaultPageNotReady: 'Sidan läses fortfarande in. Försök igen när den är klar.'
     }
   },
   assistant: {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,31 @@ def test_missing_control_row_is_running_revision_zero(conn):
     assert state.reason is None
     assert state.error_code is None
     assert conn.total_changes == before
+
+
+def test_existing_database_gains_control_schema_without_state_write(tmp_path):
+    path = tmp_path / "legacy.db"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(kb.SCHEMA_SQL.replace(kanban_control.CONTROL_SCHEMA_SQL, ""))
+    legacy.close()
+    kb._INITIALIZED_PATHS.discard(str(path.resolve()))
+
+    migrated = kbc.connect(path)
+    try:
+        state = kanban_control.read_control(migrated)
+        tables = {
+            row[0] for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+            )
+        }
+        assert "kanban_dispatch_control" in tables
+        assert "kanban_dispatch_control_events" in tables
+        assert state.state == "running" and state.revision == 0
+        assert migrated.execute(
+            "SELECT COUNT(*) FROM kanban_dispatch_control",
+        ).fetchone()[0] == 0
+    finally:
+        migrated.close()
 
 
 def test_pause_persists_and_records_one_matching_event(conn):
@@ -134,3 +160,192 @@ def test_schema_drift_reads_unknown_without_repair(conn):
     assert state.state == "unknown"
     assert state.error_code == "control_schema_invalid"
     assert conn.total_changes == before
+
+
+def _queued_task(conn, status):
+    task_id = kb.create_task(conn, title=f"{status} task", assignee="worker")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status=?, claim_lock=NULL, claim_expires=NULL, "
+            "current_run_id=NULL WHERE id=?",
+            (status, task_id),
+        )
+    return task_id
+
+
+def _claim_path_snapshot(conn, task_id):
+    task = dict(conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
+    runs = [dict(row) for row in conn.execute(
+        "SELECT * FROM task_runs WHERE task_id=? ORDER BY id", (task_id,),
+    )]
+    events = [dict(row) for row in conn.execute(
+        "SELECT * FROM task_events WHERE task_id=? ORDER BY id", (task_id,),
+    )]
+    return task, runs, events
+
+
+def test_paused_ready_claim_returns_typed_reason_without_mutation(conn):
+    task_id = _queued_task(conn, "ready")
+    kanban_control.pause_board(conn, changed_by="operator")
+    before = _claim_path_snapshot(conn, task_id)
+
+    result = kb.claim_task_result(conn, task_id, claimer="worker")
+
+    assert result.task is None
+    assert result.reason == "kanban_paused"
+    assert _claim_path_snapshot(conn, task_id) == before
+
+
+def test_paused_review_claim_returns_typed_reason_without_mutation(conn):
+    task_id = _queued_task(conn, "review")
+    kanban_control.pause_board(conn, changed_by="operator")
+    before = _claim_path_snapshot(conn, task_id)
+
+    result = kb.claim_review_task_result(conn, task_id, claimer="reviewer")
+
+    assert result.task is None
+    assert result.reason == "kanban_paused"
+    assert _claim_path_snapshot(conn, task_id) == before
+
+
+def test_unknown_control_fails_both_claim_lanes_closed(conn):
+    ready_id = _queued_task(conn, "ready")
+    review_id = _queued_task(conn, "review")
+    conn.execute("DROP TABLE kanban_dispatch_control")
+    conn.execute("CREATE TABLE kanban_dispatch_control (id INTEGER PRIMARY KEY, state TEXT)")
+    before_ready = _claim_path_snapshot(conn, ready_id)
+    before_review = _claim_path_snapshot(conn, review_id)
+
+    ready = kb.claim_task_result(conn, ready_id, claimer="worker")
+    review = kb.claim_review_task_result(conn, review_id, claimer="reviewer")
+
+    assert ready.reason == "kanban_control_unknown"
+    assert review.reason == "kanban_control_unknown"
+    assert _claim_path_snapshot(conn, ready_id) == before_ready
+    assert _claim_path_snapshot(conn, review_id) == before_review
+
+
+def test_pause_gate_precedes_parent_demotion_and_reason_is_immutable(conn):
+    parent_id = _queued_task(conn, "done")
+    child_id = _queued_task(conn, "ready")
+    conn.execute(
+        "INSERT INTO task_links(parent_id, child_id) VALUES(?, ?)",
+        (parent_id, child_id),
+    )
+    conn.execute("UPDATE tasks SET status='running' WHERE id=?", (parent_id,))
+    conn.commit()
+    kanban_control.pause_board(conn, changed_by="operator")
+    before_events = conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id=?", (child_id,),
+    ).fetchone()[0]
+
+    paused = kb.claim_task_result(conn, child_id, claimer="worker")
+    kanban_control.resume_board(conn, changed_by="operator")
+
+    assert paused.reason == "kanban_paused"
+    child = kb.get_task(conn, child_id)
+    assert child is not None and child.status == "ready"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id=?", (child_id,),
+    ).fetchone()[0] == before_events
+
+    rejected = kb.claim_task_result(conn, child_id, claimer="worker")
+    assert rejected.reason == "parents_not_done"
+    child = kb.get_task(conn, child_id)
+    assert child is not None and child.status == "todo"
+
+
+def test_admission_refusal_and_ordinary_claim_loss_are_distinct(conn, monkeypatch):
+    from hermes_cli import kanban_ready_monitor as monitor
+
+    monitor.ensure_schema(conn)
+    admission_task = _queued_task(conn, "ready")
+    refused = kb.claim_task_result(
+        conn, admission_task, claimer="worker", monitor_attempt_id="missing-attempt",
+    )
+    assert refused.reason == "admission_refused"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM kanban_claim_admissions WHERE task_id=?",
+        (admission_task,),
+    ).fetchone()[0] == 0
+
+    lost_task = _queued_task(conn, "ready")
+    monkeypatch.setattr(kb, "_claim_and_open_run", lambda *args, **kwargs: None)
+    lost = kb.claim_task_result(conn, lost_task, claimer="worker")
+    assert lost.reason == "claim_lost"
+
+
+def test_resume_permits_ready_and_review_compatibility_claims(conn):
+    ready_id = _queued_task(conn, "ready")
+    review_id = _queued_task(conn, "review")
+    kanban_control.pause_board(conn, changed_by="operator")
+    kanban_control.resume_board(conn, changed_by="operator")
+
+    ready = kb.claim_task(conn, ready_id, claimer="worker")
+    review = kb.claim_review_task(conn, review_id, claimer="reviewer")
+
+    assert ready is not None and ready.status == "running"
+    assert review is not None and review.status == "running"
+
+
+def test_pause_does_not_modify_an_existing_running_claim(conn):
+    task_id = _queued_task(conn, "ready")
+    claimed = kb.claim_task(conn, task_id, claimer="worker")
+    assert claimed is not None
+    before = _claim_path_snapshot(conn, task_id)
+
+    kanban_control.pause_board(conn, changed_by="operator")
+
+    assert _claim_path_snapshot(conn, task_id) == before
+
+
+def test_claim_and_pause_race_has_one_linearized_outcome(tmp_path, monkeypatch):
+    path = tmp_path / "board.db"
+    setup = kbc.connect(path)
+    task_id = _queued_task(setup, "ready")
+    setup.close()
+
+    entered_claim = threading.Event()
+    release_claim = threading.Event()
+    original = kb._claim_and_open_run
+
+    def delayed_claim(*args, **kwargs):
+        entered_claim.set()
+        assert release_claim.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "_claim_and_open_run", delayed_claim)
+    outcomes = {}
+
+    def claim_worker():
+        claim_conn = kbc.connect(path)
+        outcomes["claim"] = kb.claim_task_result(
+            claim_conn, task_id, claimer="worker",
+        )
+        claim_conn.close()
+
+    def pause_worker():
+        pause_conn = kbc.connect(path)
+        outcomes["pause"] = kanban_control.pause_board(
+            pause_conn, changed_by="operator",
+        )
+        pause_conn.close()
+
+    claim_thread = threading.Thread(target=claim_worker)
+    pause_thread = threading.Thread(target=pause_worker)
+    claim_thread.start()
+    assert entered_claim.wait(5)
+    pause_thread.start()
+    release_claim.set()
+    claim_thread.join(5)
+    pause_thread.join(5)
+    assert not claim_thread.is_alive() and not pause_thread.is_alive()
+
+    verify = kbc.connect(path)
+    task = kb.get_task(verify, task_id)
+    state = kanban_control.read_control(verify)
+    verify.close()
+    assert outcomes["claim"].task is not None
+    assert outcomes["pause"].state == "paused"
+    assert task is not None and task.status == "running"
+    assert state.state == "paused"

@@ -1281,6 +1281,49 @@ class TestResponsesReservedToolAliases:
         normalized = transport.normalize_response(SimpleNamespace(output=[], status="completed"))
         assert [tc.name for tc in normalized.tool_calls] == ["search_files"]
 
+    def test_meta_oauth_aliases_attested_names(self, transport):
+        """Meta subscription attestation 403s read_file/write_file/web_search on the wire."""
+        tools = list(self._TOOLS) + [
+            {"type": "function", "function": {
+                "name": "write_file", "description": "Write a file.",
+                "parameters": {"type": "object",
+                               "properties": {"path": {"type": "string"}}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="muse-spark-1.3",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+            provider="meta-oauth",
+            base_url="https://api.meta.ai/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_read_file" in names
+        assert "hermes_write_file" in names
+        assert "hermes_web_search" in names
+        assert "read_file" not in names
+        assert "write_file" not in names
+        assert "web_search" not in names
+        assert "search_files" in names  # not attested; untouched
+        assert transport._last_wire_aliases == {
+            "hermes_read_file": "read_file",
+            "hermes_write_file": "write_file",
+            "hermes_web_search": "web_search",
+        }
+
+    def test_meta_ai_api_key_keeps_original_names(self, transport):
+        """The pay-as-you-go meta-ai provider is not subscription-attested."""
+        kw = transport.build_kwargs(
+            model="muse-spark-1.3",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="meta-ai",
+            base_url="https://api.meta.ai/v1",
+        )
+        names = self._names(kw)
+        assert "read_file" in names
+        assert "web_search" in names
+        assert "hermes_read_file" not in names
+
     def test_perplexity_lookalike_host_keeps_original_names(self, transport):
         for base_url in (
             "https://sub.api.perplexity.ai/v1",

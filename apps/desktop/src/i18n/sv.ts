@@ -102,6 +102,18 @@ export const svOverrides: TranslationOverrides = {
       plugins: 'Insticksprogram',
       tour: 'Rundtur',
       build: 'Första uppgiften'
+    },
+    localModel: {
+      title: 'Den här datorn kan köra en modell lokalt',
+      text: (model, size) => `${model} (${size}) ryms på din maskin. Den är kostnadsfri att köra och chattarna stannar på den här datorn.`,
+      setUp: 'Ställ in',
+      notNow: 'Inte nu'
+    },
+    rerun: {
+      title: 'Kör introduktionen igen',
+      description: 'Öppna en ny installationschatt som går igenom stegen för första starten med din aktuella modell.',
+      action: 'Kör igen',
+      failed: 'Det gick inte att starta introduktionen'
     }
   },
   fileMenu: {

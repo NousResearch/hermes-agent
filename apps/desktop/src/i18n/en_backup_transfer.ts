@@ -18,6 +18,8 @@ export const enBackupTransfer: BackupTransferTranslations = {
   signInTitle: 'Sign in to Hermes Cloud',
   signInHelp: 'Use the Nous account your cloud agents belong to.',
   signIn: 'Sign in',
+  signInWebappHelp: 'Sign in to Nous Portal under Settings ▸ Providers, then come back here.',
+  openProviders: 'Open Providers',
   pickOrg: 'Choose a team',
   chooseAgent: 'Choose the cloud agent to replace',
   provisioning: 'Setting up…',
@@ -50,5 +52,6 @@ export const enBackupTransfer: BackupTransferTranslations = {
   undoneHelp: agent => `${agent} is back the way it was.`,
   startAgain: 'Start again',
   errorTitle: 'The transfer stopped',
+  partialHelp: agent => `${agent} may be partly replaced. Undo puts it back the way it was before the transfer.`,
   retry: 'Retry'
 }

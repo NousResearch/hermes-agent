@@ -1,7 +1,7 @@
 /**
- * Transfer this agent into a Hermes Cloud agent: `hermes backup` on the source, read the archive
- * back in chunks, upload it to the cloud agent, which restores it with `hermes import --keep-host`
- * (it keeps its own Nous Portal sign-in, model and provider, Hermes Cloud tools and scheduler).
+ * Transfer this agent into a Hermes Cloud agent: `hermes backup` on the source, stream the archive
+ * chunk by chunk to the cloud agent, which restores it with `hermes import --keep-host` (it keeps
+ * its own Nous Portal sign-in, model and provider, Hermes Cloud tools and scheduler).
  * Pure async over an injected `request`, so it is tested without Electron. Never opens a dialog.
  */
 
@@ -21,21 +21,15 @@ export interface ActionStatus {
   exit_code: null | number
   lines: string[]
   running: boolean
+  /** A keep-host import's undo point once it has written it; still present if the import fails. */
+  undo_archive?: null | string
 }
 
-export interface ImportStarted {
-  archive?: string
-  name: string
-  ok?: boolean
-  undo_archive?: string
-  uploaded_bytes?: number
-}
-
-export type TransferPhase = 'backup' | 'read' | 'restore' | 'upload'
+export type TransferPhase = 'backup' | 'restore' | 'upload'
 
 export interface TransferProgress {
   phase: TransferPhase
-  /** 0..1 while reading or uploading; undefined while a step has no measure. */
+  /** 0..1 while copying; undefined while a step has no measure. */
   fraction?: number
   line?: string
 }
@@ -45,20 +39,47 @@ export interface TransferResult {
   undoArchive: string
 }
 
+/** The restore failed after it was requested. With `undoArchive` set the cloud agent had already
+ *  taken its undo point, so it may be half-restored and Undo must be offered. */
+export class TransferRestoreError extends Error {
+  readonly undoArchive: null | string
+
+  constructor(message: string, undoArchive: null | string) {
+    super(message)
+    this.name = 'TransferRestoreError'
+    this.undoArchive = undoArchive
+  }
+}
+
 /** A Hermes Cloud agent hosts one profile. */
 export const cloudEndpoint = (connectionId: string): TransferEndpoint => ({ connectionId, profile: 'default' })
 
 export const CHUNK_BYTES = 8 * 1024 * 1024
 const RETRIES = 5
+/** Times one copy may re-sync after the target lost part of the upload. */
+const RESYNCS = 5
 const POLL_MS = 1_000
 /** A restoring cloud agent pauses its gateway briefly; status reads may fail meanwhile. */
 const POLL_FAILURES = 10
+
+const BACKUP_CHANGED = 'The backup changed while it was being read. Try again.'
 
 export interface TransferTiming {
   sleep: (ms: number) => Promise<void>
 }
 
 const realTiming: TransferTiming = { sleep: ms => new Promise(resolve => setTimeout(resolve, ms)) }
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+const httpStatus = (error: unknown) => Number(/^(\d{3}):/.exec(errorText(error))?.[1] ?? 0)
+
+/** A 4xx other than timeout/rate limit answers the same on every attempt. */
+function isFinal(error: unknown): boolean {
+  const status = httpStatus(error)
+
+  return status >= 400 && status < 500 && status !== 408 && status !== 429
+}
 
 async function retry<T>(work: () => Promise<T>, timing: TransferTiming, signal?: AbortSignal): Promise<T> {
   let lastError: unknown
@@ -69,6 +90,10 @@ async function retry<T>(work: () => Promise<T>, timing: TransferTiming, signal?:
     try {
       return await work()
     } catch (error) {
+      if (isFinal(error)) {
+        throw error
+      }
+
       lastError = error
       await timing.sleep(Math.min(8000, 500 * 2 ** attempt))
     }
@@ -77,18 +102,28 @@ async function retry<T>(work: () => Promise<T>, timing: TransferTiming, signal?:
   throw lastError
 }
 
+export interface WaitOptions {
+  /** Called once, by the first status poll that carries an undo point. */
+  onUndoArchive?: (archive: string) => void
+  signal?: AbortSignal
+  timing?: TransferTiming
+  tolerateFailures?: number
+}
+
 /** Poll an action until it stops; a non-zero exit is an error carrying its last lines. */
 export async function waitForAction(
   request: TransferRequestFn,
   owner: TransferEndpoint,
   name: string,
   onLine: (line: string) => void,
-  { timing = realTiming, tolerateFailures = 0 }: { timing?: TransferTiming; tolerateFailures?: number } = {}
+  { onUndoArchive, signal, timing = realTiming, tolerateFailures = 0 }: WaitOptions = {}
 ): Promise<void> {
   let failures = 0
+  let undoReported = false
 
   for (;;) {
     await timing.sleep(POLL_MS)
+    signal?.throwIfAborted()
 
     let status: ActionStatus
 
@@ -105,6 +140,11 @@ export async function waitForAction(
       }
 
       continue
+    }
+
+    if (status.undo_archive && !undoReported) {
+      undoReported = true
+      onUndoArchive?.(status.undo_archive)
     }
 
     const last = status.lines.at(-1)
@@ -128,7 +168,7 @@ export async function runBackup(
   request: TransferRequestFn,
   owner: TransferEndpoint,
   onLine: (line: string) => void = () => undefined,
-  timing: TransferTiming = realTiming
+  { signal, timing = realTiming }: { signal?: AbortSignal; timing?: TransferTiming } = {}
 ): Promise<string> {
   const started = await request<{ archive?: string; name: string }>(owner, {
     body: {},
@@ -140,31 +180,71 @@ export async function runBackup(
     throw new Error('The backup did not say where it was written.')
   }
 
-  await waitForAction(request, owner, started.name, onLine, { timing })
+  await waitForAction(request, owner, started.name, onLine, { signal, timing })
 
   return started.archive
 }
 
-const fromBase64 = (data: string) => Uint8Array.from(atob(data), c => c.charCodeAt(0))
+interface SourceChunk {
+  data: string
+  done: boolean
+  offset: number
+  size: number
+}
 
-/** Read an archive off `owner` in 8 MiB chunks, each retried with backoff. */
-export async function readArchive(
+interface TargetChunk {
+  received: number
+  upload_id: string
+}
+
+/** Decoded length of a base64 string, without decoding it. */
+export function base64Bytes(data: string): number {
+  if (!data) {
+    return 0
+  }
+
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0
+
+  return (data.length / 4) * 3 - padding
+}
+
+/** For a 409 offset_gap: the target's `received`, or -1 when the answer names none. Null for any
+ *  other error. */
+function offsetGap(error: unknown): null | number {
+  const text = errorText(error)
+
+  if (httpStatus(error) !== 409 || !text.includes('offset_gap')) {
+    return null
+  }
+
+  const received = /"received"\s*:\s*(\d+)/.exec(text)
+
+  return received ? Number(received[1]) : -1
+}
+
+/**
+ * Stream `archive` from `source` into a transfer upload on `target`, holding one chunk at a time:
+ * each base64 chunk the source answers is posted to the target as is.
+ */
+export async function copyArchive(
   request: TransferRequestFn,
-  owner: TransferEndpoint,
+  source: TransferEndpoint,
+  target: TransferEndpoint,
   archive: string,
   onFraction: (fraction: number) => void,
   { signal, timing = realTiming }: { signal?: AbortSignal; timing?: TransferTiming } = {}
-): Promise<Uint8Array> {
-  let bytes: Uint8Array | null = null
+): Promise<{ size: number; uploadId: string }> {
+  let uploadId: null | string = null
   let offset = 0
+  let size: null | number = null
+  let resyncs = 0
 
   for (;;) {
-    signal?.throwIfAborted()
     const at = offset
 
     const part = await retry(
       () =>
-        request<{ data: string; done: boolean; offset: number; size: number }>(owner, {
+        request<SourceChunk>(source, {
           path: `/api/ops/backup/chunk?archive=${encodeURIComponent(archive)}&offset=${at}&length=${CHUNK_BYTES}`,
           timeoutMs: 300_000
         }),
@@ -172,48 +252,60 @@ export async function readArchive(
       signal
     )
 
-    bytes ??= new Uint8Array(part.size)
-    const chunk = fromBase64(part.data)
-    bytes.set(chunk, at)
-    offset = at + chunk.length
-    onFraction(part.size ? offset / part.size : 1)
+    if (size !== null && part.size !== size) {
+      throw new Error(BACKUP_CHANGED)
+    }
 
-    if (part.done || chunk.length === 0) {
+    size = part.size
+    const length = base64Bytes(part.data)
+
+    if (length > 0) {
+      const id: null | string = uploadId
+
+      try {
+        const sent: TargetChunk = await retry(
+          (): Promise<TargetChunk> =>
+            request<TargetChunk>(target, {
+              body: { data: part.data, offset: at, upload_id: id },
+              method: 'POST',
+              path: '/api/ops/transfer/chunk',
+              timeoutMs: 300_000
+            }),
+          timing,
+          signal
+        )
+
+        uploadId = sent.upload_id
+      } catch (error) {
+        const received = offsetGap(error)
+
+        if (received === null || resyncs >= RESYNCS) {
+          throw error
+        }
+
+        resyncs += 1
+        // Resume from what the target holds; without that figure, start a fresh upload.
+        const resume: boolean = received >= 0 && received <= at && uploadId !== null
+        offset = resume ? received : 0
+        uploadId = resume ? uploadId : null
+
+        continue
+      }
+    }
+
+    offset = at + length
+    onFraction(size ? Math.min(1, offset / size) : 1)
+
+    if (part.done || length === 0) {
       break
     }
   }
 
-  if (offset !== bytes.length) {
-    throw new Error('The backup changed while it was being read. Try again.')
+  if (offset !== size || !uploadId) {
+    throw new Error(BACKUP_CHANGED)
   }
 
-  return bytes
-}
-
-/** Upload the archive to the cloud agent and wait for its restore to finish. */
-export async function uploadAndRestore(
-  request: TransferRequestFn,
-  target: TransferEndpoint,
-  bytes: Uint8Array,
-  onLine: (line: string) => void,
-  timing: TransferTiming = realTiming,
-  onUploaded: () => void = () => undefined
-): Promise<TransferResult> {
-  const started = await request<ImportStarted>(target, {
-    method: 'POST',
-    path: '/api/ops/import-upload?keep_host=true',
-    timeoutMs: 1_800_000,
-    upload: {
-      bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-      contentType: 'application/zip',
-      filename: 'hermes-transfer.zip'
-    }
-  })
-
-  onUploaded()
-  await waitForAction(request, target, started.name || 'import', onLine, { timing, tolerateFailures: POLL_FAILURES })
-
-  return { undoArchive: started.undo_archive ?? '' }
+  return { size, uploadId }
 }
 
 /** Put the cloud agent back the way it was, from the backup it took before the restore. */
@@ -237,43 +329,105 @@ export async function undoTransfer(
   await waitForAction(request, target, started.name || 'import', onLine, { timing, tolerateFailures: POLL_FAILURES })
 }
 
-/** The whole transfer: back up the source, read it, upload, restore on the target. */
+export interface TransferOptions {
+  /** The cloud agent's undo point, the moment its restore reports it (also when it later fails). */
+  onUndoArchive?: (archive: string) => void
+  /** Honoured until the restore is requested: a restore cannot be canceled. */
+  signal?: AbortSignal
+  timing?: TransferTiming
+}
+
+/** The whole transfer: check the target can receive one, back up the source, stream it over,
+ *  restore on the target. */
 export async function transferAgent(
   request: TransferRequestFn,
   source: TransferEndpoint,
   target: TransferEndpoint,
   onProgress: (progress: TransferProgress) => void,
-  { signal, timing = realTiming }: { signal?: AbortSignal; timing?: TransferTiming } = {}
+  { onUndoArchive, signal, timing = realTiming }: TransferOptions = {}
 ): Promise<TransferResult> {
-  onProgress({ phase: 'backup' })
-  const archive = await runBackup(request, source, line => onProgress({ line, phase: 'backup' }), timing)
   signal?.throwIfAborted()
+  const status = await request<null | { import_keep_host?: number }>(target, { path: '/api/status' })
 
-  const bytes = await readArchive(
+  if (!status?.import_keep_host) {
+    throw new Error('This cloud agent needs a Hermes update before it can receive a transfer.')
+  }
+
+  onProgress({ phase: 'backup' })
+  const archive = await runBackup(request, source, line => onProgress({ line, phase: 'backup' }), { signal, timing })
+
+  onProgress({ fraction: 0, phase: 'upload' })
+
+  const { size, uploadId } = await copyArchive(
     request,
     source,
+    target,
     archive,
-    fraction => onProgress({ fraction: fraction / 2, phase: 'upload' }),
+    fraction => onProgress({ fraction, phase: 'upload' }),
     { signal, timing }
   )
 
   signal?.throwIfAborted()
-  onProgress({ fraction: 0.5, phase: 'upload' })
+  onProgress({ phase: 'restore' })
 
-  // The upload is one request; its half of the bar fills when the cloud agent answers.
-  return uploadAndRestore(
-    request,
-    target,
-    bytes,
-    line => onProgress({ line, phase: 'restore' }),
-    timing,
-    () => onProgress({ phase: 'restore' })
-  )
+  const started = await request<{ name?: string }>(target, {
+    body: { size, upload_id: uploadId },
+    method: 'POST',
+    path: '/api/ops/transfer/restore',
+    timeoutMs: 300_000
+  })
+
+  let undoArchive: null | string = null
+
+  try {
+    await waitForAction(request, target, started.name || 'import', line => onProgress({ line, phase: 'restore' }), {
+      onUndoArchive: archivePath => {
+        undoArchive = archivePath
+        onUndoArchive?.(archivePath)
+      },
+      timing,
+      tolerateFailures: POLL_FAILURES
+    })
+  } catch (error) {
+    throw new TransferRestoreError(errorText(error), undoArchive)
+  }
+
+  if (!undoArchive) {
+    throw new TransferRestoreError('The cloud agent did not report its undo point.', null)
+  }
+
+  return { undoArchive }
 }
+
+export interface UndoPoint {
+  archive: string
+  target: TransferEndpoint
+}
+
+/**
+ * The undo point Undo restores, per cloud agent. The FIRST one recorded wins: a retry after a
+ * failed restore makes the cloud agent take a new undo point of its half-restored self, which must
+ * never replace the one taken before anything changed.
+ */
+export function createUndoLedger() {
+  const points = new Map<string, UndoPoint>()
+
+  return {
+    clear: (agentId: string) => void points.delete(agentId),
+    get: (agentId: string): undefined | UndoPoint => points.get(agentId),
+    record: (agentId: string, point: UndoPoint) => {
+      if (!points.has(agentId)) {
+        points.set(agentId, point)
+      }
+    }
+  }
+}
+
+export type UndoLedger = ReturnType<typeof createUndoLedger>
 
 /** An error's user-facing text: the bridge rejects with `"<status>: <json detail>"`. */
 export function transferErrorMessage(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error)
+  const text = errorText(error)
   const match = /"(?:message|detail)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text)
 
   return match ? JSON.parse(`"${match[1]}"`) : text.replace(/^\d{3}:\s*/, '')

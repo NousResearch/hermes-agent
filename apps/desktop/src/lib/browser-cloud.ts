@@ -46,7 +46,7 @@ export function createBrowserCloudBridge({
       const label = new URL(dashboardUrl).hostname.split('.')[0] || 'Hermes Cloud'
       const result = await signInSavedConnection(api, relays, dashboardUrl, { kind: 'cloud', label })
 
-      return { baseUrl: dashboardUrl, connected: result.connected }
+      return { baseUrl: dashboardUrl, connected: result.connected, connectionId: result.connectionId }
     }
   }
 }

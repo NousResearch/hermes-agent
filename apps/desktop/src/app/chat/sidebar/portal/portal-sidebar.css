@@ -832,28 +832,42 @@ button.portal-section-title:hover {
    noise and veil over the window's art, portal-artwork.css) under the card's fill: a flat colour
    there read as a dark slab laid on the card. */
 .portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading'] {
-  --portal-machine-head-hover: transparent;
+  --portal-machine-head-state: transparent;
 
   position: sticky;
   top: 0;
   z-index: 1;
+  isolation: isolate;
   border-radius: var(--portal-sidebar-machine-radius) var(--portal-sidebar-machine-radius) 0 0;
   background:
-    linear-gradient(var(--portal-machine-head-hover), var(--portal-machine-head-hover)),
     linear-gradient(var(--portal-sidebar-machine-fill), var(--portal-sidebar-machine-fill)),
     var(--artwork-panel-noise), linear-gradient(var(--portal-sidebar-panel-background)), var(--artwork-paint);
   background-color: var(--portal-surface-canvas);
-  background-blend-mode: normal, normal, normal, normal, var(--artwork-blend);
+  background-blend-mode: normal, normal, normal, var(--artwork-blend);
+}
+
+/* Its hover and press are a row's, not the header's whole box: the same bar a closed machine or a
+   pinned chat shows, centred in the taller header. Tinting the box itself drew a slab from the
+   card's top corners down onto the first agent. */
+.portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading']::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset-block: calc((var(--portal-sidebar-machine-head) - var(--portal-sidebar-machine-row)) / 2);
+  inset-inline: 0;
+  border-radius: var(--portal-sidebar-row-radius);
+  background: var(--portal-machine-head-state);
+  pointer-events: none;
 }
 
 .portal-sidebar [data-slot='gateway-group'][data-open='true'] > [data-slot='gateway-heading']:hover {
-  --portal-machine-head-hover: var(--portal-sidebar-hover);
+  --portal-machine-head-state: var(--portal-sidebar-hover);
 }
 
 .portal-sidebar
   [data-slot='gateway-group'][data-open='true']
   > [data-slot='gateway-heading']:has(> :is(.portal-machine-row, .portal-machine-status):active) {
-  --portal-machine-head-hover: var(--portal-sidebar-press);
+  --portal-machine-head-state: var(--portal-sidebar-press);
 }
 
 .portal-machine-agents {

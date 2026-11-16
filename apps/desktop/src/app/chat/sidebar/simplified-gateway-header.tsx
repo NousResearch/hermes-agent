@@ -73,7 +73,8 @@ export function SimplifiedGatewayHeader({
       data-tone={TONE[state]}
       role="group"
     >
-      <Tip label={address ? `${label} · ${address}` : label}>
+      {/* Only what the row does not already say: a tip repeating the name it sits on is noise. */}
+      <Tip label={address ? `${label} · ${address}` : undefined}>
         <RowButton
           aria-describedby={statusId}
           aria-expanded={open}

@@ -61,7 +61,8 @@ def _dotenv_values(path: Path) -> dict[str, str]:
     """Each name's value as the launch load leaves it for *path*, stored literally from then on:
     the loader's own steps (file sanitizing, parser, resolver with order, duplicates and every
     reference, credential sanitizing). References see the launch environment for the process
-    home; for any other home only process-global names, never a launch credential."""
+    home; for any other home the process-global names as they are now (the original satellite
+    builder's lookup: after the launch load), never a launch credential."""
     from agent.secret_scope import _is_process_home
     from hermes_cli.env_loader import (
         _DOTENV_LOCK, _dotenv_lookup_env, _parse_local_dotenv_file, _resolve_dotenv_assignments,
@@ -73,10 +74,11 @@ def _dotenv_values(path: Path) -> dict[str, str]:
         assignments = _parse_local_dotenv_file(path)
     except OSError:
         return {}
-    with _DOTENV_LOCK:
-        lookup = _dotenv_lookup_env(None)
-    if not _is_process_home(path.parent):
-        lookup = {k: v for k, v in lookup.items() if _is_global_env(k)}
+    if _is_process_home(path.parent):
+        with _DOTENV_LOCK:
+            lookup = _dotenv_lookup_env(None)
+    else:
+        lookup = {k: v for k, v in os.environ.items() if _is_global_env(k)}
     resolved = _resolve_dotenv_assignments(assignments, lookup, override=True)
     values = {name: value for name, value in resolved.items() if value is not None}
     _sanitize_loaded_credentials(values)

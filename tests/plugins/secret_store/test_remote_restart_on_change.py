@@ -232,3 +232,49 @@ def test_the_gateway_installs_its_planned_restart_at_start():
     calls = [node for node in ast.walk(ast.parse(inspect.getsource(bootstrap)))
              if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "install_secret_store_restart"]
     assert [[ast.unparse(a) for a in call.args] for call in calls] == [["loop", "runner"]]
+
+
+def test_a_restart_asked_for_before_any_handler_is_replayed_once_on_registration():
+    """A gateway's poller starts before its runner registers the restart: the request waits."""
+    routing.reset_for_tests()
+    routing.set_restart_handler(None)
+    calls = []
+    try:
+        assert routing.request_restart("profile 'default' changed elsewhere") is False
+        routing.set_restart_handler(lambda: calls.append("first"))
+        assert calls == ["first"]
+        routing.set_restart_handler(lambda: calls.append("second"))   # replayed once, not per handler
+        assert calls == ["first"]
+        assert routing.request_restart("again") is True and calls == ["first", "second"]
+    finally:
+        routing.set_restart_handler(None)
+        routing.reset_for_tests()
+
+
+def test_a_change_during_a_slow_gateway_start_restarts_once_the_gateway_registers(plane, monkeypatch):
+    import gateway.restart as restart_mod
+    from gateway.restart_when_idle import install_secret_store_restart
+    monkeypatch.setattr(restart_mod, "is_gateway_supervisor_process", lambda: True)
+    monkeypatch.setattr(restart_mod, "is_container_restart_context", lambda: False)
+    routing.set_restart_handler(None)   # booted, runner not registered yet
+    plane.set_level(plane.profile("default"), env={"EARLY_KEY": "boot-value"})
+    _boot(plane.home)
+    plane.set_level(plane.profile("default"), env={"EARLY_KEY": MARK})
+    _poll()   # a due tick while the gateway is still starting
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    runner = _Runner()
+    try:
+        install_secret_store_restart(loop, runner)
+        wait_until(lambda: bool(runner.stopped), timeout=10)
+        _poll()
+        install_secret_store_restart(loop, runner)   # a second registration does not ask again
+        for _ in range(3):   # let anything it scheduled run
+            asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(5)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+        loop.close()
+    assert runner.stopped == [{"restart": True, "detached_restart": False, "service_restart": True}]
+    assert os.environ["EARLY_KEY"] == "boot-value"

@@ -151,3 +151,90 @@ def test_an_imported_launch_reference_is_frozen(plane, monkeypatch):
     monkeypatch.setenv("IMPORT_GLOBAL_SOURCE", "second-marker")
     _boot(plane.home)
     assert set(_readers(plane.home, "IMPORT_REF").values()) == {"first-marker/suffix"}
+
+
+# Kept-local (bootstrap / process-global) lines stay in the file and are re-read at every start; a
+# reference from one to an imported name resolves as the original file did. Expected values were
+# produced by executing the original loader (7541e088e1, local store) on each text in a fresh process.
+KEPT_LOCAL = {
+    "after": ("RV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR}/sub\n", {}, {"TERMINAL_RV_REF": "/x/sub"}),
+    "after_shell": ("RV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR}/sub\n", {"RV_DIR": "shell-marker"},
+                    {"TERMINAL_RV_REF": "/x/sub"}),
+    "duplicate": ("RV_DIR=/x\nRV_DIR=/y\nTERMINAL_RV_REF=${RV_DIR}/sub\n", {}, {"TERMINAL_RV_REF": "/y/sub"}),
+    "default": ("RV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR:-unset}/${RV_MISSING:-dflt}\n", {},
+                {"TERMINAL_RV_REF": "/x/dflt"}),
+    "local_line_wins": ("TERMINAL_RV_OVR=local-wins\nRV_DIR=/x\nTERMINAL_RV_REF=${RV_DIR}/${TERMINAL_RV_OVR}\n", {},
+                        {"TERMINAL_RV_REF": "/x/local-wins", "TERMINAL_RV_OVR": "local-wins"}),
+    "chain": ("RV_DIR=/x\nTERMINAL_RV_A=${RV_DIR}/a\nRV_LATE=${TERMINAL_RV_A}/late\nTERMINAL_RV_B=${RV_LATE}/b\n", {},
+              {"TERMINAL_RV_A": "/x/a", "TERMINAL_RV_B": "/x/a/late/b"}),
+}
+_KEPT_NAMES = ("RV_DIR", "RV_LATE", "RV_MISSING", "TERMINAL_RV_REF", "TERMINAL_RV_OVR", "TERMINAL_RV_A", "TERMINAL_RV_B")
+
+
+def _fresh_start(monkeypatch, shell):
+    """As a new process: no provider state, no earlier publication, only the shell's exports."""
+    from hermes_cli import env_loader
+    from plugins.secret_store import remote as remote_pkg
+    remote_pkg._reset_for_tests()
+    routing.reset_for_tests()
+    with env_loader._DOTENV_LOCK:
+        env_loader._DOTENV_PUBLISHED.clear()
+    for name in _KEPT_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in shell.items():
+        monkeypatch.setenv(name, value)
+
+
+@pytest.mark.parametrize("store", ["local", "import", "seeded"])
+@pytest.mark.parametrize("case", KEPT_LOCAL)
+def test_a_kept_local_line_resolves_imported_names_as_the_original_file_did(plane, monkeypatch, store, case):
+    text, shell, expected = KEPT_LOCAL[case]
+    _fresh_start(monkeypatch, shell)
+    if store == "local":
+        monkeypatch.delenv("HERMES_SECRET_STORE")
+        routing.reset_for_tests()
+        (plane.home / ".env").write_text(text, encoding="utf-8")
+    elif store == "import":
+        (plane.home / ".env").write_text(text, encoding="utf-8")
+    else:  # what a later boot sees: the plane holds the values, the file its kept-local lines only
+        from hermes_cli.env_loader import _parse_local_dotenv_file, _resolve_dotenv_assignments
+        (plane.home / ".env").write_text(text, encoding="utf-8")
+        resolved = _resolve_dotenv_assignments(_parse_local_dotenv_file(plane.home / ".env"), {}, override=True)
+        kept = [line for line in text.splitlines(keepends=True) if line.startswith("TERMINAL_")]
+        (plane.home / ".env").write_text("".join(kept), encoding="utf-8")
+        plane.set_level(plane.profile("default"),
+                        env={k: v for k, v in resolved.items() if not k.startswith("TERMINAL_")})
+    _boot(plane.home)
+    for name, value in expected.items():
+        assert set(_readers(plane.home, name).values()) == {value}, (name, store)
+    if store == "local":
+        return
+    assert all(not line.startswith("RV_") for line in (plane.home / ".env").read_text(encoding="utf-8").splitlines())
+    _fresh_start(monkeypatch, shell)   # every later start: same answer
+    _boot(plane.home)
+    for name, value in expected.items():
+        assert set(_readers(plane.home, name).values()) == {value}, (name, "later start")
+
+
+@pytest.mark.parametrize("store", ["local", "remote"])
+def test_a_satellite_import_sees_process_globals_as_they_are_after_the_launch_load(plane, monkeypatch, store):
+    """The original satellite builder resolves a satellite ``.env`` against the process-global names
+    of the live environment, so a global the launch ``.env`` set is seen as set (base-executed:
+    fixture row 127 after the launch load gives ``launch-dotenv-global/``); a launch credential never."""
+    from agent.secret_scope import build_profile_secret_scope
+    for name, value in FIXTURE["launch"].items():
+        monkeypatch.setenv(name, value)
+    if store == "local":
+        monkeypatch.delenv("HERMES_SECRET_STORE")
+        routing.reset_for_tests()
+    (plane.home / ".env").write_text("RV10_VALUE=launch-dotenv-RV10_VALUE\nTERMINAL_RV10_GLOBAL=launch-dotenv-global\n",
+                                     encoding="utf-8")
+    _boot(plane.home)
+    satellite = plane.home.parent / "satellite"
+    satellite.mkdir()
+    (satellite / ".env").write_text(FIXTURE["rows"][127]["text"], encoding="utf-8")
+    assert build_profile_secret_scope(satellite).get("RV10_VALUE") == "launch-dotenv-global/"
+    if store == "remote":
+        stored = plane.profile("satellite")["env"]
+        assert {k: v for k, (v, _version) in stored.items()} == {"RV10_VALUE": "launch-dotenv-global/"}
+        assert FIXTURE["launch"]["OPENAI_API_KEY"] not in json.dumps(plane.patches())

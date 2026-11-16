@@ -407,9 +407,10 @@ class StoredValue(str):
 
 def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order. For a
-    profile ``.env`` a secret store serves: its view, and for a store of literal values the file's own
-    bootstrap lines, then the store's values as :class:`StoredValue` (a later layer may still expand
-    them like any value)."""
+    profile ``.env`` a secret store serves: its view, and for a store of literal values the store's
+    values as :class:`StoredValue` (a later layer may still expand them like any value), then the
+    file's own kept-local lines, which resolve references to the store's names as the file did before
+    its values were imported (they followed the assignments they reference)."""
     from hermes_secret_routing import routed_profile_env, routed_provider, routed_store_env, stays_local
     stored = routed_store_env(path)
     if stored is None:
@@ -420,7 +421,7 @@ def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
         local = [(name, value) for name, value in _parse_local_dotenv_file(path) if stays_local(provider, name)]
     except FileNotFoundError:
         local = []
-    return [*local, *((name, StoredValue(value)) for name, value in stored.items())]
+    return [*((name, StoredValue(value)) for name, value in stored.items()), *local]
 
 
 def _parse_local_dotenv_file(path: Path) -> list[tuple[str, str | None]]:

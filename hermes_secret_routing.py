@@ -105,6 +105,8 @@ def reset_for_tests() -> None:
     with _PUBLISH_LOCK:
         _PUBLICATIONS.clear()
         _PUBLISHED_NAMES.clear()
+    with _RESTART_LOCK:
+        _RESTART_PENDING.clear()
 
 
 # --- bootstrap and deployment ------------------------------------------------------------------
@@ -507,29 +509,51 @@ def auth_json_exists(auth_file: Path) -> bool:
 # --- restart on a change made elsewhere -----------------------------------------------------------
 
 _RESTART_HANDLER: list = []   # [callable] the running process's graceful restart, when it has one
+_RESTART_PENDING: list = []   # [reason] a restart asked for while no handler could take it
+_RESTART_LOCK = threading.Lock()
 
 
 def set_restart_handler(handler) -> None:
     """Register the process's graceful restart (the gateway registers its drain-aware service
     restart, the one ``SIGUSR1`` runs): a no-argument callable, safe to call from any thread.
-    ``None`` unregisters it."""
-    _RESTART_HANDLER[:] = [handler] if handler is not None else []
+    ``None`` unregisters it. A restart asked for before any handler could take it (a change seen
+    while the gateway is still starting) is handed to the first handler registered, once."""
+    with _RESTART_LOCK:
+        _RESTART_HANDLER[:] = [handler] if handler is not None else []
+        pending = _RESTART_PENDING[:1] if handler is not None else []
+        if pending:
+            _RESTART_PENDING.clear()
+    if pending:
+        _deliver_restart(handler, pending[0])
 
 
 def request_restart(reason: str) -> bool:
     """Ask the process to restart gracefully because its secrets changed somewhere else (a store
     applies its values at start only). *reason* names the change, never a value. True when a
-    restart was requested; False when this process has no restart mechanism (an interactive CLI):
-    the change then applies the next time it starts."""
+    restart was requested; False when this process has no restart mechanism yet (an interactive
+    CLI, or a gateway still starting): the request then waits for a handler to be registered, and
+    otherwise the change applies the next time the process starts."""
+    import logging
+    with _RESTART_LOCK:
+        handler = _RESTART_HANDLER[0] if _RESTART_HANDLER else None
+        if handler is None and not _RESTART_PENDING:
+            _RESTART_PENDING.append(reason)
+    if handler is None:
+        logging.getLogger(__name__).warning(
+            "Secrets changed outside this process (%s); they apply when Hermes next starts", reason)
+        return False
+    return _deliver_restart(handler, reason)
+
+
+def _deliver_restart(handler, reason: str) -> bool:
     import logging
     log = logging.getLogger(__name__)
-    handler = _RESTART_HANDLER[0] if _RESTART_HANDLER else None
-    if handler is None:
-        log.warning("Secrets changed outside this process (%s); they apply when Hermes next starts", reason)
-        return False
     log.warning("Secrets changed outside this process (%s); restarting gracefully to apply them", reason)
     try:
         handler()
-    except RuntimeError:  # the registering loop has closed: the process is already stopping
+    except RuntimeError:  # the registering loop has closed: keep it for the next handler, if any
+        with _RESTART_LOCK:
+            if not _RESTART_PENDING:
+                _RESTART_PENDING.append(reason)
         return False
     return True

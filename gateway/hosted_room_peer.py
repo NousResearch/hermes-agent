@@ -82,10 +82,15 @@ def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
                 except FileExistsError:
                     material = _read()
                 else:
-                    with os.fdopen(fd, "wb") as stream:
-                        stream.write(material)
-                        stream.flush()
-                        os.fsync(stream.fileno())
+                    try:
+                        with os.fdopen(fd, "wb") as stream:
+                            stream.write(material)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                    except BaseException:
+                        # Do not leave an uncommitted secret blocking later mint attempts.
+                        path.unlink(missing_ok=True)
+                        raise
                     fsync_directory(home)
             else:
                 fsync_directory(home)

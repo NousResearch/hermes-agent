@@ -312,3 +312,30 @@ describe('PDF previews', () => {
     expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
   })
 })
+
+describe('3D model previews', () => {
+  it.each(['stl', 'obj', 'glb', 'gltf', 'ply', '3mf'])('classifies .%s files as 3D model previews', ext => {
+    expect(localPreviewTarget(`/tmp/part.${ext.toUpperCase()}`)).toMatchObject({ previewKind: 'model3d' })
+  })
+
+  it('does not UTF-8-enrich remote 3D models before loading their bytes', async () => {
+    const { readDesktopFileText } = await import('@/lib/desktop-fs')
+
+    vi.clearAllMocks()
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => ({
+        kind: 'file',
+        label: 'part.stl',
+        path: '/remote/part.stl',
+        previewKind: 'model3d',
+        source: '/remote/part.stl',
+        url: 'file:///remote/part.stl'
+      }))
+    } as never
+
+    await expect(normalizeOrLocalPreviewTarget('/remote/part.stl')).resolves.toMatchObject({
+      previewKind: 'model3d'
+    })
+    expect(readDesktopFileText).not.toHaveBeenCalled()
+  })
+})

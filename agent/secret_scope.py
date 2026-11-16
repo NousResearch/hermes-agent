@@ -530,6 +530,21 @@ def track_installed_scope(bound, profile_home, *, builder=None, view_version=Non
                 if not refs:
                     _INSTALLED_SCOPES.pop(key, None)
 
+    overlay = {}
+    if view_version is None:
+        from hermes_secret_routing import routed_provider
+        provider = routed_provider()
+        if provider is None:
+            return
+        view_version = provider.view_version(home)
+        base = provider.env_view(home)
+        inherited = {name for name, value in bound.mapping.items() if name in base and base[name] == value}
+        if not inherited:
+            return
+        overlay = {name: value for name, value in bound.mapping.items() if name not in inherited}
+        owner_builder = builder
+        builder = lambda: {**owner_builder(), **overlay}
+
     ref = weakref.ref(bound, _forget)
     while True:
         current = installed_scope_view_version(home)

@@ -51,6 +51,7 @@ import {
   getMessageContent,
   inboundReadReceiptKeys,
   inferMediaType,
+  isOggOpus,
   mediaPayloadForFile,
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
@@ -1063,11 +1064,12 @@ app.post('/send-media', async (req, res) => {
         break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
-        // If the caller passes mp3, wav, m4a etc. (e.g. from Edge TTS / NeuTTS),
-        // silently convert to ogg/opus via ffmpeg so ptt is always honoured.
+        // Anything else — mp3, wav, m4a (Edge TTS / NeuTTS) and Ogg/Vorbis or Ogg/FLAC
+        // behind a .ogg name — is converted to ogg/opus via ffmpeg so ptt is honoured.
         let audioBuffer = buffer;
         let audioExt = ext;
-        const needsConversion = !['ogg', 'opus'].includes(ext);
+        let isOpus = isOggOpus(buffer);
+        const needsConversion = !isOpus;
         let tmpPath = null;
         if (needsConversion) {
           tmpPath = path.join(tmpdir(), `hermes_voice_${randomBytes(6).toString('hex')}.ogg`);
@@ -1079,6 +1081,7 @@ app.post('/send-media', async (req, res) => {
             );
             audioBuffer = readFileSync(tmpPath);
             audioExt = 'ogg';
+            isOpus = true;
           } catch (convErr) {
             // ffmpeg not available or conversion failed — fall back to original format
             console.warn('[bridge] ffmpeg conversion failed, sending as file attachment:', convErr.message);
@@ -1086,8 +1089,8 @@ app.post('/send-media', async (req, res) => {
             try { if (tmpPath && existsSync(tmpPath)) unlinkSync(tmpPath); } catch (_) {}
           }
         }
-        const audioMime = (audioExt === 'ogg' || audioExt === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
-        msgPayload = { audio: audioBuffer, mimetype: audioMime, ptt: audioExt === 'ogg' || audioExt === 'opus' };
+        const audioMime = isOpus ? 'audio/ogg; codecs=opus' : (['ogg', 'opus'].includes(audioExt) ? 'audio/ogg' : 'audio/mpeg');
+        msgPayload = { audio: audioBuffer, mimetype: audioMime, ptt: isOpus };
         break;
       }
       case 'document':

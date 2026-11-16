@@ -407,8 +407,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // Turn ended — drop any blocking prompt still open for THIS session
     // (e.g. interrupted, or the approval already resolved). Scoped to the
     // session so a background turn finishing can't wipe the active chat's
-    // prompt, and vice versa.
-    clearAllPrompts(sessionId)
+    // prompt, and vice versa. Folder and site cards stay: the sandbox, not
+    // the turn, waits on them.
+    clearAllPrompts(sessionId, 'turn-end')
     clearSettledClarifyRequest(sessionId)
     // Turn ended without a final `todo` update — drop a still-unfinished
     // list so "Tasks N/M" doesn't stay pinned above the composer with the

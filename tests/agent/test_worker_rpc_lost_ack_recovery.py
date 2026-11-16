@@ -32,7 +32,8 @@ def receipt_owner(monkeypatch, tmp_path):
     retry_seen = {}
     for scope in scopes:
         retry_seen[(scope['execution_id'], 1)] = threading.Event()
-    state = SimpleNamespace(requests=[], committed=set(), retry_seen=retry_seen, lock=lock, drop_replies=False)
+    state = SimpleNamespace(requests=[], committed=set(), retry_seen=retry_seen, lock=lock, drop_replies=False,
+                            delay_operation=None)
 
     def handler(ws):
         for raw in ws:
@@ -42,6 +43,7 @@ def receipt_owner(monkeypatch, tmp_path):
                 state.requests.append(request)
                 first = key not in seen
                 seen.add(key)
+                retry_event = state.retry_seen.setdefault(key, threading.Event())
             try:
                 from hermes_state_runtime import mutate_worker_execution
                 result = mutate_worker_execution(db, **request['params'])
@@ -51,11 +53,14 @@ def receipt_owner(monkeypatch, tmp_path):
                 continue
             if first:
                 state.committed.add(key)
+            delay_ack = (state.delay_operation is None
+                         or request['params']['operation'] == state.delay_operation)
+            if first and delay_ack:
                 # Hold the first ACK after the real SQLite transaction commits. The second
                 # identical request must resolve to the same receipt before this gate opens.
-                state.retry_seen[key].wait(2)
+                retry_event.wait(2)
             else:
-                state.retry_seen[key].set()
+                retry_event.set()
             if state.drop_replies:
                 continue
             try:

@@ -98,13 +98,13 @@ REPLIES = list(TASK.get("replies") or [])
 
 
 def fixtures():
-    with open(os.path.join(workspace, "run_tests.sh"), "w") as f:
+    with open(os.path.join(workspace, "run_tests.sh"), "w", encoding="utf-8") as f:
         f.write("#!/bin/sh\necho 'collecting...'\nsleep 70\necho 'Ran 42 tests in 70.1s'\necho OK\n")
     os.chmod(os.path.join(workspace, "run_tests.sh"), 0o755)
     os.makedirs(os.path.join(workspace, "site"))
-    with open(os.path.join(workspace, "site", "index.html"), "w") as f:
+    with open(os.path.join(workspace, "site", "index.html"), "w", encoding="utf-8") as f:
         f.write("<h1>prefix-rediet fixture page</h1>\n")
-    with open(os.path.join(workspace, "backup.sh"), "w") as f:
+    with open(os.path.join(workspace, "backup.sh"), "w", encoding="utf-8") as f:
         f.write("#!/bin/sh\necho backing up\n")
     os.chmod(os.path.join(workspace, "backup.sh"), 0o755)
     from hermes_state import SessionDB
@@ -305,7 +305,7 @@ def grade():
         bg_sleep = any(n == "terminal" and a.get("background") and "sleep" in str(a.get("command")) for n, a in calls)
         notes.append(f"background_sleep={bg_sleep}")
         try:
-            done = "done" in open(os.path.join(workspace, "status.txt")).read()
+            done = "done" in open(os.path.join(workspace, "status.txt"), encoding="utf-8").read()
         except OSError:
             done = False
         return (1.0 if done and not bg_sleep else 0.5 if done else 0.0), notes
@@ -314,7 +314,7 @@ def grade():
         for root, _, files in os.walk(os.path.join(hermes_home, "cron")):
             for fn in files:
                 if fn.endswith(".json"):
-                    jobs += open(os.path.join(root, fn)).read()
+                    jobs += open(os.path.join(root, fn), encoding="utf-8").read()
         notes.append(f"cron store bytes={len(jobs)}")
         return (1.0 if "backup.sh" in jobs else 0.0), notes
     if TASK_ID == "search_recall_dose":

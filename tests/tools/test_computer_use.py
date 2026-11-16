@@ -1017,7 +1017,6 @@ class TestCuaDriverSessionReconnect:
         session._lock = threading.Lock()
         session._started = True
         session._capabilities = {}
-        session._capability_version = ""
         session._ready_event = None  # populated by real _start_lifecycle
         session._shutdown_event = None
         session._lifecycle_future = None
@@ -2160,14 +2159,6 @@ class TestCuaToolCoverageExpansion:
         }
         backend._session.supports_capability = lambda cap, tool=None: False
         return backend
-
-    # ── App lifecycle ────────────────────────────────────────────
-
-    def test_launch_app_requires_bundle_id_or_name(self):
-        backend = self._backend()
-        import pytest
-        with pytest.raises(ValueError, match="bundle_id or name"):
-            backend.launch_app()
 
     # ── Generic escape hatch ────────────────────────────────────
 

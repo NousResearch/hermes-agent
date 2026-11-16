@@ -175,7 +175,7 @@ def _split_env_string(argv: list[str], idx: int, consumed: int, value: str) -> b
     if not _NEEDS_SHLEX.search(value):
         argv[idx:idx + consumed] = value.split()  # same words, without the GNU parser's per-char cost
         return True
-    from tools.approval_detection import _split_env_string as gnu_env_split
+    from tools.approval_env_split import _split_env_string as gnu_env_split
 
     words = gnu_env_split(value)
     if words is None:

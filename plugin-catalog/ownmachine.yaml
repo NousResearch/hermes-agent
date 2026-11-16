@@ -1,21 +1,23 @@
 name: ownmachine
 title: OwnMachine
 repo: https://github.com/rbur0425/ownmachine
-sha: fa71c33a3fd706d9931725565fccf89a98254d69
+sha: 17268cd760b857bf350282a5b09f55f7498a9441
 subdir: plugin
 description: "A persistent private macOS or ARM64 Omarchy VM workspace for Hermes with SSH/MCP and human-controlled browser access. Disclosure — Runs OpenSSH, using your own SSH config, agent and keys, to an operator-configured Mac host and streams VM screenshots, accessibility text and computer_use input to a guest macOS or ARM64 Omarchy Linux VM through a fixed-command MCP relay; `/ownmachine setup --run` executes remote provisioning stages on the Mac over a separate setup SSH alias; the opt-in `remind later --mode tomorrow` writes a helper script into the Hermes `scripts/` directory and creates a one-shot no-agent cron job through the profile's local gateway; it keeps a shared control database in an operator-chosen directory. Licensed PolyForm Noncommercial 1.0.0."
 maintainer: rbur0425
 tier: community
 category: desktop
 requires_hermes: ">=0.23.1"
-version: "1.0.0"
+version: "1.0.1"
 docs_url: https://github.com/rbur0425/ownmachine#readme
 readme: true
 platforms: [linux, macos] # Hermes runtime; guest host still requires Apple Silicon macOS.
+# Promotional illustrations added after v1.0.1; separately pinned asset-only commit.
 screenshots:
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/fa71c33a3fd706d9931725565fccf89a98254d69/docs/media/catalog/human-control.png
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/fa71c33a3fd706d9931725565fccf89a98254d69/docs/media/catalog/agent-control.png
-  - https://raw.githubusercontent.com/rbur0425/ownmachine/fa71c33a3fd706d9931725565fccf89a98254d69/docs/media/catalog/google-task.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/0a8d3ff5c87f320cbaa0340a77b75dbd49709218/docs/media/catalog/promotions/privacy-choice.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/0a8d3ff5c87f320cbaa0340a77b75dbd49709218/docs/media/catalog/promotions/human-control.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/0a8d3ff5c87f320cbaa0340a77b75dbd49709218/docs/media/catalog/promotions/live-visibility.png
+  - https://raw.githubusercontent.com/rbur0425/ownmachine/0a8d3ff5c87f320cbaa0340a77b75dbd49709218/docs/media/catalog/promotions/desktop-apps.png
 known_issues:
   - Omarchy supports tested foreground control on Apple Silicon; background input is experimental and Chromium requires explicit matching Hyprland module opt-in.
   - Linux uses a reviewed preview-grade driver pin; rolling system updates require compatibility checks.

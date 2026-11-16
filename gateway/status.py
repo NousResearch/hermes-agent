@@ -28,7 +28,7 @@ from gateway.status_inline_source import (
     inline_source_flag_index,
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
+from hermes_cli._subprocess_compat import pid_exists_stdlib, process_start_time_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
 
@@ -487,12 +487,9 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     spawn against the live value *on the same host*, the differing units across
     platforms are irrelevant — only same-source equality matters.
     """
-    stat_path = Path(f"/proc/{pid}/stat")
-    try:
-        # Field 22 (ticks) after comm's last ")": comm may hold spaces or non-UTF-8 bytes.
-        return int(stat_path.read_bytes().rsplit(b")", 1)[1].split()[19])
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        pass
+    ticks = process_start_time_stdlib(pid)
+    if ticks is not None:
+        return ticks
 
     # No /proc (macOS / Windows): psutil, quantized to centiseconds for stable equality.
     # process_birth: macOS's clock-step-stable kernel start (#140580); unchanged with no step.

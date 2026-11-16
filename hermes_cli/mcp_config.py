@@ -867,7 +867,8 @@ def cmd_mcp_test(args):
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
-        _info(f"Transport: HTTP → {cfg['url']}")
+        from agent.redact import redact_sensitive_text  # the rendered URL can carry a ?token= credential
+        _info(f"Transport: HTTP → {redact_sensitive_text(cfg['url'], force=True, redact_url_credentials=True)}")
     else:
         _info(f"Transport: stdio → {cfg.get('command', '?')}")
 

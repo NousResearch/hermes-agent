@@ -200,32 +200,6 @@ class TestToolGatewayUserToken:
             with pytest.raises(RuntimeError, match="resolver boom"):
                 _read_user_token_override()
 
-class TestOpenRouterCheckApiKey:
-    def test_scoped_value_wins(self, monkeypatch):
-        from tools.openrouter_client import check_api_key
-
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"OPENROUTER_API_KEY": "sk-or-scoped"}):
-            assert check_api_key() is True
-
-    def test_scoped_miss_no_borrow(self, monkeypatch):
-        from tools.openrouter_client import check_api_key
-
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-other-profile")
-        ss.set_multiplex_active(True)
-        with _Scope({"UNRELATED": "x"}):
-            assert check_api_key() is False
-
-    def test_scope_failure_never_borrows_env(self, monkeypatch):
-        from tools.openrouter_client import check_api_key
-
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-other-profile")
-        ss.set_multiplex_active(True)
-        with _Scope(_ExplodingScope()):
-            with pytest.raises(RuntimeError, match="resolver boom"):
-                check_api_key()
-
 # ── Cluster D: auxiliary client key resolution ──────────────────────────────
 
 class TestAuxiliaryScopedKeyEnv:

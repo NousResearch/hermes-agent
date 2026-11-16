@@ -48,7 +48,7 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
         async def no_hosted(_runner):
             return None
         monkeypatch.setattr('gateway.session_hosted_service.ensure_hosted_service', no_hosted)
-        monkeypatch.setattr(runner, '_schedule_planned_restart_replay', lambda: None)
+        monkeypatch.setattr(runner, '_schedule_restart_notice_replay', lambda: None)
         try:
             assert set((await recover_gateway_native_sessions(runner)).values()) == {'not_found'}
             runner._failed_platforms[Platform.RELAY] = {}

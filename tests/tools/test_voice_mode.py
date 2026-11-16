@@ -1265,7 +1265,8 @@ class TestFullDuplexListen:
         )
         assert path == "/tmp/fd.wav"
         assert phases == ["generation"]
-        assert int((audio == 5000).sum()) > 0  # speech onset in the capture
+        # Every speech block, including the ones before the trip: pre-roll keeps the onset.
+        assert int((audio == 5000).sum()) == 30 * self.BLOCK
 
     def test_playback_bleed_alone_does_not_trip(self, mock_sd, monkeypatch):
         """Speaker bleed (~1000 RMS) during playback stays below the playback

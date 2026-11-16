@@ -150,7 +150,7 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
 
 def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting. Prompt bucket = uncached + cached
-    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call.
+    + cache-write input; a turn with no usage still counts as one API call.
     ``messages`` (the transcript mirror) lets real usage anchor the next preflight: this runtime bypasses
     the main loop's capture, and the mirror is never compacted natively, so without an anchor the rough
     estimate grows monotonically and hermes-mode fires thread compaction on tiny threads (#100381)."""
@@ -173,11 +173,14 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
     # ``inputTokens`` is INCLUSIVE of ``cachedInputTokens`` (same contract as the Responses API, see
     # normalize_usage's codex_responses branch); CanonicalUsage.prompt_tokens re-adds cache_read on top of
     # input_tokens, so the canonical input bucket must be the UNCACHED remainder or cached tokens count twice.
+    # ``cacheWriteInputTokens`` (codex-rs TokenUsageBreakdown, from Responses
+    # ``input_tokens_details.cache_write_tokens``) is inside ``inputTokens`` too; older servers omit it (0).
     cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
+    cache_write_tokens = _coerce_usage_int(usage.get("cacheWriteInputTokens"))
     canonical_usage = CanonicalUsage(
-        input_tokens=max(0, _coerce_usage_int(usage.get("inputTokens")) - cache_read_tokens),
+        input_tokens=max(0, _coerce_usage_int(usage.get("inputTokens")) - cache_read_tokens - cache_write_tokens),
         output_tokens=_coerce_usage_int(usage.get("outputTokens")),
-        cache_read_tokens=cache_read_tokens, cache_write_tokens=0,
+        cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
         reasoning_tokens=_coerce_usage_int(usage.get("reasoningOutputTokens")), raw_usage=usage,
     )
     prompt_tokens = canonical_usage.prompt_tokens
@@ -210,9 +213,14 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         agent.session_estimated_cost_usd += cost_usd
     agent.session_cost_status, agent.session_cost_source = cost_result.status, cost_result.source
     cost_fields = {"estimated_cost_usd": cost_usd, "cost_status": cost_result.status, "cost_source": cost_result.source}
+    # The app-server builds its own requests (cache options included), so Hermes cannot know the
+    # window: an explicit unknown keeps an older window from outliving this cache activity.
+    from agent.prompt_cache_clock import record_unobserved_cache_response
+    from agent.turn_usage import _cache_clock_column
+    clock = _cache_clock_column(record_unobserved_cache_response(agent, canonical_usage, reason="codex_app_server"))
     _queue_token_counts(
         agent, "Codex app-server token persistence failed (session=%s, tokens=%d): %s", total_tokens,
-        counts=lambda: billing(**token_counts, **cost_fields,
+        counts=lambda: billing(**token_counts, **cost_fields, **clock,
                                billing_mode="subscription_included" if cost_result.status == "included" else None),
     )
     return {**usage_dict, "last_prompt_tokens": prompt_tokens, **cost_fields}

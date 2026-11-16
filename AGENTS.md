@@ -91,20 +91,27 @@ hermes-agent/
 **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);
 all profile-aware via `get_hermes_home()`.
 
-### Facade + siblings layout
+### Packages and Python shape
 
-Every former god file is a **facade** (public entry points + the names other packages import) plus
-**siblings** `<stem>_<topic>.py`, each owning one topic (the tree above, `gateway/run.py`,
-`tools/mcp_tool.py`, `hermes_cli/kanban.py`, `hermes_cli/web_server.py`).
+A topic that outgrows its file becomes a folder: `<stem>/__init__.py` is the **facade** (its
+docstring names each module's job, `__all__` is the surface, PEP 562 `__getattr__` only for a
+measured startup cost or import hazard it names; no behaviour; `tools/connectors/` is the model),
+`<stem>/<topic>.py` holds the code. Flat `<stem>_<topic>.py` siblings (`gateway/run.py`,
+`tools/mcp_tool.py`) stay until touched; add none unless an area AGENTS.md still prescribes one
+(`tui_gateway` RPC methods, `tools/` backends). A family folder keeps its ABC/Protocol, one module
+per variant and a name → variant table (`tools/environments/`, its table still in
+`terminal_tool_backends.py`). Tool folders register from `tool.py`; tests mirror folders.
 
-- **Find code by topic:** `grep -rn "def name" <dir>/<stem>_*.py`, not by reading the facade.
-- **Siblings late-import the facade** inside functions; never a module-level cycle.
-- **Patch where production reads:** a sibling doing `from <facade> import name` inside the function
-  makes the facade the seam; a patch on the defining module passes silently.
+- **Find code by topic:** `grep -rn "def name" <dir>/<stem>/ <dir>/<stem>_*.py`, not the facade.
+- **Imports go at module top:** topic modules import one another, never the facade; a cycle means
+  a shared name belongs in a lower module. Patch where the name is looked up.
 - **Size and complexity are ratcheted per unit:** new functions CC ≤ 20, ≤ 300 lines, nesting ≤ 6;
-  files ≤ 2,000 lines; units already over may only go down (move a function into a sibling to
-  offset growth, or put new tests in a new test file). Behaviour goes in a sibling, never a facade;
-  name ladders become a dict → handler.
+  files ≤ 2,000 lines; units already over may only go down (move code into `<stem>/`).
+- **Shape:** code imports on 3.11 (no PEP 695 syntax); import has no side effect but tool registration
+  (no I/O, threads, config or env reads); input is parsed where it enters into a frozen dataclass, `Enum`,
+  `Literal` or the area's wire model (Pydantic in `tui_gateway`); one return shape per function;
+  dispatch by table, not `if name ==` ladders; collaborators are objects, not mixins; no module
+  constant kept only for tests to patch.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
   fixing its docs in the same PR (grep `website/docs`, `skills/`, every `AGENTS.md`).
 

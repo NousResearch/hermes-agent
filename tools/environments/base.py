@@ -9,7 +9,6 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 
 import contextvars
 import hashlib
-import json
 import logging
 import os
 import shlex
@@ -34,7 +33,7 @@ from tools.environments.base_session_env import (
 from tools.environments.base_processes import LongLivedProcessMixin
 from tools.environments.base_wait import _WaitTrace
 from tools.terminal_tool_sudo_askpass import fill_timeout_token, sudo_askpass_supported_once
-from utils import atomic_json_write, env_var_enabled, file_signature
+from utils import atomic_json_write, env_var_enabled, file_signature, read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -215,15 +214,6 @@ def get_sandbox_dir() -> Path:
     return p
 
 
-def _load_json_store(path: Path) -> dict:
-    """Treat a missing or damaged snapshot store as empty."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _save_json_store(path: Path, data: dict) -> None:
     """Write *data* as pretty-printed JSON to *path* atomically (readers never see a torn file)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -252,7 +242,7 @@ def _update_json_store(path: Path, update: Callable[[dict], None]) -> None:
             ))
         except (OSError, TimeoutError):
             logger.warning("Updating %s without its lock", path, exc_info=True)
-        data = _load_json_store(path)
+        data = read_json_or_empty(path)
         before = dict(data)
         update(data)
         if data != before:
@@ -707,6 +697,13 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         old workspace state (lobehub/lobehub#19329 class)."""
         self._recreated_notice_pending = True
 
+    def _usable_cwd(self, cwd: str) -> tuple[str, dict | None]:
+        """Directory the command may actually start in, plus ``{"requested", "used"}`` when it
+        differs. Local swaps a deleted/unenterable one (it would make the wrapper's ``cd`` exit
+        126 on every call); sandboxes resolve their own. Returned, never stored on ``self``:
+        concurrent commands share one environment."""
+        return cwd, None
+
     # --- Unified execute() ---
     def execute(
         self,
@@ -739,7 +736,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         exec_command = fill_timeout_token(exec_command, effective_timeout)
-        effective_cwd = cwd or self.cwd
+        # An explicit ``cwd`` (the session's recorded cd state) can be just as dead as
+        # ``self.cwd``; resolving only the latter left every call exiting 126 at ``cd``.
+        effective_cwd, cwd_fallback = self._usable_cwd(cwd or self.cwd)
 
         # Merge sudo stdin with caller stdin.
         effective_stdin = sudo_stdin + (stdin_data or "") if sudo_stdin is not None else stdin_data
@@ -823,6 +822,8 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         if getattr(self, "_recreated_notice_pending", False):
             self._recreated_notice_pending = False
             result["environment_recreated"] = True
+        if cwd_fallback:
+            result["cwd_fallback"] = cwd_fallback
         return result
 
     def _kill_spawned_tree(self, spawned) -> None:

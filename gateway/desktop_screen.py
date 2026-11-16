@@ -245,24 +245,45 @@ async def drain_outcome_tasks(timeout: float = 5.0) -> None:
                 stuck.cancel()
 
 
+def submit_text(params) -> "str | None":
+    """The model-facing text of one submit-shaped params dict: the
+    canonical contract's ``api_text`` (the model-facing override a
+    voice prefix / model-switch note sends INSTEAD of the persisted
+    ``text`` - review F1: screening only ``text`` let the whole
+    model input ride unscreened) when present, else ``text``. None
+    when there is nothing to screen."""
+    for key in ("api_text", "text"):
+        value = params.get(key) if isinstance(params, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def session_in_scope(authority, session_id: str) -> bool:
     """True when the session's frozen launch source is a screened
     desktop surface. Never raises (an unreadable source means not in
-    scope: the screen must never wedge a submit)."""
+    scope: the screen must never wedge a submit). Resolves the DB row
+    FIRST and uses ``launch_sources`` only as a write-through cache
+    (review F4: a stale or poisoned cache entry must fail in the
+    SCREENED direction, not silently skip the gate)."""
     try:
-        sources = getattr(authority, "launch_sources", None)
-        if sources is None:
-            return False
         session_id = str(session_id or "")
-        if session_id not in sources:
-            with authority.db._read_ctx() as conn:
-                found = conn.execute(
-                    "SELECT source FROM sessions WHERE id=?",
-                    (session_id,)).fetchone()
-            if found is None:
-                return False
-            sources[session_id] = found[0]
-        return sources[session_id] in _scoped_sources()
+        if not session_id:
+            return False
+        sources = getattr(authority, "launch_sources", None)
+        db = getattr(authority, "db", None)
+        if db is None:
+            return False
+        with db._read_ctx() as conn:
+            found = conn.execute(
+                "SELECT source FROM sessions WHERE id=?",
+                (session_id,)).fetchone()
+        if found is None:
+            return False
+        source = found[0]
+        if isinstance(sources, dict):
+            sources[session_id] = source
+        return source in _scoped_sources()
     except Exception:
         logger.warning("desktop_screen: source lookup failed; not screening",
                        exc_info=True)
@@ -338,7 +359,9 @@ async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
 def hold_error(reasons) -> Exception:
     """The control-plane refusal for a held submit: a RuntimeStoreError
     subclass whose wire message is the owner-visible hold notice (the
-    dispatcher's error frame carries ``wire_message``), so the desktop
+    dispatcher's error frame carries ``wire_message``; the frame's data
+    block is the fixed refusal shape and does NOT carry the tier
+    reasons - the reasons live in the screen log), so the desktop
     client shows why the message was not delivered."""
     from hermes_state_runtime import RuntimeStoreError
 

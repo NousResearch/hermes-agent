@@ -135,18 +135,11 @@ def _deliver(authority, session_id, generation, agent, admission_id, text):
 
 async def steer_queued(connection, ref, params):
     authority, admission_id = connection.authority, params['admission_id']
-    # W1 desktop intake screen: steering text is turn input too - a held
-    # edit must not reach the queue through a side verb.
-    from gateway.desktop_screen import (desktop_screen_enabled, hold_error,
-                                        screen as desktop_screen, session_in_scope)
-    if (desktop_screen_enabled() and isinstance(params.get('text'), str)
-            and params['text'].strip()
-            and session_in_scope(authority, ref.session_id)):
-        held, reasons = await desktop_screen(
-            str(getattr(connection.actor, 'subject', '')), str(ref.session_id),
-            params['text'])
-        if held:
-            raise hold_error(reasons)
+    # W1 desktop intake screen: no gate here. The canonical steer
+    # contract carries NO text (CanonicalSteerQueuedParams = profile,
+    # session_id, admission_id) - the transfer delivers the queued
+    # row's already-screened payload text, so there is nothing new to
+    # screen (review F3: an earlier gate here was dead code).
     authority.authorize(connection.actor, ref, 'session:control')
     receipt, row = await _queued(connection, ref, admission_id)
     if steer_replayed(row):
@@ -225,17 +218,20 @@ async def replace_queued(connection, ref, params):
     ``submission_id`` is ``admission_conflict``, decided inside the admission's own transaction."""
     authority, actor, old_id = connection.authority, connection.actor, params['admission_id']
     # W1 desktop intake screen: the replacement text is a fresh submit -
-    # it gets the same intake gate as the prompt it retires.
+    # it gets the same intake gate as the prompt it retires, AFTER the
+    # cheap permission check (review F2) and on the model-facing text
+    # (review F1; the replace contract carries 'text', not api_text).
     from gateway.desktop_screen import (desktop_screen_enabled, hold_error,
-                                        screen as desktop_screen, session_in_scope)
-    if (desktop_screen_enabled() and isinstance(params.get('text'), str)
-            and params['text'].strip()
-            and session_in_scope(authority, ref.session_id)):
-        held, reasons = await desktop_screen(
-            str(getattr(actor, 'subject', '')), str(ref.session_id),
-            params['text'])
-        if held:
-            raise hold_error(reasons)
+                                        screen as desktop_screen, session_in_scope,
+                                        submit_text)
+    if desktop_screen_enabled():
+        authority.authorize(actor, ref, 'session:submit')
+        text = submit_text(params)
+        if text and session_in_scope(authority, ref.session_id):
+            held, reasons = await desktop_screen(
+                str(getattr(actor, 'subject', '')), str(ref.session_id), text)
+            if held:
+                raise hold_error(reasons)
     request = connection.submission(ref, {key: value for key, value in params.items() if key != 'admission_id'})
     receipt, row = await _queued(connection, ref, old_id)
     replacement = await asyncio.to_thread(find_session_admission, authority.db, principal_id=actor.subject,

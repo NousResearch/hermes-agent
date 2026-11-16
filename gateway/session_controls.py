@@ -803,21 +803,26 @@ class AuthorityConnection:
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
             self._record_voice_stop(ref, params)
             return {'voice_stopped': True}
-        # W1 desktop intake screen (owner order 16 Nov 2026): block-tier
-        # submits on desktop-launched sessions are held BEFORE durable
-        # admission - no turn runs for them. Inert unless env-enabled;
-        # fail-open; never raises past the dispatcher's error frame.
+        # W1 desktop intake screen (owner order 16 Nov 2026; review r2):
+        # block-tier submits on desktop-launched sessions are held BEFORE
+        # durable admission - no turn runs for them. The gate sits AFTER
+        # the cheap permission check (review F2: an unentitled connection
+        # must burn no engine call) and screens the MODEL-FACING text -
+        # api_text when the contract carries one, else text (review F1).
+        # Inert unless env-enabled; fail-open; never raises past the
+        # dispatcher's error frame.
         from gateway.desktop_screen import (desktop_screen_enabled,
                                             hold_error, screen as desktop_screen,
-                                            session_in_scope)
-        if (desktop_screen_enabled() and isinstance(params.get('text'), str)
-                and params['text'].strip()
-                and session_in_scope(self.authority, ref.session_id)):
-            held, reasons = await desktop_screen(
-                str(getattr(self.actor, 'subject', '')), str(ref.session_id),
-                params['text'])
-            if held:
-                raise hold_error(reasons)
+                                            session_in_scope, submit_text)
+        if desktop_screen_enabled():
+            self.authority.authorize(self.actor, ref, 'session:submit')
+            text = submit_text(params)
+            if text and session_in_scope(self.authority, ref.session_id):
+                held, reasons = await desktop_screen(
+                    str(getattr(self.actor, 'subject', '')), str(ref.session_id),
+                    text)
+                if held:
+                    raise hold_error(reasons)
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
         receipt = await self.authority.submit(self.actor, self.submission(ref, params),
                                               queue_while_restarting=self._operator is True)

@@ -32,17 +32,23 @@ for the owner dashboard (default `~/.hermes/logs/desktop-screen.log`).
 
 Screened: interactive viewer submits on sessions whose frozen launch
 source is a desktop surface (`gui` or `desktop` - the label a
-Desktop chat migrated from main keeps). The TUI/CLI/ACP labels can
-be added later by env alone, no code change.
+Desktop chat migrated from main keeps), on the model-facing text:
+the contract's `api_text` override when present, else the persisted
+`text` (a benign `text` with a hostile `api_text` is held - the
+engine judges what the model will see). Verbs: `prompt.submit` and
+`prompt.replace_queued` (the edit is a fresh submit). The TUI/CLI/ACP
+labels can be added later by env alone, no code change.
 
 NOT screened, structurally (machine producers never pass through the
 interactive control plane): kanban cards, hosted-room tasks, a2a
 forwards, automation envelopes (plugin injection, delegation
 completions, watch notices, heartbeat), and gateway platform
-messages (already screened by Phase 2 - a viewer's text typed into a
-messaging session's window IS screened here as desktop input).
-Attachments are not screened this cycle (media triage is use case
-A6, later in the queue).
+messages (already screened by Phase 2). Bot-relay and hosted-room
+peers writing into a gui-sourced Desktop Bot Chat are Phase 2's
+territory, not this gate's. `prompt.steer_queued` carries no text by
+contract (the transfer re-delivers the queued row's already-screened
+text). Attachments and `voice_context` are not screened this cycle
+(media triage is use case A6, later in the queue).
 
 Judge philosophy unchanged: the judge advises, it never replaces
 owner gates. The gate is one engine call, hard-capped (timeout + 1s

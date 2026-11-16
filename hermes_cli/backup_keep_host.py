@@ -35,6 +35,7 @@ import copy
 import io
 import json
 import logging
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
@@ -209,13 +210,47 @@ def kept_summary(root: Path) -> list[str]:
             f"  auth.json: {'its Nous Portal sign-in' if signed_in else '(not signed in to Nous Portal)'}"]
 
 
-def create_undo_point(root: Path, out_path: Optional[Path] = None) -> Optional[Path]:
-    """A full backup of the destination: ``out_path``, else ``backups/pre-transfer-<ts>.zip``."""
-    from hermes_cli.backup import _create_prefixed_full_backup, _write_full_zip_backup
+def create_undo_point(
+    root: Path, out_path: Optional[Path] = None, external_members: tuple[str, ...] = (),
+) -> Optional[Path]:
+    """Back up the destination, including existing external files this import will overwrite.
+
+    The ordinary automatic full backup only walks HERMES_HOME. Normal ``hermes backup``
+    archives may also contain ``_external/`` memory-provider files under the user's home,
+    which the import publishes outside HERMES_HOME. Without these files the Undo cannot
+    restore their previous contents.
+    """
+    from hermes_cli.backup import _create_prefixed_full_backup, _write_full_zip_backup, _write_zip_file
+
     if out_path is None:
-        return _create_prefixed_full_backup(root, _UNDO_PREFIX, _UNDO_KEEP, "pre-transfer", "pre-transfer backup")
-    out_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return _write_full_zip_backup(out_path, root)
+        undo = _create_prefixed_full_backup(root, _UNDO_PREFIX, _UNDO_KEEP, "pre-transfer", "pre-transfer backup")
+    else:
+        out_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        undo = _write_full_zip_backup(out_path, root)
+    if undo is None or not external_members:
+        return undo
+
+    home = Path.home().resolve()
+    try:
+        old_files: list[tuple[Path, str]] = []
+        for member in external_members:
+            rel = member.removeprefix("_external/")
+            target = home / rel
+            if not target.resolve().is_relative_to(home):
+                continue  # The import rejects paths outside the home as well.
+            if target.is_symlink():
+                raise OSError(f"cannot snapshot linked external state: {member}")
+            if target.is_file():
+                old_files.append((target, member))
+        if old_files:
+            with zipfile.ZipFile(undo, "a", zipfile.ZIP_DEFLATED) as archive:
+                for source, member in old_files:
+                    _write_zip_file(archive, source, member)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        logger.warning("Undo point could not include external state: %s", exc)
+        undo.unlink(missing_ok=True)
+        return None
+    return undo
 
 
 def _s6_slot(home: Path) -> Optional[str]:
@@ -275,7 +310,10 @@ def import_source(args, zf, members: list[str], prefix: str, root: Path):
         return
     print("\nKeeping what this host set up (--keep-host):")
     print("\n".join(kept_summary(root)))
-    undo = create_undo_point(root, Path(args.undo_point) if getattr(args, "undo_point", None) else None)
+    undo = create_undo_point(
+        root, Path(args.undo_point) if getattr(args, "undo_point", None) else None,
+        tuple(m for m in members if m.startswith("_external/")),
+    )
     if undo is None:
         raise OSError("could not back up this agent first (the undo point); nothing was restored")
     print(f"Undo point: {undo}\n  To put this agent back: hermes import {undo} --force --keep-host")

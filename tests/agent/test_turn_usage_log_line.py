@@ -1,6 +1,7 @@
 """The per-call log line carries what a cost or cache investigation needs: the cache write count, the
 provider's response id, and the serving upstream when the route reports one. Existing parsers read a
 prefix of the line, so the fields are appended and optional."""
+import json
 import logging
 from types import SimpleNamespace
 
@@ -75,8 +76,12 @@ def test_usage_is_queued_through_the_writer_handle_with_every_keyword(tmp_path, 
     tokens = TokenCounts(**{key: kwargs.pop(key) for key in (
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")})
     route = BillingRoute(**{key: kwargs.pop(key) for key in ("model", "billing_provider", "billing_base_url", "billing_mode")})
+    # The prompt-cache clock is stamped per call (its ``sent_at``), so the two calls' clocks match on every other field.
+    store_clock, delta_clock = json.loads(kwargs.pop("prompt_cache_clock")), json.loads(delta.prompt_cache_clock)
+    assert store_clock.pop("sent_at") and delta_clock.pop("sent_at") and store_clock == delta_clock
     assert sid == store_sid == "t"
-    assert delta == UsageDelta(tokens=tokens, route=route, **kwargs) and delta.tokens.cache_write_tokens == 28_604
+    assert delta == UsageDelta(tokens=tokens, route=route, prompt_cache_clock=delta.prompt_cache_clock, **kwargs)
+    assert delta.tokens.cache_write_tokens == 28_604
 
 
 def test_forensics_parser_reads_the_new_fields(tmp_path):

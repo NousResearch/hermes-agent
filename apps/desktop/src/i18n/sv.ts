@@ -697,6 +697,24 @@ export const svOverrides: TranslationOverrides = {
         approvedRetry: 'Remote Spending är godkänt, men ändringen sparades inte.',
         tryAgain: 'Försök igen'
       },
+      charge: {
+        added: amount => (amount ? `${amount} tillagt.` : 'Krediter tillagda.'),
+        failedTitle: 'Debiteringen misslyckades',
+        unconfirmedTitle: 'Debiteringsresultatet är obekräftat',
+        unconfirmedBody: message =>
+          `${message} Resultatet av din senaste debitering är obekräftat – kontrollera saldo och historik innan du försöker igen.`,
+        checkTitle: 'Det gick inte att kontrollera debiteringen',
+        checkBody: 'Det gick inte att kontrollera debiteringen.',
+        untrackedTitle: 'Debiteringen kunde inte spåras',
+        untrackedBody: 'Faktureringstjänsten godkände begäran men returnerade inget debiterings-id.',
+        timeoutTitle: 'Bearbetas fortfarande efter 5 minuter',
+        timeoutBody: 'Debiteringen kan fortfarande genomföras. Kontrollera portalen innan du försöker igen.',
+        authenticationRequired:
+          'Din bank kräver verifiering (3DS). Slutför den på portalen för att avsluta köpet.',
+        expired: 'Ditt kort har gått ut. Uppdatera det på portalen.',
+        declined: 'Ditt kort nekades. Försök med ett annat kort på portalen.',
+        failedBody: reason => `Debiteringen gick inte igenom (${reason}).`
+      },
       state: {
         notice: {
           loggedOut: {

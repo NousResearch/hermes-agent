@@ -2163,6 +2163,43 @@ def _skill_manage_inner(
     return json.dumps(result, ensure_ascii=False)
 
 
+_GUARDED_SKILL_ACTIONS = {"create", "edit", "patch", "delete", "write_file", "remove_file"}
+
+
+def _profile_write_guard_error(action, name, operations) -> Optional[str]:
+    """Fork (4e): an opted-in profile's agent_write_guard covers skill_manage.
+
+    Checks every existing skill the call would mutate (top-level ``name`` and
+    each op's ``name``) against the owning profile's guard — which protects
+    ``skills.external_dirs`` and any ``extra_paths``. Inert unless the profile
+    opted in.
+    """
+    try:
+        from agent.profile_write_guard import protected_roots, write_guard_denial
+
+        if protected_roots() is None:
+            return None
+        names = []
+        if isinstance(operations, list) and operations:
+            for op in operations:
+                if isinstance(op, dict) and (op.get("action") or action) in _GUARDED_SKILL_ACTIONS:
+                    names.append(op.get("name") or name)
+        elif action in _GUARDED_SKILL_ACTIONS:
+            names.append(name)
+        for skill_name in names:
+            if not skill_name:
+                continue
+            existing = _find_skill(skill_name)
+            if not existing:
+                continue
+            denial = write_guard_denial(existing["path"])
+            if denial:
+                return denial
+    except Exception:
+        logger.debug("skill_manage write-guard check failed", exc_info=True)
+    return None
+
+
 def skill_manage(
     action: str = None,
     name: str = None,
@@ -2183,6 +2220,9 @@ def skill_manage(
     someone noticed. Passthrough keeps the shim decoupled from upstream's
     evolving argument list.
     """
+    guard_error = _profile_write_guard_error(action, name, kwargs.get("operations"))
+    if guard_error:
+        return tool_error(guard_error, success=False)
     _tok = _CONFIRM_OWNER.set(confirm_cross_user_owner)
     _notice_tok = _OWNERSHIP_NOTICE.set(None)
     try:

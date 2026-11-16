@@ -16584,6 +16584,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     claimed[retry_claim] = active
 
         profile_homes = _multiplex_profile_homes(self.config)
+        # Fork (multiplex 4d): file tools may not cross into another served
+        # profile's home. The process home is the default profile's.
+        try:
+            from agent.multiplex_file_guard import set_served_profile_homes
+            from hermes_constants import get_process_hermes_home
+
+            set_served_profile_homes(
+                [get_process_hermes_home()] + [home for _name, home in profile_homes]
+            )
+        except Exception:
+            logger.warning("could not register served profile homes", exc_info=True)
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop

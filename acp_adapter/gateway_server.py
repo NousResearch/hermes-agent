@@ -152,6 +152,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         from acp_adapter.server import HermesACPAgent
         return await HermesACPAgent.authenticate(self, method_id, **kwargs)
 
+    async def close_session(self, session_id, **kwargs):
+        raise acp.RequestError.method_not_found("session/close")
+
+    async def ext_method(self, method, params):
+        raise acp.RequestError.method_not_found(f"_{method}")
+
+    async def ext_notification(self, method, params):
+        logger.debug("Ignoring unsupported ACP extension notification _%s", method)
+
     async def _client(self):
         async with self._connect_lock:
             if self._failure is not None or self._transport_closed():

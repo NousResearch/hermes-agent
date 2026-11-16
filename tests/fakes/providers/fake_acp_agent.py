@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 PROTOCOL_VERSION = 1
 TOOLS_MARKER = "Available tools"
@@ -195,6 +195,14 @@ def prompt_text(record: dict[str, Any]) -> str:
 # ── agent process ────────────────────────────────────────────────────────────────────────────
 
 
+class LegacySetSessionModelRequest(BaseModel):
+    """The pre-stabilization request still sent to legacy external ACP providers."""
+
+    field_meta: dict[str, Any] | None = Field(default=None, alias="_meta")
+    model_id: str = Field(alias="modelId")
+    session_id: str = Field(alias="sessionId")
+
+
 class Agent:
     """One spawned agent process (one Hermes model call)."""
 
@@ -214,7 +222,7 @@ class Agent:
             "session/new": schema.NewSessionRequest,
             "session/load": schema.LoadSessionRequest,
             "session/prompt": schema.PromptRequest,
-            "session/set_model": schema.SetSessionModelRequest,
+            "session/set_model": LegacySetSessionModelRequest,
             "session/set_config_option": schema.SetSessionConfigOptionSelectRequest,
             "session/cancel": schema.CancelNotification,
         }
@@ -285,7 +293,8 @@ class Agent:
         errors += [f"custom root field {k!r} (spec: use _meta)" for k in sorted(set(params) - allowed)]
         if method != "initialize" and not self.initialized:
             errors.append("request before initialize")
-        if method in ("session/new", "session/load") and not os.path.isabs(parsed.cwd):
+        cwd = getattr(parsed, "cwd", None)
+        if method in ("session/new", "session/load") and (not isinstance(cwd, str) or not os.path.isabs(cwd)):
             errors.append("cwd must be an absolute path")
         sid = getattr(parsed, "session_id", None)
         if method not in ("session/load",) and sid is not None and sid not in self.sessions:

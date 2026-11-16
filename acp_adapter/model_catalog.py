@@ -19,6 +19,14 @@ ACP_MAX_MODELS_PER_PROVIDER = 200
 MODEL_CONFIG_ID = "model"
 
 
+def model_config_option(current_value: str, options: list[SessionConfigSelectOption]) -> SessionConfigOptionSelect:
+    """Canonical model selector metadata for inventory and fallback rows on both adapters."""
+    return SessionConfigOptionSelect(
+        id=MODEL_CONFIG_ID, name="Model", description="Active provider and model for the session.",
+        category="model", type="select", current_value=current_value, options=options,
+    )
+
+
 def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, str]]]]:
     """``(slug, label, [(model_id, description), ...])`` for named endpoints (v12 ``providers:``
     and legacy ``custom_providers:``), which canonical provider enumeration never lists.
@@ -168,10 +176,7 @@ def fallback_model_state(model: str, provider: str) -> SessionConfigOptionSelect
         [] if codex and codex_model_requires_account_discovery(model)
         else [SessionConfigSelectOption(value=choice, name=model)]
     )
-    return SessionConfigOptionSelect(
-        id=MODEL_CONFIG_ID, name="Model", description="Active provider and model for the session.",
-        category="model_config", type="select", current_value=choice, options=options,
-    )
+    return model_config_option(choice, options)
 
 
 @dataclass
@@ -330,23 +335,9 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionConfig
         ))
 
     if not select_options and current_is_empty:
-        return SessionConfigOptionSelect(
-            id=MODEL_CONFIG_ID,
-            name="Model",
-            description="Active provider and model for the session.",
-            category="model_config",
-            type="select",
-            current_value="",
-            options=[],
-        )
+        return model_config_option("", [])
     if select_options or (current_model_id and requires_discovery):
-        return SessionConfigOptionSelect(
-            id=MODEL_CONFIG_ID,
-            name="Model",
-            description="Active provider and model for the session.",
-            category="model_config",
-            type="select",
-            current_value=current_model_id if current_model_id or current_is_empty else select_options[0].value,
-            options=select_options,
+        return model_config_option(
+            current_model_id if current_model_id or current_is_empty else select_options[0].value, select_options,
         )
     return None

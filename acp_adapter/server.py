@@ -20,7 +20,7 @@ from acp.schema import (
     AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ConfigOptionUpdate, ForkSessionResponse,
     Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
     McpServerStdio, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
-    SessionCapabilities, SessionConfigOptionSelect, SessionForkCapabilities,
+    SessionCapabilities, SessionConfigOptionSelect, SessionConfigSelectOption, SessionForkCapabilities,
     SessionInfo, SessionInfoUpdate, SessionListCapabilities, SessionMode, SessionModeState,
     SessionResumeCapabilities, SetSessionConfigOptionResponse, SetSessionModeResponse, TextContentBlock,
     Usage, UsageUpdate, UserMessageChunk,
@@ -345,7 +345,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """Authenticated providers + models, from the shared Hermes inventory (same substrate
         as ``hermes model``/TUI/dashboard) so the selector isn't just the current curated list."""
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
-        provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+        provider = (getattr(state.agent, "provider_route", None)
+                    or getattr(state.agent, "provider", None) or detect_provider() or "openrouter")
         try:
             picker = build_model_state(model, provider, str(getattr(state.agent, "base_url", "") or ""))
             if picker is not None:
@@ -375,6 +376,16 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             ],
         )
         return [model, approval] if model is not None else [approval]
+
+    async def _current_config_options(self, state: SessionState) -> list[SessionConfigOptionSelect]:
+        """Do not return a catalog built before a concurrent model or policy change."""
+        while True:
+            agent, model = state.agent, state.model
+            mode = getattr(state, "mode", self._MODE_DEFAULT)
+            options = await asyncio.to_thread(self._session_config_options, state)
+            if (state.agent is agent and state.model == model
+                    and getattr(state, "mode", self._MODE_DEFAULT) == mode):
+                return options
 
     def _switch_model(
         self, state: SessionState, raw_model: str, *, keep_endpoint: bool = False
@@ -685,10 +696,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     f"{replay_verb} will still succeed, partial transcript may be missing",
                     state.session_id, exc_info=True,
                 )
+        options = await self._current_config_options(state)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_soon(lambda: self._send_usage_update(state))
         return {
-            "config_options": await asyncio.to_thread(self._session_config_options, state),
+            "config_options": options,
             "modes": self._session_modes(state),
             "field_meta": self._provenance_meta(state.session_id, getattr(state.agent, "session_id", state.session_id)),
         }
@@ -912,16 +924,18 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         # Slash commands are text-only; a prompt with media goes to the agent even if it starts with "/".
         if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
-            previous_route = (state.model, getattr(state.agent, "provider", None))
+            previous_route = (state.model, getattr(state.agent, "provider_route", None),
+                              getattr(state.agent, "provider", None), getattr(state.agent, "base_url", None))
             # Off the loop: /model validates through switch_model (network I/O) and /compress
             # calls the LLM; handlers are sync and hold no loop-bound state.
             response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
             if response_text is not None:
                 if self._conn:
                     await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
-                    if previous_route != (state.model, getattr(state.agent, "provider", None)):
+                    if previous_route != (state.model, getattr(state.agent, "provider_route", None),
+                                          getattr(state.agent, "provider", None), getattr(state.agent, "base_url", None)):
                         # Editors replace the selector list, including the retained approval policy.
-                        options = await asyncio.to_thread(self._session_config_options, state)
+                        options = await self._current_config_options(state)
                         await self._conn.session_update(session_id, ConfigOptionUpdate(
                             session_update="config_option_update", config_options=options))
                     await self._send_usage_update(state)
@@ -1150,7 +1164,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 # (disabled provider, context window below the floor) stays on the -32603 path.
                 from acp.exceptions import RequestError
                 raise RequestError.invalid_params({"details": str(exc)}) from exc
-            options = await asyncio.to_thread(self._session_config_options, state)
+            options = await self._current_config_options(state)
             logger.info(
                 "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
             )
@@ -1190,7 +1204,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             raise acp.RequestError.invalid_params({"details": f"{config_id} requires a select value"})
         str_value = str(value)
         if config_id == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
-            state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str_value, self._MODE_DEFAULT)
+            if str_value not in self._EDIT_APPROVAL_POLICY_TO_MODE:
+                raise acp.RequestError.invalid_params({"details": "Unknown edit approval policy"})
+            state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE[str_value]
         elif config_id == self._MODEL_CONFIG_ID:
             return SetSessionConfigOptionResponse(config_options=await self._set_model_config(str_value, state))
         else:
@@ -1202,5 +1218,5 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(
-            config_options=await asyncio.to_thread(self._session_config_options, state)
+            config_options=await self._current_config_options(state)
         )

@@ -87,7 +87,7 @@ async def test_new_session_advertises_modes_and_model_config_option(monkeypatch)
     assert model_option.id == "model"
     assert model_option.current_value == "openrouter:gpt-5.4"
     assert any(opt.value == "openrouter:gpt-5.4" for opt in model_option.options)
-    assert model_option.category == "model_config"
+    assert model_option.category == "model"
     approval = resp.config_options[1]
     assert approval.id == "edit_approval_policy" and approval.category == "mode"
     assert approval.current_value == "ask"

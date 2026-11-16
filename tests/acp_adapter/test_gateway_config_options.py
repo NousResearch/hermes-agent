@@ -8,7 +8,7 @@ from acp_adapter.server import HermesACPAgent
 @pytest.mark.asyncio
 async def test_effort_pick_applies_through_the_reasoning_mutation_and_returns_the_pickers(monkeypatch):
     monkeypatch.setattr('acp_adapter.gateway_session_meta.model_state', lambda info: SessionConfigOptionSelect(
-        id='model', name='Model', type='select', current_value='openrouter:fixture',
+        id='model', name='Model', category='model', type='select', current_value='openrouter:fixture',
         options=[SessionConfigSelectOption(value='openrouter:fixture', name='fixture')]))
     info = {'model': 'fixture', 'provider': 'openrouter', 'reasoning_effort': 'medium'}
     mutations = []

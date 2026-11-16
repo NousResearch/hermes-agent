@@ -19,7 +19,6 @@ from acp_adapter.modes import (
     DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID,
     EDIT_APPROVAL_POLICY_TO_MODE, MODES,
 )
-from acp_adapter.model_catalog import MODEL_CONFIG_ID
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +89,7 @@ def config_options(models: SessionConfigOptionSelect | None, info: dict, mode_id
     options = [select(EDIT_APPROVAL_POLICY_CONFIG_ID, "Edits", "mode", MODES[mode_id][0],
                       [(policy, name) for policy, name, _ in MODES.values()])]
     if models is not None:
-        options.append(SessionConfigOptionSelect(
-            id=MODEL_CONFIG_ID, name="Model", category="model", type="select",
-            current_value=models.current_value, options=models.options,
-        ))
+        options.append(models)
     # ``session.info`` reports the level in force, never ``default`` (a reset session reads the profile's), so
     # ``default`` is offered only while no level is set: a pick never shows as another value than the one chosen.
     levels = reasoning_choices()[1:]
@@ -134,9 +130,9 @@ def model_state(info: dict) -> SessionConfigOptionSelect | None:
     from acp_adapter.auth import detect_provider
     from acp_adapter.model_catalog import build_model_state, fallback_model_state
     model = str(info.get("model") or "").strip()
-    provider = info.get("provider") or detect_provider() or "openrouter"
+    provider = info.get("provider_route") or info.get("provider") or detect_provider() or "openrouter"
     try:
-        picker = build_model_state(model, provider, "")
+        picker = build_model_state(model, provider, str(info.get("base_url") or ""))
         if picker is not None:
             return picker
     except Exception:

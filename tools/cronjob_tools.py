@@ -42,8 +42,8 @@ from cron.jobs import (
     resume_job,
     trigger_job,
     update_job)
-from tools.cronjob_prompt_scan import _scan_cron_prompt
-from tools.cronjob_job_args import (
+from cron.prompt_scan import _scan_cron_prompt
+from cron.job_args import (
     _apply_continuity,
     _canonical_skills,
     _clean_str_list,

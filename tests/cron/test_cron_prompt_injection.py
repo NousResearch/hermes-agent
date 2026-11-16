@@ -29,7 +29,7 @@ class TestInvisibleUnicodeParity:
 
     def test_cron_set_matches_canonical(self):
         """Invariant: the cron-local set IS the canonical install-time set."""
-        from tools.cronjob_prompt_scan import _CRON_INVISIBLE_CHARS
+        from cron.prompt_scan import _CRON_INVISIBLE_CHARS
         from tools.threat_patterns import INVISIBLE_CHARS
         assert _CRON_INVISIBLE_CHARS == INVISIBLE_CHARS
 

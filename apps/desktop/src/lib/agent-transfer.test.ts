@@ -42,6 +42,8 @@ interface FakeOptions {
   /** The target loses everything past this offset once, answering 409 offset_gap. */
   gapAt?: number
   undoArchive?: null | string
+  /** What the cloud agent's finished restore reports it switched off. */
+  messagingOff?: string[]
 }
 
 /** Both backends with the contract's routes. */
@@ -118,7 +120,9 @@ function fakeBackends(archive: Uint8Array, options: FakeOptions = {}) {
       return { exit_code: 1, lines: ['a', 'b', 'c', 'Error: disk full'], running: false, ...undo }
     }
 
-    return { exit_code: running ? null : 0, lines: ['working'], running, ...undo }
+    const off = !running && side !== 'local' && options.messagingOff ? { messaging_off: options.messagingOff } : {}
+
+    return { exit_code: running ? null : 0, lines: ['working'], running, ...undo, ...off }
   }
 
   const routes: Record<string, Handler> = {
@@ -150,12 +154,18 @@ const targetCalls = (calls: Call[]) => calls.filter(c => c.owner === TARGET)
 describe('transferAgent', () => {
   it('streams the archive chunk by chunk from the source to the cloud agent, then restores it', async () => {
     const archive = Uint8Array.from({ length: 300 }, (_, i) => i % 251)
-    const { calls, request, uploads } = fakeBackends(archive, { chunk: 90, flaky: 3 })
+
+    const { calls, request, uploads } = fakeBackends(archive, {
+      chunk: 90,
+      flaky: 3,
+      messagingOff: ['Telegram', 'Discord']
+    })
+
     const progress: TransferProgress[] = []
 
     const result = await transferAgent(request, SOURCE, TARGET, p => progress.push(p), { timing: instant })
 
-    expect(result.undoArchive).toBe('/cloud/pre-transfer.zip')
+    expect(result).toEqual({ messagingOff: ['Telegram', 'Discord'], undoArchive: '/cloud/pre-transfer.zip' })
     expect(progress[0].phase).toBe('backup')
     expect(progress.at(-1)?.phase).toBe('restore')
     expect(progress.filter(p => p.phase === 'upload').map(p => p.fraction)).toEqual([0, 0.3, 0.6, 0.9, 1])
@@ -263,7 +273,7 @@ describe('transferAgent', () => {
       transferAgent(fakeBackends(new Uint8Array([1]), { flaky: 10 }).request, SOURCE, TARGET, () => undefined, {
         timing: instant
       })
-    ).resolves.toEqual({ undoArchive: '/cloud/pre-transfer.zip' })
+    ).resolves.toEqual({ messagingOff: [], undoArchive: '/cloud/pre-transfer.zip' })
 
     const { calls, request } = fakeBackends(new Uint8Array([1]), { flaky: 11 })
 

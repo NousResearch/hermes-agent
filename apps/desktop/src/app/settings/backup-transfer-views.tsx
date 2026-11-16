@@ -158,7 +158,7 @@ export function ConfirmPanel({ agent, copy, onCancel, onReplace }: ConfirmPanelP
         <PlainList items={copy.replaces} title={copy.replacesTitle} />
         <PlainList items={copy.keeps} title={copy.keepsTitle} />
       </div>
-      <p className="text-xs text-muted-foreground">{copy.botNote}</p>
+      <p className="text-xs text-muted-foreground">{copy.botNote(agent)}</p>
       <p className="text-xs text-muted-foreground">{copy.undoNote(agent)}</p>
       <label className="flex items-center gap-2 text-sm font-medium">
         <Checkbox checked={understood} onCheckedChange={value => setUnderstood(value === true)} />

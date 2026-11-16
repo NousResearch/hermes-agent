@@ -239,6 +239,47 @@ def test_transfer_then_undo_returns_the_agent_byte_for_byte(homes, monkeypatch):
     assert _ids(dst / "state.db") == ["cloud-chat"]
 
 
+def test_a_transfer_brings_the_bots_switched_off_and_its_undo_brings_the_cloud_bot_back(homes, monkeypatch, capsys):
+    """``--messaging-off``: every bot the backup runs (an ``enabled`` flag or just a token), in the
+    root and in a profile, arrives off with its token and settings; the undo (no flag) puts the
+    cloud agent's own enabled bot back byte for byte."""
+    src, dst, tmp = homes
+    _write(src, "config.yaml", "display:\n  skin: ares\nplatforms:\n  telegram:\n    enabled: true\n"
+                               "    reply_to_mode: all\ndiscord:\n  require_mention: true\n")
+    _write(src, ".env", "TELEGRAM_BOT_TOKEN=SRC-TG\nDISCORD_BOT_TOKEN=SRC-DC\nSLACK_BOT_TOKEN=\n")
+    _write(src, "profiles/writer/config.yaml", "platforms:\n  telegram:\n    enabled: true\n")
+    _write(src, "profiles/writer/.env", "TELEGRAM_BOT_TOKEN=WRITER-TG\n")
+    _write(dst, "config.yaml", DST_CONFIG + "platforms:\n  discord:\n    enabled: true\n")
+    _write(dst, ".env", "NOUS_API_KEY=DST-NOUS\nDISCORD_BOT_TOKEN=DST-DC\n")
+    before = _tree(dst)
+    archive = _backup(monkeypatch, src, tmp / "src.zip")
+
+    _import(monkeypatch, dst, archive, keep_host=True, messaging_off=True)
+
+    cfg, writer = _yaml(dst / "config.yaml"), _yaml(dst / "profiles/writer/config.yaml")
+    assert cfg["platforms"] == {"telegram": {"enabled": False, "reply_to_mode": "all"},
+                                "discord": {"enabled": False}}
+    assert cfg["discord"] == {"require_mention": True} and cfg["display"] == {"skin": "ares"}
+    assert "slack" not in cfg["platforms"]  # a blank token runs nothing
+    assert writer == {"platforms": {"telegram": {"enabled": False}}}
+    assert "TELEGRAM_BOT_TOKEN=SRC-TG" in (dst / ".env").read_text()
+    assert "DISCORD_BOT_TOKEN=SRC-DC" in (dst / ".env").read_text()
+    assert (dst / "profiles/writer/.env").read_text() == "TELEGRAM_BOT_TOKEN=WRITER-TG\n"
+    assert "Messaging switched off: Discord, Telegram\n" in capsys.readouterr().out
+
+    from gateway.config import Platform, load_gateway_config
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "SRC-TG")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "SRC-DC")
+    gateway = load_gateway_config()
+    assert not gateway.platforms[Platform.TELEGRAM].enabled and not gateway.platforms[Platform.DISCORD].enabled
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN"), monkeypatch.delenv("DISCORD_BOT_TOKEN")
+
+    _import(monkeypatch, dst, _undo_point(dst), keep_host=True)
+    after = _tree(dst)
+    after.pop("state.db"), before.pop("state.db")
+    assert after == before and _yaml(dst / "config.yaml")["platforms"] == {"discord": {"enabled": True}}
+
+
 def test_undo_point_holds_the_memory_provider_files_outside_the_home(homes, monkeypatch):
     """A source's external memory file must not irreversibly replace the cloud copy."""
     src, dst, tmp = homes

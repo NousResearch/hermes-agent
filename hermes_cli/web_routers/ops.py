@@ -641,14 +641,18 @@ async def download_dashboard_backup(archive: str, profile: Optional[str] = None)
     )
 
 
-def _spawn_import(archive: str, force: bool, profile: Optional[str] = None, *, keep_host: bool = False) -> dict:
-    """``hermes import``; ``keep_host`` (the Hermes Cloud transfer and its undo) also forces it. The
-    undo point the import takes is reported by ``/api/actions/import/status`` once it exists."""
+def _spawn_import(archive: str, force: bool, profile: Optional[str] = None, *, keep_host: bool = False,
+                  messaging_off: bool = False) -> dict:
+    """``hermes import``; ``keep_host`` (the Hermes Cloud transfer and its undo) also forces it, and
+    ``messaging_off`` (the transfer only) brings the bots over switched off. The undo point the import
+    takes is reported by ``/api/actions/import/status`` once it exists."""
     args = ["import", archive]
     if force or keep_host:
         args.append("--force")
     if keep_host:
         args.append("--keep-host")
+    if keep_host and messaging_off:
+        args.append("--messaging-off")
     return _spawn_action(args, "import", log_msg="Failed to spawn import",
                          prefix="Failed to run import", profile=profile)
 

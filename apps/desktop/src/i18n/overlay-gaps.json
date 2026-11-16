@@ -1119,6 +1119,7 @@
   "settings.backup.backupSaved": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.backupTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.botNote": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "settings.backup.botsOff": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.cancel": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.chooseAgent": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.backup.confirmTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],

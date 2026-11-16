@@ -19,6 +19,11 @@ included), under the same ``exclusive_maintenance`` reservation, so nothing here
   every other provider comes from the archive. Merged under the auth-store lock against the live
   store, so a token refresh racing the restore is never rolled back.
 * A named profile's ``config.yaml`` and ``.env`` arrive whole: only the root home is the host's.
+* ``--messaging-off`` (the Desktop transfer passes it; an undo does not): every messaging bot the
+  archive would run, in the root and in each profile, arrives with its ``platforms.<id>.enabled``
+  switch off (the flag Settings ▸ Messaging writes), its token and settings kept, so the source
+  computer keeps answering until the user switches the bot over. Written into the same merged
+  ``config.yaml`` the restore publishes.
 * Never taken from the archive: ``shared/nous_auth.json``, ``webapp/`` (the Webapp's sign-in
   state), ``install_id`` and lock files.
 * Replace, not merge: in the root home and in every profile the archive carries, a file the archive
@@ -49,6 +54,7 @@ import secrets
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -96,6 +102,10 @@ _UNFINISHED_MARKER = ".transfer-unfinished"
 _PROFILES_MANIFEST = ".keep-host-profiles.json"
 # The line the dashboard's action status reads the undo point from.
 UNDO_POINT_LINE = "Undo point: "
+# The line it reads the messaging platforms ``--messaging-off`` switched off from (card names, ", ").
+MESSAGING_OFF_LINE = "Messaging switched off: "
+# Inbound HTTP endpoints, not bots: two agents can serve them at once, and the API server is the host's.
+_NOT_BOTS = frozenset({"api_server", "webhook", "msgraph_webhook", "local"})
 _EXTERNAL = "_external/"
 _NOUS = "nous"
 
@@ -168,6 +178,75 @@ def merge_auth(archive_store: dict[str, Any], host_store: dict[str, Any]) -> dic
     if _NOUS in (merged.get("active_provider"), host_store.get("active_provider")):
         merged["active_provider"] = host_store.get("active_provider")
     return merged
+
+
+def _bot_platforms() -> dict[str, tuple[str, tuple[str, ...]]]:
+    """``{platform_id: (card name, env names that turn it on)}`` for every messaging bot."""
+    from gateway.config import Platform
+    from gateway.config_env import _enable_credential_names
+    from hermes_cli.profile_channels import _left_core_platforms, _registry_entries, platform_ids
+    entries = {entry.name: entry for entry in _registry_entries()}
+    left = {feature.platform: feature for feature in _left_core_platforms()}
+    bots = {}
+    for pid in platform_ids():
+        if pid in _NOT_BOTS:
+            continue
+        entry, names = entries.get(pid), set(getattr(left.get(pid), "enable_env", ()))
+        names.update(getattr(entry, "required_env", None) or ())
+        try:
+            names.update(_enable_credential_names(Platform(pid)))
+        except ValueError:
+            pass  # a platform that left core and whose plugin is absent: its LEFT_CORE row names it
+        label = (entry and (entry.dashboard_label or entry.label)) or getattr(left.get(pid), "label", "") or pid.title()
+        bots[pid] = (label, tuple(sorted(names)))
+    return bots
+
+
+def _env_on(text: str) -> set[str]:
+    """Names ``text`` sets to a value (an ``*_ENABLED`` switch only when it is truthy)."""
+    from utils import is_truthy_value
+    on = set()
+    for line in text.splitlines():
+        name = _env_name(line)
+        value = line.split("=", 1)[1].strip().strip("'\"") if name else ""
+        if value and (not name.endswith("_ENABLED") or is_truthy_value(value)):
+            on.add(name)
+    return on
+
+
+def _platform_blocks(cfg: dict[str, Any], pid: str) -> list[dict[str, Any]]:
+    """Every block the gateway reads ``enabled`` from for ``pid`` (gateway/config_loader.py)."""
+    gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+    holders = (cfg.get("platforms"), cfg, gateway, gateway.get("platforms"))
+    return [h[pid] for h in holders if isinstance(h, dict) and isinstance(h.get(pid), dict)]
+
+
+def messaging_off(cfg: dict[str, Any], env_text: str,
+                  bots: Optional[dict[str, tuple[str, tuple[str, ...]]]] = None) -> tuple[dict[str, Any], list[str]]:
+    """``cfg`` with every messaging bot it would run switched off, and the names switched off.
+
+    A bot runs when a block sets ``enabled: true``, or when none sets ``enabled`` and ``env_text``
+    holds its token (the gateway enables it from env). Off is ``platforms.<id>.enabled: false``, the
+    switch Settings ▸ Messaging writes, plus ``false`` in any other block that sets ``enabled``, so no
+    other spelling turns it back on. Tokens and every other setting are left as they are."""
+    from utils import is_truthy_value
+    bots = _bot_platforms() if bots is None else bots
+    out, env, off = copy.deepcopy(cfg), _env_on(env_text), []
+    for pid, (label, names) in bots.items():
+        blocks = _platform_blocks(out, pid)
+        flags = [block["enabled"] for block in blocks if "enabled" in block]
+        if not (any(is_truthy_value(flag) for flag in flags) or (not flags and env.intersection(names))):
+            continue
+        for block in blocks:
+            if "enabled" in block:
+                block["enabled"] = False
+        if not isinstance(out.get("platforms"), dict):
+            out["platforms"] = {}
+        if not isinstance(out["platforms"].get(pid), dict):
+            out["platforms"][pid] = {}
+        out["platforms"][pid]["enabled"] = False
+        off.append(label)
+    return out, off
 
 
 def _yaml_map(raw: bytes, what: str) -> dict[str, Any]:
@@ -274,8 +353,11 @@ class KeepHostImport:
     import's reservation."""
 
     def __init__(self, root: Path, members: list[str], prefix: str, source: Path,
-                 had_profiles: Optional[set[str]] = None):
+                 had_profiles: Optional[set[str]] = None, messaging_off: bool = False):
         self.root, self.source = root, source.resolve()
+        # ``--messaging-off``: the bot names switched off, per home, in archive order.
+        self.messaging_off = messaging_off
+        self.switched_off: dict[str, list[str]] = {}
         self.rels: set[str] = set()
         self.profiles: set[str] = set()
         self.external = tuple(m for m in members if m.startswith(_EXTERNAL))
@@ -365,7 +447,9 @@ class KeepHostImport:
         """Write a host-owned member merged with the destination's copy; False for any other member."""
         from hermes_yaml import YAMLError
         if parts == ("config.yaml",):
-            handler = _publish_config
+            handler = partial(_publish_config, policy=self)
+        elif self.messaging_off and _home_parts(parts) == ("config.yaml",):
+            handler = partial(_publish_profile_config, policy=self)
         elif parts == (".env",):
             handler = _publish_env
         elif _is_auth_store(parts):
@@ -378,6 +462,23 @@ class KeepHostImport:
             raise OSError(str(exc)) from exc
         return True
 
+    def bots_off(self, home: str, cfg: dict[str, Any], env_text: str) -> dict[str, Any]:
+        """``cfg`` with its bots switched off under ``--messaging-off`` (as it is without the flag)."""
+        if not self.messaging_off:
+            return cfg
+        out, off = messaging_off(cfg, env_text)
+        if off:
+            self.switched_off[home] = off
+        return out
+
+    def report_messaging_off(self) -> None:
+        names = list(dict.fromkeys(name for off in self.switched_off.values() for name in off))
+        if not names:
+            return
+        print(f"{MESSAGING_OFF_LINE}{', '.join(names)}")
+        for home, off in sorted(self.switched_off.items()):
+            print(f"  {home}: {', '.join(off)} (token and settings kept; turn on in Settings > Messaging)")
+
     def finish(self, errors: list[str]) -> list[str]:
         """After a restore with no errors, clear what the archive lacks; return problems."""
         problems = [] if errors else self._clear_absent_host_files()
@@ -389,6 +490,9 @@ class KeepHostImport:
             else:
                 if removed:
                     print(f"  Removed {removed} file(s) the backup does not have.")
+        if not errors and not problems and self.messaging_off:
+            problems = self._profiles_without_config_bots_off()
+        self.report_messaging_off()
         if not errors and not problems and self.created:
             problems = self._remove_created_profiles()
         left = sorted(p.name for p in (self.root / "profiles").glob("*")
@@ -402,6 +506,27 @@ class KeepHostImport:
         self._marker().unlink(missing_ok=True)
         _prune_prefixed_zips(self.root / "backups", _UNDO_PREFIX, _UNDO_KEEP, "pre-transfer backup")
         return []
+
+    def _root_env(self) -> str:
+        """The root .env as the restore leaves it: already published, or about to keep only the host's lines."""
+        live = _live(self.root / ".env").decode("utf-8", "replace")
+        return live if ".env" in self.rels else merge_env("", live)
+
+    def _profiles_without_config_bots_off(self) -> list[str]:
+        """A profile the archive brings without a config.yaml runs the bots its .env has tokens for."""
+        from hermes_cli.config import atomic_config_replace
+        problems = []
+        for name in sorted(self.profiles):
+            home = self.root / "profiles" / name
+            if f"profiles/{name}/config.yaml" in self.rels:
+                continue
+            cfg = self.bots_off(f"profile {name}", {}, _live(home / ".env").decode("utf-8", "replace"))
+            try:
+                if cfg:
+                    atomic_config_replace(home / "config.yaml", cfg)
+            except OSError as exc:
+                problems.append(f"  profiles/{name}/config.yaml: {exc}")
+        return problems
 
     def _remove_created_profiles(self) -> list[str]:
         """Profiles the undone transfer brought: removed whole (under the reservation, never through a link)."""
@@ -429,7 +554,8 @@ class KeepHostImport:
                 continue
             try:
                 if target is config:
-                    atomic_config_replace(config, merge_config({}, _yaml_map(_live(config), "config.yaml")))
+                    kept = merge_config({}, _yaml_map(_live(config), "config.yaml"))
+                    atomic_config_replace(config, self.bots_off("root", kept, self._root_env()))
                 elif target is env:
                     with _env_write_lock(env):
                         atomic_write_text(env, merge_env("", _live(env).decode("utf-8")), preserve_mode=True)
@@ -465,12 +591,34 @@ class KeepHostImport:
         return len(stale)
 
 
-def _publish_config(zf: zipfile.ZipFile, member: str, target: Path, mode: Optional[int]) -> None:
+def _archive_env(zf: zipfile.ZipFile, config_member: str) -> str:
+    """The .env beside ``config_member`` in the archive ("" when it carries none)."""
+    try:
+        return zf.read(config_member[: -len("config.yaml")] + ".env").decode("utf-8-sig", "replace")
+    except KeyError:
+        return ""
+
+
+def _publish_profile_config(zf: zipfile.ZipFile, member: str, target: Path, mode: Optional[int], *,
+                            policy: KeepHostImport) -> None:
+    """A named profile's config.yaml, whole, with its bots switched off (``--messaging-off``)."""
+    archive = _yaml_map(zf.read(member), "the backup's config.yaml")
+    _write_config_member(zf, member, target, mode, archive,
+                         policy.bots_off(f"profile {target.parent.name}", archive, _archive_env(zf, member)))
+
+
+def _publish_config(zf: zipfile.ZipFile, member: str, target: Path, mode: Optional[int], *,
+                    policy: KeepHostImport) -> None:
+    archive = _yaml_map(zf.read(member), "the backup's config.yaml")
+    merged = merge_config(archive, _yaml_map(_live(target), "this agent's config.yaml"))
+    _write_config_member(zf, member, target, mode, archive, policy.bots_off("root", merged, _archive_env(zf, member)))
+
+
+def _write_config_member(zf: zipfile.ZipFile, member: str, target: Path, mode: Optional[int],
+                         archive: dict[str, Any], merged: dict[str, Any]) -> None:
     from hermes_cli.backup_restore import _extract_member_atomically
     from hermes_cli.config import atomic_config_replace
     from utils import atomic_replace
-    archive = _yaml_map(zf.read(member), "the backup's config.yaml")
-    merged = merge_config(archive, _yaml_map(_live(target), "this agent's config.yaml"))
     if merged == archive:
         _extract_member_atomically(zf, member, target, mode)
         return
@@ -567,9 +715,12 @@ def keep_host_import(args, zf: zipfile.ZipFile, members: list[str], prefix: str,
     """The :class:`KeepHostImport` ``run_import`` restores with (None without ``--keep-host``), the
     profile's gateway drained around it. :class:`KeepHostRefused` means nothing was written."""
     if not getattr(args, "keep_host", False):
+        if getattr(args, "messaging_off", False):
+            raise KeepHostRefused("--messaging-off needs --keep-host")
         yield None
         return
-    policy = KeepHostImport(root, members, prefix, Path(args.zipfile).expanduser(), _had_profiles(zf, prefix))
+    policy = KeepHostImport(root, members, prefix, Path(args.zipfile).expanduser(), _had_profiles(zf, prefix),
+                            messaging_off=getattr(args, "messaging_off", False))
     policy.refuse_linked_folders()
     print("\nKeeping what this host set up (--keep-host):")
     print("\n".join(kept_summary(root)))

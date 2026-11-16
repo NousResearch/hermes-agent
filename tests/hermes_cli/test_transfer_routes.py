@@ -53,7 +53,7 @@ def test_chunks_assemble_the_archive_and_restore_keeps_the_host(client):
     started = http.post("/api/ops/transfer/restore", json={"upload_id": first["upload_id"], "size": len(archive)})
 
     assert started.status_code == 200 and started.json()["name"] == "import"
-    assert spawned[0][-2:] == ["--force", "--keep-host"]
+    assert spawned[0][-3:] == ["--force", "--keep-host", "--messaging-off"]
 
 
 def test_a_body_past_one_chunk_is_refused_before_it_is_read(client):

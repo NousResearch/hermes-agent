@@ -168,10 +168,9 @@ def is_source_failure(error: str) -> bool:
 
 
 def source_failure_notice(job_name: str, job_id: str, error: str) -> str:
-    """Source errors must not suggest replacing an uninvolved model."""
-    detail = re.sub(r"\s+", " ", error.removeprefix("[monitor_source_failed]")).strip()[:180]
+    """Keep raw source errors out of chat and avoid blaming an uninvolved model."""
     return (
-        f"⚠️ Cron '{job_name}' failed while reading its script/monitor source: {detail}. "
+        f"⚠️ Cron '{job_name}' failed while reading its script/monitor source. "
         "No model was invoked. Check the source and its connection; "
         f"run log: `hermes cron runs {job_id}`."
     )

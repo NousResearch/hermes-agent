@@ -76,3 +76,45 @@ def test_native_httpx_monitor_failure_is_transient(status):
 def test_continuous_short_cron_can_defer(expression):
     from cron.scheduler_failure_copy import defer_transient_source_notice
     assert defer_transient_source_notice(dict(JOB, schedule={"kind": "cron", "expr": expression}), "[monitor_source_failed] HTTP 503")
+
+
+def test_rejected_monitor_url_keeps_credentials_out_of_delivery(monkeypatch):
+    from cron.monitor import _fetch_monitor_url
+    from cron.scheduler_delivery import _redact_cron_payload
+    from tools import url_safety
+
+    def no_network(*args, **kwargs):
+        pytest.fail("An invalid URL must be rejected before network access")
+
+    monkeypatch.setattr(url_safety, "create_ssrf_safe_client", no_network)
+    url = "ftp://fixture-user:fixture-password@example.test/feed?access_token=fixture-query-token"
+    ok, error = _fetch_monitor_url(url)
+    assert not ok
+    notice = s._summarize_cron_failure_for_delivery(JOB, "[monitor_source_failed] " + error)
+    delivered = _redact_cron_payload(notice, "source-failure test")
+    assert "fixture-query-token" not in delivered
+    assert "fixture-password" not in delivered
+    assert "fixture-user" not in delivered
+    assert "ftp://" not in notice
+    assert "Source test" in delivered
+    assert "source" in delivered
+    assert "No model was invoked" in delivered
+    assert "hermes cron runs source-test" in delivered
+
+
+@pytest.mark.parametrize("error", [
+    "Script exited with code 1\nstderr:\nsubprocess.TimeoutExpired: "
+    "Command '['curl', '-u', 'fixture-user:fixture-opaque-value']' timed out",
+    "[monitor_source_failed] Script exited with code 1\nstderr:\n"
+    "upstream returned fixture-opaque-value HTTP 401",
+])
+def test_source_tracebacks_stay_out_of_chat_notice(error):
+    from cron.scheduler_delivery import _redact_cron_payload
+
+    notice = s._summarize_cron_failure_for_delivery(JOB, error)
+    delivered = _redact_cron_payload(notice, "source-failure test")
+    assert "fixture-opaque-value" not in delivered
+    assert "subprocess.TimeoutExpired" not in notice
+    assert "Source test" in delivered
+    assert "No model was invoked" in delivered
+    assert "hermes cron runs source-test" in delivered

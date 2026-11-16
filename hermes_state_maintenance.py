@@ -284,6 +284,19 @@ class SessionMaintenanceMixin:
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
 
+    def list_archived_candidates(self, older_than_days: Optional[float] = None, source: str | None = None,
+                                 **filters) -> list[dict[str, Any]]:
+        """Dry-run: sessions an ``unarchive`` would restore, oldest first. Same row shape and filter
+        surface as :meth:`list_prune_candidates`, but with the ended-session guard lifted
+        (``include_open``): :meth:`archive_stale_sessions` may retire an unended session, and an
+        ended-only candidate set would leave exactly those rows hidden with no way back.
+        ``archived`` defaults to True and pinned rows are included, because un-hiding is never
+        destructive, so neither a live continuation nor a pin may block recovery."""
+        filters.setdefault("archived", True)
+        filters.setdefault("include_pinned", True)
+        filters["include_open"] = True
+        return self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
+
     def count_prune_matches(self, older_than_days: Optional[float] = None, source: str | None = None, *,
                             pinned_only: bool = False, **filters) -> int:
         """Count-only :meth:`list_prune_candidates`; ``pinned_only`` counts rows carrying the pin

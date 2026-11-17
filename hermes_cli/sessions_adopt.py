@@ -65,6 +65,32 @@ def adoptable_sessions(path) -> list[dict]:
         db.close()
 
 
+def missing_local_receipt_count(path) -> int:
+    """Count routed local chats lacking the owner's creation receipt; never adopt them.
+
+    Compression descendants share a chat_id with their logical owner, so count the
+    owner only and look up the receipt by that id rather than by each segment's id.
+    """
+    from hermes_state import SessionDB
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+
+    db = SessionDB(db_path=path, read_only=True)
+    try:
+        labels = tuple(sorted(LEGACY_LOCAL_SOURCES | {'local'}))
+        with db._read_ctx() as conn:
+            return conn.execute(
+                f"SELECT COUNT(DISTINCT COALESCE(NULLIF(s.chat_id, ''), s.id)) "
+                f"FROM sessions s WHERE s.source IN ({','.join('?' for _ in labels)}) "
+                "AND s.session_key LIKE 'agent:%:local:%' "
+                "AND NOT EXISTS (SELECT 1 FROM state_meta m WHERE "
+                "m.key = ? || COALESCE(NULLIF(s.chat_id, ''), s.id))",
+                (*labels, POLICY_PREFIX),
+            ).fetchone()[0]
+    finally:
+        db.close()
+
+
 async def adopt_sessions(rows, *, report=print) -> tuple[int, Counter]:
     """Resume each row once over this host's native connection (the owner adopts it), then detach
     without ending it. ``(adopted, skipped-by-refusal)``; a row the owner refuses is skipped,
@@ -129,11 +155,18 @@ def cmd_adopt(args) -> int:
         return 0
     try:
         rows = adoptable_sessions(path)
+        missing = missing_local_receipt_count(path)
     except sqlite3.Error as exc:
         print(_unreadable_store(exc, f'{display_hermes_home()}/state.db'), file=sys.stderr)
         return 1
+    if missing:
+        print(f'Warning: {missing} routed local chat(s) have no gateway receipt. '
+              'Copying sessions between profiles is unsupported; adopt cannot claim these rows. '
+              'Restore the source profile from backup or see the cross-profile transfer RFC '
+              '(NousResearch/hermes-agent#82762).', file=sys.stderr)
     if not rows:
-        print('Nothing to adopt: every local chat in this profile already belongs to its gateway.')
+        print('Nothing safely adoptable: routed local chats need their receipts.' if missing else
+              'Nothing to adopt: every local chat in this profile already belongs to its gateway.')
         return 0
     counts = Counter(row['source'] for row in rows)
     print(f"{len(rows)} pre-gateway chat(s) to adopt ({', '.join(f'{n} {s}' for s, n in sorted(counts.items()))}).")

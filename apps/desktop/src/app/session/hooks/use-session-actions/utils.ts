@@ -87,6 +87,11 @@ import {
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
 import { publishSessionUsage } from './session-usage'
+import {
+  authoritativeOverOrdinal,
+  isSettledReplyOverOrdinalShell,
+  settledReplyOverEmptyShell
+} from './settled-reply-over-shell'
 
 export {
   chatMessageArraysEquivalent,
@@ -454,28 +459,6 @@ const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage):
   return hasStreamedContent(local) && streamedAnswerHoldsCommittedText(local, authoritative)
 }
 
-const answerText = (message: ChatMessage) => textWithoutReferenceLines(chatMessageText(message)).trim()
-
-/**
- * A committed tool round with no prose (`content = ''`, `tool_calls` set)
- * hydrates as a text-less shell. When no later prose row folds into it, the
- * settled local final bubble is the only copy of the answer the user watched
- * stream, and dropping it for the shell deletes the reply on sync (#123047).
- * Interim narration and structural-only local rows never claim the slot, and
- * a retained error row is never a shell. Kept apart from
- * `localPendingSupersedes`, whose stricter live-only rule also gates resume.
- */
-const settledReplyOverEmptyShell = (local: ChatMessage, authoritative: ChatMessage): boolean =>
-  local.role === 'assistant' &&
-  local.pending !== true &&
-  local.interim !== true &&
-  !local.error &&
-  authoritative.role === 'assistant' &&
-  !isLiveTailRow(authoritative) &&
-  !authoritative.error &&
-  answerText(authoritative).length === 0 &&
-  answerText(local).length > 0
-
 /**
  * Take the cached row's content, but never its liveness. The renderer holds the
  * only copy of the streamed parts; the gateway remains the authority on whether
@@ -722,7 +705,24 @@ export function preserveLocalPendingTurnMessages(
       chatMessageText(message).trim() !== '' &&
       !nextByRoleOrdinal.has(`assistant:${ordinal}`)
 
-    if (!isOptimisticUser && !isPendingAssistant && !isSettledUnpersistedAssistant) {
+    // A settled reply bubble whose ordinal-matched page row is a text-less
+    // reasoning/tool FOLD of this same turn — see `settled-reply-over-shell`.
+    // Admitting it lets `settledReplyOverEmptyShell` replace the shell instead of
+    // dropping the reply, which is what left a completed turn on screen as the
+    // shell alone: a reasoning-only "Thought for…" row with no answer and no
+    // footer. `settlesIntoCommittedReply` folds it into the pending / stream-id
+    // paths, so the gate below keeps its original shape and complexity.
+    const ordinalShell = nextByRoleOrdinal.get(`assistant:${ordinal}`)
+
+    const admitsSettledReplyOverShell = isSettledReplyOverOrdinalShell(
+      message,
+      ordinalShell,
+      index === previousMessages.length - 1
+    )
+
+    const settlesIntoCommittedReply = isPendingAssistant || admitsSettledReplyOverShell
+
+    if (!isOptimisticUser && !isSettledUnpersistedAssistant && !settlesIntoCommittedReply) {
       continue
     }
 
@@ -795,8 +795,7 @@ export function preserveLocalPendingTurnMessages(
 
     const ordinalMatch = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
-    const authoritative =
-      ordinalMatch && !conflictingTranscriptIdentity(message, ordinalMatch) ? ordinalMatch : undefined
+    const authoritative = authoritativeOverOrdinal(message, ordinalMatch, admitsSettledReplyOverShell)
 
     // A settled stream row (`pending: false` after message.complete) whose reply
     // the authoritative transcript already carries under its committed id is
@@ -805,7 +804,7 @@ export function preserveLocalPendingTurnMessages(
     // (#70209). Only text-identical rows are dropped — a settled row the backend
     // has NOT committed yet is the only copy of that reply and must survive.
     if (
-      (isPendingAssistant || isSettledUnpersistedAssistant) &&
+      (settlesIntoCommittedReply || isSettledUnpersistedAssistant) &&
       message.pending !== true &&
       candidates.some(
         candidate =>
@@ -817,7 +816,7 @@ export function preserveLocalPendingTurnMessages(
     }
 
     if (authoritative) {
-      if (isPendingAssistant) {
+      if (settlesIntoCommittedReply) {
         // Keep the local pending row when it is the same reply further along
         // and the authoritative row is an empty projection shell or a prefix.
         // #75825. A settled final over a committed text-less tool shell is

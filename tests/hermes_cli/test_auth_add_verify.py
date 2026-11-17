@@ -63,10 +63,11 @@ def test_rejected_key_is_refused_and_not_stored(provider_home, monkeypatch, caps
     assert [e["access_token"] for e in _pool(provider_home)] == ["sk-acme"]
 
 
-def test_out_of_credit_key_is_stored_benched(provider_home, monkeypatch, capsys):
-    monkeypatch.setattr(_Provider, "status", 402)
-    monkeypatch.setattr(_Provider, "body", {"error": {"message": "Insufficient credits"}})
+@pytest.mark.parametrize("status,message", [(402, "Insufficient credits"), (403, "Key limit exceeded (total limit)")])
+def test_out_of_credit_key_is_stored_benched(provider_home, monkeypatch, capsys, status, message):
+    monkeypatch.setattr(_Provider, "status", status)
+    monkeypatch.setattr(_Provider, "body", {"error": {"message": message}})
     _add()
     (entry,) = _pool(provider_home)
-    assert (entry["last_status"], entry["last_error_code"], entry["failure_reason"]) == ("exhausted", 402, "billing")
-    assert "Insufficient credits" in capsys.readouterr().err
+    assert (entry["last_status"], entry["last_error_code"], entry["failure_reason"]) == ("exhausted", status, "billing")
+    assert message in capsys.readouterr().err

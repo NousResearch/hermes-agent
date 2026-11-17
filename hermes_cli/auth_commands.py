@@ -21,7 +21,7 @@ from agent.credential_pool import (
 from agent.credential_pool_admin import CredentialNotSavedError
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
-from hermes_cli.auth_key_verify import KeyCheck, KeyCheckOutcome, verify_api_key
+from hermes_cli.auth_verify import KeyCheck, KeyCheckOutcome, verify_api_key
 from hermes_cli.auth_plugin_providers import (
     canonical_registry_rows, dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
 from hermes_constants import OPENROUTER_BASE_URL
@@ -133,6 +133,17 @@ def _provider_base_url(provider: str) -> str:
         return str(configured.get("base_url") or "").strip()
     pconfig = PROVIDER_REGISTRY.get(provider)
     return pconfig.inference_base_url if pconfig else ""
+
+
+def _provider_api_mode(provider: str) -> str:
+    """The configured transport of a ``providers:`` / ``custom_providers`` entry (canonical), else ""."""
+    from hermes_cli.config_providers import _canonical_api_mode
+    if provider.startswith(CUSTOM_POOL_PREFIX):
+        from agent.credential_pool import _get_custom_provider_config
+        entry = _get_custom_provider_config(provider) or {}
+    else:
+        entry = _configured_provider_entry(provider) or {}
+    return _canonical_api_mode(str(entry.get("api_mode") or entry.get("transport") or "")).lower()
 
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
@@ -398,7 +409,7 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
 def _verify_before_storing(provider: str, token: str, base_url: str) -> KeyCheck:
     """One live call with the pasted key; a key the provider rejects is never stored."""
     print(f"Checking the key with {provider}...", flush=True)
-    check = verify_api_key(provider, token, base_url)
+    check = verify_api_key(provider, token, base_url, api_mode=_provider_api_mode(provider))
     if check.outcome is KeyCheckOutcome.REJECTED:
         mode = f" ({check.auth_mode})" if check.auth_mode else ""
         raise SystemExit(

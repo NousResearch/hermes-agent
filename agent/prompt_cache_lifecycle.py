@@ -243,7 +243,7 @@ def _per_token(rate: Optional[Decimal]) -> float:
 
 def evaluate_economics(
     pricing: Any, cached_tokens: int, uncached_tokens: int = 0, *,
-    spent_usd: float = 0.0, observed_warm_usd: float = 0.0,
+    spent_usd: float = 0.0, observed_warm_usd: float = 0.0, output_tokens: int = 1,
 ) -> CacheWarmingDecision:
     """Price one refresh against the miss it prevents using a ``PricingEntry``-shaped object
     (``input/output/cache_read/cache_write_cost_per_million``).
@@ -263,7 +263,7 @@ def evaluate_economics(
     tail_cost = uncached_tokens * inp
     hit_cost = cached_tokens * read
     miss_full = cached_tokens * (write if write > 0 else inp)
-    warm_cost = max(hit_cost + tail_cost + out, observed_warm_usd)
+    warm_cost = max(hit_cost + tail_cost + output_tokens * out, observed_warm_usd)
     miss_cost = max(0.0, miss_full - hit_cost)
     economics_available = cached_tokens > 0 and (hit_cost > 0 or miss_full > 0)
     expected = miss_cost - warm_cost
@@ -882,7 +882,8 @@ class PromptCacheWarmer:
         """``evaluate_economics``, refused outright when the estimator that bills a refresh
         (``_record``) cannot price the refresh's cache read or the miss's cache write: a missing
         cache rate must not read as free and approve a refresh whose saving is unknown."""
-        decision = evaluate_economics(self._pricing(), cached_tokens, uncached_tokens, **spend)
+        decision = evaluate_economics(self._pricing(), cached_tokens, uncached_tokens, **spend,
+                                      output_tokens=replay_output_cap(self.agent.model))
         if decision.action == "warm" and not self._cache_costs_known(cached_tokens, uncached_tokens):
             return CacheWarmingDecision(
                 warm_cost=decision.warm_cost, miss_cost=decision.miss_cost,

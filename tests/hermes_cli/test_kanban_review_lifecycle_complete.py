@@ -274,7 +274,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
 
 
 @pytest.mark.parametrize("bad_payload", ["{not-json", "[]"])
-def test_request_changes_fails_closed_on_malformed_review_provenance(
+def test_request_changes_routes_malformed_review_provenance_to_triage(
     conn,
     bad_payload: str,
 ):
@@ -303,13 +303,14 @@ def test_request_changes_fails_closed_on_malformed_review_provenance(
         reason="Needs changes.",
         expected_run_id=review.current_run_id,
     )
-    assert ok is False
-    assert "implementer provenance" in (detail or "")
+    assert (ok, detail) == (True, None)
     task = kb.get_task(conn, task_id)
     assert task is not None
-    assert task.status == "running"
-    assert task.assignee == "reviewer"
-    assert task.current_run_id == review.current_run_id
+    assert task.status == "triage"
+    assert task.assignee is None
+    assert task.current_run_id is None
+    event = _event(kb.list_events(conn, task_id), "changes_requested")
+    assert event.payload["routed_to_triage"] is True
 
 
 def test_reclaim_fails_safe_on_non_object_claim_provenance(conn) -> None:

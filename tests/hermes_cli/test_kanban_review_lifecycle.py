@@ -889,12 +889,8 @@ def test_review_handoff_without_live_run_attributes_run_to_implementer(kanban_ho
 def test_review_handoff_of_card_assigned_to_its_reviewer_records_no_implementer(
     kanban_home: Path,
 ) -> None:
-    """A card created already assigned to its reviewer has no implementer to
-    record. Stamping the assignee made the payload read
-    ``implementer == reviewer``, and ``request_changes`` routes on that field —
-    so a rejection went back to the profile that wrote the findings. With no
-    live run and nothing but the reviewer on the row, the honest provenance is
-    *none*, and the rejection must refuse rather than misroute."""
+    """A card assigned to its reviewer has no implementer provenance, so a
+    rejection lands in triage rather than routing back to the reviewer."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="already applied", assignee="reviewer-a")
         assert kb.request_review(
@@ -912,9 +908,149 @@ def test_review_handoff_of_card_assigned_to_its_reviewer_records_no_implementer(
 
         claimed = kb.claim_review_task(conn, tid, claimer="reviewer-a")
         assert claimed is not None
-        ok, reason = kb.request_changes(conn, tid, reason="found 3 issues")
-        assert ok is False
-        assert "implementer provenance" in (reason or "")
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 2, worker_pid = 4321, "
+            "worker_started_at = 123456 WHERE id = ?", (tid,),
+        )
+        ok, detail = kb.request_changes(conn, tid, reason="found 3 issues")
+        assert (ok, detail) == (True, None)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "triage"
+        row = conn.execute(
+            "SELECT assignee, claim_lock, claim_expires, worker_pid, worker_started_at, "
+            "current_run_id, consecutive_failures FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+        assert tuple(row[key] for key in (
+            "assignee", "claim_lock", "claim_expires", "worker_pid",
+            "worker_started_at", "current_run_id",
+        )) == (None, None, None, None, None, None)
+        assert row["consecutive_failures"] == 2
+        assert _last_run(conn, tid)["outcome"] == "changes_requested"
+
+
+def test_changes_requested_without_implementer_records_triage_event_and_run(
+    kanban_home: Path,
+) -> None:
+    with kbc.connect() as conn:
+        tid, review = _prepare_null_implementer_review(conn, "null implementer")
+        ok, detail = kb.request_changes(
+            conn, tid, reason="needs fixes", expected_run_id=review.current_run_id,
+        )
+        assert (ok, detail) == (True, None)
+        event = _events(conn, tid, kind="changes_requested")[-1][1]
+        assert event == {
+            "reason": "needs fixes",
+            "implementer": None,
+            "reviewer": "reviewer",
+            "status": "triage",
+            "routed_to_triage": True,
+        }
+        run = _last_run(conn, tid)
+        assert (run["status"], run["outcome"], run["summary"]) == (
+            "triage", "changes_requested", "needs fixes",
+        )
+
+
+def _prepare_null_implementer_review(conn, title: str):
+    tid = kb.create_task(conn, title=title, assignee="worker")
+    implementation = kb.claim_task(conn, tid, claimer="worker")
+    assert implementation is not None
+    assert kb.request_review(
+        conn, tid, summary="review", reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+    conn.execute(
+        "UPDATE task_events SET payload = ? "
+        "WHERE task_id = ? AND kind = 'review_requested'",
+        (json.dumps({"implementer": None}), tid),
+    )
+    conn.commit()
+    review = kb.claim_review_task(conn, tid, claimer="reviewer")
+    assert review is not None
+    return tid, review
+
+
+def test_blank_implementer_routes_to_triage(kanban_home: Path) -> None:
+    for blank in ("", "   "):
+        with kbc.connect() as conn:
+            tid, review = _prepare_null_implementer_review(conn, f"blank {blank!r}")
+            conn.execute(
+                "UPDATE task_events SET payload = ? "
+                "WHERE task_id = ? AND kind = 'review_requested'",
+                (json.dumps({"implementer": blank}), tid),
+            )
+            conn.commit()
+            ok, detail = kb.request_changes(
+                conn, tid, reason="needs fixes", expected_run_id=review.current_run_id,
+            )
+            assert (ok, detail) == (True, None)
+            assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_request_changes_valid_implementer_path_is_unchanged(kanban_home: Path) -> None:
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="valid implementer", assignee="worker")
+        implementation = kb.claim_task(conn, tid, claimer="worker")
+        assert implementation is not None
+        assert kb.request_review(
+            conn, tid, summary="review", reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, tid, claimer="reviewer")
+        assert review is not None
+        ok, detail = kb.request_changes(
+            conn, tid, reason="needs fixes", expected_run_id=review.current_run_id,
+        )
+        assert (ok, detail) == (True, "worker")
+        assert kb.get_task(conn, tid).status == "ready"
+        event = _events(conn, tid, kind="changes_requested")[-1][1]
+        assert event["implementer"] == "worker"
+        assert "routed_to_triage" not in event
+
+
+def test_request_changes_error_paths_are_unchanged(kanban_home: Path) -> None:
+    with kbc.connect() as conn:
+        assert kb.request_changes(conn, "missing", reason="reason") == (False, "task not found")
+        tid = kb.create_task(conn, title="not running")
+        assert kb.request_changes(conn, tid, reason="reason") == (
+            False, "task is not in an active review run",
+        )
+        assert kb.get_task(conn, tid).status == "ready"
+
+        tid = kb.create_task(conn, title="bad reason")
+        assert kb.request_changes(conn, tid, reason=" ") == (False, "reason is required")
+        assert kb.get_task(conn, tid).status == "ready"
+
+        tid = kb.create_task(conn, title="wrong run", assignee="worker")
+        implementation = kb.claim_task(conn, tid, claimer="worker")
+        assert implementation is not None
+        assert kb.request_review(conn, tid, summary="review", reviewer="reviewer")
+        review = kb.claim_review_task(conn, tid, claimer="reviewer")
+        assert review is not None
+        before = kb.get_task(conn, tid)
+        assert kb.request_changes(
+            conn, tid, reason="reason", expected_run_id=review.current_run_id + 1,
+        ) == (False, "run_id mismatch")
+        assert kb.get_task(conn, tid).status == before.status == "running"
+
+        tid = kb.create_task(conn, title="not review claimed", assignee="worker")
+        implementation = kb.claim_task(conn, tid, claimer="worker")
+        assert implementation is not None
+        assert kb.request_changes(conn, tid, reason="reason") == (
+            False, "active run was not claimed from review",
+        )
+        assert kb.get_task(conn, tid).status == "running"
+
+        tid, _review = _prepare_null_implementer_review(conn, "missing request event")
+        conn.execute(
+            "DELETE FROM task_events WHERE task_id = ? AND kind = 'review_requested'", (tid,),
+        )
+        conn.commit()
+        assert kb.request_changes(conn, tid, reason="reason") == (
+            False, "no prior review_requested event",
+        )
+        assert kb.get_task(conn, tid).status == "running"
 
 
 def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Path) -> None:

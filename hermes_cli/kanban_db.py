@@ -3326,8 +3326,8 @@ def request_review(
             # which is what ``kanban create --assignee <reviewer>`` followed by
             # ``request-review`` produces. Recording the reviewer as its own
             # implementer is worse than recording nothing: request_changes()
-            # routes on this field, and it already refuses a handoff that
-            # carries no implementer provenance.
+            # routes on this field, and a handoff without provenance goes to
+            # triage for a human instead of being misrouted.
             implementer = None
             if trow["current_run_id"] is not None:
                 arow = conn.execute(
@@ -3405,12 +3405,50 @@ def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _route_changes_to_triage(
+    conn: sqlite3.Connection, task_id: str, run_id: int, *, reason: str, reviewer: Optional[str],
+) -> tuple[bool, Optional[str]]:
+    """Land a review rejection without implementer provenance in human triage."""
+    cur = conn.execute(
+        """
+        UPDATE tasks
+           SET status = 'triage',
+               assignee = NULL,
+               claim_lock = NULL,
+               claim_expires = NULL,
+               worker_pid = NULL, worker_started_at = NULL
+         WHERE id = ? AND status = 'running' AND current_run_id = ?
+        """,
+        (task_id, run_id),
+    )
+    if cur.rowcount != 1:
+        return False, "task changed during review handoff"
+    ended_run_id = _end_run(
+        conn, task_id, outcome="changes_requested", status="triage", summary=reason,
+    )
+    _append_event(
+        conn,
+        task_id,
+        "changes_requested",
+        {
+            "reason": reason,
+            "implementer": None,
+            "reviewer": reviewer,
+            "status": "triage",
+            "routed_to_triage": True,
+        },
+        run_id=ended_run_id,
+    )
+    return True, None
+
+
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
-    back to the implementer from the latest ``review_requested`` event, parent
-    gating reapplied. Returns ``(ok, implementer | reason)``."""
+    back to its implementer from the latest ``review_requested`` event, reapplying
+    parent gating. Without implementer provenance, route to human triage.
+    Returns ``(ok, implementer | None | reason)``."""
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
@@ -3436,9 +3474,11 @@ def request_changes(
         if requested_event is None:
             return False, "no prior review_requested event"
         implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
-        if implementer is None:
-            return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+        if implementer is None:
+            return _route_changes_to_triage(
+                conn, task_id, int(current_run_id), reason=reason, reviewer=reviewer,
+            )
 
         new_status = _landing_status_after_parents(conn, task_id)
         # consecutive_failures deliberately PRESERVED: a review transition is

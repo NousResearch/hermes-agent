@@ -1148,12 +1148,14 @@ def test_classify_orphans_mixed():
 
 
 def _assistant_with_call(call_id, content=""):
+    # Read-only on purpose: an unanswered call that may have had a side effect is answered with an
+    # UNKNOWN result instead of pruned (test_resume_unanswered_tool_calls.py).
     return {
         "role": "assistant",
         "content": content,
         "tool_calls": [{
             "id": call_id, "type": "function",
-            "function": {"name": "f", "arguments": "{}"},
+            "function": {"name": "read_file", "arguments": "{}"},
         }],
     }
 
@@ -1547,8 +1549,8 @@ def test_repair_prune_unanswered_tool_calls_pops_persist_marker():
     stamped = {
         "role": "assistant", "content": "calling tools",
         "tool_calls": [
-            {"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
-            {"id": "t2", "type": "function", "function": {"name": "g", "arguments": "{}"}},
+            {"id": "t1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+            {"id": "t2", "type": "function", "function": {"name": "search_files", "arguments": "{}"}},
         ],
         _DB_PERSISTED_MARKER: True,
     }
@@ -1694,9 +1696,10 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
     assert after == ["user", "assistant"], f"flush changed the durable transcript: {before} -> {after}"
 
 
+# Read-only, so the call is erased; a side-effecting one would be kept with an UNKNOWN-effect result.
 _UNANSWERED_CALL = {"role": "assistant", "content": "", "_row_id": 21,
                     "tool_calls": [{"id": "unanswered", "type": "function",
-                                    "function": {"name": "f", "arguments": "{}"}}]}
+                                    "function": {"name": "read_file", "arguments": "{}"}}]}
 _STRAY_RESULT = {"role": "tool", "tool_call_id": "orphan", "content": "out", "_row_id": 21}
 
 

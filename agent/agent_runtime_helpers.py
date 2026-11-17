@@ -37,6 +37,7 @@ from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from agent.replay_cleanup import recover_unanswered_side_effect_calls
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -741,8 +742,8 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
 
 
 _SEQUENCE_REPAIR_PASSES = (
-    _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
-    _merge_consecutive_users,
+    _merge_consecutive_assistants, _drop_stray_tool_results, recover_unanswered_side_effect_calls,
+    _prune_unanswered_tool_calls, _merge_consecutive_users,
 )
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
@@ -767,11 +768,10 @@ def repair_message_sequence(agent, messages: list[dict]) -> int:
     """Collapse malformed role-alternation left in the live history; returns repair count.
     Providers require strict alternation after the system message (violations: silent empty
     responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as text);
-    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
-    known); drop stray tool results; prune unanswered tool_calls; merge consecutive user turns. A user
-    turn directly after an assistant turn is valid and left alone.
-    """
+    Passes in order: decode sentinel-encoded multimodal rows (an image is not merged as text); merge
+    consecutive assistant turns (BEFORE orphan detection, so the merged tool_call-id union is known); drop
+    stray tool results; answer an unanswered side-effecting call as UNKNOWN; prune the remaining unanswered
+    tool_calls; merge consecutive user turns. A user turn right after an assistant turn is left alone."""
     if not messages:
         return 0
     _normalize_sentinel_encoded_content(messages)

@@ -63,6 +63,16 @@ async def test_a_running_turn_reads_working_until_it_settles(owner):
 
 
 @pytest.mark.asyncio
+async def test_a_working_row_carries_its_activity_stamp(owner):
+    # Desktop's working-row subtitle: the list endpoints are not re-read on an activity heartbeat.
+    owner.authority.db.touch_session_activity('chat', description='executing tool: terminal')
+    assert 'activity' not in (await owner.active())['chat']
+    await owner.submit('hi')
+    owner.authority.db.touch_session_activity('chat', description='executing tool: terminal')
+    assert (await owner.active())['chat']['activity'] == 'executing tool: terminal'
+
+
+@pytest.mark.asyncio
 async def test_a_row_names_its_source(owner):
     # Desktop's poll can see a messaging turn settle before its messaging row loads; the source
     # on the live row is what keeps that settle from reading as a Desktop completion.

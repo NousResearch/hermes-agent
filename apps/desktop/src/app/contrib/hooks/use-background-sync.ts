@@ -45,6 +45,7 @@ import {
   setCurrentCwd
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
+import { setLiveActivity } from '@/store/session-live-activity'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -753,6 +754,8 @@ const TYPING_BURST_QUIET_MS = 1_500
 export const TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS = 5_000
 
 interface LiveSessionStatusItem {
+  /** What a working turn is doing right now; absent on idle rows and older backends. */
+  activity?: string
   id?: string
   last_active?: number
   session_key?: string
@@ -809,6 +812,21 @@ export function resetTypingActivityTracking(): void {
  * `running: false` edge, so the row keeps spinning and the busy→idle transition
  * that paints the green "your turn" dot never fires. Reaping runtimes that
  * vanish between polls restores both. */
+/** Stored id → what its working turn is doing, from one active_list snapshot. */
+function liveActivity(response: LiveSessionStatusResponse): Record<string, string> {
+  const out: Record<string, string> = {}
+
+  for (const session of response.sessions ?? []) {
+    const storedSessionId = session.session_key?.trim()
+
+    if (storedSessionId && session.activity) {
+      out[storedSessionId] = session.activity
+    }
+  }
+
+  return out
+}
+
 export function rehydrateLiveSessionStatuses(
   response: LiveSessionStatusResponse,
   nowMs = Date.now(),
@@ -938,6 +956,7 @@ export function rehydrateLiveSessionStatuses(
   }
 
   liveRuntimeIdsByProfile.set(profileKey, seen)
+  setLiveActivity(profileKey, liveActivity(response))
 
   // Completions the reconnect reconcile downgraded blind: this snapshot is the
   // terminal fact it lacked. Every parked session not reported working is

@@ -32,12 +32,18 @@ export const SESSION_CARD_ROW_ESTIMATE_PX = 96
  *  durable activity stamp. Idle, unread, background and needs-input rows get
  *  none — the stamp is a turn-scoped observation, and any other state already
  *  has its own cue (the amber dot, the hollow background dot). */
-export function sessionActivitySubtitle(session: SessionInfo, state: SessionDotState): null | string {
+export function sessionActivitySubtitle(
+  session: SessionInfo,
+  state: SessionDotState,
+  live?: string
+): null | string {
   if (state !== 'working' && state !== 'stalled') {
     return null
   }
 
-  return oneLine(session.last_activity_description ?? null)
+  // The live snapshot moves with the turn; the list row's stamp only as often
+  // as the list is re-read.
+  return oneLine(live || session.last_activity_description || null)
 }
 
 export function sessionRowDetails(session: SessionInfo, fmt: SessionRowFormatters): SessionRowDetails {

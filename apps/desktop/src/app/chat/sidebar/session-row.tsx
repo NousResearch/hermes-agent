@@ -38,6 +38,7 @@ import {
   showsRunningArc
 } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
+import { $liveActivityBySession } from '@/store/session-live-activity'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
@@ -132,7 +133,8 @@ const ArchivedLead = () => (
 // What a working/stalled turn is doing right now ("executing tool: terminal");
 // every other row renders nothing here, so its legacy layout is unchanged.
 function SessionActivityLine({ session, state }: { session: SessionInfo; state: SessionDotState }) {
-  const activity = sessionActivitySubtitle(session, state)
+  const live = useStoreSelector($liveActivityBySession, byId => byId[session.id])
+  const activity = sessionActivitySubtitle(session, state, live)
 
   if (!activity) {
     return null

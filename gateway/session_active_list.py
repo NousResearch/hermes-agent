@@ -40,9 +40,14 @@ async def active_list(connection, ref, params):
         if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed:
             continue
         sid, started = entry.session_id, float(row.get('started_at') or 0)
-        rows.append({'current': sid == current, 'id': sid, 'session_key': sid,
-                     'last_active': float(row.get('ended_at') or started), 'started_at': started,
-                     'message_count': int(row.get('message_count') or 0),
-                     'model': str(row.get('model') or ''), 'preview': '', 'title': row.get('title') or '',
-                     'source': row.get('source'), 'status': _status(entry.live, entry.handle, entry.pending)})
+        status = _status(entry.live, entry.handle, entry.pending)
+        item = {'current': sid == current, 'id': sid, 'session_key': sid,
+                'last_active': float(row.get('ended_at') or started), 'started_at': started,
+                'message_count': int(row.get('message_count') or 0),
+                'model': str(row.get('model') or ''), 'preview': '', 'title': row.get('title') or '',
+                'source': row.get('source'), 'status': status}
+        # The turn's durable activity stamp: the list endpoints are not re-read on a heartbeat.
+        if status == 'working' and (activity := row.get('last_activity_description')):
+            item['activity'] = activity
+        rows.append(item)
     return {'sessions': rows}

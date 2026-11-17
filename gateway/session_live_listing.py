@@ -46,6 +46,7 @@ def _store_facts(db, session_ids):
     with db._read_ctx() as conn:
         rows = conn.execute(
             "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.message_count, s.model, s.hidden, "
+            "s.last_activity_description, "
             "s.archived, s.runtime_revision, s.runtime_generation, "
             "(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = CASE WHEN json_valid(m.value) "
             "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at "

@@ -16,6 +16,7 @@ import {
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
+import { $liveActivityBySession } from '@/store/session-live-activity'
 import {
   $attentionSessionIds,
   $sessionTiles,
@@ -1245,6 +1246,19 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual([])
     expect($attentionSessionIds.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])
+  })
+
+  // The sidebar subtitle reads this map: the session list is not re-read on an
+  // activity heartbeat, so the live snapshot is what moves it mid-turn.
+  it('tracks what each working turn is doing, and drops it when the turn ends', () => {
+    const working = { id: 'runtime-busy', session_key: 'busy', status: 'working' as const }
+
+    rehydrateLiveSessionStatuses({ sessions: [{ ...working, activity: 'starting new turn' }] }, Date.now(), 'p')
+    rehydrateLiveSessionStatuses({ sessions: [{ ...working, activity: 'tool running: terminal' }] }, Date.now(), 'p')
+    expect($liveActivityBySession.get()).toEqual({ busy: 'tool running: terminal' })
+
+    rehydrateLiveSessionStatuses({ sessions: [{ ...working, status: 'idle' }] }, Date.now(), 'p')
+    expect($liveActivityBySession.get()).toEqual({})
   })
 })
 

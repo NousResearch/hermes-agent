@@ -668,7 +668,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     elif inflight:
         preview = " ".join(str(inflight.get("assistant") or inflight.get("user") or preview).split())[:160]
     now = time.time()
-    return {
+    item = {
         "current": sid == current_sid, "id": sid,
         "last_active": float(session.get("last_active") or session.get("created_at") or now),
         "message_count": len(history),
@@ -676,6 +676,18 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "session_key": key, "started_at": float(session.get("created_at") or now), "status": status,
         "title": _session_live_title(session, key),
     }
+    if status == "working" and (activity := _live_activity(agent)):
+        item["activity"] = activity
+    return item
+
+
+def _live_activity(agent) -> str:
+    """What a running turn is doing right now, straight off the agent's activity clock. The list
+    endpoints only carry the durable stamp, and no ``sessions.changed`` fires for a heartbeat, so a
+    sidebar subtitle read from the list alone freezes on the turn's first label."""
+    summary = getattr(agent, "get_activity_summary", None)
+    snapshot = summary() if callable(summary) else None
+    return str(snapshot.get("last_activity_description") or "") if isinstance(snapshot, dict) else ""
 
 
 def _session_lookup_key(session: dict, *, fallback: str = "") -> str:

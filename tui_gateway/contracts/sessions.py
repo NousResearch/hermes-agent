@@ -282,6 +282,8 @@ class SessionActiveItem(Result):
     started_at: float
     status: LiveSessionStatus
     title: str
+    # What a working turn is doing right now ("executing tool: terminal"); absent when idle.
+    activity: str | None = None
 
 
 class SessionActiveListResult(Result):

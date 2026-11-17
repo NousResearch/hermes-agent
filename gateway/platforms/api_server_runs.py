@@ -336,7 +336,7 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {
-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
+            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at", "delivery"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -473,7 +473,7 @@ def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, An
         # The documented poll shape: the canonical projection decides status/output/usage; the
         # retained run record still names the object, the requested model and the served runtime.
         retained = self._run_statuses.get(run_id) or {}
-        return {"object": "hermes.run", **{key: retained[key] for key in ("model", "runtime", "created_at")
+        return {"object": "hermes.run", **{key: retained[key] for key in ("model", "runtime", "created_at", "delivery")
                                            if key in retained}, **canonical}
     status = self._run_statuses.get(run_id)
     if status is not None:
@@ -576,7 +576,8 @@ def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _op
             code="idempotency_key_conflict", status=409)
     original_id = str(record["run_id"])
     status = self._durable_run_status(request, original_id) or record["status"]
-    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
+    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True,
+                              delivery=status.get("delivery", record["status"].get("delivery")))
 
 
 @dataclass(slots=True)
@@ -910,7 +911,6 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             idempotency_scope, idempotency_key, _openai_error)
         if refused is not None:
             return refused
-    delivery = await apply_if_busy(launch, if_busy)
     self._activate_admitted_request()
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
@@ -921,6 +921,9 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
+    # After the launch: the admitted run executes (and its drain is scheduled) whatever the busy
+    # policy step does. The decision is recorded so an exact keyed retry reports it again.
+    delivery = await apply_if_busy(launch, if_busy)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False, delivery=delivery)
 
 

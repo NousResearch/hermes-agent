@@ -10,6 +10,7 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_authority import initialize_session_authority
 from hermes_state import SessionDB
+from tests.waiting import async_wait_until
 from tests.gateway.test_api_unknown_resolution import _AUTH_HEADERS, _adapter, _runs_client
 
 
@@ -86,12 +87,10 @@ async def _post(env, if_busy, text, **headers):
 
 
 async def _status(env, run_id, until):
-    for _ in range(100):
-        polled = await (await env.client.get(f"/v1/runs/{run_id}", headers=_AUTH_HEADERS)).json()
-        if polled["status"] in until:
-            return polled
-        await asyncio.sleep(0.05)
-    return polled
+    async def polled():
+        current = await (await env.client.get(f"/v1/runs/{run_id}", headers=_AUTH_HEADERS)).json()
+        return current if current["status"] in until else None
+    return await async_wait_until(polled, timeout=10, what=f"run {run_id} reaching {sorted(until)}")
 
 
 @pytest.mark.asyncio
@@ -135,6 +134,8 @@ async def test_if_busy_interrupt_stops_the_running_turn_and_runs_next(tmp_path, 
         status, taken = await _post(env, "interrupt", "do this instead", **{"Idempotency-Key": "k1"})
         assert (status, taken["delivery"]) == (202, "interrupted")
         assert env.agent._interrupt_requested
+        status, replay = await _post(env, "interrupt", "do this instead", **{"Idempotency-Key": "k1"})
+        assert (status, replay["run_id"], replay["delivery"]) == (202, taken["run_id"], "interrupted")
         status, conflict = await _post(env, "queue", "do this instead", **{"Idempotency-Key": "k1"})
         assert status == 409 and conflict["error"]["code"] == "idempotency_key_conflict"
         env.release.set()

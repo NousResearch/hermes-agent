@@ -14,11 +14,15 @@ carrying images, stays queued. The 202 names what happened in ``delivery``.
 """
 import asyncio
 import hmac
+import logging
+import sqlite3
 
 from gateway.platforms.api_server_authority_runs import _authority, run_admission, run_projection
 from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_queued_controls import transfer_to_running
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+logger = logging.getLogger(__name__)
 
 IF_BUSY_VALUES = ("queue", "steer", "interrupt")
 
@@ -68,14 +72,27 @@ _BUSY_ACTIONS = {"steer": _steer, "interrupt": _interrupt}
 
 
 async def apply_if_busy(launch, if_busy):
-    """Apply *if_busy* to an admitted run -> its ``delivery`` (``None`` when the request sent no
-    ``if_busy``: the 202 body stays exactly what it was)."""
+    """Apply *if_busy* to an admitted, launched run -> its ``delivery`` (``None`` when the request
+    sent no ``if_busy``: the 202 body stays exactly what it was). The decision is recorded on the
+    run status, so an exact keyed retry (``_replay_or_conflict``) reports it without acting again."""
     if if_busy is None:
         return None
+    delivery = await _decide(launch, if_busy)
+    owner = launch.owner
+    owner._set_run_status(launch.run_id, owner._run_statuses[launch.run_id]["status"], delivery=delivery)
+    return delivery
+
+
+async def _decide(launch, if_busy):
     if launch.admission is None:
         return "started"  # in-process execution (no session authority) or a live Bot Chat owner
     authority, ref, row = launch.admission
-    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=ref.session_id)
+    try:
+        rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=ref.session_id)
+    except (sqlite3.Error, RuntimeStoreError):
+        # The run is admitted and launched: it runs in FIFO order, which is the queue policy.
+        logger.warning("if_busy: could not read the FIFO of %s; run %s stays queued", ref.session_id, launch.run_id)
+        return "queued"
     head = _running_head(rows, row)
     if head is False:
         return "started"

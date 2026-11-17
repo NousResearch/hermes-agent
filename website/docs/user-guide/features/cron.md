@@ -660,6 +660,30 @@ Doctor never mutates jobs or state — it only reports. Pair it with
 `hermes cron incidents` (durable failure records) and `hermes cron runs`
 (attempt ledger) when digging into a flagged job.
 
+### Keeping jobs in git: `hermes cron export` / `import`
+
+`jobs.json` mixes what a job does with the scheduler's bookkeeping, so it changes on every run.
+`hermes cron export` writes only the definitions, one YAML file per job, so you can version,
+review and back up your automations like code:
+
+```bash
+hermes cron export ~/automations --git -m "add morning digest"
+git -C ~/automations push   # your remote, your call
+```
+
+Each job lands in `<dir>/jobs/<id>.yaml` with sorted keys: name, prompt, schedule, skills,
+delivery target, model/provider pins, script, workdir, timezone and the other authored fields.
+Run state (`next_run_at`, last status and error, run counters, pause markers) and the origin
+chat are left out, so running the export again on an unchanged store produces no diff and
+`--git` makes no commit. Files for jobs you deleted are removed. Credential-shaped strings (API
+keys, `user:password@` in URLs) are masked and the field is named under `redacted_fields`.
+
+`hermes cron import <dir>` merges the files back by job id, on the same machine or another
+profile: an existing job gets the exported definition and keeps its run state (fields under
+`redacted_fields` are left untouched), and a job the store has never seen arrives **paused**
+until you `hermes cron resume` it. Scripts referenced by a job are not copied; keep
+`HERMES_HOME/scripts/` in the same repo if you need them.
+
 ## Delivery options
 
 When scheduling jobs, you specify where the output goes:

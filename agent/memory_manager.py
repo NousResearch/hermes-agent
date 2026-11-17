@@ -176,7 +176,9 @@ def _mask_learned(text: str, learned: set) -> str:
         start, end = m.start(), m.end()
         token = m.group(0)
         offset = 0
-        if start and text[start - 1] == "\\" and len(token) > 1 and token[0] in _ESCAPE_LETTERS:
+        if (start and text[start - 1] == "\\" and len(token) > 1
+                and token[0] in _ESCAPE_LETTERS
+                and token.rstrip(_TOKEN_TRAILING_PUNCT) not in learned):
             offset = 1
         core = token[offset:]
         hit = core if core in learned else None

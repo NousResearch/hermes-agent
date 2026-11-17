@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from agent.memory_manager import MemoryManager
+from agent.memory_manager import MemoryManager, _redact_for_provider
 from agent.memory_provider import MemoryProvider
 
 _SECRET = "sk-proj-abc123def456ghi789jkl012"
@@ -136,22 +136,9 @@ def test_provider_tool_url_argument_reaches_the_provider_unmasked():
     for url in urls:
         mgr.handle_tool_call("rec_tool", {"url": url})
     assert provider.seen == [{"url": url} for url in urls]
-"""Tests appended to tests/agent/test_memory_sync_redaction.py in the PR.
-
-Same file as the existing suite so the #115104 contract (a key seen in a tool result is
-masked where the model repeats it in prose) and the new no-collateral-damage contract are
-asserted together.
-"""
-import json
-
-import pytest
-
-from agent.memory_manager import _redact_for_provider
-
 # Assembled at runtime so this file's own text never contains a token-shaped literal.
 _MODEL = "cn:glm-5.3-flash"
 _CONFIG_KEY = "HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS"
-_SECRET = "sk-" + "nxpQ7fakeFAKEfake1234567890abcdefghichk"
 
 
 def test_an_env_dump_does_not_learn_the_neighbouring_config_key_or_model_id():
@@ -198,3 +185,16 @@ def test_a_real_secret_is_still_masked_when_the_model_repeats_it(escaped):
     repeated = f"\\n{secret}." if escaped else f"{secret}."
     tool_out, prose_out = _redact_for_provider(tool, f"Your key is {repeated}")
     assert secret not in tool_out and secret not in prose_out
+
+
+def test_escaped_n_leading_secret_is_masked_without_rewriting_longer_identifiers():
+    """Keep a real n-leading credential whole even when prose prefixes it with a backslash."""
+    secret = "n" + "Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+    tool = json.dumps({"output": f"HINDSIGHT_API_LLM_API_KEY={secret}\n"})
+    longer_identifier = f"{secret}Suffix"
+
+    _tool_out, prose_out = _redact_for_provider(
+        tool, f"Copied value \\{secret}. Safe identifier {longer_identifier}"
+    )
+    assert secret not in prose_out.split("Safe identifier")[0]
+    assert longer_identifier in prose_out

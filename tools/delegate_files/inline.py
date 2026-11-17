@@ -211,7 +211,8 @@ def read_task_files(specs: list[FileSpec], workspace: Optional[str]) -> tuple[Op
             return None, err
         resolved_specs.append((spec, resolved))
     parts, spans, skipped = [], [], []
-    budget = MAX_TOTAL_BYTES - len(FILES_HEADING) - 1
+    # Room for the skipped-names marker is held back whenever a later entry could be skipped.
+    budget = MAX_TOTAL_BYTES - len(FILES_HEADING) - 1 - (_MIN_ENTRY_BYTES if len(resolved_specs) > 1 else 0)
     for spec, resolved in resolved_specs:
         if budget < _MIN_ENTRY_BYTES:
             skipped.append(spec.path if spec.start is None else f"{spec.path}:{spec.start}-{spec.end}")
@@ -226,7 +227,8 @@ def read_task_files(specs: list[FileSpec], workspace: Optional[str]) -> tuple[Op
     if skipped:
         names = ", ".join(skipped[:_MAX_SKIPPED_NAMES]) + (f" +{len(skipped) - _MAX_SKIPPED_NAMES} more"
                                                           if len(skipped) > _MAX_SKIPPED_NAMES else "")
-        parts.append(f"[not inlined, over the {MAX_TOTAL_BYTES}-byte cap: {names[:_MIN_ENTRY_BYTES - 96]}; "
+        shown = names.encode()[:_MIN_ENTRY_BYTES - 96].decode(errors="ignore")
+        parts.append(f"[not inlined, over the {MAX_TOTAL_BYTES}-byte cap: {shown}; "
                      "read_file to see them]\n")
     return TaskFiles(f"{FILES_HEADING}\n" + "\n".join(parts), tuple(spans)), None
 

@@ -141,3 +141,13 @@ def test_files_refuse_range_starting_beyond_eof(tmp_path):
     assert files == []
     assert "'files' entry 'small.py:21-25' starts beyond the end of the file" in err
     assert message is None
+
+
+def test_skipped_names_stay_inside_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(dtf, "MAX_TOTAL_BYTES", 2000)
+    ws = _workspace(tmp_path)
+    names = [f"{'d' * 60}_{i}.py" for i in range(8)]
+    for name in names:
+        (ws / name).write_text("x = 1\n", encoding="utf-8")
+    _ws, files, err, _msg = _brief(tmp_path, ["big.py", *names])
+    assert err is None and "not inlined" in files[0].block and len(files[0].block.encode()) <= 2000

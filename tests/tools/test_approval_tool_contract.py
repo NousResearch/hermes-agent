@@ -58,6 +58,11 @@ def plugin(tmp_path, monkeypatch, request):
                       preview=lambda args: f"Send to {args['to']}:\n{args['text']}", apply=apply)
     ctx.register_tool(name="fixture_plain", toolset="contract_fixture", schema={**_SCHEMA, "name": "fixture_plain"},
                       handler=lambda args, **_: plain.append(dict(args)) or json.dumps({"sent": True}))
+    ctx.register_tool(name="fixture_pay", toolset="contract_fixture", schema={
+        "name": "fixture_pay", "description": "Pay an amount.", "parameters": {
+            "type": "object", "properties": {"amount": {"type": "integer"}}, "required": ["amount"]}},
+        preview=lambda args: f"Pay {args['amount']}",
+        apply=lambda args, decision_id: json.dumps({"paid": args["amount"]}))
     yield {"sent": sent, "plain": plain, "home": home}
     manager.unload("contract_fixture")
     set_approval_callback(None)
@@ -114,3 +119,97 @@ def test_tool_without_a_declaration_is_unchanged(plugin):
     assert _call("fixture_plain", {"to": "#ops", "text": "hi"}, "call-3") == {"sent": True}
     assert plugin["plain"] == [{"to": "#ops", "text": "hi"}]
     assert not (plugin["home"] / "approvals").exists()
+
+
+def _agent_loop_call(name: str, args: dict, tool_call_id: str) -> dict:
+    """The agent loop's order: the pre-call verdict on the model's raw args, then dispatch (which
+    repairs argument types) without firing the hook again."""
+    from hermes_cli.plugins import resolve_pre_tool_block
+
+    block = resolve_pre_tool_block(name, args, task_id="contract-task", tool_call_id=tool_call_id)
+    if block is not None:
+        return {"error": block}
+    return json.loads(handle_function_call(name, args, task_id="contract-task", tool_call_id=tool_call_id,
+                                           skip_pre_tool_call_hook=True))
+
+
+def test_repaired_argument_types_still_match_the_approved_decision(plugin):
+    human = _Human("once")
+    set_approval_callback(human)
+    assert _agent_loop_call("fixture_pay", {"amount": "42"}, "call-pay") == {"paid": 42}
+    assert human.cards == ["Pay 42"]
+
+
+def test_profiles_and_sessions_do_not_take_each_others_decisions(plugin, tmp_path, monkeypatch):
+    """execute_code calls carry no tool call id, so the queue key must hold the profile and the
+    session: one process serving several of them must not hand one's approved decision to another."""
+    digest = approval_decisions.args_digest({"to": "#ops", "text": "same text"})
+    approval_decisions.queue_for_dispatch("", "fixture_send", digest, "decision-a")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "other-profile"))
+    assert approval_decisions._take_queued("", "fixture_send", digest) is None
+    monkeypatch.setenv("HERMES_HOME", str(plugin["home"]))
+    other_session = set_current_session_key("another-session")
+    try:
+        assert approval_decisions._take_queued("", "fixture_send", digest) is None
+    finally:
+        reset_current_session_key(other_session)
+    assert approval_decisions._take_queued("", "fixture_send", digest) == "decision-a"
+
+
+def test_a_decision_past_retention_is_never_applied_again(plugin, request):
+    import time
+
+    args = {"to": "#ops", "text": "pay invoice 8"}
+    digest = approval_decisions.args_digest(args)
+    decision_id = approval_decisions.decision_id_for(f"contract-{request.node.name}", "call-old",
+                                                     "fixture_send", digest)
+    approval_decisions.mint(decision_id, "fixture_send", digest, "user")
+    with approval_decisions._connect() as con:  # applied 31 days ago
+        con.execute("UPDATE decisions SET status='applied', result=?, updated=? WHERE id=?",
+                    (json.dumps(json.dumps({"sent": True})), time.time() - 31 * 24 * 3600, decision_id))
+    set_approval_callback(lambda *a, **k: pytest.fail("a replay of an applied decision is not asked again"))
+
+    result = _call("fixture_send", args, "call-old")
+
+    assert plugin["sent"] == [] and "expired" in json.dumps(result)
+    assert approval_decisions.get(decision_id)["status"] == "applied"
+
+
+@pytest.mark.parametrize("outcome", [
+    json.dumps({"rows": ["x" * 100] * 1000}),  # longer than any column cap
+    {"_multimodal": True, "content": [{"type": "text", "text": "chart attached"}]},
+], ids=["long-json", "multimodal"])
+def test_replay_returns_exactly_the_first_outcome(plugin, outcome):
+    import uuid
+
+    args = {"to": "#ops"}
+    decision_id = uuid.uuid4().hex
+    approval_decisions.mint(decision_id, "fixture_send", approval_decisions.args_digest(args), "user")
+    first = approval_decisions.run_once("fixture_send", args, decision_id, lambda: outcome, lambda r: r)
+    again = approval_decisions.run_once("fixture_send", args, decision_id,
+                                        lambda: pytest.fail("applied once"), lambda r: r)
+    assert first == again == outcome
+    assert approval_decisions.get(decision_id)["status"] == "applied"
+
+
+def test_a_plugin_approved_replay_is_not_asked_again(plugin, monkeypatch):
+    from hermes_cli import lifecycle
+
+    real = lifecycle.invoke_hook
+
+    def hooks(name, **kwargs):
+        if name == "pre_tool_call" and kwargs.get("tool_name") == "fixture_send":
+            return [{"action": "approve", "message": "Send it?"}]
+        return real(name, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "invoke_hook", hooks)
+    human = _Human("once")
+    set_approval_callback(human)
+    args = {"to": "#ops", "text": "release notes"}
+
+    first = _call("fixture_send", args, "call-r")
+    replay = _call("fixture_send", args, "call-r")
+
+    assert len(human.cards) == 1 and first == replay == {"sent": True, "to": "#ops"}
+    assert len(plugin["sent"]) == 1

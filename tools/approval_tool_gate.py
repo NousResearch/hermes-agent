@@ -315,6 +315,19 @@ def _replayed_decision(tool_name: str, args: dict, tool_call_id: str) -> Optiona
         get_current_session_key(), tool_call_id, tool_name, digest))
 
 
+def _reuse_replayed(tool_name: str, args: dict, tool_call_id: str) -> bool:
+    """A replay of a call whose ``apply`` decision already exists reuses it: no new prompt, and
+    ``apply`` answers from the stored outcome instead of running again."""
+    entry = _declared(tool_name)
+    if entry is None or entry.apply is None:
+        return False
+    replayed = _replayed_decision(tool_name, args, tool_call_id)
+    if replayed is None:
+        return False
+    _queue_decision(tool_name, args, tool_call_id, replayed.get("approved_by") or "replay")
+    return True
+
+
 def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Optional[str]:
     from agent.i18n import t
     from tools.approval_context import _get_approval_scope
@@ -326,8 +339,7 @@ def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Op
     commits = entry is not None and entry.apply is not None
     if not commits and _get_approval_scope() != "all":
         return None
-    if commits and (replayed := _replayed_decision(tool_name, args, tool_call_id)) is not None:
-        _queue_decision(tool_name, args, tool_call_id, replayed.get("approved_by") or "replay")
+    if commits and _reuse_replayed(tool_name, args, tool_call_id):
         return None
     presence = _human_presence()
     if presence is None and not commits:
@@ -405,6 +417,18 @@ def _resolve_directive(details, tool_name: str) -> tuple[Optional[str], bool]:
     return None, True
 
 
+def _dispatch_args(tool_name: str, args: Any) -> dict:
+    """The arguments as dispatch will see them: ``handle_function_call`` repairs argument types
+    (``"42"`` -> ``42``) after the agent loop's pre-call verdict, so the preview, the grant and the
+    approved-args digest are computed on the repaired copy (the caller's dict is not touched)."""
+    if not isinstance(args, dict):
+        return {}
+    import copy
+    from tools.arg_coercion import coerce_tool_args
+    repaired = coerce_tool_args(tool_name, copy.deepcopy(args))
+    return repaired if isinstance(repaired, dict) else {}
+
+
 def resolve_pre_tool_block(details, tool_name: str, args: Any, *, task_id: str = "", turn_id: str = "",
                            tool_call_id: str = "", session_id: str = "") -> Optional[str]:
     """The ONE pre-call verdict: the plugin directive, then the full-scope tool gate on the
@@ -417,11 +441,12 @@ def resolve_pre_tool_block(details, tool_name: str, args: Any, *, task_id: str =
     except Exception:  # health: allow BLE001 -- observability only; the verdict must still run
         logger.debug("approval observability context unavailable", exc_info=True)
     try:
+        final_args = _dispatch_args(tool_name, details.modified_args if details.modified_args is not None else args)
+        if details.action == "approve" and _reuse_replayed(tool_name, final_args, tool_call_id):
+            return None
         block, human_approved = _resolve_directive(details, tool_name)
-        final_args = details.modified_args if details.modified_args is not None else args
         if block is None and human_approved and (entry := _declared(tool_name)) is not None and entry.apply:
-            _queue_decision(tool_name, final_args if isinstance(final_args, dict) else {}, tool_call_id,
-                            "plugin_approve")
+            _queue_decision(tool_name, final_args, tool_call_id, "plugin_approve")
         if block is not None or human_approved:
             return block
         return evaluate_tool_gate(tool_name, final_args, task_id, tool_call_id)

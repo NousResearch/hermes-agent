@@ -8,6 +8,8 @@
  * rather than inside either one.
  */
 
+import { isHostedArtifactCardTool } from './hosted-artifacts'
+
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
 
 /** Renders a diff — the deliverable of the turn, and the one card whose cost scales. */
@@ -27,6 +29,8 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `manage_connections` and `manage_catalog` are consent cards; their controls must stay visible.
 //   - `set_theme` shows a picker card while it waits for the user, then a one-line receipt.
 //   - `setup_beat` is the onboarding chat's card for one beat, then a one-line receipt.
+//   - The hosted artifacts server's create / update / show calls draw the
+//     artifact itself (isHostedArtifactCardTool).
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
@@ -50,7 +54,12 @@ export function isCardToolName(toolName: string): toolName is CardToolName {
 export const CONNECTION_CARD_KEY = 'manage_connections:card'
 
 export function isCardTool(toolName: string): boolean {
-  return isCardToolName(toolName) || toolName === CONNECTION_CARD_KEY || isFileEditTool(toolName)
+  return (
+    isCardToolName(toolName) ||
+    toolName === CONNECTION_CARD_KEY ||
+    isFileEditTool(toolName) ||
+    isHostedArtifactCardTool(toolName)
+  )
 }
 
 // Activity tools that render nothing at all: `todo` parts are hoisted to a

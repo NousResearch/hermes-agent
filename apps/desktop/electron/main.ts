@@ -318,6 +318,7 @@ import {
 } from './hardening'
 import { isHermesProcess } from './hermes-process'
 import { assertNotPassiveSpawn } from './host-backend-singleton'
+import { hostedArtifactFrameNavigation, isHostedArtifactRequestingUrl } from './hosted-artifact-frame'
 import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
@@ -6747,6 +6748,14 @@ function installMediaPermissions() {
   // (hub-iframe-policy.ts): the picker's Copy controls write to the clipboard,
   // and every other frame — artifact previews included — stays denied.
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    // A hosted artifact frame is untrusted content on its own origin: it is
+    // granted nothing, whatever it asks for.
+    if (isHostedArtifactRequestingUrl(details?.requestingUrl, hostedArtifactFramePolicy())) {
+      callback(false)
+
+      return
+    }
+
     if ((permission as string) === 'clipboard-sanitized-write') {
       callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
 
@@ -6763,7 +6772,11 @@ function installMediaPermissions() {
   // the shared predicate runs with `undefined` details and allows the capture
   // permissions — identical policy to the request handler below, just without
   // the metadata refinement (absent metadata is allowed there too).
-  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    if (isHostedArtifactRequestingUrl(requestingOrigin, hostedArtifactFramePolicy())) {
+      return false
+    }
+
     if ((permission as string) === 'clipboard-sanitized-write') {
       return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
     }
@@ -6831,6 +6844,21 @@ function findFrameByIdentifier(
       f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
     ) ?? null
   )
+}
+
+/** Hosted artifact framing policy for this build: unpackaged (development)
+ *  runs also accept the local artifacts server. */
+function hostedArtifactFramePolicy() {
+  return { dev: !IS_PACKAGED }
+}
+
+/** A URL's origin for logs: never the path or query (a view ticket). */
+function safeUrlOrigin(url: string): string {
+  try {
+    return new URL(url).origin
+  } catch {
+    return '(unparseable)'
+  }
 }
 
 /** `frame.origin` as a safe string; destroyed frames report opaque/'null'. */
@@ -11835,6 +11863,22 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
     const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
     const frameOrigin = safeFrameOrigin(frame)
+
+    // Hosted artifact frames: an artifact stays on its own origin, and a
+    // frame enters the artifact namespace only on an origin this build may
+    // frame (hosted-artifact-frame.ts). Everything else is not ours.
+    const artifactVerdict = hostedArtifactFrameNavigation(frameOrigin, url, hostedArtifactFramePolicy())
+
+    if (artifactVerdict === 'deny') {
+      event.preventDefault()
+      rememberLog(`[hosted-artifact] denied frame navigation to ${safeUrlOrigin(url)}`)
+
+      return
+    }
+
+    if (artifactVerdict === 'allow') {
+      return
+    }
 
     if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
       return

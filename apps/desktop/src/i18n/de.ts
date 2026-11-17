@@ -3602,6 +3602,14 @@ export const deOverrides = {
     copyUrl: 'URL kopieren',
     copyPath: 'Pfad kopieren'
   },
+  hostedArtifact: {
+    untitled: 'Artefakt',
+    version: version => `Version ${version}`,
+    newerVersion: version => `Version ${version} verfügbar`,
+    openViewer: 'Im Viewer öffnen',
+    linkOnly: 'Öffne den Viewer, um dieses Artefakt zu sehen.',
+    frameTitle: title => `Artefakt: ${title}`
+  },
   artifactCard: {
     kind: {
       code: 'Code',

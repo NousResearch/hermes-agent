@@ -49,6 +49,17 @@ Vault requests are live-only and are not replayed after a reconnect. A failed
 preview fill never switches to a different browser. Filling does not submit
 the login form.
 
+### JavaScript-masked password boxes
+
+Some sites render bullets in a text input instead of using a standard password
+input. Hermes can fill one unambiguous, initially empty current-password box
+after a nonsecret probe confirms masking and normal clearing. The supervisor
+retains a single-use target in an isolated browser context, rechecks the page,
+form and control before private delivery, and refuses unsupported or changed
+widgets. There is no separate selector configuration. The fill never submits a
+form or automatically retries uncertain delivery; the site's own scripts still
+have access to a password supplied to that site.
+
 ## Two-factor codes
 
 Sites that ask for a code after the password are handled the same way:

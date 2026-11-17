@@ -25,6 +25,7 @@ from tools.browser_supervisor_dialogs import (
     DialogSupervisionMixin, PendingDialog,
 )
 from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
+from tools.browser_supervisor_vault import VaultWidgetMixin
 
 # ``websockets`` costs ~22 ms at import and is only needed once a supervisor connects.
 if TYPE_CHECKING:
@@ -95,7 +96,7 @@ class SupervisorSnapshot:
         return out
 
 
-class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
+class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin, VaultWidgetMixin):
     """One supervisor per (task_id, cdp_url) pair. ``start()`` spawns a daemon thread
     running its own asyncio loop, connects, attaches to the first page target, enables
     domains and auto-attach. ``snapshot()`` / ``respond_to_dialog()`` / ``evaluate_runtime()``
@@ -129,6 +130,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._page_session_id: Optional[str] = None
         # The tab the task's browser_exec daemon last drove (``set_driven_target``); ``focus_page`` prefers it.
         self._driven_target_id: Optional[str] = None
+        self._vault_widget_proofs: set = set()
+        self._page_action_lock = asyncio.Lock()
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: dict[str, asyncio.TimerHandle] = {}
         self._dialog_seq = 0
@@ -325,8 +328,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 return {"ok": True, "url": url}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
+        async def focused_with_admission():
+            async with self._page_action_lock:
+                return await _focus()
+
         try:
-            return _schedule(_focus(), loop, timeout=timeout + 1)
+            return _schedule(focused_with_admission(), loop, timeout=timeout + 1)
         except Exception as exc:
             return _err(exc)
 

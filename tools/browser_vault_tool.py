@@ -236,6 +236,10 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     if supervisor is None:
         return None
     focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
+    if kind == "login" and not focused.get("ok"):
+        from agent.vault_masked_password import MASKED_PASSWORD_TAB_PROBE
+
+        focused = supervisor.focus_page(origin, accept=MASKED_PASSWORD_TAB_PROBE)
     return (origin or focused.get("url")) if focused.get("ok") else None
 
 
@@ -568,6 +572,17 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         result = classify(LoginControl.from_dict(raw))
         if result is not None:
             classified.append(result)
+    if meta.kind == "login":
+        # A text input's autocomplete hint is not proof it can receive a
+        # password. Prefer actual standard controls before considering a probe.
+        classified = [c for c in classified
+                      if c.token != "current-password" or c.control.type == "password"]
+    if meta.kind == "login" and not any(
+        c.token == "current-password" and c.control.type == "password" for c in classified
+    ):
+        from tools.browser_vault_masked_password import fill_masked_password
+
+        return fill_masked_password(effective_task_id, backend, handle, page_origin)
     if not classified:
         return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 

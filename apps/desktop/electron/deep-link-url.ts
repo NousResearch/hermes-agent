@@ -43,8 +43,10 @@ export function parseDeepLink(
   try {
     name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
   } catch {
-    // A stray or truncated percent escape (`%E0%A4%A`): URIError.
-    reject(`ignoring ${kind} link with a malformed path`)
+    // A stray or truncated percent escape (`%E0%A4%A`): URIError. The reason is
+    // static: the host, path and query are caller-controlled, so none of them
+    // is copied into the log.
+    reject('ignoring deep link with a malformed path')
 
     return null
   }

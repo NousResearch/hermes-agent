@@ -22,6 +22,25 @@ test('a malformed percent escape in the path is refused, never thrown, and the l
   }
 })
 
+test('the malformed-path rejection never echoes the host, path or query', () => {
+  for (const url of [
+    'hermes://private-token-label/%',
+    'hermes://sk-live-abc123/%E0%A4%A?token=secret-value',
+    'hermes://open/%zz?user=alice%40example.com'
+  ]) {
+    const { payload, reasons } = parse(url)
+    const parsed = new URL(url)
+
+    assert.equal(payload, null, url)
+    assert.deepEqual(reasons, ['ignoring deep link with a malformed path'], url)
+    assert.ok(!reasons[0].includes(parsed.hostname), url)
+
+    for (const value of parsed.searchParams.values()) {
+      assert.ok(!reasons[0].includes(value), url)
+    }
+  }
+})
+
 test('a payload re-dispatched the way main.ts queues it parses back to itself', () => {
   for (const url of [
     'hermes://blueprint/daily%20brief?slot=morning&tz=UTC',

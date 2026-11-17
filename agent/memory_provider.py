@@ -11,8 +11,10 @@ import contextvars
 import logging
 import re
 import threading
+import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -72,13 +74,119 @@ TRIVIAL_PROMPT_RE = re.compile(
 )
 
 
+_TRIVIAL_SENDER_PREFIX_MAX_CHARS = 60
+
+
+def _normalize_trivial_acknowledgement(text: str) -> str:
+    """Normalize a short acknowledgement while preserving all interior words."""
+    value = text.strip()
+    if value.startswith("["):
+        closing = value.find("]")
+        if 1 <= closing <= _TRIVIAL_SENDER_PREFIX_MAX_CHARS and (
+            closing + 1 == len(value) or value[closing + 1].isspace()
+        ):
+            value = value[closing + 1:].lstrip()
+    value = unicodedata.normalize("NFD", value.lower())
+    value = "".join(char for char in value if unicodedata.category(char) != "Mn")
+    value = "".join(" " if char in ",;:!?" else char for char in value)
+    value = " ".join(value.split())
+    while value and not (value[0].isalnum() or value[0] == "_"):
+        value = value[1:]
+    while value and not (value[-1].isalnum() or value[-1] == "_"):
+        value = value[:-1]
+    return value.strip()
+
+
+_TRIVIAL_ACK_FILE_MAX_BYTES = 16_384
+_TRIVIAL_ACK_FILE_MAX_PHRASES = 256
+_TRIVIAL_ACK_PHRASE_MAX_CHARS = 60
+_TRIVIAL_ACK_PHRASE_MAX_WORDS = 4
+
+
+def _is_recordable_trivial_ack(phrase: str) -> bool:
+    """Guard the phrase file against regexes, sentences and look-alike words."""
+    return bool(
+        phrase
+        and len(phrase) <= _TRIVIAL_ACK_PHRASE_MAX_CHARS
+        and len(phrase.split()) <= _TRIVIAL_ACK_PHRASE_MAX_WORDS
+        and all(char.isalpha() or char.isspace() for char in phrase)
+    )
+
+
+def _trivial_ack_phrase_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return Path(get_hermes_home()) / "state" / "trivial_ack_phrases.txt"
+
+
+def _mutable_trivial_acknowledgements() -> frozenset[str]:
+    """Read this profile's small phrase list; never evaluate regex/code from it."""
+    try:
+        path = _trivial_ack_phrase_path()
+        try:
+            with path.open("rb") as stream:
+                raw = stream.read(_TRIVIAL_ACK_FILE_MAX_BYTES + 1)
+        except FileNotFoundError:
+            return frozenset()
+        if len(raw) > _TRIVIAL_ACK_FILE_MAX_BYTES:
+            return frozenset()
+        lines = raw.decode("utf-8-sig").splitlines()
+        parsed = set()
+        for line in lines[:_TRIVIAL_ACK_FILE_MAX_PHRASES]:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            phrase = _normalize_trivial_acknowledgement(line)
+            if _is_recordable_trivial_ack(phrase):
+                parsed.add(phrase)
+        return frozenset(parsed)
+    except Exception:
+        logger.debug("Could not load mutable trivial-ack phrases; using built-ins only", exc_info=True)
+        return frozenset()
+
+
+def record_trivial_acknowledgement(text: str) -> bool:
+    """Grow the profile's phrase list so future turns skip memory prefetch.
+
+    The text is normalized and validated exactly like a file line, so a regex
+    (``^.*$``), a line with digits, or a long sentence is refused instead of
+    poisoning the gate. A stored phrase matches only when it is the whole
+    message, so even a recorded fragment cannot hide a longer request.
+    """
+    phrase = _normalize_trivial_acknowledgement(text or "")
+    if not _is_recordable_trivial_ack(phrase):
+        return False
+    try:
+        if phrase in _mutable_trivial_acknowledgements():
+            return True
+        path = _trivial_ack_phrase_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(f"{phrase}\n")
+        return True
+    except Exception:
+        logger.debug("Could not record trivial-ack phrase", exc_info=True)
+        return False
+
+
 def is_trivial_prompt(text: Optional[str]) -> bool:
-    """True for empty input, slash commands and bare greetings/acknowledgements (skipping
-    recall saves a round-trip and keeps stale context from derailing one-word replies)."""
+    """True for empty input, slash commands and bare acknowledgements/continuations.
+
+    This only skips memory prefetch for a message with no semantic content; it
+    does not suppress the user turn or its normal persistence.
+    """
     stripped = (text or "").strip()
     if not stripped or stripped.startswith("/"):
         return True
-    return bool(TRIVIAL_PROMPT_RE.match(stripped))
+    if TRIVIAL_PROMPT_RE.match(stripped):
+        return True
+    normalized = _normalize_trivial_acknowledgement(stripped)
+    if not normalized:
+        return False
+    return bool(
+        TRIVIAL_PROMPT_RE.match(normalized)
+        or normalized in _mutable_trivial_acknowledgements()
+    )
 
 
 class MemoryProvider(ABC):

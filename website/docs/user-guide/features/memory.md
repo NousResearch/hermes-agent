@@ -326,6 +326,34 @@ are captured at provider registration: restart Hermes after changing them.
 See [oversized prefetch results](../../developer-guide/memory-provider-plugin.md#oversized-prefetch-results)
 for the configuration details.
 
+### Skipping memory prefetch for bare acknowledgements
+
+Hermes does not need to query an external memory provider for a message that is
+only a short acknowledgement or continuation. Built-in English phrases cover the
+common cases; each profile can also grow its own exact-match set in
+`state/trivial_ack_phrases.txt` (under that profile's Hermes home): one plain
+phrase per line, `#` lines are comments. The file is read on demand and picked up
+as soon as it changes — no restart. It is data, never a regex or a script.
+
+A phrase only counts when it is the whole message, so `vale, revisa la causa`
+still runs normal retrieval even if `vale` is listed. Recorded entries are
+normalized the same way as file lines and must be letters and spaces only, at
+most four words: `record_trivial_acknowledgement("de una")` appends one, and
+refuses blank text, digits or a pattern such as `^.*$`.
+
+This gate skips only the prefetch for that turn; the user message, normal turn
+processing, and memory sync/persistence continue. Nothing in the live path asks a
+model to classify the message, so a turn never waits on a second inference to
+decide whether to recall.
+
+**Growing the set from experience.** Because the list is plain data, a profile
+can let confirmed acknowledgements accumulate: an operator can add a phrase when
+it is clearly noise, or a local classifier can call
+`record_trivial_acknowledgement()` for messages it is confident about. Keep it
+conservative — record a phrase only when the whole message carries no request,
+fact, or question — since a wrong entry buys a skipped recall on that exact
+message and nothing else.
+
 ## Controlling memory writes (`write_approval`)
 
 By default the agent saves memory freely — including from the background

@@ -660,16 +660,20 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         self._kill_process(proc)
 
     # --- CWD extraction ---
-    def _update_cwd(self, result: dict):
-        """Extract CWD from command output. Override for local file-based read."""
-        self._extract_cwd_from_output(result)
+    def _update_cwd(self, result: dict, *, move_session: bool = True):
+        """Parse the cwd marker into *result*; only a command that may move the session
+        (``move_session``) then publishes it to ``self.cwd``. Parsing never writes ``self.cwd``:
+        the environment is shared, so a housekeeping command run from ``/`` (the background
+        poller) must never expose ``/`` to a concurrent file op, even briefly."""
+        self._parse_cwd_marker(result)
+        if move_session and result.get("cwd_observed"):
+            self.cwd = result["cwd"]
 
-    def _extract_cwd_from_output(self, result: dict):
-        """Parse the ``__HERMES_CWD_{session}__`` marker from ``result["output"]``, update
-        ``self.cwd`` and strip the marker line. ``result["cwd_observed"]``/``["cwd"]`` are set
-        only when THIS command emitted a marker: a killed/timed-out command emits none and
-        ``self.cwd`` keeps the previous value. The environment is shared across sessions, so
-        concurrent callers must read ``result["cwd"]`` rather than ``self.cwd``."""
+    def _parse_cwd_marker(self, result: dict):
+        """Strip the ``__HERMES_CWD_{session}__`` (and PIPESTATUS) marker lines from
+        ``result["output"]``. ``result["cwd_observed"]``/``["cwd"]`` are set only when THIS
+        command emitted a marker: a killed/timed-out command emits none. Concurrent callers
+        must read ``result["cwd"]`` rather than ``self.cwd``."""
         pipe_split = _split_cwd_marker(result.get("output", ""), self._pipe_marker) if self._pipe_marker else None
         if pipe_split is not None:
             statuses, cleaned = pipe_split
@@ -683,7 +687,6 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             return
         cwd_path, cleaned = split
         if cwd_path:
-            self.cwd = cwd_path
             result["cwd_observed"] = True
             result["cwd"] = cwd_path
         result["output"] = cleaned
@@ -753,6 +756,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         # ``self.cwd``; resolving only the latter left every call exiting 126 at ``cd``.
         effective_cwd, cwd_fallback = (
             self._usable_cwd(cwd or self.cwd) if allow_cwd_fallback else (cwd or self.cwd, None))
+        moves_session = allow_cwd_fallback or not cwd or cwd == self.cwd
 
         # Merge sudo stdin with caller stdin.
         effective_stdin = sudo_stdin + (stdin_data or "") if sudo_stdin is not None else stdin_data
@@ -786,7 +790,9 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             proc_holder.append(spawned)
             if fenced:  # the hard-exit kill may have stopped waiting for us before we registered
                 self._force_kill_process(spawned)
-            output = _new_output_collector(spawned, bounded_capture)
+            # The fallback line leads the stream; pulled out before capture so truncation can't cut it.
+            output = _new_output_collector(
+                spawned, bounded_capture, control_marker=self._cwd_fallback_marker if allow_cwd_fallback else "")
             output_holder.append(output)
             try:
                 return self._wait_for_process(
@@ -832,13 +838,13 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             result["hermes_timed_out"] = True
         else:
             result = bounded.value
-        prev_cwd = self.cwd
-        self._update_cwd(result)
-        if cwd and cwd != prev_cwd and not allow_cwd_fallback:
-            self.cwd = prev_cwd  # housekeeping from "/" or a one-off workdir must not move the session
-        if self._cwd_fallback_marker and (split := _split_cwd_marker(result.get("output", ""), self._cwd_fallback_marker)):
-            used, result["output"] = split
-            cwd_fallback = cwd_fallback or ({"requested": effective_cwd, "used": used} if used else None)
+        # Housekeeping from "/" (the background poller) or a one-off workdir must not move the session.
+        self._update_cwd(result, move_session=moves_session)
+        used = output_holder[0].control_value if output_holder else None
+        if allow_cwd_fallback and not used and (split := _split_cwd_marker(result.get("output", ""), self._cwd_fallback_marker)):
+            used, result["output"] = split  # login-shell noise printed ahead of the wrapper's line
+        if used:
+            cwd_fallback = cwd_fallback or {"requested": effective_cwd, "used": used}
         if getattr(self, "_recreated_notice_pending", False):
             self._recreated_notice_pending = False
             result["environment_recreated"] = True

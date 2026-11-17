@@ -669,8 +669,7 @@ def _open_requests(sid: str) -> list[dict]:
     ``session.activate`` / ``session.events.since``). A client detached when the request frame was written would
     otherwise never see it (agent parked until timeout). Under turn isolation the compute-host child owns the
     request; the parent mirrors it from the relayed frame (compute_host_bridge)."""
-    from tui_gateway import server_requests
-    reqs = server_requests.open_requests(sid)
+    reqs = _server_requests.open_requests(sid)
     if reqs:
         return reqs
     if (session := _sessions.get(sid)) is not None:
@@ -963,8 +962,7 @@ def _enable_gateway_prompts() -> None:
 def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> str:
     """Server→client request whose answer is one string under ``value`` (sudo, secret, vault prompts, GUI reads,
     MCP setup). Empty string when the renderer skipped, timed out, or was cancelled."""
-    from tui_gateway import server_requests
-    result = server_requests.send(method, sid, params, timeout=timeout)
+    result = _server_requests.send(method, sid, params, timeout=timeout)
     value = (result or {}).get("value", "")
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
@@ -1099,8 +1097,7 @@ def _preview_action_request(sid: str, payload: dict) -> str:
 def _clear_pending(sid: str | None = None) -> None:
     """Withdraw open server→client requests: only *sid*'s (session.interrupt must not cancel other sessions'
     prompts), or every one when *sid* is None (process exit). Each one gets a ``request.cancel``."""
-    from tui_gateway import server_requests
-    server_requests.cancel(sid, reason="interrupted" if sid else "shutdown")
+    _server_requests.cancel(sid, reason="interrupted" if sid else "shutdown")
 
 
 # ── Agent factory ────────────────────────────────────────────────────
@@ -1130,7 +1127,10 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     # reads its credential through get_secret, which fails closed once this process multiplexes (#112927).
     session_tokens = _set_session_context(session_key, cwd=_session_cwd(session))
     try:
-        with _session_profile_runtime_scope(session):
+        from agent.system_prompt import interim_preamble_surface
+        # The interim callback is cleared between turns: say whether this surface shows interim text through a
+        # context-local flag; the live callback belongs to any turn that starts meanwhile.
+        with _session_profile_runtime_scope(session), interim_preamble_surface(_load_interim_assistant_messages()):
             prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
         db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
     except Exception:

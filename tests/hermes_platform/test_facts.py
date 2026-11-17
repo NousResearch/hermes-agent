@@ -138,3 +138,13 @@ def test_windows_nonconsole_interactive_session_uses_user32(monkeypatch) -> None
 
     assert facts._windows_interactive_session() is True
     assert loaded == ["kernel32", "user32"]
+
+
+@pytest.mark.platforms("windows")
+def test_windows_nonconsole_session_reads_the_real_window_station(monkeypatch) -> None:
+    """Off the console session (RDP, a second signed-in user) the real user32 call decides, not an
+    AttributeError swallowed as "no interactive session" (#156668)."""
+    console = ctypes.WinDLL("kernel32", use_last_error=True).WTSGetActiveConsoleSessionId()
+    monkeypatch.setattr(facts, "_windows_session_id", lambda: console + 1)
+
+    assert facts.interactive_session() is True

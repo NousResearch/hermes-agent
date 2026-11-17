@@ -106,7 +106,9 @@ class ReasoningParamsMixin:
         if base_url_host_matches(url, "ollama.com"):
             # Ollama Cloud: /api/show capabilities are authoritative.
             return self._ollama_supports_thinking_cached()
-        if not self._is_openrouter_url() or base_url_host_matches(url, "api.mistral.ai"):
+        # A named OpenRouter route can use a proxy without losing the model capability gate.
+        is_openrouter = self._is_openrouter_url() or (self.provider or "").strip().lower() == "openrouter"
+        if not is_openrouter or base_url_host_matches(url, "api.mistral.ai"):
             return False
         # Live-catalog metadata first (OpenRouter /v1/models supported_parameters) — the static prefix
         # allowlist repeatedly went stale one vendor at a time. Unknown falls back to the static list.

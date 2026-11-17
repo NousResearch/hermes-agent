@@ -7,6 +7,7 @@ shape, and a coroutine that never ran is closed (no ``RuntimeWarning: coroutine 
 which this module turns into an error).
 """
 import asyncio
+import inspect
 import threading
 import time
 from types import SimpleNamespace
@@ -79,6 +80,15 @@ def test_loop_closed_between_scheduling_and_result_is_a_result(tmp_path, monkeyp
     _serve(monkeypatch, loop)
     calls = []
     _gateway_post(monkeypatch, calls)
+    coroutines = []
+    original_post = thread_side._post
+
+    def capture_coroutine(*args, **kwargs):
+        coroutine = original_post(*args, **kwargs)
+        coroutines.append(coroutine)
+        return coroutine
+
+    monkeypatch.setattr(thread_side, '_post', capture_coroutine)
     monkeypatch.setattr(thread_side, '_TIMEOUT_S', 10.0)
     monkeypatch.setattr(thread_side, '_POLL_S', 0.02, raising=False)
     results = []
@@ -95,6 +105,7 @@ def test_loop_closed_between_scheduling_and_result_is_a_result(tmp_path, monkeyp
     assert results == [{'ok': False, 'error': 'gateway_unavailable',
                         'detail': 'the gateway loop closed before the card was admitted'}]
     assert calls == []
+    assert inspect.getcoroutinestate(coroutines[0]) == inspect.CORO_CLOSED
 
 
 def test_cancelled_task_is_a_result(tmp_path, monkeypatch):

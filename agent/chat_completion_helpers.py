@@ -2011,10 +2011,10 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
         if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
             continue
 
-        held, route = walk.check(fb, fb_provider, fb_model)
-        if held:
-            return False
         try:
+            held, route = walk.check(fb, fb_provider, fb_model)  # before any route change
+            if held:
+                return False
             from agent.route_binding import bind_route_entry
             bound = bind_route_entry(agent, fb, fb_provider, fb_model, route=route)
             if bound is None:

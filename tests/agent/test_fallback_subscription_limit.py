@@ -15,6 +15,8 @@ RESET = NOW + 3600
 METERED = {"provider": "openrouter", "model": "openai/gpt-5", "base_url": "https://openrouter.ai/api/v1",
            "api_key": "sk-or-v1-test"}
 SAME_BACKEND = {"provider": "openai-codex", "model": "gpt-5.5"}
+BROKEN = {"provider": "openrouter", "model": "openai/gpt-5-broken", "base_url": "https://openrouter.ai/api/v1",
+          "api_key": "sk-or-v1-test"}
 
 
 def _codex_agent(clarify=None, chain=(METERED,)):
@@ -56,7 +58,8 @@ def test_subscription_to_metered_switch_says_billed_per_token_and_reset_time():
     ("ask", 0, True, 1),
     ("ask", 1, False, 1),
 ])
-@pytest.mark.parametrize("chain", [(METERED,), (SAME_BACKEND, METERED)], ids=["metered-first", "skipped-entry-first"])
+@pytest.mark.parametrize("chain", [(METERED,), (SAME_BACKEND, METERED), (BROKEN, METERED)],
+                         ids=["metered-first", "skipped-entry-first", "broken-entry-first"])
 def test_on_subscription_limit_policy_gates_the_metered_switch(policy, answer, switched, asked, chain):
     calls = []
 
@@ -65,11 +68,20 @@ def test_on_subscription_limit_policy_gates_the_metered_switch(policy, answer, s
         return {"answers": {"q0": questions[0]["choices_offered"][answer]}, "outcome": "submitted"}
 
     agent = _codex_agent(clarify, chain)
-    assert _switch(agent, policy) is switched
+    from agent.route_binding import resolve_route_entry_client as real_resolve
+
+    def resolve(entry, provider, model, **kw):  # an entry whose client cannot be built
+        if model.endswith("-broken"):
+            raise ValueError("malformed endpoint")
+        return real_resolve(entry, provider, model, **kw)
+
+    with patch("agent.fallback_billing.resolve_route_entry_client", resolve):
+        assert _switch(agent, policy) is switched
     assert (agent.model == "openai/gpt-5") is switched
     assert len(calls) == asked
     if not switched:  # still on the primary, told why; the retry loop's next walk does not re-ask
         assert agent._fallback_index == 0
         assert any(f"on_subscription_limit is {policy}" in line for line in agent._test_status)
-        assert _switch(agent, policy) is False
+        with patch("agent.fallback_billing.resolve_route_entry_client", resolve):
+            assert _switch(agent, policy) is False
         assert len(calls) == asked

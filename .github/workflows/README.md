@@ -105,7 +105,9 @@ The pattern repeats across files:
   `docs-search-monitor`, `install-e2e-red-tracker`. All of them queue
   (`cancel-in-progress: false`).
   GitHub keeps only one *pending* run per group, so a newer queued run
-  replaces an older queued one.
+  replaces an older queued one. `canary-e2e` and `install-e2e-red-tracker`
+  therefore queue only the runs that will do work (group suffix `-auto`); a
+  run that will skip, or a dispatch, gets a group of its own.
 
 ### "Skipped" is not "failed"
 

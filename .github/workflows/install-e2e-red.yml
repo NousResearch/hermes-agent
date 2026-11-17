@@ -31,8 +31,15 @@ on:
 permissions:
   contents: read
 
+# GitHub keeps one pending run per group, and every Canary E2E completion starts
+# this workflow. Only runs whose track job will run share the queue; a dispatched
+# or skipped Canary E2E run in it would replace a queued real result.
 concurrency:
-  group: install-e2e-red-tracker
+  group: >-
+    install-e2e-red-tracker-${{ github.event_name == 'workflow_run' &&
+    github.event.workflow_run.event == 'workflow_run' &&
+    github.event.workflow_run.conclusion != 'skipped' &&
+    'auto' || github.run_id }}
   cancel-in-progress: false
 
 jobs:

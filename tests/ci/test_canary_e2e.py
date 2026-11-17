@@ -111,7 +111,11 @@ def test_every_call_is_the_claims_call_on_the_canary_commit():
     ("workflow_dispatch", "failure", False),
 ])
 def test_the_tracker_follows_only_runs_a_canary_started(started_by, conclusion, tracks):
-    ctx = {"github": {"event_name": "workflow_run",
+    ctx = {"github": {"event_name": "workflow_run", "run_id": RUN_ID,
                       "event": {"workflow_run": {"event": started_by, "conclusion": conclusion}}},
            "inputs": {}}
-    assert gha.condition(load("install-e2e-red.yml")["jobs"]["track"]["if"], ctx) is tracks
+    workflow = load("install-e2e-red.yml")
+    assert gha.condition(workflow["jobs"]["track"]["if"], ctx) is tracks
+    # Only runs that track share the queue, so one that won't can't replace a queued result.
+    group = gha.render(workflow["concurrency"]["group"], ctx)
+    assert group == ("install-e2e-red-tracker-auto" if tracks else f"install-e2e-red-tracker-{RUN_ID}")

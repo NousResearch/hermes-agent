@@ -34,6 +34,7 @@ from agent.conversation_loop import (
     _should_skip_model_call_for_reference_handoff,
 )
 from agent.agent_runtime_helpers import repair_message_sequence
+from agent.prompt_builder import steer_user_row
 from agent.turn_context import reanchor_current_turn_user_idx
 
 
@@ -332,6 +333,31 @@ class TestReanchorSkipsHandoffFallback:
         ]
 
         assert reanchor_current_turn_user_idx(messages, "rewritten ask") == 1
+
+
+class TestReanchorSkipsSteerRow:
+    """#132165: after a model change the alternation repair merges the model_switch
+    marker into the prompt row, so no exact match survives and the fallback picks
+    the last user-originated row — which would be the mid-turn /steer row. A steer
+    is never the turn's opening ask: anchoring on it lets the persist override
+    overwrite the correction's stored content with the opening prompt."""
+
+    def test_fallback_skips_steer_row(self):
+        messages = [
+            {"role": "user", "content": "[model_switch] sonnet → haiku\n\noriginal ask"},
+            {"role": "assistant", "content": "running the steps"},
+            steer_user_row("stop after step 2"),
+        ]
+        # No exact match (repair rewrote the prompt row) — fallback must land on
+        # the prompt row, not the steer row.
+        assert reanchor_current_turn_user_idx(messages, "original ask") == 0
+
+    def test_steer_row_is_not_an_anchor_even_on_identical_text(self):
+        # The steer row stores the marker-wrapped text, so a correction typed
+        # verbatim from the prompt can never exact-match either; alone in the
+        # transcript it yields no anchor rather than steering onto itself.
+        messages = [steer_user_row("original ask")]
+        assert reanchor_current_turn_user_idx(messages, "original ask") == -1
 
 
 class TestRetryableUserText:

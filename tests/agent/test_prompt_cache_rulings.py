@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import agent.prompt_cache_lifecycle as pcl
+from agent.usage_pricing import get_pricing_entry as _REAL_PRICING
 
 _OPUS = SimpleNamespace(input_cost_per_million=5, output_cost_per_million=25,
                         cache_read_cost_per_million=0.5, cache_write_cost_per_million=10)
@@ -201,3 +202,70 @@ def test_ruling_3_a_running_tool_is_kept_warm_until_it_returns_bounded_by_one_re
         _fire(warmer)
         idle += 1
     assert len(client.calls) - sent == pcl.WARM_BUDGET  # idle: three per user message, as before
+
+
+# ── Nous catalog rule: input_cache_write in /v1/models = explicit markers (Anthropic spec) ──────────
+
+_NOUS = "https://inference-api.nousresearch.com/v1"
+_CATALOG = {  # per-token strings, as the Nous /v1/models pricing parses
+    "qwen/qwen3.7-max": {"pricing": {"prompt": "0.000001475", "completion": "0.000004425",
+                                     "cache_read": "0.000000295", "cache_write": "0.0000018437"}},
+    "anthropic/claude-sonnet-4.6": {"pricing": {"prompt": "0.000003", "completion": "0.000015",
+                                                "cache_read": "0.0000003", "cache_write": "0.00000375",
+                                                "cache_write_1h": "0.000006"}},
+    "deepseek/deepseek-v4-flash": {"pricing": {"prompt": "0.00000009", "completion": "0.0000003",
+                                               "cache_read": "0.000000018"}},
+    "qwen/qwen3.5-397b-a17b": {"pricing": {"prompt": "0.00000045", "completion": "0.0000036",
+                                           "cache_read": "0.00000022"}},
+}
+
+
+@pytest.fixture
+def nous_catalog(monkeypatch):
+    import agent.model_metadata as mm
+
+    monkeypatch.setattr(mm, "fetch_endpoint_model_metadata", lambda base_url, api_key="", **_: dict(_CATALOG))
+
+
+def _policy(model):
+    from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
+
+    agent = SimpleNamespace(provider="nous", base_url=_NOUS, api_mode="chat_completions", model=model,
+                            _cache_disabled=False, api_key="")
+    return anthropic_prompt_cache_policy(agent)
+
+
+def test_nous_rule_1_a_catalog_cache_write_rate_means_markers_at_the_tier_asked(nous_catalog):
+    """Qwen 3.7 Max is priced with ``input_cache_write`` on Nous: it gets markers, and its 1h ask is
+    kept and trusted (measured: a 1h entry still read back after 13 idle minutes)."""
+    from agent.prompt_cache_clock import attempt_facts, record_cache_response
+    from agent.prompt_caching import effective_cache_ttl
+    from agent.usage_pricing import CanonicalUsage
+
+    assert _policy("qwen/qwen3.7-max") == (True, False)
+    assert effective_cache_ttl("1h", provider="nous", base_url=_NOUS, model="qwen/qwen3.7-max", auto=True) == "1h"
+    agent = _chat(provider="nous", base_url=_NOUS, api_mode="chat_completions", model="qwen/qwen3.7-max")
+    agent._prompt_cache_attempt = dict(attempt_facts(_REQUEST), sent_at=1_000.0)
+    event = record_cache_response(agent, CanonicalUsage(input_tokens=14, cache_write_tokens=31_297),
+                                  model=agent.model, provider="nous", base_url=_NOUS, api_mode="chat_completions")
+    assert (event.route_class, event.tier, event.confidence) == ("anthropic_spec", "1h", "declared")
+
+
+def test_nous_rule_2_no_catalog_cache_write_rate_means_no_markers_and_openai_spec(nous_catalog):
+    """Qwen 3.5 397B has no cache-write rate on Nous: no markers (it was marked as 'a Qwen'), its
+    automatic cache follows the OpenAI spec; Claude keeps its markers because the catalog prices them."""
+    assert _policy("qwen/qwen3.5-397b-a17b") == (False, False)
+    assert _policy("deepseek/deepseek-v4-flash") == (False, False)
+    assert _policy("anthropic/claude-sonnet-4.6") == (True, False)
+
+
+def test_nous_rule_3_a_1h_write_is_priced_at_the_catalog_rate_not_a_fixed_2x(nous_catalog, monkeypatch):
+    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+
+    monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", _REAL_PRICING)  # served from the seeded catalog
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata",
+                        lambda base_url, api_key="", **_: dict(_CATALOG))
+    one_hour = CanonicalUsage(cache_write_tokens=1_000_000, cache_write_by_ttl=(("1h", 1_000_000),))
+    qwen = estimate_usage_cost("qwen/qwen3.7-max", one_hour, provider="nous", base_url=_NOUS).amount_usd
+    claude = estimate_usage_cost("anthropic/claude-sonnet-4.6", one_hour, provider="nous", base_url=_NOUS).amount_usd
+    assert (round(qwen, 4), round(claude, 4)) == (Decimal("1.8437"), Decimal("6.0000"))  # 1.25x vs Claude's 2x

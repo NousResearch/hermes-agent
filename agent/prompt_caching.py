@@ -209,6 +209,8 @@ def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "",
         return "5m"
     if provider_lower in MEASURED_1H_PROVIDERS:
         clamped = "5m" if _flat_model(model) in NO_1H_TIER_MODELS else "1h"
+    elif _catalog_route(provider, base_url):
+        clamped = "1h"  # the catalog route's own ceiling decides, not the model family
     else:
         clamped = "5m" if is_qwen_model(model) or provider_lower in ALIBABA_FAMILY_PROVIDERS else "1h"
     return "5m" if clamped == "5m" or route_ttl_ceiling(provider, base_url) == "5m" else "1h"
@@ -232,6 +234,30 @@ def _route_names(provider: str, base_url: str) -> list[str]:
             if candidate and candidate not in names:
                 names.append(candidate)
     return names
+
+
+def _catalog_route(provider: str, base_url: str) -> bool:
+    from providers import get_provider_profile
+
+    return any(getattr(get_provider_profile(n), "prompt_cache_markers_from_catalog", False)
+               for n in _route_names(provider, base_url))
+
+
+def catalog_cache_markers(provider: str, base_url: str = "", model: str = "", api_key: str = "") -> bool | None:
+    """Whether the route's ``/models`` catalog prices ``model`` with a cache-write rate (explicit
+    ``cache_control`` caching), on a provider that declares ``prompt_cache_markers_from_catalog``.
+    None when the route declares nothing, or its catalog (or the model's row) is unavailable."""
+    from agent.model_metadata import fetch_endpoint_model_metadata
+    from providers import get_provider_profile
+
+    profile = next((p for p in map(get_provider_profile, _route_names(provider, base_url))
+                    if getattr(p, "prompt_cache_markers_from_catalog", False)), None)
+    if profile is None or not model:
+        return None
+    row = fetch_endpoint_model_metadata(base_url or profile.base_url, api_key=api_key or "").get(model)
+    if not isinstance(row, dict) or not isinstance(row.get("pricing"), dict):
+        return None
+    return row["pricing"].get("cache_write") not in (None, "", "0")
 
 
 def route_ttl_ceiling(provider: str, base_url: str = "") -> str | None:

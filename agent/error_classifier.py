@@ -198,7 +198,12 @@ _OVERLOADED_PATTERNS = (
 # the signals that mark such a limit as transient (periodic quota, not billing).
 _USAGE_LIMIT_PATTERNS = ("usage limit", "quota", "limit exceeded", "key limit exceeded")
 _USAGE_LIMIT_TRANSIENT_SIGNALS = (
-    "try again", "retry", "resets at", "reset in", "resets in", "reset after", "available in",
+    "try again", "retry", "resets at", "reset at", "reset in", "resets in", "reset after",
+    "reset on", "available in",
+    # Z.ai GLM Coding Plan words its 5-hour/weekly window reset as
+    # "Your limit will reset at <UTC+8 timestamp>" — future-tense reset wording is
+    # still a reset signal (transient quota), not a terminal billing wall;
+    # "resets at" alone misses it and misroutes the 429 to billing.
     "wait", "requests remaining", "periodic", "window", "per minute", "per second",
 )
 

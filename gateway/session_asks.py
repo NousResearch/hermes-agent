@@ -46,9 +46,10 @@ class Ask:
     answer: Optional[dict] = None
     # Reads the native waiter for an ask no settle callback reports: None while it still waits.
     probe: Optional[Callable[[], Optional[Outcome]]] = field(default=None, repr=False)
-    # (status, answer) of an API answer or dismiss in flight: the native settle it causes is reported
-    # as that, closed by ``api``, instead of as an answer from another client.
-    claim: Optional[tuple[str, Optional[dict]]] = field(default=None, repr=False)
+    # An API answer or dismiss in flight: ``(recorded, expected)``, each a ``(status, answer)``. Only the
+    # native settle it causes (*expected*) is reported as *recorded*, closed by ``api``; any other
+    # answer that wins the waiter (another surface) keeps its own outcome.
+    claim: Optional[tuple[tuple, tuple]] = field(default=None, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
         return {"object": "hermes.session.ask", "id": self.id, "session_id": self.session_id,
@@ -86,8 +87,16 @@ def question_outcome(response: Optional[str]) -> Outcome:
     return "answered", {"text": response}, "session"
 
 
-def secret_outcome(*, settled: bool, value: str, wait_reason: str) -> Outcome:
-    """A ``secret`` request's end: answered (the value itself is never recorded), skipped, or unanswered."""
+def request_outcome(*, settled: bool, value: str, result: Optional[dict], wait_reason: str) -> Outcome:
+    """A viewer request's end. A secret: answered (the value itself is never recorded) or skipped. A
+    clarify batch: its ``ClarifyResult`` outcome, with the answers. Unanswered: interrupted or expired."""
+    if result is not None and "outcome" in result:  # a clarify batch (tools/clarify_batch.settle_batch)
+        outcome = result["outcome"]
+        if outcome == "submitted":
+            return "answered", {"answers": dict(result.get("answers") or {})}, "session"
+        if outcome == "timed_out":
+            return "expired", None, "timeout"
+        return ("dismissed", None, "session") if settled else INTERRUPTED
     if settled:
         return ("answered", None, "session") if value else ("dismissed", None, "session")
     return INTERRUPTED if wait_reason == "interrupted" else ("expired", None, "timeout")
@@ -101,10 +110,14 @@ class AskLedger:
     def open(self, ask: Ask) -> Ask:
         with self._lock:
             self._asks[ask.id] = ask
-            closed = [k for k, a in self._asks.items() if a.status != "pending"]
-            for key in closed[:max(0, len(closed) - _CLOSED_KEEP)]:
-                del self._asks[key]
+            self._trim()
         return ask
+
+    def _trim(self) -> None:
+        """Keep the newest ``_CLOSED_KEEP`` closed asks (caller holds ``_lock``)."""
+        closed = [k for k, a in self._asks.items() if a.status != "pending"]
+        for key in closed[:max(0, len(closed) - _CLOSED_KEEP)]:
+            del self._asks[key]
 
     def settle(self, ask_id: str, status: str, answer: Optional[dict] = None, closed_by: str = "session") -> None:
         """Close *ask_id*; the first close wins. A settle caused by an API claim is reported as the claim."""
@@ -112,15 +125,20 @@ class AskLedger:
             ask = self._asks.get(ask_id)
             if ask is None or ask.status != "pending":
                 return
-            if ask.claim is not None and status in ("answered", "dismissed"):
-                (status, answer), closed_by = ask.claim, "api"
+            if ask.claim is not None and ask.claim[1] == (status, answer):
+                (status, answer), closed_by = ask.claim[0], "api"
             ask.status, ask.answer, ask.closed_by, ask.closed_at = status, answer, closed_by, time.time()
             ask.claim = ask.probe = None
+            self._trim()
 
-    def claim(self, ask_id: str, status: str, answer: Optional[dict]) -> None:
+    def claim(self, ask_id: str, recorded: tuple, expected: tuple) -> bool:
+        """Mark one API answer in flight; False when the ask is closed or another API answer holds it."""
         with self._lock:
-            if (ask := self._asks.get(ask_id)) is not None:
-                ask.claim = (status, answer)
+            ask = self._asks.get(ask_id)
+            if ask is None or ask.status != "pending" or ask.claim is not None:
+                return False
+            ask.claim = (recorded, expected)
+            return True
 
     def release(self, ask_id: str) -> None:
         with self._lock:
@@ -133,6 +151,7 @@ class AskLedger:
             merged = OrderedDict(earlier._asks)
             merged.update(self._asks)
             self._asks = merged
+            self._trim()
 
     def _refresh(self) -> None:
         with self._lock:
@@ -181,6 +200,10 @@ class RetiredAsks:
 
     def forget(self, session_id: str) -> None:
         self._ledgers.pop(session_id, None)
+
+    def take(self, session_id: str) -> Optional[AskLedger]:
+        """Hand a restored conversation its earlier ledger back."""
+        return self._ledgers.pop(session_id, None)
 
     def get(self, session_id: str) -> Optional[AskLedger]:
         return self._ledgers.get(session_id)

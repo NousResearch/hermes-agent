@@ -83,7 +83,8 @@ async def test_pending_approval_is_listed_and_answered_through_its_native_waiter
 @pytest.mark.asyncio
 async def test_question_dismiss_skips_and_a_secret_value_is_never_accepted(api, owner):
     """Dismissing a clarify question sends the clarify skip; a secret ask refuses an answer (the value
-    is entered only in an attached client's masked prompt) and a dismiss settles it with no value."""
+    is entered only in an attached client's masked prompt) and a dismiss settles it with no value; a
+    local viewer's question panel is an ask too, and answering it settles the panel request."""
     from gateway import session_server_requests
     from tools import clarify_gateway
     api._api_key = 'sk-asks'
@@ -97,7 +98,11 @@ async def test_question_dismiss_skips_and_a_secret_value_is_never_accepted(api, 
         events.fanout.attach(transport)
         value = session_server_requests.ask_viewer(events, 'q-sess', 'secret',
                                                    {'env_var': 'TOKEN', 'prompt': 'Paste it'}, timeout=10)
-        return reply, value
+        # A Desktop/TUI turn asks its question panel as one ``clarify`` request.
+        panel = session_server_requests.ask_viewer_result(
+            events, 'q-sess', 'clarify', {'questions': [{'qid': 'q0', 'question': 'Region?', 'choices': ['eu', 'us']}]},
+            timeout=10, qids=['q0'])
+        return reply, value, panel
     run, seen = _start(api, owner, 'q-sess', 'run_q', work)
     async with TestClient(TestServer(_app(api))) as client:
         async def pending(kind):
@@ -117,8 +122,18 @@ async def test_question_dismiss_skips_and_a_secret_value_is_never_accepted(api, 
         assert refused.status == 400 and (await refused.json())['error']['code'] == 'answer_with_secret'
         gone = await client.post(f"/api/sessions/q-sess/asks/{secret['id']}/dismiss", headers=HEADERS)
         assert (await gone.json())['status'] == 'dismissed'
+        await async_wait_until(
+            lambda: pending('question'), timeout=10, what='the question panel ask')
+        [panel] = await pending('question')
+        assert panel['payload']['questions'][0]['qid'] == 'q0'
+        picked = await client.post(f"/api/sessions/q-sess/asks/{panel['id']}/answer", json={'choice': 'us'},
+                                   headers=HEADERS)
+        assert picked.status == 200, await picked.text()
+        assert (await picked.json())['status'] == 'answered'
         await asyncio.wait_for(run, timeout=10)
-        assert seen['result'] == (clarify_gateway.SKIPPED, '')
+        reply, value, answered_panel = seen['result']
+        assert (reply, value) == (clarify_gateway.SKIPPED, '')
+        assert answered_panel['answers'] == {'q0': 'us'} and answered_panel['outcome'] == 'submitted'
         everything = await (await client.get('/api/sessions/q-sess/asks?status=all', headers=HEADERS)).json()
         assert 'sk-live' not in str(everything)
-        assert {a['status'] for a in everything['data']} == {'dismissed'}
+        assert sorted(a['status'] for a in everything['data']) == ['answered', 'dismissed', 'dismissed']

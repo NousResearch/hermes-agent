@@ -9,6 +9,7 @@ from functools import partial
 from gateway.session_asks import INTERRUPTED, Ask, AskLedger, approval_outcome, prompt_payload, question_outcome
 from hermes_state_runtime import RuntimeStoreError
 from tools.approval import list_gateway_approvals, observe_gateway_outcome, resolve_gateway_approval
+from tools.clarify_gateway import SKIPPED as CLARIFY_SKIPPED
 
 
 class PendingControls:
@@ -104,7 +105,9 @@ class PendingControls:
                         or (kind == 'approval' and response[field] not in prompt['choices'])):
                     raise RuntimeStoreError('invalid_params')
                 self.remote_responders[prompt_id](kind, prompt_id, response[field])
-                self.asks.settle(prompt_id, 'answered', {'text' if kind == 'clarify' else 'choice': response[field]})
+                value = response[field]
+                self.asks.settle(prompt_id, *(approval_outcome('resolved', {'choice': value}) if kind == 'approval'
+                                              else question_outcome(value if value.strip() else CLARIFY_SKIPPED)))
                 del self.remote_responders[prompt_id]
                 del self.pending[prompt_id]
                 self.events.publish(session_id, {'prompt_id': prompt_id, 'execution_generation': generation},

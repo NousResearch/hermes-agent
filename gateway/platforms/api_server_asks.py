@@ -23,7 +23,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.platforms.api_server_authority_runs import respond_prompt, store_error_response
-from gateway.session_asks import STATUSES, ledger_of, retired_of
+from gateway.session_asks import STATUSES, approval_outcome, ledger_of, question_outcome, retired_of
 from gateway.session_contract import SessionActor, SessionRef
 from hermes_state_runtime import RuntimeStoreError
 
@@ -81,7 +81,10 @@ async def _session_ledger(adapter, request) -> tuple[Optional[tuple], Optional[w
                             SessionRef(authority.profile_id, session_id), "session:read")
     except RuntimeStoreError as exc:
         return None, _store_error(exc)
-    return (authority, session_id, ledger_of(live.event_stream)), None
+    ledger = ledger_of(live.event_stream)
+    if (earlier := retired_of(authority).take(session_id)) is not None:
+        ledger.absorb(earlier)  # a restored conversation keeps the asks it had before retirement
+    return (authority, session_id, ledger), None
 
 
 def _store_error(exc: RuntimeStoreError) -> web.Response:
@@ -130,7 +133,7 @@ async def _handle_get(adapter, request) -> web.Response:
     return err or web.json_response(ask.as_dict())
 
 
-def _approval_response(ask, body) -> tuple[Optional[dict], Optional[dict], Optional[str]]:
+def _approval_response(ask, body) -> tuple:
     from tools.approval import canonical_approval_choice
     choice = canonical_approval_choice(body.get("choice"))
     if set(body) != {"choice"} or choice not in ask.payload.get("choices", ()):
@@ -138,18 +141,47 @@ def _approval_response(ask, body) -> tuple[Optional[dict], Optional[dict], Optio
     return {"choice": choice}, {"choice": choice}, None
 
 
-def _question_response(ask, body) -> tuple[Optional[dict], Optional[dict], Optional[str]]:
-    """``{"text": str}`` (free text, or a choice label) or ``{"choice": label | [labels]}``."""
-    choices, multi = ask.payload.get("choices") or [], bool(ask.payload.get("multi_select"))
+_QUESTION_SHAPE = 'answer with {"text": "..."} or {"choice": <one of the question\'s choices>}'
+
+
+def _one_answer(body, choices, multi) -> tuple:
+    """``{"text": str}`` (free text, or a choice label) or ``{"choice": label | [labels]}`` -> the raw
+    answer the clarify tool reads (a multi-select is the JSON array of labels it decodes) and the
+    answer the ask records; ``(None, None)`` when malformed."""
+    if not isinstance(body, dict):
+        return None, None
     if set(body) == {"text"} and isinstance(body["text"], str) and body["text"].strip():
-        return {"answer": body["text"]}, {"text": body["text"]}, None
+        return body["text"], {"text": body["text"]}
     picked = body.get("choice") if set(body) == {"choice"} else None
     picks = picked if isinstance(picked, list) and multi else [picked]
     if picks and all(isinstance(p, str) and p in choices for p in picks):
-        # A multi-select answer is the JSON array of labels the clarify tool decodes.
-        answer = json.dumps(picks, ensure_ascii=False) if multi else picks[0]
-        return {"answer": answer}, {"choice": picked}, None
-    return None, None, "answer with {\"text\": \"...\"} or {\"choice\": <one of the ask's choices>}"
+        return (json.dumps(picks, ensure_ascii=False) if multi else picks[0]), {"choice": picked}
+    return None, None
+
+
+def _question_response(ask, body) -> tuple:
+    if "questions" in ask.payload:
+        return _batch_response(ask, body)
+    raw, recorded = _one_answer(body, ask.payload.get("choices") or [], bool(ask.payload.get("multi_select")))
+    return (None, None, _QUESTION_SHAPE) if raw is None else ({"answer": raw}, recorded, None)
+
+
+def _batch_response(ask, body) -> tuple:
+    """A local viewer's question panel (Desktop, TUI): ``{"answers": {qid: answer | null}}`` naming
+    every question (``null`` skips one), or one question's ``text`` / ``choice`` when it holds one."""
+    questions = {q["qid"]: q for q in ask.payload["questions"]}
+    given = body.get("answers") if set(body) == {"answers"} else (
+        {next(iter(questions)): body} if len(questions) == 1 else None)
+    if not isinstance(given, dict) or set(given) != set(questions):
+        return None, None, 'answer with {"answers": {<qid>: {"text"|"choice": ...} | null}} for ' + ", ".join(questions)
+    answers = {}
+    for qid, one in given.items():
+        q = questions[qid]
+        raw = None if one is None else _one_answer(one, q.get("choices") or [], bool(q.get("multi_select")))[0]
+        if one is not None and raw is None:
+            return None, None, f"{qid}: {_QUESTION_SHAPE}"
+        answers[qid] = raw
+    return {"answers": answers}, {"answers": answers}, None
 
 
 _ANSWER_SHAPES = {"approval": _approval_response, "question": _question_response}
@@ -158,21 +190,40 @@ _DISMISS_RESPONSES = {"approval": {"choice": "deny"}, "question": {"answer": ""}
 _RESPOND_KIND = {"approval": "approval", "question": "clarify"}
 
 
+def _expected_settle(ask, response: Optional[dict]) -> tuple:
+    """The ``(status, answer)`` the ask's native waiter reports once *response* reaches it."""
+    if ask.kind == "approval":
+        return approval_outcome("resolved", {"choice": response["choice"]})[:2]
+    if response is not None and "answers" in response:
+        return "answered", {"answers": response["answers"]}
+    if response is None or not response["answer"].strip():
+        return "dismissed", None  # a skip, a cancel-all or a secret settled with no value
+    return question_outcome(response["answer"])[:2]
+
+
+async def _deliver(authority, session_id, ask, response: Optional[dict]) -> dict:
+    """Send *response* to the ask's native waiter: the authority's prompt controls, or for a viewer
+    request (a secret, a question panel) its response frame on the session's own stream."""
+    if ask.execution_generation is not None:
+        return await respond_prompt(authority, session_id, ask.execution_generation, ask.id,
+                                    _RESPOND_KIND[ask.kind], response, operator=True)
+    from gateway import session_server_requests as requests
+    live = authority.sessions.get(session_id)
+    result = {"value": ""} if ask.kind == "secret" else (response if response and "answers" in response else {})
+    settled = live is not None and requests.resolve(
+        {"id": ask.id, "result": result},
+        session_ok=lambda sid, events: sid == session_id and events is live.event_stream)
+    return {"status": "resolved" if settled else "already_resolved"}
+
+
 async def _settle(scope, ask, status: str, recorded: Optional[dict], response: Optional[dict]) -> web.Response:
-    """Send *response* to the ask's native waiter, recording the close as *status* by ``api``."""
+    """Send *response* to the ask's native waiter, recording the close as *status* by ``api``. One API
+    answer at a time: a concurrent one is told the ask is closed."""
     authority, session_id, ledger = scope
-    ledger.claim(ask.id, status, recorded)
+    if not ledger.claim(ask.id, (status, recorded), _expected_settle(ask, response)):
+        return _closed(ledger, ask.id)
     try:
-        if ask.kind == "secret":
-            from gateway import session_server_requests as requests
-            live = authority.sessions.get(session_id)
-            settled = live is not None and requests.resolve(
-                {"id": ask.id, "result": {"value": ""}},
-                session_ok=lambda sid, events: sid == session_id and events is live.event_stream)
-            outcome = {"status": "resolved" if settled else "already_resolved"}
-        else:
-            outcome = await respond_prompt(authority, session_id, ask.execution_generation, ask.id,
-                                           _RESPOND_KIND[ask.kind], response, operator=True)
+        outcome = await _deliver(authority, session_id, ask, response)
     except RuntimeStoreError as exc:
         ledger.release(ask.id)
         if exc.reason in ("approval_not_pending", "stale_generation"):

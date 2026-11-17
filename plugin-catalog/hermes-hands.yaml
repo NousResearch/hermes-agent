@@ -1,7 +1,7 @@
 name: hermes-hands
 title: Hermes Hands
 repo: https://github.com/Ridwannurudeen/hermes-hands-plugin
-sha: "1eb7dc3fc1365fd397550b2e480af5820587e0f3"
+sha: "d759def7b0a7ce026a65769e47d44de1218ac57e"
 subdir: hermes-hands
 description: >-
   Run Hermes terminal and file tools on a paired Windows or Linux computer while Hermes stays on a
@@ -22,9 +22,9 @@ maintainer: Ridwan Nurudeen
 tier: community
 category: tools
 requires_hermes: ">=0.23.1"
-docs_url: https://github.com/Ridwannurudeen/hermes-hands-plugin/tree/1eb7dc3fc1365fd397550b2e480af5820587e0f3/hermes-hands#readme
+docs_url: https://github.com/Ridwannurudeen/hermes-hands-plugin/tree/d759def7b0a7ce026a65769e47d44de1218ac57e/hermes-hands#readme
 version: "0.2.1"
-image: https://raw.githubusercontent.com/Ridwannurudeen/hermes-hands-plugin/1eb7dc3fc1365fd397550b2e480af5820587e0f3/hermes-hands/assets/banner.png
+image: https://raw.githubusercontent.com/Ridwannurudeen/hermes-hands-plugin/d759def7b0a7ce026a65769e47d44de1218ac57e/hermes-hands/assets/banner.png
 platforms:
   - linux
 known_issues:

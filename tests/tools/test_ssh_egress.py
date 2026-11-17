@@ -32,7 +32,7 @@ def make_env(monkeypatch):
     monkeypatch.setattr(SSHEnvironment, "init_session", lambda self: None)
     monkeypatch.setattr(SSHEnvironment, "_run_ssh_checked", lambda self, *a, **k: None)
     monkeypatch.setattr(SSHEnvironment, "_scp_upload",
-                        lambda self, host_path, remote_path: uploads.append((Path(host_path).read_text()
+                        lambda self, host_path, remote_path: uploads.append((Path(host_path).read_text(encoding="utf-8-sig")
                                                                              if host_path.endswith(".env") else host_path,
                                                                              remote_path)))
     monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: SimpleNamespace(sync=lambda **k: None))

@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from hermes_constants import secure_parent_dir
-from utils import atomic_json_write
+from utils import atomic_json_write, atomic_replace
 from tools.mcp_dashboard_oauth import contextvar_set as _contextvar_set, get_dashboard_oauth_flow
 
 if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 # outlast a slow network round trip. Bounded anyway -- a wedged peer must not
 # strand us forever -- but generous enough that a healthy refresh never trips it.
 _REFRESH_FENCE_TIMEOUT_SECONDS = 60.0
+# A token temp file younger than this may still be a live writer's (between mkstemp and rename);
+# only an older one is treated as an interrupted write. See HermesTokenStorage._adopt_interrupted_token_write.
+_INTERRUPTED_WRITE_MIN_AGE = 10.0
+
 
 class RefreshFenceTimeout(RuntimeError):
     """The refresh fence could not be acquired within its bound.
@@ -478,8 +482,69 @@ class HermesTokenStorage:
         self.loaded_issuer = data.pop("hermes_issuer", None)
         self._rebase_expires_in(data)
 
+    def _interrupted_token_writes(self) -> list[Path]:
+        """Temp files ``atomic_json_write`` staged for the tokens file and never renamed over it.
+
+        Matched by the exact ``mkstemp`` shape (``.<stem>_`` + 8 random chars + ``.tmp``) so another
+        server whose name merely starts with this one's (``srv`` vs ``srv_x``) is never touched."""
+        tokens = self._tokens_path()
+        pattern = re.compile(rf"\.{re.escape(tokens.stem)}_[a-z0-9_]{{8}}\.tmp")
+        with contextlib.suppress(OSError):
+            return [p for p in tokens.parent.iterdir() if pattern.fullmatch(p.name)]
+        return []
+
+    def _adopt_interrupted_token_write(self) -> None:
+        """Finish a token write the process died in the middle of.
+
+        A refresh rotates the refresh token server-side BEFORE ``set_tokens`` persists the new pair.
+        A process killed between the temp file's fsync and its rename (``os._exit`` from the gateway
+        liveness watchdog skips ``_atomic_write``'s cleanup) leaves the only copy of the live pair in
+        that temp file, while ``<server>.json`` still holds the already-rotated predecessor: the next
+        refresh replays it and a rotating server revokes the whole grant, which in a non-interactive
+        process means "re-run ``hermes mcp login``". Adopting the newest complete temp file instead
+        completes the write that was interrupted.
+
+        Adopted only when it is newer than an EXISTING tokens file (never resurrect after
+        ``remove()``), at least ``_INTERRUPTED_WRITE_MIN_AGE`` old (not a live writer's), a complete
+        JSON object carrying a refresh token, and granted by the same issuer. Superseded temp files
+        (older than the tokens file) are deleted: they are stale credential copies."""
+        tokens = self._tokens_path()
+        try:
+            current_mtime = tokens.stat().st_mtime
+        except OSError:
+            return
+        current = _read_json(tokens)
+        current_issuer = current.get("hermes_issuer") if isinstance(current, dict) else None
+        cutoff = time.time() - _INTERRUPTED_WRITE_MIN_AGE
+        candidates: list[tuple[float, Path]] = []
+        for tmp in self._interrupted_token_writes():
+            try:
+                mtime = tmp.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > cutoff:
+                continue  # possibly a live writer's: leave it alone
+            if mtime <= current_mtime:
+                tmp.unlink(missing_ok=True)
+                continue
+            data = _read_json(tmp)
+            if (isinstance(data, dict) and data.get("refresh_token") and data.get("access_token")
+                    and data.get("hermes_issuer") == current_issuer):
+                candidates.append((mtime, tmp))
+        if not candidates:
+            return
+        candidates.sort()
+        _, newest = candidates[-1]
+        atomic_replace(newest, tokens)
+        for _, older in candidates[:-1]:
+            older.unlink(missing_ok=True)
+        logger.warning("MCP OAuth '%s': recovered tokens from an interrupted write (%s) newer than "
+                       "the saved file; the saved refresh token had already been rotated",
+                       self._server_name, newest.name)
+
     async def get_tokens(self) -> "OAuthToken | None":
         self.loaded_issuer = None
+        self._adopt_interrupted_token_write()
         return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
@@ -587,7 +652,7 @@ class HermesTokenStorage:
         # The ``.refresh.lock`` sidecar is deliberately kept: flock is inode-bound, so unlinking it
         # while a peer holds the fence would let the next acquirer lock a fresh inode (two holders).
         for p in (self._tokens_path(), self._client_info_path(), self._cimd_rejected_path(),
-                  *(() if keep_metadata else (self._meta_path(),))):
+                  *(() if keep_metadata else (self._meta_path(),)), *self._interrupted_token_writes()):
             p.unlink(missing_ok=True)
 
     def snapshot(self) -> dict[str, bytes]:

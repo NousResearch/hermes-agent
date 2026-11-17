@@ -11,6 +11,12 @@ from agent.context_compressor import ContextCompressor
 from agent.context_compressor_prune import _COLD_CACHE_MIN_RECLAIM_TOKENS
 from agent.turn_context_compaction import CompactionOutcome, run_turn_start_compaction
 from agent.turn_proactive_prune import run_proactive_prune, turn_start_cold_prune
+from persistence.conversation.messages import ConversationRequest
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session, seed_usage
+
+_WITH_ROW_IDS = ConversationRequest(include_row_ids=True)
 
 
 def _shipped(**kw):
@@ -269,7 +275,8 @@ def test_turn_start_compaction_runs_the_cold_prune():
 
 def _bound(db, sid="s1"):
     c = _shipped()
-    c.bind_session_state(session_db=db, session_id=sid)
+    real = hasattr(db, "scope")  # a storage interface handle is also the compressor's interface
+    c.bind_session_state(session_db=db, session_id=sid, persistence=db if real else None)
     return c
 
 
@@ -286,13 +293,12 @@ def test_unflushed_tool_results_keep_their_original_on_disk(tmp_path, monkeypatc
     first: the stub names a file holding the exact body (kvnloo's #136488 finding: before, the next flush
     stored only the stub and the original was gone)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s1", source="cli", model="test")
-    db.append_message("s1", role="user", content="Previous turn")
-    saved = db.get_messages_as_conversation("s1", include_row_ids=True)
+    db = open_persistence(profile_scope(home=tmp_path), eager=True)
+    seed_session(db, "s1", "cli", model="test")
+    seed_messages(db, "s1", {"role": "user", "content": "Previous turn"})
+    saved = conversation(db, "s1", _WITH_ROW_IDS)
     for message in saved:
         message[_DB_PERSISTED_MARKER] = True
     pending = _history(20, big=set(range(18)), chars=24_000, start=1)
@@ -309,14 +315,11 @@ def test_unflushed_tool_results_keep_their_original_on_disk(tmp_path, monkeypatc
 def test_cold_credit_survives_a_rebuilt_compressor(tmp_path):
     """api_server builds an agent per request and resumes rebuild the compressor: the credit is persisted with
     the runway in the same commit, and restored on bind."""
-    from hermes_state import SessionDB
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("s1", source="cli", model="m")
-    for m in _small_batch()[1:]:
-        db.append_message("s1", role=m["role"], content=m["content"], tool_calls=m.get("tool_calls"),
-                          tool_call_id=m.get("tool_call_id"))
-    live = [{"role": "system", "content": "sys"}] + db.get_messages_as_conversation("s1", include_row_ids=True)
+    db = open_persistence(profile_scope(home=tmp_path), eager=True)
+    seed_session(db, "s1", "cli", model="m")
+    seed_messages(db, "s1", *_small_batch()[1:])
+    live = [{"role": "system", "content": "sys"}] + conversation(db, "s1", _WITH_ROW_IDS)
     for m in live[1:]:
         m[_DB_PERSISTED_MARKER] = True
     first = _bound(db)
@@ -340,18 +343,18 @@ def test_legacy_session_resumed_while_warm_is_not_pruned(tmp_path, monkeypatch):
     """Invariant: a pre-clock session's window is rebuilt from TODAY's TTL, not the one it was cached at,
     so it never licenses a cold prune. Cached for 1h, resumed 10 min later under a 5m setting: still warm."""
     import time
-    from hermes_state import SessionDB
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path), eager=True)
     try:
-        db.create_session("s1", "cli")
-        db.append_message("s1", "user", "hi")
-        db.append_message("s1", "assistant", "hello", timestamp=time.time() - 600)
-        db.update_token_counts("s1", cache_write_tokens=4000, api_call_count=1)  # no stored clock
+        seed_session(db, "s1", "cli")
+        seed_messages(db, "s1", {"role": "user", "content": "hi"},
+                      {"role": "assistant", "content": "hello", "timestamp": time.time() - 600})
+        seed_usage(db, "s1", cache_write_tokens=4000, api_call_count=1)  # no stored clock
         prune, calls = _recording_prune(lambda m, cold: (m, 0))
         agent = _site_agent(prune, cold=True)
         agent.api_mode, agent._use_prompt_caching, agent._cache_ttl = "anthropic_messages", True, "5m"
         agent._session_db, agent._prompt_cache_clock, agent._prompt_cache_clock_restored = db, None, False
+        agent.persistence = db
         run_proactive_prune(agent, _history(3, big=set()), 100_000, "t")
         assert calls == [False]
     finally:

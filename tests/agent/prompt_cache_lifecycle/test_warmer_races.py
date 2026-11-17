@@ -1,4 +1,4 @@
-"""Prompt-cache keep-alive races against real state: a real ``SessionDB`` in a scratch dir and the
+"""Prompt-cache keep-alive races against real state: a real storage interface handle on a scratch state.db and the
 real OpenAI SDK posting to a local HTTP endpoint that can hold its reply. Local-wire proofs of the
 warmer's own state machine, not of any provider's cache TTL."""
 
@@ -66,16 +66,16 @@ def _endpoint():
 
 def _armed(tmp_path, client, sid="s1", *, expect=None):
     """An agent whose first response (a 120k-token cache write) is folded into the clock and armed."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(sid, "cli")
-    db.append_message(sid, "user", "before")
-    db.append_message(sid, "assistant", "old prefix")
+    db = open_persistence(profile_scope(home=tmp_path), eager=True)
+    seed_session(db, sid, "cli")
+    seed_messages(db, sid, {"role": "user", "content": "before"}, {"role": "assistant", "content": "old prefix"})
     agent = SimpleNamespace(
         api_mode="chat_completions", provider="anthropic", base_url="https://api.anthropic.com",
         model="claude-opus-4-7", api_key="", _use_prompt_caching=True, _cache_disabled=False,
-        _interrupt_requested=False, session_id=sid, session_api_calls=1, _session_db=db, client=client,
+        _interrupt_requested=False, session_id=sid, session_api_calls=1, _session_db=db, persistence=db, client=client,
         context_compressor=None, log_prefix="", session_prompt_tokens=0, session_completion_tokens=0,
         session_total_tokens=0, session_input_tokens=0, session_output_tokens=0, session_cache_read_tokens=0,
         session_cache_write_tokens=0, session_reasoning_tokens=0, session_estimated_cost_usd=0.0,
@@ -95,7 +95,8 @@ def _armed(tmp_path, client, sid="s1", *, expect=None):
 
 
 def _compact(agent):
-    agent._session_db.archive_and_compact(agent.session_id, [{"role": "user", "content": "NEW COMPACTED PREFIX"}])
+    from persistence.conversation.messages import NewMessage
+    agent._session_db.messages.compact(agent.session_id, [NewMessage.from_live({"role": "user", "content": "NEW COMPACTED PREFIX"})])
     assert cache_window(agent).reason == "compacted"
 
 
@@ -119,8 +120,8 @@ def test_a_refresh_of_a_compacted_prefix_never_certifies_the_new_one(tmp_path, w
             srv.release.set()
             worker.join(10)
             assert not worker.is_alive()
-            db.flush_token_counts()
-            assert db.get_session(agent.session_id)["cache_read_tokens"] == _READ  # billed where sent
+            db.usage.flush_usage()
+            assert db.sessions.get(agent.session_id).cache_read_tokens == _READ  # billed where sent
         window = cache_window(agent)
         assert window.confidence == "unknown" and window.reason == "compacted"
         assert warmer._run is None and warmer.status["reason"] == "conversation context changed"
@@ -172,7 +173,8 @@ def test_a_refresh_from_before_a_reset_stays_out_of_the_new_sessions_totals(tmp_
         assert srv.entered.wait(5)
         warmer.cancel("agent run settled")
         agent.session_id = "new"
-        db.create_session("new", "cli")
+        from tests.fixtures.storage_seed import seed_session
+        seed_session(db, "new", "cli")
         agent._transition_context_engine_session = lambda **kw: None  # no context engine on this agent
         agent.session_cache_warm_calls = 3
         AIAgent.reset_session_state(agent)
@@ -181,11 +183,11 @@ def test_a_refresh_from_before_a_reset_stays_out_of_the_new_sessions_totals(tmp_
         srv.release.set()
         worker.join(10)
         assert not worker.is_alive()
-        db.flush_token_counts()
+        db.usage.flush_usage()
         assert agent.session_cache_read_tokens == 0 and agent.session_estimated_cost_usd == 0.0
         assert agent.session_cache_warm_calls == 0
-        assert db.get_session("old")["cache_read_tokens"] == _READ
-        assert db.get_session("new")["cache_read_tokens"] == 0
+        assert db.sessions.get("old").cache_read_tokens == _READ
+        assert db.sessions.get("new").cache_read_tokens == 0
         db.close()
 
 

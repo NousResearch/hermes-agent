@@ -1,6 +1,6 @@
 name: treg-jobs
 repo: https://github.com/YAN-XBT/treg-jobs
-sha: 7b015b90ffa6281d66c41e9cd33ab84e5fd58fc9
+sha: 39cd46453f660f349f196e23b9281850c30301ee
 description: >-
   Job hunt through treg's job API: search live roles across companies, semantic fit search, the
   people who work there, one person's work email, real salary percentiles with the sample size
@@ -11,10 +11,10 @@ maintainer: YAN-XBT
 tier: community
 category: tools
 requires_hermes: ">=0.22"
-version: "0.3.9"
+version: "0.4.0"
 docs_url: https://github.com/YAN-XBT/treg-jobs/blob/main/README.md
 title: Treg Jobs
-image: https://raw.githubusercontent.com/YAN-XBT/treg-jobs/7b015b90ffa6281d66c41e9cd33ab84e5fd58fc9/assets/card.jpg
+image: https://raw.githubusercontent.com/YAN-XBT/treg-jobs/39cd46453f660f349f196e23b9281850c30301ee/assets/card.jpg
 screenshots: []
 platforms: []
 known_issues:

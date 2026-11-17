@@ -242,10 +242,23 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     from hermes_cli.source_releases import resolve_source_target
     from hermes_cli.update_channel import channel_record, rides_default_channel
     from hermes_cli.update_cmd_common import _record_stop
+    from hermes_cli import update_releases
 
+    root = _uc()._m().PROJECT_ROOT
+    if git_cmd is not None or getattr(args, "rollback", False):
+        try:
+            if git_cmd is None:
+                raise LookupError("this install is not a git checkout, so it keeps no release ledger.")
+            ledger = update_releases.select(args, git_cmd, root, request)
+        except LookupError as exc:
+            print(f"✗ Cannot roll back: {exc} No update was applied.")
+            stop()
+            _record_stop("target_unresolved")
+            sys.exit(1)
+        if ledger is not None:
+            return ledger
     if getattr(args, "branch", None):
         return f"origin/{branch}", None, False, None
-    root = _uc()._m().PROJECT_ROOT
     selected = _uc()._update_run_channel(args)
     original = deepcopy(channel_record(require_readable_config_before_write(
         Path(request["home"]) / "config.yaml"), root))

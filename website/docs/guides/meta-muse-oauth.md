@@ -54,12 +54,13 @@ The picker offers the live `api.meta.ai/v1/models` catalog when you are signed i
 | Model | Notes |
 |-------|-------|
 | `muse-spark-1.3` | Default; recommended for new work, 1M context |
-| `muse-wonder-1.0` | Most capable; long-horizon agentic work, 1M context |
+| `muse-wonder-full-1.0`, `muse-wonder-full-1.0-contributor` | Seen in the live subscription catalog; the standard variant has passed a local chat smoke test. |
+| `muse-wonder-1.0` | Long-horizon agentic work, 1M context |
 | `muse-ember-1.0` | Efficient execution; sub-agent and high-volume work, 1M context |
 | `muse-spark-1.3-contributor` | Contributor mode (content may train future models) |
 | `muse-spark-1.2`, `muse-spark-1.2-contributor` | Previous Spark version |
 
-Not offered: `muse-spark-1.1` (Model API pay-as-you-go only, not in Muse Code), `muse-image-*`, `muse-voice-*` and `sam-*` (non-chat endpoints, filtered from the live catalog), and the self-hosted Muse Spark Open / Muse Glimmer weights (no Model API endpoint). Muse Wonder Full has no separate model ID — it is selected inside Muse Code itself, so it cannot be offered here.
+Not offered: `muse-spark-1.1` (Model API pay-as-you-go only, not in Muse Code), `muse-image-*`, `muse-voice-*` and `sam-*` (non-chat endpoints, filtered from the live catalog), and the self-hosted Muse Spark Open / Muse Glimmer weights (no Model API endpoint). Wonder Full variants were present in the live account catalog; availability may vary by account. They are not yet included in the offline fallback list.
 
 ## Logging In Manually
 
@@ -139,9 +140,7 @@ The `meta` / `muse` / `muse-spark` shortcuts keep resolving to the API-key provi
 
 | Variable | Effect |
 |----------|--------|
-| `MODEL_API_KEY` | Explicit Meta Model API key (Meta's documented variable). Takes precedence over the subscription login when set. |
-| `META_API_KEY` | Convenience alias for the same key. |
-| `META_MODEL_API_KEY` | Convenience alias for the same key. |
+| `MODEL_API_KEY`, `META_API_KEY`, `META_MODEL_API_KEY` | API keys for the separate `meta-ai` provider. They are not used by `meta-oauth`, which requires a subscription login. |
 | `META_BASE_URL` | Override the default `https://api.meta.ai/v1` endpoint (rarely needed). `HERMES_META_BASE_URL` takes precedence when both are set. |
 
 To select Meta as the active provider, set `model.provider: meta-oauth` in `config.yaml` (use `hermes setup` for the guided flow) or pass `--provider meta-oauth` for a single invocation.
@@ -173,7 +172,7 @@ For loopback-redirect providers (Spotify, MCP servers), see [OAuth over SSH / Re
 
 ### "No Meta credentials found" error at runtime
 
-The auth store has no `meta-oauth` entry and no `MODEL_API_KEY`/`META_API_KEY`/`META_MODEL_API_KEY` is set. You haven't logged in yet, or the credential file was deleted.
+The auth store has no `meta-oauth` entry. The subscription provider does not use the API-key environment variables, so sign in even if a `meta-ai` key is configured.
 
 **Fix:** run `hermes model` and pick the Meta (Muse subscription) provider, or run `hermes auth add meta-oauth`.
 

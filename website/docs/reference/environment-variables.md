@@ -104,7 +104,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `OLLAMA_BASE_URL` | Override Ollama Cloud base URL (default: `https://ollama.com/v1`) |
 | `XAI_API_KEY` | xAI (Grok) API key for chat + TTS + web search ([console.x.ai](https://console.x.ai/)) |
 | `XAI_BASE_URL` | Override xAI base URL (default: `https://api.x.ai/v1`) |
-| `MODEL_API_KEY` | Meta Model API key ([dev.meta.ai](https://dev.meta.ai)). Takes precedence over the `meta-oauth` subscription login when set. |
+| `MODEL_API_KEY` | Meta Model API key ([dev.meta.ai](https://dev.meta.ai)) for `meta-ai`; not used by `meta-oauth` subscription login. |
 | `META_API_KEY` | Convenience alias for `MODEL_API_KEY`. |
 | `META_MODEL_API_KEY` | Convenience alias for `MODEL_API_KEY`. |
 | `META_BASE_URL` | Override Meta base URL (default: `https://api.meta.ai/v1`); `HERMES_META_BASE_URL` takes precedence when both are set |

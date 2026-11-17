@@ -347,7 +347,7 @@ def _seed_meta_auth_store(hermes_home, tokens=None, last_refresh="2026-09-20T00:
     (hermes_home / "auth.json").write_text(json.dumps(store))
 
 
-def test_meta_env_key_wins_over_auth_store(tmp_path, monkeypatch):
+def test_meta_subscription_ignores_api_key_environment(tmp_path, monkeypatch):
     from hermes_cli.auth_meta import resolve_meta_oauth_runtime_credentials
 
     hermes_home = tmp_path / "hermes"
@@ -355,13 +355,30 @@ def test_meta_env_key_wins_over_auth_store(tmp_path, monkeypatch):
     _seed_meta_auth_store(hermes_home)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     for var in ("MODEL_API_KEY", "META_API_KEY", "META_MODEL_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("META_API_KEY", "env-key-1")
+        monkeypatch.setenv(var, "pay-as-you-go-key")
 
     creds = resolve_meta_oauth_runtime_credentials(refresh_if_expiring=False)
 
-    assert creds["api_key"] == "env-key-1"
-    assert creds["source"] == "env"
+    assert creds["api_key"] == "store-at"
+    assert creds["source"] == "hermes-auth-store"
+    assert creds["auth_mode"] == "oauth_device_code"
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    runtime = resolve_runtime_provider(requested="meta-oauth")
+    assert runtime["provider"] == "meta-oauth"
+    assert runtime["api_key"] == "store-at"
+
+
+def test_meta_subscription_never_falls_back_to_api_key_when_not_logged_in(tmp_path, monkeypatch):
+    import pytest
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.auth_meta import resolve_meta_oauth_runtime_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("MODEL_API_KEY", "pay-as-you-go-key")
+    with pytest.raises(AuthError):
+        resolve_meta_oauth_runtime_credentials(refresh_if_expiring=False)
 
 
 def test_meta_pool_seeds_from_auth_store(tmp_path, monkeypatch):

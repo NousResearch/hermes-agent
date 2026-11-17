@@ -466,29 +466,6 @@ def _is_terminal_meta_oauth_refresh_error(exc: Exception) -> bool:
     )
 
 
-_META_ENV_KEY_VARS = ("MODEL_API_KEY", "META_API_KEY", "META_MODEL_API_KEY")
-
-
-def _meta_env_api_key() -> str:
-    """Explicit Meta API key from the environment (Meta's documented ``MODEL_API_KEY`` first).
-
-    Explicit keys win over subscription state; a miss is silent so callers fall
-    through to the pooled OAuth credential. Never logs the key.
-    """
-    from agent.secret_scope import UnscopedSecretError, get_secret_str
-
-    for var in _META_ENV_KEY_VARS:
-        try:
-            token = _clean(get_secret_str(var, ""))
-        except UnscopedSecretError:
-            raise
-        except Exception:  # health: allow BLE001 -- a secret-scope read failure is a miss for this var, never a login failure
-            token = ""
-        if token:
-            return token
-    return ""
-
-
 def _refresh_meta_oauth_tokens(tokens: dict[str, Any]) -> dict[str, Any]:
     from hermes_cli.auth import _load_auth_store, _load_provider_state
 
@@ -524,19 +501,9 @@ def resolve_meta_oauth_runtime_credentials(
         else META_OAUTH_REFRESH_SKEW_SECONDS
     )
 
-    # Precedence: explicit env key wins, then the pooled subscription credential
-    # from the auth store. No keychain read (Muse login stays the plugin's own
-    # rule on the ``meta-ai`` provider); a miss raises re-login AuthError below.
-    env_key = _meta_env_api_key()
-    if env_key:
-        return {
-            "provider": META_OAUTH_PROVIDER_ID,
-            "base_url": _meta_oauth_inference_base_url(),
-            "api_key": env_key,
-            "source": "env",
-            "last_refresh": None,
-            "auth_mode": "api_key",
-        }
+    # Subscription identity is explicit: never substitute a pay-as-you-go
+    # Meta environment key when the user selected meta-oauth. Those keys
+    # belong to the separate meta-ai provider.
 
     def _should_refresh(data: dict[str, Any]) -> bool:
         return bool(force_refresh) or bool(

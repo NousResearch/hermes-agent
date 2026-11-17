@@ -45,7 +45,41 @@ class TestMCPComponentExtraction:
             source="mcp:fs",
         )
 
+    def test_uvx_from_with_runtime_and_extras(self):
+        comp = sa._extract_mcp_component(
+            "arcade",
+            "uvx",
+            [
+                "--python",
+                "3.12",
+                "--from",
+                "arcade-agent[mcp]==0.4.2",
+                "arcade-mcp",
+            ],
+        )
+        assert comp == sa.Component(
+            name="arcade-agent",
+            version="0.4.2",
+            ecosystem="PyPI",
+            source="mcp:arcade",
+        )
 
+    def test_uvx_from_equals_with_extras(self):
+        comp = sa._extract_mcp_component(
+            "arcade",
+            "uvx",
+            ["--from=arcade-agent[mcp]==0.4.2", "arcade-mcp"],
+        )
+        assert comp is not None
+        assert (comp.name, comp.version) == ("arcade-agent", "0.4.2")
+
+    def test_uvx_unpinned_from_does_not_audit_pinned_entrypoint(self):
+        comp = sa._extract_mcp_component(
+            "arcade",
+            "uvx",
+            ["--from", "arcade-agent[mcp]", "arcade-mcp==9.9.9"],
+        )
+        assert comp is None
 
     def test_empty_args(self):
         assert sa._extract_mcp_component("x", "npx", []) is None

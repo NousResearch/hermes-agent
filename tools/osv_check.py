@@ -211,8 +211,18 @@ def _parse_package_from_args(args: list, ecosystem: str) -> tuple[Optional[str],
     # Skip flags to find the package token. npx's explicit install target (--package=NAME /
     # --package NAME / -p NAME) names a package distinct from the executed binary.
     package_token = None
+    if ecosystem == "PyPI":
+        # uvx --from names the install target explicitly; the trailing positional is the
+        # entrypoint, and flags like --python take a value that is not the package.
+        for index, arg in enumerate(args or ()):
+            if arg == "--from" and index + 1 < len(args) and isinstance(args[index + 1], str):
+                package_token = args[index + 1]
+                break
+            if isinstance(arg, str) and arg.startswith("--from="):
+                package_token = arg[len("--from="):]
+                break
     take_next = False
-    for arg in args or ():
+    for arg in (args or ()) if package_token is None else ():
         if not isinstance(arg, str):
             continue
         if take_next:

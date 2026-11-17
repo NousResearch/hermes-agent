@@ -234,6 +234,16 @@ def test_the_moved_helpers_are_their_replacements(quiet):
         assert getattr(hermes_state, name) is getattr(module, name), name
 
 
+def test_the_backend_writer_and_read_pool_helpers_main_published_are_their_homes_objects(quiet):
+    from persistence.sqlite._state import readpool, write
+
+    for name in ("WriterMutexTimeout", "maintain_after_commit", "write_site", "writer_mutex_until"):
+        assert getattr(hermes_state, name) is getattr(write, name), name
+    from hermes_state import note_read_pool_exhausted
+
+    assert note_read_pool_exhausted is readpool.note_read_pool_exhausted
+
+
 def test_a_diverted_transcript_lands_in_the_profiles_sessions_folder(quiet):
     path = hermes_state.divert_session_transcript_jsonl("s9", [{"role": "user", "content": "kept"}, None, "plain"])
     assert path == hermes_constants.get_hermes_home() / "sessions" / "s9.jsonl"

@@ -33,6 +33,10 @@ _MIGRATION_GUIDE = (
 _logger = _logging.getLogger("hermes_state")
 _warned = False
 
+# The SQLite backend's writer and read-pool helpers main's hermes_state published: no public replacement.
+_NO_WRITER_REPLACEMENT = "the store's own write verbs (the SQLite backend's writer helpers have no public replacement)"
+_NO_READ_POOL_REPLACEMENT = "the store's own read verbs (the SQLite backend's read pool has no public replacement)"
+
 # Each carried name with the replacement its deprecation warning names.
 _REPLACEMENTS = {
     "SessionDB": "persistence_assembly.open_persistence(profile_scope()), or open_persistence_reader(...) for read_only",
@@ -62,6 +66,11 @@ _REPLACEMENTS = {
     "read_only_db_uri": "sqlite_support.read_only_db_uri",
     "resolved_max_export_messages": "storage_limits.resolved_max_export_messages",
     "resolved_max_resume_messages": "storage_limits.resolved_max_resume_messages",
+    "WriterMutexTimeout": _NO_WRITER_REPLACEMENT,
+    "maintain_after_commit": _NO_WRITER_REPLACEMENT,
+    "write_site": _NO_WRITER_REPLACEMENT,
+    "writer_mutex_until": _NO_WRITER_REPLACEMENT,
+    "note_read_pool_exhausted": _NO_READ_POOL_REPLACEMENT,
 }
 
 # Names that are another module's object, under a new name or the same one.
@@ -87,6 +96,11 @@ _FORWARDED = {
     "read_only_db_uri": ("sqlite_support", "read_only_db_uri"),
     "resolved_max_export_messages": ("storage_limits", "resolved_max_export_messages"),
     "resolved_max_resume_messages": ("storage_limits", "resolved_max_resume_messages"),
+    "WriterMutexTimeout": ("persistence.sqlite._state.write", "WriterMutexTimeout"),
+    "maintain_after_commit": ("persistence.sqlite._state.write", "maintain_after_commit"),
+    "write_site": ("persistence.sqlite._state.write", "write_site"),
+    "writer_mutex_until": ("persistence.sqlite._state.write", "writer_mutex_until"),
+    "note_read_pool_exhausted": ("persistence.sqlite._state.readpool", "note_read_pool_exhausted"),
 }
 
 __all__ = sorted(_REPLACEMENTS)

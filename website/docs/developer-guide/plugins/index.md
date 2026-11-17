@@ -350,6 +350,7 @@ Session storage sits behind a storage interface: typed contracts in `persistence
 | `resolved_max_resume_messages`, `resolved_max_export_messages` | the same names in `storage_limits` |
 | `preflight_db_writability`, `read_only_db_uri` | the same names in `sqlite_support`, for a plugin's own SQLite file |
 | `holder_pid_checkable`, `make_user_dir` | `process_identity.holder_pid_checkable`, `hermes_dir_acl.make_user_dir` |
+| `WriterMutexTimeout`, `maintain_after_commit`, `write_site`, `writer_mutex_until`, `note_read_pool_exhausted` | none: the SQLite backend's own writer and read-pool helpers, carried unchanged for the stand-in's life; a store's verbs do their own writes and reads |
 | `divert_session_transcript_jsonl(session_id, messages)` | `session_rescue.divert_session_transcript_jsonl(session_id, messages, sessions_dir=get_hermes_home() / "sessions")` |
 | `session_db`, the `SessionDB` a context engine's `bind_session_state` and `on_session_start` receive | `persistence`, the agent's store handle, passed beside it to a hook that accepts that keyword ([Context engine plugins](../context-engine-plugin.md#session-storage)) |
 

@@ -66,6 +66,7 @@ with a name allows that one name only.
 | `hermes_state` | `SessionResumeTooLargeError` | developer-guide / plugins docs |
 | `hermes_state` | `StateDbCorruptError` | developer-guide / plugins docs |
 | `hermes_state` | `StateDbReplacedError` | developer-guide / plugins docs |
+| `hermes_state` | `WriterMutexTimeout` | developer-guide / plugins docs |
 | `hermes_state` | `apply_database_pragmas` | developer-guide / plugins docs |
 | `hermes_state` | `apply_wal_with_fallback` | developer-guide / plugins docs |
 | `hermes_state` | `classify_persistence_error` | developer-guide / plugins docs |
@@ -76,14 +77,18 @@ with a name allows that one name only.
 | `hermes_state` | `holder_pid_checkable` | developer-guide / plugins docs |
 | `hermes_state` | `is_malformed_db_error` | developer-guide / plugins docs |
 | `hermes_state` | `is_sqlite_lock_error` | developer-guide / plugins docs |
+| `hermes_state` | `maintain_after_commit` | developer-guide / plugins docs |
 | `hermes_state` | `make_user_dir` | developer-guide / plugins docs |
 | `hermes_state` | `mkdir_under_hermes_home` | developer-guide / plugins docs |
+| `hermes_state` | `note_read_pool_exhausted` | developer-guide / plugins docs |
 | `hermes_state` | `preflight_db_writability` | developer-guide / plugins docs |
 | `hermes_state` | `read_only_db_uri` | developer-guide / plugins docs |
 | `hermes_state` | `resolved_max_export_messages` | developer-guide / plugins docs |
 | `hermes_state` | `resolved_max_resume_messages` | developer-guide / plugins docs |
 | `hermes_state` | `storage_corrupt_reason` | developer-guide / plugins docs |
 | `hermes_state` | `storage_state` | developer-guide / plugins docs |
+| `hermes_state` | `write_site` | developer-guide / plugins docs |
+| `hermes_state` | `writer_mutex_until` | developer-guide / plugins docs |
 | `hermes_state_registry` | `acquire` | developer-guide / plugins docs |
 | `hermes_state_registry` | `release` | developer-guide / plugins docs |
 | `hermes_state_registry` | `release_or_close` | developer-guide / plugins docs |

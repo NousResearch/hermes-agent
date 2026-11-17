@@ -2888,6 +2888,64 @@ def mark_job_run(
         )
 
 
+def mark_job_skipped(
+    job_id: str,
+    status: str,
+    reason: str,
+    *,
+    retry_at: Optional[datetime] = None,
+    expected_fire_owner: Optional[str] = None,
+) -> bool:
+    """Record a run that was deliberately not executed (fork: cost budget).
+
+    Unlike ``mark_job_run`` this is not a run: ``failure_streak``,
+    ``last_error``, the preflight/drift alert markers and
+    ``repeat.completed`` are left as they were. A finite one-shot's dispatch
+    pre-claim (``claim_dispatch``) is handed back and the one-shot is
+    re-armed at ``retry_at`` (when the budget resets) rather than consumed;
+    a recurring job simply moves to its next occurrence. Clears the fire /
+    run claims so the job is claimable again. Returns False when the job is
+    gone or ``expected_fire_owner`` no longer owns the fire claim.
+    """
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            return False
+        with _jobs_lock():
+            jobs = load_jobs()
+            for job in jobs:
+                if job["id"] != job_id:
+                    continue
+                if expected_fire_owner is not None:
+                    claim = job.get("fire_claim")
+                    if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
+                        logger.warning(
+                            "mark_job_skipped: job_id %s fire claim owner changed; "
+                            "discarding stale skip", job_id,
+                        )
+                        return False
+                now = _hermes_now()
+                job["last_run_at"] = now.isoformat()
+                job["last_status"] = status
+                job["last_skip_reason"] = reason
+                job.pop("manual_run_at", None)
+                job.pop("manual_run_prompt", None)
+                job["fire_claim"] = None
+                if job.get("run_claim") is not None:
+                    job["run_claim"] = None
+                schedule = job.get("schedule", {})
+                if schedule.get("kind") == "once":
+                    repeat = job.get("repeat")
+                    if isinstance(repeat, dict) and int(repeat.get("completed") or 0) > 0:
+                        repeat["completed"] = int(repeat["completed"]) - 1
+                    job["next_run_at"] = (retry_at or now + timedelta(hours=1)).isoformat()
+                else:
+                    job["next_run_at"] = compute_next_run(schedule, now.isoformat())
+                save_jobs(jobs)
+                return True
+    logger.warning("mark_job_skipped: job_id %s not found", job_id)
+    return False
+
+
 def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:
     """Set/clear a persisted alert-dedup marker; return the PRIOR value.
 

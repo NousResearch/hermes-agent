@@ -371,6 +371,22 @@ TOOLSETS = {
         "includes": [],
     },
 
+    # Fork GitHub tool for secondary profiles that must not reach the default
+    # profile's GitHub MCP. The profile's per-repo action allowlist
+    # (`github_pr.repos`) is the boundary; reads and writes are separate
+    # toolsets so granting reads never implies opening PRs.
+    "github_pr": {
+        "description": "GitHub PR + commit-log reads on allowlisted repos (REST, no shell)",
+        "tools": ["github_pr_read"],
+        "includes": [],
+    },
+
+    "github_pr_write": {
+        "description": "GitHub: create a branch, commit files, open a PR on allowlisted repos — never merge",
+        "tools": ["github_pr_write"],
+        "includes": [],
+    },
+
     # Zendesk Help Center, draft-only. Reads and the draft create are separate
     # toolsets: the shared service-account token can publish, so the write
     # tool's allowlist + forced `draft: true` is the boundary, and granting
@@ -422,6 +438,14 @@ TOOLSETS = {
     "slack_post": {
         "description": "Post a text message into a specific Slack thread (explicit chat_id + thread_ts)",
         "tools": ["slack_post_thread"],
+        "includes": [],
+    },
+
+    # Fork: the agent's read-only view of its own spend and budget
+    # (agent/cost_budget.py). Non-floor: spend is granted per role.
+    "cost_budget": {
+        "description": "Read-only view of this profile's own LLM spend and cost budget",
+        "tools": ["cost_budget_status"],
         "includes": [],
     },
 

@@ -417,7 +417,11 @@ def policy_for_source(gateway_config: Any, source: Any) -> ToolAccessPolicy:
 # toolset via the registry, and returns a denial message or None.
 # ---------------------------------------------------------------------------
 
-_config_cache: Dict[str, Any] = {"fp": None, "config": None}
+# Keyed by the RESOLVED config.yaml path (multiplex fix 1): one entry per
+# profile home, each holding ``(fp, config)`` with ``fp = (mtime_ns, size)``.
+# A single global slot keyed only on ``fp`` served one profile's RBAC to
+# another, because ``hermes profile create --clone`` preserves mtime.
+_config_cache: Dict[str, Any] = {}
 _config_cache_lock = threading.Lock()
 
 
@@ -457,7 +461,7 @@ def _toolset_for_tool(tool_name: str) -> Optional[str]:
 
 
 def _load_config_cached():
-    """Load gateway config, memoized on config.yaml mtime."""
+    """Load gateway config, memoized per config.yaml path on (mtime, size)."""
     try:
         from gateway.config import load_gateway_config, get_hermes_home
         cfg_file = get_hermes_home() / "config.yaml"
@@ -466,11 +470,16 @@ def _load_config_cached():
             fp = (st.st_mtime_ns, st.st_size)
         except OSError:
             fp = None
+        try:
+            key = str(cfg_file.resolve())
+        except OSError:
+            key = str(cfg_file)
         with _config_cache_lock:
-            if fp != _config_cache["fp"] or _config_cache["config"] is None:
-                _config_cache["config"] = load_gateway_config()
-                _config_cache["fp"] = fp
-            return _config_cache["config"]
+            entry = _config_cache.get(key)
+            if entry is None or entry[0] != fp or entry[1] is None:
+                entry = (fp, load_gateway_config())
+                _config_cache[key] = entry
+            return entry[1]
     except Exception:
         return None
 

@@ -31,7 +31,7 @@ WIRING = [
     ("RBAC policy", "gateway/tool_access.py", "def _effective_grant", "channel_roles union"),
     ("RBAC point A", "gateway/authz_mixin.py", "policy_for_source", "message gate in authz mixin"),
     ("RBAC point A", "gateway/authz_mixin.py", "_rbac_policy.is_authorized", "authorization decision wired"),
-    ("RBAC point B", "gateway/run.py", "return filter_enabled_toolsets(", "toolset filter in resolver"),
+    ("RBAC point B", "gateway/run.py", "return filter_foreign_mcp_toolsets(filter_enabled_toolsets(", "toolset filter in resolver"),
     ("RBAC point C", "model_tools.py", "denial_for_current_tool", "execution backstop"),
     # ── RBAC admin surfaces ───────────────────────────────────────────────
     ("hermes users", "hermes_cli/users.py", "def register_users_subcommands", "registrar"),
@@ -46,6 +46,14 @@ WIRING = [
     ("webflow_asset_upload", "tools/webflow_asset_tool.py", "is_protected_data_path", "credential-read guard"),
     ("ownership tool", "tools/ownership_tool.py", 'toolset="ownership"', "floor toolset"),
     ("pdf_pages", "tools/pdf_pages_tool.py", 'toolset="pdf_pages"', "own toolset, fixed argv"),
+    ("github_pr_read", "tools/github_pr_tool.py", 'toolset="github_pr"', "own read toolset"),
+    ("github_pr_write", "tools/github_pr_tool.py", 'toolset="github_pr_write"', "own write toolset, never merges"),
+    ("github_pr_write", "tools/github_pr_tool.py", "default, err = await _default_branch(repo, token)", "live default-branch guard before every write"),
+    ("github_pr", "tools/github_pr_tool.py", "_authorize(repo, op, WRITE_OPS)", "per-repo action allowlist gates writes"),
+    ("github_pr", "tools/github_pr_tool.py", "get_secret(_TOKEN_ENV)", "token only via profile-scoped get_secret"),
+    ("github_pr", "tools/github_pr_tool.py", "if writes and not prefix:", "branch_prefix required for write repos"),
+    ("github_pr", "tools/github_pr_tool.py", "allow_redirects=False", "redirects never followed"),
+    ("github_pr_write", "tools/github_pr_tool.py", "if not base_tree:", "no base-tree-less commit (would delete the branch)"),
     ("zendesk_api", "tools/zendesk_tool.py", "_READ_ALLOWLIST", "Help Center-only read allowlist (no tickets)"),
     ("zendesk_create_draft", "tools/zendesk_tool.py", "_WRITE_ALLOWLIST", "curated write allowlist"),
     ("zendesk_create_draft", "tools/zendesk_tool.py", 'article.get("draft") is not True', "forced unpublished draft"),
@@ -69,6 +77,17 @@ WIRING = [
     ("pricing overrides", "agent/usage_pricing.py", "pricing_override_for(model_name, route)", "override consulted first"),
     ("relevance gate accounting", "gateway/run.py", "def _relevance_gate_accounting_token", "classifier usage booked to the channel session"),
     ("relevance gate accounting", "gateway/run.py", 'task="relevance_gate"', "aux task tag"),
+    # ── Cost budget + alerts ──────────────────────────────────────────────
+    ("cost budget", "agent/cost_budget.py", "def preflight_cron_job", "skip decision + overrun alert"),
+    ("cost budget", "agent/cost_budget.py", "def watch", "per-tick threshold/run/unpriced alerts"),
+    ("cost budget", "cron/scheduler.py", "_cost_budget.preflight_cron_job(job, adapters=adapters, loop=loop)", "pre-run skip in the shared run body"),
+    ("cost budget", "cron/scheduler.py", 'mark_job_skipped(job["id"], "skipped_budget"', "skip recorded without consuming a run"),
+    ("cost budget", "cron/jobs.py", "def mark_job_skipped", "skip keeps streak/repeat, re-arms one-shots"),
+    ("cost budget", "agent/cost_budget.py", "if job_id in cfg.essential_jobs:", "essential ids always run; default_discretionary fail-closed mode"),
+    ("cost budget", "tools/cronjob_tools.py", 'updates["discretionary"] = True', "set-only discretionary flag"),
+    ("cost budget", "cron/scheduler.py", "_cost_budget.watch(adapters=adapters, loop=loop)", "tick watches this profile's budget"),
+    ("cost budget", "cron/executions.py", "note: Optional[str] = None", "ledger records the skip on a completed row"),
+    ("cost_budget_status", "tools/cost_budget_tool.py", 'toolset="cost_budget"', "own non-floor toolset"),
     # ── Drive per-user access check ───────────────────────────────────────
     ("Drive access check", "plugins/google_drive_sa/access.py", "def require_access", "gate"),
     ("Drive access check", "plugins/google_drive_sa/access.py", "def filter_listing", "listing filter"),
@@ -166,6 +185,45 @@ WIRING = [
     ("Bot-thread wake opt-in", "plugins/platforms/slack/adapter.py", "and self._slack_wake_in_bot_authored_threads()", "gates check 4"),
     ("Bot-thread wake opt-in", "plugins/platforms/slack/adapter.py", "SLACK_WAKE_IN_BOT_AUTHORED_THREADS", "yaml -> env bridge"),
     ("Bot-thread wake opt-in", "hermes_cli/config_defaults.py", '"wake_in_bot_authored_threads": False', "defaults to pre-sync behaviour"),
+    ("Bot-thread wake opt-in", "plugins/platforms/slack/adapter.py", 'opens_wake_zone = not (metadata or {}).get("job_id")', "cron sends don't arm check 1"),
+    # ── Multiplex hardening (docs/superpowers/specs/2026-11-16-…) ─────────
+    ("Multiplex 1: RBAC cache", "gateway/tool_access.py", "key = str(cfg_file.resolve())", "cache keyed by config path"),
+    ("Multiplex 2: Slack settings", "plugins/platforms/slack/adapter.py", "def _slack_setting", "mode-aware settings read"),
+    ("Multiplex 2: Slack settings", "plugins/platforms/slack/adapter.py", "def _scoped_slack_env", "scoped SLACK_* env read"),
+    ("Multiplex 2: Slack settings", "plugins/platforms/slack/adapter.py", "seeded = {PROFILE_SETTINGS_KEY: profile_settings}", "yaml -> extra[profile_settings]"),
+    ("Multiplex 2: Slack settings", "plugins/platforms/slack/adapter.py", "    if _multiplex_on():\n        return seeded", "no os.environ bridge under multiplex"),
+    ("Multiplex 3: adapter per source", "gateway/run.py", "self._multiplex_adapter_for(event.source, event.source.platform)", "relevance gate"),
+    ("Multiplex 3: adapter per source", "gateway/run.py", "adapter = self._multiplex_adapter_for(source, Platform.SLACK)", "channel models"),
+    ("Multiplex 4: fork credentials", "agent/fork_secrets.py", "def read_secret", "scoped credential read"),
+    ("Multiplex 4: fork credentials", "tools/jira_api_tool.py", 'read_secret("JIRA_API_TOKEN", tool="jira_api")', "jira"),
+    ("Multiplex 4: fork credentials", "tools/notion_api_tool.py", "scoped_subprocess_env()", "ntn child env"),
+    ("Multiplex 4: fork credentials", "tools/webflow_asset_tool.py", "def _wf_secret", "webflow"),
+    ("Multiplex 4: fork credentials", "tools/slack_react_tool.py", 'read_secret("SLACK_BOT_TOKEN", tool="slack")', "slack react/post token"),
+    ("Multiplex 4: fork credentials", "plugins/google_drive_sa/client.py", "_profile_credentials", "Drive creds per profile"),
+    ("Multiplex 4b: slash admins", "gateway/run.py", "_policy_for_source(self._gateway_config_for_source(source), source)", "slash gate per profile"),
+    ("Multiplex 4b: slash admins", "gateway/slash_commands.py", "def _profile_gateway_config", "slash commands per profile"),
+    ("Multiplex 4b: ignored channels", "gateway/run.py", "def _slack_source_ignored", "runner guard per profile"),
+    ("Multiplex 4c: MCP guard", "gateway/run.py", "return filter_foreign_mcp_toolsets(filter_enabled_toolsets(", "toolsets filtered"),
+    ("Multiplex 4c: MCP guard", "model_tools.py", "foreign_mcp_denial(function_name)", "dispatch backstop"),
+    ("Multiplex 4c: MCP guard", "cron/scheduler.py", "filter_foreign_mcp_toolsets(toolsets)", "cron toolsets filtered"),
+    ("Multiplex 4d: file boundary", "agent/file_safety.py", 'cross_profile_denial(resolved, verb="Read")', "read chokepoint"),
+    ("Multiplex 4d: file boundary", "agent/file_safety.py", 'return "cross_profile"', "write chokepoint"),
+    ("Multiplex 4d: file boundary", "gateway/run.py", "set_served_profile_homes(", "served homes registered"),
+    ("Multiplex 4d: search hits", "tools/file_tools.py", "omitted = _filter_read_blocked_search_results(result, task_id)", "every search hit re-checked"),
+    ("Multiplex 4d: search hits", "tools/file_tools.py", "    return get_read_block_error(str(resolved))", "hit check runs the read guard (incl. cross_profile_denial)"),
+    ("Multiplex 4e: write guard", "agent/file_safety.py", 'return "write_guard"', "file tools"),
+    ("Multiplex 4e: write guard", "tools/skill_manager_tool.py", "_profile_write_guard_error(action, name", "skill_manage"),
+    ("Multiplex 4f: cron script env", "cron/scheduler.py", "env = build_subprocess_env(base=scoped_subprocess_env())", "script runs as its profile"),
+    ("Multiplex sweep: notepad", "cron/notepad.py", "def _notepad_file", "per-call home"),
+    ("Multiplex 4g: cron .env reload", "cron/scheduler.py", "        if not _cron_multiplex_active():\n            load_hermes_dotenv(hermes_home=_get_hermes_home())", "agent path skips reload"),
+    ("Multiplex 4g: cron .env reload", "cron/scheduler.py", "        if not _cron_multiplex_active():\n            try:\n                from hermes_cli.env_loader import load_hermes_dotenv", "no_agent path skips reload"),
+    ("Multiplex 4g: import-time .env", "run_agent.py", "_hermes_home = _import_time_env_home()", "process home under multiplex"),
+    ("Multiplex 4h: slash fail-closed", "gateway/run.py", "return _deny_all_slash_config(getattr(source, \"platform\", None))", "deny-all on failed load"),
+    ("Multiplex 4h: allow_bots per bot", "gateway/authz_mixin.py", '_reader = getattr(_bot_adapter, "_slack_allow_bots", None)', "gate asks the source adapter"),
+    ("Multiplex 4h: bot chat child", "cron/scheduler.py", "owner = _resolve_active_profile_name()", "-p <owning profile>"),
+    ("Multiplex 4h: checkpoints", "tools/checkpoint_manager.py", "def _checkpoint_base", "per-call home"),
+    ("Multiplex 4h: process registry", "tools/process_registry.py", "def _checkpoint_path", "per-call home"),
+    ("Multiplex 6: precedence warning", "gateway/run.py", "_warn_slack_precedence_flips(profile_homes)", "startup warning wired"),
 ]
 
 
@@ -197,8 +255,8 @@ def test_fork_toolsets_are_registered():
 
     all_toolsets = set(toolsets.get_all_toolsets())
     for name in ("notion", "jira", "jira_write", "slack_post", "webflow_assets",
-                 "ownership", "slack", "video_frames", "pdf_pages",
-                 "zendesk", "zendesk_write"):
+                 "ownership", "slack", "video_frames", "pdf_pages", "cost_budget",
+                 "github_pr", "github_pr_write", "zendesk", "zendesk_write"):
         assert name in all_toolsets, (
             f"toolset '{name}' is not registered — RBAC cannot gate it, and any "
             f"role granting it becomes a no-op."

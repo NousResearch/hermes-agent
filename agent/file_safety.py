@@ -130,7 +130,8 @@ def build_write_approval_paths(home: str) -> set[str]:
 
 
 def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+    """Return ``'credential'``, ``'safe_root'``, ``'cross_profile'``,
+    ``'write_guard'``, or ``None`` if writes are allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
@@ -141,6 +142,16 @@ def _classify_write_denial(path: str) -> Optional[str]:
     # the ``.ssh/`` directory prefix below doesn't swallow the config file.
     if resolved in build_write_approval_paths(home):
         return None
+
+    # Fork: multiplex profile boundary (4d) and the opt-in per-profile
+    # self-modification guard (4e). Both inert unless enabled.
+    from agent.multiplex_file_guard import cross_profile_denial
+    from agent.profile_write_guard import write_guard_denial
+
+    if cross_profile_denial(resolved, verb="Write"):
+        return "cross_profile"
+    if write_guard_denial(resolved):
+        return "write_guard"
 
     if resolved in build_write_denied_paths(home):
         return "credential"
@@ -207,6 +218,17 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     denial = _classify_write_denial(path)
     if denial is None:
         return None
+    if denial == "cross_profile":
+        return (
+            f"{verb} denied: '{path}' belongs to another profile served by this "
+            "gateway. Each bot may only use files in its own profile."
+        )
+    if denial == "write_guard":
+        return (
+            f"{verb} denied: '{path}' is protected by this profile's "
+            "agent_write_guard (its own config, persona, cron, scripts, secrets "
+            "and externally owned skills). Ask an operator to change it."
+        )
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
         return (
@@ -553,6 +575,13 @@ def get_read_block_error(path: str) -> Optional[str]:
     protected = is_protected_data_path(resolved)
     if protected:
         return protected
+
+    # Fork (multiplex 4d): another served profile's home is off limits.
+    from agent.multiplex_file_guard import cross_profile_denial
+
+    cross = cross_profile_denial(resolved, verb="Read")
+    if cross:
+        return cross
 
     return None
 

@@ -124,7 +124,28 @@ from hermes_cli.timeouts import (
     get_provider_stale_timeout,
 )
 
-_hermes_home = get_hermes_home()
+def _import_time_env_home() -> Path:
+    """Home whose ``.env`` this module loads into ``os.environ`` at import.
+
+    Fork (multiplex 4g): under ``gateway.multiplex_profiles`` the first import
+    can happen inside a secondary profile's turn or cron run (home override
+    active). Loading THAT profile's .env into the shared os.environ would hand
+    its credentials to the default bot, so use the process (default) home —
+    whose .env the gateway already loaded at startup. Unchanged otherwise.
+    """
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        if is_multiplex_active():
+            from hermes_constants import get_process_hermes_home
+
+            return get_process_hermes_home()
+    except Exception:
+        pass
+    return get_hermes_home()
+
+
+_hermes_home = _import_time_env_home()
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 if _loaded_env_paths:

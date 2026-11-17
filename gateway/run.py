@@ -1693,12 +1693,103 @@ def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
     raw = None
     if platform_cfg is not None:
         raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
+    if raw is None and platform_cfg is not None and _multiplex_is_active():
+        # Multiplex: the profile's own slack: block (the YAML→env bridge is
+        # skipped, see the Slack plugin's _apply_yaml_config).
+        _profile = getattr(platform_cfg, "extra", {}).get("profile_settings")
+        if isinstance(_profile, dict):
+            raw = _profile.get("ignored_channels")
     if raw is None:
         # Top-level ``slack.ignored_channels`` config flows through the
         # plugin's YAML→env bridge (SLACK_IGNORED_CHANNELS) rather than
         # PlatformConfig.extra — honor it here too (#46925).
-        raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
+        if _multiplex_is_active():
+            from gateway.authz_mixin import _platform_gate_env
+
+            raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
+        else:
+            raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
+
+
+def _warn_slack_precedence_flips(profile_homes) -> list:
+    """Warn about Slack keys whose effective value flips under multiplex.
+
+    Single-profile, ``.env`` beats ``config.yaml`` for the Slack keys that
+    used to be read only from the environment; under multiplex the profile's
+    ``config.yaml`` wins. Where both set such a key to different values,
+    enabling multiplex silently changes that bot's behaviour — so list every
+    such key per profile (names only, never values). Returns
+    ``[(profile, [keys])]`` for tests.
+    """
+    found = []
+    try:
+        import yaml
+
+        from agent.secret_scope import build_profile_secret_scope
+        from hermes_constants import get_process_hermes_home, hermes_home_key
+        from plugins.platforms.slack.adapter import env_yaml_precedence_conflicts
+
+        process_key = hermes_home_key(get_process_hermes_home())
+        for name, home in profile_homes:
+            cfg_path = Path(home) / "config.yaml"
+            try:
+                data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError):
+                continue
+            slack_cfg = data.get("slack") if isinstance(data, dict) else None
+            if not isinstance(slack_cfg, dict):
+                continue
+            # The default profile's single-profile environment was the process
+            # env (.env loaded into it, plus systemd/shell exports).
+            env = (
+                dict(os.environ)
+                if hermes_home_key(home) == process_key
+                else build_profile_secret_scope(Path(home))
+            )
+            keys = env_yaml_precedence_conflicts(slack_cfg, env)
+            if keys:
+                found.append((name, keys))
+                logger.warning(
+                    "multiplex: profile %r sets Slack keys in both .env and "
+                    "config.yaml with different values; under multiplex "
+                    "config.yaml wins (single-profile, .env won): %s",
+                    name,
+                    ", ".join(keys),
+                )
+    except Exception:
+        logger.debug("Slack precedence check skipped", exc_info=True)
+    return found
+
+
+_DENY_ALL_ADMIN_ID = "__multiplex_profile_config_unavailable__"
+
+
+def _deny_all_slash_config(platform: Any) -> "GatewayConfig":
+    """A gateway config whose slash policy admits nobody (multiplex fail-closed)."""
+    from gateway.config import GatewayConfig, PlatformConfig
+
+    cfg = GatewayConfig(multiplex_profiles=True)
+    if platform is not None:
+        cfg.platforms[platform] = PlatformConfig(
+            enabled=True,
+            extra={
+                "allow_admin_from": [_DENY_ALL_ADMIN_ID],
+                "group_allow_admin_from": [_DENY_ALL_ADMIN_ID],
+                "user_allowed_commands": [],
+                "group_user_allowed_commands": [],
+            },
+        )
+    return cfg
+
+
+def _multiplex_is_active() -> bool:
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        return is_multiplex_active()
+    except Exception:
+        return False
 
 
 def _slack_parent_channel_id(chat_id: Any) -> str:
@@ -2215,7 +2306,7 @@ def _home_thread_env_var(platform_name: str) -> str:
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
 
 
-def _home_channel_prompt_enabled(platform_name: str) -> bool:
+def _home_channel_prompt_enabled(platform_name: str, adapter: Any = None) -> bool:
     """Whether the one-time "set a home channel" onboarding notice should fire.
 
     Slack-only opt-out: ``slack.home_channel_prompt: false`` (bridged to
@@ -2225,6 +2316,11 @@ def _home_channel_prompt_enabled(platform_name: str) -> bool:
     home channel is unnecessary. Other platforms are unaffected.
     """
     if platform_name == Platform.SLACK.value:
+        setting = getattr(adapter, "_slack_setting", None)
+        if _multiplex_is_active() and callable(setting):
+            # Multiplex: this profile's slack: block / .env, not os.environ.
+            raw = setting("home_channel_prompt", "SLACK_HOME_CHANNEL_PROMPT", "true")
+            return str(raw).lower() not in {"false", "0", "no"}
         return os.getenv("SLACK_HOME_CHANNEL_PROMPT", "true").lower() not in {"false", "0", "no"}
     return True
 
@@ -16559,6 +16655,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     claimed[retry_claim] = active
 
         profile_homes = _multiplex_profile_homes(self.config)
+        # Fork (multiplex 4d): file tools may not cross into another served
+        # profile's home. The process home is the default profile's.
+        try:
+            from agent.multiplex_file_guard import set_served_profile_homes
+            from hermes_constants import get_process_hermes_home
+
+            set_served_profile_homes(
+                [get_process_hermes_home()] + [home for _name, home in profile_homes]
+            )
+        except Exception:
+            logger.warning("could not register served profile homes", exc_info=True)
+        _warn_slack_precedence_flips(profile_homes)
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
@@ -17496,7 +17604,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             config
             and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(config, getattr(source, "chat_id", None))
+            and self._slack_source_ignored(source)
         ):
             logger.info(
                 "Skipping Slack platform notice for configured ignored channel %s",
@@ -18090,9 +18198,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             not is_internal
             and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(
-                getattr(self, "config", None), getattr(source, "chat_id", None)
-            )
+            and self._slack_source_ignored(source)
         ):
             logger.info(
                 "Dropping Slack message from configured ignored channel %s",
@@ -18185,7 +18291,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
             if source.chat_type == "dm" and _rbac_active_for_dm:
-                adapter = self.adapters.get(source.platform)
+                adapter = self._multiplex_adapter_for(source, source.platform)
                 if adapter:
                     await adapter.send(
                         source.chat_id,
@@ -19529,7 +19635,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if await _relevance_gate_should_skip(
                     event,
                     _load_gateway_config(),
-                    self.adapters.get(event.source.platform),
+                    self._multiplex_adapter_for(event.source, event.source.platform),
                 ):
                     logger.info(
                         "relevance gate skip: platform=%s chat=%s",
@@ -21911,7 +22017,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             home_env = "set"
                 except Exception:
                     pass
-            if not home_env and _home_channel_prompt_enabled(platform_name):
+            if not home_env and _home_channel_prompt_enabled(
+                platform_name, self._multiplex_adapter_for(source, source.platform)
+            ):
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".
@@ -22875,7 +22983,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
+        policy = _policy_for_source(self._gateway_config_for_source(source), source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(
@@ -24307,18 +24415,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Cache-safe: enabled_toolsets is part of get_tool_definitions' memo key.
         from gateway.tool_access import filter_enabled_toolsets
 
+        # Multiplex 4c: a secondary profile never gets the default profile's
+        # MCP servers (they run with the default's credentials). No-op with
+        # multiplex off or in the default profile's context.
+        from gateway.multiplex_guard import filter_foreign_mcp_toolsets
+
         if override and isinstance(override, list):
             cfg = dict(user_config)
             pts = dict(cfg.get("platform_toolsets") or {})
             pts[platform_key] = [str(t) for t in override]
             cfg["platform_toolsets"] = pts
-            return filter_enabled_toolsets(
+            return filter_foreign_mcp_toolsets(filter_enabled_toolsets(
                 source, sorted(_get_platform_tools(cfg, platform_key))
-            )
+            ))
 
-        return filter_enabled_toolsets(
+        return filter_foreign_mcp_toolsets(filter_enabled_toolsets(
             source, sorted(_get_platform_tools(user_config, platform_key))
-        )
+        ))
 
     async def _run_background_task_inner(
         self,
@@ -28183,7 +28296,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             parent_id = getattr(source, "parent_chat_id", None)
 
             entry = None
-            adapter = (getattr(self, "adapters", None) or {}).get(Platform.SLACK)
+            adapter = self._multiplex_adapter_for(source, Platform.SLACK)
             adapter_extra = getattr(getattr(adapter, "config", None), "extra", None)
             if isinstance(adapter_extra, dict) and adapter_extra.get("channel_models"):
                 entry = resolve_channel_model(adapter_extra, chat_id, parent_id)
@@ -30067,6 +30180,63 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
         )
         return None
+
+    def _gateway_config_for_source(self, source: SessionSource) -> Any:
+        """Gateway config of the profile that owns *source* (multiplex fix 4b).
+
+        Multiplex off: ``self.config`` — unchanged. On: the source profile's
+        config, loaded inside its ``_profile_runtime_scope`` through the
+        path-keyed RBAC cache, so slash-admin lists and similar per-platform
+        policy come from that profile's ``config.yaml`` — never the default's.
+        A load failure never borrows the default profile's config and never
+        reads as "no policy" (which would open every admin command): it
+        returns a DENY-ALL config — slash admin gating enabled with an admin
+        id no user can have, and no user-allowed commands.
+        """
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return config
+        loaded = None
+        try:
+            from gateway.tool_access import _load_config_cached
+
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                loaded = _load_config_cached()
+        except Exception:
+            logger.warning(
+                "multiplex: could not load the source profile's gateway config",
+                exc_info=True,
+            )
+        if loaded is None:
+            logger.warning(
+                "multiplex: no gateway config for %s/%s; slash commands fail closed",
+                getattr(getattr(source, "platform", None), "value", "?"),
+                getattr(source, "profile", None) or "default",
+            )
+            return _deny_all_slash_config(getattr(source, "platform", None))
+        return loaded
+
+    def _slack_source_ignored(self, source: SessionSource) -> bool:
+        """``_is_slack_ignored_channel`` against the source profile's config."""
+        config = getattr(self, "config", None)
+        chat_id = getattr(source, "chat_id", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return _is_slack_ignored_channel(config, chat_id)
+        try:
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                from gateway.tool_access import _load_config_cached
+
+                return _is_slack_ignored_channel(_load_config_cached(), chat_id)
+        except Exception:
+            logger.warning("multiplex: ignored-channel check failed", exc_info=True)
+            return False
+
+    def _multiplex_adapter_for(self, source, platform):
+        """``self.adapters.get(platform)`` single-profile (unchanged); under
+        multiplex the adapter that owns *source* (fix 3)."""
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return self._adapter_for_source(source)
+        return (getattr(self, "adapters", None) or {}).get(platform)
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
         """Resolve which profile's HERMES_HOME should serve this inbound source.

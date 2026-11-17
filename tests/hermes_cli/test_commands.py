@@ -224,9 +224,9 @@ class TestSlackSubcommandMap:
 
 
 class TestSlackNativeSlashes:
-    """Slack native slash command generation — used to register every
-    COMMAND_REGISTRY entry as a first-class Slack slash, matching Discord
-    and Telegram."""
+    """Slack native slash command generation — registers the most-used
+    COMMAND_REGISTRY entries as first-class Slack slashes within Slack's
+    25-per-app cap; the rest stay reachable via ``/hermes <command>``."""
 
 
     def test_names_respect_slack_limits(self):
@@ -279,7 +279,7 @@ class TestSlackNativeSlashes:
         demoted name and require it back as a native slash — the only edit
         direction in which the generator's set and the leak check's set can
         disagree."""
-        import hermes_cli.commands_platforms as commands_platforms
+        from hermes_cli import commands_platforms
 
         # title ranks inside the 25-slot window once undemoted; if curation
         # drops it, re-pick a name that does instead of weakening this test.
@@ -311,7 +311,7 @@ class TestSlackNativeSlashes:
         installed plugin commands must take the freed slots before generated
         aliases do (a dropped plugin command loses its only entry point; an
         alias stays reachable via its canonical slash and /hermes)."""
-        import hermes_cli.commands_platforms as commands_platforms
+        from hermes_cli import commands_platforms
 
         monkeypatch.setattr(
             commands_platforms, "_SLACK_VIA_HERMES_ONLY",

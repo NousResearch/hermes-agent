@@ -302,14 +302,14 @@ def cmd_whatsapp_cloud(args):
 
 def cmd_slack(args):
     """``hermes slack <subcommand>``; ``manifest`` prints or writes a Slack app manifest with
-    every gateway command registered as a first-class slash."""
+    the most-used gateway commands registered as first-class slashes (Slack's 25-per-app cap)."""
     sub = getattr(args, "slack_command", None)
     if sub in {None, ""}:
         _err("usage: hermes slack <subcommand>\n"
              "\n"
              "subcommands:\n"
-             "  manifest   Generate a Slack app manifest with every gateway\n"
-             "             command registered as a native slash\n"
+             "  manifest   Generate a Slack app manifest with the most-used\n"
+             "             commands as native slashes (rest via /hermes)\n"
              "\n"
              "Run `hermes slack manifest -h` for details.")
         return 1

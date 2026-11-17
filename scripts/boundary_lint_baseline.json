@@ -513,7 +513,7 @@
     "plugins/platforms/slack/adapter.py gateway.session.neutralize_untrusted_inline_text": 1,
     "plugins/platforms/slack/adapter.py hermes_cli.commands.is_gateway_known_command": 1,
     "plugins/platforms/slack/adapter.py hermes_cli.commands.resolve_command": 1,
-    "plugins/platforms/slack/adapter.py hermes_cli.commands_platforms.slack_native_slashes": 1,
+    "plugins/platforms/slack/adapter.py hermes_cli.commands_platforms.slack_slash_command_pattern": 1,
     "plugins/platforms/slack/adapter.py hermes_cli.model_picker_usage.picker_row_suffix": 1,
     "plugins/platforms/slack/adapter.py hermes_cli.plugins.get_plugin_manager": 1,
     "plugins/platforms/slack/adapter.py hermes_cli.providers.get_label": 2,

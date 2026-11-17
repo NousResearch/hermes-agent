@@ -30,7 +30,7 @@ the steps below.
 ## Step 1: Create a Slack App
 
 The fastest path is to paste a manifest Hermes generates for you. It
-declares every built-in slash command (`/btw`, `/stop`, `/model`, …),
+declares the most-used slash commands (`/btw`, `/stop`, `/model`, …),
 every required OAuth scope, every event subscription, and enables Socket
 Mode — all at once.
 
@@ -253,16 +253,20 @@ The bot will **not** automatically join channels. You must invite it to each cha
 
 ## Slash Commands
 
-Every Hermes command (`/btw`, `/stop`, `/new`, `/model`, `/help`, ...)
-is a native Slack slash command — exactly the way they work on Telegram
-and Discord. Type `/` in Slack and the autocomplete picker lists every
-Hermes command with its description.
+Hermes commands (`/btw`, `/stop`, `/new`, `/model`, ...) are native Slack
+slash commands, the way they work on Telegram and Discord. Type `/` in
+Slack and the autocomplete picker lists them with their descriptions.
 
-Under the hood: Hermes ships with a generated Slack app manifest (see
-Step 1, Option A) that declares every command in
-[`COMMAND_REGISTRY`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/commands.py)
-as a slash command. In Socket Mode, Slack routes the command event
-through the WebSocket regardless of the manifest's `url` field.
+Slack allows at most **25 slash commands per app**, and Hermes has more
+commands than that. The generated manifest (see Step 1, Option A) therefore
+declares `/hermes` plus the 24 most-used recurring commands (`/new`,
+`/stop`, `/btw`, `/queue`, `/steer`, `/model`, `/resume`, `/approve`, ...).
+Every other command is reached through `/hermes <command>` — for example
+`/hermes usage`, `/hermes title My session`, `/hermes help` — or with the
+`!` prefix (`!usage`). An app created when Slack allowed more commands keeps
+its extra slashes declared, and Hermes still answers them. In Socket Mode,
+Slack routes the command event through the WebSocket regardless of the
+manifest's `url` field.
 
 ### Agent messaging experience
 
@@ -298,9 +302,10 @@ Then in Slack:
 4. **Save**. Slack will prompt to reinstall the app if scopes or slash
    commands changed.
 
-### Legacy `/hermes <subcommand>` still works
+### `/hermes <subcommand>` reaches every command
 
-For backward compatibility with older manifests, you can still type
+Commands that don't get one of the 25 native slots are always reachable as
+`/hermes <command>`. Any command works this way, so you can also type
 `/hermes bg run the tests` — Hermes routes it the same way as `/bg
 run the tests`. Free-form questions also work: `/hermes what's the
 weather?` is treated as a regular message.

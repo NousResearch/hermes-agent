@@ -372,7 +372,7 @@ class ProofRejected(AuthorityRefusal):
 
 
 class HandoffUnsettled(AuthorityRefusal):
-    """Durable work still owns the session's runtime lineage, so a settled handoff is refused and nothing is written. ``reason`` is ``unknown_execution`` for an admission whose outcome is unknown, else ``session_busy`` (queued or started work, a live worker, a live turn lease or compression lock)."""
+    """Durable work still owns the session's runtime lineage, so a settled handoff is refused and nothing is written. ``reason`` is ``unknown_execution`` for an admission or worker execution whose outcome is unknown, else ``session_busy`` (queued or started work, a registered or running worker, a live turn lease or compression lock)."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)

@@ -1,6 +1,6 @@
 """Contract cases for the settled-handoff refusal: ``request_handoff(require_settled=True)`` and ``check_handoff_settled``.
 
-Durable work owning the session's runtime lineage refuses with :class:`persistence.core.errors.HandoffUnsettled`: a queued, started or unknown admission, a live worker, a live turn lease or a live compression lock. ``unknown_execution`` is the reason for an unknown admission, ``session_busy`` for every other owner. A refusal writes nothing.
+Durable work owning the session's runtime lineage refuses with :class:`persistence.core.errors.HandoffUnsettled`: a queued, started or unknown admission, a live worker, a live turn lease or a live compression lock. ``unknown_execution`` is the reason for an unknown admission or worker, ``session_busy`` for every other owner. A refusal writes nothing.
 """
 
 from __future__ import annotations
@@ -49,6 +49,11 @@ def _worker(store, session_id: str = SID) -> None:
     store.worker_executions.register(epoch=_begin(store), execution_id="w-1", session_id=SessionId(session_id), generation=0, kind="child", adoption_secret="sec")
 
 
+def _unknown_worker(store, session_id: str = SID) -> None:
+    store.worker_executions.register(epoch=_begin(store), execution_id="w-1", session_id=SessionId(session_id), generation=0, kind="compute", adoption_secret="sec")
+    store.admissions.recover(epoch=_begin(store, "instance-b"))
+
+
 def _turn_lease(store, session_id: str = SID) -> None:
     assert store.coordination.try_acquire_turn_lease(session_id=SessionId(session_id), holder="turn-holder") is True
 
@@ -62,6 +67,7 @@ OWNERS = [
     pytest.param(_started, "session_busy", id="started-admission"),
     pytest.param(_unknown, "unknown_execution", id="unknown-admission"),
     pytest.param(_worker, "session_busy", id="live-worker"),
+    pytest.param(_unknown_worker, "unknown_execution", id="unknown-worker"),
     pytest.param(_turn_lease, "session_busy", id="turn-lease"),
     pytest.param(_compression_lock, "session_busy", id="compression-lock"),
 ]

@@ -502,7 +502,7 @@ class CoordinationRepository(SubagentLedger, Protocol):
         ...
 
     def check_handoff_settled(self, *, session_id: SessionId) -> None:
-        """In a write transaction: raise :class:`persistence.core.errors.HandoffUnsettled` while durable work owns the session's runtime lineage (the session, its physical target, its local owner and their compression relatives): ``unknown_execution`` for an admission whose outcome is unknown, ``session_busy`` for a queued or started admission, a live worker, or a live turn lease or compression lock on a member compression has not closed. Ids are checked in sorted order, each admission and worker first, then its leases. Writes nothing; a missing session passes."""
+        """In a write transaction: raise :class:`persistence.core.errors.HandoffUnsettled` while durable work owns the session's runtime lineage (the session, its physical target, its local owner and their compression relatives): ``unknown_execution`` for an admission or worker execution whose outcome is unknown, ``session_busy`` for a queued or started admission, a registered or running worker, or a live turn lease or compression lock on a member compression has not closed. Ids are checked in sorted order, each admission and worker first, then its leases. Writes nothing; a missing session passes."""
         ...
 
     def claim_handoff(self, *, session_id: SessionId) -> bool:

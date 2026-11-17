@@ -1208,7 +1208,10 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     from gateway.session_context import get_session_env as env
     platform, chat_id = env("HERMES_SESSION_PLATFORM", ""), env("HERMES_SESSION_CHAT_ID", "")
     if not platform or not chat_id:
-        session_key = env("HERMES_SESSION_KEY", "") or os.environ.get("HERMES_SESSION_KEY", "")
+        # ``env`` reads os.environ only where this context never bound the key (the inheriting
+        # subprocess). An explicitly cleared key means "no session here": a further os.environ
+        # fallback would hand the card to whichever session this process built last.
+        session_key = env("HERMES_SESSION_KEY", "")
         if not session_key:
             return None
         platform, chat_id = "tui", session_key

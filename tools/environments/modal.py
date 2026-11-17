@@ -203,6 +203,8 @@ class ModalEnvironment(BaseEnvironment):
         """(Re)start the in-sandbox relay agent; its exec ends whenever the sandbox restarts."""
         with self._relay_lock:  # two commands seeing a dead relay must not both bind its ports
             if self._relay is None or not self._relay.alive():
+                if self._relay is not None:
+                    self._relay.close()  # a failed relay's agent must free its ports first
                 self._relay = start_modal_relay(self._egress, self._sandbox, self._worker, "/root")
 
     def _exec(self, cmd: str, *, timeout: int, stdin: str | None = None, fail_label: str | None = None,

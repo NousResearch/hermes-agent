@@ -78,6 +78,16 @@ def test_relay_carries_a_connection_over_the_exec_stream(tmp_path, monkeypatch):
             release.set()
             reply = client.recv(100)
         assert reply == b"ECHO:hello"
+
+        # A frame the stream cannot take ends the relay, so the next command starts a fresh one
+        # instead of serving connections that silently lost bytes.
+        def _broken(_line: str) -> None:
+            raise BrokenPipeError
+        broken = RelayHub(_broken, hub._targets)
+        broken.feed_line("O 7 MA==")
+        broken.feed_line("C 7 ")  # the client hangs up: the hub must send a close frame back
+        wait_until(broken.failed.is_set, what="relay marked failed after a lost frame")
+        wait_until(lambda: not broken._inboxes, what="connections ended")
     finally:
         hub.close()
         proc.kill()

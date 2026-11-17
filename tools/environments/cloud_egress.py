@@ -11,6 +11,7 @@ long-lived stream to carry the relay, so it refuses to start while ``cloud_relay
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shlex
@@ -106,11 +107,12 @@ class Relay:
         self.hub, self._reader, self._stop = hub, reader, stop
 
     def alive(self) -> bool:
-        return self._reader.is_alive()
+        return self._reader.is_alive() and not self.hub.failed.is_set()
 
     def close(self) -> None:
         self.hub.close()
-        self._stop()
+        with contextlib.suppress(Exception):  # health: allow BLE001 -- the stream may already be gone
+            self._stop()
 
 
 def start_modal_relay(egress: CloudEgress, sandbox, worker, remote_home: str) -> Relay:
@@ -136,10 +138,14 @@ def start_modal_relay(egress: CloudEgress, sandbox, worker, remote_home: str) ->
         finally:
             hub.close()
 
+    async def _eof() -> None:  # the agent exits on stdin EOF, freeing its ports for a replacement
+        proc.stdin.write_eof()
+        await proc.stdin.drain.aio()
+
     reader = spawn_context_thread(_reader, name="hermes-egress-relay-modal")
     reader.start()
     hub.wait_ready("Modal")
-    return Relay(hub, reader, stop=lambda: None)  # sandbox.terminate() ends the exec
+    return Relay(hub, reader, stop=lambda: worker.run_coroutine(_eof(), timeout=10))
 
 
 def start_daytona_relay(egress: CloudEgress, sandbox, remote_home: str) -> Relay:

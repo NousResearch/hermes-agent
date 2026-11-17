@@ -111,6 +111,8 @@ class DaytonaEnvironment(BaseEnvironment):
     def _ensure_relay(self) -> None:
         """(Re)start the in-sandbox relay agent; its PTY ends whenever the sandbox stops."""
         if self._relay is None or not self._relay.alive():
+            if self._relay is not None:
+                self._relay.close()  # a failed relay's agent must free its ports first
             self._relay = start_daytona_relay(self._egress, self._sandbox, self._remote_home)
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:

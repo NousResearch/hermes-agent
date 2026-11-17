@@ -140,7 +140,7 @@ class RelayHub:
     def __init__(self, send_line: Callable[[str], None], targets: tuple[tuple[str, int], tuple[str, int]]):
         self._send_line, self._targets = send_line, targets
         self._inboxes: dict[int, queue.Queue] = {}
-        self.ready = threading.Event()
+        self.ready, self.failed, self._closed = threading.Event(), threading.Event(), threading.Event()
         # Outbound frames go through one writer thread: feed_line() runs on the transport's reader
         # (on Modal, the event loop the write itself needs), so it must never wait on a send. Data
         # frames take a slot first, so a slow stream backpressures iron-proxy, not host memory.
@@ -153,15 +153,23 @@ class RelayHub:
             line, is_data = item
             try:
                 self._send_line(line)
-            except Exception:  # health: allow BLE001 -- the stream died; its reader closes the hub
-                logger.debug("egress relay: frame send failed", exc_info=True)
+            except Exception:  # health: allow BLE001 -- any SDK write failure means the stream is unusable
+                # A lost frame corrupts its connection, so the whole relay is done: end every
+                # connection and let the next command start a fresh relay.
+                logger.warning("egress relay: frame write failed; restarting the relay", exc_info=True)
+                self.failed.set()
+                self.close()
             finally:
                 if is_data:
                     self._data_slots.release()
 
     def _send(self, op: str, cid: int, data: bytes = b"") -> None:
         if op == "D":
-            self._data_slots.acquire()
+            while not self._data_slots.acquire(timeout=1.0):
+                if self._closed.is_set():  # the writer is gone: nothing will free a slot
+                    return
+        if self._closed.is_set():
+            return
         self._outbox.put((f"{op} {cid} {base64.b64encode(data).decode('ascii')}\n", op == "D"))
 
     def feed_line(self, line: str) -> None:
@@ -228,6 +236,7 @@ class RelayHub:
         """End every connection and the frame writer (the stream is gone or the sandbox is closing)."""
         for cid in list(self._inboxes):
             self._end(cid)
+        self._closed.set()
         self._outbox.put(None)
 
     def wait_ready(self, backend: str) -> None:

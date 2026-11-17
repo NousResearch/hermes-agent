@@ -770,9 +770,14 @@ def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
     section = config.get("prompt_caching")
     if not isinstance(section, dict) or section.get("cache_ttl") != "5m":
         return
+    from hermes_cli.config_backend import supports_file_tooling
+
     path = _cfg().get_config_path()
-    text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
-    if not _TEMPLATE_CACHE_TTL_LINE.search(text):
+    # The proof is the template's comment bytes, which only an installer-seeded LOCAL file carries; a
+    # non-file backend was never seeded from the template, so its "5m" is kept like any other pin.
+    seeded = supports_file_tooling() and _TEMPLATE_CACHE_TTL_LINE.search(
+        path.read_text(encoding="utf-8-sig"))  # config-reader: ok — comment bytes are the provenance; parsed docs drop them
+    if not seeded:
         if not quiet:
             print('  ℹ prompt_caching.cache_ttl: "5m" pins every session to the 5m cache tier; the '
                   'default is now "auto" (1h for sessions you type into). Remove the line to follow it.')

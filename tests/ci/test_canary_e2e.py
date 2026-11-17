@@ -84,38 +84,41 @@ def test_a_dispatched_commit_must_be_a_full_sha():
         resolved_commit(dispatched("main"))
 
 
-def tested_step() -> dict:
+def _tested_step() -> dict:
     return next(s for s in load("canary-e2e.yml")["jobs"]["resolve"]["steps"] if s.get("id") == "tested")
 
 
-@pytest.mark.parametrize(("passed_titles", "tested"), [
-    ([f"Canary E2E on {MAIN_TIP}", f"Canary E2E on {CANARY_COMMIT}"], "true"),
-    ([f"Canary E2E on {MAIN_TIP}"], None),
-    ([], None),
+# workflow_steps memoizes a replay per process by its rendered script and env, not PATH, so a
+# fake gh can't vary the answer for the same inputs: each case tests its own commit.
+@pytest.mark.parametrize(("commit", "passed_commits", "tested"), [
+    ("a" * 40, [MAIN_TIP, "a" * 40], "true"),
+    ("b" * 40, [MAIN_TIP], None),
+    ("c" * 40, [], None),
 ])
-def test_a_commit_an_automatic_run_already_passed_is_not_run_again(tmp_path, monkeypatch, passed_titles, tested):
+def test_a_commit_an_automatic_run_already_passed_is_not_run_again(tmp_path, monkeypatch, commit, passed_commits,
+                                                                   tested):
     """A quiet day resumes the last canary, which succeeds again on the same commit."""
     fake = tmp_path / "bin"
     fake.mkdir()
-    (tmp_path / "titles").write_text("".join(f"{t}\n" for t in passed_titles), encoding="utf-8")
+    (tmp_path / "titles").write_text("".join(f"Canary E2E on {c}\n" for c in passed_commits), encoding="utf-8")
     (fake / "gh").write_text(f'#!/bin/sh\necho "$*" > {tmp_path}/args\ncat {tmp_path}/titles\n', encoding="utf-8")
     (fake / "gh").chmod(0o755)
     monkeypatch.setattr(os, "defpath", f"{fake}{os.pathsep}{os.defpath}")
     ctx = after_canary()
-    ctx["steps"] = {"commit": {"outputs": {"commit": CANARY_COMMIT}}}
-    out = workflow_steps.outputs(tested_step(), ctx).get("tested")
+    ctx["steps"] = {"commit": {"outputs": {"commit": commit}}}
+    out = workflow_steps.outputs(_tested_step(), ctx).get("tested")
     assert out == tested
     # Only automatic successes count: a dispatched or red run of the commit is no reason to skip.
     args = (tmp_path / "args").read_text(encoding="utf-8")
     assert "canary-e2e.yml/runs?" in args and "event=workflow_run" in args and "status=success" in args
     for name, job in load("canary-e2e.yml")["jobs"].items():
         if "uses" in job:
-            needs = {"resolve": {"outputs": {"commit": CANARY_COMMIT, "tested": out or ""}}}
+            needs = {"resolve": {"outputs": {"commit": commit, "tested": out or ""}}}
             assert gha.condition(job["if"], {"needs": needs}) is (tested is None), name
 
 
 def test_a_dispatch_always_runs_the_set():
-    assert gha.condition(tested_step()["if"], dispatched(CANARY_COMMIT)) is False
+    assert gha.condition(_tested_step()["if"], dispatched(CANARY_COMMIT)) is False
 
 
 def test_every_call_is_the_claims_call_on_the_canary_commit():

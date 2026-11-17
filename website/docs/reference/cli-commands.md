@@ -912,6 +912,10 @@ hermes egress reload                   # hot-reload the ruleset in-place (no res
 hermes egress status                   # binary + config + pid + listening + mappings
 hermes egress status --show-tokens     # print proxy tokens in full (default: redacted)
 
+hermes egress log                      # outbound requests through the proxy, newest first
+hermes egress log --session ID         # only requests from that session's sandbox
+hermes egress log --limit N            # rows to show (default 50)
+
 hermes egress disable                  # flip proxy.enabled = false (does not stop a running proxy)
 hermes egress config                   # print the path to proxy.yaml for inspection
 ```

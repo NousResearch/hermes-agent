@@ -189,6 +189,8 @@ export const en: Translations = {
     noMatch: "No sessions match your search",
     startConversation: "Start a conversation to see it here",
     noMessages: "No messages",
+    egressTitle: "Outbound requests",
+    egressEmpty: "No outbound requests from this session's sandbox yet",
     untitledSession: "Untitled session",
     deleteSession: "Delete session",
     confirmDeleteTitle: "Delete session?",

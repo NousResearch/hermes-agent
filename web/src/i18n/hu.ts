@@ -149,6 +149,8 @@ export const hu: Translations = {
     noMatch: "Nincs a keresésnek megfelelő munkamenet",
     startConversation: "Indítson egy beszélgetést, hogy itt megjelenjen",
     noMessages: "Nincsenek üzenetek",
+    egressTitle: "Kimenő kérések",
+    egressEmpty: "Még nincs kimenő kérés ennek a munkamenetnek a sandboxából",
     untitledSession: "Névtelen munkamenet",
     deleteSession: "Munkamenet törlése",
     confirmDeleteTitle: "Törli a munkamenetet?",

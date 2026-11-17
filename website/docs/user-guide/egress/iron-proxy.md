@@ -307,6 +307,7 @@ Daemon configuration, credentials, and logs remain profile-scoped under
 | `iron-proxy.pid` | `0o600` | PID of the running daemon |
 | `iron-proxy.nonce` | `0o600` | Per-start nonce for PID-recycle defense |
 | `iron-proxy.log` | `0o600` | Daemon stdout/stderr — **includes per-request records on v0.50** |
+| `sandboxes.jsonl` | `0o600` | Sandbox bridge IP → session/task id, appended when an egress-routed Docker sandbox starts; attributes request records to sessions |
 | `audit.log` | `0o600` | Reserved for the dedicated per-request audit stream on future binary versions; pre-created so the privacy contract holds when upstream wires it in |
 
 The CA private key is the most sensitive file. It's created with `0o600` from the first byte (no umask-window TOCTOU) and `O_NOFOLLOW` so a same-uid attacker can't redirect it via a planted symlink. The pidfile, nonce file, daemon log, and audit log get the same treatment.
@@ -554,17 +555,28 @@ hermes egress start
 
 ### Inspecting per-request behavior
 
-On the pinned binary version (**v0.50**) both daemon-level events and per-request records land in `~/.hermes/proxy/iron-proxy.log`. The format is line-delimited JSON. Grep for a specific upstream:
+On the pinned binary version (**v0.50**) both daemon-level events and per-request records land in `~/.hermes/proxy/iron-proxy.log` as line-delimited JSON. A per-request record has `"msg":"request"` and an `audit` object:
 
-```bash
-grep '"upstream":"openrouter.ai"' ~/.hermes/proxy/iron-proxy.log | tail -20
+```json
+{"time":"…","level":"INFO","msg":"request","audit":{"host":"httpbin.org","method":"GET","path":"/anything/a/one","remote_addr":"172.17.0.4:41038","action":"allow","status_code":200,"duration_ms":257.2}, "request_transforms":[…]}
 ```
 
-Or watch in real-time:
+`path` never includes the query string and request headers are never logged. Grep for a specific upstream, or watch in real time:
 
 ```bash
+grep '"msg":"request"' ~/.hermes/proxy/iron-proxy.log | grep '"host":"openrouter.ai"' | tail -20
 tail -f ~/.hermes/proxy/iron-proxy.log | jq
 ```
+
+### Per-session outbound request log
+
+With egress enabled, Hermes shows those records per session: method, host, path, status and duration, nothing else (no headers, no query string, no transform annotations; secret-shaped path segments are redacted).
+
+- **Dashboard** — expand a session on the Sessions page; an *Outbound requests* panel lists that session's sandbox traffic. With egress off the panel is absent.
+- **CLI** — `hermes egress log [--session ID] [--limit N]`.
+- **API** — `GET /api/egress/requests?session=ID` returns `{"enabled": bool, "requests": [...]}`; `enabled: false` and no rows when `proxy.enabled` is off.
+
+iron-proxy's proxy tokens are per provider and shared by every sandbox, so a record names its sandbox only by source address (`remote_addr`). When the Docker backend starts an egress-routed container it appends `{ip, task_id, container}` to `~/.hermes/proxy/sandboxes.jsonl` (0o600), and a request belongs to the newest registration of its IP made before it. The log is per session when each session gets its own container (`terminal.container_persistent: false`); with a persistent, profile-shared container every session of that profile shares one sandbox and sees the same rows. An allowed `CONNECT` is folded into the request it tunnelled; a denied `CONNECT` (host not on the allowlist) is kept, since it is the only trace of the attempt. This is observation only — it never allows or blocks traffic.
 
 When the pinned version moves to a release that adds `log.audit_path`, per-request records will move to `~/.hermes/proxy/audit.log` and `iron-proxy.log` will hold only daemon-level events. Until that bump, `audit.log` is an empty placeholder (pre-created at `0o600` so the future daemon inherits tight permissions) — wire your logrotate / monitoring tooling to `iron-proxy.log` today and plan to add `audit.log` after the version bump.
 

@@ -147,6 +147,8 @@ export const ar = defineLocale({
     noMatch: "لا توجد جلسات تطابق بحثك",
     startConversation: "ابدأ محادثة لتظهر هنا",
     noMessages: "لا توجد رسائل",
+    egressTitle: "الطلبات الصادرة",
+    egressEmpty: "لا توجد طلبات صادرة من بيئة هذه الجلسة بعد",
     untitledSession: "جلسة بدون عنوان",
     deleteSession: "حذف الجلسة",
     confirmDeleteTitle: "حذف الجلسة؟",

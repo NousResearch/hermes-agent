@@ -149,6 +149,8 @@ export const ja: Translations = {
     noMatch: "検索条件に一致するセッションはありません",
     startConversation: "会話を開始するとここに表示されます",
     noMessages: "メッセージがありません",
+    egressTitle: "送信リクエスト",
+    egressEmpty: "このセッションのサンドボックスからの送信リクエストはまだありません",
     untitledSession: "無題のセッション",
     deleteSession: "セッションを削除",
     confirmDeleteTitle: "セッションを削除しますか？",

@@ -149,6 +149,8 @@ export const ru: Translations = {
     noMatch: "Нет сессий, соответствующих запросу",
     startConversation: "Начните разговор, чтобы увидеть его здесь",
     noMessages: "Нет сообщений",
+    egressTitle: "Исходящие запросы",
+    egressEmpty: "Из песочницы этой сессии ещё не было исходящих запросов",
     untitledSession: "Сессия без названия",
     deleteSession: "Удалить сессию",
     confirmDeleteTitle: "Удалить сессию?",

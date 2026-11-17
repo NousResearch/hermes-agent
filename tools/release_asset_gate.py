@@ -33,6 +33,23 @@ class GateError(RuntimeError):
     """A human signal could not be read or did not check out — fail closed."""
 
 
+class SlackRejected(GateError):
+    """Slack DEFINITELY did nothing: HTTP 200, a JSON object, ``ok: false``
+    and an error in ``DEFINITE_SLACK_FAILURES``. Anything else — a timeout,
+    a proxy's error page, ``internal_error`` / ``fatal_error`` — may have
+    partly succeeded, so it is a plain ``GateError``."""
+
+
+# Errors Slack returns before it does anything (validation, auth, channel
+# access, rate limiting). internal_error / fatal_error / request_timeout are
+# deliberately absent: the message may have been posted.
+DEFINITE_SLACK_FAILURES = frozenset({
+    "not_in_channel", "channel_not_found", "is_archived", "msg_too_long", "no_text",
+    "invalid_blocks", "restricted_action", "not_authed", "invalid_auth",
+    "account_inactive", "token_revoked", "missing_scope", "ratelimited",
+})
+
+
 class RowStopped(GateError):
     """The row is Published or on hold. For an action waiting out its veto
     window this IS the veto; for a fresh call it is a plain refusal."""
@@ -104,7 +121,9 @@ def _select_name(prop: dict) -> str:
     return ""
 
 
-def row_state(page: dict, expected_parent: str) -> RowState:
+def row_state(page: dict, expected_parent: str, *, status_property: str = "Status",
+              asset_type_property: str = "Asset type",
+              config_key: str = "zendesk.release_assets_data_source_id") -> RowState:
     """Read Status / Asset type / Destination from a Release Assets row.
 
     Raises ``GateError`` unless the page's parent data source (or database)
@@ -113,7 +132,7 @@ def row_state(page: dict, expected_parent: str) -> RowState:
     want = _hex_id(expected_parent)
     if not want:
         raise GateError(
-            "zendesk.release_assets_data_source_id is not configured — cannot verify "
+            f"{config_key} is not configured — cannot verify "
             "the sign-off row belongs to Release Assets.")
     parent = page.get("parent") if isinstance(page.get("parent"), dict) else {}
     have = {_hex_id(str(parent.get(k) or "")) for k in ("data_source_id", "database_id")}
@@ -129,12 +148,36 @@ def row_state(page: dict, expected_parent: str) -> RowState:
                             if isinstance(t, dict)).strip()
             break
     return RowState(
-        status=_select_name(props.get("Status")),
-        asset_type=_select_name(props.get("Asset type")),
+        status=_select_name(props.get(status_property)),
+        asset_type=_select_name(props.get(asset_type_property)),
         destination=_select_name(props.get("Destination")),
         url=str(page.get("url") or ""),
         title=title,
     )
+
+
+async def update_page_properties(page_id: str, properties: dict) -> dict:
+    """PATCH a page's properties directly (not through ``notion_api``).
+
+    The ONE Notion write that bypasses the write guard (5a's exception): only
+    ``tools/release_update_post.py`` calls it, with a fixed body (``Published
+    URL`` + ``Status=Published``) after it has posted a Slack-update row.
+    """
+    hexid = _hex_id(page_id)
+    if not re.fullmatch(r"[0-9a-f]{32}", hexid):
+        raise GateError(f"{page_id!r} is not a Notion page id.")
+    token = _secret("NOTION_API_KEY", "NOTION_API_TOKEN")
+    if not token:
+        raise GateError("Notion not configured (NOTION_API_KEY) — cannot update the row.")
+    headers = {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION}
+    try:
+        status, data = await _http_json("PATCH", f"https://api.notion.com/v1/pages/{hexid}",
+                                        headers, json={"properties": properties})
+    except Exception as e:
+        raise GateError(f"Notion request failed: {e}") from e
+    if status != 200:
+        raise GateError(f"Notion API error (HTTP {status}): {str(data.get('message', ''))[:200]}")
+    return data
 
 
 _MAX_BLOCKS = 2000
@@ -189,6 +232,11 @@ async def fetch_block_tree(page_id: str) -> list[dict]:
 
 # ── Slack ────────────────────────────────────────────────────────────────
 
+def require_slack_token() -> None:
+    """Raise GateError now when no bot token is configured."""
+    _slack_headers()
+
+
 def _slack_headers() -> dict:
     token = _secret("SLACK_BOT_TOKEN")
     if not token:
@@ -199,12 +247,15 @@ def _slack_headers() -> dict:
 async def _slack(method: str, api: str, **kw) -> dict:
     headers = _slack_headers()
     try:
-        _status, data = await _http_json(method, f"https://slack.com/api/{api}", headers, **kw)
+        status, data = await _http_json(method, f"https://slack.com/api/{api}", headers, **kw)
     except Exception as e:
         raise GateError(f"Slack {api} failed: {e}") from e
-    if not data.get("ok"):
-        raise GateError(f"Slack {api} error: {data.get('error', 'unknown')}")
-    return data
+    if status == 200 and data.get("ok") is True:
+        return data
+    error = str(data.get("error") or "")
+    if status == 200 and data.get("ok") is False and error in DEFINITE_SLACK_FAILURES:
+        raise SlackRejected(f"Slack {api} error: {error}")
+    raise GateError(f"Slack {api} failed (HTTP {status}, {error or 'no error code'}).")
 
 
 async def post_announcement(channel: str, text: str, thread_ts: str = "") -> str:
@@ -214,6 +265,18 @@ async def post_announcement(channel: str, text: str, thread_ts: str = "") -> str
         payload["thread_ts"] = thread_ts
     data = await _slack("POST", "chat.postMessage", json=payload)
     return str(data.get("ts") or "")
+
+
+async def permalink(channel: str, ts: str) -> str:
+    """The message's permalink; falls back to the canonical archive URL."""
+    try:
+        data = await _slack("GET", "chat.getPermalink", params={"channel": channel, "message_ts": ts})
+        link = str(data.get("permalink") or "")
+        if link.startswith("https://"):
+            return link
+    except GateError as e:
+        logger.debug("permalink lookup failed: %s", e)
+    return f"https://slack.com/archives/{channel}/p{ts.replace('.', '')}"
 
 
 async def veto_reactions(channel: str, ts: str) -> list[str]:

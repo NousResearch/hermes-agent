@@ -48,10 +48,29 @@ def _safe_href(href) -> str | None:
     return escape(href, quote=True)
 
 
-def _rich(items) -> str:
+# A mention's plain_text is resolved LIVE from what it points at (a page's
+# current title, a link preview's fetched title): someone who can edit that
+# page could change an approved row's rendered text without touching the row.
+# User and date mentions are fixed values and stay.
+_STATIC_MENTIONS = frozenset({"user", "date"})
+
+
+def _dynamic_mention(item: dict) -> str | None:
+    if item.get("type") != "mention":
+        return None
+    kind = str((item.get("mention") or {}).get("type") or "unknown")
+    return None if kind in _STATIC_MENTIONS else f"{kind} mention"
+
+
+def _rich(items, problems: list | None = None) -> str:
     out = []
     for item in items or []:
         if not isinstance(item, dict):
+            continue
+        dynamic = _dynamic_mention(item)
+        if dynamic:
+            if problems is not None:
+                problems.append(dynamic)
             continue
         text = escape(str(item.get("plain_text") or "")).replace("\n", "<br>")
         if not text:
@@ -110,7 +129,7 @@ class _Renderer:
 
     def block(self, b: dict, kind: str, depth: int) -> str:
         body = b.get(kind) if isinstance(b.get(kind), dict) else {}
-        text = _rich(body.get("rich_text"))
+        text = _rich(body.get("rich_text"), self.unsupported)
         if kind == "paragraph":
             inner = f"<p>{text}</p>" if text else ""
             return inner + self.children(b, depth)
@@ -154,7 +173,7 @@ class _Renderer:
             cells = ((row or {}).get("table_row") or {}).get("cells") or []
             cell_tag = "th" if header and i == 0 else "td"
             rows.append("<tr>" + "".join(
-                f"<{cell_tag}>{_rich(c)}</{cell_tag}>" for c in cells) + "</tr>")
+                f"<{cell_tag}>{_rich(c, self.unsupported)}</{cell_tag}>" for c in cells) + "</tr>")
         return f"<table><tbody>{''.join(rows)}</tbody></table>"
 
 
@@ -163,3 +182,145 @@ def render_blocks(blocks) -> Rendered:
     r = _Renderer()
     html = r.blocks(blocks)
     return Rendered(html=html, images=r.images, unsupported=r.unsupported)
+
+
+# ── Slack mrkdwn (the #release-updates post, tools/release_update_post.py) ──
+#
+# Same contract as the HTML renderer: the post is the row's own content, and
+# nothing in it can become Slack markup the row didn't mean. Every text run
+# is escaped (& < >), so `<!channel>`, `<@U…>` and `<url|label>` typed into a
+# row arrive as literal text; links are emitted only for https/http/mailto
+# hrefs with no `|`, `<`, `>` or whitespace; tables and unknown blocks are
+# reported, never passed through.
+
+@dataclass
+class RenderedText:
+    text: str
+    images: list[str] = field(default_factory=list)
+    unsupported: list[str] = field(default_factory=list)
+
+
+def _mrkdwn_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _mrkdwn_href(href) -> str | None:
+    if not isinstance(href, str) or not href.strip():
+        return None
+    href = href.strip()
+    try:
+        scheme = urlsplit(href).scheme.lower()
+    except ValueError:
+        return None
+    if scheme not in _SAFE_SCHEMES or any(ch.isspace() or ch in "|<>" for ch in href):
+        return None
+    return href.replace("&", "&amp;")
+
+
+def _wrap(text: str, mark: str) -> str:
+    core = text.strip()
+    if not core:
+        return text
+    lead = text[: len(text) - len(text.lstrip())]
+    trail = text[len(text.rstrip()):]
+    return f"{lead}{mark}{core}{mark}{trail}"
+
+
+def _mrkdwn_rich(items, problems: list | None = None) -> str:
+    out = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        dynamic = _dynamic_mention(item)
+        if dynamic:
+            if problems is not None:
+                problems.append(dynamic)
+            continue
+        text = _mrkdwn_escape(str(item.get("plain_text") or ""))
+        if not text:
+            continue
+        ann = item.get("annotations") or {}
+        if ann.get("code"):
+            text = _wrap(text.replace("`", "'"), "`")
+        else:
+            if ann.get("bold"):
+                text = _wrap(text, "*")
+            if ann.get("italic"):
+                text = _wrap(text, "_")
+            if ann.get("strikethrough"):
+                text = _wrap(text, "~")
+        href = _mrkdwn_href(item.get("href"))
+        if href and text.strip():
+            lead = text[: len(text) - len(text.lstrip())]
+            trail = text[len(text.rstrip()):]
+            text = f"{lead}<{href}|{text.strip()}>{trail}"
+        out.append(text)
+    return "".join(out)
+
+
+class _MrkdwnRenderer:
+    def __init__(self) -> None:
+        self.images: list[str] = []
+        self.unsupported: list[str] = []
+
+    def blocks(self, blocks, depth: int = 0, prefix: str = "") -> list[str]:
+        if depth > _MAX_DEPTH:
+            self.unsupported.append("nesting too deep")
+            return []
+        lines: list[str] = []
+        number = 0
+        for b in blocks or []:
+            if not isinstance(b, dict):
+                continue
+            kind = str(b.get("type") or "")
+            number = number + 1 if kind == "numbered_list_item" else 0
+            lines.extend(self.block(b, kind, depth, prefix, number))
+        return lines
+
+    def block(self, b: dict, kind: str, depth: int, prefix: str, number: int) -> list[str]:
+        body = b.get(kind) if isinstance(b.get(kind), dict) else {}
+        text = _mrkdwn_rich(body.get("rich_text"), self.unsupported)
+        kids = b.get("children") or []
+        if kind == "paragraph":
+            return [prefix + text] + self.blocks(kids, depth + 1, prefix)
+        if kind in _HEADING:
+            return ([prefix + _wrap(text, "*")] if text.strip() else []) + self.blocks(kids, depth + 1, prefix)
+        if kind in _LIST_TAG:
+            if kind == "bulleted_list_item":
+                marker = "• "
+            elif kind == "numbered_list_item":
+                marker = f"{number}. "
+            else:
+                marker = "☑ " if body.get("checked") else "☐ "
+            return [prefix + marker + text] + self.blocks(kids, depth + 1, prefix + "    ")
+        if kind in ("quote", "callout"):
+            return [prefix + "> " + text] + self.blocks(kids, depth + 1, prefix + "> ")
+        if kind == "code":
+            code = _mrkdwn_escape(_plain(body.get("rich_text"))).replace("```", "'''")
+            return [prefix + "```", *[prefix + ln for ln in code.split("\n")], prefix + "```"]
+        if kind == "divider":
+            return [prefix + "───"]
+        if kind == "toggle":
+            return ([prefix + text] if text else []) + self.blocks(kids, depth + 1, prefix)
+        if kind in ("column_list", "column"):
+            return self.blocks(kids, depth + 1, prefix)
+        if kind == "image":
+            self.images.append(_plain(body.get("caption")) or "(image without caption)")
+            return []
+        if kind == "bookmark":
+            href = _mrkdwn_href(body.get("url"))
+            if href:
+                return [prefix + f"<{href}>"]
+            self.unsupported.append(kind)
+            return []
+        if kind in _SKIP:
+            return []
+        self.unsupported.append(kind or "unknown")
+        return []
+
+
+def render_blocks_mrkdwn(blocks) -> RenderedText:
+    """Render a block list as Slack mrkdwn text (one line per block)."""
+    r = _MrkdwnRenderer()
+    text = "\n".join(r.blocks(blocks)).strip("\n")
+    return RenderedText(text=text, images=r.images, unsupported=r.unsupported)

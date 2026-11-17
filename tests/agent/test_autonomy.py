@@ -39,7 +39,8 @@ def test_unbuilt_level_is_refused():
         ("zendesk_publish", "auto"),
         ("zendesk_publish", "signoff"),
         ("zendesk_create_draft", "autopilot"),
-        ("post_release_update", "veto"),  # not built by this change
+        ("advance_asset_status", "signoff"),  # Notion guard relaxations: off only
+        ("ideas_accept_own", "auto"),
     ]
     for action, level in cases:
         with pytest.raises(au.AutonomyConfigError) as exc:
@@ -176,3 +177,127 @@ def test_veto_expiry_hours():
     for bad in (0, -1, "x"):
         with pytest.raises(au.AutonomyConfigError):
             au.veto_expiry_hours(_cfg(veto_expiry_hours=bad))
+
+
+def test_post_release_update_built_for_every_level():
+    for level in ("off", "signoff", "veto", "auto"):
+        assert au.resolve_level("post_release_update",
+                                _cfg(actions={"post_release_update": level})) == level
+    assert au.resolve_level("advance_asset_status", {}) == "off"
+    assert au.resolve_level("ideas_accept_own", {}) == "off"
+
+
+# ── shared veto driver ───────────────────────────────────────────────────
+
+from datetime import timedelta  # noqa: E402
+
+from model_tools import _run_async  # noqa: E402
+
+T0 = datetime(2026, 11, 18, 10, 0, tzinfo=timezone.utc)  # Wednesday
+
+
+def _plan_cfg(**over):
+    block = {"announce_channel": "CHOME", "veto_wait_working_hours": 4, "veto_expiry_hours": 72}
+    block.update(over)
+    return {"autonomy": block}
+
+
+def test_plan_veto():
+    plan = au.plan_veto(_plan_cfg(), T0)
+    assert plan.channel == "CHOME"
+    assert plan.not_before == T0 + timedelta(hours=4)
+    assert plan.expires_at == T0 + timedelta(hours=76)
+    with pytest.raises(au.AutonomyConfigError):
+        au.plan_veto(_plan_cfg(announce_channel=""), T0)
+
+
+class _Driver:
+    def __init__(self):
+        self.said, self.audits, self.vetoers = [], [], []
+        self.result, self.raise_ = {"ok": True, "x": 1}, None
+
+    async def reactions(self, channel, ts):
+        return list(self.vetoers)
+
+    async def say(self, channel, text, ts=""):
+        self.said.append(text)
+        return ""
+
+    def audit(self, action, target):
+        self.audits.append(action)
+
+    async def execute(self, signed):
+        if self.raise_:
+            raise self.raise_
+        return dict(self.result)
+
+    def run(self, pid, now, level="veto"):
+        return _run_async(au.run_pending(
+            "post_release_update", pid, level, now=now, veto_reactions=self.reactions,
+            say=self.say, audit=self.audit, execute=self.execute,
+            done_text=lambda r: "done!", done_fields=lambda r: {"x": r["x"]},
+            verb="posting it", outcome="posted"))
+
+
+def _queue():
+    pid = au.new_pending_id()
+    plan = au.plan_veto(_plan_cfg(), T0)
+    au.save_pending("post_release_update", pid, {
+        "not_before": plan.not_before.isoformat(), "expires_at": plan.expires_at.isoformat(),
+        "announce_channel": plan.channel, "announcement_ts": "1.2"})
+    return pid
+
+
+def test_run_pending_lifecycle():
+    d = _Driver()
+    pid = _queue()
+    assert "veto window" in d.run(pid, T0 + timedelta(hours=1))["error"]
+    assert au.due_pending_ids("post_release_update", T0 + timedelta(hours=1)) == []
+    assert au.due_pending_ids("post_release_update", T0 + timedelta(hours=5)) == [pid]
+    assert d.run(pid, T0 + timedelta(hours=5)) == {"ok": True, "x": 1}
+    rec = au.load_pending("post_release_update", pid)
+    assert rec["status"] == "done" and rec["x"] == 1 and d.said == ["done!"]
+    assert "not pending" in d.run(pid, T0 + timedelta(hours=6))["error"]
+
+
+def test_run_pending_veto_stop_retry_expiry():
+    d = _Driver()
+    pid = _queue()
+    d.vetoers = ["U123", "not-a-user"]
+    out = d.run(pid, T0 + timedelta(hours=5))
+    assert out["status"] == "vetoed" and "U123" in out["reason"] and "not-a-user" not in out["reason"]
+    assert d.said[-1].startswith(":no_entry_sign: Not posting it")
+
+    d = _Driver()
+    pid = _queue()
+    d.raise_ = au.PendingRetry("jira down")
+    assert d.run(pid, T0 + timedelta(hours=5)) == {"error": "jira down"}
+    assert au.load_pending("post_release_update", pid)["last_error"] == "jira down"
+    d.raise_ = au.PendingStop("stale", "content <changed>")
+    out = d.run(pid, T0 + timedelta(hours=5))
+    assert out["status"] == "stale" and "&lt;changed&gt;" in d.said[-1]
+
+    pid = _queue()
+    out = d.run(pid, T0 + timedelta(hours=77))
+    assert out["status"] == "expired" and "nothing was posted" in d.said[-1]
+
+
+def test_run_pending_refuses_tampered():
+    d = _Driver()
+    pid = _queue()
+    path = au._pending_path("post_release_update", pid)
+    import json as _json
+    rec = _json.loads(path.read_text())
+    rec["signed"]["announce_channel"] = "CEVIL"
+    path.write_text(_json.dumps(rec))
+    assert "integrity" in d.run(pid, T0 + timedelta(hours=5))["error"]
+
+
+def test_bare_yaml_off_is_off():
+    import yaml
+    cfg = yaml.safe_load("autonomy:\n  actions:\n    advance_asset_status: off\n    post_release_update: off\n")
+    assert cfg["autonomy"]["actions"]["advance_asset_status"] is False
+    assert au.resolve_level("advance_asset_status", cfg) == "off"
+    assert au.resolve_level("post_release_update", cfg) == "off"
+    with pytest.raises(au.AutonomyConfigError):  # bare `on` (True) is still not a level
+        au.resolve_level("post_release_update", yaml.safe_load("autonomy: {actions: {post_release_update: on}}"))

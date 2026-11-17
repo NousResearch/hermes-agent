@@ -1487,6 +1487,23 @@ def handle_function_call(
         if _mcp_denial is not None:
             return json.dumps({"error": _mcp_denial}, ensure_ascii=False)
 
+        # Fork 5a backstop: the profile's Notion write guard, mirrored here so
+        # a path that reaches notion_api some other way is still checked.
+        # Fails CLOSED for notion_api writes; inert for other tools and for
+        # unguarded profiles.
+        if function_name == "notion_api":
+            try:
+                from tools.notion_write_guard import denial_for_tool_call
+                _notion_denial = denial_for_tool_call(function_name, function_args)
+            except Exception as _ng_err:
+                logger.error("notion write guard backstop error: %s", _ng_err)
+                _notion_denial = (
+                    None if str((function_args or {}).get("method") or "GET").upper() == "GET"
+                    else "Notion write refused: the write guard backstop failed."
+                )
+            if _notion_denial is not None:
+                return json.dumps({"error": _notion_denial}, ensure_ascii=False)
+
         # Per-tool approval gate: block gated tools until the user confirms.
         # Runs AFTER the RBAC hard-deny (may-you) and before execution (confirm-you).
         try:

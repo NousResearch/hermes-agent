@@ -200,3 +200,66 @@ def test_fetch_block_tree_error_raises(monkeypatch):
     monkeypatch.setattr(g, "_http_json", fake)
     with pytest.raises(g.GateError, match="404"):
         _run_async(g.fetch_block_tree(DS))
+
+
+def test_update_page_properties_patches_fixed_body(monkeypatch):
+    import agent.secret_scope as ss
+    monkeypatch.setattr(ss, "get_secret", lambda n, d=None: "tok" if n == "NOTION_API_KEY" else None)
+    seen = {}
+
+    async def fake(method, url, headers, **kw):
+        seen.update(method=method, url=url, body=kw.get("json"))
+        return 200, {"object": "page"}
+
+    monkeypatch.setattr(g, "_http_json", fake)
+    props = {"Published URL": {"url": "https://x"}, "Status": {"select": {"name": "Published"}}}
+    _run_async(g.update_page_properties(DS, props))
+    assert seen == {"method": "PATCH", "url": f"https://api.notion.com/v1/pages/{DS.replace('-', '')}",
+                    "body": {"properties": props}}
+
+    async def fail(method, url, headers, **kw):
+        return 409, {"message": "conflict"}
+    monkeypatch.setattr(g, "_http_json", fail)
+    with pytest.raises(g.GateError, match="409"):
+        _run_async(g.update_page_properties(DS, props))
+    with pytest.raises(g.GateError):
+        _run_async(g.update_page_properties("not-an-id", props))
+
+
+def test_permalink_with_fallback(monkeypatch, slack_tok):
+    async def ok(method, url, headers, **kw):
+        return 200, {"ok": True, "permalink": "https://acme.slack.com/archives/C1/p12"}
+    monkeypatch.setattr(g, "_http_json", ok)
+    assert _run_async(g.permalink("C1", "1.2")) == "https://acme.slack.com/archives/C1/p12"
+
+    async def bad(method, url, headers, **kw):
+        return 200, {"ok": False, "error": "missing_scope"}
+    monkeypatch.setattr(g, "_http_json", bad)
+    assert _run_async(g.permalink("C1", "1.2")) == "https://slack.com/archives/C1/p12"
+
+
+@pytest.mark.parametrize("status,body,rejected", [
+    (200, {"ok": False, "error": "not_in_channel"}, True),
+    (200, {"ok": False, "error": "ratelimited"}, True),
+    (200, {"ok": False, "error": "internal_error"}, False),
+    (200, {"ok": False, "error": "fatal_error"}, False),
+    (502, {}, False),                                   # proxy error page (non-JSON → {})
+    (500, {"ok": False, "error": "not_in_channel"}, False),
+    (200, {}, False),                                    # no `ok` at all
+])
+def test_only_definite_failures_are_rejections(monkeypatch, slack_tok, status, body, rejected):
+    async def fake(method, url, headers, **kw):
+        return status, body
+    monkeypatch.setattr(g, "_http_json", fake)
+    with pytest.raises(g.GateError) as exc:
+        _run_async(g.post_announcement("C1", "hello"))
+    assert isinstance(exc.value, g.SlackRejected) is rejected
+
+
+def test_non_json_body_is_not_a_rejection(monkeypatch, slack_tok):
+    async def fake(method, url, headers, **kw):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")  # json() on an HTML 502
+    monkeypatch.setattr(g, "_http_json", fake)
+    with pytest.raises(g.GateError) as exc:
+        _run_async(g.post_announcement("C1", "hello"))
+    assert not isinstance(exc.value, g.SlackRejected)

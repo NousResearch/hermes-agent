@@ -22,14 +22,11 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
-_cache: Dict[str, Tuple[Tuple[int, int], Any]] = {}
 
 _PROTECTED_FILES = ("config.yaml", "SOUL.md")
 _PROTECTED_DIRS = ("cron", "scripts")
@@ -44,28 +41,16 @@ def _under(path: str, root: str) -> bool:
 
 
 def _guard_setting(home: Path) -> Any:
-    cfg = home / "config.yaml"
-    try:
-        st = cfg.stat()
-    except OSError:
-        return None
-    key = str(cfg)
-    fp = (st.st_mtime_ns, st.st_size)
-    with _lock:
-        hit = _cache.get(key)
-        if hit is not None and hit[0] == fp:
-            return hit[1]
-    try:
-        import yaml
+    """The profile's ``agent_write_guard`` value, read strictly
+    (``agent.boundary_config.read_boundary_config``): a config.yaml that
+    fails to parse keeps the last good value, and with none the guard is ON —
+    a typo must never unprotect the file it is in."""
+    from agent.boundary_config import is_unreadable, read_boundary_config
 
-        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-    except Exception:
-        logger.debug("agent_write_guard: unreadable %s", cfg, exc_info=True)
-        data = {}
-    setting = data.get("agent_write_guard") if isinstance(data, dict) else None
-    with _lock:
-        _cache[key] = (fp, setting)
-    return setting
+    data = read_boundary_config(home)
+    if is_unreadable(data):
+        return True
+    return data.get("agent_write_guard") if isinstance(data, dict) else None
 
 
 def _enabled_and_extra(setting: Any) -> Tuple[bool, List[str]]:
@@ -91,10 +76,16 @@ def protected_roots(home: Optional[Path] = None) -> Optional[List[Tuple[str, boo
     if not enabled:
         return None
     home_real = _real(home)
-    roots: List[Tuple[str, bool]] = [
-        (os.path.join(home_real, name), False) for name in _PROTECTED_FILES
-    ]
-    roots += [(os.path.join(home_real, name), True) for name in _PROTECTED_DIRS]
+    # Each protected name both as the path inside the home AND resolved: a
+    # symlinked config.yaml (or cron/ dir) must protect its real target too,
+    # since targets are compared by realpath.
+    roots: List[Tuple[str, bool]] = []
+    for name in _PROTECTED_FILES:
+        joined = os.path.join(home_real, name)
+        roots += [(joined, False), (_real(joined), False)]
+    for name in _PROTECTED_DIRS:
+        joined = os.path.join(home_real, name)
+        roots += [(joined, True), (_real(joined), True)]
     try:
         from agent.skill_utils import get_external_skills_dirs
 
@@ -133,5 +124,9 @@ def write_guard_denial(path) -> Optional[str]:
             "secrets and externally owned skills). Ask an operator to change it."
         )
     except Exception:
-        logger.debug("agent_write_guard check failed for %s", path, exc_info=True)
-        return None
+        # Fail closed: a guard that can't be evaluated must not wave writes through.
+        logger.warning("agent_write_guard check failed for %s; denying", path, exc_info=True)
+        return (
+            f"Write denied: '{path}' could not be checked against this profile's "
+            "agent_write_guard. Ask an operator."
+        )

@@ -480,7 +480,7 @@ def _alert_owner_of_undelivered_failure(
     try:
         if not (content or "").strip():
             return
-        if _resolve_delivery_targets(job):
+        if _apply_post_policy(_resolve_delivery_targets(job))[0]:
             return  # the alert already went to a real target
         if incident_id and not already_deduped:
             from cron.incidents import get_incident
@@ -3277,6 +3277,34 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _apply_post_policy(targets: List[dict], cfg: Optional[dict] = None) -> tuple:
+    """Fork (education design 5b): drop Slack targets the profile's posting
+    policy refuses (``slack.post_allowed_channels`` / ``post_gated_channels``,
+    agent/slack_post_policy.py). A cron delivery is free text, so it never
+    reaches a gated channel. Returns ``(kept, refusal_messages)``. Inert for a
+    profile with neither list (and no Notion write guard)."""
+    try:
+        from agent.slack_post_policy import channel_denial
+        if cfg is None:
+            from agent.boundary_config import read_boundary_config
+            cfg = read_boundary_config()
+    except Exception as e:
+        # Fail closed for Slack (the policy may be what forbids the target);
+        # other platforms are outside the policy.
+        logger.error("cron delivery: posting policy unavailable (%s); refusing Slack targets", e)
+        kept = [t for t in targets if str(t.get("platform") or "").lower() != "slack"]
+        return kept, ["posting policy unavailable"] * (len(targets) - len(kept))
+    kept, refused = [], []
+    for target in targets:
+        if str(target.get("platform") or "").lower() == "slack":
+            denial = channel_denial(target.get("chat_id"), cfg)
+            if denial:
+                refused.append(denial)
+                continue
+        kept.append(target)
+    return kept, refused
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -3289,6 +3317,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     Returns None on success, or an error string on failure.
     """
     targets = _resolve_delivery_targets(job)
+    if targets:
+        targets, _policy_refused = _apply_post_policy(targets)
+        if _policy_refused:
+            logger.warning("Job '%s': delivery target(s) refused by the posting policy: %s",
+                           job.get("id", "?"), "; ".join(_policy_refused))
+            if not targets:
+                return "delivery refused by posting policy: " + "; ".join(_policy_refused)
     if not targets:
         deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
         if deliver_value == "local":

@@ -9,6 +9,13 @@ lives in its own NON-FLOOR ``slack_post`` toolset (deliberately NOT the floor
 ``slack`` toolset, which would hand every valid-role user arbitrary
 thread-posting). This is the worker's poster because cron hard-disables the
 ``messaging`` toolset that ``send_message`` lives in.
+
+Fork boundary (education design 5b, ``agent/slack_post_policy.py``): a
+profile with ``slack.post_allowed_channels`` posts only to those channels,
+and a channel in ``slack.post_gated_channels`` accepts no free text — the
+caller passes ``release_asset_row_id`` and ``tools/release_update_post.py``
+posts the row's own body once its sign-off and Jira checks pass. Profiles
+with neither list (and no Notion write guard) are unchanged.
 """
 from __future__ import annotations
 
@@ -27,7 +34,12 @@ SLACK_POST_THREAD_SCHEMA = {
         "(cron cannot use send_message). Give chat_id and message (Slack "
         "mrkdwn); add thread_ts to reply in that thread, omit it to post a new "
         "root message. Returns message_ts (use it as the thread_ts of later "
-        "replies) and permalink."
+        "replies) and permalink. Some profiles may post only to allowlisted "
+        "channels. A GATED channel (e.g. #release-updates) takes no message: pass "
+        "release_asset_row_id (the Approved 'Slack update' Release Assets row) and "
+        "the tool posts the row's own body once every linked Jira ticket is Done, "
+        "then marks the row Published. run_due=true posts veto-level updates whose "
+        "window passed; list_pending=true lists waiting ones."
     ),
     "parameters": {
         "type": "object",
@@ -42,10 +54,24 @@ SLACK_POST_THREAD_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "Message text (Slack mrkdwn).",
+                "description": "Message text (Slack mrkdwn). Not accepted for a gated channel.",
             },
+            "release_asset_row_id": {
+                "type": "string",
+                "description": "Gated channels only: Notion id of the Release Assets row (Slack update) to post.",
+            },
+            "omit_images": {
+                "type": "boolean",
+                "description": "Gated posts: leave the row's images out (their captions are returned).",
+            },
+            "pending_id": {"type": "string",
+                           "description": "Run one veto-level release update announced earlier."},
+            "run_due": {"type": "boolean",
+                        "description": "Post every veto-level release update whose window has passed."},
+            "list_pending": {"type": "boolean",
+                             "description": "List veto-level release updates still waiting."},
         },
-        "required": ["chat_id", "message"],
+        "required": [],
     },
 }
 
@@ -93,12 +119,42 @@ async def _get_permalink(token: str, channel: str, message_ts: str) -> str:
         return ""
 
 
+def _respond(payload: dict) -> str:
+    if "error" in payload and len(payload) == 1:
+        return tool_error(payload["error"])
+    return tool_result(payload)
+
+
 async def _slack_post_thread_handler(args: dict, **_kw) -> str:
+    from agent.slack_post_policy import channel_denial, is_gated
+    from tools import release_update_post as rup
+
+    try:
+        cfg = rup._config()
+    except Exception as e:  # fail closed: the posting policy can't be read
+        logger.error("[slack_post_thread] config read failed: %s", e)
+        return tool_error("Could not read this profile's config to check the posting policy.")
+    from agent.boundary_config import is_unreadable, unreadable_message
+    if is_unreadable(cfg):
+        return tool_error(unreadable_message(cfg))
+
+    ops = await rup.handle_autonomy_ops(args, cfg)
+    if ops is not None:
+        return _respond(ops)
+
     channel = (args.get("chat_id") or "").strip()
     thread_ts = (args.get("thread_ts") or "").strip()
     message = (args.get("message") or "").strip()
+    if channel and (str(args.get("release_asset_row_id") or "").strip() or is_gated(channel, cfg)):
+        if not str(args.get("release_asset_row_id") or "").strip():
+            return tool_error(channel_denial(channel, cfg) or "release_asset_row_id is required.")
+        return _respond(await rup.post_release_update(args, cfg))
     if not channel or not message:
         return tool_error("'chat_id' and 'message' are required.")
+    denial = channel_denial(channel, cfg)
+    if denial:
+        logger.warning("[slack_post_thread] refused (channel=%s): %s", channel, denial)
+        return tool_error(denial)
 
     token = _resolve_slack_token()
     if not token:

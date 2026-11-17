@@ -14137,6 +14137,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # profile's home + credential scope and stamp their inbound events with
         # the profile so the agent turn resolves correctly. No-op when off.
         try:
+            from agent.boundary_config import log_boundary_config_errors
+            from hermes_cli.profiles import get_active_profile_name
+            log_boundary_config_errors(get_active_profile_name() or "default")
+        except Exception as _bc_err:
+            logger.debug("boundary config validation skipped: %s", _bc_err)
+        try:
             _secondary_connected = await self._start_secondary_profile_adapters()
             connected_count += _secondary_connected
         except MultiplexConfigError as e:
@@ -16728,6 +16734,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             discover_plugins()
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
+            # Fork (education design 5): make a broken notion.write_guard /
+            # autonomy / posting block loud at startup (the guards also fail
+            # closed per call).
+            from agent.boundary_config import log_boundary_config_errors
+            log_boundary_config_errors(profile_name)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(
@@ -30217,7 +30228,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return loaded
 
     def _slack_source_ignored(self, source: SessionSource) -> bool:
-        """``_is_slack_ignored_channel`` against the source profile's config."""
+        """``_is_slack_ignored_channel`` against the source profile's config —
+        plus the profile's ``slack.post_gated_channels`` (fork, education
+        design 5b): a gated channel accepts no free text from the bot, so it
+        never answers there, mentioned or not."""
+        if self._slack_source_gated(source):
+            return True
         config = getattr(self, "config", None)
         chat_id = getattr(source, "chat_id", None)
         if not getattr(config, "multiplex_profiles", False):
@@ -30230,6 +30246,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.warning("multiplex: ignored-channel check failed", exc_info=True)
             return False
+
+    def _slack_source_gated(self, source: SessionSource) -> bool:
+        channel_id = _slack_parent_channel_id(getattr(source, "chat_id", None))
+        if not channel_id:
+            return False
+        try:
+            from agent.boundary_config import read_boundary_config
+            from agent.slack_post_policy import is_gated
+
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                    return is_gated(channel_id, read_boundary_config())
+            return is_gated(channel_id, read_boundary_config())
+        except Exception:
+            # Fail closed: an unanswered message beats free text in a gated channel.
+            logger.warning("gated-channel check failed; ignoring the message", exc_info=True)
+            return True
 
     def _multiplex_adapter_for(self, source, platform):
         """``self.adapters.get(platform)`` single-profile (unchanged); under

@@ -1,5 +1,5 @@
 name: cobrain
-title: Cobrain
+title: "Cobrain – Shared memory for all your AIs"
 repo: https://github.com/Overpress-Media/cobrain-plugin
 sha: 59754f356d87ebfa2b44e8a5a1f0de6ef388e315
 description: "Shared Markdown memory for Hermes, Claude, ChatGPT, Codex and any MCP client: load a project's notes and decisions in one call, search, and save as you work. Portable Agent Plugin v1 package (plugin.json, Streamable HTTP mcp.json, one skill). Disclosure — connects to Cobrain's hosted MCP server (cobrain.space, EU-hosted) and needs a Cobrain account (free plan available); after sign-in its tools read, search, create and update the user's own notes, and can move or delete them (deleted notes go to a 30-day trash that only the owner can restore, never reachable from MCP). Writes are version-checked so two agents cannot silently overwrite each other. No telemetry, no local process, no stored credentials beyond Hermes's own OAuth token store. The remote tool list can change without a new pin of this package."

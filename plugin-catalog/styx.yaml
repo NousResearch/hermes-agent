@@ -1,0 +1,21 @@
+name: styx
+title: Styx
+repo: https://github.com/CloudDown/styx
+sha: 6f3bf33cb1028c93bb1d7f0ff2a2870d10305669
+description: Password-gated Tor onion access to the local Hermes webapp or dashboard.
+maintainer: CloudDown
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "0.1.0"
+docs_url: https://github.com/CloudDown/styx/blob/6f3bf33cb1028c93bb1d7f0ff2a2870d10305669/README.md
+image: https://raw.githubusercontent.com/CloudDown/styx/6f3bf33cb1028c93bb1d7f0ff2a2870d10305669/docs/catalog-banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/CloudDown/styx/6f3bf33cb1028c93bb1d7f0ff2a2870d10305669/docs/login.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -48,12 +48,12 @@ def lead_member(room: DiscussionRoom, context: Mapping[str, str]) -> DiscussionM
 def routes_through_lead(discussion: _ValidatedEvent, room: DiscussionRoom, events: Sequence[_ValidatedEvent]) -> bool:
     """A human message that opens a new thread and addresses nobody goes to the lead first."""
     from gateway.hosted_room_context import scheduled_post_kind
-    from gateway.hosted_room_discussion import _MENTION_RE
+    from gateway.hosted_room_discussion import mention_handles
 
     if scheduled_post_kind(discussion.actor) is not None:
         return False
-    handles = {member.handle.casefold() for member in room.members} | {"all", "everyone"}
-    if any(match.group(1).casefold() in handles for match in _MENTION_RE.finditer(str(discussion.payload["text"]))):
+    # A mention (or @all/@everyone) means the message is addressed, so no routing turn decides for it.
+    if any(mention_handles(discussion.payload["text"], (member.handle for member in room.members))):
         return False
     thread_id = discussion.payload["thread_id"]
     return not any(

@@ -160,7 +160,16 @@ def test_a_purpose_only_save_racing_a_routing_change_never_restores_the_old_rout
     assert context.room_context(room_db, room_id=ROOM_ID)["routing"] == "everyone"
 
 
-@pytest.mark.parametrize(("text", "first"), [("@grace what broke?", "grace"), ("@everyone status", "ada")])
+@pytest.mark.parametrize(
+    ("text", "first"),
+    [
+        ("@grace what broke?", "grace"),
+        ("@everyone status", "ada"),
+        # #151802: prose punctuation after a handle used to name nobody, so the message took a routing turn.
+        ("@grace: what broke?", "grace"),
+        ("@everyone. status", "ada"),
+    ],
+)
 def test_mentions_and_everyone_bypass_the_lead(room_db: Path, text: str, first: str):
     _lead_room(room_db)
     seq = _say(room_db, text)

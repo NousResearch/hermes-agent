@@ -43,10 +43,10 @@ _held_gates: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
     "hermes_llm_admission_held", default=frozenset()
 )
 # A permit admitted before its physical request exists (see ``prepaid_provider_slot``).
-_prepaid: contextvars.ContextVar["_Prepaid | None"] = contextvars.ContextVar(
+_prepaid: contextvars.ContextVar[_Prepaid | None] = contextvars.ContextVar(
     "hermes_llm_admission_prepaid", default=None
 )
-_gates: dict[str, "_Gate"] = {}
+_gates: dict[str, _Gate] = {}
 _gates_lock = threading.Lock()
 
 
@@ -87,7 +87,8 @@ def _configured_limits(provider: Any, identity: str) -> _Limits | None:
         from hermes_cli.config import load_config_readonly
 
         config = load_config_readonly()
-    except Exception:
+    except Exception:  # an unreadable config means "no limits", never a failed request
+        logger.debug("provider request limits unreadable", exc_info=True)
         return None
     providers = config.get("providers") if isinstance(config, dict) else None
     if not isinstance(providers, dict):
@@ -275,7 +276,7 @@ def _role(role: str | None) -> str:
 class ProviderPermit:
     """One held admission (or a no-op when unlimited or re-entrant); release is idempotent."""
 
-    __slots__ = ("key", "_gate", "_released", "_lock")
+    __slots__ = ("_gate", "_lock", "_released", "key")
 
     def __init__(self, key: str = "", gate: _Gate | None = None) -> None:
         self.key, self._gate = key, gate
@@ -307,7 +308,7 @@ class ProviderPermit:
 class _Prepaid:
     """A permit admitted ahead of the physical request that claims it; claimed at most once."""
 
-    __slots__ = ("key", "_permit", "_closed", "_lock")
+    __slots__ = ("_closed", "_lock", "_permit", "key")
 
     def __init__(self, permit: ProviderPermit) -> None:
         self.key, self._permit = permit.key, permit

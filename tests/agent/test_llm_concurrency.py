@@ -187,7 +187,7 @@ def test_requests_per_minute_paces_starts_fairly_and_honors_rate_limit_headers(p
         permit.release()
 
     async def settle() -> None:
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.2)  # health: allow HX013 -- lets the queued requests reach the gate before the clock moves
 
     async def scenario() -> None:
         await request("main-0", "main")
@@ -274,9 +274,9 @@ def test_requests_per_minute_paces_starts_fairly_and_honors_rate_limit_headers(p
             return _spawn(_context_thread_target(attempts)).result(timeout=5)
 
     call = _spawn(logical_call)
-    time.sleep(0.3)
+    time.sleep(0.3)  # health: allow HX013 -- nothing may open while the pacing window has not elapsed
     clock.now = 5000.99
-    time.sleep(0.3)
+    time.sleep(0.3)  # health: allow HX013 -- still inside the window: the stream must stay unopened
     assert opened == [5000.0]
     clock.now = 5001.0
     assert call.result(timeout=5) == ["chunk-1", "chunk-2"]
@@ -305,7 +305,7 @@ def test_requests_per_minute_paces_starts_fairly_and_honors_rate_limit_headers(p
             threading.Timer(1.5, first_attempt.release).start()
             streaming._readmit_retry()  # queued ~1.5 s against a 0.5 s stale threshold
             assert stale_kills == []
-            time.sleep(1.2)  # admitted, and the provider never answers
+            time.sleep(1.2)  # health: allow HX013 -- admitted, and the provider never answers: the stale threshold must now elapse
             assert stale_kills
     finally:
         streaming._call_done.set()

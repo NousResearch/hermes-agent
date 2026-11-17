@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: joinbot
+description: Join Zoom, Google Meet and Teams calls as a named guest and answer out loud.
+source: https://usejoinbot.com/llms-full.txt
+
+# Vendor-hosted remote MCP over Streamable HTTP (URL-only, nothing runs locally).
+# Native OAuth 2.1 + Dynamic Client Registration, verified live: an unauthenticated
+# call returns 401 with RFC 9728 resource_metadata -> protected-resource metadata ->
+# AS metadata (clerk.usejoinbot.com) with registration_endpoint and S256 PKCE.
+transport:
+  type: http
+  url: https://usejoinbot.com/api/mcp
+
+auth:
+  type: oauth
+
+# Ten tools (register, join_meeting, list_meetings, listen, say, speak, suggest,
+# post_chat, leave_meeting, get_transcript); all are needed for a meeting, so
+# the install checklist starts fully checked.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - joinbot
+    - zoom call
+    - google meet
+    - teams meeting
+    - join meeting
+  hosts:
+    - usejoinbot.com
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to JoinBot
+  (or run `hermes mcp login joinbot`). Approve access, restart the
+  session so tools load, then say "Connect to JoinBot." and approve
+  the bot in JoinBot under Bots. Meeting time is billed from your
+  JoinBot credits; new accounts get $1 of free credit.

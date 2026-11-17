@@ -267,7 +267,7 @@ class TestPreKeylessRescueDirectives:
                           '{"action": "block", "message": "kept on this machine by the plugin"}')
         calls = []
         with pytest.MonkeyPatch.context() as patcher:
-            search, _extract = await _both(patcher, _KeylessRescueBoomProvider(), calls)
+            search, extract = await _both(patcher, _KeylessRescueBoomProvider(), calls)
         assert calls == []
         assert search["success"] is False and "kept on this machine by the plugin" in search["error"]
         assert all("kept on this machine by the plugin" in e.get("error", "") for e in extract)
@@ -288,7 +288,7 @@ class TestPreKeylessRescueDirectives:
         monkeypatch.setattr("tools.approval.request_tool_approval", gate)
         calls = []
         with pytest.MonkeyPatch.context() as patcher:
-            search, _extract = await _both(patcher, _KeylessRescueBoomProvider(), calls)
+            search, extract = await _both(patcher, _KeylessRescueBoomProvider(), calls)
         assert [a[0] for a in asked] == ["web_search", "web_extract"]
         assert all(a[1] == "send it to an outside service?" and a[2] == "probe:keyless_rescue" for a in asked)
         if approved:

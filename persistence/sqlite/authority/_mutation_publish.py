@@ -46,6 +46,9 @@ def compress_in_transaction(holder, conn, session_id, payload, prepared):
         publish_on_connection(holder, conn, parent_session_id=target, child_session_id=child,
             source=policy['source'], model=policy['model'], messages=prepared['messages'],
             model_config={'_compressed_from': target}, cwd=policy['cwd'], require_compression_lease=False)
+        # The conversation's name moves to the live segment, as an automatic rotation's does.
+        from ..gateway._local_lineage import _title_follows_head
+        _title_follows_head(conn, target, child)
         affected = set()  # Rotation publication already advances the logical revision.
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
     generation = conn.execute('SELECT runtime_generation FROM sessions WHERE id=?', (session_id,)).fetchone()[0]

@@ -1069,6 +1069,15 @@ because the message can only reach the conversation that already invoked the plu
 
 ## Posting a card
 
+:::caution Experimental
+`ctx.post_card` is experimental, like [`ctx.fork_session`](../../developer-guide/plugin-llm-access.md#forking-the-sessions-own-agent-ctxfork_session):
+the card shape and the result codes may change in a later release. Keep the call inside one small
+function of your plugin that returns plain data, and treat a refusal as "no card" rather than an error.
+Under `plugins.isolation: host` a third-party plugin's `ctx.post_card` and `ctx.apost_card` exist but
+raise `PluginHostUnsupported` (a `RuntimeError`), as `post_message` and `fork_session` do: the card is
+admitted on the gateway's event loop into a session the Hermes process owns.
+:::
+
 A plugin can put a card into a conversation from anywhere, including a timer or its own background
 thread, without starting a model turn. The card is saved in the session's history, so it is still there
 after a reload, and the model sees one short line saying which plugin posted what:
@@ -1117,8 +1126,9 @@ Result: `{"ok": True, "card_id", "status": "queued" | "duplicate"}`, or `{"ok": 
 Expected refusals are `consent_required`, `invalid_target`, `no_conversation`, `group_not_allowed`,
 `invalid_card`, `card_conflict`, `rate_limited` (more than 6 cards in 60 seconds for one session),
 `gateway_unavailable`, `on_event_loop`, and `timeout`. An internal admission failure is reported as
-`refused` or `post_failed`, not raised into the plugin.
-`ctx.post_card` is not available in the out-of-process plugin host (`plugins.isolation: host`).
+`refused` or `post_failed`, not raised into the plugin. Like `inject_message`, the card is admitted from
+the gateway's own context, never the caller's: a card posted from a session fork's tool handler or from a
+hook inside a turn hands none of that turn's scopes to the session queue.
 
 Cards need the `conversation.cards` capability. Declare it in `plugin.yaml` and grant it on the consent
 screen. It is separate from `allow_gateway_injection` because a card runs no model and no tools and sends

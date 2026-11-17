@@ -123,6 +123,7 @@ class TestMemoryManagerUserIdThreading:
                 session_id="session-with-title",
                 session_db=session_db,
                 gateway_session_key="agent:main:telegram:dm:42",
+                thread_id="800", parent_chat_id="700",
                 cwd=str(tmp_path),
             )
 
@@ -133,5 +134,7 @@ class TestMemoryManagerUserIdThreading:
             == "agent:main:telegram:dm:42"
         )
         assert provider._init_kwargs["cwd"] == str(tmp_path)
+        # A thread's parent channel reaches providers, so channel memory can span its threads.
+        assert (provider._init_kwargs["thread_id"], provider._init_kwargs["parent_chat_id"]) == ("800", "700")
         agent.close()
 

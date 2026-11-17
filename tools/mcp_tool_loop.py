@@ -19,6 +19,10 @@ from tools import mcp_tool_lifecycle as _lifecycle
 
 logger = logging.getLogger("tools.mcp_tool")
 
+# Bound on the wait for a fresh MCP loop thread to start running. Microseconds in practice; the
+# bound only keeps a starved thread from holding the caller (and the lock) forever.
+_MCP_LOOP_START_TIMEOUT = 5.0
+
 
 class _LockCookie:
     """Holds a cross-process file lock; ``release()`` drops it. The file object MUST stay open while
@@ -205,16 +209,27 @@ def _signal_reconnect_and_wait(server_name: str, srv: Any, *, op_description: st
 
 
 def _ensure_mcp_loop():
-    """Start the background loop thread if not running. The loop/thread handles live on the ORIGIN
-    module (tests read and reset ``tools.mcp_tool._mcp_loop``), so they are written there."""
+    """Start the background loop thread if not running, and return only once the loop IS running.
+    The loop/thread handles live on the ORIGIN module (tests read and reset
+    ``tools.mcp_tool._mcp_loop``), so they are written there."""
     from tools import mcp_tool as _origin
     with _core._lock:
         if _origin._mcp_loop is not None and _origin._mcp_loop.is_running():
             return
         loop = _origin._mcp_loop = asyncio.new_event_loop()
         loop.set_exception_handler(_mcp_loop_exception_handler)
+        # Thread.start() returns when the thread has begun, not when run_forever has marked the
+        # loop running. In that gap _run_on_mcp_loop raises "not running", _stop_mcp_loop drives
+        # the loop from the calling thread, and the guard above builds a second loop. A callback
+        # queued before the thread starts runs on the loop's first iteration, after run_forever
+        # set the running state. The wait stays inside the lock the guard, _stop_mcp_loop and
+        # _running_loop all take, so none of them can observe the gap.
+        running = threading.Event()
+        loop.call_soon(running.set)
         _origin._mcp_thread = threading.Thread(target=loop.run_forever, name="mcp-event-loop", daemon=True)
         _origin._mcp_thread.start()
+        if not running.wait(_MCP_LOOP_START_TIMEOUT):
+            logger.warning("MCP event loop thread did not start running within %.1fs", _MCP_LOOP_START_TIMEOUT)
 
 
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:

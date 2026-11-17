@@ -1,5 +1,5 @@
 {
-  "description": "Load an image into the conversation so you can see it. Call it any time the user references an image — then answer from what you see.",
+  "description": "Inspect an image when you need visual information that is not already available, such as exact text or small details. If the image or an existing description is enough to answer the request, answer directly.",
   "name": "vision_analyze",
   "parameters": {
     "properties": {

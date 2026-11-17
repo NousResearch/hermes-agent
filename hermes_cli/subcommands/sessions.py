@@ -43,6 +43,18 @@ def _add_refresh_prompts(sessions_subparsers) -> None:
     _flag(refresh, "--json", help="Machine-readable output")
 
 
+def _add_list(sessions_subparsers) -> None:
+    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
+    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
+    sessions_list.add_argument("--workspace", metavar="NEEDLE",
+        help="Only sessions in one workspace: a git repo root or project dir "
+        "(matched by path substring or basename).")
+    sessions_list.add_argument("--metadata", action="append", default=[], metavar="KEY=VALUE",
+        help="Only sessions whose metadata KEY equals VALUE (set via PATCH /api/sessions/{id}); "
+        "repeat to require several pairs.")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -50,12 +62,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
-    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
-    sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")
-    sessions_list.add_argument("--workspace", metavar="NEEDLE",
-        help="Only sessions in one workspace: a git repo root or project dir "
-        "(matched by path substring or basename).")
+    _add_list(sessions_subparsers)
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

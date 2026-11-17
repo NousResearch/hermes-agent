@@ -718,10 +718,10 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`) |
+| `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`, repeated `metadata.<key>=<value>`) |
 | `POST` | `/api/sessions` | Create an empty session |
 | `GET` | `/api/sessions/{id}` | Read session metadata |
-| `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
+| `PATCH` | `/api/sessions/{id}` | Update `title`, `end_reason`, the `pinned` / `archived` / `hidden` / `unread` flags, or `metadata` (see below) |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session. `include_compacted=true` also returns the turns a context compaction archived (default: live transcript only). `inline_images=false` renders image attachments as `[image]` placeholders instead of inline data URIs — the transcript travels in kilobytes, for clients reading over a network |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
@@ -740,6 +740,33 @@ curl -X POST http://localhost:8642/api/sessions/$ID/fork \
 curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -d '{"input": "what files changed in the last hour?"}'
+```
+
+### Session metadata
+
+A session can carry your own key/value labels — a ticket id, a CI run, a customer — so an external
+system can find "the Hermes session for ENG-123" again without keeping a side table. Metadata is
+storage only: it is never shown to the model and never changes the prompt.
+
+- `PATCH /api/sessions/{id}` with `{"metadata": {...}}` is a JSON merge-patch: listed keys are set,
+  a `null` value deletes that key, keys you leave out are kept. The response's `session.metadata`
+  is the full merged object; every session response carries `metadata` (`{}` when unset).
+- Bounds: at most 32 keys; keys are 1–40 characters of `A-Z a-z 0-9 _ . -`; values are strings of
+  at most 500 characters. A violation is a `400` with `code: invalid_session_metadata` and `param`
+  naming the field (for example `metadata.ticket`).
+- Metadata covers the whole conversation: a patch through any id of a compressed chat applies to
+  every segment, and a segment compression creates later inherits it.
+- `GET /api/sessions?metadata.<key>=<value>` keeps sessions whose metadata has that exact value;
+  repeat the parameter to require several pairs (they AND). The dashboard's `/api/sessions` and
+  `hermes sessions list --metadata KEY=VALUE` take the same filter.
+
+```bash
+curl -X PATCH http://localhost:8642/api/sessions/$ID \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -d '{"metadata": {"ticket": "ENG-123", "ci.run": "4812"}}'
+
+curl "http://localhost:8642/api/sessions?metadata.ticket=ENG-123" \
+  -H "Authorization: Bearer $API_SERVER_KEY"
 ```
 
 ## Skills and toolsets discovery

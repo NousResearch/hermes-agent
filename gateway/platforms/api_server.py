@@ -116,6 +116,7 @@ from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
+from gateway.platforms import api_server_session_metadata as _session_metadata
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -2436,39 +2437,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @staticmethod
     def _session_response(session: dict[str, Any]) -> dict[str, Any]:
-        """Return a stable, client-safe session representation."""
-        safe_keys = (
-            "id", "source", "user_id", "model", "title", "started_at", "ended_at", "end_reason",
-            "message_count", "tool_call_count", "input_tokens", "output_tokens",
-            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
-            "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
-        payload = {key: session.get(key) for key in safe_keys if key in session}
-        # SQLite stores the flags as 0/1.
-        payload.update(
-            {f: bool(payload[f]) for f in ("pinned", "archived", "hidden") if f in payload})
-        # Full system prompts / model_config never cross the client API; only their presence.
-        payload["has_system_prompt"] = bool(session.get("system_prompt"))
-        payload["has_model_config"] = bool(session.get("model_config"))
-        raw_model_config = session.get("model_config")
-        try:
-            model_config = (
-                json.loads(raw_model_config)
-                if isinstance(raw_model_config, str)
-                else raw_model_config
-            )
-        except (TypeError, json.JSONDecodeError):
-            model_config = None
-        # Exact-id consumers may inspect/resume delegate children even though
-        # list endpoints intentionally omit them. Project only the provenance
-        # bit the client needs so it cannot accidentally promote such a row
-        # into an ordinary session list; never expose the model snapshot.
-        payload["is_internal_child"] = bool(
-            isinstance(model_config, dict)
-            and model_config.get("_delegate_from") is not None
-        )
-        return payload
-
+        return _session_metadata.session_response(session)
     @staticmethod
     def _message_response(message: dict[str, Any]) -> dict[str, Any]:
         message = _project_client_message(message)
@@ -2529,6 +2498,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         title_filter = (request.query.get("title") or "").strip() or None
         include_hidden = bool(title_filter) and _coerce_request_bool(
             request.query.get("include_hidden"), default=False)
+        metadata, err = _session_metadata.metadata_filter(request.query)
+        if err:
+            return err
 
         async def _list() -> list:
             # include_pinned back-fills pins past the recency window; search_query pushes the
@@ -2536,7 +2508,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             rows = await asyncio.to_thread(
                 db.list_sessions_rich, source=source, limit=limit, offset=offset,
                 include_children=include_children, order_by_last_active=True, include_pinned=True,
-                search_query=title_filter, include_hidden=include_hidden)
+                search_query=title_filter, include_hidden=include_hidden, metadata=metadata)
             if title_filter:
                 rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
             return rows
@@ -2658,16 +2630,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err:
             return err
         # pinned/archived/unread are durable desktop-sidebar flags.
-        unknown = sorted(set(body) - {"title", "end_reason", "pinned", "archived", "hidden", "unread"})
+        unknown = sorted(set(body) - {"title", "end_reason", "pinned", "archived", "hidden", "unread", "metadata"})
         if unknown:
             return _error_response(
                 f"Unsupported session fields: {', '.join(unknown)}", 400, code="unsupported_session_field")
         for flag in ("pinned", "archived", "hidden", "unread"):
             if flag in body and not isinstance(body[flag], bool):
                 return _error_response(f"'{flag}' must be a boolean", 400, code="invalid_session_field")
+        metadata_patch, err = _session_metadata.metadata_patch(body)
         db = await self._ensure_session_db_async()
-        if db is None:
-            return self._session_db_unavailable()
+        if err or db is None:
+            return err or self._session_db_unavailable()
+        if err := await _session_metadata.apply_metadata_patch(db, session_id, metadata_patch):
+            return err
         if "title" in body:
             try:
                 await asyncio.to_thread(

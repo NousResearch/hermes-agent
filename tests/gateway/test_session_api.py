@@ -1226,6 +1226,34 @@ async def test_patch_session_persists_pinned_and_archived(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_patch_session_metadata_merges_and_list_filters_by_it(adapter, session_db):
+    """PATCH metadata is a merge-patch (null deletes) echoed on the session; GET /api/sessions
+    keeps only rows carrying every ``metadata.<key>=<value>`` pair; bounds are a 400 naming the field."""
+    for sid in ("ticket-a", "ticket-b"):
+        session_db.create_session(sid, "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.patch("/api/sessions/ticket-a", json={"metadata": {"ticket": "ENG-1", "team": "x"}})
+        assert resp.status == 200, await resp.text()
+        resp = await cli.patch("/api/sessions/ticket-a", json={"metadata": {"team": None, "ci.run": "7"}})
+        assert (await resp.json())["session"]["metadata"] == {"ticket": "ENG-1", "ci.run": "7"}
+        await cli.patch("/api/sessions/ticket-b", json={"metadata": {"ticket": "ENG-2"}})
+
+        resp = await cli.get("/api/sessions?metadata.ticket=ENG-1&metadata.ci.run=7")
+        assert [s["id"] for s in (await resp.json())["data"]] == ["ticket-a"]
+        resp = await cli.get("/api/sessions?metadata.ticket=ENG-1&metadata.ci.run=8")
+        assert (await resp.json())["data"] == []
+
+        resp = await cli.patch("/api/sessions/ticket-a", json={"metadata": {"ticket": "x" * 501}})
+        assert resp.status == 400
+        assert (await resp.json())["error"]["param"] == "metadata.ticket"
+        resp = await cli.patch("/api/sessions/ticket-a", json={"metadata": {"bad key": "v"}})
+        assert resp.status == 400
+        assert session_db.get_session("ticket-a")["metadata"] == '{"ci.run": "7", "ticket": "ENG-1"}'
+
+
+@pytest.mark.asyncio
 async def test_patch_session_rejects_non_boolean_pinned(adapter, session_db):
     session_id = session_db.create_session("pin-type-session", "api_server")
     app = _create_session_app(adapter)

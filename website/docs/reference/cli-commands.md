@@ -1875,7 +1875,7 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List recent sessions. |
+| `list` | List recent sessions. `--source`, `--workspace <needle>`, and `--metadata KEY=VALUE` (repeatable; every pair must match) narrow the list — metadata is set through [`PATCH /api/sessions/{id}`](../user-guide/features/api-server.md#session-metadata). |
 | `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |

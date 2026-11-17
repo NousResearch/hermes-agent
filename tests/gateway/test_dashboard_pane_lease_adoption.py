@@ -24,27 +24,26 @@ def owner(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from hermes_cli.active_sessions import release_active_session
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
+    db = store.persistence
     # A chat the dashboard's Desktop pane ran: a plain desktop row, no canonical receipt.
-    db.create_session(CHAT, source='desktop', model='m', cwd=str(tmp_path))
-    db.set_session_title(CHAT, 'Rodar dag-ulw via interface desktop')
-    db.append_message(CHAT, role='user', content='Q')
-    db.append_message(CHAT, role='assistant', content='A')
+    seed_session(db, CHAT, 'desktop', model='m', cwd=str(tmp_path))
+    seed_messages(db, CHAT, {'role': 'user', 'content': 'Q'}, {'role': 'assistant', 'content': 'A'})
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _adapter_for_source=lambda source: None, _cached_agent_for=lambda route: None,
                              _evict_cached_agent=lambda route: None)
-    authority = asyncio.run(initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='gateway'))
     identity = {'user_id': 'native', 'provider': 'local', 'profile_id': str(tmp_path),
                 'instance_id': 'gateway'}
+    authority = asyncio.run(initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='gateway'))
     connection = AuthorityConnection(authority, object(), identity)
     native = connection.actor
     leases = []
     try:
-        yield SimpleNamespace(authority=authority, db=db, home=Path(db.db_path).parent, native=native,
+        yield SimpleNamespace(authority=authority, db=db, home=Path(db.scope.profile_dir), native=native,
                                leases=leases, connection=connection)
     finally:
         for lease in leases:
@@ -79,12 +78,11 @@ async def test_an_idle_dashboard_pane_does_not_fence_opening_its_chat_through_th
 async def test_a_dashboard_pane_mid_turn_still_refuses_and_binds_nothing(owner):
     _mount_dashboard_pane(owner)
     holder = f'pid={os.getpid()}:turn=1ce47391:platform=desktop'
-    assert owner.db.try_acquire_session_turn_lease(CHAT, holder)
+    assert owner.db.coordination.try_acquire_turn_lease(session_id=CHAT, holder=holder, ttl_seconds=60)
 
     reply = await owner.connection.dispatch({'id': 2, 'method': 'session.resume',
                                              'params': {'session_id': CHAT, 'omit_messages': True}})
     assert reply.get('error', {}).get('data', {}).get('reason') == 'runtime_coordination_required', reply
-    with owner.db._read_ctx() as conn:
-        assert not conn.execute("SELECT 1 FROM state_meta WHERE key LIKE 'gateway.local_policy.v1:%'").fetchall()
+    assert not owner.db.bindings.binding_marks(CHAT).policy
 
-    owner.db.release_session_turn_lease(CHAT, holder)
+    owner.db.coordination.release_turn_lease(session_id=CHAT, holder=holder)

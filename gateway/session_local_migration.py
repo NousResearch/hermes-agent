@@ -362,13 +362,19 @@ def adopt_legacy_session(authority, actor, row):
     return restore_local_session(authority, sid)
 
 
+class _WriterHeldRefusal(AuthorityRefusal):
+    holder: dict[str, object]
+
+    def __init__(self, holder: dict[str, object]):
+        super().__init__('runtime_coordination_required', field='session_writer',
+                         detail='another session writer holds this session')
+        self.holder = holder
+
+
 def writer_held(entry):
     """The refusal for a live lease on the session, naming its holder (never its metadata)."""
     from hermes_cli.active_sessions import lease_holder_facts
-    exc = AuthorityRefusal('runtime_coordination_required', field='session_writer',
-                           detail='another session writer holds this session')
-    setattr(exc, 'holder', lease_holder_facts(entry))
-    return exc
+    return _WriterHeldRefusal(lease_holder_facts(entry))
 
 
 def registry_unprovable():

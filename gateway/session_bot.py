@@ -715,11 +715,12 @@ async def _migrate(authority, actor, home, root):
         if authority_persistence(authority).lineage.tip(owner['session_id']) != entry.session_id:
             continue
         from gateway.session_local_migration import registry_unprovable, writer_held
-        from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_holders_guard
+        from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_holders_guard, is_authority_lease
         try:
             with active_session_holders_guard(owner['session_id'], registry_home=home) as holders:
-                if holders:
-                    raise writer_held(holders[0])
+                blocking = next((holder for holder in holders if not is_authority_lease(holder)), None)
+                if blocking is not None:
+                    raise writer_held(blocking)
         except ActiveSessionRegistryError as exc:
             raise registry_unprovable() from exc
         if record['status'] == 'claimed':

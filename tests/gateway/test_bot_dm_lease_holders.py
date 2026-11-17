@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 
 CHAT = 'old-bot-chat'
@@ -31,16 +30,14 @@ async def owner(tmp_path, monkeypatch):
     from hermes_cli import gateway_runtime
     from hermes_cli.active_sessions import release_active_session
     from hermes_cli.gateway_client import rpc_error
-    from hermes_state import SessionDB
+    from tests.fixtures.storage_seed import seed_session
     from tools import bot_live_delivery, bot_mode_dm
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    store._db = SessionDB(db_path=tmp_path / 'state.db')
-    db = store._db
-    db.create_session(CHAT, source='desktop', model='old', cwd=str(tmp_path))
-    db.set_session_title(CHAT, 'Bot Chat')
+    db = store.persistence
+    seed_session(db, CHAT, 'desktop', model='old', cwd=str(tmp_path), title='Bot Chat')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -93,17 +90,11 @@ async def _send(owner, text):
 
 
 def _admissions(owner):
-    return [row['request_id'] for row in list_session_admissions(owner.db, session_id=CHAT, pending_only=False)]
+    return [row.request_id for row in owner.db.admissions.list(session_id=CHAT, pending_only=False)]
 
 
 def _adopted(owner):
-    from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_PREFIX
-    row = owner.db.get_session(CHAT)
-    key = row.get('chat_id') or CHAT
-    with owner.db._read_ctx() as conn:
-        return conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
-                            (POLICY_PREFIX + key, LEGACY_PREFIX + key)).fetchone() is not None
+    return owner.db.bindings.binding_marks(CHAT).policy
 
 
 def _plant_unreadable_entry(home):
@@ -159,14 +150,14 @@ async def test_a_dm_during_that_panes_turn_is_a_definite_no_send_then_adopts(own
     assert lease is not None, refusal
     owner.leases.append(lease)
     holder = f'pid={os.getpid()}:turn=pane-1:platform=desktop'
-    assert owner.db.try_acquire_session_turn_lease(CHAT, holder)
+    assert owner.db.coordination.try_acquire_turn_lease(session_id=CHAT, holder=holder, ttl_seconds=60)
 
     refused = await _send(owner, 'ping')
     assert refused.get('reason') == 'runtime_coordination_required' and 'status' not in refused, refused
     assert refused['error'].endswith('the message was NOT sent; it is safe to resend later.'), refused
     assert not _adopted(owner) and _admissions(owner) == []
 
-    owner.db.release_session_turn_lease(CHAT, holder)
+    owner.db.coordination.release_turn_lease(session_id=CHAT, holder=holder)
     sent = await _send(owner, 'ping again')
     assert sent.get('status') in {'queued', 'claimed', 'settled'} and _adopted(owner), sent
     await async_wait_until(lambda: owner.executed == ['ping again'], what='the adopted DM ran')

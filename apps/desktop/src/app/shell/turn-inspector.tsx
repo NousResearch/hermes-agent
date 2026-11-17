@@ -182,11 +182,20 @@ export function TurnInspector({
         </p>
         <ul className="flex flex-col gap-1" data-slot="inspector-tools">
           {snapshot.tools.map(tool => (
-            <li className="flex flex-col" key={tool.name}>
-              <span className="font-mono text-[0.6875rem] text-foreground">{tool.name}</span>
-              {tool.description && (
-                <span className="line-clamp-2 text-[0.625rem] text-muted-foreground">{tool.description}</span>
-              )}
+            <li key={tool.name}>
+              <details className="group">
+                <summary className="flex cursor-pointer list-none flex-col">
+                  <span className="font-mono text-[0.6875rem] text-foreground">{tool.name}</span>
+                  {tool.description && (
+                    <span className="line-clamp-2 text-[0.625rem] text-muted-foreground group-open:hidden">
+                      {tool.description}
+                    </span>
+                  )}
+                </summary>
+                {tool.description && (
+                  <p className="text-[0.625rem] whitespace-pre-wrap text-muted-foreground">{tool.description}</p>
+                )}
+              </details>
             </li>
           ))}
         </ul>

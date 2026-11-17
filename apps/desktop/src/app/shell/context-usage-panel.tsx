@@ -3,6 +3,7 @@ import { useContext, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -120,28 +121,15 @@ function PanelTabs({ onSelect, tab }: { onSelect: (tab: PanelTab) => void; tab: 
   const copy = t.shell.statusbar.contextUsagePanel.tabs
 
   return (
-    <div className="flex gap-1 rounded-md bg-muted p-0.5" role="tablist">
-      {(['usage', 'inspector'] as const).map(id => (
-        <button
-          aria-selected={tab === id}
-          className={cn(
-            'flex-1 rounded-[5px] px-2 py-0.5 text-[0.6875rem] transition-colors',
-            tab === id ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
-          )}
-          key={id}
-          // Radix's menu treats a click as a selection and closes; the tab switch must keep it open.
-          onClick={event => {
-            event.preventDefault()
-            event.stopPropagation()
-            onSelect(id)
-          }}
-          role="tab"
-          type="button"
-        >
-          {copy[id]}
-        </button>
-      ))}
-    </div>
+    <Tabs onValueChange={value => onSelect(value as PanelTab)} value={tab}>
+      <TabsList className="h-7 w-full">
+        {(['usage', 'inspector'] as const).map(id => (
+          <TabsTrigger className="h-6 flex-1 text-[0.6875rem]" key={id} value={id}>
+            {copy[id]}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   )
 }
 

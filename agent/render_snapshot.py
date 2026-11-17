@@ -3,8 +3,10 @@
 Read-only over what the session already persisted: the prompt comes from the row's content-addressed
 ``system_prompts`` hash (never a rebuild, so the cached prefix is untouched) and the tools from the row's
 frozen tools[] pin. A live agent contributes only attributes it already holds (``tools``, ``model``,
-``provider``). Compression rotates the session id, so the lineage is diffed segment by segment into
-change records (prompt changed, tool added/removed, model or provider changed). Prompt text and tool
+``provider``). A rotating compression (``compression.in_place: false``) or a fork leaves one row per
+segment, and the lineage is diffed segment by segment into change records (prompt changed, tool
+added/removed, model or provider changed). An in-place compaction (the default) rewrites the same row,
+so such a session has one segment and no change records: nothing durable holds its earlier snapshot. Prompt text and tool
 descriptions go through the same force-mode redaction ``hermes sessions export --redact`` uses.
 """
 
@@ -16,12 +18,10 @@ from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_state_sessions import _parse_model_config
-from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
 from tools.registry import registry
 
 # A long-lived conversation can rotate many times; the inspector diffs the newest segments.
 MAX_SEGMENTS = 20
-_DESCRIPTION_CHARS = 400
 
 
 def _function(tool: Any) -> dict:
@@ -43,12 +43,10 @@ def _pinned_tools(raw: Optional[str]) -> list:
     return tools if isinstance(tools, list) else []
 
 
-def _mcp_server(name: str, toolset: str) -> Optional[str]:
-    if toolset.startswith("mcp-"):
-        return toolset[len("mcp-"):]
-    if name.startswith(MCP_TOOL_NAME_PREFIX):
-        return name[len(MCP_TOOL_NAME_PREFIX):].split("__", 1)[0] or None
-    return None
+def _mcp_server(toolset: str) -> Optional[str]:
+    """The server name from its registered ``mcp-<server>`` toolset. A tool name cannot be reversed into
+    one (registration sanitizes the server name), so an unregistered MCP tool names no server."""
+    return toolset[len("mcp-"):] if toolset.startswith("mcp-") else None
 
 
 def _tool_rows(tools: list) -> list[dict]:
@@ -59,8 +57,8 @@ def _tool_rows(tools: list) -> list[dict]:
             continue
         toolset = toolsets.get(name) or ""
         description = str(_function(tool).get("description") or "").strip()
-        rows.append({"name": name, "toolset": toolset, "mcp_server": _mcp_server(name, toolset),
-                     "description": redact_sensitive_text(description[:_DESCRIPTION_CHARS], force=True)})
+        rows.append({"name": name, "toolset": toolset, "mcp_server": _mcp_server(toolset),
+                     "description": redact_sensitive_text(description, force=True)})
     return rows
 
 

@@ -46,7 +46,7 @@ describe('TurnInspector', () => {
     expect(screen.getByText('Model changed: model-a → model-b')).toBeTruthy()
     expect(screen.getByText('Prompt changed')).toBeTruthy()
     expect(screen.getByText('Tool removed: read_file')).toBeTruthy()
-    expect(screen.getByText('Run shell commands')).toBeTruthy()
+    expect(screen.getAllByText('Run shell commands').length).toBeGreaterThan(0)
     expect(screen.getByText('gh')).toBeTruthy()
   })
 })

@@ -48,6 +48,9 @@ def test_render_snapshot_reads_the_stored_prompt_and_diffs_the_lineage(db, monke
 
     agent = SimpleNamespace(tools=[_tool("terminal", "live terminal"), _tool("mcp__gh__issues")],
                             model="model-b", provider="nous", _build_system_prompt=_no_rebuild)
+    # The MCP server comes from the registered ``mcp-<server>`` toolset, never a guess from the tool name.
+    monkeypatch.setattr("agent.render_snapshot.registry.get_tool_to_toolset_map",
+                        lambda: {"terminal": "terminal", "mcp__gh__issues": "mcp-gh"})
     monkeypatch.setattr("agent.system_prompt.build_system_prompt", _no_rebuild)
     monkeypatch.setattr("agent.system_prompt.build_system_prompt_parts", _no_rebuild)
     sid = _live(monkeypatch, "seg-1", agent)
@@ -69,7 +72,9 @@ def test_render_snapshot_reads_the_stored_prompt_and_diffs_the_lineage(db, monke
 def test_render_snapshot_redacts_secrets_in_the_stored_prompt_without_an_agent(db, monkeypatch):
     secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789"
     db.create_session("solo", source="desktop", model="model-a", system_prompt=f"Use key {secret} carefully.")
-    db.update_session_tool_names("solo", {"version": "v", "tools": [_tool("web_search", f"auth {secret}")]})
+    # Past any preview length: the whole description is redacted, so a secret at a cut point cannot leak.
+    long_description = "x" * 395 + f" {secret} tail"
+    db.update_session_tool_names("solo", {"version": "v", "tools": [_tool("web_search", long_description)]})
     sid = _live(monkeypatch, "solo")
 
     result = srv._methods["session.render_snapshot"](1, {"session_id": sid})["result"]
@@ -77,5 +82,6 @@ def test_render_snapshot_redacts_secrets_in_the_stored_prompt_without_an_agent(d
     assert result["tools_source"] == "stored"
     assert [t["name"] for t in result["tools"]] == ["web_search"]
     assert secret not in result["system_prompt"] and "carefully" in result["system_prompt"]
-    assert secret not in result["tools"][0]["description"]
+    description = result["tools"][0]["description"]
+    assert secret[:20] not in description and description.endswith("tail")
     assert db.get_session("solo")["system_prompt"] == f"Use key {secret} carefully."  # stored row untouched

@@ -58,11 +58,17 @@ def _spawn_env_for_profile_b(monkeypatch, tmp_path):
 
     monkeypatch.setattr(process_registry, "systemd_user_bus_env", _capture)
 
+    # ``status="claimed"`` with ``current_run_id=None`` is a state the dispatcher
+    # never spawns from: ``claim_task`` opens a run and stamps it on the row
+    # before the spawn fn is called (kanban_db.py ``_claim_and_open_run`` ->
+    # ``UPDATE tasks SET current_run_id = ?``), and ``_restart_safe_worker_argv``
+    # refuses to mint an untraceable worker under a managed systemd unit. Model
+    # the real claimed row so this test is topology-independent.
     task = Task(
         id="t1", title="t", body=None, assignee="b", status="claimed", priority=0,
         created_by=None, created_at=0, started_at=None, completed_at=None,
         workspace_kind="dir", workspace_path=None, claim_lock=None, claim_expires=None,
-        tenant=None)
+        tenant=None, current_run_id=1)
     with pytest.raises(_StopSpawn):
         kanban_db_dispatch._default_spawn(task, str(tmp_path / "ws"))
     assert captured, "_default_spawn never built a worker env"
@@ -96,11 +102,13 @@ def test_launch_profiles_own_worker_keeps_its_credentials(tmp_path, monkeypatch)
         raise _StopSpawn
 
     monkeypatch.setattr(process_registry, "systemd_user_bus_env", _capture)
+    # Real claimed state: the dispatcher always spawns a run-stamped task
+    # (see the note in ``_spawn_env_for_profile_b``).
     task = Task(
         id="t1", title="t", body=None, assignee="default", status="claimed", priority=0,
         created_by=None, created_at=0, started_at=None, completed_at=None,
         workspace_kind="dir", workspace_path=None, claim_lock=None, claim_expires=None,
-        tenant=None)
+        tenant=None, current_run_id=1)
     with pytest.raises(_StopSpawn):
         kanban_db_dispatch._default_spawn(task, str(tmp_path / "ws"))
 

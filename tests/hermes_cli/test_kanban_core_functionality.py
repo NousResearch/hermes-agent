@@ -701,7 +701,12 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     try:
         tid = kb.create_task(conn, title="skill-loading test",
                              assignee="some-profile")
-        task = kb.get_task(conn, tid)
+        # The dispatcher always claims before it spawns, and ``claim_task`` opens the run
+        # whose id names the worker's restart-safe scope: ``_restart_safe_worker_argv``
+        # refuses a runless task under a managed systemd dispatcher (no traceable unit
+        # suffix).  Spawning an unclaimed task tested a state production never reaches.
+        task = kb.claim_task(conn, tid)
+        assert task is not None and task.current_run_id, "claim must open a run"
         workspace = kbw.resolve_workspace(task)
         pid = kbd._default_spawn(task, str(workspace))
         assert pid == 99999

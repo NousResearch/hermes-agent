@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 
@@ -174,6 +176,64 @@ def _reset_prompt_toolkit_output_cache():
     _clear()
     yield
     _clear()
+
+
+_KANBAN_MODULE_ROOTS = ("hermes_cli", "hermes_state", "hermes_constants")
+
+
+def _is_kanban_family(name: str) -> bool:
+    return name.split(".", 1)[0] in _KANBAN_MODULE_ROOTS
+
+
+def _pin_parent_attribute(module_name: str, module) -> None:
+    """Point the parent package's attribute back at ``module`` (or drop a dead one).
+
+    ``sys.modules`` is not the only registry: ``import hermes_cli.gateway_runtime``
+    also leaves the submodule on its parent package. A purge that only touches
+    ``sys.modules`` leaves that attribute holding the dead copy, so the next
+    ``from hermes_cli import gateway_runtime`` hands out the ghost while
+    ``from hermes_cli.gateway_runtime import …`` — production's function-local form —
+    re-imports the fresh module. Repairing both halves is what makes the identity
+    one module again.
+    """
+    parent_name, _, child = module_name.rpartition(".")
+    parent = sys.modules.get(parent_name)
+    if parent is None or not hasattr(parent, child):
+        return
+    if module is None:
+        delattr(parent, child)
+    else:
+        setattr(parent, child, module)
+
+
+@pytest.fixture(autouse=True)
+def _restore_kanban_module_identity():
+    """Hand every test the ``hermes_cli*``/``hermes_state*``/``hermes_constants``
+    ``sys.modules`` state it would have had running alone.
+
+    Two fixtures purge that whole family from ``sys.modules`` so the next import
+    re-reads a fake ``HERMES_HOME`` (``test_kanban_per_profile_cap.py``,
+    ``test_kanban_cli_dispatch_passthrough.py``). Followed by a re-import the purge
+    is one-way, and that splits the process in two: modules imported during
+    collection (the test modules themselves, ``hermes_cli.kanban_db``, …) keep the
+    ghost copy a test patched, while a function-local ``import`` in production
+    (``hermes_cli/kanban_worker_client.py``) resolves the fresh copy and cannot see
+    that patch — so the real ``connect_gateway`` runs. A file that never loads a
+    purging fixture is green; the package run, which does, is not. Snapshotting and
+    restoring the family around every test keeps a purge a local act, so file order
+    no longer decides the result.
+    """
+    saved = {name: module for name, module in sys.modules.items() if _is_kanban_family(name)}
+    yield
+    live = [n for n in sys.modules if _is_kanban_family(n)]
+    for name in live:
+        del sys.modules[name]
+    sys.modules.update(saved)
+    for name in live:
+        _pin_parent_attribute(name, saved.get(name))
+    for name, module in saved.items():
+        _pin_parent_attribute(name, module)
+
 
 @pytest.fixture
 def probe_root(tmp_path):

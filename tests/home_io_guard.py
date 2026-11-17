@@ -50,6 +50,52 @@ _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
 
 
+def _checkout_git_dirs() -> tuple[str, ...]:
+    """The git admin directory of the checkout these tests live in.
+
+    A git worktree's ``.git`` is a FILE (``gitdir: <main checkout>/.git/worktrees/<name>``), so
+    its admin tree — HEAD, refs and the updater's ``hermes-update-pull`` journal marker — sits in
+    the MAIN checkout, which a default install keeps inside the home.  Probes there are checkout
+    inspection, not reads of Hermes state: ``restore_interrupted_pull``'s fast path is one
+    ``is_file()`` on that marker, run from ``hermes_bootstrap`` at import time.  CI's plain clone
+    has its ``.git`` beside the checkout, so nothing changes there.
+    """
+    checkout = Path(__file__).resolve().parent.parent
+    dot_git = checkout / ".git"
+    try:
+        if dot_git.is_file():
+            for line in dot_git.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, _, target = line.partition(":")
+                if key.strip() == "gitdir" and target.strip():
+                    return (_normcase(os.path.realpath(os.path.join(checkout, target.strip()))),)
+            return ()
+        return (_normcase(os.path.realpath(dot_git)),) if dot_git.is_dir() else ()
+    except OSError:
+        return ()
+
+
+_CHECKOUT_GIT_DIR_STRS = _checkout_git_dirs()
+
+
+def _payload_manifest_paths() -> tuple[str, ...]:
+    """The sealed-payload manifest ``hermes_bootstrap`` probes when an install looks at the tree.
+
+    ``_payload_manifest`` reads ``root.parent/manifest.json`` (the tree is a payload member) and
+    then ``root/manifest.json``; the latter is already inside the checkout allowance, but the
+    former lands in the checkout's PARENT. A checkout kept under the home — a default install, or
+    a task/worktree checkout — therefore probes one file inside the home that is the installer's
+    manifest, not Hermes state. Exact paths only, so nothing else beside the checkout opens up.
+    """
+    checkout = Path(__file__).resolve().parent.parent
+    return tuple(
+        _normcase(os.path.realpath(os.fspath(path)))
+        for path in (checkout / "manifest.json", checkout.parent / "manifest.json")
+    )
+
+
+_PAYLOAD_MANIFEST_STRS = _payload_manifest_paths()
+
+
 def _within(path: str, prefix: str) -> bool:
     """``Path(path).is_relative_to(prefix)`` for two normalized, case-folded absolute strings."""
     if path == prefix:
@@ -62,6 +108,29 @@ def _contains(path: str, prefix: str) -> bool:
     if path == prefix:
         return True
     return prefix.startswith(path) if path == os.sep else prefix.startswith(path + os.sep)
+
+
+def _disposable_workspace(path: str, root: str, *, destructive: bool) -> bool:
+    """True when *path* is inside a Kanban worker's own workspace under *root*.
+
+    ``<root>/kanban/workspaces/<id>`` is created for a single card and deleted with it (a
+    scratch dir or a git worktree), so it is disposable working space, not Hermes state: a
+    card running inside it must be able to probe and write its own tree. The reported case was
+    pm's environment probe of ``<workspace>/manifest.json`` aborting six kanban handoff tests
+    from inside a card worktree.
+
+    The chain is matched on path components, never a substring, so ``<root>/kanban.db``,
+    ``<root>/manifest.json``, ``<root>/profiles/``, the workspaces root itself and lookalikes
+    such as ``<root>/profiles/kanban/workspaces/<id>/`` stay refused. The workspace directory
+    itself may be read or created but not removed or renamed (``destructive``): that would
+    destroy a live card's work.
+    """
+    if not _within(path, root):
+        return False
+    parts = [part for part in path[len(root):].split(os.sep) if part]
+    if len(parts) < 3 or parts[0] != "kanban" or parts[1] != "workspaces" or not parts[2]:
+        return False
+    return len(parts) > 3 or not destructive
 
 
 class HomeIOGuard:
@@ -120,10 +189,21 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
+            # The checkout's git admin dir (see _checkout_git_dirs): a worktree's points back into
+            # the main checkout under the home, and the interrupted-update journal probe there is
+            # checkout inspection, not Hermes state. Probes only — writes stay guarded.
+            if metadata:
+                for git_dir in _CHECKOUT_GIT_DIR_STRS:
+                    if _within(absolute, git_dir) or _contains(absolute, git_dir):
+                        return
+            # The sealed-payload manifest beside the checkout (see _payload_manifest_paths):
+            # hermes_bootstrap's install probe, not Hermes state. Exact paths only.
+            if absolute in _PAYLOAD_MANIFEST_STRS:
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             for root in roots:
-                if _within(absolute, root):
+                if _within(absolute, root) and not _disposable_workspace(absolute, root, destructive=destructive):
                     self.refuse(value)
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
@@ -133,8 +213,10 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(resolved, prefix):
                     return
+            if resolved in _PAYLOAD_MANIFEST_STRS:
+                return
             for root in roots:
-                if _within(resolved, root):
+                if _within(resolved, root) and not _disposable_workspace(resolved, root, destructive=destructive):
                     self.refuse(value)
         finally:
             self.checking.active = False

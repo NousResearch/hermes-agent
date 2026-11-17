@@ -295,29 +295,32 @@ class TestWorkerSpawnEnv:
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
         kb.create_board("spawntest")
 
-        task = kb.Task(
-            id="t_abc",
-            title="worker test",
-            body=None,
-            assignee="teknium",
-            status="ready",
-            priority=0,
-            created_by="user",
-            created_at=0,
-            started_at=None,
-            completed_at=None,
-            workspace_kind="scratch",
-            workspace_path=None,
-            claim_lock=None,
-            claim_expires=None,
-            tenant=None,
-        )
+        # Claim through the real path. Production never hands ``_default_spawn``
+        # a task without a run id: ``claim_task`` -> ``_claim_and_open_run``
+        # (hermes_cli/kanban_db.py) inserts the ``task_runs`` row and stamps
+        # ``current_run_id`` BEFORE the dispatcher spawns, and the spawn helper
+        # refuses an untraceable worker under a systemd unit
+        # ("cannot create restart-safe systemd scope for Kanban worker: the
+        # claimed task has no current run id").  A hand-built ``kb.Task`` with
+        # ``current_run_id=None`` therefore tested a state that cannot occur.
+        with kbc.connect_closing(board="spawntest") as conn:
+            task_id = kb.create_task(
+                conn,
+                title="worker test",
+                assignee="teknium",
+                created_by="user",
+                workspace_kind="scratch",
+                board="spawntest",
+            )
+            task = kb.claim_task(conn, task_id)
+        assert task is not None, "claim_task lost the CAS on a fresh ready task"
+        assert task.current_run_id is not None
 
         kbd._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
 
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"
-        assert env["HERMES_KANBAN_TASK"] == "t_abc"
+        assert env["HERMES_KANBAN_TASK"] == task_id
         # DB path should match the per-board DB, not the legacy default.
         expected_db = fresh_home / "kanban" / "boards" / "spawntest" / "kanban.db"
         assert env["HERMES_KANBAN_DB"] == str(expected_db)

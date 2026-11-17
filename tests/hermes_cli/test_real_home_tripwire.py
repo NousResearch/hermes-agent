@@ -260,3 +260,82 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+
+
+def _pre_made_workspace(root, monkeypatch, *parts):
+    """Build ``root/kanban/workspaces/<id>/...`` as the Kanban CLI leaves it before a card runs.
+
+    The chain is created with the guard stood down, exactly as it exists on a real host: the
+    card finds ``kanban/workspaces/<id>`` already there. Creating the containers themselves
+    stays refused, which the refusal test below covers.
+    """
+    from tests import conftest
+
+    path = root.joinpath("kanban", "workspaces", *parts)
+    monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", [])
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    finally:
+        monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES", [root])
+    return path
+
+
+def test_kanban_worker_workspace_is_disposable_working_space(protected_home, monkeypatch):
+    """A Kanban worker runs inside its own ``<home>/kanban/workspaces/<id>``.
+
+    That tree is created for one card and deleted with it, so the guard must let the card
+    probe and write it. The reported false positive: pm's environment probe of
+    ``<workspace>/manifest.json`` aborted six kanban handoff tests when its worktree lived
+    under ``~/.hermes/kanban/workspaces/<task>/wt``. The guard installed by conftest is the
+    one exercised here — plain ``open()``, not a hand-built HomeIOGuard.
+    """
+    workspace = _pre_made_workspace(protected_home, monkeypatch, "t_b83b86f3")
+    wt = _pre_made_workspace(protected_home, monkeypatch, "t_b83b86f3", "wt", "hermes_cli")
+
+    manifest = workspace / "manifest.json"
+    assert manifest.exists() is False  # the existence probe that used to abort
+    manifest.write_text("{}", encoding="utf-8")
+    assert manifest.read_text(encoding="utf-8") == "{}"
+    assert sorted(os.listdir(workspace)) == ["manifest.json", "wt"]
+    (wt / "module.py").write_text("", encoding="utf-8")
+    sqlite3.connect(wt.parent / "state.db").close()
+    (workspace / "scratch" / "cache").mkdir(parents=True)
+    shutil.rmtree(workspace / "scratch")  # a card may clean up its own tree
+
+
+def test_hermes_state_beside_a_kanban_workspace_is_still_refused(protected_home, monkeypatch):
+    """The exemption is a component chain, not a substring: real state, the workspaces root
+    and lookalikes stay refused, and so does a synthetic path at the real home."""
+    from tests.home_io_guard import HomeIOGuard
+
+    guard = HomeIOGuard(lambda: [protected_home])
+    workspace = _pre_made_workspace(protected_home, monkeypatch, "t_b83b86f3", "wt")
+    workspace = workspace.parent
+
+    refused = [
+        protected_home / "manifest.json",                                  # the real-home probe
+        protected_home / "kanban.db",                                      # the live board
+        protected_home / "profiles" / "cody" / "config.yaml",
+        protected_home / "kanban" / "workspaces",                          # the root itself
+        protected_home / "profiles" / "kanban" / "workspaces" / "t_x" / "f",  # lookalike chain
+        workspace / ".." / ".." / "workspaces.db",                          # sibling of a workspace
+    ]
+    for path in refused:
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            guard.check(path)
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            guard.check(path, destructive=True)
+
+    # Renaming or deleting the workspace itself would destroy another card's work.
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(workspace, destructive=True)
+
+    # A synthetic path at the OPERATOR home still trips the guard: root the guard at the real
+    # ``$HOME/.hermes`` and check the reported state files. Nothing here touches the disk.
+    real_home = (Path(os.path.expanduser("~")) / ".hermes").resolve()
+    real_guard = HomeIOGuard(lambda: [real_home])
+    for name in ("manifest.json", "kanban.db", os.path.join("profiles", "cody", "config.yaml")):
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            real_guard.check(real_home / name)
+    # ... while the worker's own workspace under it is allowed.
+    real_guard.check(real_home / "kanban" / "workspaces" / "t_b83b86f3" / "manifest.json")

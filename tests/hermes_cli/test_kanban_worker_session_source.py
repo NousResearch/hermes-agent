@@ -38,12 +38,18 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
     monkeypatch.setattr(kbd, "_retag_legacy_worker_sessions", lambda _root: None)
     monkeypatch.setattr(kb, "worker_logs_dir", lambda board=None: tmp_path / "logs")
 
+    # A claimed card always carries its run id: _claim_and_open_run inserts the
+    # task_runs row, sets tasks.current_run_id and only then returns the Task
+    # (kanban_db.py). _restart_safe_worker_argv builds the worker's restart-safe
+    # systemd scope from that id and refuses a run-less card under a managed
+    # unit, so a hand-built card without one is a state the claim path cannot
+    # produce -- and this test would then pass or fail by host, not by code.
     task = kb.Task(
         id="t_b21733fb",
         title="ship it",
         body=None,
         assignee="default",
-        status="in_progress",
+        status="running",
         priority=0,
         created_by=None,
         created_at=0,
@@ -54,6 +60,7 @@ def test_worker_spawn_tags_session_source_kanban(monkeypatch, tmp_path):
         claim_lock=None,
         claim_expires=None,
         tenant=None,
+        current_run_id=1,
     )
     workspace = str(tmp_path / "ws")
     os.makedirs(workspace, exist_ok=True)

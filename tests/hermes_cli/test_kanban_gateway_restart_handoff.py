@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,41 @@ def test_managed_gateway_worker_spawn_fails_closed_without_scope(
     with pytest.raises(RuntimeError, match="restart-safe systemd scope"):
         kbd._default_spawn(task, str(workspace))
     assert popen_calls == []
+
+
+@pytest.mark.platforms("linux")
+def test_managed_gateway_refuses_worker_for_a_card_without_a_run_id(
+    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A managed dispatch must never launch a worker no ``task_runs`` row accounts for.
+
+    ``claim_task`` -> ``_claim_and_open_run`` stamps ``current_run_id`` before the
+    spawn function runs, so a run-less claimed card only appears if that stamp is
+    missing (or a caller forged it). The managed path has to refuse it: the worker
+    would be untraceable, and a restarted gateway cannot adopt it. Outside a
+    managed unit the same card is harmless, so the pre-scope command is returned.
+    """
+    workspace, task = worker_setup
+    runless = replace(task, current_run_id=None)
+    monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
+    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *_a, **_k: pytest.fail("launched a run-less worker")
+    )
+
+    with pytest.raises(RuntimeError, match="has no current run id"):
+        kbd._default_spawn(runless, str(workspace))
+
+    # Standalone dispatcher (no systemd unit): no scope is created at all, so the
+    # run-less card is not an infrastructure failure and the plain command stands.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
+    assert kbd._restart_safe_worker_argv(runless, ["python", "-m", "worker"]) == [
+        "python",
+        "-m",
+        "worker",
+    ]
 
 
 @pytest.mark.platforms("linux")

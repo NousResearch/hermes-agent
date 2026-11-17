@@ -13,11 +13,25 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_wal
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
+
+
+def _live_state_wal():
+    """The live ``hermes_state_wal`` module — the copy production's import sees.
+
+    Per-profile tests in this package purge the board module family from
+    ``sys.modules`` so the next import re-reads a fake ``HERMES_HOME``. That
+    purge is one-way, and a module-level ``import hermes_state_wal`` keeps the
+    pre-purge copy, so a ``_wal_fallback_warned_paths.clear()`` or a monkeypatch
+    applied to this module's global is invisible to the code under test.
+    ``sys.modules`` always holds the copy production resolves.
+    """
+    import importlib
+
+    return importlib.import_module("hermes_state_wal")
 
 
 @pytest.fixture
@@ -1156,6 +1170,14 @@ class TestSharedBoardPaths:
             claim_expires=None,
             tenant=None,
             branch_name="wt/t_dispatch_env",
+            # Production never spawns an unclaimed task: claim_task ->
+            # _claim_and_open_run stamps tasks.current_run_id before the
+            # dispatcher spawns, and _restart_safe_worker_argv refuses an
+            # untraceable worker under a systemd unit ("the claimed task has
+            # no current run id"). Hand-built Task literals must carry the run
+            # id the claim would have set, or this test only passes on hosts
+            # without INVOCATION_ID.
+            current_run_id=1,
         )
         kbd._default_spawn(task, str(tmp_path / "ws"))
 
@@ -1217,16 +1239,20 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
 
     # These tests exercise the WAL-attempt path; assume a fixed SQLite so the
     # WAL-reset vulnerability gate doesn't short-circuit before the pragma.
-    import hermes_state_wal as _hermes_state_wal
+    # Resolve the module through sys.modules: fixtures in this package purge the
+    # board module family (per-profile HERMES_HOME tests), which leaves this
+    # module's own ``hermes_state_wal`` global pointing at a pre-purge copy —
+    # clearing/patching that copy is invisible to production's import.
+    wal = _live_state_wal()
     monkeypatch.setattr(
-        _hermes_state_wal, "is_sqlite_wal_reset_vulnerable",
+        wal, "is_sqlite_wal_reset_vulnerable",
         lambda version_info=None: False,
     )
-    _hermes_state_wal._wal_fallback_warned_paths.clear()
+    wal._wal_fallback_warned_paths.clear()
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
-    hermes_state_wal._wal_fallback_warned_paths.clear()
+    wal._wal_fallback_warned_paths.clear()
 
     real_connect = _sqlite3.connect
 
@@ -1277,10 +1303,14 @@ def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplo
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     kb._INITIALIZED_PATHS.clear()
-    hermes_state_wal._wal_fallback_warned_paths.clear()
+    # Same sys.modules resolution as the sibling WAL test above: this module's
+    # ``hermes_state_wal`` binding can be a pre-purge copy that production's
+    # import never sees, which would silently skip the clear AND the patch.
+    wal = _live_state_wal()
+    wal._wal_fallback_warned_paths.clear()
     # Assume a fixed SQLite so the WAL-reset gate doesn't short-circuit.
     monkeypatch.setattr(
-        hermes_state_wal, "is_sqlite_wal_reset_vulnerable",
+        wal, "is_sqlite_wal_reset_vulnerable",
         lambda version_info=None: False,
     )
 
@@ -1660,6 +1690,11 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
         priority=0, created_by=None, created_at=0, started_at=None, completed_at=None,
         workspace_kind="worktree", workspace_path=str(tmp_path / "ws"), claim_lock=None,
         claim_expires=None, tenant=None, branch_name=None,
+        # A claimed card always has a run id (claim_task -> _claim_and_open_run);
+        # carry the one the claim would have stamped so the spawn guard under a
+        # systemd unit sees the production state instead of a state that cannot
+        # occur.
+        current_run_id=1,
     )
 
     for resolved in ([sys.executable, "-m", "hermes_cli.main"], ["/opt/hermes/bin/hermes"]):

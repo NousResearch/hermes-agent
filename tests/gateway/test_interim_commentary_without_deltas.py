@@ -123,6 +123,14 @@ def test_commentary_is_deduped_when_this_consumer_accepted_the_deltas():
     assert consumer.segment_breaks == 1
 
 
+def test_noneditable_adapter_never_accepts_reply_deltas():
+    consumer, _interim_callback = _interim_cb(
+        streaming_enabled=True, supports_editing=False
+    )
+
+    assert consumer.stream_deltas_enabled is False
+
+
 def test_unstreamed_commentary_still_reaches_the_consumer():
     """Unchanged path: nothing streamed, so the text is posted."""
     consumer, interim_cb = _interim_cb(streaming_enabled=True, supports_editing=True)

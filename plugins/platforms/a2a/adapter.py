@@ -277,6 +277,11 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 class A2AAdapter(BasePlatformAdapter):
     """Inbound A2A server adapter."""
 
+    # A2A protocol streams are not editable chat previews. Generic gateway text streaming must
+    # leave the final response to the notify-marked send that resolves the pending A2A task.
+    SUPPORTS_MESSAGE_EDITING = False
+
+
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("a2a"))
         extra = getattr(config, "extra", {}) or {}
@@ -874,10 +879,11 @@ class A2AAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None):
         """Fulfil the oldest pending reply Future for this context (``chat_id`` = A2A context id).
         Only sends carrying ``metadata['notify']`` (the base adapter's final-reply marker) satisfy
-        the caller; progress/status/preview sends must not."""
+        the caller; progress/status/preview sends are not protocol-visible deliveries."""
         if not (metadata or {}).get("notify"):
             logger.debug("A2A: ignoring non-final send for context %s", chat_id)
-        elif not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
+            return SendResult(success=False, error="A2A interim delivery is not protocol-visible")
+        if not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
             logger.debug("A2A: send() for context %s had no pending waiter", chat_id)  # late chunk / out-of-band
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
 

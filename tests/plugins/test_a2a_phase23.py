@@ -195,6 +195,14 @@ class TestStreamingEndToEnd:
             artifacts = [p["artifactUpdate"] for p in payloads if "artifactUpdate" in p]
             assert len(artifacts) == 1
             assert "ECHO:" in protocol.extract_text(artifacts[0]["artifact"])
+            artifact_text = protocol.extract_text(artifacts[0]["artifact"])
+            task_id = payloads[0]["task"]["id"]
+            get_resp = await asyncio.to_thread(_post_json, base + "/", {
+                "jsonrpc": "2.0", "id": "2", "method": "GetTask",
+                "params": {"id": task_id},
+            })
+            assert get_resp["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            assert protocol.extract_text(get_resp["result"]["artifacts"][0]) == artifact_text
 
             assert events == []  # v1.0: stream closure is the terminal signal, no event frame
             await adapter.disconnect()

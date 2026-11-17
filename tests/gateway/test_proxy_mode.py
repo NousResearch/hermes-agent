@@ -232,6 +232,40 @@ class TestRunAgentProxyDispatch:
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
 
+
+class TestProxyStreamConsumerCapability:
+    def test_noneditable_adapter_skips_proxy_stream_consumer(self):
+        runner = _make_runner()
+        adapter = types.SimpleNamespace(
+            SUPPORTS_MESSAGE_EDITING=False,
+            SUPPORTS_NATIVE_STREAMING=False,
+        )
+        runner._delivery_adapter_for = lambda _source: adapter
+        runner._build_stream_consumer_config = MagicMock()
+        stream_config = types.SimpleNamespace(
+            globally_enabled=True,
+            enabled_for=lambda _platform_setting: True,
+        )
+
+        with (
+            patch(
+                "gateway.run_config_loaders.streaming_config_for_source",
+                return_value=stream_config,
+            ),
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("gateway.display_config.resolve_display_setting", return_value=None),
+        ):
+            consumer = runner._proxy_stream_consumer(
+                _make_source(Platform("a2a")),
+                event_message_id="message-1",
+                _thread_metadata=None,
+                _run_still_current=lambda: True,
+            )
+
+        assert consumer is None
+        runner._build_stream_consumer_config.assert_not_called()
+
+
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
 

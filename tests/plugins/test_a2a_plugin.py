@@ -640,18 +640,21 @@ def _bare_adapter():
 
 
 class TestReplyCapture:
-    def test_send_waits_for_notify_marked_final_reply(self):
-        """Interim/editable sends must not satisfy the blocked A2A RPC future."""
+    def test_adapter_declares_non_editable_transport(self):
+        assert _bare_adapter().SUPPORTS_MESSAGE_EDITING is False
+
+    def test_final_matching_interim_send_does_not_claim_delivery(self):
+        """A no-op preview matching the final text must not hide the A2A artifact."""
         adapter = _bare_adapter()
         fut = adapter._add_pending("task-final", "ctx-final")
 
         async def run():
             interim = await adapter.send(
                 "ctx-final",
-                "⏩ Steered into current run (iteration 1/200).",
+                "FINAL_PROOF_PAYLOAD",
                 metadata={"expect_edits": True},
             )
-            assert interim.success is True
+            assert interim.success is False
             assert fut.done() is False
 
             final = await adapter.send(

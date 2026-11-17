@@ -618,6 +618,12 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             _adapter = self._delivery_adapter_for(source)
             if not _adapter:
                 return None
+            supports_incremental_stream = (
+                getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                or bool(getattr(_adapter, "SUPPORTS_NATIVE_STREAMING", False))
+            )
+            if not supports_incremental_stream:
+                return None
             _consumer_cfg, _pause_typing_before_finalize = self._build_stream_consumer_config(
                 source, _scfg, _adapter, on_missing_cursor="fallback",
             )

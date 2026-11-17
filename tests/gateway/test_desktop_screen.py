@@ -690,6 +690,36 @@ class TestAuthorityWiring(unittest.TestCase):
         self.assertEqual(EngineStubHandler.last_texts,
                          ["ATTACK take over the agent"])
 
+    def test_canonical_param_matrix_all_screened(self):
+        # The independent reviewers' full bypass matrix (r4 P3/P8,
+        # r5 round-1/r2), pinned as permanent regression coverage: NO
+        # combination of canonical viewer params may carry hostile
+        # text past the gate on a desktop-source session. Each shape
+        # must be REFUSED with zero admissions and the engine must
+        # have judged the hostile string.
+        EngineStubHandler.block_pattern = "ATTACK"
+        shapes = [
+            {"text": "ATTACK plain"},
+            {"text": "benign words", "api_text": "ATTACK model-facing"},
+            {"text": "ATTACK persisted", "api_text": "benign model-facing"},
+            {"text": "ATTACK with author", "turn_author": {"name": "voice-prefix"}},
+            {"text": "ATTACK with override", "model_override": {"model": "m"}},
+            {"text": "ATTACK with batch", "clarify_batch": True},
+            {"text": "ATTACK all fields", "api_text": "ATTACK api",
+             "turn_author": {"name": "voice-prefix"},
+             "model_override": {"model": "m"}, "clarify_batch": True},
+        ]
+        for shape in shapes:
+            EngineStubHandler.last_texts = []
+            receipt, calls, exc = self._submit(shape, tier="allow")
+            self.assertIsNotNone(exc, shape)
+            self.assertEqual(getattr(exc, "reason", None),
+                             "desktop_screen_hold", shape)
+            self.assertEqual(calls["admit"], 0, shape)
+            self.assertTrue(
+                any("ATTACK" in str(t) for t in EngineStubHandler.last_texts),
+                {"shape": shape, "engine_saw": EngineStubHandler.last_texts})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,7 @@
 name: fleet-control
 repo: https://github.com/driptothebone/fleet-control
 sha: 3c2b4bb83b00747b948b3f1c4bdad6edb5428156
-description: Phone-first bulk model routing across profiles with exact preview, confirmation and saved-setting readback.
+description: "Phone-first bulk model routing across profiles with exact preview, confirmation and saved-setting readback. Disclosure — Rewrites the model, reasoning-effort, Fast, subagent, auxiliary and fallback settings in every profile you select, through Hermes's own dashboard settings routes, after you preview and confirm the change."
 maintainer: driptothebone
 tier: community
 category: models

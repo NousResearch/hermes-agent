@@ -96,6 +96,29 @@ class TestUserSkins:
         assert skin.tool_emojis == {}
         assert skin.tool_prefix == "!"
 
+    def test_yaml_null_values_inherit_instead_of_reaching_renderers(self, tmp_path, monkeypatch):
+        """An unquoted ``#hex`` is a YAML comment, so ``banner_border: #A93333`` loads as null. Null
+        means unset: the key inherits from ``default`` instead of reaching prompt_toolkit as ``None``."""
+        from prompt_toolkit.styles import Style
+
+        from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides, load_skin, set_active_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        (skins_dir / "unquoted.yaml").write_text(
+            "name: unquoted\ncolors:\n  banner_border: #A93333\n  status_bar_bg: #101010\n"
+            "branding:\n  welcome:\ntool_prefix:\n", encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        default = load_skin("default")
+        skin = set_active_skin("unquoted")
+
+        for key in ("banner_border", "status_bar_bg"):
+            assert skin.get_color(key) == default.get_color(key)
+        assert skin.get_branding("welcome") == default.get_branding("welcome")
+        assert skin.tool_prefix == default.tool_prefix
+        Style.from_dict(get_prompt_toolkit_style_overrides())  # the CLI's TUI style build
+
     def test_list_skins_includes_user_skins(self, tmp_path, monkeypatch):
         from hermes_cli.skin_engine import list_skins
         skins_dir = tmp_path / "skins"

@@ -123,7 +123,7 @@ def test_a_rotating_compress_moves_the_name_to_the_new_segment(backend, scope_a)
         # Reference limit: past its fence the reference refuses the publication itself (module docstring of mutation_commands).
         with pytest.raises(CapabilityUnsupported):
             store.runtime.mutate(epoch, **compress)
-        return
+        pytest.skip("backend does not declare rotating publications: the fence ran, the publication refused CapabilityUnsupported")
     child = store.runtime.mutate(epoch, **compress).result["target_session_id"]
     # CONTRACT: a rotation moves the conversation's name onto its live segment.
     assert (store.sessions.get(child).title, store.sessions.get(sid).title) == ("Named chat", None)

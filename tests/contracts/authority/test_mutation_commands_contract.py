@@ -225,7 +225,7 @@ def test_reset_branch_and_compress_run_their_fences_first(backend, scope_a):
         with pytest.raises(CapabilityUnsupported):
             store.runtime.mutate(epoch, **reset)
         assert not store.runtime.has_mutation_receipt("p", sid, "r")
-        return
+        pytest.skip("backend does not declare rotating publications: the fences ran, the publication refused CapabilityUnsupported")
     # CONTRACT: queued input does not hold a reset; it publishes a fresh child of the target.
     outcome = store.runtime.mutate(epoch, **reset)
     child = outcome.result["target_session_id"]

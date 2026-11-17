@@ -32,7 +32,7 @@ from tests.contracts._waiting import wait_past
 from tests.contracts._scopes import MEDIA_ROOT
 
 T0 = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
-FRESH = 0  # every already-created row is older than a zero-day window
+FRESH = 0  # a zero-day window: every row ``_keyed`` created is already older than it
 SRC = "telegram"
 
 
@@ -58,8 +58,9 @@ def _entry(key: str, session_id: str, **extra: Any) -> str:
 
 
 def _keyed(backend: Any, scope: Any, session_id: str, key: str, **kwargs: Any) -> None:
-    """A keyed gateway session, created through the sessions capability with the peer's identity."""
+    """A keyed gateway session, created through the sessions capability with the peer's identity, then the clock moved past its stamp so a ``FRESH`` window already covers it."""
     backend.open(scope).sessions.create(_new(session_id, session_key=key, **kwargs))
+    _tick()
 
 
 def _tick() -> None:

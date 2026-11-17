@@ -203,6 +203,31 @@ class TestAnchorInvalidation:
         assert stale._usage_anchor is None
         db.close()
 
+    def test_trailing_whitespace_survives_durable_resume(self, tmp_path):
+        """A prompt ending in a space must round-trip byte-for-byte, or every resumed session
+        invalidates its anchor and its token estimate drifts below the real context size."""
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import conversation
+        from tests.fixtures.storage_seed import seed_messages, seed_session
+
+        db = open_persistence(profile_scope(home=tmp_path))
+        sid = "anchor-whitespace"
+        seed_session(db, sid, "cli")
+        seed_messages(db, sid, {"role": "user", "content": "plan the release  "},
+                      {"role": "assistant", "content": "ok"})
+        durable = conversation(db, sid)
+        assert durable[0]["content"] == "plan the release  "
+        live = SimpleNamespace(session_id=sid, _session_db=db, persistence=db, _persist_disabled=False,
+                               _usage_anchor=None)
+        set_usage_anchor(live, capture_usage_anchor(10_000, 20, durable))
+
+        fresh = SimpleNamespace(session_id=sid, _session_db=db, persistence=db, _persist_disabled=False,
+                                _usage_anchor=None)
+        restore_usage_anchor(fresh, conversation(db, sid))
+        assert fresh._usage_anchor is not None
+        assert anchored_context_tokens(conversation(db, sid), fresh._usage_anchor) == 10_020
+        db.close()
+
     def test_persist_and_restore_through_the_writer_handle(self, tmp_path):
         """An agent with a writer's storage handle beside its store writes and reads the anchor through it."""
         import persistence_assembly

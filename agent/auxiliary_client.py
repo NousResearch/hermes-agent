@@ -1730,10 +1730,10 @@ class _AnthropicCompletionsAdapter:
         # (already TRANSLATED to native fields — raw would 400 on strict gateways) and ``_`` Hermes plumbing.
         # The Messages body is built from a fixed allow-list of kwargs (``timeout`` included, below): an
         # unlisted kwarg is dropped, so a schema contract became prompt compliance (#85626 review, point 2).
-        top_level_response_format = kwargs.get("response_format")
-        if top_level_response_format is not None:
-            _translate_anthropic_response_format(anthropic_kwargs, top_level_response_format)
         caller_extra_body = kwargs.get("extra_body")
+        extra_has_rf = isinstance(caller_extra_body, dict) and "response_format" in caller_extra_body
+        if not extra_has_rf and (top_rf := kwargs.get("response_format")) is not None:
+            _translate_anthropic_response_format(anthropic_kwargs, top_rf)
         if caller_extra_body and isinstance(caller_extra_body, dict):
             _translate_anthropic_response_format(anthropic_kwargs, caller_extra_body.get("response_format"))
             passthrough = {

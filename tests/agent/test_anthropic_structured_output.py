@@ -201,6 +201,24 @@ def test_top_level_response_format_kwarg_is_translated_not_dropped():
     _assert_no_raw_response_format(api_kwargs)
 
 
+def test_extra_body_json_object_overrides_top_level_json_schema():
+    """An explicit schema-less hint must not inherit a top-level schema constraint."""
+    api_kwargs = _capture_anthropic_kwargs(
+        {"response_format": {"type": "json_object"}},
+        top_level_kwargs={
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "schema": {"type": "object", "properties": {"item": {"type": "string"}}},
+                },
+            },
+        },
+    )
+
+    assert "format" not in (api_kwargs.get("output_config") or {})
+    _assert_no_raw_response_format(api_kwargs)
+
+
 def test_extra_body_response_format_wins_over_top_level_kwarg():
     """When both shapes are present, extra_body wins.
 

@@ -53,15 +53,15 @@ def visibility(backend, scope, sid: SessionId = S) -> list[tuple[MessageId, RowV
     return [(r.id, r.visibility) for r in store.messages.read_transcript(sid, TranscriptRead(view=TranscriptView.ALL))]
 
 
-def test_an_append_takes_no_compression_lock_holder(backend, scope_a):
+def test_an_append_is_not_fenced_by_a_live_compression_lock(backend, scope_a):
     store = backend.open(scope_a)
     store.sessions.create(NewSession(session_id=S, source="cli"))
-    # CONTRACT: a live compression lock never fences an ordinary append, so the append verbs take no lock holder (an argument that fenced nothing).
-    with pytest.raises(TypeError):
-        store.messages.append(S, msg("u"), compression_lock_holder="compressor")
-    with pytest.raises(TypeError):
-        store.messages.append_batch(S, [msg("u")], compression_lock_holder="compressor")
-    assert store.messages.read_transcript(S) == ()
+    assert store.coordination.try_acquire_compression_lock(session_id=S, holder="compressor", ttl_seconds=300.0) is True
+    # CONTRACT: a live compression lock held by another writer never fences an ordinary append or batch append.
+    store.messages.append(S, msg("u"))
+    store.messages.append_batch(S, [msg("a", 1, "assistant")])
+    assert [row.content for row in store.messages.read_transcript(S)] == ["u", "a"]
+    assert store.coordination.get_compression_lock_holder(session_id=S) == "compressor"
 
 
 def test_active_message_ids_are_the_live_rows_in_order(backend, scope_a):

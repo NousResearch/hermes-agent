@@ -99,3 +99,25 @@ async def test_a_prompt_queued_between_completions_keeps_them_apart(tmp_path, mo
             'running turn', '[IMPORTANT: proc_a finished]', 'queued follow-up', '[IMPORTANT: proc_b finished]']
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_completion_claimed_before_the_fold_runs_alone(tmp_path, monkeypatch):
+    """The waiting completion starts between the tail read and the fold's write: it keeps its own
+    text and runs, and the new completion queues alone instead of folding into a running row."""
+    from gateway import session_automation
+    authority, _human, complete, queued = await _discord_session(tmp_path, monkeypatch)
+    try:
+        await complete('proc_a')
+        tail = queued()[-1]
+        monkeypatch.setattr(session_automation, '_waiting_completion', lambda *args: {**tail, '_skip': []})
+        authority.db._execute_write(lambda conn: conn.execute(
+            "UPDATE session_admissions SET status='started',owner_epoch=?,generation=1 WHERE admission_id=?",
+            (authority.epoch, tail['admission_id'])))
+        await complete('proc_b')
+        claimed = next(row for row in complete.history() if row['admission_id'] == tail['admission_id'])
+        assert claimed['status'] == 'started' and claimed['payload']['text'] == tail['payload']['text']
+        assert [row['payload']['text'].split('\n')[0] for row in queued()] == [
+            'running turn', '[IMPORTANT: proc_b finished]']
+    finally:
+        authority.db.close()

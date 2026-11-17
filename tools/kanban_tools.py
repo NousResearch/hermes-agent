@@ -741,6 +741,27 @@ def _handle_list(args: dict, **kw) -> str:
             "promoted": promoted})
 
 
+def _missing_handoff(
+    kb, conn, tid: str, expected_keys: set[str], handoff_summary: Optional[str],
+) -> list[str]:
+    """Which parts of the handoff this completion claims are NOT on the closing run.
+
+    Checked key by key against the row that was just written, not against a
+    boolean: losing ``metadata`` while keeping ``summary`` is the normal
+    failure, so a reader that only asks "is there an object?" reports success
+    on a lost handoff.
+    """
+    run = kb.latest_run(conn, tid)
+    landed = run.metadata if run is not None else None
+    keys = set(landed) if isinstance(landed, dict) else set()
+    missing: list[str] = []
+    if expected_keys and not expected_keys <= keys:
+        missing.append(f"metadata {sorted(expected_keys - keys)}")
+    if handoff_summary and not (run is not None and (run.summary or "").strip()):
+        missing.append("summary")
+    return missing
+
+
 @_kanban_handler("kanban_complete")
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
@@ -816,14 +837,50 @@ def _handle_complete(args: dict, **kw) -> str:
             _check(False, (task.last_failure_error if task else None) or
                    f"could not complete {tid} (unknown id, stale run, or already terminal)")
         run = kb.latest_run(conn, tid)
+        # Read back what the completion just wrote instead of assuming it
+        # landed. A completion can close the card while summary/metadata end up
+        # on no run row at all (an already-closed run from a reclaim or
+        # timeout, a storage surprise), and answering ok:true there is a lie
+        # the worker cannot detect: the board shows an empty handoff and it has
+        # to be rebuilt from a comment later.
+        handoff_summary = summary if summary is not None else result
+        expected_keys = set(metadata) - {"_staged_artifacts"} if isinstance(metadata, dict) else set()
+        repaired = False
+        missing = _missing_handoff(kb, conn, tid, expected_keys, handoff_summary)
+        if missing:
+            # The card is already done, so a plain retry is refused as "already
+            # terminal": backfill the closing run with the same handoff and
+            # re-verify before answering.
+            done_task = kb.get_task(conn, tid)
+            backfill_result = result if result is not None else (
+                (done_task.result if done_task else None) or handoff_summary)
+            try:
+                repaired = kb.edit_task(
+                    conn, tid, result=backfill_result, summary=handoff_summary,
+                    metadata=metadata if isinstance(metadata, dict) else None)
+            except Exception:
+                logger.exception("kanban_complete handoff backfill failed for %s", tid)
+            missing = _missing_handoff(kb, conn, tid, expected_keys, handoff_summary)
+            if missing:
+                return tool_error(
+                    f"kanban_complete closed {tid} but the handoff did not land in "
+                    f"task_runs ({', '.join(missing)}); backfill "
+                    f"{'ran' if repaired else 'failed'}. The card is done — post the "
+                    f"handoff with kanban_comment so it is not lost.")
+            run = kb.latest_run(conn, tid)
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has
         # no way to observe what its completion just registered (#117360).
         # Report the card's durable attachment set in the result.
-        return _ok(task_id=tid, run_id=run.id if run else None,
-                   attachments=[
-                       _fields(a, _ATTACHMENT_FIELDS)
-                       for a in kb.list_attachments(conn, tid)])
+        payload: dict[str, Any] = {
+            "task_id": tid,
+            "run_id": run.id if run else None,
+            "attachments": [
+                _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)],
+        }
+        if repaired:
+            payload["handoff_repaired"] = True
+        return _ok(**payload)
 
 
 @_kanban_handler("kanban_block")

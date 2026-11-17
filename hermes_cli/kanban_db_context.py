@@ -188,7 +188,13 @@ def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str
             lines.append(_ctx_cap(pt.result))
         else:
             lines.append("(no result recorded)")
-        meta_line = _ctx_metadata_line(run.metadata) if run is not None else None
+        meta_run = run
+        if meta_run is None or not _kb.has_handoff_payload(meta_run.metadata):
+            # The closing run of a reviewed card is the reviewer's, whose
+            # metadata is at most the stamped worker session id; the handoff
+            # the implementer sent sits on its ``review_requested`` run.
+            meta_run = _kb.latest_handoff_run(conn, pid)
+        meta_line = _ctx_metadata_line(meta_run.metadata) if meta_run is not None else None
         if meta_line:
             lines.append(meta_line)
         lines.append("")

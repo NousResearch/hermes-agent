@@ -273,8 +273,8 @@ older Hermes cores that predate them.
 
 ## Session links: `thread_url`
 
-The Desktop sidebar and the dashboard's Sessions page show **Open in <platform>** on a messaging
-session when its platform can link to the conversation it came from. The link comes from your
+The Desktop sidebar and the dashboard's Sessions page show **Open in Slack** (or Discord, Telegram, …)
+on a messaging session when its platform can link to the conversation it came from. The link comes from your
 adapter: override the `BasePlatformAdapter.thread_url(source)` static method (the base returns
 `None`) and register it as `thread_url_fn`. It receives the session's stored `SessionSource` and
 returns an `https://` URL, or `None` when that conversation has no link (Telegram private chats).
@@ -291,7 +291,7 @@ def register(ctx):
     ctx.register_platform(..., thread_url_fn=MyAdapter.thread_url)
 ```
 
-Session list and detail responses carry the result as `origin_url` (`null` when unknown). Slack,
+Session list, detail and search responses carry the result as `origin_url` (`null` when unknown). Slack,
 Discord and Telegram implement it (`plugins/platforms/<name>/thread_link.py`).
 
 ## Authorization fields for chat platforms

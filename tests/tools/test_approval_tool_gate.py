@@ -337,3 +337,28 @@ def test_no_human_present_is_unchanged(gate_env):
     finally:
         reset_hermes_interactive_context(token)
     assert "outside-secret" in json.dumps(result)
+
+
+def test_backend_path_link_does_not_ride_a_workspace_grant(gate_env, monkeypatch):
+    """On an SSH / container backend the resolver returns ``PurePosixPath`` values, which the host
+    cannot ``realpath``; the file writer still follows a link there. A link inside the workspace
+    that points outside must not ride the workspace grant."""
+    from pathlib import Path, PurePosixPath
+
+    from tools import file_tools_paths
+
+    workspace, outside = gate_env["workspace"], gate_env["outside"]
+    (workspace / "link.txt").symlink_to(outside / "secret.txt")
+    remote_root = PurePosixPath(str(workspace))  # a remote resolver joins paths; it cannot follow links
+    monkeypatch.setattr(file_tools_paths, "_resolve_base_dir", lambda task_id="default", **kw: remote_root)
+    monkeypatch.setattr(file_tools_paths, "_resolve_path_for_task",
+                        lambda path, task_id="default": remote_root / path)
+    assert not isinstance(file_tools_paths._resolve_path_for_task("link.txt", "gate-task"), Path)
+
+    human = _Human("session", "deny")
+    set_approval_callback(human)
+    _call("write_file", {"path": "a.txt", "content": "one"})
+    escaped = _call("write_file", {"path": "link.txt", "content": "overwritten"})
+    assert "error" in escaped and len(human.prompts) == 2
+    assert str(outside / "secret.txt") in human.prompts[1][1]  # the grant names the link's real target
+    assert (outside / "secret.txt").read_text(encoding="utf-8") == "outside-secret\n"

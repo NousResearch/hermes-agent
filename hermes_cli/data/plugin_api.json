@@ -180,6 +180,12 @@
       ]
     },
     {
+      "source": "plugins/index.md § Send the Hermes User-Agent header",
+      "entries": [
+        "hermes_cli.version_info:hermes_user_agent"
+      ]
+    },
+    {
       "source": "user-guide/features/plugins.md § A plugin with its own chat client",
       "entries": [
         "hermes_cli.chat_launch:hermes_command",

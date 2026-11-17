@@ -66,7 +66,7 @@ def sandbox_run_argv(docker: str, image: str, scratch: str, command: list[str], 
         raise ValueError(f"unknown sandbox network {network!r}")
     argv = [docker, "run", "--rm", "--name", name,
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,size=1g",
+            "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,size=1g",  # no-tmp: ok — the container's own tmpfs
             "--user", _SANDBOX_USER,
             "-v", f"{scratch}:{_MOUNT}", "-w", _SRC]
     if network == "none":
@@ -122,8 +122,9 @@ def _hardened_git_env(repo: Path) -> dict[str, str]:
 
 
 def _git(repo: Path, env: dict[str, str], *args: str, timeout: float = 120) -> str:
-    proc = subprocess.run(["git", "-C", str(repo), *args], env=env, capture_output=True, text=True,
-                          stdin=subprocess.DEVNULL, timeout=timeout)
+    proc = subprocess.run(["git", "-C", str(repo), *args], env=env, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace",
+                          stdin=subprocess.DEVNULL, timeout=timeout, check=False)
     if proc.returncode != 0:
         raise SandboxError(f"git {args[0]} failed: {(proc.stderr or proc.stdout).strip()}")
     return proc.stdout.strip()
@@ -163,7 +164,7 @@ def export_ref(repo: Path, ref: str, dest: Path) -> str:
         proc.stdout.close()
         stderr = proc.stderr.read().decode(errors="replace")
         proc.stderr.close()
-        rc = proc.wait()
+        rc = proc.wait(timeout=120)
     if rc != 0:
         raise SandboxError(f"git archive failed: {stderr.strip()}")
     return sha
@@ -182,9 +183,10 @@ def _open_scratch(scratch: Path) -> None:
 
 def _run_step(argv: list[str], docker: str, name: str, timeout: float) -> int:
     try:
-        return subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=timeout).returncode
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=timeout, check=False).returncode
     except subprocess.TimeoutExpired:
-        subprocess.run([docker, "rm", "-f", name], capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+        subprocess.run([docker, "rm", "-f", name], capture_output=True, stdin=subprocess.DEVNULL, timeout=60,
+                       check=False)
         print(f"hermes sandbox: step timed out after {timeout:.0f}s", file=sys.stderr)
         return _TIMEOUT_EXIT
 
@@ -219,7 +221,7 @@ def run_sandbox(args) -> int:
               "keys and tokens.", file=sys.stderr)
         return NO_RUNTIME_EXIT
     if subprocess.run([docker, "version"], capture_output=True, stdin=subprocess.DEVNULL,
-                      timeout=15).returncode != 0:
+                      timeout=15, check=False).returncode != 0:
         print(f"hermes sandbox run: the container runtime is not reachable; {docker_runtime_start_hint(docker)}.\n"
               "  Do not run this code on the host instead.", file=sys.stderr)
         return NO_RUNTIME_EXIT

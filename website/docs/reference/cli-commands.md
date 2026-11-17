@@ -956,6 +956,7 @@ Common failure modes + recovery are covered in [Egress proxy → Troubleshooting
 Run another author's code in a throwaway Docker or Podman container: a pull request's tests, a downloaded repo's build, an install script. The code is copied into a scratch directory without executing anything it carries (no checkout, no hooks, no repo-configured git filters, symlinks kept as links), then the command runs with:
 
 - no network (`--network none`), all capabilities dropped, `no-new-privileges`;
+<!-- no-tmp: ok — the container's own tmpfs -->
 - a read-only root, a tmpfs `/tmp`, and an unprivileged user (`65534`);
 - no environment from the host and no host mount except the scratch copy, which is deleted afterwards;
 - the CPU and memory limits of `terminal.container_cpu` / `terminal.container_memory`.

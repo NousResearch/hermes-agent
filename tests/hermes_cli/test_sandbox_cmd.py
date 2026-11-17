@@ -1,6 +1,7 @@
 """`hermes sandbox run`: the container lock cannot be loosened, and the export runs nothing the code carries."""
 
 import argparse
+import itertools
 import os
 import subprocess
 
@@ -49,7 +50,7 @@ def test_run_argv_is_locked_whatever_the_options(monkeypatch, setup_flags, limit
         split = argv.index("--entrypoint")
         flags, tail = argv[:split], argv[split:]
         assert tail == ["--entrypoint", "env", chosen, "HOME=/sandbox/home", *step_command]
-        pairs = list(zip(flags, flags[1:]))
+        pairs = list(itertools.pairwise(flags))
         for pair in [("--cap-drop", "ALL"), ("--security-opt", "no-new-privileges"),
                      ("--user", "65534:65534"), ("-v", "/scratch/x:/sandbox")]:
             assert pair in pairs

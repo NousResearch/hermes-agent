@@ -46,7 +46,7 @@ hermes chat -s hermes-agent-dev,github-auth
 # Resume previous sessions
 hermes --resume <session_id>  # Resume a specific session by ID (-r)
 hermes --resume "my thread"   # Resume by title (latest "#N" continuation in the lineage)
-hermes -c "my thread" --create-if-missing  # Resume that titled session, creating it if absent
+hermes chat -c "my thread" --create-if-missing  # Resume that titled session, creating it if absent
 hermes --continue             # Resume the most recent session (bare -c)
 hermes --resume latest        # Same as bare -c
 hermes --resume latest --in ./dir  # Resume ./dir's latest session, staying in ./dir
@@ -586,7 +586,7 @@ Resume options:
 hermes --continue                          # Resume the most recent CLI session
 hermes -c                                  # Short form
 hermes -c "my project"                     # Resume a named session (latest in lineage)
-hermes -c "my project" --create-if-missing # Same, creating the titled session if none exists
+hermes chat -c "my project" --create-if-missing # Same, creating the titled session if none exists
 hermes --resume 20260225_143052_a1b2c3     # Resume a specific session by ID
 hermes --resume "refactoring auth"         # Resume by title
 hermes --resume latest                     # Resume the most recent session (same as -c)

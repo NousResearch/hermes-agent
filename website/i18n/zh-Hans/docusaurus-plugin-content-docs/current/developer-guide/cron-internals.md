@@ -221,7 +221,7 @@ Cron 运行的会话已禁用 `cronjob` 工具集。这可防止：
 
 ```bash
 hermes cron list                    # 显示所有任务
-hermes cron create                  # 交互式创建任务（别名：add）
+hermes cron create <schedule> [prompt]  # 创建任务（别名：add）
 hermes cron edit <job_id>           # 编辑任务配置
 hermes cron pause <job_id>          # 暂停运行中的任务
 hermes cron resume <job_id>         # 恢复已暂停的任务

@@ -32,11 +32,10 @@ def _send_through_hooks(client, url: str, payload: dict):
 
 
 def _post_against(answers, payload, *, async_mode=False):
-    """POST through the official-endpoint hooks and replay client; the wire answers from ``answers``."""
     seen = []
 
     def handle(request):
-        seen.append((request.headers.get("content-encoding"), request.content))
+        seen.append((request.headers.get("content-encoding"), request.content, request.headers.get("content-length")))
         status, body = answers[len(seen) - 1]
         return httpx.Response(status, json=body)
 
@@ -60,7 +59,7 @@ def test_official_codex_body_is_zstd_and_lossless_by_default(async_mode):
     payload = {"model": "gpt-6.1-sol", "input": [{"role": "user", "content": "hi " * 500}]}
     response, seen = _post_against([(200, {"ok": True})], payload, async_mode=async_mode)
     assert response.status_code == 200
-    (encoding, body), = seen
+    (encoding, body, _), = seen
     assert encoding == "zstd"
     assert json.loads(zstd.decompress(body)) == payload
 
@@ -71,9 +70,13 @@ def test_bare_400_on_zstd_body_is_resent_once_as_plain_json(async_mode):
     pytest.importorskip("compression.zstd")
     payload = {"model": "gpt-6.1-sol", "input": "x" * 131073}
     response, seen = _post_against([(400, BARE_400), (200, {"ok": True})], payload, async_mode=async_mode)
+    zstd = pytest.importorskip("compression.zstd")
     assert response.status_code == 200
-    assert [encoding for encoding, _ in seen] == ["zstd", None]
-    assert json.loads(seen[1][1]) == payload
+    assert [encoding for encoding, *_ in seen] == ["zstd", None]
+    (_, compressed, _), (_, plain, length) = seen
+    assert plain == zstd.decompress(compressed)
+    assert int(length) == len(plain)
+    assert json.loads(plain) == payload
 
 
 @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
@@ -82,7 +85,50 @@ def test_plain_json_rejection_is_returned_without_another_resend(async_mode):
     response, seen = _post_against([(400, BARE_400), (400, BARE_400)], {"model": "x", "input": "hi"},
                                    async_mode=async_mode)
     assert (response.status_code, response.json()) == (400, BARE_400)
-    assert [encoding for encoding, _ in seen] == ["zstd", None]
+    assert [encoding for encoding, *_ in seen] == ["zstd", None]
+
+
+def test_raw_body_is_not_kept_alive_with_the_response():
+    pytest.importorskip("compression.zstd")
+    response, _ = _post_against([(200, {"ok": True})], {"model": "x", "input": "hi"})
+    assert "hermes_codex_raw_body" not in response.request.extensions
+
+
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+def test_failed_read_of_a_streamed_400_closes_it(async_mode):
+    pytest.importorskip("compression.zstd")
+
+    class Boom(httpx.SyncByteStream, httpx.AsyncByteStream):
+        closed = False
+
+        def __iter__(self):
+            raise httpx.ReadError("reset")
+            yield b""
+
+        async def __aiter__(self):
+            raise httpx.ReadError("reset")
+            yield b""
+
+        def close(self):
+            Boom.closed = True
+
+        async def aclose(self):
+            Boom.closed = True
+
+    hooks = codex_request_compression_hooks(OFFICIAL, async_mode=async_mode)
+    transport = httpx.MockTransport(lambda request: httpx.Response(400, stream=Boom()))
+    client = codex_zstd_replay_client_cls(async_mode)(event_hooks=hooks, transport=transport)
+    with pytest.raises(httpx.ReadError):
+        if async_mode:
+            async def go():
+                async with client:
+                    request = client.build_request("POST", f"{OFFICIAL}/responses", json={"model": "x"})
+                    await client.send(request, stream=True)
+            asyncio.run(go())
+        else:
+            with client:
+                client.send(client.build_request("POST", f"{OFFICIAL}/responses", json={"model": "x"}), stream=True)
+    assert Boom.closed
 
 
 @pytest.mark.parametrize("answer", [
@@ -97,13 +143,18 @@ def test_other_errors_are_not_resent(answer):
     assert len(seen) == 1
 
 
-def test_keepalive_client_uses_the_replay_client_for_official_codex():
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+def test_keepalive_client_uses_the_replay_client_for_official_codex(async_mode):
     pytest.importorskip("compression.zstd")
-    client = build_keepalive_http_client(OFFICIAL)
+    client = build_keepalive_http_client(OFFICIAL, async_mode=async_mode)
     try:
-        assert isinstance(client, codex_zstd_replay_client_cls(False))
+        assert isinstance(client, codex_zstd_replay_client_cls(async_mode))
+        assert len(client.event_hooks["request"]) == 1
     finally:
-        client.close()
+        if async_mode:
+            asyncio.run(client.aclose())
+        else:
+            client.close()
 
 
 def test_opt_out_sends_plain_json(profile_home):

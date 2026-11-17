@@ -1,0 +1,27 @@
+name: omp
+repo: https://github.com/Thaeland/hermes-omp-backend
+sha: c5eb6e6d4e3b96e2c53baf331e10068b112e59ff
+description: >
+  oh-my-pi (omp) terminal backend for Hermes Agent: Hermes's terminal, file
+  and code tools run each task's commands through one long-lived
+  `omp --mode rpc` session shell on this host, with lossless output transfer
+  past omp's inline caps. Select with `terminal.backend: omp`.
+  Disclosure — no Python dependencies and no network calls of its own (the
+  spawned omp CLI may reach the model provider you configured for omp): it
+  drives the `omp` CLI you install yourself
+  (`npm install -g @oh-my-pi/pi-coding-agent bun`), spawns one long-lived
+  `omp --mode rpc` process per Hermes task, and spools command output, a
+  per-env config overlay and optional stdin through temp files under your
+  scratch directory (plus a live-observation log at `~/.hermes/omp-live/`).
+maintainer: Thaeland
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+version: "1.0.0"
+platforms:
+  - linux
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

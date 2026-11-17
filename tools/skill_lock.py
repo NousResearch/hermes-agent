@@ -60,7 +60,9 @@ def _skill_dirs(names: set[str] | None) -> list[tuple[str, str]]:
     if names is not None and not names:
         return []
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
-    found: dict[str, str] = {}
+    # Every directory with a locked name is listed: a second one with the same name must not take
+    # the lock over (locks are keyed by directory name).
+    found: set[tuple[str, str]] = set()
     for base in get_all_skills_dirs():
         if not base.is_dir():
             continue
@@ -68,10 +70,10 @@ def _skill_dirs(names: set[str] | None) -> list[tuple[str, str]]:
             name = skill_md.parent.name
             if names is not None and name not in names:
                 continue
-            if name in found or is_excluded_skill_path(skill_md, root=base):
+            if is_excluded_skill_path(skill_md, root=base):
                 continue
-            found[name] = os.path.realpath(skill_md.parent)
-    return sorted(found.items())
+            found.add((name, os.path.realpath(skill_md.parent)))
+    return sorted(found)
 
 
 def _guard_state() -> tuple[list[tuple[str, str]], str | None]:

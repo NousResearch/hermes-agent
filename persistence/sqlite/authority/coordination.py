@@ -253,19 +253,20 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             return False
         now = time.time()
         expires_at = now + max(0.1, float(ttl_seconds))
+        store = self._store.holder()  # resolved before the write: a re-resolve inside it can wait on a sweep behind this lock
         def _do(conn):
             # Sweep rows that expired long ago: a holder that died without releasing leaves its row behind, and
             # nothing else revisits a conversation nobody resumes. The grace keeps the recent expiries a live
             # owner can renew from a starved refresher.
             conn.execute("DELETE FROM session_turn_leases WHERE expires_at < ?",
                          (now - TURN_LEASE_SWEEP_GRACE_SECONDS,))
-            conversation_id = _session_turn_lease_key_on_conn(self._store.holder(), conn, session_id)
+            conversation_id = _session_turn_lease_key_on_conn(store, conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
                 lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
             )[0]
         with translated():
-            return bool(self._store.holder()._execute_write(_do, patience_s=patience_s))
+            return bool(store._execute_write(_do, patience_s=patience_s))
 
     def refresh_turn_lease(self, *, session_id: SessionId, holder: str, ttl_seconds: float = 300.0,
                            patience_s: Optional[float] = None) -> bool:
@@ -274,33 +275,36 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
         if not session_id or not holder:
             return False
         expires_at = time.time() + max(0.1, float(ttl_seconds))
+        store = self._store.holder()
         def _do(conn):
-            conversation_id = _session_turn_lease_key_on_conn(self._store.holder(), conn, session_id)
+            conversation_id = _session_turn_lease_key_on_conn(store, conn, session_id)
             return conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
             ).rowcount > 0
         with translated():
-            return bool(self._store.holder()._execute_write(_do, patience_s=patience_s))
+            return bool(store._execute_write(_do, patience_s=patience_s))
 
     def release_turn_lease(self, *, session_id: SessionId, holder: str) -> None:
         if not session_id or not holder:
             return
+        store = self._store.holder()
         def _do(conn):
-            conversation_id = _session_turn_lease_key_on_conn(self._store.holder(), conn, session_id)
+            conversation_id = _session_turn_lease_key_on_conn(store, conn, session_id)
             conn.execute(
                 "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
                 (conversation_id, holder))
         with translated():
-            self._store.holder()._execute_write(_do)
+            store._execute_write(_do)
 
     def turn_lease_expires_at(self, *, session_id: SessionId, holder: str) -> Optional[float]:
         if not session_id or not holder:
             return None
-        with translated(), self._store.holder()._read_ctx() as conn:
+        store = self._store.holder()
+        with translated(), store._read_ctx() as conn:
             row = conn.execute(
                 "SELECT expires_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
-                (_session_turn_lease_key_on_conn(self._store.holder(), conn, session_id), holder),
+                (_session_turn_lease_key_on_conn(store, conn, session_id), holder),
             ).fetchone()
         return float(row[0]) if row else None
 

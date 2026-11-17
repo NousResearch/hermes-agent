@@ -18,6 +18,7 @@ Use only the packaged server `kling-ai` at the Global endpoint `https://kling.ai
 
 ## When to Use
 
+- For prompt-only requests, return the requested prompt, storyboard, or plan. When a required source asset is missing, request it before account discovery or upload. Keep those steps separate from generation preparation and submission.
 - Route text-to-image, image-to-image, posters, covers, product stills, portraits, and image variants to `kling-ai-generate-image`.
 - Route text-to-video, image-to-video, motion control, animation, camera movement, storyboards, and video concepts to `kling-ai-generate-video`.
 - Keep OAuth, sign-out or account switching, uploads, the motion library, Elements, credit checks, cross-media requests, and task-status requests in this Skill.
@@ -38,7 +39,7 @@ Discover the live tools exposed by `kling-ai`. Never infer tool prefixes, models
 
 ### Billing and single submission
 
-- Image, video, and motion generation are credit-consuming write actions. Call `who_am_i` before submission and use its live model and argument definitions. If the remote `mcpVersion` is newer than the current tool snapshot, refresh the native MCP tools before proceeding; report the limitation if the host cannot refresh them.
+- Image, video, and motion generation are credit-consuming write actions. Include any billing disclosure required by the selected model in the final settings, including input-video duration when it contributes to per-second billing. Call `who_am_i` before submission and use its live model and argument definitions. If the remote `mcpVersion` is newer than the current tool snapshot, refresh the native MCP tools before proceeding; report the limitation if the host cannot refresh them.
 - Before generation, show the final workflow, model, prompt summary, resolution or duration, aspect ratio, output count, and reference roles. Obtain explicit confirmation immediately before submission. A read-only query, account check, or upload is not generation approval.
 - Keep Kling tool calls serial, including on Catalog installations without the parallel-call config hint.
 - Submit at most once per confirmed intent. Never retry automatically or silently change models after a failure, timeout, ambiguous response, or rendering problem.
@@ -78,7 +79,7 @@ Apply these defaults only when the user did not specify another choice and the l
 - Video resolution: prefer `1080p` for normal delivery and `4k` for supported commercial, large-screen, or post-production work. Use `720p` for drafts, speed, cost, or model limitations.
 - Output count: generate one result unless the user requests more.
 - Duration: use about 5 seconds for one action or shot, about 10 seconds for dialogue, a complete product action, or two connected beats, and longer only when supported and narratively necessary.
-- Aspect ratio: use `9:16` for vertical shorts, `1:1` for square feeds, and `16:9` for landscape ads or web. For image-to-video, preserve the first frame unless the live tool requires an explicit ratio.
+- Aspect ratio: use `9:16` for vertical shorts, `1:1` for square feeds, and `16:9` for landscape ads or web. For image-to-video, preserve first-frame composition when no ratio was requested. Honor an explicit ratio when the selected tool and model support it with the supplied frame.
 
 ## Pitfalls
 

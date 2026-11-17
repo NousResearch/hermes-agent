@@ -38,6 +38,12 @@ Read [motion and shots](references/motion-and-shots.md) for camera direction, co
 
 ## Procedure
 
+For prompt-only work or a missing required source asset, follow the core Skill's routing before discovery. Reuse a supplied prompt verbatim when it fits the request and revise only what is needed.
+
+Where the live catalog exposes `omni_ref_video`, compare it with `text_to_video` for text-led requests and with `image_to_video` for image-led requests. Keep Omni eligible for pure text only when the model requires no media. Choose a tool/model pair that satisfies the brief before applying defaults. Name the actual variant returned by `who_am_i`, including Kling 4.0 or Kling 4.0 Flash when eligible.
+
+Bind an explicit ratio if the model supports it with its first-frame input. Treat generated sound, audio references, and original-sound retention as distinct controls. A required first frame, silence, or single shot needs explicit live support.
+
 1. Use `text_to_video` when text defines the opening frame. Use `image_to_video` when an image controls the first frame, tail frame, identity, product, or visual reference. Use `motion_control` for motion transfer.
 2. Ask only for missing information that materially changes the result: destination and aspect ratio, duration, required references, protected facts, narration or copy, or shot structure.
 3. Create or reuse the UUIDv7 `taskTraceId` for this objective, call `who_am_i`, and select a compatible model, duration, resolution, and live arguments.
@@ -59,7 +65,7 @@ Read [motion and shots](references/motion-and-shots.md) for camera direction, co
 
 - Prefer `1080p` for normal delivery and supported `4k` for commercial, large-screen, or post-production work. Use `720p` for drafts, speed, credit savings, or model limitations. Never lower a higher live default.
 - Use about 5 seconds for one action or shot, about 10 seconds for dialogue, a complete product action, or two connected beats, and longer only when supported and narratively necessary.
-- For text-to-video, infer `9:16`, `1:1`, or `16:9` from the destination. For image-to-video, preserve the first-frame composition unless the tool requires an explicit ratio.
+- For text-to-video, infer `9:16`, `1:1`, or `16:9` from the destination. For image-to-video, preserve first-frame composition when no ratio was requested. Honor an explicit ratio when the selected tool and model support it with the supplied frame.
 - Use one primary camera movement in a five-second shot. Use multiple shots only when location, time, scale, or information state changes.
 - Do not add unrequested narration, readable text, extra characters, product claims, prices, endorsements, or certifications.
 

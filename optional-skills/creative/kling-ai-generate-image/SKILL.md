@@ -38,6 +38,8 @@ Read [prompt construction](references/prompt-construction.md) for reference imag
 
 ## Procedure
 
+For prompt-only work or a missing required source asset, follow the core Skill's routing before discovery. Reuse a supplied prompt verbatim when it fits the request and revise only what is needed.
+
 1. Use `text_to_image` for a new image. Use `image_to_image` when source media controls identity, product structure, composition, editable content, or style. An attachment alone does not determine the mode.
 2. Ask only for missing information that materially changes the result: subject, destination and aspect ratio, required copy, reference roles, protected facts, or output count.
 3. Create or reuse the UUIDv7 `taskTraceId` for this objective, call `who_am_i`, and select an explicitly compatible model and live arguments.

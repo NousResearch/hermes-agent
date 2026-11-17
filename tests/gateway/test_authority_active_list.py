@@ -78,10 +78,10 @@ async def test_a_compressed_turn_reads_its_activity_off_the_continuation(owner, 
     db = owner.authority.db
     db.create_session('chat-tip', source='telegram', parent_session_id='chat')
     db.touch_session_activity('chat-tip', description='tool running: terminal')
-    real_tip = type(db).get_compression_tip
+    real_tip = type(db)._compression_tip_on
     # Stand-in for a published rotation: the chain walk itself is covered in tests/hermes_state.
-    monkeypatch.setattr(type(db), 'get_compression_tip',
-                        lambda self, sid: 'chat-tip' if sid == 'chat' else real_tip(self, sid))
+    monkeypatch.setattr(type(db), '_compression_tip_on',
+                        lambda self, conn, sid: 'chat-tip' if sid == 'chat' else real_tip(self, conn, sid))
     await owner.submit('hi')
     assert (await owner.active())['chat']['activity'] == 'tool running: terminal'
 

@@ -61,9 +61,10 @@ def _working_activity(db, session_ids) -> dict[str, str]:
     """Worker thread: each working turn's durable activity stamp, read off its compression TIP (the
     running agent stamps the continuation and the ended root's label is cleared). Desktop's subtitle
     needs it here because the list endpoints are not re-read on an activity heartbeat."""
-    tips = {sid: db.get_compression_tip(sid) for sid in session_ids}
-    ids = json.dumps(sorted(set(tips.values())))
     with db._read_ctx() as conn:
+        # One read connection for every chain walk and the label query, not one read per chain link.
+        tips = {sid: db._compression_tip_on(conn, sid) for sid in session_ids}
+        ids = json.dumps(sorted(set(tips.values())))
         labels = dict(conn.execute(
             "SELECT id, last_activity_description FROM sessions WHERE id IN (SELECT value FROM json_each(?))",
             (ids,)).fetchall())

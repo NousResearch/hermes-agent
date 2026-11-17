@@ -118,13 +118,19 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         ``_CACHE_EXPIRY_CONCURRENCY`` summarising at once."""
         jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
         slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))
-        for key, live_agent, action in await asyncio.to_thread(self._cache_expiry_due_keys, set(jobs)):
-            if key in jobs:  # a release claimed it while the scan ran
-                continue
-            task = self._retain_background_task(
-                asyncio.create_task(self._compact_before_cache_expiry(key, live_agent, slots, action)))
-            jobs[key] = task
-            task.add_done_callback(lambda _done, key=key: jobs.pop(key, None))
+        handoff = self.__dict__.setdefault("_cache_expiry_handoff", {})
+        settled = self.__dict__["_cache_expiry_scan_settled"] = asyncio.Event()
+        try:
+            for key, live_agent, action in await asyncio.to_thread(self._cache_expiry_due_keys, set(jobs)):
+                if key in jobs:  # a release job registered while the scan ran: it runs the action claimed here
+                    handoff[key] = action
+                    continue
+                task = self._retain_background_task(
+                    asyncio.create_task(self._compact_before_cache_expiry(key, live_agent, slots, action)))
+                jobs[key] = task
+                task.add_done_callback(lambda _done, key=key: jobs.pop(key, None))
+        finally:
+            settled.set()
 
     async def _compact_before_cache_expiry(self, key: str, live_agent, slots: asyncio.Semaphore,
                                            action: str = "compact") -> None:
@@ -240,6 +246,13 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         except Exception:
             logger.debug("release-time compaction check failed for %s", key, exc_info=True)
             return
+        if action is None:
+            # A due-scan in flight may have latched this chat's claim first: it hands the action over.
+            settled = self.__dict__.get("_cache_expiry_scan_settled")
+            if settled is not None:
+                await settled.wait()
+        handed = self.__dict__.setdefault("_cache_expiry_handoff", {}).pop(key, None)
+        action = action or handed
         if action is None:
             return
         slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))

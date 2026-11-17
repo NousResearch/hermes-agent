@@ -48,6 +48,10 @@ def human_paced(agent: Any) -> bool:
         return False
     if getattr(agent, "_skip_prompt_cache_warming", False):
         return False
+    from gateway.session_finite import finite_turn_required
+
+    if finite_turn_required() is True:  # a finite admission (chat -q, -z) runs one task, nobody comes back
+        return False
     return session_source_for(getattr(agent, "platform", None)) not in MACHINE_PACED_SOURCES
 
 

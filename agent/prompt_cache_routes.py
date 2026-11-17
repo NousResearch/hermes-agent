@@ -6,7 +6,7 @@ reads back, one that re-writes the whole prefix on every hit, an automatic cache
 This store learns that from the usage Hermes already receives (normal responses and keep-alives; it
 never sends a probe) and the warmer and marker policy consult it at decision time.
 
-Key: ``(provider, base_url host, model, explicit|implicit)``, implicit = no ``cache_control`` markers.
+Key: ``(provider, normalized base_url, model, explicit|implicit)``, implicit = no ``cache_control`` markers.
 Per key: ``reads`` (hits after a known earlier touch), ``attempts`` (a later request inside the tier
 that read nothing), ``write_on_hit`` (a keep-alive, an unchanged replay, that hit and still wrote as many
 tokens as it read: the same prefix again; an ordinary turn appends new content, so its sizes prove nothing),
@@ -61,18 +61,37 @@ def _path() -> Path:
 
 
 def route_key(provider: str, base_url: str, model: str, explicit: bool) -> str:
-    from utils import base_url_hostname
+    """The endpoint is the normalized base URL (scheme, host, port, path): two local servers on one host
+    (llama.cpp on :8080, Ollama on :11434) serving the same model name are different caches."""
+    from hermes_cli.route_identity import normalize_route_base_url
 
-    host = base_url_hostname(base_url or "") or ""
-    return "|".join((str(provider or ""), host, str(model or ""), "explicit" if explicit else "implicit"))
+    endpoint = normalize_route_base_url(base_url or "")
+    return "|".join((str(provider or ""), endpoint, str(model or ""), "explicit" if explicit else "implicit"))
 
 
 def _load(path: Path, now: float) -> dict[str, dict[str, Any]]:
     from utils.files import read_json_or_empty
 
     data = read_json_or_empty(path)
-    return {k: v for k, v in data.items()
-            if isinstance(v, dict) and now - float(v.get("updated") or 0) < EXPIRY_SECONDS}
+    return {k: v for k, v in data.items() if _well_formed(v) and now - v["updated"] < EXPIRY_SECONDS}
+
+
+def _numbers(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value)
+
+
+def _well_formed(entry: Any) -> bool:
+    """An entry every reader can trust: numeric timestamp, counters and gap lists, string session lists.
+    A hand-edited or foreign file's bad entry is dropped (and rewritten away on the next save), never raised."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("updated"), (int, float)):
+        return False
+    counters = ("reads", "attempts", "write_on_hit", "samples", "longest_hit")
+    gaps = ("hit_gaps", "miss_gaps", "write_on_hit_gaps")
+    sessions = ("miss_gaps_sessions", "write_on_hit_gaps_sessions")
+    return (all(isinstance(entry.get(k, 0), (int, float)) and not isinstance(entry.get(k, 0), bool) for k in counters)
+            and all(_numbers(entry.get(k, [])) for k in gaps)
+            and all(isinstance(entry.get(k, []), list) and all(isinstance(s, str) for s in entry.get(k, []))
+                    for k in sessions))
 
 
 def _save(path: Path, data: dict[str, dict[str, Any]]) -> None:

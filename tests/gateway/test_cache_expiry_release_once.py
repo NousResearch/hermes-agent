@@ -61,3 +61,50 @@ async def test_an_evicted_agent_is_released_exactly_once(fate):
     assert runner.released == ["k1"]
     if fate != "loop_never_ran_it":
         assert threading.get_ident() not in agent._prompt_cache_warmer.threads
+
+
+@pytest.mark.asyncio
+async def test_a_due_scans_claim_is_run_by_the_release_job_that_raced_it():
+    """alt-glitch: the scan claims off the loop, so an eviction's release job can register for the same chat
+    before the scan returns; the scan's latched action must reach that job, not be thrown away."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._gateway_loop = asyncio.get_running_loop()
+    ran = []
+
+    async def _run(key, agent, slots, action="compact"):
+        ran.append((key, action))
+
+    runner._compact_before_cache_expiry = _run
+    latched = {"done": False}
+
+    def claim_edge(*, releasing=False, now=None):  # the one latch: whoever claims first gets the action
+        if latched["done"]:
+            return None
+        latched["done"] = True
+        return "compact"
+
+    agent = SimpleNamespace(session_id="s1", _prompt_cache_warmer=SimpleNamespace(claim_edge=claim_edge))
+    runner._agent_cache, runner._agent_cache_lock = {"k1": (agent, "sig")}, threading.Lock()
+    runner._is_session_running = lambda key: False
+    jobs = runner.__dict__.setdefault("_cache_expiry_jobs", {})
+    real_due = runner._cache_expiry_due_keys
+    release_job = []
+
+    def scan_then_race(skip):
+        due = real_due(skip)  # the scan latched "compact" ...
+        fut = asyncio.run_coroutine_threadsafe(_register_release(), runner._gateway_loop)
+        fut.result(timeout=5)  # ... and an eviction registered its release job before the scan returned
+        return due
+
+    async def _register_release():
+        task = asyncio.ensure_future(runner._compact_then_release_job("k1", agent))
+        jobs["k1"] = task
+        release_job.append(task)
+
+    runner._cache_expiry_due_keys = scan_then_race
+    await runner._compact_idle_sessions_before_cache_expiry()
+    await asyncio.gather(*release_job)
+    assert ran == [("k1", "compact")], "the claimed compaction was dropped"

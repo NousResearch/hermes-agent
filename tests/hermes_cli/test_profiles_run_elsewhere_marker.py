@@ -148,35 +148,33 @@ def test_reading_the_marker_folder_gives_one_kind_of_answer(root):
 
 def _between_look_and_change(monkeypatch, profile: str, action) -> None:
     """Run *action* once, right after the module's next look at *profile*'s marker (the listing, stat
-    or read a writer does before it changes anything): what another writer does in that gap."""
+    or read a writer does before it changes anything): what another writer does in that gap.
+
+    Only the module's own call counts. The suite's home guard wraps ``os.lstat`` and resolves the path
+    first, and POSIX ``realpath`` lstats every component through ``os``: a look made inside a look is
+    part of it, so *action* waits for the outermost one to finish."""
     armed = [True]
+    looking = [0]
     real_listdir, real_lstat, real_read = os.listdir, os.lstat, pre._read_entry
 
-    def fire():
-        if armed:
-            armed.clear()
-            action()
+    def look(real, is_the_marker, *args, **kwargs):
+        looking[0] += 1
+        try:
+            return real(*args, **kwargs)
+        finally:
+            looking[0] -= 1
+            if armed and not looking[0] and is_the_marker:
+                armed.clear()
+                action()
 
     def listdir(path):
-        try:
-            return real_listdir(path)
-        finally:
-            if Path(path).name == pre.RUN_ELSEWHERE_DIRNAME:
-                fire()
+        return look(real_listdir, Path(path).name == pre.RUN_ELSEWHERE_DIRNAME, path)
 
     def lstat(path, *args, **kwargs):
-        try:
-            return real_lstat(path, *args, **kwargs)
-        finally:
-            if Path(os.fspath(path)).name == f"{profile}.json":
-                fire()
+        return look(real_lstat, Path(os.fspath(path)).name == f"{profile}.json", path, *args, **kwargs)
 
     def read_entry(folder, name):
-        try:
-            return real_read(folder, name)
-        finally:
-            if name == profile:
-                fire()
+        return look(real_read, name == profile, folder, name)
 
     monkeypatch.setattr(pre.os, "listdir", listdir)
     monkeypatch.setattr(pre.os, "lstat", lstat)

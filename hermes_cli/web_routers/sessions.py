@@ -888,14 +888,41 @@ def _profile_owner_home(profile: Optional[str]) -> Path:
     return Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
 
 
-def _gateway_owns_profile(profile: Optional[str]) -> bool:
-    """Whether a *separate* gateway process owns *profile*'s home.
+async def _stamp_via_gateway_owner(profile: Optional[str]) -> Optional[int]:
+    """Have the live standalone gateway stamp its own store; None when discovery found no owner.
 
-    Only the safe direction is used: discovery answers ``None`` when it cannot tell, and an
-    absent/refused control socket means no runtime holds the profile.
+    The owner holds the profile reservation for its whole lifetime, so the offline maintenance
+    write below can never win while it runs (#148531) — the stamp is the owner's write, over the
+    control socket it already serves mutations on. A refusal frame is the owner's verdict and
+    keeps its reason; any transport failure is a retryable 503, never a silent "stamped nothing"
+    (the Desktop fails closed on unowned rows, so a false success strands them for good).
     """
+    from dataclasses import replace
+
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
-    return discover_gateway_endpoint(_profile_owner_home(profile), timeout=1.5).endpoint is not None
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+    from hermes_cli.web_server_sessions import _MUTATION_REFUSAL_STATUS
+
+    home = _profile_owner_home(profile)
+    endpoint = (await asyncio.to_thread(discover_gateway_endpoint, home, timeout=1.5)).endpoint
+    if endpoint is None:
+        return None
+    if not getattr(endpoint, 'control_home', True):
+        # The selected home answered on its own socket: pin it, so the ticket is minted on the
+        # socket that just identified as this profile's owner.
+        endpoint = replace(endpoint, control_home=str(home.expanduser().resolve()))
+    try:
+        # The stamp is store-wide ownership metadata, not an edit on any principal's row: the
+        # host owner (this same-user socket's own peer) is the right ticket, as for a sign-in.
+        async with connect_gateway(endpoint=endpoint, subject=None) as client:
+            result = await client.rpc('session.owner_backfill')
+    except GatewayRPCError as exc:
+        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(str(exc), 503),
+                            detail=str(exc)) from exc
+    except (GatewayClientError, DiscoveryError, OSError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail='owner_unreachable') from exc
+    return int(result.get('stamped') or 0)
 
 
 def _count_pending_owner_stamps_sync(profile: Optional[str]) -> int:
@@ -938,7 +965,6 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
     ``get_sessions``). See #95407.
     """
     stamp = _serving_profile(body.profile)
-    deferred_to_owner = False
 
     with http_failure(
         "POST /api/sessions/owner-backfill failed", 500, detail="Internal server error"):
@@ -947,32 +973,35 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
             # A live gateway owns this store: it is the only writer (the offline maintenance lock
             # would 409 every Desktop boot), so the idempotent stamp runs on its own connection.
             stamped = await asyncio.to_thread(owner_db.backfill_null_session_profiles, stamp)
+            owned_by = "composed"
         else:
             # No composed owner here, but a standalone gateway may still own the profile. It is the
             # only writer while it holds it, so the offline reservation below is refused and every
             # Desktop boot 409s (#148531). The owner already runs this same idempotent stamp at
-            # bring-up (gateway/session_authority.py), so check the cheap read first and only take
-            # the write path when the profile is provably unowned.
+            # bring-up (gateway/session_authority.py), so check the cheap read first, hand a real
+            # pending set to the owner that holds the profile, and only write offline when the
+            # profile is provably unowned.
             pending = await _count_pending_owner_stamps(body.profile)
+            owned_by = None
             if not pending:
                 stamped = 0
-            elif await asyncio.to_thread(_gateway_owns_profile, body.profile):
-                deferred_to_owner = True
-                stamped = 0
             else:
-                stamped = await asyncio.to_thread(
-                    _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
-                    read_only=False)
+                stamped = await _stamp_via_gateway_owner(body.profile)
+                if stamped is None:
+                    stamped = await asyncio.to_thread(
+                        _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
+                        read_only=False)
+                else:
+                    owned_by = "gateway"
 
     if stamped:
         _log.info(
             "owner-backfill: stamped %d legacy NULL-profile session row(s) with profile %r",
             stamped, stamp)
-    elif deferred_to_owner:
-        _log.info("owner-backfill: %r is owned by a running gateway; it stamps its own rows",
+    elif owned_by == "gateway":
+        _log.info("owner-backfill: %r is owned by a running gateway; it reported nothing left to stamp",
                   stamp)
-    return {"ok": True, "stamped": stamped, "profile": stamp,
-            "deferred_to_owner": deferred_to_owner}
+    return {"ok": True, "stamped": stamped, "profile": stamp}
 
 
 @manage_router.patch("/api/sessions/{session_id}")

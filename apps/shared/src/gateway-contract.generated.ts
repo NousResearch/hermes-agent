@@ -4844,6 +4844,12 @@ export interface SessionPruneResult {
   routing_deleted?: number | null
   skipped?: number | null
 }
+/** No fields: the owner stamps its own store with its own profile name. */
+export type SessionOwnerBackfillParams = Record<string, never>
+export interface SessionOwnerBackfillResult {
+  stamped: number
+  profile?: string | null
+}
 export interface CommandObserveParams {
   session_id: string
   name: string
@@ -7214,6 +7220,8 @@ export interface CanonicalRpcMethods {
   'session.list': { params: CanonicalListParams; result: CanonicalListResult }
   /** Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, delete, rewind, reset, model, reasoning, workspace, edit_policy, compress, import). */
   'session.mutate': { params: SessionMutateParams; result: SessionMutateResult }
+  /** Local operator only: the owner stamps its own store's legacy NULL-profile rows with its own profile, the boot stamp a dashboard cannot take the reservation for. */
+  'session.owner_backfill': { params: SessionOwnerBackfillParams; result: SessionOwnerBackfillResult }
   /** Local operator only: the owner deletes the ended sessions `hermes sessions prune` selected, skipping busy sessions and retained reset owners. */
   'session.prune': { params: SessionPruneParams; result: SessionPruneResult }
   'session.redirect': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
@@ -7278,6 +7286,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.interrupt',
   'session.list',
   'session.mutate',
+  'session.owner_backfill',
   'session.prune',
   'session.redirect',
   'session.resume',

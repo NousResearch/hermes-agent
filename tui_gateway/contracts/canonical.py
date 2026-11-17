@@ -132,6 +132,22 @@ canonical_method("session.prune", params=SessionPruneParams, result=SessionPrune
                      "selected, skipping busy sessions and retained reset owners.")
 
 
+class SessionOwnerBackfillParams(Params):
+    """No fields: the owner stamps its own store with its own profile name."""
+
+
+class SessionOwnerBackfillResult(Result):
+    stamped: int
+    profile: str | None = None
+
+
+canonical_method("session.owner_backfill", params=SessionOwnerBackfillParams,
+                 result=SessionOwnerBackfillResult,
+                 doc="Local operator only: the owner stamps its own store's legacy NULL-profile rows "
+                     "with its own profile, the boot stamp a dashboard cannot take the reservation for.")
+
+
+
 class CommandObserveParams(Params):
     session_id: str
     name: str

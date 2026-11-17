@@ -207,28 +207,57 @@ async def test_owner_backfill_answers_without_reserving_when_nothing_is_pending(
     async with _split_client(_app()) as client:
         resp = await client.post("/api/sessions/owner-backfill", json={})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {
-        "ok": True, "stamped": 0, "profile": "default", "deferred_to_owner": False}
+    assert resp.json() == {"ok": True, "stamped": 0, "profile": "default"}
+
+
+class _FakeOwnerSocket:
+    """Stands in for the live gateway's control socket: the owner stamps its own store."""
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self.calls = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def rpc(self, verb, **params):
+        self.calls.append((verb, params))
+        from hermes_state import SessionDB
+
+        with SessionDB(db_path=self.db_path) as db:
+            stamp = db._own_profile_name()
+            return {"stamped": db.backfill_null_session_profiles(stamp), "profile": stamp}
 
 
 @pytest.mark.asyncio
-async def test_owner_backfill_defers_pending_rows_to_the_live_owner(owner_held, monkeypatch):
-    """Pending rows + a discoverable owner: hand the stamp over instead of 409-ing."""
+async def test_owner_backfill_stamps_pending_rows_through_the_live_owner(owner_held, monkeypatch):
+    """Pending rows + a discoverable owner: the owner stamps them, not a bare "deferred" 200.
+
+    Answering ``stamped: 0`` while the rows stay NULL is what strands them: the Desktop marks the
+    scope attempted before the POST and only retries on a transport failure, so a false success
+    fails those rows closed for good.
+    """
     from types import SimpleNamespace
 
     _seed_legacy_null(owner_held / "state.db")
+    socket = _FakeOwnerSocket(owner_held / "state.db")
     monkeypatch.setattr(
         "hermes_cli.gateway_runtime.discover_gateway_endpoint",
         lambda home, *, timeout: SimpleNamespace(
             endpoint=SimpleNamespace(home=str(home)), state="live", reason_code=None))
+    monkeypatch.setattr("hermes_cli.gateway_client.connect_gateway",
+                        lambda endpoint=None, subject=None: socket)
 
     async with _split_client(_app()) as client:
         resp = await client.post("/api/sessions/owner-backfill", json={})
     assert resp.status_code == 200, resp.text
-    assert resp.json()["deferred_to_owner"] is True
-    assert resp.json()["stamped"] == 0
-    # The owner is the writer; this process did not touch the row.
-    assert _profiles(owner_held / "state.db")["legacy-null"] is None
+    assert resp.json() == {"ok": True, "stamped": 1, "profile": "default"}
+    assert socket.calls == [("session.owner_backfill", {})]
+    # The owner's write is the durable one the fail-closed ladder reads.
+    assert _profiles(owner_held / "state.db")["legacy-null"] == "default"
 
 
 @pytest.mark.asyncio

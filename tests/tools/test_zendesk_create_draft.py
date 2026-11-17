@@ -57,7 +57,11 @@ class World:
         self.next_id = 500
         self.article = {"id": 77, "section_id": 42, "title": "Live <b>article</b>",
                         "locale": "en-us", "permission_group_id": 9, "user_segment_id": 33}
-        monkeypatch.setattr(zt, "_zendesk_creds", lambda: (BASE, "bot@ex.com", "tok"))
+        monkeypatch.setattr(zt, "_zendesk_creds", lambda: (BASE, "cid", "secret"))
+
+        async def token(scope, *, force=False):
+            return "tok"
+        monkeypatch.setattr(zt, "_access_token", token)
         monkeypatch.setattr(zt, "_config", self.config)
         monkeypatch.setattr(zt, "_now", lambda: self.now)
         monkeypatch.setattr(zt, "_audit", lambda action, target: self.audits.append((action, target)))
@@ -77,7 +81,7 @@ class World:
             cfg["notion"] = {"write_guard": {"enabled": True}}
         return cfg
 
-    async def zendesk(self, base, email, token, path, method="GET", json_body=None):
+    async def zendesk(self, base, token, path, method="GET", json_body=None):
         self.requests.append((method, path, json_body))
         if method == "GET":
             return {"status": 200, "text": json.dumps({"article": self.article})}
@@ -236,7 +240,7 @@ def test_concurrent_create_for_same_row_is_refused(w):
 
 
 def test_failed_post_leaves_no_ledger_and_can_retry(w, monkeypatch):
-    async def boom(base, email, token, path, method="GET", json_body=None):
+    async def boom(base, token, path, method="GET", json_body=None):
         return {"status": 422, "text": '{"error": "invalid section"}'}
     monkeypatch.setattr(zt, "_zendesk_request", boom)
     assert "422" in _call(_args())["error"]
@@ -278,7 +282,7 @@ def test_revision_takes_visibility_from_live_article(w):
 
 
 def test_revision_of_missing_article_refused(w, monkeypatch):
-    async def missing(base, email, token, path, method="GET", json_body=None):
+    async def missing(base, token, path, method="GET", json_body=None):
         w.requests.append((method, path, json_body))
         return {"status": 404, "text": '{"error": "RecordNotFound"}'}
     monkeypatch.setattr(zt, "_zendesk_request", missing)

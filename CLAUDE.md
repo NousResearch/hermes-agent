@@ -314,9 +314,37 @@ cron/delegation runs that never loaded it (the same pattern), so they work headl
   guard (education spec, 5a) ships, `notion_api` passes `PATCH` unchecked and
   the agent could set its own row to Approved. That later PR owns enforcement
   behind the same key; do not set the key before it is deployed.
-  Credentials (`ZENDESK_SUBDOMAIN`/`ZENDESK_EMAIL`/`ZENDESK_API_TOKEN`, plus
-  `NOTION_API_KEY` and `SLACK_BOT_TOKEN` for the gate) come **only** from
-  `agent.secret_scope.get_secret`; `UnscopedSecretError` = not configured.
+  **Auth is OAuth client credentials only** — Zendesk is retiring API tokens
+  (none can be created since 2026-10-27; all deactivated 2027-04-30), so there
+  is no API-token path and `ZENDESK_EMAIL`/`ZENDESK_API_TOKEN` are never read.
+  Credentials `ZENDESK_SUBDOMAIN`/`ZENDESK_OAUTH_CLIENT_ID`/
+  `ZENDESK_OAUTH_CLIENT_SECRET` (plus `NOTION_API_KEY` and `SLACK_BOT_TOKEN`
+  for the gate) come **only** from `agent.secret_scope.get_secret`;
+  `UnscopedSecretError` = not configured. `POST https://<sub>.zendesk.com/oauth/tokens`
+  (`grant_type=client_credentials`, `expires_in` 1800, `allow_redirects=False`)
+  → `Authorization: Bearer`. **Least privilege per call:** reads get an
+  `hc:read` token, only the draft create gets `hc:read hc:write`; never the
+  global `read`/`write` or ticket scopes. Tokens are cached in memory per
+  (profile home, base URL, client id, scope) — two profiles never share one —
+  refreshed 120 s before expiry, and a 401 drops the token and retries once.
+  Token and secret are scrubbed from every error. `hc:write` also covers
+  publish/delete, so `_zendesk_write` stays the boundary. **The token acts as
+  the user the OAuth client belongs to** — that user's rights are the real
+  ceiling. **Admin Center setup:** (1) create a dedicated service user (not a
+  person, not an account admin): an agent whose custom role grants **Manage
+  APIs** (Zendesk lets admins *or* agents with that permission create OAuth
+  clients) and as little ticket access as the plan allows, with Guide role
+  **Help Center manager**; (2) signed in as that user, Admin Center → Apps and
+  integrations → APIs → OAuth clients → add a **Confidential** client, and
+  restrict its allowed scopes to `hc:read hc:write` (the client's `scope`
+  field); copy the identifier and the secret (shown once); (3) put
+  `ZENDESK_SUBDOMAIN`, `ZENDESK_OAUTH_CLIENT_ID`, `ZENDESK_OAUTH_CLIENT_SECRET`
+  in the **profile's** `.env`; (4) verify with a read
+  (`zendesk_api api/v2/help_center/en-us/categories.json`). Unverified: whether
+  `hc:read` covers `guide/permission_groups`/`user_segments` (only used to look
+  ids up — drafts take visibility from config), and whether removing Manage
+  APIs from the user after creating the client keeps its tokens working
+  (keep it unless tested).
   **Not in any built-in role.** **Deployment:** both `zendesk` and
   `zendesk_write` must be listed in `platform_toolsets.slack` (an explicit
   list shadows defaults) or the tools are silently missing. Plan:

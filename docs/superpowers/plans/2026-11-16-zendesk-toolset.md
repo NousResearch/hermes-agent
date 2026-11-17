@@ -139,3 +139,20 @@ Reviewer: the education-teammate session. All items addressed on the same branch
 - Slack text: every interpolated value is escaped (`& < >`), and links are emitted only for https URLs on the Zendesk or Notion hosts. Zendesk links are constructed from integer ids.
 - Read query keys are allowlisted (`_READ_QUERY_KEYS`). `include`, unknown keys and `;` are refused.
 - `agent/file_safety.is_protected_data_path` covers `<home>/autonomy/**` for read, write, patch and search.
+
+## Review round 2 (2026-11-17): OAuth instead of API tokens
+
+Zendesk is removing API tokens ([support article 10851263566234](https://support.zendesk.com/hc/en-us/articles/10851263566234)). Since Phase 2 (2026-10-27) no new token can be created, and Phase 3 (2027-04-30) deactivates every remaining token. So the Basic `email/token:` auth is gone with **no fallback**.
+
+- **Grant:** `client_credentials` against `POST https://<sub>.zendesk.com/oauth/tokens`, which requires a confidential client. The body is `grant_type`, `client_id`, `client_secret`, `scope`, and `expires_in: 1800`. We request the lifetime explicitly because the response may omit `expires_in`; Zendesk allows 300–172800. The grant returns no refresh token, so we simply re-request.
+- **Scopes:** reads request `hc:read`; the draft create requests `hc:read hc:write`. This deliberately splits the reviewer's single `hc:read hc:write` so a read path never holds a write-capable token. We never request global `read`/`write` or ticket scopes.
+- **Credentials:** `ZENDESK_SUBDOMAIN`, `ZENDESK_OAUTH_CLIENT_ID`, `ZENDESK_OAUTH_CLIENT_SECRET`, read via `get_secret` only. `ZENDESK_EMAIL` and `ZENDESK_API_TOKEN` are no longer read.
+- **Cache:** in memory, keyed by (profile home, base URL, client id, scope). A token is refreshed 120 s before it expires. On a 401 the cached token is dropped and the call is retried exactly once.
+- **No leaks:** the token and secret are scrubbed from every error, and transport exceptions are reduced to their type name. The token request uses the fixed host with `allow_redirects=False`.
+- **Correction to the request** ("the client must be created by a service user with Help Center manager only — not an account admin"):
+  - Per the [OAuth Clients API](https://developer.zendesk.com/api-reference/ticketing/oauth/oauth_clients/), clients can be created by "Admins, and agents with the Manage APIs permission".
+  - The token "inherits the permissions of the user associated with the OAuth client".
+  - So the service user is an **agent with a custom role that grants Manage APIs**, plus the Guide role Help Center manager. It is not an admin, but it is not Guide-only either.
+  - The client's own `scope` field caps it at `hc:read hc:write`.
+  - Not verified: whether removing Manage APIs after the client is created keeps its tokens working, and whether `hc:read` covers `guide/permission_groups` and `user_segments`.
+- **Tests:** `tests/tools/test_zendesk_oauth.py`.

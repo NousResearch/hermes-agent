@@ -12,8 +12,8 @@ Two tools, two toolsets, so RBAC can grant reads without writes:
   title and HTML body, never a method or a path. Every write goes through
   ``_zendesk_write``, which re-checks the curated ``_WRITE_ALLOWLIST`` and
   refuses any body that isn't ``draft: true`` with ``notify_subscribers:
-  false``. Zendesk API tokens carry no scopes (the shared service account can
-  publish), so that chokepoint IS the boundary — it never publishes, archives,
+  false``. ``hc:write`` covers publish and delete too (and the service user
+  can publish), so that chokepoint IS the boundary — it never publishes, archives,
   deletes, changes permissions or touches tickets. Whether it may act at all
   is the profile's autonomy level for ``zendesk_create_draft``
   (``agent/autonomy.py``).
@@ -25,9 +25,12 @@ Team Publishing's work-in-progress state has no public API (Zendesk staff,
 community post 6482703860506, checked 2026-11-16). The result says
 ``reconcile_required`` and names the live article for a human.
 
-Credentials come ONLY from ``agent.secret_scope.get_secret`` (the multiplex
-gateway's per-profile scope): ``ZENDESK_SUBDOMAIN``, ``ZENDESK_EMAIL``,
-``ZENDESK_API_TOKEN``. An ``UnscopedSecretError`` means "not configured".
+Auth is OAuth client credentials ONLY (Zendesk is retiring API tokens):
+``ZENDESK_SUBDOMAIN``, ``ZENDESK_OAUTH_CLIENT_ID``, ``ZENDESK_OAUTH_CLIENT_SECRET``,
+read ONLY from ``agent.secret_scope.get_secret`` (the multiplex gateway's
+per-profile scope); an ``UnscopedSecretError`` means "not configured". Reads
+use an ``hc:read`` token, the draft create an ``hc:read hc:write`` token,
+cached per (profile, subdomain, client, scope).
 
 Design: docs/superpowers/specs/2026-11-16-product-education-teammate-design.md
 ("Dependencies → 2. Zendesk tool"). Plan:
@@ -35,7 +38,6 @@ docs/superpowers/plans/2026-11-16-zendesk-toolset.md.
 """
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import re
@@ -126,10 +128,37 @@ def _normalize_read_path(raw: str, base: str) -> str | None:
     return raw if _read_allowed(path) else None
 
 
-# ── credentials + HTTP ───────────────────────────────────────────────────
+# ── credentials, OAuth token, HTTP ───────────────────────────────────────
+#
+# Zendesk is retiring API tokens (Phase 2, 2026-10-27: none can be created;
+# Phase 3, 2027-04-30: all deactivated), so this uses OAuth client
+# credentials ONLY — a confidential client created in Admin Center. There is
+# no API-token fallback: ZENDESK_EMAIL / ZENDESK_API_TOKEN are never read.
+# The token acts as the user who created the client, so that user's Guide
+# permissions are the real ceiling (see CLAUDE.md for the setup).
+#
+# Least privilege per call: reads get an `hc:read` token; only the draft
+# create gets `hc:read hc:write`. No global `read`/`write`, no ticket scopes.
+
+_READ_SCOPE = "hc:read"
+_WRITE_SCOPE = "hc:read hc:write"
+_TOKEN_TTL_SECONDS = 1800       # requested; Zendesk allows 300..172800
+_TOKEN_SKEW_SECONDS = 120       # refresh this long before it expires
+# (profile home, base url, client id, scope) -> (access token, monotonic expiry)
+_TOKEN_CACHE: dict[tuple[str, str, str, str], tuple[str, float]] = {}
+
+
+class ZendeskAuthError(RuntimeError):
+    """The OAuth token request failed (message carries no secret or token)."""
+
+
+def _monotonic() -> float:
+    import time
+    return time.monotonic()
+
 
 def _zendesk_creds() -> tuple[str, str, str]:
-    """``(base_url, email, token)`` from the active profile's secret scope.
+    """``(base_url, client_id, client_secret)`` from the active profile's secret scope.
 
     ``("", "", "")`` when any is missing, the subdomain isn't a bare
     subdomain, or the read is unscoped under multiplex.
@@ -137,39 +166,133 @@ def _zendesk_creds() -> tuple[str, str, str]:
     from agent.secret_scope import UnscopedSecretError, get_secret
     try:
         sub = (get_secret("ZENDESK_SUBDOMAIN") or "").strip().lower()
-        email = (get_secret("ZENDESK_EMAIL") or "").strip()
-        token = (get_secret("ZENDESK_API_TOKEN") or "").strip()
+        client_id = (get_secret("ZENDESK_OAUTH_CLIENT_ID") or "").strip()
+        secret = (get_secret("ZENDESK_OAUTH_CLIENT_SECRET") or "").strip()
     except UnscopedSecretError:
         return "", "", ""
-    if not (sub and email and token) or not _SUBDOMAIN.match(sub) or sub.endswith("-"):
+    if not (sub and client_id and secret) or not _SUBDOMAIN.match(sub) or sub.endswith("-"):
         return "", "", ""
-    return f"https://{sub}.zendesk.com", email, token
+    return f"https://{sub}.zendesk.com", client_id, secret
 
 
 def _check_zendesk() -> bool:
     return all(_zendesk_creds())
 
 
-_NOT_CONFIGURED = "Zendesk not configured (set ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN)."
+_NOT_CONFIGURED = ("Zendesk not configured (set ZENDESK_SUBDOMAIN, ZENDESK_OAUTH_CLIENT_ID, "
+                   "ZENDESK_OAUTH_CLIENT_SECRET).")
+
+
+def _scrub(text: str, *secrets_: str) -> str:
+    """Remove any credential material from a message before it leaves."""
+    out = str(text)
+    for value in secrets_:
+        if value:
+            out = out.replace(value, "[redacted]")
+    for _key, (token, _exp) in list(_TOKEN_CACHE.items()):
+        out = out.replace(token, "[redacted]")
+    return out
+
+
+def _cache_key(base: str, client_id: str, scope: str) -> tuple[str, str, str, str]:
+    from hermes_constants import get_hermes_home
+    return (str(get_hermes_home()), base, client_id, scope)
+
+
+async def _token_request(base: str, payload: dict) -> dict:
+    """POST the client-credentials grant to the fixed ``base/oauth/tokens``."""
+    import aiohttp
+    from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+
+    _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+    async with aiohttp.ClientSession(timeout=timeout, **_sess_kw) as session:
+        async with session.request("POST", f"{base}/oauth/tokens", json=payload,
+                                   headers={"Accept": "application/json"},
+                                   allow_redirects=False, **_req_kw) as resp:
+            return {"status": resp.status, "text": await resp.text()}
+
+
+async def _access_token(scope: str, *, force: bool = False) -> str:
+    """A cached OAuth access token for ``scope``. Raises ZendeskAuthError."""
+    base, client_id, secret = _zendesk_creds()
+    if not (base and client_id and secret):
+        raise ZendeskAuthError(_NOT_CONFIGURED)
+    key = _cache_key(base, client_id, scope)
+    cached = _TOKEN_CACHE.get(key)
+    if cached and not force and _monotonic() < cached[1]:
+        return cached[0]
+    _TOKEN_CACHE.pop(key, None)
+    payload = {"grant_type": "client_credentials", "client_id": client_id,
+               "client_secret": secret, "scope": scope, "expires_in": _TOKEN_TTL_SECONDS}
+    try:
+        resp = await _token_request(base, payload)
+    except Exception as e:
+        raise ZendeskAuthError(_scrub(f"Zendesk OAuth token request failed: {type(e).__name__}",
+                                      secret, client_id)) from None
+    try:
+        data = json.loads(resp.get("text") or "{}")
+    except ValueError:
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    token = data.get("access_token")
+    if resp["status"] >= 300 or not isinstance(token, str) or not token:
+        code = str(data.get("error") or "no access_token")[:60]
+        raise ZendeskAuthError(_scrub(
+            f"Zendesk OAuth token request failed (HTTP {resp['status']}: {code}). Check the "
+            "OAuth client (confidential, client_credentials allowed, scopes hc:read hc:write).",
+            secret, client_id))
+    ttl = data.get("expires_in")
+    ttl = ttl if isinstance(ttl, int) and ttl > 0 else _TOKEN_TTL_SECONDS
+    _TOKEN_CACHE[key] = (token, _monotonic() + max(ttl - _TOKEN_SKEW_SECONDS, 0))
+    return token
+
+
+def _drop_token(scope: str) -> None:
+    base, client_id, _secret = _zendesk_creds()
+    _TOKEN_CACHE.pop(_cache_key(base, client_id, scope), None)
 
 
 async def _zendesk_request(
-    base: str, email: str, token: str, path: str,
+    base: str, token: str, path: str,
     method: str = "GET", json_body: dict | None = None,
 ) -> dict:
-    """Call ``base/path`` with Zendesk API-token basic auth. Returns {status, text}."""
+    """Call ``base/path`` with a Bearer token. Returns {status, text}."""
     import aiohttp
     from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
 
     url = f"{base}/{path.lstrip('/')}"
-    cred = base64.b64encode(f"{email}/token:{token}".encode()).decode()
-    headers = {"Authorization": f"Basic {cred}", "Accept": "application/json"}
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout, **_sess_kw) as session:
         async with session.request(method, url, headers=headers, json=json_body,
                                    allow_redirects=False, **_req_kw) as resp:
             return {"status": resp.status, "text": await resp.text()}
+
+
+async def _authed_request(path: str, *, scope: str, method: str = "GET",
+                          json_body: dict | None = None) -> dict:
+    """One API call with a cached token; on 401 drop it and retry ONCE.
+
+    Raises ZendeskAuthError (no token obtainable) or RuntimeError for a
+    transport failure — both with credential material scrubbed.
+    """
+    base, client_id, secret = _zendesk_creds()
+    token = await _access_token(scope)
+    try:
+        resp = await _zendesk_request(base, token, path, method=method, json_body=json_body)
+        if resp["status"] == 401:
+            _drop_token(scope)
+            token = await _access_token(scope, force=True)
+            resp = await _zendesk_request(base, token, path, method=method, json_body=json_body)
+    except ZendeskAuthError:
+        raise
+    except Exception as e:
+        logger.warning("[zendesk] %s %s failed: %s", method, path, type(e).__name__)
+        raise RuntimeError(f"Zendesk request failed ({type(e).__name__}).") from None
+    resp["text"] = _scrub(resp.get("text") or "", token, secret, client_id)
+    return resp
 
 
 def _parse(resp: dict) -> tuple[bool, object]:
@@ -186,14 +309,12 @@ def _parse(resp: dict) -> tuple[bool, object]:
 
 
 async def _zendesk_get(path: str) -> tuple[bool, object]:
-    base, email, token = _zendesk_creds()
-    if not (base and email and token):
+    if not _check_zendesk():
         return False, _NOT_CONFIGURED
     try:
-        resp = await _zendesk_request(base, email, token, path)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("[zendesk] GET %s failed: %s", path, e)
-        return False, f"Zendesk request failed: {e}"
+        resp = await _authed_request(path, scope=_READ_SCOPE)
+    except (ZendeskAuthError, RuntimeError) as e:
+        return False, str(e)
     return _parse(resp)
 
 
@@ -208,10 +329,12 @@ async def _zendesk_write(method: str, path: str, body: dict) -> dict:
         raise ZendeskWriteRefused("Zendesk writes must create an unpublished draft (draft: true).")
     if body.get("notify_subscribers") is not False:
         raise ZendeskWriteRefused("Zendesk draft creation must set notify_subscribers: false.")
-    base, email, token = _zendesk_creds()
-    if not (base and email and token):
+    if not _check_zendesk():
         raise ZendeskWriteRefused(_NOT_CONFIGURED)
-    return await _zendesk_request(base, email, token, path, method=method, json_body=body)
+    try:
+        return await _authed_request(path, scope=_WRITE_SCOPE, method=method, json_body=body)
+    except (ZendeskAuthError, RuntimeError) as e:
+        raise ZendeskWriteRefused(str(e)) from None
 
 
 # ── zendesk_api (read) ───────────────────────────────────────────────────
@@ -246,7 +369,7 @@ async def _zendesk_api_handler(args: dict, **_kw) -> str:
     method = (args.get("method") or "GET").strip().upper()
     if method != "GET":
         return tool_error(f"Unsupported method '{method}'. zendesk_api is read-only (GET).")
-    base, _email, _token = _zendesk_creds()
+    base, _client_id, _secret = _zendesk_creds()
     if not base:
         return tool_error(_NOT_CONFIGURED)
     path = _normalize_read_path(args.get("path") or "", base)

@@ -55,6 +55,8 @@ WIRING = [
     ("zendesk_create_draft", "tools/zendesk_tool.py", 'm = await _materialize(spec, cfg, require_approved=require_approved)', "content comes from the row"),
     ("zendesk_create_draft", "tools/zendesk_tool.py", "autonomy.ledger_put(_ACTION, key, entry)", "one draft per row"),
     ("zendesk_api", "tools/zendesk_tool.py", "if not keys <= _READ_QUERY_KEYS:", "read query-key allowlist"),
+    ("zendesk OAuth", "tools/zendesk_tool.py", '"grant_type": "client_credentials"', "OAuth client credentials, no API tokens"),
+    ("zendesk OAuth", "tools/zendesk_tool.py", 'resp = await _authed_request(path, scope=_READ_SCOPE)', "reads use the hc:read token"),
     ("autonomy levels", "agent/autonomy.py", "def verify_pending", "signed pending records"),
     ("autonomy state protected", "agent/file_safety.py", '(anchor / "autonomy").resolve()', "file tools can't touch autonomy state"),
     ("allow_bots_channels", "plugins/platforms/slack/adapter.py", "def _slack_allow_bots_channels", "per-channel app admission"),

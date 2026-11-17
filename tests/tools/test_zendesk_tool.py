@@ -13,7 +13,11 @@ BASE = "https://everafterai.zendesk.com"
 
 @pytest.fixture
 def zd_ok(monkeypatch):
-    monkeypatch.setattr(zt, "_zendesk_creds", lambda: (BASE, "bot@ex.com", "tok"))
+    monkeypatch.setattr(zt, "_zendesk_creds", lambda: (BASE, "cid", "secret"))
+
+    async def token(scope, *, force=False):
+        return "tok"
+    monkeypatch.setattr(zt, "_access_token", token)
 
 
 @pytest.fixture
@@ -45,14 +49,14 @@ def test_registered_toolsets_are_separate():
 def test_read_passes_path_and_parses_json(monkeypatch, zd_ok):
     seen = {}
 
-    async def fake(base, email, token, path, method="GET", json_body=None):
-        seen.update(base=base, email=email, token=token, path=path, method=method)
+    async def fake(base, token, path, method="GET", json_body=None):
+        seen.update(base=base, token=token, path=path, method=method)
         return {"status": 200, "text": '{"categories": [{"id": 1}]}'}
 
     monkeypatch.setattr(zt, "_zendesk_request", fake)
     out = _read({"path": "api/v2/help_center/en-us/categories.json?page[size]=100"})
     assert out["ok"] is True and out["data"]["categories"] == [{"id": 1}]
-    assert seen == {"base": BASE, "email": "bot@ex.com", "token": "tok",
+    assert seen == {"base": BASE, "token": "tok",
                     "path": "api/v2/help_center/en-us/categories.json?page[size]=100",
                     "method": "GET"}
 
@@ -81,7 +85,7 @@ def test_read_allowlist_accepts_help_center(path):
 def test_read_accepts_own_host_full_url_and_refuses_other_hosts(monkeypatch, zd_ok):
     seen = {}
 
-    async def fake(base, email, token, path, method="GET", json_body=None):
+    async def fake(base, token, path, method="GET", json_body=None):
         seen["path"] = path
         return {"status": 200, "text": "{}"}
 
@@ -132,10 +136,10 @@ def test_read_unconfigured(monkeypatch, no_network):
 def test_creds_use_get_secret_not_environ(monkeypatch):
     import agent.secret_scope as ss
     monkeypatch.setenv("ZENDESK_SUBDOMAIN", "from-environ")
-    vals = {"ZENDESK_SUBDOMAIN": "everafterai", "ZENDESK_EMAIL": "bot@ex.com",
-            "ZENDESK_API_TOKEN": "tok"}
+    vals = {"ZENDESK_SUBDOMAIN": "everafterai", "ZENDESK_OAUTH_CLIENT_ID": "cid",
+            "ZENDESK_OAUTH_CLIENT_SECRET": "secret"}
     monkeypatch.setattr(ss, "get_secret", lambda name, default=None: vals.get(name, default))
-    assert zt._zendesk_creds() == (BASE, "bot@ex.com", "tok")
+    assert zt._zendesk_creds() == (BASE, "cid", "secret")
     assert zt._check_zendesk() is True
 
 
@@ -153,7 +157,8 @@ def test_creds_unscoped_secret_is_not_configured(monkeypatch):
 def test_creds_reject_bad_subdomain(monkeypatch):
     import agent.secret_scope as ss
     for sub in ("evil.com/x", "a b", "everafterai.zendesk.com", "-x"):
-        vals = {"ZENDESK_SUBDOMAIN": sub, "ZENDESK_EMAIL": "e", "ZENDESK_API_TOKEN": "t"}
+        vals = {"ZENDESK_SUBDOMAIN": sub, "ZENDESK_OAUTH_CLIENT_ID": "c",
+                "ZENDESK_OAUTH_CLIENT_SECRET": "s"}
         monkeypatch.setattr(ss, "get_secret", lambda n, d=None, v=vals: v.get(n, d))
         assert zt._zendesk_creds() == ("", "", ""), sub
 
@@ -201,7 +206,7 @@ def test_write_chokepoint_refuses_non_draft_and_other_paths(monkeypatch, zd_ok, 
 def test_write_chokepoint_sends_allowed_draft(monkeypatch, zd_ok):
     seen = {}
 
-    async def fake(base, email, token, path, method="GET", json_body=None):
+    async def fake(base, token, path, method="GET", json_body=None):
         seen.update(path=path, method=method, body=json_body)
         return {"status": 201, "text": '{"article": {"id": 5}}'}
 

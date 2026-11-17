@@ -229,8 +229,8 @@ def handle_blueprint_command(
 
     # Slot values are user text interpolated into the stored prompt: the same prompt/deliver
     # guards as the cronjob tool and the dashboard's blueprint instantiate.
-    from tools.cronjob_job_args import _normalize_deliver_param, _validate_bot_chat_deliver
-    from tools.cronjob_prompt_scan import _scan_cron_prompt
+    from cron.job_args import _normalize_deliver_param, _validate_bot_chat_deliver
+    from cron.prompt_scan import _scan_cron_prompt
     guard_error = _scan_cron_prompt(spec["prompt"]) or _validate_bot_chat_deliver(
         _normalize_deliver_param(spec.get("deliver")))
     if guard_error:

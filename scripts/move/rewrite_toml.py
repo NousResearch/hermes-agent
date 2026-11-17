@@ -45,7 +45,7 @@ def rewrite_pyproject(root: Path, plan, write: bool) -> tuple[int, list[str]]:
     table, count, flags, out = "", 0, [], []
     if startup is not None:
         first, last = startup
-        new_lines, count = _rewrite_startup(lines[first:last + 1], dict(plan.paths), _generated_paths(root))
+        new_lines, count = _rewrite_startup(lines[first:last + 1], dict(plan.moved.paths), _generated_paths(root))
         lines = lines[:first] + new_lines + lines[last + 1:]
         startup = (first, first + len(new_lines) - 1)
     for number, line in enumerate(lines, 1):
@@ -193,6 +193,6 @@ def _flags(line: str, number: int, table: str, plan) -> list[str]:
             reason = ("package list names a moved package; keep the old name only while a shim lives there"
                       if table.startswith("tool.setuptools") else "TOML value names a moved module; fix by hand")
             out.append(f"pyproject.toml:{number}  toml  {text}  {reason}")
-        elif (found := plan.find_path(text)) is not None:
+        elif (found := plan.moved.find_path(text)) is not None:
             out.append(f"pyproject.toml:{number}  toml  {found[0]}  TOML value names a moved path (now {found[1]})")
     return out

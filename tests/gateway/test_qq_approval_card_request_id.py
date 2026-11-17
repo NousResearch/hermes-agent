@@ -130,13 +130,13 @@ def test_a_card_tap_checks_and_settles_in_one_step(monkeypatch):
     monkeypatch.delitem(approval._gateway_queues, SK, raising=False)
     late = _ApprovalEntry({"request_id": "b"})
     late.card_deny_only = True
-    select = approval._card_target
+    select = approval._entry_for_request
 
     def select_then_enqueue(session_key, request_id):
         entry = select(session_key, request_id)
         approval._gateway_queues.setdefault(session_key, []).append(late)
         return entry
 
-    monkeypatch.setattr(approval, "_card_target", select_then_enqueue)
+    monkeypatch.setattr(approval, "_entry_for_request", select_then_enqueue)
     assert approval.resolve_gateway_approval_card(SK, "once", None) == 0
     assert late.result is None and not late.event.is_set()

@@ -238,7 +238,7 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
         from gateway.session_authorities import active_authority
         from gateway.session_policy import policy_for_source
-        from tools.checkpoint_manager import CheckpointManager
+        from agent.checkpoints.manager import CheckpointManager
         policy = policy_for_source(self, source) if source is not None else None
         cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
                                       else _load_gateway_config())
@@ -745,7 +745,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
-        from tools.checkpoint_manager import format_checkpoint_list
+        from agent.checkpoints.manager import format_checkpoint_list
         mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
@@ -767,7 +767,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.rollback.none_found", cwd=cwd)
 
         # Restore by number or hash (a short hash can be all digits)
-        from tools.checkpoint_refs import resolve_checkpoint_ref
+        from agent.checkpoints.refs import resolve_checkpoint_ref
         try:
             target_hash = resolve_checkpoint_ref(checkpoints, arg)
         except ValueError:

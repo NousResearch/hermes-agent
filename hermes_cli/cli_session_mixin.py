@@ -264,8 +264,8 @@ class CLISessionMixin:
         return buf.getvalue().rstrip("\n").splitlines()
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
-        """A 1-indexed checkpoint number or a hash (``tools/checkpoint_refs.py``, every surface's rule)."""
-        from tools.checkpoint_refs import resolve_checkpoint_ref
+        """A 1-indexed checkpoint number or a hash (``agent/checkpoints/refs.py``, every surface's rule)."""
+        from agent.checkpoints.refs import resolve_checkpoint_ref
         try:
             return resolve_checkpoint_ref(checkpoints, ref)
         except ValueError:
@@ -911,6 +911,16 @@ class CLISessionMixin:
 
             write_breadcrumb(self.session_id)
 
+    def _title_session_id(self) -> str:
+        """The row holding this conversation's title: its compression tip. A gateway-backed CLI keeps
+        the conversation's creation id while each compression moves the live segment, and the title
+        with it, to a new row (the in-process CLI already follows the tip)."""
+        session_id = str(getattr(self, "session_id", "") or "")
+        db = getattr(self, "_session_db", None)
+        if not session_id or db is None:
+            return session_id
+        return db.get_compression_tip(session_id) or session_id
+
     def _is_session_yolo_active(self) -> bool:
         """Whether YOLO bypass is on for this session: reads ``tools.approval._session_yolo``
         (not a stale env var) and honors the frozen process-start ``--yolo`` flag."""
@@ -1204,7 +1214,7 @@ class CLISessionMixin:
         session_title = None
         if self._session_db:
             with contextlib.suppress(Exception):
-                session_title = self._session_db.get_session_title(self.session_id)
+                session_title = self._session_db.get_session_title(self._title_session_id())
 
         print(t("cli.session.exit_resume_hint"))
         # Session IDs are profile-constrained: non-default profiles need `-p <profile>` in

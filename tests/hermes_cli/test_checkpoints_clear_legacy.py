@@ -11,21 +11,19 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
+from hermes_constants import get_hermes_home
 
 
 def _base_with_archives(tmp_path: Path, monkeypatch, names) -> Path:
-    import tools.checkpoint_manager as ckpt_mgr
-
-    base = tmp_path / "checkpoints"
+    base = get_hermes_home() / "checkpoints"
     for name in names:
         (base / name).mkdir(parents=True)
         (base / name / "blob").write_bytes(b"x" * 1024)
-    monkeypatch.setattr(ckpt_mgr, "CHECKPOINT_BASE", base)
     return base
 
 
 def test_undeletable_archive_exits_two_and_is_reported(tmp_path, monkeypatch, capsys):
-    import tools.checkpoint_manager as ckpt_mgr
+    import agent.checkpoints.manager as ckpt_mgr
     from hermes_cli import checkpoints as checkpoints_cli
 
     base = _base_with_archives(tmp_path, monkeypatch, ["legacy-20200101-000000", "legacy-20200102-000000"])

@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import hermes_yaml as yaml
 
-from hermes_constants import get_hermes_home
 from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
@@ -37,6 +36,7 @@ from tools.skill_manager_batch import (
 from tools.skill_manager_scan import (
     _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+from tools.skills_tool import _skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +56,15 @@ def _scan_required() -> bool:
     return _guard_agent_created_enabled() or _background_origin()
 
 
-def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None) -> Optional[str]:
+def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None,
+                         files: Optional[list[Path]] = None) -> Optional[str]:
     """Post-write scan; error string if blocked, else None. An "ask" verdict
     (dangerous findings) is surfaced as an error so the agent can retry without them.
-    With a *baseline*, only findings absent from it count."""
+    With a *baseline* (taken over *files*), only findings absent from it count."""
     if not _scan_required():
         return None
     try:
-        result = scan_skill(skill_dir, source="agent-created")
+        result = scan_skill(skill_dir, source="agent-created", files=files)
         if baseline is not None:
             result = _introduced_findings(skill_dir, result, baseline)
         allowed, reason = should_allow_install(result)
@@ -75,23 +76,6 @@ def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None) ->
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
         return f"Security scan could not complete, so this skill was blocked: {e}"
     return None
-
-
-# All skills live in ~/.hermes/skills/ (single source of truth)
-HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
-_SKILLS_DIR_AT_IMPORT = SKILLS_DIR
-
-
-def _skills_dir() -> Path:
-    """Active profile's skills dir at call time (multi-profile runtimes rebind per session).
-    An explicitly patched module-level ``SKILLS_DIR`` (tests) wins over the live HERMES_HOME.
-
-    Long-lived multi-profile runtimes (Dashboard/TUI/Desktop backend, cron, kanban workers) import this
-    module once under the launch HERMES_HOME and later bind a different profile per session (#40677).
-    """
-    configured = Path(SKILLS_DIR)
-    return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
 
 
 def _skill_lock_path(name: str) -> Path:
@@ -429,19 +413,19 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         original = target.read_text(encoding="utf-8-sig")
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
-    baseline, scan_error = _scan_baseline(skill_dir)
+    scope, baseline, scan_error = _scan_baseline(skill_dir, target)
     if scan_error:
         return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
-    scan_error = _security_scan_skill(skill_dir, baseline)
+    scan_error = _security_scan_skill(skill_dir, baseline, scope)
     if not scan_error:
         return None
     if original is not None:
         atomic_write_text(target, original, preserve_mode=True)
-    else:
-        target.unlink(missing_ok=True)
+    else:  # a dangling symlink's write created its destination: remove that, keep the link
+        target.resolve().unlink(missing_ok=True)
     return _err(scan_error)
 
 

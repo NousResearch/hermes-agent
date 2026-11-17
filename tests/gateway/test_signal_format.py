@@ -5,6 +5,8 @@ strikethrough, monospace, code blocks, headings, and — critically — the
 false-positive regressions that caused spurious italics in production.
 """
 
+import pytest
+
 from plugins.platforms.signal.signal_format import markdown_to_signal
 
 # ---------------------------------------------------------------------------
@@ -247,3 +249,127 @@ class TestTableRealignment:
         assert self._u16_slice(text, mono[0]) == "| Name  | Age |\n|-------|-----|\n| Alice | 30  |"
         assert self._u16_slice(text, mono[1]) == "| a | b |\n|---|---|\n| 1 | 22 |"
         assert "cost | value" == _m2s("cost | value\nnot a table")[0].split("\n")[0]
+
+
+# ===========================================================================
+# Code protection against restyling & command alteration (#146848)
+# ===========================================================================
+
+class TestCodeProtection:
+    """Commands and text inside fenced code blocks and inline code spans must
+    never have formatting markers (*, _, ~, #) stripped or restyled."""
+
+    def test_fenced_code_preserves_wildcards_and_asterisks(self):
+        """rm -rf /srv/*/cache/* in fenced code must not be italicized or stripped."""
+        md = "```\nrm -rf /srv/*/cache/*\n```"
+        text, styles = _m2s(md)
+        assert text == "rm -rf /srv/*/cache/*"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "ITALIC") == []
+
+    def test_fenced_code_preserves_underscores(self):
+        """find . -name *_old_* -delete must not have _ stripped as italic."""
+        md = "```\nfind . -name *_old_* -delete\n```"
+        text, styles = _m2s(md)
+        assert text == "find . -name *_old_* -delete"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "ITALIC") == []
+
+    def test_fenced_code_preserves_tildes(self):
+        """chmod -R 777 ~~/backup~~ must not become strikethrough."""
+        md = "```\nchmod -R 777 ~~/backup~~\n```"
+        text, styles = _m2s(md)
+        assert text == "chmod -R 777 ~~/backup~~"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "STRIKETHROUGH") == []
+
+    def test_fenced_code_preserves_comments(self):
+        """Comments starting with # in code blocks must not become bold headings."""
+        md = "```python\n# This is a comment\nx = 1\n```"
+        text, styles = _m2s(md)
+        assert text == "# This is a comment\nx = 1"
+        assert len(styles) == 1
+        assert styles[0].endswith(":MONOSPACE")
+        assert _find_style(styles, "BOLD") == []
+
+    def test_heading_preceding_code_block_preserves_both_ranges(self):
+        """A heading before a code block must retain both heading BOLD and code block MONOSPACE."""
+        md = "# Heading\n```\nmy_code_block\n```"
+        text, styles = _m2s(md)
+        assert text == "Heading\nmy_code_block"
+        bold = _find_style(styles, "BOLD")
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(bold) == 1
+        assert len(mono) == 1
+        assert bold[0] == "0:7:BOLD"
+        assert mono[0] == "8:13:MONOSPACE"
+
+    def test_inline_code_preserves_wildcards_and_tildes(self):
+        """Inline code spans must not have internal * or ~ restyled."""
+        md = "Execute `rm -rf /srv/*/cache/*` and `chmod -R 777 ~~/backup~~`"
+        text, styles = _m2s(md)
+        assert text == "Execute rm -rf /srv/*/cache/* and chmod -R 777 ~~/backup~~"
+        mono = _find_style(styles, "MONOSPACE")
+        assert len(mono) == 2
+        assert _find_style(styles, "ITALIC") == []
+        assert _find_style(styles, "STRIKETHROUGH") == []
+
+
+_APPROVAL_COMMANDS = [
+    "rm -rf /srv/*/cache/*",
+    "find . -name *_old_* -delete",
+    "chmod -R 777 ~~/backup~~",
+    "cp __init__.py **/pkg/",
+    "# comment *line*\necho _x_ `y`",
+]
+
+
+@pytest.mark.parametrize("command", _APPROVAL_COMMANDS)
+def test_fenced_command_round_trips_amid_styled_prose(command):
+    """An approval prompt's fenced command reads byte-identical, and the prose
+    around it (heading, bold, italic) is still styled outside the fence."""
+    md = f"## Approve?\n```bash\n{command}\n```\nThis is **dangerous** and _final_."
+    text, styles = _m2s(md)
+    mono = _find_style(styles, "MONOSPACE")
+    assert len(mono) == 1
+    start, length, _ = mono[0].split(":")
+    assert text[int(start) : int(start) + int(length)] == command
+    assert text == f"Approve?\n{command}\nThis is dangerous and final."
+    assert len(_find_style(styles, "BOLD")) == 2
+    assert len(_find_style(styles, "ITALIC")) == 1
+
+
+@pytest.mark.parametrize("command", [
+    "echo " + "`" * 3 + " ; rm -rf /tmp/*/x*",
+    "printf '" + "`" * 3 + "' && rm -rf ~~/home~~",
+    "a " + "`" * 4 + " b **c** _d_",
+    "echo " + "`" * 3 + " ; echo " + "`" * 3,
+    "printf '" + "`" * 3 + "x" + "`" * 3 + "' && rm -rf /srv/*/c*",
+])
+def test_command_with_a_backtick_run_round_trips_inside_its_longer_fence(command):
+    """code_fence() wraps a command holding ``` in a longer fence; the ``` inside must not close it."""
+    from gateway.platforms.base_exec_approval import code_fence
+
+    fence = code_fence(command)
+    md = f"Approve?\n{fence}\n{command}\n{fence}\nThis is **dangerous**."
+    text, styles = _m2s(md)
+    mono = _find_style(styles, "MONOSPACE")
+    assert len(mono) == 1
+    start, length, _ = mono[0].split(":")
+    assert text[int(start) : int(start) + int(length)] == command
+    assert text == f"Approve?\n{command}\nThis is dangerous."
+
+
+def test_backtick_run_kept_in_a_longer_fence_does_not_pair_with_a_later_fence():
+    """A ``` kept inside one block must not open a new block with the next fence in the message."""
+    from gateway.platforms.base_exec_approval import code_fence
+
+    command = "echo " + "`" * 3 + " x"
+    fence = code_fence(command)
+    text, styles = _m2s(f"{fence}\n{command}\n{fence}\nThen **this**:\n```\nlater\n```")
+    assert text == f"{command}\nThen this:\nlater"
+    spans = [m.split(":") for m in _find_style(styles, "MONOSPACE")]
+    assert [text[int(s) : int(s) + int(n)] for s, n, _ in spans] == [command, "later"]

@@ -8,7 +8,7 @@ def send_message_verb(runner):
     def handler(params: dict) -> dict:
         from gateway.config import Platform
         from gateway.run import _profile_runtime_scope
-        from tools.send_message_tool import send_message_tool
+        from gateway.outbound.send import send_message_tool
 
         target, message, home = params.get("target"), params.get("message"), params.get("home")
         if (not isinstance(target, str) or not target.lower().startswith("matrix:")
@@ -36,7 +36,7 @@ def matrix_send_verb(runner):
         from concurrent.futures import TimeoutError
         from gateway.config import Platform
         from gateway.run import _profile_runtime_scope
-        from tools.send_message_senders import _matrix_send_core
+        from gateway.outbound.senders import _matrix_send_core
 
         home, chat, message = params.get("home"), params.get("chat_id"), params.get("message")
         media, thread = params.get("media_files", []), params.get("thread_id")

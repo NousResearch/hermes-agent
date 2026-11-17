@@ -171,6 +171,8 @@ def build_request_payload(
         logger.warning("LLM request middleware failed; sending the request unmodified", exc_info=True)
         _original_api_kwargs = dict(api_kwargs)
         _llm_middleware_trace = []
+    from agent.prompt_cache_clock import record_attempt_sent
+    record_attempt_sent(agent, api_kwargs)
     return ApiRequestBuild(
         "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
         _original_api_kwargs, _llm_middleware_trace,

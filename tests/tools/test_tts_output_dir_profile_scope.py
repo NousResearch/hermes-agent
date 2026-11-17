@@ -1,22 +1,13 @@
 """Regression tests for profile-scoped TTS default output dir (#98749).
 
-``DEFAULT_OUTPUT_DIR`` was resolved once at import time, so long-lived
-multi-profile runtimes (dashboard console, TUI/Desktop backend, cron, kanban
-workers) kept writing synthesized audio into the launch profile's
-``cache/audio`` even while the request was scoped to a different profile via
-``HERMES_HOME`` or ``set_hermes_home_override()``. The call-time accessor
-``_default_output_dir()`` re-resolves from the live profile-scoped home;
-these pins keep the synthesis paths from re-freezing the launch profile.
+Long-lived multi-profile runtimes (dashboard console, TUI/Desktop backend,
+cron, kanban workers) must write synthesized audio into the active profile's
+``cache/audio`` when a request is scoped via ``set_hermes_home_override()``,
+not into the launch profile's.
 """
 
-import importlib
-from pathlib import Path
+from tools import tts_tool
 
-def _reload_tts_tool(import_home: Path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(import_home))
-    from tools import tts_tool
-
-    return importlib.reload(tts_tool)
 
 def test_default_output_dir_follows_contextvar_profile_override(tmp_path, monkeypatch):
     """The web server scopes profiles via set_hermes_home_override() rather
@@ -26,7 +17,7 @@ def test_default_output_dir_follows_contextvar_profile_override(tmp_path, monkey
     default_home.mkdir(parents=True)
     profile_home.mkdir(parents=True)
 
-    tts_tool = _reload_tts_tool(default_home, monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
 
     from hermes_constants import (
         reset_hermes_home_override,

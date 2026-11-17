@@ -7,8 +7,6 @@ import shutil
 import sqlite3
 import stat
 import sys
-import tempfile
-import threading
 import time
 import zipfile
 import zlib
@@ -29,8 +27,9 @@ from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_atomic import _atomic_output_path
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
+from hermes_cli.backup_staging import prune_backup_staging, reclaim_backup_staging, staged_backup_file, warn_legacy_backup_file
 from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
+from hermes_cli.home_data_layout import BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
@@ -115,14 +114,14 @@ _KEPT_CACHE_SUBDIRS = {
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* is inside a regenerable tree at a profile-home root."""
+    """True when *rel_path* is inside a regenerable tree at a profile-home root, or is the bridge log."""
     root_entry = profile_root_entry(rel_path.parts)
     if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
         return True
     parts = rel_path.parts
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
-    return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS
+    return parts in BRIDGE_LOG_PARTS or (len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS)
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:
@@ -264,7 +263,8 @@ def _iter_external_files(base: Path) -> list[Path]:
         return []
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+        dirnames[:] = prune_backup_staging(
+            Path(dirpath), [d for d in dirnames if d not in _EXCLUDED_DIRS])
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
                      if not (_is_non_regular_path(fp) or fp.name in _EXCLUDED_NAMES
                              or fp.name.endswith(_EXCLUDED_SUFFIXES)))
@@ -315,6 +315,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
     shared by ``hermes backup`` and the pre-update path so they can never drift.
     """
+    reclaim_backup_staging(hermes_root / _PRE_UPDATE_BACKUPS_DIR)
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(hermes_root)
         is_root = rel_dir == Path(".")
@@ -325,7 +326,8 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
         # No walk may follow a junction.
-        dirnames[:] = [name for name in kept if not _is_link_path(Path(dirpath) / name)]
+        dirnames[:] = prune_backup_staging(
+            Path(dirpath), [name for name in kept if not _is_link_path(Path(dirpath) / name)])
         for fname in filenames:
             rel = rel_dir / fname
             fpath = hermes_root / rel
@@ -475,15 +477,12 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
     Staged beside the output zip: /tmp may be a small tmpfs that cannot hold large databases.
     """
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(out_path.parent)) as tmp:
-        tmp_db = Path(tmp.name)
-    try:
+    with staged_backup_file(out_path.parent, "snapshot.db") as tmp_db:
         if not _safe_copy_db(abs_path, tmp_db):
+            warn_legacy_backup_file(abs_path)
             return None
         _write_zip_file(zf, tmp_db, str(rel_path))
         return tmp_db.stat().st_size
-    finally:
-        tmp_db.unlink(missing_ok=True)
 
 
 def _write_zip_entries(
@@ -505,6 +504,7 @@ def _write_zip_entries(
                     continue
                 total_bytes += size
             else:
+                warn_legacy_backup_file(abs_path)
                 _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
@@ -779,10 +779,12 @@ def run_import(args) -> Optional[int]:
 
         t0 = time.monotonic()
         from gateway.runtime_ownership import OwnershipConflict
+        from hermes_cli.backup_keep_host import KeepHostRefused, keep_host_import
         try:
-            restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
-                zf, members, prefix, hermes_root, file_count)
-        except OwnershipConflict as exc:
+            with keep_host_import(args, zf, members, prefix, hermes_root) as keep_host:
+                restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
+                    zf, members, prefix, hermes_root, file_count, keep_host)
+        except (OwnershipConflict, KeepHostRefused) as exc:
             print(f"\nImport refused; no files restored: {exc}")
             sys.exit(1)
         elapsed = time.monotonic() - t0
@@ -799,11 +801,7 @@ def run_import(args) -> Optional[int]:
             )
 
         if errors:
-            print(f"\n  Warnings ({len(errors)} files skipped):")
-            for e in errors[:10]:
-                print(e)
-            if len(errors) > 10:
-                print(f"  ... and {len(errors) - 10} more")
+            _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "")
 
         if db_shrunk:
             # The backup predates work that is now overwritten. Say so: the
@@ -893,7 +891,7 @@ def run_import(args) -> Optional[int]:
 
 
 def _import_members(
-    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
+    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int, keep_host=None,
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Reserve all affected profiles before publishing even the first config file."""
     from gateway.runtime_ownership import exclusive_maintenance
@@ -911,8 +909,10 @@ def _import_members(
         target = hermes_root / rel
         if target.suffix == ".db" and target.resolve().is_relative_to(root_res):
             homes.update([target.absolute().parent, target.resolve().parent])
+    homes.update(keep_host.homes() if keep_host else ())
     with exclusive_maintenance(homes):
-        return _import_members_exclusive(zf, members, prefix, hermes_root, file_count)
+        restore = keep_host.around(_import_members_exclusive) if keep_host else _import_members_exclusive
+        return restore(zf, members, prefix, hermes_root, file_count)
 
 
 def _import_external_member(
@@ -943,7 +943,7 @@ def _import_external_member(
 
 
 def _import_members_exclusive(
-    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
+    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int, keep_host=None,
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Publish every member; return ``(restored, restored_external, errors, skipped_runtime, db_shrunk)``.
 
@@ -995,7 +995,7 @@ def _import_members_exclusive(
         # reconciler on the target and disconnects hosted instances from the
         # Nous portal. Matched by basename so both the root profile and
         # named profiles (profiles/<name>/gateway_state.json) are covered.
-        if parts[-1] in _IMPORT_SKIP_NAMES:
+        if parts[-1] in _IMPORT_SKIP_NAMES or (keep_host is not None and keep_host.skips(parts)):
             skipped_runtime.append(rel)
             continue
 
@@ -1034,7 +1034,7 @@ def _import_members_exclusive(
                 after = _count_session_rows(target)
                 if before and after and after[1] < before[1]:
                     db_shrunk.append((rel, before, after))
-            else:
+            elif keep_host is None or not keep_host.publish(zf, member, parts, target, new_file_mode):
                 _extract_member_atomically(zf, member, target, new_file_mode)
             if target.name == "config.yaml":  # extraction keeps the live file's mode
                 drop_other_access(target)
@@ -2003,21 +2003,21 @@ def run_quick_backup(args) -> None:
 # Shared full-zip backup helper
 # ---------------------------------------------------------------------------
 
-def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
-    """Single-flight wrapper for automatic full zip backups."""
+def _write_full_zip_backup(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]] = ()) -> Optional[Path]:
+    """Single-flight wrapper for automatic full zip backups; ``extra``: ``(path, arcname)`` outside the home."""
     try:
         with _backup_operation_lock(hermes_root):
-            return _write_full_zip_backup_locked(out_path, hermes_root)
+            return _write_full_zip_backup_locked(out_path, hermes_root, list(extra))
     except BackupInProgressError as exc:
         logger.warning("Full-zip backup skipped: %s", exc)
         return None
 
 
-def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional[Path]:
+def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]]) -> Optional[Path]:
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
     try:
-        files_to_add = list(_iter_backup_files(hermes_root, out_path))
+        files_to_add = list(_iter_backup_files(hermes_root, out_path)) + extra
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None

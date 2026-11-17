@@ -43,20 +43,15 @@ from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from tools.process_registry_wait import max_wait_timeout, process_deadline_floor
 
 logger = logging.getLogger(__name__)
 
-# Crash-recovery checkpoint (gateway only)
-CHECKPOINT_PATH = get_hermes_home() / "processes.json"
-_CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
-
-
 def _checkpoint_path() -> Path:
-    """Active profile's checkpoint file at call time: the patched ``CHECKPOINT_PATH`` when a test
-    changed it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every
-    profile from one process, so the import-time constant would pin every profile's process
-    checkpoint to the launch home."""
-    return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
+    """Active profile's crash-recovery checkpoint file, resolved per call: the multiplexed gateway
+    serves every profile from one process, so an import-time path would pin every profile's
+    process checkpoint to the launch home."""
+    return get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 # Tail of the output a completion notification carries. Right for a build log; a spawner whose
@@ -562,8 +557,8 @@ class ProcessSession:
     exited: bool = False
     exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
     exit_code: Optional[int] = None             # None while running
-    completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
-    termination_source: str = ""                # process.kill|kill_all|backend_lost|env_closed|failed_start
+    completion_reason: str = "exited"           # exited|killed|lost
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|env_closed
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
@@ -1065,7 +1060,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             and not self._is_host_pid_alive(session.pid))
 
     @staticmethod
-    def _config_value(section: str, key: str, fallback):
+    def _config_value(section: str, key: str):
         """``config.yaml`` value for ``section.key``, else the DEFAULT_CONFIG value.
         Raises if config is unreadable; callers wrap with their own hard fallback so
         registry code paths never crash on a broken config file."""
@@ -1078,7 +1073,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def _config_seconds(key: str, fallback: float) -> float:
         """``terminal.<key>`` as a non-negative float (0 disables); *fallback* if unreadable."""
         try:
-            return max(float(ProcessRegistry._config_value("terminal", key, fallback)), 0.0)
+            return max(float(ProcessRegistry._config_value("terminal", key)), 0.0)
         except Exception:
             return fallback
 
@@ -1418,7 +1413,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             logger.warning("%s wait failed; recording known exit status: %s", label, e)
         self._finish_exited(session, exit_code())
 
-    _log_delta_command = staticmethod(log_delta_command)
 
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
         """Background thread: poll a sandbox log file for non-local backends.
@@ -1433,7 +1427,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             try:
                 # Read only the bytes written since the last poll, plus the process status.
                 raw = env.execute(
-                    self._log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
+                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
                     timeout=10).get("output", "")
                 reply = parse_log_delta_reply(raw)
                 delta = reply.delta if reply else ""
@@ -1774,7 +1768,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """``delegation.surface_child_process_notifications``; False on any config
         error — never crash the drain loop."""
         try:
-            return bool(ProcessRegistry._config_value("delegation", "surface_child_process_notifications", False))
+            return bool(ProcessRegistry._config_value("delegation", "surface_child_process_notifications"))
         except Exception:
             return False
 
@@ -2055,10 +2049,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
         from tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
 
-        try:
-            max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
-        except (ValueError, TypeError):
-            max_timeout = 180
+        max_timeout = max_wait_timeout()
         # The schema says minimum=1 but not every caller enforces it; timeout=0 is
         # falsy and would silently fall through to the default wait.
         if timeout is not None and timeout <= 0:
@@ -2667,15 +2658,11 @@ def _redact_process_result(result: dict) -> dict:
 def _list_processes(task_id) -> dict:
     # Also surface session-scoped background processes (e.g. a forgotten preview
     # server): they share the gateway session_key and can block session reset.
-    session_key = ""
-    with suppress(Exception):
-        # See #29177.
-        from tools.approval_context import get_current_session_key
-        session_key = get_current_session_key(default="") or ""
+    from tools.process_registry_access import caller_session_key
     return {"processes": [
         _redact_process_result(p)
         for p in process_registry.list_sessions(
-            task_id=task_id, session_key=session_key or None, include_retained=True)]}
+            task_id=task_id, session_key=caller_session_key() or None, include_retained=True)]}
 
 
 # action -> (handler(session_id, args) -> dict, redact output?). Output-bearing
@@ -2705,6 +2692,10 @@ def _handle_process(args, **kw):
     if action in _SESSION_ACTIONS:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
+        from tools.process_registry_access import resolve_actionable
+        allowed, session_id = resolve_actionable(session_id, kw.get("task_id"))
+        if not allowed:
+            return json.dumps(_not_found(session_id), ensure_ascii=False)
         handler, redact = _SESSION_ACTIONS[action]
         from tools.process_registry_wait_policy import apply_wait_poll_policy
         result = apply_wait_poll_policy(action, session_id, handler(session_id, args))
@@ -2718,4 +2709,5 @@ registry.register(
     schema=PROCESS_SCHEMA,
     handler=_handle_process,
     emoji="⚙️",
+    deadline_floor=process_deadline_floor,
 )

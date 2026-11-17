@@ -81,7 +81,7 @@ async def test_review_command_dispatches_background_subagent(monkeypatch):
         return fake_child
 
     monkeypatch.setattr(dt, "_build_child_agent", fake_build)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     monkeypatch.setattr(
         dt, "_run_single_child",
         lambda *a, **k: {

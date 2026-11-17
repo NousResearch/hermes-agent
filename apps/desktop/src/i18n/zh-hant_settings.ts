@@ -130,6 +130,8 @@ export const zhHantSettings = {
       mcp: 'MCP',
       archivedChats: '已封存聊天',
       sessions: '工作階段',
+      backup: '備份與移轉',
+      backupOnly: '備份',
       about: '關於',
       billing: '帳單',
       notifications: '通知',

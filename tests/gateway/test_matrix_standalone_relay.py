@@ -8,7 +8,7 @@ import pytest
 from gateway.control_socket import query_gateway_control
 from gateway.run_bootstrap import _start_gateway_start_control_socket
 from plugins.platforms.matrix.adapter import _standalone_send
-from tools.send_message_senders import _send_matrix_via_adapter
+from gateway.outbound.senders import _send_matrix_via_adapter
 
 
 @pytest.mark.platforms("posix")
@@ -56,7 +56,7 @@ async def test_standalone_entrypoints_relay_text_media_thread_and_profile(tmp_pa
     (bob / "gateway.sock.path").write_text(str(server._bind_path))
     pconfig = SimpleNamespace(extra={"e2ee_mode": "required"})
     try:
-        with patch("tools.send_message_senders._live_adapter", return_value=(None, None)), patch(
+        with patch("gateway.outbound.senders._live_adapter", return_value=(None, None)), patch(
             "plugins.platforms.matrix.adapter.MatrixAdapter", side_effect=AssertionError("ephemeral fallback")):
             with _profile_runtime_scope(home):
                 result = await sender(pconfig, "!room:example.org", "hello", media_files=[(str(media), False)], thread_id="$thread")
@@ -67,7 +67,7 @@ async def test_standalone_entrypoints_relay_text_media_thread_and_profile(tmp_pa
             ("text", "alice", loop, "!room:example.org", "hello", {"thread_id": "$thread"}),
             ("media", "alice", loop, "!room:example.org", str(media), {"thread_id": "$thread"}),
         ]
-        with patch("tools.send_message_senders._live_adapter", return_value=(None, None)), patch(
+        with patch("gateway.outbound.senders._live_adapter", return_value=(None, None)), patch(
             "plugins.platforms.matrix.adapter.MatrixAdapter", side_effect=AssertionError("ephemeral fallback")):
             with _profile_runtime_scope(bob):
                 bob_result = await sender(pconfig, "!bob:example.org", "bob message")
@@ -95,7 +95,7 @@ async def test_uncertain_standalone_relay_never_falls_back(sender, monkeypatch):
         return {"supported_verbs": ["matrix-send"]} if verb == "send-capabilities" else None
 
     monkeypatch.setattr("gateway.control_socket.query_gateway_control", query)
-    with patch("tools.send_message_senders._live_adapter", return_value=(None, None)), patch(
+    with patch("gateway.outbound.senders._live_adapter", return_value=(None, None)), patch(
         "plugins.platforms.matrix.adapter.MatrixAdapter", side_effect=AssertionError("ephemeral fallback")):
         result = await sender(SimpleNamespace(extra={"e2ee_mode": "required"}), "!room:example.org", "hello")
     assert "outcome unknown" in result["error"]

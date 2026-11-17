@@ -83,6 +83,8 @@ def pending():
     entry = _ApprovalEntry({"request_id": "r1", "command": "x"})
     with approval._lock:
         approval._gateway_queues[SESSION] = [entry]
+    # Lifted first, so each test sees whether the text path sets the mark itself.
+    approval.restrict_gateway_approval_card_to_deny(SESSION, "r1", restricted=False)
     yield entry
     with approval._lock:
         approval._gateway_queues.clear()

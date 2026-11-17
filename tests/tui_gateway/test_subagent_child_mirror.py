@@ -111,7 +111,7 @@ def test_live_child_session_gets_native_stream(server, emits):
     assert child[2][1] == {"text": "hmm"}
     # The rotated-out tool closes with the same id it opened with.
     assert child[3][1]["tool_id"] == first_tool["tool_id"]
-    assert child[6][1] == {"text": "done deal"}
+    assert child[6][1] == {"text": "done deal", "status": "complete"}
 
     # Parent relay is untouched alongside the mirror.
     assert [e for e, s, _ in emits if s == "parent-sid"] == [
@@ -122,6 +122,28 @@ def test_live_child_session_gets_native_stream(server, emits):
     ]
     # Completion clears mirror state.
     assert server._child_mirrors == {}
+
+
+def test_completed_child_http_summary_is_not_a_desktop_failure(server, emits):
+    """A successful child watch turn must carry the gateway completion verdict.
+
+    Desktop's status-less legacy fallback otherwise mistakes this ordinary
+    summary for an HTTP provider failure and hides the child's answer.
+    """
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+
+    _relay(
+        server,
+        "subagent.complete",
+        child_session_id="child-1",
+        status="completed",
+        summary="HTTP 200 OK",
+    )
+
+    assert [(e, p) for e, s, p in emits if s == "live-1"] == [
+        ("message.start", None),
+        ("message.complete", {"text": "HTTP 200 OK", "status": "complete"}),
+    ]
 
 
 def test_window_closed_midrun_drops_state_then_fresh_turn_on_reopen(server, emits):

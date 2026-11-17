@@ -117,6 +117,75 @@ async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancella
     assert 'run.cancelled' in names and 'run.completed' not in names
 
 
+@pytest.mark.asyncio
+async def test_run_sse_keeps_subagent_lifecycle_beside_structured_tool_events(
+    api, owner
+):
+    admitted = admit_api_turn(
+        api, session_id="subagent-sse", user_message="hello", conversation_history=[]
+    )
+    _, ref, _row = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+
+        turn = _turn_runner(owner, ref)
+        progress = _wired_agent(turn).tool_progress_callback
+        assert progress is not None
+        progress("subagent.start", goal="inspect", child_session_id="child-session-1")
+        progress(
+            "tool.started",
+            "read_file",
+            "a.txt",
+            {"path": "a.txt"},
+            tool_call_id="call-1",
+        )
+        turn.combined_tool_start_callback("call-1", "read_file", {"path": "a.txt"})
+        progress(
+            "tool.completed",
+            "read_file",
+            None,
+            {"path": "a.txt"},
+            tool_call_id="call-1",
+            is_error=False,
+        )
+        turn.combined_tool_complete_callback(
+            "call-1", "read_file", {"path": "a.txt"}, "body"
+        )
+        progress(
+            "subagent.complete",
+            goal="inspect",
+            child_session_id="child-session-1",
+            status="completed",
+            summary="done",
+        )
+        execution_result.get()["result"] = {"final_response": "ok"}
+        return "ok"
+
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)
+    events = _events(queue)
+    lifecycle = [
+        event
+        for event in events
+        if event["event"]
+        in {"tool.started", "tool.completed", "subagent.start", "subagent.complete"}
+    ]
+    assert [event["event"] for event in lifecycle] == [
+        "subagent.start",
+        "tool.started",
+        "tool.completed",
+        "subagent.complete",
+    ]
+    assert (
+        lifecycle[0]["child_session_id"]
+        == lifecycle[-1]["child_session_id"]
+        == "child-session-1"
+    )
+
+
 def _wrap(api, run_id, loop, sink):
     from gateway.platforms.api_server_runs import _make_run_event_callback
     inner = _make_run_event_callback(api, run_id, loop, _api_server=_api_server)

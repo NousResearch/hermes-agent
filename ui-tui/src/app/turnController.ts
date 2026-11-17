@@ -2,6 +2,7 @@ import type {
   ArtifactLink,
   MessageCompletePayload,
   SubagentEventPayload,
+  ToolCompletePayload,
   ToolLabel
 } from '@hermes/shared/gateway-events'
 import type { SessionInterruptResponse } from '@hermes/shared/gateway-types'
@@ -662,6 +663,12 @@ class TurnController {
       { kind: 'event', linkUrl: link.url, role: 'system', text: artifactLinkText(link) }
     ]
     patchTurnState({ streamSegments: this.segmentMessages })
+  }
+
+  // What a finished call hangs under its row: a hosted artifact's viewer link, then its image.
+  pushToolResultSegments(payload: Pick<ToolCompletePayload, 'artifact_link' | 'image_path' | 'tool_id'>) {
+    this.pushArtifactLinkSegment(payload.artifact_link)
+    this.pushImageSegment(payload.image_path, payload.tool_id)
   }
 
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {

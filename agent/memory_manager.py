@@ -173,7 +173,7 @@ def _mask_learned(text: str, learned: set) -> str:
     ordered = sorted(learned, key=len, reverse=True)
     out, cursor = [], 0
     for m in _TOKEN_RE.finditer(text):
-        start, end = m.start(), m.end()
+        start = m.start()
         token = m.group(0)
         offset = 0
         if (start and text[start - 1] == "\\" and len(token) > 1

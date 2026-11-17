@@ -159,3 +159,21 @@ def test_a_cached_backend_does_not_keep_the_installing_call_alive(backends):
     del sink
     gc.collect()
     assert ref() is None
+
+
+def test_a_profile_that_cannot_be_bound_still_has_its_backend_stopped(backends, tmp_path, monkeypatch):
+    """The backend is out of the cache before teardown: if binding its profile fails, nothing else would
+    ever stop it, and its driver (a remote exec stream) would keep the sandbox awake."""
+    from contextlib import contextmanager
+    import agent.runtime_scope as runtime_scope
+
+    @contextmanager
+    def unavailable(home, **kw):
+        raise RuntimeError("secret source unavailable")
+        yield
+
+    with _profile(_home(tmp_path / "other", 1)):
+        _call()
+    monkeypatch.setattr(runtime_scope, "bind_profile_scope", unavailable)
+    cu.release_idle_backends(now=time.monotonic() + 3600)
+    assert backends[0].stopped

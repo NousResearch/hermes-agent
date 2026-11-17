@@ -205,6 +205,26 @@ def _idle_due_locked(sid: str, now: float) -> bool:
     limit = _backend_idle_limits.get(sid, 0.0)
     return limit > 0 and now - _backend_last_used.get(sid, now) >= limit
 
+def _stop_in_profile(sid: str, backend: ComputerUseBackend, home: Optional[str]) -> None:
+    """Stop a detached backend under its owning profile. It is already out of the cache, so nothing else
+    will ever stop it: a profile bind that fails must not skip the stop (it then runs unbound)."""
+    from agent.runtime_scope import bind_profile_scope
+
+    def on_error(e: Exception) -> None:
+        logger.debug("computer_use idle release failed for session %s", sid, exc_info=True)
+
+    stopped = False
+    try:
+        # No secret hydration: stopping a driver reads no secrets, and hydration can run external sources.
+        with bind_profile_scope(home, hydrate_secrets=False) if home is not None else contextlib.nullcontext():
+            _stop_backend(backend, None, on_error)
+            stopped = True
+    except Exception:
+        logger.warning("computer_use: could not bind profile %s to release session %s's backend", home, sid,
+                       exc_info=True)
+    if not stopped:
+        _stop_backend(backend, None, on_error)
+
 def release_idle_backends(now: Optional[float] = None) -> list[str]:
     """Release every cached backend unused for longer than its idle limit; the scoped keys released.
 
@@ -230,10 +250,7 @@ def release_idle_backends(now: Optional[float] = None) -> list[str]:
             if backend is None:
                 continue
             logger.info("computer_use backend for session %s idle; released", sid)
-            from agent.runtime_scope import bind_profile_scope
-            with bind_profile_scope(home) if home is not None else contextlib.nullcontext():
-                _stop_backend(backend, None, lambda e: logger.debug(
-                    "computer_use idle release failed for session %s", sid, exc_info=True))
+            _stop_in_profile(sid, backend, home)
             released.append(sid)
         finally:
             call_lock.release()

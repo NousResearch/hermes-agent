@@ -8,7 +8,8 @@ never sends a probe) and the warmer and marker policy consult it at decision tim
 
 Key: ``(provider, base_url host, model, explicit|implicit)``, implicit = no ``cache_control`` markers.
 Per key: ``reads`` (hits after a known earlier touch), ``attempts`` (a later request inside the tier
-that read nothing), ``write_on_hit`` (a hit that also wrote as many tokens as it read: the same prefix again),
+that read nothing), ``write_on_hit`` (a keep-alive, an unchanged replay, that hit and still wrote as many
+tokens as it read: the same prefix again; an ordinary turn appends new content, so its sizes prove nothing),
 the gaps (seconds since the prefix was last touched) of hits and misses, and ``updated``.
 
 Rules (each needs two consistent samples, so one stray miss never downgrades a route):
@@ -94,10 +95,12 @@ def _routine_hit(entry: dict[str, Any], gap_s: Optional[float], read: int, write
 
 
 def observe(*, provider: str, base_url: str, model: str, explicit: bool, read: int, write: int,
-            gap_s: Optional[float], tier_s: Optional[float], now: Optional[float] = None) -> None:
+            gap_s: Optional[float], tier_s: Optional[float], now: Optional[float] = None,
+            replay: bool = False) -> None:
     """Fold one response's cache usage. ``gap_s`` is the time since the same prefix was last touched
-    (None when the clock knows no earlier touch); ``tier_s`` the lifetime the clock assumed for it. A
-    response that read and wrote nothing still counts as a miss when the prefix had a cache entry."""
+    (None when the clock knows no earlier touch); ``tier_s`` the lifetime the clock assumed for it;
+    ``replay`` whether the request re-sent the prefix unchanged (a keep-alive). A response that read and
+    wrote nothing still counts as a miss when the prefix had a cache entry."""
     now = time.time() if now is None else now
     hit = read > 0
     known = gap_s is not None and tier_s is not None and gap_s < tier_s
@@ -115,7 +118,7 @@ def observe(*, provider: str, base_url: str, model: str, explicit: bool, read: i
                 entry["reads"] = int(entry.get("reads", 0)) + 1
                 if gap_s is not None:
                     _push(entry, "hit_gaps", gap_s)
-                if abs(write - read) <= _SAME_PREFIX_SHARE * read:
+                if replay and abs(write - read) <= _SAME_PREFIX_SHARE * read:
                     entry["write_on_hit"] = int(entry.get("write_on_hit", 0)) + 1
             else:
                 entry["attempts"] = int(entry.get("attempts", 0)) + 1

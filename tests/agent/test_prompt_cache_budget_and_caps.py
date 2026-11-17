@@ -142,9 +142,9 @@ def test_a_tool_run_that_spent_its_keep_alives_still_compacts_at_the_end_of_the_
     pcl.end_turn_prompt_cache_warming(agent)
 
     due_at = warmer._spent.due_at
-    assert pcl.compaction_due(agent, now=due_at) == (True, "due")
-    assert pcl.release_compaction_due(agent, now=due_at) == (True, "due")
-    assert pcl.claim_compaction(agent, now=due_at) is True
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=due_at).compact == "due"
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(releasing=True, now=due_at).compact == "due"
+    assert pcl.get_prompt_cache_warmer(agent).claim_edge(now=due_at) == "compact"
     assert len(agent._anthropic_client.calls) == pcl.WARM_BUDGET  # nothing more was sent
 
     small = _chat(tokens=50_000)  # the same run on a small chat ends in step 3 instead
@@ -154,7 +154,7 @@ def test_a_tool_run_that_spent_its_keep_alives_still_compacts_at_the_end_of_the_
         _fire(w2)
     _respond(small)
     pcl.end_turn_prompt_cache_warming(small)
-    assert pcl.offload_due(small, now=small._prompt_cache_clock.estimated_until + 1) == (True, "due")
+    assert pcl.get_prompt_cache_warmer(small).edge_decision(now=small._prompt_cache_clock.estimated_until + 1).offload == "due"
 
 
 def test_a_keep_alive_on_the_wire_when_its_run_is_replaced_still_counts_against_the_user_turn():
@@ -217,7 +217,7 @@ def test_a_miss_that_lands_after_its_run_was_replaced_still_ends_the_budget_and_
 
     pcl.end_turn_prompt_cache_warming(agent)
     assert warmer._run is None and replacement.cancelled and len(client.calls) == 1
-    assert pcl.compaction_due(agent, now=warmer._spent.due_at) == (True, "due")
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "due"
 
 
 def _gemini_client(sent):
@@ -336,3 +336,38 @@ def test_keep_alive_admission_respects_disabled_cache_and_reset_epoch(change):
         assert warmer.status["state"] == "inactive"
         _fire(warmer)
     assert warmer._run is None and agent._anthropic_client.calls == []
+
+
+# Greptile on d42bea43: session-owned state follows the session; the money limit ends a budget like its
+# count; a per-request fee is reserved before the send.
+def test_a_new_session_does_not_inherit_the_old_chats_spent_budget():
+    agent = _chat()
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    assert _respond(agent) is None
+    warmer._budget.ended = True  # turn 1 spent its keep-alives
+    run = warmer._run
+    pcl.reset_prompt_cache_session(agent)
+    agent._session_reset_epoch = 1
+    warmer._disable_warming(run)  # a miss of the old session lands after the reset
+    assert not warmer.warming_disabled
+    assert _respond(agent) is None  # the new chat's turn 1 warms afresh
+    assert warmer._run is not None
+
+
+def test_an_idle_budget_out_of_money_still_reaches_the_compaction_decision(monkeypatch):
+    agent = _chat()
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    assert _respond(agent) is None
+    pcl.end_turn_prompt_cache_warming(agent)
+    warmer._budget.spent_usd = 10.0  # the keep-alives so far cost about one rewrite
+    _fire(warmer)
+    assert warmer._run is None and agent._anthropic_client.calls == []
+    assert warmer._spent is not None
+    assert warmer.edge_decision(now=warmer._spent.due_at).compact != "budget_not_spent"
+
+
+@pytest.mark.parametrize("fee, warms", [(Decimal(0), True), (Decimal(5), False)])
+def test_a_per_request_fee_is_reserved_before_the_send(fee, warms):
+    pricing = SimpleNamespace(**vars(_OPUS), request_cost=fee)
+    decision = pcl.evaluate_economics(pricing, 120_000, 3)
+    assert (decision.action == "warm") is warms

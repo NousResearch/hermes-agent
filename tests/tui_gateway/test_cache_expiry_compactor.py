@@ -19,11 +19,25 @@ def server(monkeypatch):
     return srv
 
 
+class _Edge:
+    """The warmer surface the owners read: ``claim_edge`` answers *action* and records each claim."""
+
+    def __init__(self, action="compact", on_claim=None):
+        self.action, self.claims, self.on_claim = action, [], on_claim
+
+    def claim_edge(self, *, releasing=False, now=None):
+        self.claims.append(releasing)
+        if self.on_claim is not None:
+            self.on_claim()
+        return self.action
+
+
 class _Agent:
     session_id = "sid-1"
 
-    def __init__(self):
+    def __init__(self, action="compact"):
         self.calls = []
+        self._prompt_cache_warmer = _Edge(action)
 
     def _compress_context(self, messages, system_message, **kwargs):
         self.calls.append(kwargs)
@@ -37,15 +51,12 @@ def _session(agent, *, running=False):
 
 
 def test_idle_due_session_compacts_with_the_cache_expiry_trigger_and_running_one_is_skipped(server, monkeypatch):
-    import agent.prompt_cache_lifecycle as decision
-
-    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
     idle_agent, busy_agent = _Agent(), _Agent()
     idle, busy = _session(idle_agent), _session(busy_agent, running=True)
     monkeypatch.setattr(server, "_sessions", {"idle": idle, "busy": busy})
 
-    for thread in server._cache_expiry_tick() or ():
-        thread.join(timeout=10)
+    for job in server._cache_expiry_tick():
+        job.result(timeout=10)
 
     assert busy_agent.calls == [] and len(busy["history"]) == 8
     assert [(c["trigger"], c["force"]) for c in idle_agent.calls] == [("cache_expiry", False)]
@@ -56,9 +67,6 @@ def test_idle_due_session_compacts_with_the_cache_expiry_trigger_and_running_one
 def test_a_slow_summary_does_not_delay_another_due_session_and_is_never_run_twice(server, monkeypatch):
     """Each due session compacts in its own job: a summary that runs for minutes must not hold the
     next chat past its window, and a tick while it runs never claims that session again."""
-    import agent.prompt_cache_lifecycle as decision
-
-    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
     release, slow_started, fast_done = threading.Event(), threading.Event(), threading.Event()
     slow_returned = threading.Event()
 
@@ -79,17 +87,17 @@ def test_a_slow_summary_does_not_delay_another_due_session_and_is_never_run_twic
     slow_agent, fast_agent = _Slow(), _Fast()
     slow, fast = _session(slow_agent), _session(fast_agent)
     monkeypatch.setattr(server, "_sessions", {"slow": slow, "fast": fast})
-    threads = list(server._cache_expiry_tick() or ())
+    jobs = list(server._cache_expiry_tick())
     try:
         assert not slow_returned.is_set()  # the tick returned while the slow summary still runs
         assert slow_started.wait(timeout=10)
         assert fast_done.wait(timeout=10)  # started while the slow summary is still running
         slow["running"] = False  # even if the busy flag were missed, the in-flight sid is skipped
-        threads += list(server._cache_expiry_tick() or ())
+        jobs += list(server._cache_expiry_tick())
     finally:
         release.set()
-        for thread in threads:
-            thread.join(timeout=10)
+        for job in jobs:
+            job.result(timeout=10)
     assert len(slow_agent.calls) == 1
     assert len(slow["history"]) == 2 and len(fast["history"]) == 2
 
@@ -97,40 +105,57 @@ def test_a_slow_summary_does_not_delay_another_due_session_and_is_never_run_twic
 def test_a_job_queued_behind_busy_slots_never_compacts_a_chat_closed_meanwhile(server, monkeypatch):
     """The job holds the session dict while it waits for a summary slot; the user closes the chat
     (``_pop_session_by_id`` sets ``_closing``). The busy claim refuses it: nothing is summarized."""
-    import agent.prompt_cache_lifecycle as decision
-
-    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
     agent = _Agent()
     session = _session(agent)
     monkeypatch.setattr(server, "_sessions", {"s": session})
-    held = [server._cache_expiry_slots.acquire(timeout=5) for _ in range(server._CACHE_EXPIRY_CONCURRENCY)]
+    gate = threading.Event()
+    held = [server._cache_expiry_submit(gate.wait, 10) for _ in range(server._CACHE_EXPIRY_CONCURRENCY)]
     try:
-        (thread,) = server._cache_expiry_tick()
+        (job,) = server._cache_expiry_tick()
         with server._sessions_lock:  # what a close does as it unregisters the chat
             server._sessions.pop("s")
             session["_closing"] = True
     finally:
-        for _ in held:
-            server._cache_expiry_slots.release()
-    thread.join(timeout=10)
-    assert not thread.is_alive()
+        gate.set()
+    for blocker in held:
+        blocker.result(timeout=10)
+    job.result(timeout=10)
     assert agent.calls == [] and len(session["history"]) == 8 and session["running"] is False
+
+
+def test_due_sessions_past_the_workers_wait_in_the_queue_not_on_threads(server, monkeypatch):
+    """Kshitij #6: the ticker never starts a thread per due chat; at most the worker bound exist."""
+    gate = threading.Event()
+
+    class _Blocked(_Agent):
+        def _compress_context(self, messages, system_message, **kwargs):
+            assert gate.wait(timeout=10)
+            return super()._compress_context(messages, system_message, **kwargs)
+
+    monkeypatch.setattr(server, "_sessions", {f"s{i}": _session(_Blocked()) for i in range(8)})
+    before = {t.ident for t in threading.enumerate()}
+    try:
+        jobs = server._cache_expiry_tick()
+        assert len(jobs) == 8
+        started = [t for t in threading.enumerate() if t.ident not in before]
+        assert len(started) <= server._CACHE_EXPIRY_CONCURRENCY
+    finally:
+        gate.set()
+    for job in jobs:
+        job.result(timeout=10)
 
 
 def test_a_chat_past_its_window_is_offloaded_by_the_ticker(server, monkeypatch):
     """Ruling F: no compaction due, the cache is over: the owner offloads old tool output right then."""
-    import agent.prompt_cache_lifecycle as decision
     import agent.turn_proactive_prune as prune
 
-    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: False)
-    monkeypatch.setattr(decision, "claim_offload", lambda agent, **k: True)
     monkeypatch.setattr(prune, "offload_cold_history",
                         lambda agent, history, task_id=None: [*history[:-1], {"role": "assistant", "content": "stub"}])
-    agent = _Agent()
+    agent = _Agent("offload")
     session = _session(agent)
     monkeypatch.setattr(server, "_sessions", {"s": session})
-    for thread in server._cache_expiry_tick() or ():
-        thread.join(timeout=10)
+    for job in server._cache_expiry_tick():
+        job.result(timeout=10)
     assert agent.calls == []  # no summary
     assert session["history"][-1]["content"] == "stub" and session["history_version"] == 4
     assert session["running"] is False
@@ -139,19 +164,18 @@ def test_a_chat_past_its_window_is_offloaded_by_the_ticker(server, monkeypatch):
 def test_the_idle_reaper_compacts_a_due_chat_before_it_closes_it(server, monkeypatch):
     """A budget ends at its keep-alives or at the release: the TTL reaper's close of a chat whose step 2 is
     due compacts it first (nothing is warmed after a release), then closes it."""
-    import agent.prompt_cache_lifecycle as decision
-
     order = []
-    monkeypatch.setattr(decision, "claim_compaction_at_release", lambda agent, **k: order.append("claimed") or True)
     monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: order.append(("closed", sid)))
     monkeypatch.setattr(server, "_session_is_reapable", lambda sid, session: True)
     agent = _Agent()
+    agent._prompt_cache_warmer.on_claim = lambda: order.append("claimed")
     session = _session(agent)
     monkeypatch.setattr(server, "_sessions", {"s": session})
 
-    thread = server._compact_then_close("s", session, end_reason="idle_timeout")
-    assert thread is not None
-    thread.join(timeout=10)
+    job = server._compact_then_close("s", session, end_reason="idle_timeout")
+    assert job is not None
+    job.result(timeout=10)
+    assert agent._prompt_cache_warmer.claims == [True]  # claimed as a release
 
     assert [c["trigger"] for c in agent.calls] == ["cache_expiry"] and len(session["history"]) == 2
     assert order == ["claimed", ("closed", "s")]
@@ -160,10 +184,7 @@ def test_the_idle_reaper_compacts_a_due_chat_before_it_closes_it(server, monkeyp
 def test_the_session_cap_defers_only_the_excess_and_never_overshoots(server, monkeypatch):
     """Three reapable chats over a cap of 2, each due at release: one slow release-time compaction must
     count as the close the cap needs, so the cap loop stops there and closes nothing else."""
-    import agent.prompt_cache_lifecycle as decision
-
     release = threading.Event()
-    monkeypatch.setattr(decision, "claim_compaction_at_release", lambda agent, **k: True)
     monkeypatch.setattr(server, "_max_live_sessions", lambda: 2)
     monkeypatch.setattr(server, "_session_is_reapable", lambda sid, session: True)
 
@@ -189,34 +210,35 @@ def test_the_session_cap_defers_only_the_excess_and_never_overshoots(server, mon
         closed.append(sid)
         return True
     monkeypatch.setattr(server, "_close_session_by_id", close)
-    started = []
+    started, jobs = [], []
     real = server._compact_then_close
-    monkeypatch.setattr(server, "_compact_then_close",
-                        lambda sid, s, **kw: started.append(sid) or real(sid, s, **kw))
+
+    def deferred(sid, s, **kw):
+        started.append(sid)
+        job = real(sid, s, **kw)
+        jobs.append(job)
+        return job
+    monkeypatch.setattr(server, "_compact_then_close", deferred)
 
     server._enforce_session_cap()
     assert started == ["s0"] and closed == []  # the deferred close already covers the one excess chat
     release.set()
-    for thread in [t for t in threading.enumerate() if t.name.startswith("cache-expiry-release-")]:
-        thread.join(timeout=10)
+    for job in jobs:
+        job.result(timeout=10)
     assert closed == ["s0"] and sorted(server._sessions) == ["s1", "s2"]
 
 
 @pytest.mark.parametrize("state", ["running", "closing", "in_flight", "compute_host", "not_due"])
 def test_cache_tick_checks_eligibility_before_claiming(server, monkeypatch, state):
-    import agent.prompt_cache_lifecycle as decision
-
     session = _session(_Agent())
     monkeypatch.setattr(server, "_sessions", {"s": session})
     monkeypatch.setattr(server, "_cache_expiry_in_flight", {"s"} if state == "in_flight" else set())
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda s: state == "compute_host")
     session["running"], session["_closing"] = state == "running", state == "closing"
-    claims = []
-    monkeypatch.setattr(decision, "claim_compaction", lambda a: claims.append(a) or False)
-    monkeypatch.setattr(decision, "claim_offload", lambda a: False)
+    edge = session["agent"]._prompt_cache_warmer
+    edge.action = None
     assert server._cache_expiry_tick() == []
-    assert len(claims) == (1 if state == "not_due" else 0)
-    assert "_cache_edge_action" not in session
+    assert len(edge.claims) == (1 if state == "not_due" else 0)
 
 
 def test_finalized_chat_refuses_the_compression_claim(server):
@@ -247,8 +269,6 @@ def test_offload_preserves_a_history_edit_during_the_prune(server, monkeypatch):
 
 
 def test_disabling_cap_while_a_release_is_queued_preserves_the_chat(server, monkeypatch):
-    import agent.prompt_cache_lifecycle as decision
-
     release, started = threading.Event(), threading.Event()
 
     class Slow(_Agent):
@@ -258,18 +278,17 @@ def test_disabling_cap_while_a_release_is_queued_preserves_the_chat(server, monk
             return super()._compress_context(messages, system_message, **kwargs)
 
     cap = [2]
-    monkeypatch.setattr(decision, "claim_compaction_at_release", lambda a: True)
     monkeypatch.setattr(server, "_max_live_sessions", lambda: cap[0])
     monkeypatch.setattr(server, "_session_is_reapable", lambda *a: True)
     monkeypatch.setattr(server, "_cache_expiry_releasing", set())
     monkeypatch.setattr(server, "_sessions", {f"s{i}": _session(Slow()) for i in range(3)})
-    closed, threads = [], []
+    closed, jobs = [], []
     real = server._compact_then_close
 
     def defer(sid, session, **kw):
-        thread = real(sid, session, **kw)
-        threads.append(thread)
-        return thread
+        job = real(sid, session, **kw)
+        jobs.append(job)
+        return job
 
     def close(sid, *, predicate=None, **kw):
         with server._sessions_lock:
@@ -287,8 +306,9 @@ def test_disabling_cap_while_a_release_is_queued_preserves_the_chat(server, monk
         cap[0] = 0
     finally:
         release.set()
-        for thread in threads:
-            thread.join(timeout=10)
+        for job in jobs:
+            if job is not None:
+                job.result(timeout=10)
     assert not closed and len(server._sessions) == 3
 
 
@@ -298,7 +318,6 @@ def test_classic_cli_cache_idle_hook_preserves_input_priority(monkeypatch, state
     import queue
     from types import SimpleNamespace
     from hermes_cli.cli_session_mixin import CLISessionMixin
-    import agent.prompt_cache_lifecycle as decision
     import agent.conversation_compression_manual as manual
     import agent.turn_proactive_prune as prune
 
@@ -306,7 +325,10 @@ def test_classic_cli_cache_idle_hook_preserves_input_priority(monkeypatch, state
         pass
 
     cli = CLI()
-    cli.agent, cli._agent_running, cli._pending_input = object(), state == "running", queue.Queue()
+    edge = SimpleNamespace(action="compact")
+    edge.claim_edge = lambda **kw: claims.append(edge.action) or edge.action
+    cli.agent = SimpleNamespace(_prompt_cache_warmer=edge)
+    cli._agent_running, cli._pending_input = state == "running", queue.Queue()
     cli.conversation_history = [{"role": "user", "content": "question"}] * (3 if state == "short" else 8)
     cli.session_id, cli._last_cache_expiry_check = "s", 999 if state == "throttled" else 0
     cli._busy_command = lambda *a, **kw: contextlib.nullcontext()
@@ -315,8 +337,8 @@ def test_classic_cli_cache_idle_hook_preserves_input_priority(monkeypatch, state
     if state == "queued":
         cli._pending_input.put("next prompt")
     monkeypatch.setattr("hermes_cli.cli_session_mixin.time.time", lambda: 1000)
-    monkeypatch.setattr(decision, "claim_compaction", lambda a, **kw: claims.append("compact") or True)
-    result = SimpleNamespace(status="compressed", after_messages=[{"role": "assistant", "content": "summary"}])
+    result = SimpleNamespace(status="compressed", committed=True,
+                             after_messages=[{"role": "assistant", "content": "summary"}])
     monkeypatch.setattr(manual, "compress_now", lambda *a, **kw: result)
     cli._maybe_compact_before_cache_expiry()
     assert claims == (["compact"] if state == "idle" else [])
@@ -327,8 +349,7 @@ def test_classic_cli_cache_idle_hook_preserves_input_priority(monkeypatch, state
     cli._maybe_compact_before_cache_expiry()
     assert len(claims) == 1
     cli._last_cache_expiry_check = 0
-    monkeypatch.setattr(decision, "claim_compaction", lambda a, **kw: False)
-    monkeypatch.setattr(decision, "claim_offload", lambda a, **kw: True)
+    edge.action = "offload"
     monkeypatch.setattr(prune, "offload_cold_history", lambda a, h, sid: offloaded.append(sid) or result.after_messages)
     cli._maybe_compact_before_cache_expiry()
     assert offloaded == ["s"] and cli.conversation_history is result.after_messages

@@ -18,8 +18,8 @@ def test_shipped_default_and_seeded_template_are_auto():
 
     assert DEFAULT_CONFIG["prompt_caching"]["cache_ttl"] == AUTO_CACHE_TTL
     template = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
-    assert template["prompt_caching"]["cache_ttl"] == AUTO_CACHE_TTL, (
-        "installers copy the template into config.yaml, so a 5m there pins every fresh install to 5m")
+    assert "cache_ttl" not in (template.get("prompt_caching") or {}), (
+        "installers copy the template into config.yaml, so any value there pins every fresh install to it")
 
 
 def test_background_platform_labels_are_machine_paced():

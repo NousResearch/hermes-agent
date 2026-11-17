@@ -53,6 +53,17 @@ class _Store:
         return self.__dict__.setdefault(name, factory())
 
 
+class _Edge:
+    """The warmer surface the owners read: ``claim_edge`` answers *action* and records each claim."""
+
+    def __init__(self, action="compact"):
+        self.action, self.claims = action, []
+
+    def claim_edge(self, *, releasing=False, now=None):
+        self.claims.append(releasing)
+        return self.action
+
+
 class _Authority:
     def __init__(self, runner):
         self.runner, self.sessions, self.profile_id = runner, {}, "default"
@@ -63,10 +74,8 @@ class _Authority:
 
 @pytest.fixture
 def make_runner(monkeypatch):
-    import agent.prompt_cache_lifecycle as decision
     from gateway.run import GatewayRunner
 
-    monkeypatch.setattr(decision, "claim_compaction", lambda agent, **k: True)
     runners = []
 
     def make(entries, keys, *, authority=False):
@@ -75,7 +84,8 @@ def make_runner(monkeypatch):
         runner.session_store = _Store(entries)
         runner.session_authority = _Authority(runner) if authority else None
         runner._agent_cache = {key: (SimpleNamespace(session_id=entries[key].session_id if key in entries
-                                                     else key.rsplit(":", 1)[-1]), "sig") for key in keys}
+                                                     else key.rsplit(":", 1)[-1], _prompt_cache_warmer=_Edge()),
+                                     "sig") for key in keys}
         runner._agent_cache_lock = threading.Lock()
         runner.compacted = []
         runners.append(runner)
@@ -207,12 +217,9 @@ async def test_a_job_queued_behind_a_summary_skips_a_key_that_new_rerouted(make_
 
 
 @pytest.mark.asyncio
-async def test_running_chat_is_not_claimed_by_the_scan(make_runner, monkeypatch):
-    import agent.prompt_cache_lifecycle as decision
-
+async def test_running_chat_is_not_claimed_by_the_scan(make_runner):
     runner = make_runner({"k1": _entry("k1", "s1", _source())}, ["k1"])
-    claims = []
-    monkeypatch.setattr(decision, "claim_compaction", lambda agent: claims.append(agent) or True)
+    claims = runner._agent_cache["k1"][0]._prompt_cache_warmer.claims
     runner._session_state("k1").turn.agent = object()
     assert runner._cache_expiry_due_keys() == []
     assert claims == []
@@ -271,15 +278,13 @@ async def test_claimed_job_rechecks_running_state_and_minimum_history(make_runne
 
 @pytest.mark.asyncio
 async def test_cold_claim_offloads_instead_of_requesting_a_summary(make_runner, monkeypatch):
-    import agent.prompt_cache_lifecycle as decision
     import agent.turn_proactive_prune as prune
 
     entry = _entry("k1", "s1", _source())
     runner = make_runner({"k1": entry}, ["k1"])
     agent = runner._agent_cache["k1"][0]
+    agent._prompt_cache_warmer.action = "offload"
     offloads = []
-    monkeypatch.setattr(decision, "claim_compaction", lambda agent: False)
-    monkeypatch.setattr(decision, "claim_offload", lambda agent: True)
 
     def offload(live_agent, history, session_id):
         offloads.append((live_agent is agent, history == HISTORY, session_id))

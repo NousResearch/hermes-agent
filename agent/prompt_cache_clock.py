@@ -423,7 +423,8 @@ def _learn(previous: Optional[CacheEvent], provider: str, base_url: str, model: 
 
     tier_s = TTL_SECONDS.get(previous.tier or "") if previous is not None else None
     observe(provider=provider, base_url=base_url, model=model, explicit=attempt.get("marker_ttl") is not None,
-            read=read, write=write, gap_s=(at - previous.sent_at) if previous is not None else None, tier_s=tier_s)
+            read=read, write=write, gap_s=(at - previous.sent_at) if previous is not None else None, tier_s=tier_s,
+            replay=bool(attempt.get("replay")))
 
 
 def _learn_silent_miss(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,

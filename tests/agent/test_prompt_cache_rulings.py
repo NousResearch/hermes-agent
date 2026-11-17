@@ -159,7 +159,7 @@ def test_ruling_2_the_first_miss_ends_warming_for_the_rest_of_the_session():
     pcl.end_turn_prompt_cache_warming(agent)
     _fire(warmer)
     assert len(client.calls) == 1 and warmer._run is None
-    assert pcl.compaction_due(agent, now=warmer._spent.due_at) == (True, "due")  # the fallthrough still runs
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "due"  # the fallthrough still runs
 
     agent._user_turn_count = 2  # the person sends another message, then goes idle again
     _respond(agent)
@@ -171,7 +171,7 @@ def test_ruling_2_the_first_miss_ends_warming_for_the_rest_of_the_session():
     assert warmer._run is None and len(client.calls) == 1
     assert warmer.status["reason"] == "prompt cache warming disabled for session: keep-alive missed"
     assert pcl.prompt_cache_warming_disabled(agent)
-    assert pcl.compaction_due(agent, now=warmer._spent.due_at)[1] != "budget_not_spent"  # steps 2/3 still decide
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact != "budget_not_spent"  # steps 2/3 still decide
 
     agent.model = "claude-sonnet-4-6"  # /model: a different cache, warmed afresh
     agent._user_turn_count = 4

@@ -67,6 +67,7 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_vault_code import SlackVaultCodeMixin
+    from .adapter_subagent_panel import SlackSubagentPanelMixin
     from .adapter_image_batch import collect_image_uploads
     from .adapter_forwarded import (
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
@@ -81,6 +82,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
     from adapter_vault_code import SlackVaultCodeMixin  # type: ignore
+    from adapter_subagent_panel import SlackSubagentPanelMixin  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
 
 
@@ -991,7 +993,7 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         and not is_permanent_tls_error)
 
 
-class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformAdapter):
+class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, SlackSubagentPanelMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1666,6 +1668,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         for _action_id in _MODEL_PICKER_ACTION_IDS:
             self._app.action(_action_id)(self._handle_model_picker_action)
         self._register_vault_code_handlers(self._app)
+        self._register_subagent_panel_handlers(self._app)
         self._register_plugin_action_handlers()
         # ctx.register_platform_handler("slack", ...) factories get the full
         # AsyncApp surface (event/action/command), wired before Socket Mode starts.

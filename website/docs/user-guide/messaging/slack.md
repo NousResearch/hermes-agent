@@ -474,6 +474,7 @@ platforms:
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). Markdown `[label](url)` links and Slack `<url\|label>` autolinks both become clickable links inside lists, quotes and table cells; mentions (`<@U…>`, `<#C…>`, `<!here>`) are left as-is. A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles, unless you explicitly set `tool_progress: new`/`all`, which falls back to editable text progress there. Recoverable native API failures fall back to one continuously edited text update. |
+| `platforms.slack.extra.subagent_panel` | `false` | When `true`, `delegate_task` children get one in-place panel message per turn: a row per child with its status, goal, current tool, tool count and elapsed time, refreshed at most every 2.5 s. A running row has a **Stop** button, a finished one a **Result** button that opens its result in a modal. Background children keep updating the panel after the reply. See [Subagent panel](#subagent-panel). |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
@@ -564,6 +565,35 @@ No extra configuration is needed beyond enabling streaming:
 streaming:
   enabled: true       # transport auto/draft lights up Slack native streaming
 ```
+
+### Subagent panel
+
+With `platforms.slack.extra.subagent_panel: true`, a turn that delegates work
+posts one panel message in the thread and edits it in place as the children
+run: one row per `delegate_task` child with a status icon, its goal, the tool
+it is running, how many tools it has called and the elapsed time. Updates are
+throttled to one edit every 2.5 seconds.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      subagent_panel: true
+```
+
+- **Stop** (on a running row) interrupts that one child at its next step; the
+  parent and the other children keep going.
+- **Result** (on a finished row) opens a modal with the child's result, the
+  first ~11.9k characters.
+- Buttons follow the same rule as approval buttons: by default anyone admitted
+  to the chat may press them; with `approvals.approvers` narrowed only the
+  person who started the turn, the listed approvers and the chat's admins can.
+  Where the chat sets `allow_admin_from`, Stop also needs permission to run
+  `/stop` there.
+- The panel is separate from tool progress, so it keeps updating when a
+  background child (`background: true`) finishes after the reply. Only
+  first-level children get rows; a child's own subagents do not.
+- Off by default; other platforms are unaffected.
 
 ### Native Task Cards (live tool progress)
 

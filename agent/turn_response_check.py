@@ -207,8 +207,8 @@ def check_api_response(
     if _usage_outcome.rearmed:
         _preflight_compression_blocked = False
         _last_preflight_pressure = None
-    # Arm a one-token replay of THIS request before the clock's guaranteed window ends, so a tool
-    # round longer than the TTL does not turn the next request into a full-price cache write.
+    # Arm a bounded replay (smallest output cap) of THIS request before the clock's guaranteed window
+    # ends, so a tool round longer than the TTL does not turn the next request into a full-price cache write.
     start_prompt_cache_warming(agent, api_kwargs, response)
 
     _retry.has_retried_429 = False

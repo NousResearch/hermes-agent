@@ -883,10 +883,11 @@ compression:
 # Anthropic supports two TTL tiers for cached prefixes: "5m" and "1h". The
 # default "auto" picks per session: "1h" when a person types the turns (CLI,
 # TUI, Desktop, messaging), "5m" for subagents, cron, one-shots, webhooks,
-# Kanban, the API server and batch runs. Other values are ignored and "5m" is used.
+# Kanban, the API server and batch runs. "off" (or false/none/disabled/no)
+# turns prompt caching off entirely; any other unrecognised value means "5m".
 #
 # prompt_caching:
-#   cache_ttl: "auto"   # or pin "5m" / "1h" for every session
+#   cache_ttl: "auto"   # or pin "5m" / "1h" for every session, or "off"
 
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)

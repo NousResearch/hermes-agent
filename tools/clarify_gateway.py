@@ -11,7 +11,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,6 @@ class _ClarifyEntry:
 _lock = threading.RLock()
 _entries: dict[str, _ClarifyEntry] = {}  # clarify_id -> entry (button callbacks)
 _session_index: dict[str, list[str]] = {}  # session_key -> [clarify_id] FIFO (text intercept, cleanup)
-# Per-session notify callbacks (gateway -> adapter bridge); mirrors tools.approval. Tests clear it.
-_notify_cbs: dict[str, Callable[[_ClarifyEntry], None]] = {}
 
 # Outcomes for typed clarify replies. Gateway cancels the pending prompt on
 # free prose (deadlock break) but keeps it armed for a retryable bad selection.
@@ -183,11 +181,6 @@ def _selection_attempt_tokens(text: str, choices: Optional[list[str]] = None) ->
     return tokens if all(t.isdigit() or len(t.split()) <= max_words for t in tokens) else None
 
 
-def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
-    """Accepted value for a typed reply, or None on any rejection."""
-    return _coerce_text_response_detailed(entry, response)[0]
-
-
 def _coerce_text_response_detailed(entry: _ClarifyEntry, response: str) -> tuple[Optional[str], Optional[str]]:
     """Map a typed reply to ``(value, None)`` or ``(None, reason)``: ``"invalid_selection"``
     (selection-shaped but out of range/unrecognised — keep the clarify armed for a retry) or
@@ -236,15 +229,9 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     return json.dumps(selected, ensure_ascii=False) if selected else None
 
 
-def attempt_text_response_for_session(session_key: str, response: str) -> str:
-    """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
-    entry = get_pending_for_session(session_key, include_choice_prompts=True)
-    return _attempt_text_response(entry, response)
-
-
 def attempt_text_response(clarify_id: str, response: str) -> str:
-    """Like :func:`attempt_text_response_for_session`, but only for the entry ``clarify_id`` names:
-    a reply checked against one question (its requester) never settles another raised meanwhile."""
+    """Try to resolve the entry ``clarify_id`` names from typed text; returns a TEXT_* outcome. A
+    reply checked against one question (its requester) never settles another raised meanwhile."""
     return _attempt_text_response(get_pending(clarify_id), response)
 
 
@@ -257,11 +244,6 @@ def _attempt_text_response(entry: Optional[_ClarifyEntry], response: str) -> str
     if resolve_gateway_clarify(entry.clarify_id, coerced):
         return TEXT_RESOLVED
     return TEXT_NO_PENDING  # lost a race with a button/callback resolution — no work left
-
-
-def resolve_text_response_for_session(session_key: str, response: str) -> bool:
-    """True only when the typed reply was accepted and the waiter unblocked."""
-    return attempt_text_response_for_session(session_key, response) == TEXT_RESOLVED
 
 
 def mark_awaiting_text(clarify_id: str) -> bool:

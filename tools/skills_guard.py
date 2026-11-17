@@ -369,7 +369,7 @@ THREAT_PATTERNS = [
     # (`| gunzip | sh`, `| tee x.sh; sh x.sh`), or an archive unpacker: an embedded base64 tarball
     # (`tail "$0" | base64 -d | tar x`) is code the scanner never sees. Decoding into a data consumer
     # (`| jq .`, `| grep`) is not. A base64 ENCODE→DECODE round-trip of a freshly-created archive over a
-    # transport (`tar c… | base64 … | base64 -d | tar x`) is data movement, demoted in plugin_guard_context.
+    # transport (`tar c… | base64 … | base64 -d | tar x`) is data movement, demoted in plugins_install_scan_context.
     (r'(?:\bbase64\s+(?:-[^\s|]+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b|\bopenssl\s+(?:base64|enc)\b[^|;&\n]*?\s-d\b)'
      r'[^\n]*?(?:\||;|&&)\s*(?:\w+=\S*\s+)*(?:\S*/)?'
      r'(?:sh|bash|zsh|ksh|dash|fish|python[\d.]*|perl|ruby|node|nodejs|php|eval|source|exec|xargs|env|sudo'

@@ -103,6 +103,7 @@ import {
   SETTINGS_ROUTE,
   STARMAP_ROUTE
 } from '../routes'
+import { BACKUP_SETTINGS_HREF, backupPaletteEntries } from '../settings/backup-palette'
 import { SECTIONS } from '../settings/constants'
 import { type SettingsSearchEntry, settingsSearchTargetQuery } from '../settings/settings-search'
 import { useSettingsSearchCatalog } from '../settings/use-settings-search'
@@ -1038,7 +1039,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['settings', ...(entry.keywords ?? [])],
             label: t.settings.nav[entry.labelKey],
             run: go(settingsTab(entry.tab))
-          }))
+          })),
+          ...backupPaletteEntries(t).map(entry => ({ ...entry, id: `set-${entry.id}`, run: go(BACKUP_SETTINGS_HREF) }))
         ]
       }
     ]
@@ -1352,7 +1354,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['settings', ...(entry.keywords ?? [])],
             label: t.settings.nav[entry.labelKey],
             run: go(settingsTab(entry.tab))
-          }))
+          })),
+          ...backupPaletteEntries(t).map(entry => ({ ...entry, id: `sp-${entry.id}`, run: go(BACKUP_SETTINGS_HREF) }))
         ]
       }
     ]

@@ -214,6 +214,13 @@ export const enRedesign: RedesignOverlay = {
         desktopTargetFromPackage: 'Loaded into this app from the package above — same for every agent'
       }
     },
+    backup: {
+      backupHelp:
+        'One file with everything: every agent, settings, memory, skills, routines, chat history and keys. Keep it private.',
+      replaces: ['Memory', 'Persona', 'Skills', 'Conversations', 'Routines', 'Settings', 'API keys and logins'],
+      gatewayDown: agent =>
+        `The files arrived, but ${agent} did not start again, so its bots and routines are not running. Restart it from the Hermes Cloud portal, or run \`hermes gateway start\` on it.`
+    },
     vault: {
       otpHint:
         'The "setup key" the site shows when you enable 2FA. With it saved, the agent generates the codes itself.'

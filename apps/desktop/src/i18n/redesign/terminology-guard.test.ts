@@ -122,7 +122,8 @@ const REDESIGN_KEEPS: Record<string, string> = {
     'settings.gateway.webappOauthPaste.placeholder',
     'messaging.relayLink.title',
     'messaging.relayLink.managed',
-    'messaging.relayLink.managedNote'
+    'messaging.relayLink.managedNote',
+    'settings.backup.gatewayDown'
   ),
   // A routine HAS a schedule; "cron" names the expression syntax its input accepts.
   ...keep(

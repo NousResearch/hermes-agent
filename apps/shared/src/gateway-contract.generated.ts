@@ -4049,7 +4049,7 @@ export interface RollbackRestoreParams {
   profile?: string | null
   all?: boolean | null
 }
-/** ``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
+/** ``agent/checkpoints/manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
 export interface RollbackRestoreResult {
   success: boolean
   restored_to?: string | null
@@ -4110,7 +4110,7 @@ export interface CronManageResult {
   removed_job?: CronRemovedJob | null
   [key: string]: unknown
 }
-/** ``tools/cronjob_job_args.py::_format_job``. */
+/** ``cron/job_args.py::_format_job``. */
 export interface CronJobRow {
   job_id: string
   name?: string
@@ -4672,7 +4672,7 @@ export interface PluginLiveSkill {
   description?: string
 }
 export type PluginRestartTarget = 'gateway' | 'backend'
-/** One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked. */
+/** One security-scan finding (``hermes_cli.plugins_install_scan``) on a plugin tree the scan blocked. */
 export interface PluginScanFinding {
   pattern_id: string
   severity: string
@@ -6270,7 +6270,7 @@ export interface PreviewOpenPayload {
   url: string
   label?: string
 }
-/** ``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab. */
+/** ``tools/preview_tool.py``; ``url`` '' closes every tab. */
 export interface PreviewClosePayload {
   url?: string
 }

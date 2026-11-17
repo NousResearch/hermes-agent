@@ -78,7 +78,7 @@ def test_voice_live_session_vendor_error_is_redacted(client, monkeypatch):
 
 @pytest.mark.parametrize("route, target", [
     ("/api/audio/tts-lease", "tools.tts_tool_lifecycle.acquire_tts_lease"),
-    ("/api/audio/stt-lease", "tools.stt_lease.acquire_stt_lease"),
+    ("/api/audio/stt-lease", "tools.stt_lease.warm_stt_provider"),
 ])
 def test_lease_warmup_error_body_is_redacted(client, monkeypatch, route, target):
     monkeypatch.setattr(target, _raise)

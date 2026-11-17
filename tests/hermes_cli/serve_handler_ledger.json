@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 345
+   "undecided": 349
   },
   "rpc": {
    "authority": 114,
@@ -57,6 +57,7 @@
   {"current_path": "hermes_cli.dashboard_auth.routes:api_auth_me", "decision": "undecided", "handler": "GET /api/auth/me", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:api_auth_providers", "decision": "undecided", "handler": "GET /api/auth/providers", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.chat_workspaces:get_chat_workspaces", "decision": "undecided", "handler": "GET /api/chat/workspaces", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.status:list_cloud_agents", "decision": "undecided", "handler": "GET /api/cloud/agents", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:get_config", "decision": "undecided", "handler": "GET /api/config", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.config_env:get_defaults", "decision": "undecided", "handler": "GET /api/config/defaults", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.analytics:get_config_raw", "decision": "undecided", "handler": "GET /api/config/raw", "kind": "http", "ref": ""},
@@ -140,6 +141,7 @@
   {"current_path": "hermes_cli.web_routers.models:get_moa_models", "decision": "undecided", "handler": "GET /api/model/moa", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.models:get_model_options", "decision": "undecided", "handler": "GET /api/model/options", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.models:get_recommended_default_model", "decision": "undecided", "handler": "GET /api/model/recommended-default", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.transfer:read_dashboard_backup_chunk", "decision": "undecided", "handler": "GET /api/ops/backup/chunk", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:download_dashboard_backup", "decision": "undecided", "handler": "GET /api/ops/backup/download", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:list_checkpoints", "decision": "undecided", "handler": "GET /api/ops/checkpoints", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:list_hooks", "decision": "undecided", "handler": "GET /api/ops/hooks", "kind": "http", "ref": ""},
@@ -298,6 +300,8 @@
   {"current_path": "hermes_cli.web_routers.ops:run_import_upload", "decision": "undecided", "handler": "POST /api/ops/import-upload", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:run_prompt_size", "decision": "undecided", "handler": "POST /api/ops/prompt-size", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:run_security_audit", "decision": "undecided", "handler": "POST /api/ops/security-audit", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.transfer:append_transfer_chunk", "decision": "undecided", "handler": "POST /api/ops/transfer/chunk", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.transfer:restore_transfer", "decision": "undecided", "handler": "POST /api/ops/transfer/restore", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:approve_pairing", "decision": "undecided", "handler": "POST /api/pairing/approve", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:clear_pending_pairing", "decision": "undecided", "handler": "POST /api/pairing/clear-pending", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:revoke_pairing", "decision": "undecided", "handler": "POST /api/pairing/revoke", "kind": "http", "ref": ""},

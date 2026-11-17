@@ -8,6 +8,7 @@ One owner is SIGKILLed so no Python cleanup of ours can run; the other is the li
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 
@@ -138,12 +139,13 @@ def test_teardown_releases_the_kernels_group(monkeypatch, tmp_path):
 # The surviving cell child is orphaned once its kernel exits; killing it leaves the test subtree.
 @pytest.mark.live_system_guard_bypass
 def test_teardown_keeps_covering_a_cell_child_that_survived_it(monkeypatch, tmp_path):
-    # Ignores the teardown's SIGTERM. Escalation is off so a kernel slow to exit under load cannot
-    # turn the TERM into a tree SIGKILL that takes the child too (the precondition, not the point).
-    from tools import code_execution_tool
-    real_kill = code_execution_tool._kill_process_group
-    monkeypatch.setattr(code_execution_tool, "_kill_process_group",
-                        lambda proc, escalate=False: real_kill(proc, escalate=False))
+    # Ignores the teardown's SIGTERM. The teardown kill sends only the TERM so a kernel slow to exit
+    # under load cannot turn it into a tree SIGKILL that takes the child too (the precondition, not
+    # the point).
+    from agent import deadline
+    from tools import code_kernel
+    monkeypatch.setattr(code_kernel, "_kill_process_group",
+                        lambda proc: deadline.kill_process_tree(proc.pid, sig=signal.SIGTERM))
     # The ready file is written only once the trap is in place: the receipt alone races a loaded
     # host, where the teardown's SIGTERM can land before sh has installed it.
     ready = tmp_path / "trapped"

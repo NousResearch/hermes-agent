@@ -733,6 +733,8 @@ include = [
   "pm.*",
   "tools",
   "tools.*",
+  "utils",
+  "utils.*",
 ]
 
 [tool.setuptools.package-data]

@@ -24,8 +24,8 @@ from hermes_state_holders import read_only_db_uri
 from hermes_cli.backup_sqlite import _safe_copy_db
 from hermes_cli.config_backend import drop_other_access
 from utils import (
-    _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
-    mkstemp_beside,
+    atomic_replace, mkstemp_beside, preserve_file_mode, preserve_file_owner, restore_file_mode,
+    restore_file_owner,
 )
 
 logger = logging.getLogger(__name__)
@@ -460,7 +460,7 @@ def _default_new_file_mode() -> Optional[int]:
 
     ``tempfile.mkstemp`` always creates at 0600, so staging an import through a
     temp file would tighten every *newly created* file to owner-only — the same
-    hazard ``utils._restore_file_mode`` documents for Docker/NAS volume mounts
+    hazard ``utils.restore_file_mode`` documents for Docker/NAS volume mounts
     that rely on broader permissions.  The umask can only be read by setting it,
     so this is resolved once per import rather than once per member.  The probe
     installs a *restrictive* mask rather than 0 so that anything another thread
@@ -508,7 +508,7 @@ def _extract_member_atomically(
     produced.  ``os.replace`` swaps in a temp file owned by the *writing* user,
     so without the chown a ``sudo hermes import`` would silently re-own every
     restored file to root — on the disaster-recovery path, and on exactly the
-    Docker/NAS installs ``utils._restore_file_owner`` documents.  Both concerns
+    Docker/NAS installs ``utils.restore_file_owner`` documents.  Both concerns
     delegate to the shared ``utils`` helpers rather than being re-derived here.
     The temp file is removed on any failure so a partial import leaves no
     residue.
@@ -522,16 +522,16 @@ def _extract_member_atomically(
     pre-replace ``fchmod`` nor the post-replace restore can re-elevate the
     target.
     """
-    # ``_preserve_file_mode`` returns None when the target does not exist (or
+    # ``preserve_file_mode`` returns None when the target does not exist (or
     # cannot be stat'd), in which case the umask-derived create-mode applies —
     # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
-    mode = _preserve_file_mode(target)
-    owner = _preserve_file_owner(target)
+    mode = preserve_file_mode(target)
+    owner = preserve_file_owner(target)
     if mode is None:
         mode = new_file_mode
     else:
         # Deliberately NOT a faithful mode copy: setuid/setgid are dropped.
-        # ``_preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve
+        # ``preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve
         # bits, and the content replacing this file comes from the archive.
         # Carrying the elevated bits across would let archive-controlled bytes
         # take over an existing setuid/setgid file, so ``hermes import`` would
@@ -567,8 +567,8 @@ def _extract_member_atomically(
         # because chown drops setuid/setgid and a mode restore that ran first
         # would be partly undone.  Here ``mode`` no longer carries those bits,
         # so the two agree: neither step can re-elevate the restored file.
-        _restore_file_owner(real_path, owner)
-        _restore_file_mode(real_path, mode)
+        restore_file_owner(real_path, owner)
+        restore_file_mode(real_path, mode)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -661,8 +661,8 @@ def _import_db_member_exclusive(
 
     # The database keeps its own mode/ownership: the bytes come from the
     # archive but the file does not, so the archive has no say in either.
-    mode = _preserve_file_mode(target)
-    owner = _preserve_file_owner(target)
+    mode = preserve_file_mode(target)
+    owner = preserve_file_owner(target)
 
     fd, tmp_name = tempfile.mkstemp(
         dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".dbimport"
@@ -690,8 +690,8 @@ def _import_db_member_exclusive(
                 "left untouched. Stop the gateway/dashboard processes holding it "
                 "open and re-run the import."
             )
-        _restore_file_owner(target, owner)
-        _restore_file_mode(target, mode)
+        restore_file_owner(target, owner)
+        restore_file_mode(target, mode)
     finally:
         try:
             os.unlink(tmp_name)

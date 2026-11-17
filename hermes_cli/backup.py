@@ -779,10 +779,12 @@ def run_import(args) -> Optional[int]:
 
         t0 = time.monotonic()
         from gateway.runtime_ownership import OwnershipConflict
+        from hermes_cli.backup_keep_host import KeepHostRefused, keep_host_import
         try:
-            restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
-                zf, members, prefix, hermes_root, file_count)
-        except OwnershipConflict as exc:
+            with keep_host_import(args, zf, members, prefix, hermes_root) as keep_host:
+                restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
+                    zf, members, prefix, hermes_root, file_count, keep_host)
+        except (OwnershipConflict, KeepHostRefused) as exc:
             print(f"\nImport refused; no files restored: {exc}")
             sys.exit(1)
         elapsed = time.monotonic() - t0
@@ -799,11 +801,7 @@ def run_import(args) -> Optional[int]:
             )
 
         if errors:
-            print(f"\n  Warnings ({len(errors)} files skipped):")
-            for e in errors[:10]:
-                print(e)
-            if len(errors) > 10:
-                print(f"  ... and {len(errors) - 10} more")
+            _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "")
 
         if db_shrunk:
             # The backup predates work that is now overwritten. Say so: the
@@ -893,7 +891,7 @@ def run_import(args) -> Optional[int]:
 
 
 def _import_members(
-    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
+    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int, keep_host=None,
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Reserve all affected profiles before publishing even the first config file."""
     from gateway.runtime_ownership import exclusive_maintenance
@@ -911,8 +909,10 @@ def _import_members(
         target = hermes_root / rel
         if target.suffix == ".db" and target.resolve().is_relative_to(root_res):
             homes.update([target.absolute().parent, target.resolve().parent])
+    homes.update(keep_host.homes() if keep_host else ())
     with exclusive_maintenance(homes):
-        return _import_members_exclusive(zf, members, prefix, hermes_root, file_count)
+        restore = keep_host.around(_import_members_exclusive) if keep_host else _import_members_exclusive
+        return restore(zf, members, prefix, hermes_root, file_count)
 
 
 def _import_external_member(
@@ -943,7 +943,7 @@ def _import_external_member(
 
 
 def _import_members_exclusive(
-    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
+    zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int, keep_host=None,
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Publish every member; return ``(restored, restored_external, errors, skipped_runtime, db_shrunk)``.
 
@@ -995,7 +995,7 @@ def _import_members_exclusive(
         # reconciler on the target and disconnects hosted instances from the
         # Nous portal. Matched by basename so both the root profile and
         # named profiles (profiles/<name>/gateway_state.json) are covered.
-        if parts[-1] in _IMPORT_SKIP_NAMES:
+        if parts[-1] in _IMPORT_SKIP_NAMES or (keep_host is not None and keep_host.skips(parts)):
             skipped_runtime.append(rel)
             continue
 
@@ -1034,7 +1034,7 @@ def _import_members_exclusive(
                 after = _count_session_rows(target)
                 if before and after and after[1] < before[1]:
                     db_shrunk.append((rel, before, after))
-            else:
+            elif keep_host is None or not keep_host.publish(zf, member, parts, target, new_file_mode):
                 _extract_member_atomically(zf, member, target, new_file_mode)
             if target.name == "config.yaml":  # extraction keeps the live file's mode
                 drop_other_access(target)
@@ -2003,21 +2003,21 @@ def run_quick_backup(args) -> None:
 # Shared full-zip backup helper
 # ---------------------------------------------------------------------------
 
-def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
-    """Single-flight wrapper for automatic full zip backups."""
+def _write_full_zip_backup(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]] = ()) -> Optional[Path]:
+    """Single-flight wrapper for automatic full zip backups; ``extra``: ``(path, arcname)`` outside the home."""
     try:
         with _backup_operation_lock(hermes_root):
-            return _write_full_zip_backup_locked(out_path, hermes_root)
+            return _write_full_zip_backup_locked(out_path, hermes_root, list(extra))
     except BackupInProgressError as exc:
         logger.warning("Full-zip backup skipped: %s", exc)
         return None
 
 
-def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional[Path]:
+def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]]) -> Optional[Path]:
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
     try:
-        files_to_add = list(_iter_backup_files(hermes_root, out_path))
+        files_to_add = list(_iter_backup_files(hermes_root, out_path)) + extra
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None

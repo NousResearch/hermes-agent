@@ -617,8 +617,8 @@ async def run_backup(body: BackupRequest, profile: Optional[str] = None):
     return response
 
 
-@router.get("/api/ops/backup/download")
-async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
+def _dashboard_backup_path(archive: str, profile: Optional[str]) -> Path:
+    """``archive`` resolved, when it is a file in this profile's backups directory (403/404 else)."""
     try:
         backup_dir = _dashboard_backup_dir(profile).expanduser().resolve(strict=False)
         target = Path(archive).expanduser().resolve(strict=True)
@@ -626,20 +626,33 @@ async def download_dashboard_backup(archive: str, profile: Optional[str] = None)
         raise HTTPException(status_code=404, detail="Backup not found")
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid backup path")
-
     if not _path_is_under(backup_dir, target):
         raise HTTPException(status_code=403, detail="Backup is outside the dashboard backup directory")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Backup not found")
+    return target
+
+
+@router.get("/api/ops/backup/download")
+async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
+    target = _dashboard_backup_path(archive, profile)
     return FileResponse(
         path=str(target), media_type="application/zip", filename=target.name, content_disposition_type="attachment",
     )
 
 
-def _spawn_import(archive: str, force: bool, profile: Optional[str] = None) -> dict:
+def _spawn_import(archive: str, force: bool, profile: Optional[str] = None, *, keep_host: bool = False,
+                  messaging_off: bool = False) -> dict:
+    """``hermes import``; ``keep_host`` (the Hermes Cloud transfer and its undo) also forces it, and
+    ``messaging_off`` (the transfer only) brings the bots over switched off. The undo point the import
+    takes is reported by ``/api/actions/import/status`` once it exists."""
     args = ["import", archive]
-    if force:
+    if force or keep_host:
         args.append("--force")
+    if keep_host:
+        args.append("--keep-host")
+    if keep_host and messaging_off:
+        args.append("--messaging-off")
     return _spawn_action(args, "import", log_msg="Failed to spawn import",
                          prefix="Failed to run import", profile=profile)
 
@@ -652,7 +665,7 @@ async def run_import(body: ImportRequest, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail="archive path is required")
     if not os.path.isfile(archive):
         raise HTTPException(status_code=404, detail=f"Archive not found: {archive}")
-    return _spawn_import(archive, body.force, profile)
+    return _spawn_import(archive, body.force, profile, keep_host=body.keep_host)
 
 
 def _safe_backup_upload_name(filename: str | None) -> str:

@@ -35,6 +35,7 @@ import {
   IconClipboard,
   IconClock,
   IconCloud,
+  IconCloudUpload,
   IconCommand,
   IconCopy,
   IconCornerDownLeft,
@@ -167,6 +168,7 @@ export const CircleLetterA = shellIcon(IconCircleLetterA, 'CircleLetterA')
 export const Clipboard = shellIcon(IconClipboard, 'Clipboard')
 export const Clock = shellIcon(IconClock, 'Clock')
 export const Cloud = shellIcon(IconCloud, 'Cloud')
+export const CloudUpload = shellIcon(IconCloudUpload, 'CloudUpload')
 export const Command = shellIcon(IconCommand, 'Command')
 export const Copy = shellIcon(IconCopy, 'Copy')
 export const CopyIcon = shellIcon(IconCopy, 'CopyIcon')

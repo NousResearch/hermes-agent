@@ -23,7 +23,8 @@ Text it reads: ``*.md``, ``*.mdx``, ``*.txt`` whole; ``*.yaml``/``*.yml``/``*.ya
 
 Left alone, and counted as ``skip-*``: a path behind any ``/`` (``~/.hermes/cron/``, ``$HERMES_HOME/...``,
 ``./x``); bare directories that also name HERMES_HOME dirs or other projects' dirs (``tools/``, ``cron/``), and a
-glob that takes every file of one (``cron/*``, ``plugins/**``);
+glob that takes every file of one (``cron/*``, ``plugins/**``); a glob that also matches a file that stayed,
+or whose files were renamed or went to different folders (``tools/*.py`` when three files left ``tools/``);
 a name whose root is a moved *file* that other projects share (``utils.x``, ``cli.x``); config keys
 (``agent.reasoning_effort``, ``plugins.enabled``, ``gateway.platforms.telegram`` outside an import); i18n keys
 (``t("gateway.status.*")``); tree-diagram lines; and the files in
@@ -52,7 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from renames import config_keys, current_name, git, module_renames, renamed_paths
+from renames import config_keys, current_name, emptied_folders, git, module_renames, renamed_paths
 
 #: Files and trees the rewrite never touches. Frozen surfaces keep the old names on purpose, generated pages
 #: are regenerated, third-party docs name other projects' modules, locale values are runtime strings
@@ -119,6 +120,8 @@ class Plan:
     attributes: dict[str, frozenset[str] | None] = field(default_factory=dict, init=False)
     files: dict[str, str] = field(init=False)
     dirs: dict[str, str] = field(init=False)
+    children: dict[str, list[str]] = field(init=False)
+    """Folder -> the names of the files directly in it before the move."""
     modules: set[str] = field(init=False)
     packages: set[str] = field(init=False)
     """Every dotted prefix of a module name, so a namespace package without ``__init__.py`` counts too."""
@@ -126,18 +129,16 @@ class Plan:
 
     def __post_init__(self) -> None:
         self.files = dict(self.paths)
-        moved = set(self.files)
-        under: dict[str, list[str]] = {}
+        self.children = {}
         for path in self.tree:
-            for parent in PurePosixPath(path).parents:
-                if str(parent) != ".":
-                    under.setdefault(str(parent), []).append(path)
+            self.children.setdefault(PurePosixPath(path).parent.as_posix(), []).append(PurePosixPath(path).name)
+        emptied = emptied_folders(self.tree, self.paths)
         self.dirs = {}
         for old, new in self.paths:
             old_parent, new_parent = PurePosixPath(old).parent, PurePosixPath(new).parent
             while str(old_parent) != "." and old_parent.name == new_parent.name:
                 key = str(old_parent)
-                if key not in self.dirs and all(p in moved for p in under.get(key, [])):
+                if key not in self.dirs and key in emptied:
                     self.dirs[key] = str(new_parent)
                 old_parent, new_parent = old_parent.parent, new_parent.parent
         self.modules = set()
@@ -296,11 +297,24 @@ def _path(token: str, plan: Plan, stats: Stats):
             if head in AMBIGUOUS_ROOTS and not pattern.strip("*"):
                 stats.skips["bare-dir"] += 1  # ``cron/*`` takes the whole folder, like a bare ``cron/``
                 return None
-            hits = [f for f in plan.files if PurePosixPath(f).parent.as_posix() == head
-                    and fnmatch.fnmatch(PurePosixPath(f).name, pattern)]
-            if hits:
-                return len(head), PurePosixPath(plan.files[hits[0]]).parent.as_posix(), "path-glob"
+            if any(PurePosixPath(f).parent.as_posix() == head and fnmatch.fnmatch(PurePosixPath(f).name, pattern)
+                   for f in plan.files):
+                target = _glob_target(head, pattern, plan)
+                if target is not None:
+                    return len(head), target, "path-glob"
+                stats.skips["partial-glob"] += 1
     return None
+
+
+def _glob_target(head: str, pattern: str, plan: Plan) -> str | None:
+    """The folder every file ``head/pattern`` matched went to under its own name; None when one stayed, was renamed,
+    or they went to different folders, because the same glob under a new folder would then match other files."""
+    targets = set()
+    for name in plan.children.get(head, ()):
+        if fnmatch.fnmatch(name, pattern):
+            new = PurePosixPath(plan.files.get(f"{head}/{name}", f"{head}/{name}"))
+            targets.add(new.parent.as_posix() if new.name == name else None)
+    return targets.pop() if len(targets) == 1 else None
 
 
 def _tail_ok(rest: str) -> bool:

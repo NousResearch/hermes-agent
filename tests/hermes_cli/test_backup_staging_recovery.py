@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import backup
+from tests.waiting import wait_until
 
 
 def _home(path: Path) -> Path:
@@ -87,6 +88,33 @@ def _kill(proc: subprocess.Popen[str]) -> None:
     proc.communicate(timeout=30)
 
 
+def _lease_released(stage: Path) -> bool:
+    from hermes_cli import backup_staging
+
+    with (stage / "owner.lock").open("r+b") as lease:
+        try:
+            backup_staging._lock(lease)
+        except OSError:
+            return False
+        lease.seek(0)
+        # Unlock before close: a lock left for close() is freed just as lazily.
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lease.fileno(), fcntl.LOCK_UN)
+    return True
+
+
+def _await_lease_release(stage: Path) -> None:
+    """Windows frees a killed process's byte-range locks asynchronously (LockFileEx docs), so
+    a reaper started the moment the child is reaped can still see it as a live owner."""
+    wait_until(lambda: _lease_released(stage), timeout=30, what=f"killed child's lock on {stage}")
+
+
 @pytest.mark.platforms("windows", "posix")
 @pytest.mark.parametrize("automatic", [False, True])
 def test_killed_backup_recovers_and_preserves_live_peer(
@@ -112,6 +140,7 @@ def test_killed_backup_recovers_and_preserves_live_peer(
         assert active_snapshot.read_bytes() == b"\0" * 4096
     finally:
         _kill(child)
+    _await_lease_release(active_snapshot.parent)
     # Retry into the default excluded backups directory instead of the old root
     # output. The walk must still reclaim the abandoned root stages.
     retry_dir = home / "backups"
@@ -373,6 +402,7 @@ def test_retry_elsewhere_reclaims_default_backup_stages_but_preserves_live_ones(
         assert snapshot.read_bytes() == b"\0" * 4096
     finally:
         _kill(child)
+    _await_lease_release(snapshot.parent)
     run()
     assert not snapshot.parent.exists()
     assert set(backup_dir.glob(".hermes-backup-stage-*")) == {lookalike}

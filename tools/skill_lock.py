@@ -74,11 +74,6 @@ def _skill_dirs(names: set[str] | None) -> list[tuple[str, str]]:
     return sorted(found.items())
 
 
-def locked_skill_dirs() -> list[tuple[str, str]]:
-    """``(name, realpath)`` of every locked skill in the active profile."""
-    return _skill_dirs(set(_skill_usage().locked_skill_names()))
-
-
 def _guard_state() -> tuple[list[tuple[str, str]], str | None]:
     """The locked skills, plus the read error when the sidecar exists but cannot be read or parsed.
     The guards then fail CLOSED over every skill in the profile: an unknown lock set is not "nothing is

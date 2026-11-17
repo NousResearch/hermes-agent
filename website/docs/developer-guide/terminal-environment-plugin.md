@@ -351,9 +351,8 @@ local backend on this host, docker/ssh and `supports_streams` plugins through
 their exec prefix). Suspending a sandbox once its processes are idle-stopped,
 and network isolation between sandboxes, are yours.
 
-**Credentials** reach a hosted sandbox as broker references
-(`sandbox_scope.CredentialRef`), never as values from the secret store. No
-broker exists yet, so Hermes passes none.
+**Credentials** never reach a hosted sandbox as values from the secret store.
+No credential broker exists yet, so Hermes passes none.
 
 **Conformance.** `tools/environments/sandbox_conformance.py` holds the
 isolation checks Hermes runs against its recording stub backend

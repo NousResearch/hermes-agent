@@ -174,6 +174,12 @@
       ]
     },
     {
+      "source": "plugins/index.md § Read a Retry-After header the way Hermes does",
+      "entries": [
+        "agent.retry_utils:parse_retry_after_seconds"
+      ]
+    },
+    {
       "source": "user-guide/features/plugins.md § A plugin with its own chat client",
       "entries": [
         "hermes_cli.chat_launch:hermes_command",

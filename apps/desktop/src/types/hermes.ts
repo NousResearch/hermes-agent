@@ -55,8 +55,6 @@ export interface AudioSttLeaseResponse {
   ok: boolean
   lease: string
   active: boolean
-  /** Live lease holders after this call (null when the backend call itself failed). */
-  leases: null | number
   /** Warm-up outcome: `loaded` | `cached` | `noop` | `error`. Release carries no action. */
   action?: string
   /** Whether the configured engine was actually warmed (`noop` for cloud providers carries false). */

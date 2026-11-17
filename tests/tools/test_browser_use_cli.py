@@ -120,11 +120,12 @@ class TestSubprocessEnvironment:
         assert "/bin" in parts
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX PATH-floor semantics")
-    def test_floor_preserves_existing_entries_and_order(self):
+    def test_floor_preserves_existing_entries_and_order(self, monkeypatch):
         """The floor only adds dirs — never drops or reorders what the
         caller's environment already had."""
         original = "/opt/toolchain/bin:/usr/bin:/snap/bin"
-        merged = bu_cli._floor_subprocess_path(original).split(os.pathsep)
+        monkeypatch.setattr(bs, "build_browser_env", lambda: {"PATH": original})
+        merged = bu_cli._base_subprocess_env()["PATH"].split(os.pathsep)
 
         assert set(original.split(os.pathsep)) <= set(merged)
         positions = [merged.index(p) for p in original.split(os.pathsep)]

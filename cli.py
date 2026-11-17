@@ -72,7 +72,6 @@ from hermes_cli.cli_shutdown import (
     _wait_for_oneshot_background_completions,
 )
 from hermes_cli.cli_auto_maintenance import (
-    _run_checkpoint_auto_maintenance,
     _run_state_db_auto_maintenance,
 )
 from hermes_cli.cli_render import (

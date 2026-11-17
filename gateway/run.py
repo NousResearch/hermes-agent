@@ -4369,7 +4369,7 @@ def _housekeeping_checkpoint_prune() -> None:
     """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
     ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
     ``git gc`` can block for tens of seconds on a large store."""
-    from tools.checkpoint_maintenance import auto_prune_from_config
+    from agent.checkpoints.maintenance import auto_prune_from_config
     auto_prune_from_config()
 
 

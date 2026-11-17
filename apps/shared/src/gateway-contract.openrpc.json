@@ -16080,7 +16080,7 @@
       },
       "CronJobRow": {
         "additionalProperties": true,
-        "description": "``tools/cronjob_job_args.py::_format_job``.",
+        "description": "``cron/job_args.py::_format_job``.",
         "properties": {
           "job_id": {
             "title": "Job Id",
@@ -28807,7 +28807,7 @@
       },
       "PluginScanFinding": {
         "additionalProperties": false,
-        "description": "One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked.",
+        "description": "One security-scan finding (``hermes_cli.plugins_install_scan``) on a plugin tree the scan blocked.",
         "properties": {
           "pattern_id": {
             "title": "Pattern Id",
@@ -30014,7 +30014,7 @@
       },
       "PreviewClosePayload": {
         "additionalProperties": false,
-        "description": "``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab.",
+        "description": "``tools/preview_tool.py``; ``url`` '' closes every tab.",
         "properties": {
           "url": {
             "default": "",
@@ -35312,7 +35312,7 @@
       },
       "RollbackRestoreResult": {
         "additionalProperties": true,
-        "description": "``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
+        "description": "``agent/checkpoints/manager.py::restore`` outcome; ``history_removed`` is added for a full\n(non-file) restore that also rewound the live transcript.",
         "properties": {
           "success": {
             "title": "Success",

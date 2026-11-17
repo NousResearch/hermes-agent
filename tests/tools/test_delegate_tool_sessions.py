@@ -14,7 +14,7 @@ def test_spawned_children_resolve_by_subagent_id_only_under_their_conversation(t
     import tools.delegate_tool_config as dtc
     from tools.delegate_tool_sessions import stored_child_session
     cfg = {"max_spawn_depth": 3}
-    monkeypatch.setattr(dt, "_load_config", lambda: cfg)
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: cfg)
     monkeypatch.setattr(dtc, "_load_config", lambda: cfg)
     db = SessionDB(db_path=tmp_path / "state.db")
     kw = dict(api_key="k", base_url="https://openrouter.ai/api/v1", provider="openrouter",

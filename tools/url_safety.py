@@ -35,6 +35,21 @@ def _proxy_is_configured() -> bool:
     return any(os.environ.get(v) for v in _PROXY_ENV_VARS)
 
 
+def _request_goes_through_proxy(hostname: str, scheme: str) -> bool:
+    """Return True when an env-configured egress proxy carries a request to *hostname*.
+
+    Mirrors how httpx (``trust_env``) and urllib pick a proxy: the scheme's own
+    variable (``HTTPS_PROXY`` for https, ``HTTP_PROXY`` for http) or ``ALL_PROXY``,
+    unless ``NO_PROXY`` covers the host (then the connect is direct).
+    """
+    names = ("HTTPS_PROXY", "https_proxy") if scheme == "https" else ("HTTP_PROXY", "http_proxy")
+    if not any((os.environ.get(v) or "").strip() for v in (*names, "ALL_PROXY", "all_proxy")):
+        return False
+    from urllib.request import proxy_bypass_environment
+
+    return not proxy_bypass_environment(hostname)
+
+
 def normalize_url_for_request(url: str) -> str:
     """ASCII-safe HTTP URL for Hermes-owned URL tools (IRI -> URI, e.g. ``https://wttr.in/Köln``).
     Preserves URL syntax and existing percent escapes while IDNA-encoding the host and
@@ -160,8 +175,11 @@ def _resolve_allow_private_urls() -> bool:
 def _reset_allow_private_cache() -> None:
     """Reset the cached toggle and the cached fake-ip ranges — only for tests."""
     global _allow_private_resolved, _cached_allow_private, _fake_ip_resolved, _cached_fake_ip_ranges
+    global _proxy_fake_ip_resolved, _cached_proxy_fake_ip_networks
     _allow_private_resolved = _cached_allow_private = _fake_ip_resolved = False
     _cached_fake_ip_ranges = ()
+    _proxy_fake_ip_resolved = False
+    _cached_proxy_fake_ip_networks = ()
 
 
 def _resolve_fake_ip_ranges() -> tuple:
@@ -204,6 +222,81 @@ def _global_fake_ip_ranges() -> tuple:
     if not _fake_ip_resolved:
         _fake_ip_resolved, _cached_fake_ip_ranges = True, _resolve_fake_ip_ranges()
     return _cached_fake_ip_ranges
+
+
+# ---------------------------------------------------------------------------
+# Opt-in: an egress proxy's fake-IP DNS range (security.proxy_fake_ip_cidrs)
+# ---------------------------------------------------------------------------
+# Some sandbox runtimes answer EVERY DNS query with a synthetic address from a
+# reserved range and resolve the real name at their HTTP proxy,
+# which is the egress boundary. There, a resolved 198.18.x.x says nothing about
+# the destination, but the private-IP check would refuse every hostname.
+# ``security.proxy_fake_ip_cidrs`` (default empty) names that range. Unlike
+# ``security.fake_ip_ranges`` (a local TUN proxy, dialable everywhere), it only
+# applies to a request an env-configured proxy carries
+# (``_request_goes_through_proxy``) and only in ``is_safe_url``: a direct
+# connect to the range stays refused at connect time, and every other private,
+# loopback, link-local and metadata address stays blocked whatever the setting.
+_proxy_fake_ip_resolved = False
+_cached_proxy_fake_ip_networks: tuple = ()
+# Never accepted as a proxy fake-IP range, however configured (on top of
+# ``_FAKE_IP_UNDECLARABLE_NETWORKS``).
+_NEVER_PROXY_FAKE_IP_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4",
+    "::/127", "fe80::/10", "ff00::/8", "::ffff:0:0/96",
+))
+
+
+def _parse_proxy_fake_ip_cidrs(raw: Any) -> tuple:
+    """Validate configured fake-IP CIDRs; unsafe or malformed entries are ignored (logged)."""
+    if raw in (None, ""):
+        return ()
+    if isinstance(raw, str):
+        raw = [part for part in raw.split(",")]
+    if not isinstance(raw, (list, tuple)):
+        logger.warning("security.proxy_fake_ip_cidrs must be a list of CIDR networks; ignoring %r", raw)
+        return ()
+    nets = []
+    for entry in raw:
+        text = str(entry).strip() if entry is not None else ""
+        if not text:
+            continue
+        try:
+            net = ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            logger.warning("Ignoring invalid security.proxy_fake_ip_cidrs entry %r", entry)
+            continue
+        too_wide = net.prefixlen < (8 if net.version == 4 else 16)
+        never = (*_NEVER_PROXY_FAKE_IP_NETWORKS, *_FAKE_IP_UNDECLARABLE_NETWORKS)
+        if too_wide or any(net.overlaps(bad) for bad in never if bad.version == net.version):
+            logger.warning(
+                "Ignoring unsafe security.proxy_fake_ip_cidrs entry %r (too wide, or overlaps loopback, "
+                "RFC 1918, CGNAT, ULA, link-local/metadata, multicast or unspecified space)", entry,
+            )
+            continue
+        nets.append(net)
+    return tuple(nets)
+
+
+def _resolve_proxy_fake_ip_networks() -> tuple:
+    try:
+        from hermes_cli.config import read_raw_config
+
+        sec = read_raw_config().get("security", {})
+    except Exception:
+        logger.debug("security.proxy_fake_ip_cidrs: config unavailable; the opt-in stays off", exc_info=True)
+        return ()
+    return _parse_proxy_fake_ip_cidrs(sec.get("proxy_fake_ip_cidrs") if isinstance(sec, dict) else None)
+
+
+def _proxy_fake_ip_networks() -> tuple:
+    """The configured proxy fake-IP ranges (cached like ``_global_allow_private_urls``)."""
+    global _proxy_fake_ip_resolved, _cached_proxy_fake_ip_networks
+    if get_hermes_home_override() is not None:
+        return _resolve_proxy_fake_ip_networks()
+    if not _proxy_fake_ip_resolved:
+        _proxy_fake_ip_resolved, _cached_proxy_fake_ip_networks = True, _resolve_proxy_fake_ip_networks()
+    return _cached_proxy_fake_ip_networks
 
 
 def _normalize_hostname(host: Optional[str]) -> str:
@@ -312,6 +405,16 @@ def _is_declared_fake_ip(ip: _IPAddress) -> bool:
     no reach an attacker lacks through the proxy's own DNS; undeclared ranges keep the private verdict."""
     ip = _embedded_ipv4(ip)
     return any(ip in net for net in _global_fake_ip_ranges())
+
+
+def _proxy_fake_ip_allowed(ip: _IPAddress, hostname: str, scheme: str) -> bool:
+    """True when *ip* is in a ``security.proxy_fake_ip_cidrs`` range AND an env proxy carries the
+    request. Pre-flight (``is_safe_url``) only; the metadata floor is checked before this."""
+    nets = _proxy_fake_ip_networks()
+    ip = _embedded_ipv4(ip)
+    if not nets or not any(ip in net for net in nets if net.version == ip.version):
+        return False
+    return _request_goes_through_proxy(hostname, scheme)
 
 
 def _is_blocked_ip(ip: _IPAddress) -> bool:
@@ -429,6 +532,12 @@ def is_safe_url(url: str) -> bool:
                 logger.warning("Blocked request — unparseable IP address %r for hostname %s", raw, hostname)
                 return False
             reason = _resolved_ip_block_reason(ip, allow_private)
+            if reason is not None and not _is_always_blocked_ip(ip) and _proxy_fake_ip_allowed(ip, hostname, scheme):
+                logger.debug(
+                    "Allowing proxy fake-IP answer (security.proxy_fake_ip_cidrs; the proxy resolves): %s -> %s",
+                    hostname, ip_str,
+                )
+                continue
             if reason is not None:
                 logger.warning("Blocked request to %s: %s -> %s", reason, hostname, ip_str)
                 return False
@@ -455,7 +564,11 @@ class SSRFConnectionBlocked(ValueError):
 def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
     """Resolve and validate *host* at TCP-connect time; return dialable IP strings. Closes the
     DNS-rebinding gap between pre-flight validation and connect for direct httpx clients. The
-    result is capped at ``_MAX_SSRF_CONNECT_IPS``, but EVERY answer is validated."""
+    result is capped at ``_MAX_SSRF_CONNECT_IPS``, but EVERY answer is validated.
+
+    Only DIRECT connects reach this check (a proxied request is dialled by the client's proxy
+    transport, which connects to the proxy, not the target), so ``security.proxy_fake_ip_cidrs``
+    never applies here: a direct connect to such an address is refused like any other private one."""
     hostname = _normalize_hostname(host)
     if not hostname:
         raise SSRFConnectionBlocked("Blocked request with empty hostname")

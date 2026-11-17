@@ -895,6 +895,26 @@ or `::/0`) is ignored with a warning rather than widening the guard. On a host w
 browser provider, the declared sentinel also stops counting as private for
 `browser.auto_local_for_private_urls`, so those pages keep going to the cloud browser.
 
+#### Egress-proxy fake-IP ranges
+
+A sandbox whose DNS answers every name with a synthetic address and whose HTTP proxy resolves
+the real name (for example from `198.18.0.0/15`, the RFC 2544 block) needs a narrower exemption than
+`fake_ip_ranges`: the proxy is the egress boundary, so only a request the proxy carries should
+get through.
+
+```yaml
+security:
+  proxy_fake_ip_cidrs:
+    - 198.18.0.0/15
+```
+
+An answer inside `security.proxy_fake_ip_cidrs` passes the pre-flight check only when an
+environment proxy carries the request (the scheme's `HTTPS_PROXY`/`HTTP_PROXY` or `ALL_PROXY`,
+and `NO_PROXY` does not cover the host). A direct connect to the range is still refused at
+connect time, and every other private, loopback, link-local and metadata answer stays blocked.
+Entries wider than `/8` (`/16` for IPv6) or overlapping the classes `fake_ip_ranges` refuses,
+multicast or IPv4-mapped space are ignored with a warning. Empty by default.
+
 ### Content-Level Command Checks
 
 The dangerous-command detector also flags two content-level shapes that a

@@ -528,10 +528,13 @@ def _is_routed_home(target_home: str | Path) -> bool:
 
     Same launch-home identity as ``agent.secret_scope.serves_routed_profile()``: under a host that
     mirrors the served profile into ``HERMES_HOME``, the live env var names the served home and the
-    launch residue would never be stripped from that profile's child env."""
-    from hermes_constants import get_routing_process_hermes_home
+    launch residue would never be stripped from that profile's child env. Both sides compare through
+    ``hermes_home_key`` (resolved-key cache), matching ``secret_scope._is_process_home``: the
+    sibling checks must keep one identity seam and one cache, not a raw ``Path.resolve()``
+    filesystem round-trip per call (#145022)."""
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     try:
-        return Path(target_home).resolve() != get_routing_process_hermes_home().resolve()
+        return hermes_home_key(target_home) != hermes_home_key(get_routing_process_hermes_home())
     except OSError:
         return True
 

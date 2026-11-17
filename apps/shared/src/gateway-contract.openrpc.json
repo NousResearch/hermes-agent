@@ -17314,6 +17314,194 @@
         "title": "DelegationStatusResult",
         "type": "object"
       },
+      "DeliverySourceMap": {
+        "additionalProperties": false,
+        "description": "Which source feeds each number. A count is fed by its source even when it is zero.",
+        "properties": {
+          "pending": {
+            "title": "Pending",
+            "type": "string"
+          },
+          "delivered_recent": {
+            "title": "Delivered Recent",
+            "type": "string"
+          },
+          "dead_letter": {
+            "title": "Dead Letter",
+            "type": "string"
+          },
+          "last_delivery_at": {
+            "title": "Last Delivery At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pending",
+          "delivered_recent",
+          "dead_letter",
+          "last_delivery_at"
+        ],
+        "title": "DeliverySourceMap",
+        "type": "object"
+      },
+      "DeliveryStatusParams": {
+        "additionalProperties": false,
+        "description": "One session (``session_id``) or every visible session (``scope=\"all\"``); exactly one of\nthe two. Neither is a default to \"everything\": without one the call is refused\n(fail-closed), so a bare poll never leaks another session's deliveries.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "const": "all",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scope"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          },
+          "window_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Window Seconds"
+          }
+        },
+        "title": "DeliveryStatusParams",
+        "type": "object"
+      },
+      "DeliveryStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryStatusRow"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "session",
+              "all"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "window_seconds": {
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sessions",
+          "scope",
+          "window_seconds"
+        ],
+        "title": "DeliveryStatusResult",
+        "type": "object"
+      },
+      "DeliveryStatusRow": {
+        "additionalProperties": false,
+        "description": "One session's delivery state.\n\n``pending`` counts detached deliveries recorded after the session's last assistant row \u2014\nthe documented approximation of \"recorded and not yet consumed by a turn\": the core keeps\nno \"seen\" column on ``messages``, so a delivery the user already saw through another\nchannel still counts until the next turn runs. ``oldest_pending_age_seconds`` is null when\nnothing is pending. ``delivered_recent`` counts detached deliveries plus settled relay\nreceipts inside ``window_seconds``. ``dead_letter`` counts failed relay receipts (the\ntranscript has no dead-letter state). ``last_delivery_at`` is the newest delivery\ntimestamp across both sources, or null when the session has none.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "oldest_pending_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Pending Age Seconds"
+          },
+          "delivered_recent": {
+            "title": "Delivered Recent",
+            "type": "integer"
+          },
+          "dead_letter": {
+            "title": "Dead Letter",
+            "type": "integer"
+          },
+          "last_delivery_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Delivery At"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DeliverySourceMap"
+          }
+        },
+        "required": [
+          "session_id",
+          "pending",
+          "oldest_pending_age_seconds",
+          "delivered_recent",
+          "dead_letter",
+          "last_delivery_at",
+          "source"
+        ],
+        "title": "DeliveryStatusRow",
+        "type": "object"
+      },
       "DiagnosticsShareNousParams": {
         "additionalProperties": false,
         "properties": {
@@ -50773,6 +50961,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CronSubmitResult"
+        }
+      }
+    },
+    {
+      "name": "delivery.status",
+      "summary": "Read-only delivery state for one session or every visible session: pending detached deliveries (recorded after the last assistant row \u2014 a documented approximation, the core keeps no 'seen' column), deliveries in the window, failed relay receipts (dead-letter) and the newest delivery time. Sources: the transcript's detached-result rows plus the bot relay receipts; the plugin outbox is NOT covered. Requires ``session:read``; a session of another profile answers ``permission_denied`` / ``profile_mismatch`` with no data. Writes nothing, touches no turn, lease or cache, and answers during the restart drain.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DeliveryStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DeliveryStatusResult"
         }
       }
     },

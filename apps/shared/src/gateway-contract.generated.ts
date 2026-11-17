@@ -5212,6 +5212,36 @@ export interface CanonicalGroupsPeerRegisterParams {
   grant: string
   catalog: Record<string, unknown>
 }
+/** One session (``session_id``) or every visible session (``scope="all"``); exactly one of the two. Neither is a default to "everything": without one the call is refused (fail-closed), so a bare poll never leaks another session's deliveries. */
+export interface DeliveryStatusParams {
+  profile?: string | null
+  session_id?: string | null
+  scope?: 'all' | null
+  limit?: number | null
+  window_seconds?: number | null
+}
+export interface DeliveryStatusResult {
+  sessions: DeliveryStatusRow[]
+  scope: 'session' | 'all'
+  window_seconds: number
+}
+/** One session's delivery state. ``pending`` counts detached deliveries recorded after the session's last assistant row — the documented approximation of "recorded and not yet consumed by a turn": the core keeps no "seen" column on ``messages``, so a delivery the user already saw through another channel still counts until the next turn runs. ``oldest_pending_age_seconds`` is null when nothing is pending. ``delivered_recent`` counts detached deliveries plus settled relay receipts inside ``window_seconds``. ``dead_letter`` counts failed relay receipts (the transcript has no dead-letter state). ``last_delivery_at`` is the newest delivery timestamp across both sources, or null when the session has none. */
+export interface DeliveryStatusRow {
+  session_id: string
+  pending: number
+  oldest_pending_age_seconds: number | null
+  delivered_recent: number
+  dead_letter: number
+  last_delivery_at: number | null
+  source: DeliverySourceMap
+}
+/** Which source feeds each number. A count is fed by its source even when it is zero. */
+export interface DeliverySourceMap {
+  pending: string
+  delivered_recent: string
+  dead_letter: string
+  last_delivery_at: string
+}
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
@@ -7208,6 +7238,8 @@ export interface CanonicalRpcMethods {
   'cron.status': { params: CronAdmissionParams; result: CronStatusResult }
   /** Admit one cron firing into the owning profile's durable FIFO. */
   'cron.submit': { params: CronRunParams; result: CronSubmitResult }
+  /** Read-only delivery state for one session or every visible session: pending detached deliveries (recorded after the last assistant row — a documented approximation, the core keeps no 'seen' column), deliveries in the window, failed relay receipts (dead-letter) and the newest delivery time. Sources: the transcript's detached-result rows plus the bot relay receipts; the plugin outbox is NOT covered. Requires ``session:read``; a session of another profile answers ``permission_denied`` / ``profile_mismatch`` with no data. Writes nothing, touches no turn, lease or cache, and answers during the restart drain. */
+  'delivery.status': { params: DeliveryStatusParams; result: DeliveryStatusResult }
   'groups.approve': { params: CanonicalRoomApproveParams; result: GroupsApproveResult }
   /** Read one committed attachment for a live room viewer. */
   'groups.attachment.download': { params: GroupsAttachmentDownloadParams; result: RoomAttachmentBytes }
@@ -7292,6 +7324,7 @@ export const CANONICAL_RPC_METHODS = [
   'cron.recover',
   'cron.status',
   'cron.submit',
+  'delivery.status',
   'groups.approve',
   'groups.attachment.download',
   'groups.attachment.upload',

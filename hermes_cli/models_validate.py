@@ -496,6 +496,37 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     )
 
 
+def _single_vendor(catalog) -> Optional[str]:
+    """The one vendor every id in *catalog* classifies to; ``None`` for a mixed or unclassifiable list."""
+    from hermes_cli.model_normalize import detect_vendor
+
+    vendors = {detect_vendor(mid) for mid in catalog}
+    return next(iter(vendors)) if len(vendors) == 1 and None not in vendors else None
+
+
+def _other_vendor_id(lookup: str, catalog) -> Optional[str]:
+    """Vendor of *lookup* when it is positively another vendor's id than the single-vendor *catalog*'s
+    (``kimi-k3.1-pro`` against MiniMax); ``None`` when it is the catalog's own family or unclassifiable.
+    A ``minimaxai/MiniMax-M2`` aggregator spelling of the native vendor is the native family."""
+    from hermes_cli.model_normalize import detect_vendor
+
+    native, vendor = _single_vendor(catalog), detect_vendor(lookup)
+    if not native or not vendor or vendor == native:
+        return None
+    return None if _family_head(lookup.rsplit("/", 1)[-1]) in {_family_head(m) for m in catalog} else vendor
+
+
+def _provider_to_pin_for(vendor: str, *, not_provider: str) -> Optional[str]:
+    """A first-party provider whose whole catalog is *vendor*'s (one the user holds credentials for
+    first) — the ``--provider`` to suggest for an id the current provider cannot serve."""
+    from hermes_cli import models as _m
+    from hermes_cli.models_detect import provider_has_credentials
+
+    candidates = [p for p, ids in _m._PROVIDER_MODELS.items()
+                  if p != not_provider and p not in _m._AGGREGATOR_PROVIDERS and _single_vendor(ids) == vendor]
+    return next((p for p in candidates if provider_has_credentials(p)), candidates[0] if candidates else None)
+
+
 def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
     """MiniMax has no /models endpoint — static catalog, case-insensitive (ids like MiniMax-M2.7).
     Returns None when the catalog is empty."""
@@ -503,7 +534,23 @@ def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
     if not catalog:
         return None
     match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
-    return match.verdict(req) or _soft_accept(
+    verdict = match.verdict(req)
+    if verdict is not None:
+        return verdict
+    # Plausibility gate (#45006): MiniMax can only answer another vendor's id with "unknown model" on every
+    # turn. With no /models to ask, soft-accepting it pinned the session to a model it never serves. A
+    # user-set MINIMAX_BASE_URL may front anything, so only the official hosts are judged.
+    official = not req.base_url or any(base_url_host_matches(req.base_url, h) for h in ("minimax.io", "minimaxi.com"))
+    vendor = _other_vendor_id(req.lookup, catalog) if official else None
+    if vendor:
+        slug = _provider_to_pin_for(vendor, not_provider=req.normalized)
+        fix = f"`/model {req.requested} --provider {slug}`" if slug else "`--provider <slug>`"
+        return _reject(
+            f"`{req.requested}` doesn't look like a MiniMax model (it is a {vendor} id) and isn't in its "
+            f"listing, so it was not accepted: MiniMax would answer every turn with an unknown-model error. "
+            f"Switch with {fix} (or select it from the `/model` picker)."
+        )
+    return _soft_accept(
         f"Note: `{req.requested}` was not found in the MiniMax catalog."
         f"{match.suggestion_text}"
         "\n  MiniMax does not expose a /models endpoint, so Hermes cannot verify the model name."

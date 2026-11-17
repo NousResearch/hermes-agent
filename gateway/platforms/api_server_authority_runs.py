@@ -73,6 +73,9 @@ def run_projection(adapter, run_id):
     # ``unknown`` is not terminal: later turns wait for POST /v1/runs/{id}/resolve-unknown, and
     # ``interrupted`` is in TERMINAL_STATUSES, so a poller would stop at a paused head.
     status = {'queued': 'queued', 'started': 'running', 'unknown': 'unknown', 'terminal': row['outcome']}.get(row['status'])
+    if row['status'] == 'terminal' and row['outcome'] in ('steering', 'steered'):
+        # ``if_busy: steer``: the text rides the running turn (``steering``), then settles with it.
+        status = 'running' if row['outcome'] == 'steering' else 'completed'
     saved = admission_result(authority.db, row['admission_id'])
     result = saved.get('result', {}) if saved else {}
     if row['status'] == 'terminal':

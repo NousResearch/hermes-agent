@@ -2,7 +2,7 @@ name: finix
 title: Finix
 repo: https://github.com/web3blind/finix
 sha: b4241cdefa70b9184bc5728600204d0e0f723b46
-description: Age-encrypted profile backups with verified cloud readback and offline extraction; automatic recovery is unavailable.
+description: "Age-encrypted profile backups with verified cloud readback and offline extraction; automatic recovery is unavailable. Disclosure — Finix copies your whole Hermes profile, including `.env`, `auth.json`, `config.yaml`, session databases and memories, encrypts it with age to a recipient key you generate, and uploads it to your Google Drive (Hermes-managed `finix:google` OAuth, drive.file scope) or an rclone remote you configure; it runs scheduled backups in the background once you enable them, needs the separately installed `age` and `age-keygen`, and anyone holding the recovery key can read every secret in those backups, so keep the key off the backup host."
 maintainer: web3blind
 tier: community
 category: automation

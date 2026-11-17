@@ -120,6 +120,10 @@ describe('main process wiring', () => {
     expect(handler.slice(0, 1500)).toMatch(/if \(artifactVerdict === 'deny'\) \{\s*event\.preventDefault\(\)/)
   })
 
+  it('honours the development frame domain only in unpackaged runs', () => {
+    expect(main).toContain('const HOSTED_ARTIFACT_FRAME_POLICY = { dev: !IS_PACKAGED }')
+  })
+
   it('denies artifact frames in both permission handlers', () => {
     const request = main.slice(main.indexOf('setPermissionRequestHandler('))
     const check = main.slice(main.indexOf('setPermissionCheckHandler('))

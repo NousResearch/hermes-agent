@@ -3,7 +3,7 @@
 import json
 import shlex
 
-from tools.terminal_hints.reread import REREAD_HINT, viewed_path
+from tools.terminal_reread.hint import REREAD_HINT, viewed_path
 from tools.terminal_tool_result import finalize_foreground_result
 
 

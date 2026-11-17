@@ -213,7 +213,18 @@ pub fn apply_event(state: &mut AppState, evt: &JsonRpcEvent) {
                 .and_then(|v| v.get("allow_permanent").and_then(|d| d.as_bool()))
                 .unwrap_or(true);
             let request_id = p
-                .and_then(|v| v.get("request_id").and_then(|d| d.as_str()))
+                .and_then(|v| {
+                    v.get("request_id")
+                        .and_then(|d| d.as_str())
+                        .filter(|s| !s.is_empty())
+                })
+                .or_else(|| {
+                    p.and_then(|v| {
+                        v.get("prompt_id")
+                            .and_then(|d| d.as_str())
+                            .filter(|s| !s.is_empty())
+                    })
+                })
                 .map(|s| s.to_string());
             state.pending_approval = Some(crate::state::ApprovalRequest {
                 description: description.clone(),
@@ -228,7 +239,18 @@ pub fn apply_event(state: &mut AppState, evt: &JsonRpcEvent) {
         "clarify.request" => {
             let p = evt.params.payload.as_ref();
             let request_id = p
-                .and_then(|v| v.get("request_id").and_then(|d| d.as_str()))
+                .and_then(|v| {
+                    v.get("request_id")
+                        .and_then(|d| d.as_str())
+                        .filter(|s| !s.is_empty())
+                })
+                .or_else(|| {
+                    p.and_then(|v| {
+                        v.get("prompt_id")
+                            .and_then(|d| d.as_str())
+                            .filter(|s| !s.is_empty())
+                    })
+                })
                 .unwrap_or("")
                 .to_string();
             let answered = p.and_then(|v| v.get("answers")).and_then(|v| v.as_object());

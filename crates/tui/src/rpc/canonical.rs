@@ -44,10 +44,17 @@ pub fn mutate_params(
     Some(params)
 }
 
+pub fn generation_of(value: &Value) -> Option<i64> {
+    value.get("execution_generation").and_then(as_i64)
+}
+
+/// Newest user row the owner will rewind.
+///
+/// A micro-compaction merge stays in `messages` and is the undo target. `display_messages`
+/// is the projection the screen paints, so it is not a rewind id.
 pub fn last_user_row_id(snapshot: &Value) -> Option<i64> {
     let rows = snapshot
         .get("stored_messages")
-        .or_else(|| snapshot.get("display_messages"))
         .or_else(|| snapshot.get("messages"))?
         .as_array()?;
     rows.iter().rev().find_map(user_turn_row)
@@ -164,6 +171,48 @@ pub fn present_usage(value: &Value) -> Value {
     value.clone()
 }
 
+/// Combine the account block with the session counters.
+///
+/// `session.account_usage` is plan lines only. Stopping there paints `/credits`
+/// as zero calls. Counters come from `session.stats` (or a legacy `session.usage`
+/// that already uses the TUI field names). Account lines overlay those counters.
+pub fn merge_usage(
+    account: Option<&Value>,
+    stats: Option<&Value>,
+    legacy: Option<&Value>,
+) -> Option<Value> {
+    let body = stats
+        .map(present_usage)
+        .or_else(|| legacy.map(present_usage));
+    let credits = credit_lines(account).or_else(|| credit_lines(legacy));
+    let Some(lines) = credits else {
+        return body;
+    };
+    let empty = lines.as_array().is_some_and(|rows| rows.is_empty());
+    if empty {
+        return body.or_else(|| account.map(usage_view));
+    }
+    if let Some(mut owned) = body {
+        owned["credits_lines"] = lines;
+        return Some(owned);
+    }
+    Some(json!({
+        "calls": 0,
+        "input": 0,
+        "output": 0,
+        "total": 0,
+        "credits_lines": lines,
+    }))
+}
+
+fn credit_lines(value: Option<&Value>) -> Option<Value> {
+    let value = value?;
+    if value.get("lines").is_some() || value.get("nous_lines").is_some() {
+        return usage_view(value).get("credits_lines").cloned();
+    }
+    value.get("credits_lines").cloned()
+}
+
 pub fn method_missing(err: &anyhow::Error) -> bool {
     let text = err.to_string();
     text.contains("(-32601)") || text.contains("method not found")
@@ -173,6 +222,15 @@ pub fn method_missing(err: &anyhow::Error) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rewind_ignores_the_display_projection() {
+        let snap = json!({
+            "display_messages": [{"role": "user", "row_id": 9, "content": "shown"}],
+            "messages": [{"role": "user", "row_id": 1, "content": "merged"}]
+        });
+        assert_eq!(last_user_row_id(&snap), Some(1));
+    }
 
     #[test]
     fn rewind_skips_compaction_and_archived_rows() {
@@ -209,5 +267,29 @@ mod tests {
             "nous_lines": ["balance 2"],
         }));
         assert_eq!(view["credits_lines"], json!(["plan 10", "balance 2"]));
+    }
+
+    #[test]
+    fn merge_keeps_stats_when_account_usage_is_lines_only() {
+        let merged = merge_usage(
+            Some(&json!({
+                "lines": ["plan 10"],
+                "nous_lines": ["balance 2"],
+                "nous_route": true,
+            })),
+            Some(&json!({
+                "api_calls": 4,
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "total_tokens": 18,
+            })),
+            None,
+        )
+        .expect("merged usage");
+        assert_eq!(merged["calls"], 4);
+        assert_eq!(merged["input"], 11);
+        assert_eq!(merged["output"], 7);
+        assert_eq!(merged["total"], 18);
+        assert_eq!(merged["credits_lines"], json!(["plan 10", "balance 2"]));
     }
 }

@@ -37,6 +37,35 @@ struct ServerAsk {
     answers: Map<String, Value>,
 }
 
+/// Latest execution generation per session, and the generation a prompt was opened on.
+struct GenerationBook {
+    sessions: HashMap<String, i64>,
+    prompts: HashMap<String, i64>,
+}
+
+impl GenerationBook {
+    fn new() -> Self {
+        Self {
+            sessions: HashMap::new(),
+            prompts: HashMap::new(),
+        }
+    }
+
+    fn note_session(&mut self, session_id: &str, generation: i64) {
+        let stale = self
+            .sessions
+            .get(session_id)
+            .is_some_and(|current| *current > generation);
+        if !stale {
+            self.sessions.insert(session_id.to_string(), generation);
+        }
+    }
+
+    fn note_prompt(&mut self, prompt_id: &str, generation: i64) {
+        self.prompts.insert(prompt_id.to_string(), generation);
+    }
+}
+
 enum ClarifyStep {
     Hold,
     Reply(Value, Value),
@@ -58,6 +87,7 @@ pub struct GatewayClient {
     event_tx: broadcast::Sender<JsonRpcEvent>,
     child: Arc<Mutex<Option<Child>>>,
     subscriptions: Arc<Mutex<HashMap<String, String>>>,
+    generations: Arc<Mutex<GenerationBook>>,
     rpc_timeout: Duration,
 }
 
@@ -94,12 +124,22 @@ impl GatewayClient {
         let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let server_requests = Arc::new(Mutex::new(HashMap::new()));
+        let generations = Arc::new(Mutex::new(GenerationBook::new()));
         let (tx, rx) = mpsc::channel(64);
         let pending_clone = pending_requests.clone();
         let server_clone = server_requests.clone();
+        let generations_clone = generations.clone();
         let exit_tx = event_tx.clone();
         tokio::spawn(async move {
-            pump_socket(ws, rx, pending_clone, server_clone, exit_tx).await;
+            pump_socket(
+                ws,
+                rx,
+                pending_clone,
+                server_clone,
+                generations_clone,
+                exit_tx,
+            )
+            .await;
         });
 
         let client = Self {
@@ -110,6 +150,7 @@ impl GatewayClient {
             event_tx,
             child: Arc::new(Mutex::new(None)),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            generations,
             rpc_timeout: cfg.rpc_timeout,
         };
         wait_until_gateway_ready(&mut ready_rx, cfg.startup_timeout)
@@ -164,6 +205,7 @@ impl GatewayClient {
         let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let server_requests = Arc::new(Mutex::new(HashMap::new()));
+        let generations = Arc::new(Mutex::new(GenerationBook::new()));
 
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
@@ -174,6 +216,7 @@ impl GatewayClient {
 
         let pending_clone = pending_requests.clone();
         let server_clone = server_requests.clone();
+        let generations_clone = generations.clone();
         let event_tx_clone = event_tx.clone();
         let outbound_reader = outbound.clone();
 
@@ -193,9 +236,14 @@ impl GatewayClient {
                 }
                 match serde_json::from_str::<Value>(&line) {
                     Ok(val) => {
-                        if let Some(reply) =
-                            dispatch_frame(val, &pending_clone, &server_clone, &event_tx_clone)
-                                .await
+                        if let Some(reply) = dispatch_frame(
+                            val,
+                            &pending_clone,
+                            &server_clone,
+                            &generations_clone,
+                            &event_tx_clone,
+                        )
+                        .await
                         {
                             write_child(&outbound_reader, &reply).await;
                         }
@@ -255,6 +303,7 @@ impl GatewayClient {
             event_tx,
             child,
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            generations,
             rpc_timeout: cfg.rpc_timeout,
         })
     }
@@ -336,9 +385,42 @@ impl GatewayClient {
     }
 
     async fn remember_snapshot(&self, snapshot: &Value) {
-        if let Some((sid, sub)) = canonical::remember_fields(snapshot) {
-            self.subscriptions.lock().await.insert(sid, sub);
+        let sid = if let Some((sid, sub)) = canonical::remember_fields(snapshot) {
+            self.subscriptions.lock().await.insert(sid.clone(), sub);
+            Some(sid)
+        } else {
+            snapshot
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        };
+        if let Some(sid) = sid {
+            if let Some(gen) = canonical::generation_of(snapshot) {
+                self.generations.lock().await.note_session(&sid, gen);
+            }
         }
+    }
+
+    async fn generation(&self, session_id: &str) -> Result<i64> {
+        self.generations
+            .lock()
+            .await
+            .sessions
+            .get(session_id)
+            .copied()
+            .with_context(|| format!("session {session_id} has no execution generation"))
+    }
+
+    async fn prompt_generation(&self, session_id: &str, prompt_id: &str) -> Result<i64> {
+        let book = self.generations.lock().await;
+        if let Some(gen) = book.prompts.get(prompt_id) {
+            return Ok(*gen);
+        }
+        book.sessions
+            .get(session_id)
+            .copied()
+            .with_context(|| format!("prompt {prompt_id} has no execution generation"))
     }
 
     async fn resume_for_cas(&self, session_id: &str) -> Result<Value> {
@@ -417,7 +499,10 @@ impl GatewayClient {
             "text": text,
             "submission_id": fresh_request_id(),
         });
-        let _ = self.call("prompt.submit", params).await?;
+        let res = self.call("prompt.submit", params).await?;
+        if let Some(gen) = canonical::generation_of(&res) {
+            self.generations.lock().await.note_session(session_id, gen);
+        }
         Ok(())
     }
 
@@ -430,16 +515,28 @@ impl GatewayClient {
     }
 
     pub async fn interrupt(&self, session_id: &str) -> Result<()> {
-        let params = json!({ "session_id": session_id });
-        self.call("session.interrupt", params).await?;
+        let generation = self.generation(session_id).await?;
+        self.call(
+            "session.interrupt",
+            json!({
+                "session_id": session_id,
+                "execution_generation": generation,
+            }),
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn steer(&self, session_id: &str, text: &str) -> Result<String> {
+        let generation = self.generation(session_id).await?;
         let res = self
             .call(
                 "session.steer",
-                json!({ "session_id": session_id, "text": text }),
+                json!({
+                    "session_id": session_id,
+                    "text": text,
+                    "execution_generation": generation,
+                }),
             )
             .await?;
         Ok(res
@@ -872,7 +969,89 @@ impl GatewayClient {
     }
 
     pub async fn resume_session(&self, session_id: &str) -> Result<Value> {
-        self.resume_for_cas(session_id).await
+        let snap = self.resume_for_cas(session_id).await?;
+        self.replay_open(&snap).await;
+        Ok(snap)
+    }
+
+    /// Re-show prompts and server requests a reconnecting viewer still has to answer.
+    async fn replay_open(&self, snap: &Value) {
+        let session_id = snap
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if let Some(rows) = snap.get("open_requests").and_then(|v| v.as_array()) {
+            for row in rows {
+                let Some(id) = row.get("id").cloned() else {
+                    continue;
+                };
+                let Some(method) = row.get("method").and_then(|m| m.as_str()) else {
+                    continue;
+                };
+                let params = row.get("params").cloned().unwrap_or(Value::Null);
+                let key = wire::id_key(&id);
+                let Some((event, payload)) = wire::server_event(method, &key, &params) else {
+                    continue;
+                };
+                let question_count = params
+                    .get("questions")
+                    .and_then(|q| q.as_array())
+                    .map(|items| items.len())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(1);
+                self.server_requests.lock().await.insert(
+                    key,
+                    ServerAsk {
+                        id,
+                        method: method.to_string(),
+                        question_count,
+                        answers: Map::new(),
+                    },
+                );
+                let _ = self.event_tx.send(JsonRpcEvent {
+                    jsonrpc: "2.0".into(),
+                    method: "event".into(),
+                    params: EventParams {
+                        event_type: event.into(),
+                        session_id: session_id.clone(),
+                        payload: Some(payload),
+                    },
+                });
+            }
+        }
+        let Some(prompts) = snap.get("prompts").and_then(|v| v.as_array()) else {
+            return;
+        };
+        for prompt in prompts {
+            let event = match prompt.get("kind").and_then(|k| k.as_str()) {
+                Some("approval") => "approval.request",
+                Some("clarify") => "clarify.request",
+                _ => continue,
+            };
+            if let Some(gen) = canonical::generation_of(prompt) {
+                if let Some(sid) = session_id.as_deref() {
+                    self.generations.lock().await.note_session(sid, gen);
+                }
+                if let Some(pid) = prompt.get("prompt_id").and_then(|v| v.as_str()) {
+                    self.generations.lock().await.note_prompt(pid, gen);
+                }
+            }
+            let mut payload = prompt.clone();
+            if let Some(obj) = payload.as_object_mut() {
+                if let Some(pid) = prompt.get("prompt_id").cloned() {
+                    obj.entry("request_id").or_insert(pid);
+                }
+            }
+            let _ = self.event_tx.send(JsonRpcEvent {
+                jsonrpc: "2.0".into(),
+                method: "event".into(),
+                params: EventParams {
+                    event_type: event.into(),
+                    session_id: session_id.clone(),
+                    payload: Some(payload),
+                },
+            });
+        }
     }
 
     pub async fn clarify_respond(
@@ -914,15 +1093,20 @@ impl GatewayClient {
             ClarifyStep::Hold => Ok(json!({ "remaining": ["pending"] })),
             ClarifyStep::Reply(id, result) => self.respond_server(&id, result).await,
             ClarifyStep::Legacy => {
-                let mut params = json!({
-                    "session_id": session_id,
-                    "request_id": request_id,
-                    "answer": answer,
-                });
-                if let Some(qid) = question_id {
-                    params["question_id"] = json!(qid);
+                if request_id.is_empty() {
+                    anyhow::bail!("clarify needs a prompt id");
                 }
-                self.call("clarify.respond", params).await
+                let generation = self.prompt_generation(session_id, request_id).await?;
+                self.call(
+                    "clarify.respond",
+                    json!({
+                        "session_id": session_id,
+                        "execution_generation": generation,
+                        "prompt_id": request_id,
+                        "answer": answer,
+                    }),
+                )
+                .await
             }
         }
     }
@@ -984,14 +1168,20 @@ impl GatewayClient {
                 return self.respond_server(&id, json!({ "choice": choice })).await;
             }
         }
-        let mut params = json!({
-            "session_id": session_id,
-            "choice": choice,
-        });
-        if let Some(id) = request_id {
-            params["request_id"] = json!(id);
-        }
-        self.call("approval.respond", params).await
+        let Some(prompt_id) = request_id.filter(|id| !id.is_empty()) else {
+            anyhow::bail!("approval needs a prompt id");
+        };
+        let generation = self.prompt_generation(session_id, prompt_id).await?;
+        self.call(
+            "approval.respond",
+            json!({
+                "session_id": session_id,
+                "execution_generation": generation,
+                "prompt_id": prompt_id,
+                "choice": choice,
+            }),
+        )
+        .await
     }
 
     pub async fn mcp_servers_list(&self) -> Result<Value> {
@@ -1268,9 +1458,14 @@ impl GatewayClient {
     }
 
     pub async fn session_set_hidden(&self, session_id: &str, hidden: bool) -> Result<Value> {
-        self.call(
-            "session.set_hidden",
-            json!({ "session_id": session_id, "hidden": hidden }),
+        let snap = self.resume_for_cas(session_id).await?;
+        self.mutate(
+            session_id,
+            &snap,
+            "sidebar",
+            json!({ "hidden": hidden }),
+            false,
+            self.rpc_timeout,
         )
         .await
     }
@@ -1320,9 +1515,14 @@ impl GatewayClient {
     }
 
     pub async fn session_redirect(&self, session_id: &str, text: &str) -> Result<Value> {
+        let generation = self.generation(session_id).await?;
         self.call(
             "session.redirect",
-            json!({ "session_id": session_id, "text": text }),
+            json!({
+                "session_id": session_id,
+                "text": text,
+                "execution_generation": generation,
+            }),
         )
         .await
     }
@@ -1396,18 +1596,30 @@ impl GatewayClient {
 
     pub async fn session_usage(&self, session_id: &str) -> Result<Value> {
         let params = json!({ "session_id": session_id });
-        let mut last = None;
-        for method in ["session.account_usage", "session.stats", "session.usage"] {
-            match self.call(method, params.clone()).await {
-                Ok(v) => return Ok(canonical::present_usage(&v)),
-                Err(err) if canonical::method_missing(&err) => last = Some(err),
-                Err(err) => return Err(err),
+        let account = match self.call("session.account_usage", params.clone()).await {
+            Ok(v) => Some(v),
+            Err(err) if canonical::method_missing(&err) => None,
+            Err(err) => return Err(err),
+        };
+        let stats = match self.call("session.stats", params.clone()).await {
+            Ok(v) => Some(v),
+            Err(err) if canonical::method_missing(&err) => None,
+            Err(err) => return Err(err),
+        };
+        // Current main serves both. The third call is only for a gateway that
+        // still answers the old combined `session.usage` verb.
+        let legacy = if account.is_none() || stats.is_none() {
+            match self.call("session.usage", params).await {
+                Ok(v) => Some(v),
+                Err(err) if canonical::method_missing(&err) => None,
+                Err(err) if account.is_none() && stats.is_none() => return Err(err),
+                Err(_) => None,
             }
-        }
-        match last {
-            Some(err) => Err(err),
-            None => anyhow::bail!("session usage is not available"),
-        }
+        } else {
+            None
+        };
+        canonical::merge_usage(account.as_ref(), stats.as_ref(), legacy.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("session usage is not available"))
     }
 
     pub async fn usage_bars(&self) -> Result<Value> {
@@ -1553,6 +1765,7 @@ async fn pump_socket<S>(
     mut outbound: mpsc::Receiver<String>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     server_requests: Arc<Mutex<HashMap<String, ServerAsk>>>,
+    generations: Arc<Mutex<GenerationBook>>,
     event_tx: broadcast::Sender<JsonRpcEvent>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -1584,6 +1797,7 @@ async fn pump_socket<S>(
                                 val,
                                 &pending,
                                 &server_requests,
+                                &generations,
                                 &event_tx,
                             )
                             .await
@@ -1615,10 +1829,34 @@ async fn dispatch_frame(
     val: Value,
     pending: &Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>,
     server_requests: &Mutex<HashMap<String, ServerAsk>>,
+    generations: &Mutex<GenerationBook>,
     event_tx: &broadcast::Sender<JsonRpcEvent>,
 ) -> Option<String> {
     match wire::classify(val) {
         wire::Inbound::Event(evt) => {
+            if let Some(sid) = evt.params.session_id.as_deref() {
+                if let Some(gen) = evt
+                    .params
+                    .payload
+                    .as_ref()
+                    .and_then(canonical::generation_of)
+                {
+                    generations.lock().await.note_session(sid, gen);
+                }
+            }
+            if matches!(
+                evt.params.event_type.as_str(),
+                "approval.request" | "clarify.request"
+            ) {
+                if let Some(payload) = evt.params.payload.as_ref() {
+                    if let (Some(pid), Some(gen)) = (
+                        payload.get("prompt_id").and_then(|v| v.as_str()),
+                        canonical::generation_of(payload),
+                    ) {
+                        generations.lock().await.note_prompt(pid, gen);
+                    }
+                }
+            }
             let _ = event_tx.send(evt);
             None
         }
@@ -1714,6 +1952,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(4);
         let pending = Mutex::new(HashMap::new());
         let server = Mutex::new(HashMap::new());
+        let generations = Mutex::new(GenerationBook::new());
         let reply = dispatch_frame(
             json!({
                 "jsonrpc": "2.0",
@@ -1723,6 +1962,7 @@ mod tests {
             }),
             &pending,
             &server,
+            &generations,
             &tx,
         )
         .await;
@@ -1740,6 +1980,7 @@ mod tests {
         let (tx, _rx) = broadcast::channel(4);
         let pending = Mutex::new(HashMap::new());
         let server = Mutex::new(HashMap::new());
+        let generations = Mutex::new(GenerationBook::new());
         let reply = dispatch_frame(
             json!({
                 "jsonrpc": "2.0",
@@ -1749,6 +1990,7 @@ mod tests {
             }),
             &pending,
             &server,
+            &generations,
             &tx,
         )
         .await
@@ -1803,15 +2045,23 @@ for line in sys.stdin:
         sys.stdout.write(json.dumps({
             "jsonrpc": "2.0",
             "id": rid,
-            "result": {"session_id": "s-test"}
+            "result": {"session_id": "s-test", "execution_generation": 3}
         }) + "\n")
     elif method == "session.interrupt":
-        sid = (req.get("params") or {}).get("session_id")
-        sys.stdout.write(json.dumps({
-            "jsonrpc": "2.0",
-            "id": rid,
-            "result": {"ok": True, "session_id": sid}
-        }) + "\n")
+        params = req.get("params") or {}
+        sid = params.get("session_id")
+        if params.get("execution_generation") != 3:
+            sys.stdout.write(json.dumps({
+                "jsonrpc": "2.0",
+                "id": rid,
+                "error": {"code": 4001, "message": "invalid_params"}
+            }) + "\n")
+        else:
+            sys.stdout.write(json.dumps({
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {"ok": True, "session_id": sid}
+            }) + "\n")
     else:
         sys.stdout.write(json.dumps({
             "jsonrpc": "2.0",

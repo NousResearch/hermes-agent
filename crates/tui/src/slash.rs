@@ -379,7 +379,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/unhide",
         args_hint: "<session>",
-        description: "Unhide a stored session (session.set_hidden)",
+        description: "Unhide a stored session",
         local: true,
     },
     SlashCommand {

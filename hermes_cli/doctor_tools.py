@@ -477,8 +477,9 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
 @doctor_check("Could not check tool availability", "({e})")
 def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import PROJECT_ROOT
-    sys.path.insert(0, str(PROJECT_ROOT))
-    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from model_tools import check_tool_availability
     available, unavailable = _apply_doctor_tool_availability_overrides(*check_tool_availability())
     # Web is split into search/extract readiness rows so an explicitly
     # selected but unconfigured backend cannot look healthy.
@@ -490,7 +491,7 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
             available = [tid for tid in available if tid != "web"]
             unavailable = [item for item in unavailable if item.get("name") != "web"]
     for tid in available:
-        check_ok(TOOLSET_REQUIREMENTS.get(tid, {}).get("name", tid), _doctor_tool_availability_detail(tid))
+        check_ok(tid, _doctor_tool_availability_detail(tid))
     for status, label, detail in web_rows:
         (check_ok if status == "ok" else check_warn)(label, detail)
     for item in unavailable:

@@ -1,14 +1,15 @@
 name: cursor-provider
 repo: https://github.com/anpicasso/hermes-cursor-provider
-sha: bf7d61fb1e37fa78ec58de7683ec436dff5b71bf
+sha: e2e23d6b65252b3d410cc852dde9ca05de9d5cd4
 subdir: provider
-description: "Cursor model provider using the official proprietary Cursor SDK. Disclosure — uses Cursor's proprietary cursor-sdk (PyPI, bundled binary bridge on loopback) with the user's CURSOR_API_KEY; sends the full conversation, tool schemas/results and images (HTTPS URLs or base64) to Cursor; keeps private per-session SDK workspaces under HERMES_HOME/cache/cursor-sdk; Cursor built-in tools and MCP are requested off and Hermes keeps tool execution and approvals."
+image: https://raw.githubusercontent.com/anpicasso/hermes-cursor-provider/e2e23d6b65252b3d410cc852dde9ca05de9d5cd4/docs/banner.png
+description: "Cursor model provider using the official proprietary Cursor SDK. Disclosure — uses Cursor's proprietary cursor-sdk (PyPI, bundled binary bridge on loopback) with the user's CURSOR_API_KEY; sends the full conversation, tool schemas/results and images (HTTPS URLs or base64) to Cursor; keeps private per-session SDK workspaces under HERMES_HOME/cache/cursor-sdk. Cursor built-in tools and MCP are requested off and Hermes keeps tool execution and approvals; native custom tools are opt-in (default off) with an inert executor. Plan-only exhaustion and rejected model parameters are terminal and fail closed without fallback. The SDK passes a loopback tool-callback token on the bridge argv (not the API key) and copies the gateway environment into the bridge process."
 maintainer: anpicasso
 tier: community
 category: models
-requires_hermes: ">=0.22.0"
+requires_hermes: ">=0.23.1"
 docs_url: https://github.com/anpicasso/hermes-cursor-provider#readme
-version: "0.4.1"
+version: "0.5.0"
 platforms: []
 capabilities:
   provides_tools: []

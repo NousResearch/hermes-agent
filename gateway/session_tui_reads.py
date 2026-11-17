@@ -165,13 +165,14 @@ async def context_breakdown(connection, ref, params) -> dict:
             # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
             # system prompt. Reuse the payload while neither the transcript nor the agent moved.
             key = (id(agent), _agent_context_marks(agent), authority.db.conversation_revision(tip),
-                   row.get('system_prompt'), row.get('tool_names'))
+                   row.get('system_prompt'), row.get('tool_names'), row.get('prompt_cache_clock'),
+                   row.get('model'), row.get('model_config'))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
                 return dict(cached[1])
             conversation = _model_history(authority.db, tip)
             if agent is None:
-                payload = _stored_breakdown(row, conversation, usage)
+                payload = _stored_breakdown(row, conversation, usage, tip=tip, db=authority.db)
             else:
                 payload = compute_session_context_breakdown(agent, conversation)
                 payload['context_files'] = context_file_sources_for_agent(agent)
@@ -180,10 +181,12 @@ async def context_breakdown(connection, ref, params) -> dict:
     return await asyncio.to_thread(build)
 
 
-def _stored_breakdown(row, conversation, usage) -> dict:
+def _stored_breakdown(row, conversation, usage, *, tip, db) -> dict:
     """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin, beside its
-    stored usage. Tools are measured as the next agent restores them (``pinned_tool_defs``)."""
+    stored usage and saved prompt-cache clock. Tools are measured as the next agent restores them
+    (``pinned_tool_defs``)."""
     from agent.context_breakdown import stored_context_breakdown
+    from agent.prompt_cache_clock import current_generation, stored_cache_window
     from tools.mcp_tool_agent import pinned_tool_defs
     breakdown = {'categories': [], 'estimated_total': 0}
     # No prompt until an agent first built one: nothing to measure yet, the contract's pre-build shape.
@@ -196,7 +199,17 @@ def _stored_breakdown(row, conversation, usage) -> dict:
     return {**breakdown, 'context_max': int(usage.get('context_max') or 0),
             'context_percent': int(usage.get('context_percent') or 0), 'context_used': int(usage.get('context_used') or 0),
             'context_estimated': bool(usage.get('context_estimated', False)),
-            'context_source': str(usage.get('context_source') or 'provider_usage'), 'model': str(usage.get('model') or '')}
+            'context_source': str(usage.get('context_source') or 'provider_usage'), 'model': str(usage.get('model') or ''),
+            'prompt_cache': stored_cache_window(row.get('prompt_cache_clock'), session_id=tip,
+                                                generation=current_generation(db, tip), saved_route=_saved_route(row))}
+
+
+def _saved_route(row) -> tuple:
+    """``(provider, base_url, model)`` as the row persists them (``session.mutate`` writes the model and
+    ``model_config.provider``; ``update_session_model`` also the base_url)."""
+    from hermes_state_sessions import _parse_model_config
+    config = _parse_model_config(row.get('model_config'))
+    return config.get('provider'), config.get('base_url'), row.get('model')
 
 
 def _agent_context_marks(agent) -> tuple:

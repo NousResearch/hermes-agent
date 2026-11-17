@@ -1,0 +1,32 @@
+name: wings
+title: Wings
+repo: https://github.com/e-shizz/wings
+sha: ddeabd4e581b9f97eb5f77de430f7a43649a8025
+subdir: plugin
+version: "0.3.1"
+description: "A private WireGuard network between every Hermes you own and your phone. Two devices are enough: run setup on a computer, scan one code on the phone. Bots and sessions from all your machines in Desktop, the terminal and the Hermes app. Computers link directly when they can. No account, no coordination server, no third party. Disclosure — Wings asks for admin rights once per machine and installs a root helper (/usr/local/libexec/wings-root) with always-on systemd units (wings-sync, wings-watch, wings-relay, wings-address, wings-dns), a WireGuard interface wings0, an nftables table, firewalld/ufw rules, a wings-net system user, a marked /etc/hosts line and a private certificate authority trusted system-wide but limited to .wings names; it may install wireguard-tools and nftables from your package manager and downloads wstunnel 11.1.0 from its official GitHub release (checksum-pinned). It also adds a per-user wings-upkeep timer that runs every minute, installs and starts the Hermes gateway service, and sets webapp.enabled and webapp.public_url in config.yaml. Every device you pair can sign in to Hermes on every machine in your wing net without a password (full dashboard and terminal access), and every joined computer holds the shared wing-net key; turn this off per machine with `hermes wings trust off`. The Wings page lists the bots and recent session titles of every Hermes profile on each of your machines. A hub opens one UDP port (plus TCP 443 for the optional HTTPS relay), and `hermes wings router open` asks your router over UPnP to forward it."
+maintainer: e-shizz
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/e-shizz/wings/tree/ddeabd4e581b9f97eb5f77de430f7a43649a8025/plugin#readme
+image: https://raw.githubusercontent.com/e-shizz/wings/ddeabd4e581b9f97eb5f77de430f7a43649a8025/docs/card.png
+screenshots:
+  - https://raw.githubusercontent.com/e-shizz/wings/ddeabd4e581b9f97eb5f77de430f7a43649a8025/docs/shots/desktop.jpg
+  - https://raw.githubusercontent.com/e-shizz/wings/ddeabd4e581b9f97eb5f77de430f7a43649a8025/docs/shots/terminal.jpg
+  - https://raw.githubusercontent.com/e-shizz/wings/ddeabd4e581b9f97eb5f77de430f7a43649a8025/docs/shots/join.jpg
+  - https://raw.githubusercontent.com/e-shizz/wings/ddeabd4e581b9f97eb5f77de430f7a43649a8025/docs/shots/phone.jpg
+readme: true
+platforms: [linux]
+known_issues:
+  - Asks for admin rights once per machine to install a root helper. Read plugin/root/wings-root.sh first.
+  - Trusts a private certificate authority system-wide, limited to .wings names.
+  - Devices connect to the computer you ran setup on (the hub). To reach a hub at home from outside, one UDP port must be forwarded on the router.
+  - Computers link directly when their networks allow it and otherwise go through the hub. Phones always do.
+  - Phones run one VPN at a time, so the Wings tunnel replaces any other while it is on.
+capabilities:
+  provides_tools:
+    - wings_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

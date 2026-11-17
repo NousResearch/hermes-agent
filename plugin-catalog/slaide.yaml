@@ -1,0 +1,20 @@
+name: slaide
+repo: https://github.com/Lugier/slaide-mcp
+sha: 25a02d1318341ec657dc6828ac611207cc010be2
+title: Presentations & Slides by Slaide
+description: "AI presentation maker: build, edit and export PowerPoint slide decks, Word documents and Excel workbooks from chat through Slaide's hosted MCP server. Portable Agent Plugin v1 package (plugin.json, Streamable HTTP mcp.json, one skill). Disclosure — connects to Slaide's hosted MCP server (app.slaide.de) and needs a Slaide account (free tier available); after sign-in its tools read, create, update and export the user's own Slaide documents, which uses the user's Slaide plan allowance; it cannot delete documents or change a plan. The package marks the server `trust: untrusted` so every non-read-only call asks first. Export files arrive as a private link that expires after 15 minutes. The remote tool list can change without a new pin of this package."
+maintainer: Slaide
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://www.slaide.de/ai-assistants
+version: "1.0.0"
+readme: true
+known_issues:
+  - "Portable mcp.json cannot complete OAuth. Add mcp_servers.slaide with url https://app.slaide.de/api/mcp, auth: oauth and trust: untrusted to config.yaml, then run hermes mcp login slaide and hermes mcp test slaide."
+  - "Creating and updating documents uses the user's Slaide plan allowance. Changes are versioned and can be restored in Slaide. The remote tool list can change without a new pin of this package."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

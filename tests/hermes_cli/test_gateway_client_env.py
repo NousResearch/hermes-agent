@@ -115,7 +115,7 @@ def test_tui_launcher_hands_the_shell_env_to_ink(monkeypatch):
     monkeypatch.setenv('HERMES_PYTHON', sys.executable)
     monkeypatch.setattr(main_mod, '_has_any_provider_configured', lambda: True)
     captured = {}
-    monkeypatch.setattr(main_tui_launch, '_make_tui_argv', lambda tui_dir, tui_dev: (['node', 'dist/entry.js'], Path('.')))
+    monkeypatch.setattr(main_tui_launch, '_make_tui_argv', lambda tui_dir, tui_dev, notices=None: (['node', 'dist/entry.js'], Path('.')))
 
     def fake_call(argv, cwd=None, env=None):
         captured.update(env)

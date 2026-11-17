@@ -6,9 +6,6 @@
     "shrinks: when a seam lands, rewrite the block onto it and delete the entry."
   ],
   "sites": [
-    "website/docs/developer-guide/browser-vault-plugin.md agent.browser_page_backend.BrowserPageBackend",
-    "website/docs/developer-guide/browser-vault-plugin.md agent.vault_backends.base.LoginBackend",
-    "website/docs/developer-guide/browser-vault-plugin.md agent.vault_store.VaultItemMeta",
     "website/docs/developer-guide/terminal-environment-plugin.md tools.environments.local.LocalEnvironment"
   ]
 }

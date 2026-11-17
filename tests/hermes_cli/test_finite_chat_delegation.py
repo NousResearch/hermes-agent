@@ -207,7 +207,7 @@ def test_tty_seeded_chat_keeps_background_delegation(monkeypatch, query, image):
     parent = _make_mock_parent()
     parent.session_id = "interactive-parent"
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: MagicMock())
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: {
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **kw: {
         "model": "test-model", "provider": "custom", "base_url": None, "api_key": None,
         "api_mode": None, "command": None, "args": None,
     })

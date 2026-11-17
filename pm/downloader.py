@@ -52,7 +52,7 @@ from pm.network import edge_block, is_transient, retry_network
 # their docs require a real User-Agent. A browser-shaped one is the
 # least-privileged string every asset CDN accepts.
 _UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-pm/1.0", "Accept-Encoding": "identity"}
-_LOOPBACK = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _CHUNK = 1 << 20  # read/write block, also the minimum range size
 _CHECKPOINT_SECONDS = 5.0
 # The largest npm-hosted artifact in pm/lock.json is ~25 MB (a pnpm executable).
@@ -70,6 +70,17 @@ def _host(url: str) -> str | None:
     return urllib.parse.urlsplit(url).hostname
 
 
+def _loopback(url: str) -> bool:
+    """Plain http to a local test server. Parsed, not prefix-matched:
+    ``http://127.0.0.1:@evil.com/`` names evil.com as its host."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+    except ValueError:  # malformed bracketed host
+        return False
+    return parts.scheme == "http" and "@" not in parts.netloc and host in _LOOPBACK_HOSTS
+
+
 class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Redirects keep the transport rule: an https hop never lands on http.
 
@@ -83,7 +94,7 @@ class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # An https origin bouncing to a local listener would hand an unpinned
         # model file to whatever is bound there.
-        loopback = req.full_url.startswith(_LOOPBACK) and newurl.startswith(_LOOPBACK)
+        loopback = _loopback(req.full_url) and _loopback(newurl)
         same_host_http = (req.full_url.startswith("http://") and newurl.startswith("http://")
                           and _host(req.full_url) == _host(newurl))
         if not (newurl.startswith("https://") or loopback or same_host_http):
@@ -342,7 +353,7 @@ class Download:
             # http npm registry (Verdaccio, Nexus) cannot change what installs (#150032).
             for url in (source.url, *source.fallbacks):
                 plain = url == source.url and source.plain_http()
-                if not (url.startswith(("https://", *_LOOPBACK)) or plain):
+                if not (url.startswith("https://") or _loopback(url) or plain):
                     raise ValueError(f"refusing non-https url: {url}")
 
         # Probe the whole plan before reporting a denominator. A missing

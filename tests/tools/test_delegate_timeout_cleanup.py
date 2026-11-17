@@ -67,8 +67,8 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
         _active_children=[child],
         _active_children_lock=threading.Lock(),
     )
-    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.5)
-    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: 0.5)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: False)
 
     from tools.daemon_pool import DaemonThreadPoolExecutor
 

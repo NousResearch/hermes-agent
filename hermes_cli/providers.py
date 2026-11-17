@@ -500,7 +500,14 @@ def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[Pr
     the built-in's real transport/base_url/auth_type with an empty ``openai_chat``/``api_key``
     stub, routing e.g. AWS Bedrock through the generic custom-endpoint ``/models`` probe (#110402).
     """
-    entry = user_config.get(name) if isinstance(user_config, dict) and user_config else None
+    if not isinstance(user_config, dict) or not user_config:
+        return None
+    # Callers lowercase the requested name; the config key keeps the user's case (``Axonhub``).
+    # The pdef id is the config key so later ``user_config[target_provider]`` reads still hit.
+    if name not in user_config:
+        wanted = str(name or "").strip().lower()
+        name = next((k for k in user_config if isinstance(k, str) and k.strip().lower() == wanted), name)
+    entry = user_config.get(name)
     if not isinstance(entry, dict):
         return None
     base_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""

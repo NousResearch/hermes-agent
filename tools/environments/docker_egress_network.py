@@ -22,7 +22,6 @@ from dataclasses import dataclass
 
 from hermes_constants import get_hermes_home
 from hermes_platform.host import facts
-from tools.environments.remote_common import run_capture
 from tools.terminal_tool_config import home_profile_name
 
 _NETWORK_LABEL_KEY = "hermes-egress-network"
@@ -43,9 +42,16 @@ def internal_network_name() -> str:
     return f"hermes-egress-{profile}-{digest}"
 
 
+def _docker(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess:
+    # Plain subprocess, not remote_common.run_capture: `hermes egress` imports this module while
+    # building the CLI parser, and remote_common's import chain pulls in the secret backends.
+    return subprocess.run(argv, check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=timeout, stdin=subprocess.DEVNULL)
+
+
 def _inspect(docker_exe: str, name: str) -> dict | None:
     try:
-        result = run_capture([docker_exe, "network", "inspect", name], timeout=15)
+        result = _docker([docker_exe, "network", "inspect", name], timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
@@ -60,7 +66,7 @@ def _inspect(docker_exe: str, name: str) -> dict | None:
 def _create(docker_exe: str, name: str) -> str:
     """``docker network create --internal --ipv6=false``; returns stderr on failure, else ''."""
     try:
-        result = run_capture(
+        result = _docker(
             [docker_exe, "network", "create", "--internal", "--ipv6=false",
              "--label", f"{_NETWORK_LABEL_KEY}=1", name], timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:

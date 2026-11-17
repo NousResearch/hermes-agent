@@ -17,7 +17,6 @@ from agent.proxy_sources import iron_proxy as ip
 from agent.redact import mask_secret
 from hermes_cli._secrets_common import console_safe
 from hermes_cli.config import load_config, load_env, save_config
-from tools.environments.docker import find_docker
 from tools.environments.docker_egress_network import (
     ensure_internal_network, existing_internal_gateway, internal_network_name)
 
@@ -435,6 +434,10 @@ def _sync_tunnel_bind(proxy_cfg: dict, console: Console) -> None:
     if current is None:
         return
     host, port = current
+    # Deferred: tools.environments.docker's import chain loads the secret backends, which every
+    # `hermes` parser build would otherwise pay for (tests/hermes_cli/test_update_secret_import_lock.py).
+    from tools.environments.docker import find_docker
+
     docker_exe = find_docker() or "docker"
     if proxy_cfg.get("docker_internal_network"):
         network = ensure_internal_network(docker_exe)

@@ -189,7 +189,7 @@ def test_send_mirror_delivery_controls_the_session_mirror(whatsapp_bridge, monke
     """The message reaches the bridge either way; ``send.mirror_delivery: false`` only skips the
     append to the target chat's session transcript."""
     mirrored = []
-    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *args: mirrored.append(args) or True)
+    monkeypatch.setattr("gateway.outbound.send._mirror_sent_message", lambda *args: mirrored.append(args) or True)
     monkeypatch.setattr("hermes_cli.config.load_config_readonly",
                         lambda: {"send": {"mirror_delivery": mirror_delivery}})
 

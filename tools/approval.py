@@ -233,6 +233,8 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
             if not may_answer(target.authority, actor_id, admin_ids, extra, approval_commands(choice),
                               admitted=admitted):
                 return 0
+        if target is not None:
+            target.via_card = True
         return resolve_gateway_approval(session_key, choice, request_id=request_id)
 
 

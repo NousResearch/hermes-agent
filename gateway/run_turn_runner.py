@@ -1142,6 +1142,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return result
         finally:
             unregister_gateway_notify(session_key)
+            from gateway.run_turn_runner_approval_settle import settle_unreported_cards
+            settle_unreported_cards(self)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):

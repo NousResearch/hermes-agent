@@ -197,6 +197,18 @@ Deny rules are a shell-command policy, not a complete shell interpreter or an OS
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
 
+On Slack, Telegram, Discord and the other platforms with approval buttons, the card itself always ends in a decided state and never keeps live buttons once its question is closed:
+
+| Card shows | When |
+|---|---|
+| ⏳ Approved — the command is running… | approved (button, `/approve` or another surface) and the command has started |
+| ✅ Approved | the approved command finished |
+| ⚠️ Approved, but the command failed: … | the approved command ran and reported a failure |
+| ❔ Outcome unknown | the turn ended before the approved command reported back: it may or may not have run, so check before retrying |
+| ❌ Denied — the command was not run. Reason: … | denied with a button or `/deny <reason>` |
+| ⏹ Withdrawn | the turn ended or the session was reset before anyone answered |
+| ⌛ Approval timed out | nobody answered within `approvals.timeout` |
+
 An expired prompt cannot be reopened: the pending entry is discarded and the agent is told not to retry on its own within that turn. To run the operation after all, send a new message asking for it (for example "go ahead and run that now") — the agent issues a fresh tool call, which raises a fresh approval card, and a "once" approval applies only to that call. A timeout is not counted as a denial, so asking again is never penalized.
 
 Configure the timeout in `~/.hermes/config.yaml`:

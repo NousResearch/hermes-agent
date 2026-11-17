@@ -212,7 +212,7 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
     """Run ACP edit approval if bound.
 
     Returns a JSON tool-error string when the edit must be blocked, otherwise
-    ``None`` so dispatch can continue.  Requester exceptions deny by default."""
+    ``None`` so dispatch can continue.  Requester failures block without attributing a client denial."""
     requester = _EDIT_APPROVAL_REQUESTER.get()
     if requester is None:
         return None
@@ -231,7 +231,7 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
         approved = bool(result)
     except Exception as exc:
         logger.warning("ACP edit approval requester failed: %s", exc)
-        approved = False
+        return _denied("Edit approval was not answered: requester failed before a usable decision; file was not modified.")
     return None if approved else _denied("Edit approval denied by ACP client; file was not modified.")
 
 

@@ -49,7 +49,7 @@ def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
 
 
 
-def test_requester_exception_denies_and_does_not_mutate(tmp_path):
+def test_requester_exception_is_unanswered_and_does_not_mutate(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
 
@@ -67,7 +67,8 @@ def test_requester_exception_denies_and_does_not_mutate(tmp_path):
     )
 
     assert "error" in result
-    assert "Edit approval denied" in result["error"]
+    assert "Edit approval was not answered" in result["error"]
+    assert "denied by ACP client" not in result["error"].lower()
     assert target.read_text(encoding="utf-8") == "before\n"
 
 

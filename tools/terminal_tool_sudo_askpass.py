@@ -100,12 +100,16 @@ _PROLOGUE_TEMPLATE = (
     # checked every two seconds: while the command's shell ($$) runs, as after a yield to the
     # background, serving continues; once the shell is gone it stops at once, unless a counted
     # sudo was put in the background (@BG@ = 1), which is then served for up to @TIMEOUT@ more
-    # seconds. A timed-out read is status > 128 on bash 4+ and status 1 after the wait on bash
-    # 3.2, where EOF returns 1 at once (SECONDS counts whole seconds, hence ``-lt 1``).
+    # seconds. A timed-out read is status > 128 on bash 4+, so any lower status there is EOF, even
+    # one that arrives partway through the wait; on macOS a later read of that FIFO times out
+    # instead of returning EOF again, so it must be taken the first time. Bash 3.2 returns status 1
+    # for a timeout too, after the wait, while its EOF returns 1 at once and on every later read
+    # (SECONDS counts whole seconds, hence ``-lt 1``).
     "    __hermes_sudo_t=@TIMEOUT@; __hermes_sudo_g=0\n"
     "    while \\builtin :; do\n"
     "      SECONDS=0; \\builtin read -r -t 2 __hermes_sudo_x <&8; __hermes_sudo_r=$?\n"
-    '      if \\builtin test "$__hermes_sudo_r" -le 128 && \\builtin test "$SECONDS" -lt 1; then \\builtin break; fi\n'
+    '      if \\builtin test "$__hermes_sudo_r" -le 128 && { \\builtin test "${BASH_VERSINFO[0]}" -ge 4 ||'
+    ' \\builtin test "$SECONDS" -lt 1; }; then \\builtin break; fi\n'
     "      if \\builtin kill -0 $$ 2>/dev/null; then \\builtin continue; fi\n"
     "      if \\builtin test @BG@ -eq 0; then \\builtin break; fi\n"
     "      __hermes_sudo_g=$((__hermes_sudo_g + 2))\n"

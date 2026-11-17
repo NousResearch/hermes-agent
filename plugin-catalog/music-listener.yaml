@@ -2,27 +2,7 @@ name: music-listener
 repo: https://github.com/JPeetz/music-listener
 sha: 877e6c8705470125b8587724a2424a324319a72c
 title: Music Listener
-description: >-
-  Listen to an MP3/FLAC/WAV by reconstructing every instrumental track, the
-  vocal melody, pitch contour and time-aligned lyrics into a multi-track MIDI,
-  MusicXML score and a compact structural JSON. Runs a heavy audio/ML stack
-  (Demucs htdemucs_6s 6-stem separation, Spotify Basic Pitch polyphonic
-  transcription, librosa pyin f0, faster-whisper lyric alignment) inside its own
-  isolated Python 3.11 venv so Hermes' core runtime is never touched. The
-  listen_to_music tool accepts an audio path and returns artifact paths
-  (full_score.mid, full_score.musicxml, score_summary.json) plus tempo, key,
-  per-track note counts, 8-bar section descriptors and synced lyric words — a
-  compact structural summary so the agent reasons over the song without loading
-  thousands of raw MIDI events. A /listen slash command and the
-  music-listener:music-listener skill (pretty_midi/music21 recipes for bar
-  queries, motifs, transposition and re-harmonization) round out the working
-  surface. The worker prints progress to stderr and only compact JSON to
-  stdout. Security: no shell=True (argv-list subprocesses), sanitized output
-  paths, no credential reads, no network ports, a 60-minute worker cap; its
-  only outbound traffic is official Demucs/faster-whisper model-weight
-  downloads. Proven end-to-end on a real 2:46 commercial track (Imael Angel -
-  "Bad Times"): 7 named MIDI tracks, valid MusicXML, 100 time-aligned lyric
-  words. See https://github.com/JPeetz/music-listener#readme.
+description: "Listen to an MP3/FLAC/WAV by reconstructing every instrumental track, the vocal melody, pitch contour and time-aligned lyrics into a multi-track MIDI, MusicXML score and a compact structural JSON. Runs a heavy audio/ML stack (Demucs htdemucs_6s 6-stem separation, Spotify Basic Pitch polyphonic transcription, librosa pyin f0, faster-whisper lyric alignment) inside its own isolated Python 3.11 venv so Hermes' core runtime is never touched. The listen_to_music tool accepts an audio path and returns artifact paths (full_score.mid, full_score.musicxml, score_summary.json) plus tempo, key, per-track note counts, 8-bar section descriptors and synced lyric words — a compact structural summary so the agent reasons over the song without loading thousands of raw MIDI events. A /listen slash command and the music-listener:music-listener skill (pretty_midi/music21 recipes for bar queries, motifs, transposition and re-harmonization) round out the working surface. The worker prints progress to stderr and only compact JSON to stdout. Security: no shell=True (argv-list subprocesses), sanitized output paths, no credential reads, no network ports, a 60-minute worker cap; its only outbound traffic is official Demucs/faster-whisper model-weight downloads. Proven end-to-end on a real 2:46 commercial track (Imael Angel - \"Bad Times\"): 7 named MIDI tracks, valid MusicXML, 100 time-aligned lyric words. See https://github.com/JPeetz/music-listener#readme. Disclosure — after install you run the plugin's install.sh, which builds a Python 3.11 venv inside the plugin folder and downloads about 1-2 GB of packages (torch, Demucs, faster-whisper); the first transcription downloads Demucs and faster-whisper model weights from their upstream hosts; listen_to_music reads whatever audio path the agent passes and writes stems and scores under transcriptions/ in the agent's working directory (or the configured output_dir), running a CPU/GPU-heavy worker for up to 60 minutes per call."
 maintainer: JPeetz
 tier: community
 version: "0.1.0"

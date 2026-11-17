@@ -298,9 +298,13 @@ class SessionLifecycleMixin:
                 return False
             # Save first. Clearing in memory before a save that fails would let a retry see the
             # flag as cleared and send, while the next boot loads it as still set.
+            data, generation = self._snapshot_routing_locked()
+            # A recovered routing DB may replace the fallback entry during the snapshot.
+            entry = self._entries.get(session_key)
+            if entry is None or not entry.resume_pending:
+                return False
             candidate = entry.to_dict()
             candidate.update(resume_pending=False, resume_reason=None, last_resume_marked_at=None)
-            data, generation = self._snapshot_routing_locked()
             data[session_key] = candidate
             self._persist_routing_data(data, generation)
             entry.resume_pending = False

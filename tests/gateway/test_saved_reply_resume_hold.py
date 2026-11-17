@@ -191,3 +191,61 @@ async def test_a_boot_claimed_flood_row_keeps_its_wait_when_no_adapter_can_send_
     released = read()
     assert (released["state"], released["attempts"], released["last_error"]) == ("failed", 0, "flood_control:60")
     assert ledger.pending_retries()[0]["not_before"] > released["updated_at"]
+
+
+def test_clear_resume_pending_uses_reconciled_route(tmp_path, monkeypatch):
+    """A recovered DB route must win over a stale sessions.json copy during clear."""
+    import json
+
+    import hermes_constants
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: str(tmp_path))
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    stale = pending_session(Mock(session_store=store))
+    store._entries.clear()
+    newer = SessionEntry.from_dict({**stale.to_dict(), "session_id": "sid-newer"})
+    db = store._routing_db
+    assert db is not None
+    db.replace_gateway_routing_entries(
+        {SESSION_KEY: json.dumps(newer.to_dict())}, scope=store._routing_scope()
+    )
+    store.sessions_dir.mkdir(parents=True, exist_ok=True)
+    (store.sessions_dir / "sessions.json").write_text(
+        json.dumps({SESSION_KEY: stale.to_dict()}), encoding="utf-8"
+    )
+
+    original_method = store._routing_db_method
+
+    def unavailable(**_kwargs):
+        raise sqlite3.OperationalError("temporarily unavailable")
+
+    def offline(name):
+        return unavailable if name == "load_gateway_routing_entries" else original_method(name)
+
+    monkeypatch.setattr(store, "_routing_db_method", offline)
+    with store._lock:
+        store._ensure_loaded_locked()
+    assert store._routing_db_loaded is False
+    assert store._entries[SESSION_KEY].session_id == stale.session_id
+
+    # The first reconciliation fails; the snapshot's second read succeeds.
+    fail_once = iter((True, False))
+
+    def recovering(name):
+        if name == "load_gateway_routing_entries" and next(fail_once):
+            return unavailable
+        return original_method(name)
+
+    monkeypatch.setattr(store, "_routing_db_method", recovering)
+    assert store.clear_resume_pending(SESSION_KEY) is True
+
+    current = store._entries[SESSION_KEY]
+    persisted = json.loads(
+        db.load_gateway_routing_entries(scope=store._routing_scope())[SESSION_KEY]
+    )
+    assert current.session_id == newer.session_id
+    assert current.resume_pending is False
+    assert persisted["session_id"] == newer.session_id
+    assert persisted["resume_pending"] is False

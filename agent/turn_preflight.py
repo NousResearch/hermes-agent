@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.context_compressor_summary import _accepts_keyword_argument
+from agent.context_compressor_summary import accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
@@ -372,19 +372,15 @@ def compress_after_tool_results(
             agent._warn_context_overflow_blocked(
                 _block_reason, _real_tokens, int(getattr(_compressor, "threshold_tokens", 0) or 0)
             )
-        _pruned_msgs = _proactive_tool_result_prune(
-            agent, _compressor, messages, _real_tokens, turn_start=current_turn_user_idx)
-        if _pruned_msgs is not messages:
-            messages = _pruned_msgs
-            # A committed prune is a content-loss boundary like compaction: demoted skill_view /
-            # read_file bodies survive only as one-line markers, so the repeat-read dedup must
-            # stop answering "unchanged" for them or the reload the marker asks for is refused.
-            _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
+        messages = _proactive_tool_result_prune(
+            agent, _compressor, messages, _real_tokens, turn_start=current_turn_user_idx,
+            effective_task_id=effective_task_id)
     return _verdict(False)
 
 
 def _proactive_tool_result_prune(
     agent: Any, compressor: Any, messages: list, current_tokens: int, *, turn_start: int | None = None,
+    effective_task_id: Any = None,
 ) -> list:
     """Proactive tool-result prune (deterministic, no LLM, keeps tail): the pruned list when one
     committed, else the same ``messages`` object. No-op unless proactive_prune_tokens is exceeded;
@@ -412,11 +408,11 @@ def _proactive_tool_result_prune(
             getattr(compressor, "_session_db", None) is not None and getattr(compressor, "_session_id", "")):
         return messages
     kwargs: dict[str, Any] = {"current_tokens": current_tokens}
-    if _accepts_keyword_argument(prune, "cold_cache"):  # older plugin engines keep their signature
-        from agent.turn_proactive_prune import prompt_cache_is_cold
+    if accepts_keyword_argument(prune, "cold_cache"):  # older plugin engines keep their signature
+        from agent.prompt_cache_clock import prompt_cache_is_cold
 
         kwargs["cold_cache"] = prompt_cache_is_cold(agent)
-    if isinstance(turn_start, int) and _accepts_keyword_argument(prune, "turn_start"):
+    if isinstance(turn_start, int) and accepts_keyword_argument(prune, "turn_start"):
         kwargs["turn_start"] = turn_start  # the running turn is never shortened
     try:
         pruned_msgs, pruned_n = prune(messages, **kwargs)
@@ -431,4 +427,9 @@ def _proactive_tool_result_prune(
     from agent.compaction_events import publish_prune
 
     publish_prune(agent, messages, pruned_msgs, pruned_n)
+    if effective_task_id is not None:
+        # A committed prune is a content-loss boundary like compaction: demoted skill_view / read_file
+        # bodies survive only as one-line markers, so the repeat-read dedup must stop answering
+        # "unchanged" for them or the reload the marker asks for is refused.
+        _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
     return pruned_msgs

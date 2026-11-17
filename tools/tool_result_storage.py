@@ -15,7 +15,7 @@ import shlex
 import tempfile
 import threading
 import time
-from typing import Any, Container
+from typing import Any
 
 from session_rules.media import PRUNED_SUBDIR, SPILLOVER_SUBDIR, archive_refs_in_text
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
@@ -355,22 +355,20 @@ def _with_pointer(content: Any, display_path: str) -> Any:
 
 
 def archive_pruned_originals(
-    messages: list[dict[str, Any]], pruned: list[dict[str, Any]], session_id: str, *,
-    skip: Container[int] = frozenset(),
+    messages: list[dict[str, Any]], pruned: list[dict[str, Any]], session_id: str,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """Write the original of every tool row *pruned* changed; returns ``(rows, written host paths, reverted)``.
 
     A changed row whose archive write fails is put back to its original (``reverted`` counts them),
     so the caller re-checks its reclaim gate and never commits a stub without a file behind it. A row
-    that already names its archive is left as the prune made it: its original is on disk. Rows at
-    *skip* indices are left as they are (another pass already archived what replaces them).
+    that already names its archive is left as the prune made it: its original is on disk.
     """
     from agent.context_compressor import _tool_calls_by_id
 
     call_id_to_tool = _tool_calls_by_id(messages)
     rows, written, reverted = list(pruned), [], 0
     for i, (original, replacement) in enumerate(zip(messages, pruned)):
-        if (i in skip or not isinstance(original, dict) or original.get("role") != "tool"
+        if (not isinstance(original, dict) or original.get("role") != "tool"
                 or not isinstance(replacement, dict) or replacement.get("content") == original.get("content")):
             continue
         body = original.get("content")
@@ -389,8 +387,7 @@ def archive_pruned_originals(
 
 
 def archive_compaction_drops(
-    messages: list[dict[str, Any]], dropped: list[dict[str, Any]], session_id: str, *,
-    skip: Container[int] = frozenset(),
+    messages: list[dict[str, Any]], dropped: list[dict[str, Any]], session_id: str,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """:func:`archive_pruned_originals` for a compaction's tool-result drops (window prune, lean tail).
 
@@ -400,7 +397,7 @@ def archive_compaction_drops(
     """
     if not _backend_reads_host_files():
         return dropped, [], 0
-    return archive_pruned_originals(messages, dropped, session_id, skip=skip)
+    return archive_pruned_originals(messages, dropped, session_id)
 
 
 ARCHIVE_LIST_HEADING = "Archived tool output (exact originals; read_file a path to recover one):"

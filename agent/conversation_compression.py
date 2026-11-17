@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
-from agent.context_compressor_summary import _accepts_keyword_argument
+from agent.context_compressor_summary import accepts_keyword_argument
 from agent.context_engine import CompactionProgressText, automatic_compaction_status_message, sanitize_memory_context
 from agent.conversation_compression_codex import _compress_context_via_codex_app_server
 from agent.conversation_compression_deadline import resolve_context_compression_timeouts
@@ -1420,14 +1420,14 @@ def _automatic_compression_gate_blocks(
     blocked = getattr(type(compressor), "_automatic_compression_blocked", None)
     if not callable(blocked):
         return None
-    ignore = bypass_cooldown and _accepts_keyword_argument(blocked, "ignore_cooldown")
+    ignore = bypass_cooldown and accepts_keyword_argument(blocked, "ignore_cooldown")
     if not (blocked(compressor, ignore_cooldown=True) if ignore else blocked(compressor)):
         return None
     reason, reason_fn = None, getattr(compressor, "_compression_block_reason", None)
     if callable(reason_fn):  # engines predating it name no reason
         with _swallow('compression block-reason read failed', exc_info=True):
             reason = (
-                reason_fn(ignore_cooldown=True) if ignore and _accepts_keyword_argument(reason_fn, "ignore_cooldown")
+                reason_fn(ignore_cooldown=True) if ignore and accepts_keyword_argument(reason_fn, "ignore_cooldown")
                 else reason_fn()
             )
     reason = reason if isinstance(reason, str) and reason else "unknown"

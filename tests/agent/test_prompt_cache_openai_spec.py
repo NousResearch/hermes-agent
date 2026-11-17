@@ -59,7 +59,7 @@ def _agent(model):
         client=client, model=model, provider="nous", base_url="https://inference-api.nousresearch.com/v1",
         api_key="", session_api_calls=3, session_prompt_tokens=0, session_completion_tokens=0,
         session_total_tokens=0, session_input_tokens=0, session_output_tokens=0, session_cache_read_tokens=0,
-        session_cache_write_tokens=0, session_estimated_cost_usd=0.0, _session_db=None, session_id="s",
+        session_cache_write_tokens=0, session_reasoning_tokens=0, session_estimated_cost_usd=0.0, _session_db=None, session_id="s",
         log_prefix="", platform="cli", compression_enabled=True, _user_turn_count=1,
         context_compressor=SimpleNamespace(compression_count=0, last_prompt_tokens=40_000, threshold_tokens=60_000,
                                            summary_target_ratio=0.2, last_compression_rough_tokens=0,
@@ -96,7 +96,7 @@ def test_an_openai_spec_route_is_warmed_at_25_minutes_and_replayed_with_the_smal
 def test_a_mid_chat_route_switch_makes_the_next_request_offload_first():
     """/model or a fallback moves the chat to a route that never saw its prefix: the cache is cold
     there, so the turn-start offload runs before the first request on the new route."""
-    from agent.turn_proactive_prune import prompt_cache_is_cold
+    from agent.prompt_cache_clock import prompt_cache_is_cold
 
     agent = _agent("deepseek/deepseek-v4-flash")
     _respond(agent, {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]})

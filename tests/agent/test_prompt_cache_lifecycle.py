@@ -71,7 +71,7 @@ def _chat(*, platform="cli", client=None, tokens=150_000, provider="anthropic", 
         _interrupt_requested=False, _anthropic_client=client or _Client(), model="claude-opus-4-7",
         provider=provider, base_url=base_url, api_key="", session_api_calls=7, session_prompt_tokens=0,
         session_completion_tokens=0, session_total_tokens=0, session_input_tokens=0, session_output_tokens=0,
-        session_cache_read_tokens=0, session_cache_write_tokens=0, session_estimated_cost_usd=0.0,
+        session_cache_read_tokens=0, session_cache_write_tokens=0, session_reasoning_tokens=0, session_estimated_cost_usd=0.0,
         _session_db=None, session_id="s", log_prefix="", platform=platform, compression_enabled=True,
         context_compressor=SimpleNamespace(
             compression_count=0, last_prompt_tokens=tokens, threshold_tokens=200_000, summary_target_ratio=0.2,
@@ -245,7 +245,7 @@ def test_a_machine_session_warms_only_while_its_tool_runs(over):
 
 
 def test_an_unknown_clock_makes_nothing_act():
-    from agent.turn_proactive_prune import prompt_cache_is_cold
+    from agent.prompt_cache_clock import prompt_cache_is_cold
 
     agent = _chat()
     warmer = pcl.get_prompt_cache_warmer(agent)

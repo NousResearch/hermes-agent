@@ -77,7 +77,7 @@ def _chat(client=None, **over):
         _interrupt_requested=False, _anthropic_client=client or _Client(), model="claude-opus-4-7",
         provider="anthropic", base_url="https://api.anthropic.com", api_key="", session_api_calls=7,
         session_prompt_tokens=0, session_completion_tokens=0, session_total_tokens=0, session_input_tokens=0,
-        session_output_tokens=0, session_cache_read_tokens=0, session_cache_write_tokens=0,
+        session_output_tokens=0, session_cache_read_tokens=0, session_cache_write_tokens=0, session_reasoning_tokens=0,
         session_estimated_cost_usd=0.0, _session_db=None, session_id="s", log_prefix="", platform="cli",
         compression_enabled=True, _user_turn_count=1, _executing_tools=False,
         context_compressor=SimpleNamespace(

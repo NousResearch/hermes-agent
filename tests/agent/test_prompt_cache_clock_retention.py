@@ -11,7 +11,7 @@ import pytest
 
 from agent.prompt_cache_clock import cache_certainly_warm, cache_window, record_attempt_sent, record_cache_response
 from agent.transports.codex import _default_prompt_cache_retention_for_request
-from agent.turn_proactive_prune import prompt_cache_is_cold
+from agent.prompt_cache_clock import prompt_cache_is_cold
 from agent.usage_pricing import normalize_usage
 
 T0 = 1_000.0

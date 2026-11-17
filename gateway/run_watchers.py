@@ -39,6 +39,13 @@ async def _interruptible_sleep(runner, seconds: int) -> None:
         await asyncio.sleep(1)
 
 
+def drain_pending_cache_releases(runner) -> None:
+    """Shutdown: release every evicted agent whose release-time cache-edge job never got to release it
+    (cancelled before its first step, or a callback the stopped loop never ran)."""
+    for release in list(vars(runner).get("_pending_cache_releases", {}).values()):
+        release()
+
+
 class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
     """Session housekeeping / stall / catalog-refresh watcher loops for GatewayRunner (and, through
     ``GatewayAutoResumeMixin``, the ``delegation.auto_resume`` scheduler)."""
@@ -194,7 +201,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
 
     def _release_once(self, key: str, agent) -> Callable[[], None]:
         """The evicted agent's release, idempotent: the job's done-callback, the loop-closed fallback
-        and shutdown (:meth:`_drain_pending_cache_releases`, for a callback or done-callback the stopped
+        and shutdown (:func:`drain_pending_cache_releases`, for a callback or done-callback the stopped
         loop never ran) may all reach it."""
         pending = self.__dict__.setdefault("_pending_cache_releases", {})
         lock = self.__dict__.setdefault("_pending_cache_releases_lock", threading.Lock())
@@ -213,10 +220,6 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
             pending[key] = _release
         return _release
 
-    def _drain_pending_cache_releases(self) -> None:
-        """Shutdown: release every evicted agent whose release-time job never got to release it."""
-        for release in list(self.__dict__.get("_pending_cache_releases", {}).values()):
-            release()
 
     def _decide_compact_then_release(self, key: str, agent, release: Callable[[], None]) -> None:
         jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})

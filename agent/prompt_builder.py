@@ -935,18 +935,36 @@ def _remote_context_discovery_script(cwd: str, nonce: str) -> str:
         # ``cd -P`` so $PWD is the physical path: git's --show-toplevel resolves symlinks too, and only a
         # physical PWD lets the ``${f#"$PWD"/}`` label-strip produce the relative labels the local loader uses.
         f"cd -P -- {q} 2>/dev/null || exit 0",
-        f"emit() {{ printf '{marker}|%s|%s@@\\n' \"$1\" \"$2\"; head -c {cap} \"$3\"; printf '\\n{marker}|END@@\\n'; }}",
+        # Containment (mirrors the local ``_read_context_file`` policy, PR #156648 review): a candidate
+        # enters the prompt only if its FULLY RESOLVED path stays inside the project root. ``canon``
+        # resolves every symlink hop through ``cd -P`` so a relative link cannot smuggle a physical
+        # escape via ``..`` segments; an unresolvable/unreadable parent fails closed. A violation is
+        # silently skipped (the frame is never emitted) — the same skip, not warn, posture as the scan.
+        "canon() { d=$(cd -- \"$(dirname -- \"$1\")\" 2>/dev/null && pwd -P) || return 1; b=$(basename -- \"$1\");"
+        " while [ -L \"$d/$b\" ]; do l=$(readlink -- \"$d/$b\") || return 1;"
+        " case \"$l\" in /*) d2=$(cd -- \"$(dirname -- \"$l\")\" 2>/dev/null && pwd -P) || return 1;"
+        " d=\"$d2\"; b=$(basename -- \"$l\");;"
+        " *) d2=$(cd -- \"$(dirname -- \"$d/$l\")\" 2>/dev/null && pwd -P) || return 1;"
+        " d=\"$d2\"; b=$(basename -- \"$l\");; esac; done; printf '%s/%s' \"$d\" \"$b\"; }",
+        "inside_root() { t=$(canon \"$1\") || return 1; case \"$t\" in \"$root\"|\"$root\"/*) return 0;; *) return 1;; esac; }",
+        f"emit() {{ inside_root \"$3\" || return 0; printf '{marker}|%s|%s@@\\n' \"$1\" \"$2\"; head -c {cap} \"$3\"; printf '\\n{marker}|END@@\\n'; }}",
         "root=$(git rev-parse --show-toplevel 2>/dev/null) || root=''",
         "[ -n \"$root\" ] || root=$(pwd)",
+        # ``_containment_root`` mirror: a root at or above the backend's $HOME narrows to the cwd, so a
+        # session opened at ~ cannot serve dotfiles (~/.ssh/…) through a project-root prefix match.
+        "case \"$HOME\" in \"$root\"|\"$root\"/*) root=$(pwd);; esac",
         "chain=(); d=$(pwd)",
         "while :; do chain+=(\"$d\"); [ \"$d\" = \"$root\" ] && break; nd=$(dirname \"$d\"); [ \"$nd\" = \"$d\" ] && break; d=$nd; done",
+        # Directory components are checked too (``[ -d ]`` follows links): a symlinked .cursor must not
+        # redirect the *.mdc glob to an outside tree; the per-file emit guard is the second net.
         "for ((i=${#chain[@]}-1; i>=0; i--)); do dir=${chain[i]}; "
         "for n in AGENTS.override.md AGENTS.md agents.md; do f=\"$dir/$n\"; [ -s \"$f\" ] && emit agents_md \"${f#\"$PWD\"/}\" \"$f\"; done; done",
         "for dir in \"${chain[@]}\"; do for n in .hermes.md HERMES.md; do f=\"$dir/$n\"; [ -s \"$f\" ] && emit hermes_md \"${f#\"$PWD\"/}\" \"$f\"; done; done",
         "for n in CLAUDE.md claude.md; do f=\"$PWD/$n\"; [ -s \"$f\" ] && emit claude_md \"$n\" \"$f\"; done",
-        "[ -s \"$PWD/.cursorrules\" ] && emit cursorrules .cursorrules \"$PWD/.cursorrules\"",
-        "if [ -d \"$PWD/.cursor/rules\" ]; then for f in \"$PWD\"/.cursor/rules/*.mdc; do "
-        "[ -s \"$f\" ] && emit cursorrules \"${f#\"$PWD\"/}\" \"$f\"; done; fi",
+        "[ -s \"$PWD/.cursorrules\" ] && ! [ -L \"$PWD/.cursorrules\" ] && emit cursorrules .cursorrules \"$PWD/.cursorrules\"",
+        "if [ -d \"$PWD/.cursor/rules\" ] && ! [ -L \"$PWD/.cursor\" ] && ! [ -L \"$PWD/.cursor/rules\" ]; then "
+        "for f in \"$PWD\"/.cursor/rules/*.mdc; do "
+        "[ -s \"$f\" ] && ! [ -L \"$f\" ] && emit cursorrules \"${f#\"$PWD\"/}\" \"$f\"; done; fi",
         "exit 0",
     ])
 
@@ -978,9 +996,11 @@ def _parse_remote_context_payload(output: str, nonce: str) -> list[tuple[str, st
 def _remote_project_context_prompt(backend: str, declared_cwd: str, context_length: Optional[int]) -> str:
     """Backend-side mirror of the one-type-wins project discovery (see ``build_context_files_prompt``).
 
-    Deliberate deltas from the local loaders: the containment policy (symlink-escape / deny-list) is not
-    mirrored shell-side — the threat scan in ``_context_section`` stays the hard gate, so hostile backend
-    files are blocked, not merely uncontained. ``read_file`` paths in truncation markers point at the
+    Deliberate deltas from the local loaders: containment is mirrored shell-side (a candidate's fully
+    resolved path must stay inside the project root, HOME-level roots narrow to the cwd — see
+    ``_remote_context_discovery_script``), while the local read deny-list is not; the threat scan in
+    ``_context_section`` stays the second hard gate, so hostile backend files are blocked, not merely
+    uncontained. ``read_file`` paths in truncation markers point at the
     backend (the agent's file tools read through the same backend). Any failure yields "": the caller then
     ships NO project context rather than falling back to this host's launch dir, which names nothing in
     the session.

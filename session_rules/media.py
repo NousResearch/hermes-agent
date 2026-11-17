@@ -75,7 +75,7 @@ def retirement_candidates_in_text(*texts) -> set:
     basename (the form every store recorded before prune originals), a prune original by its
     ``cache/pruned/<name>`` reference."""
     spill = SPILLOVER_SUBDIR + "/"
-    return {ref[len(spill):] if ref.startswith(spill) else ref for ref in archive_refs_in_text(*texts)}
+    return {ref.removeprefix(spill) for ref in archive_refs_in_text(*texts)}
 
 
 def spillover_names_in_text(*texts) -> set:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
@@ -51,20 +51,24 @@ def cache_clock_column(event: Any) -> dict[str, str]:
     return {"prompt_cache_clock": event_to_json(event)}
 
 
-def _queue_usage(agent: Any, **counts: Any) -> None:
-    """Enqueue one API call's accounting (``queue_token_counts`` keywords) on the agent's store."""
+def queue_usage(agent: Any, session_id: Any = None, source: Optional[str] = None, **counts: Any) -> None:
+    """Enqueue one API call's accounting (``queue_token_counts`` keywords) on the agent's store: through its
+    storage interface handle when it has one, else on its own store (a worker's ``RuntimeSessionStore``).
+    *session_id* / *source* default to the agent's current session and surface (a cache keep-alive passes
+    the ones it captured when it was scheduled)."""
     from agent.agent_init_session import agent_interface
+    session_id = agent.session_id if session_id is None else session_id
+    source = agent_session_source(agent) if source is None else source
     store = agent_interface(agent)
     if store is None:
-        agent._session_db.queue_token_counts(agent.session_id, source=agent_session_source(agent), **counts)
+        agent._session_db.queue_token_counts(session_id, source=source, **counts)
         return
     from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
     tokens = TokenCounts(**{key: counts.pop(key, 0) for key in (
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")})
     route = {key: counts.pop(key, None) for key in ("model", "billing_provider", "billing_base_url", "billing_mode")}
-    delta = UsageDelta(tokens=tokens, route=BillingRoute(**route) if route["model"] else None,
-                       source=agent_session_source(agent), **counts)
-    store.usage.queue_usage(agent.session_id, delta)
+    delta = UsageDelta(tokens=tokens, route=BillingRoute(**route) if route["model"] else None, source=source, **counts)
+    store.usage.queue_usage(session_id, delta)
 
 
 @dataclass
@@ -327,7 +331,7 @@ def record_response_usage(
             # _ensure_db_session() may fail, and UPDATE on a missing row affects 0 rows.
             if not agent._session_db_created:
                 agent._ensure_db_session()
-            _queue_usage(
+            queue_usage(
                 agent,
                 input_tokens=canonical_usage.input_tokens,
                 output_tokens=canonical_usage.output_tokens,

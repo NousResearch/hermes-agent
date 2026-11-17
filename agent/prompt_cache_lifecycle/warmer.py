@@ -708,10 +708,10 @@ class PromptCacheWarmer:
                 if getattr(agent, "_session_reset_epoch", 0) == b["reset_epoch"]:
                     self._add_to_session_totals(canonical, amount)
             clock = self._fold_clock(run, canonical, sent_at, message)
-            db = getattr(agent, "_session_db", None)
-            if db is not None and b["session_id"]:
-                db.queue_token_counts(
-                    b["session_id"], source=b["source"],
+            if getattr(agent, "_session_db", None) is not None and b["session_id"]:
+                from agent.turn_usage import queue_usage
+                queue_usage(
+                    agent, b["session_id"], b["source"],
                     input_tokens=canonical.input_tokens, output_tokens=canonical.output_tokens,
                     cache_read_tokens=canonical.cache_read_tokens,
                     cache_write_tokens=canonical.cache_write_tokens,

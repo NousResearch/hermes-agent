@@ -89,12 +89,7 @@ BIND_FUSE_SSHFS = "622 25 0:62 / /home/remote rw,relatime - fuse.sshfs host:/hom
 BIND_VIRTIOFS = "623 25 0:63 / /data rw,relatime - virtiofs mount0 rw"
 
 
-@pytest.fixture()
-def _linux(monkeypatch):
-    monkeypatch.setattr(sqlite_support.sys, "platform", "linux")
-
-
-@pytest.mark.usefixtures("_linux")
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("path,expected", [
     ("/srv/nas/agent", True),
     ("/mnt/share/db", True),
@@ -107,7 +102,7 @@ def test_only_network_mounts_are_flagged(tmp_path, path, expected):
     assert _detect_network_fs(path, mountinfo_path=mi) is expected
 
 
-@pytest.mark.usefixtures("_linux")
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("fstype", [
     "ext4", "xfs", "btrfs", "zfs", "tmpfs", "overlay", "apfs", "f2fs", "fuse.ntfs3g", "fuse.rofs",
 ])

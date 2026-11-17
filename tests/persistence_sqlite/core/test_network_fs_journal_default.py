@@ -135,12 +135,7 @@ def test_existing_wal_store_on_network_fs_keeps_wal_and_names_the_offline_remedy
 ROOT_EXT4 = "25 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw"
 
 
-@pytest.fixture()
-def _linux(monkeypatch):
-    monkeypatch.setattr(sqlite_support.sys, "platform", "linux")
-
-
-@pytest.mark.usefixtures("_linux")
+@pytest.mark.platforms("linux")
 def test_network_fstypes_cover_nfs_and_smb_variants(tmp_path):
     rows = [ROOT_EXT4] + [
         f"{600 + i} 25 0:{60 + i} / /mnt/{fs.replace('.', '_')} rw - {fs} srv:/x rw"

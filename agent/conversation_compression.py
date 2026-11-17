@@ -44,7 +44,7 @@ from agent.session_activity import ActivityProvenance, normalize_activity_proven
 from agent.usage_anchor import set_usage_anchor
 from hermes_state_ids import new_session_id as mint_session_id
 from hermes_state_pidns import holder_namespace_token
-from agent.conversation_compression_watermark import held_archive_watermark
+from agent.conversation_compression_watermark import _restore_prune_rearm_tokens, held_archive_watermark
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +474,7 @@ class CompressionCommitFence:
         # lock, so a host that cannot afford to block behind an in-flight commit can still guarantee no
         # FUTURE commit is admitted.
         self._admission_revoked = False
+        self.committed = False  # this attempt's durable-commit verdict, set by compress_context
         # Holder-scoped release published by the worker once it owns the durable lock (no ABA on a NEW holder).
         # Holder-qualified durable-lock release hook (#76354 review F4; transplanted from PR #71569 by
         # @ciabata-git). The worker publishes an idempotent, holder-scoped release callable once it owns the
@@ -1424,14 +1425,6 @@ def _restore_messages_snapshot(messages: list, snapshot: Optional[list]) -> None
     """Put the pre-compression deep snapshot back into the live list if it drifted."""
     if snapshot is not None and messages != snapshot:
         messages[:] = copy.deepcopy(snapshot)
-
-
-def _restore_prune_rearm_tokens(compressor: Any, snapshot: dict) -> None:
-    """Restore ONLY the prune runway from the attempt snapshot.
-    compress() zeroes it in memory while the durable copy only clears on a successful commit; a kept
-    transcript keeps its cached prefix, and 0 would let the next prune break that cache."""
-    if "_proactive_prune_rearm_tokens" in snapshot:
-        compressor._proactive_prune_rearm_tokens = snapshot["_proactive_prune_rearm_tokens"]
 
 
 def compression_skipped_due_to_lock(agent: Any) -> bool:
@@ -4187,6 +4180,8 @@ def compress_context(
         lifecycle.commit_status = (
             "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
         )
+        if commit_fence is not None and (commit.compacted_in_place or lifecycle.commit_status == "committed"):
+            commit_fence.committed = True  # the pooled worker hands back THIS attempt's snapshot only then
         # A rewrite that survived a later bookkeeping failure is still what the model sees: count it as saved.
         rewritten = commit.compacted_in_place or compressed is not messages
         if rewritten or lifecycle.commit_status == "committed":

@@ -1,9 +1,9 @@
 name: hermes-tenuo
 title: Tenuo
-version: "0.4.1"
+version: "0.4.2"
 category: tools
 repo: https://github.com/tenuo-ai/hermes-tenuo
-sha: "9ef36fc7e590e63a537839c550e47ee419800a8c"
+sha: "6db400dac5646bb9cf352496fb93436985d63160"
 description: >-
   Signed, expiring tool permissions and local workspaces for Hermes Agent.
   Warrants constrain tool calls and delegated agents; without a warrant or access

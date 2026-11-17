@@ -565,9 +565,11 @@ class PromptCacheWarmer:
                     self._end_budget(run, f"learned: {learned}", due_at=run.next_warm_at)
                     return
             if retry_from is not None:
-                # The miss re-sent the whole prompt at ``retry_from``, so the entry lives from then. An automatic
-                # cache that reports no write counter left the clock where it was: never retry from that.
-                window = (max(window[0] if window else 0.0, retry_from + run.ttl_s), run.ttl_s)
+                # The miss re-sent the whole prompt at ``retry_from``, so the entry lives from then, for the lifetime
+                # just learned (never the tier it replaced). An automatic cache that reports no write counter left
+                # the clock where it was: never retry from that.
+                life = window[1] if window else run.ttl_s
+                window = (max(window[0] if window else 0.0, retry_from + life), life)
             if window is None:
                 self._stop("cache window not guaranteed warm")
                 return

@@ -132,9 +132,8 @@ def test_a_finite_admission_arms_no_idle_keep_alive():
     assert pcl.get_prompt_cache_warmer(agent)._run is None
 
 
-def test_a_retried_miss_with_no_write_counter_waits_a_window_before_the_next_send(monkeypatch):
-    """An automatic (OpenAI-spec) cache reports a miss as plain input: no read, no write, so the clock does not
-    move. The retry must wait a full window from the miss, not fire at once off the old deadline."""
+def _retried_miss_run(monkeypatch):
+    """Fire one keep-alive that misses on an automatic cache (no write counter) and return (run, sent_before)."""
     import time
 
     from agent.prompt_cache_clock import record_cache_response
@@ -177,4 +176,38 @@ def test_a_retried_miss_with_no_write_counter_waits_a_window_before_the_next_sen
     _fire(warmer)  # the keep-alive misses (read 0): retried once
     run = warmer._run
     assert len(client.calls) == 1 and run is not None
+    return run, before
+
+
+def test_a_retried_miss_with_no_write_counter_waits_a_window_before_the_next_send(monkeypatch):
+    """An automatic (OpenAI-spec) cache reports a miss as plain input: no read, no write, so the clock does not
+    move. The retry must wait a full window from the miss, not fire at once off the old deadline."""
+    run, before = _retried_miss_run(monkeypatch)
     assert run.next_warm_at >= before + 0.8 * pcl.cache_warming_delay_s(run.ttl_s), "the retry fires at once"
+
+
+def test_a_retried_miss_keeps_a_shorter_lifetime_learned_at_that_miss(monkeypatch):
+    """The route store learns a 10-minute lifetime from this very miss: the retry warms on 10 minutes, never on the
+    tier it just replaced (a 25-minute wait would land after the entry is gone)."""
+    from agent.prompt_cache_lifecycle import warmer as warmer_mod
+
+    real = warmer_mod.learned_window
+    learned = {"on": False}
+
+    def _learned(agent, window, marked):
+        if not learned["on"]:
+            return real(agent, window, marked)
+        deadline, tier_s = window
+        return (deadline - (tier_s - 600.0), 600.0), "lifetime:600"
+
+    monkeypatch.setattr(warmer_mod, "learned_window", _learned)
+    real_miss = warmer_mod.PromptCacheWarmer._miss_ends_warming
+
+    def _miss(self, run, message):
+        learned["on"] = True  # this miss supplies the second session's sample
+        return real_miss(self, run, message)
+
+    monkeypatch.setattr(warmer_mod.PromptCacheWarmer, "_miss_ends_warming", _miss)
+    run, before = _retried_miss_run(monkeypatch)
+    assert run.ttl_s == 600.0
+    assert run.next_warm_at <= before + pcl.cache_warming_delay_s(600.0) + 5, "the retry waits on the replaced tier"

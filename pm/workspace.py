@@ -600,6 +600,48 @@ def hermes_fit_error(declaration, extras: Iterable[str] | None = None) -> Option
     return requires_hermes_error(declaration.manifest) or core_requirement_error(declaration, extras)
 
 
+def _member_declaring(root: Path, document: Mapping[str, object]) -> Path | None:
+    """The member already in this workspace that declares the same package name, if any.
+
+    uv identifies a workspace member by ``[project].name`` and refuses a workspace that
+    declares one name twice ("Two workspace members are both named ..."). A buildable member
+    cannot be renamed - uv verifies the declared name against the package metadata its
+    backend produces - so the same plugin installed in two profiles used to abort every
+    ``uv lock`` of the workspace. The environment holds one copy of a package, so the second
+    copy of the plugin reuses the member the first one made. Two copies that disagree on the
+    version are a real conflict, not a duplicate: they stay loud.
+    """
+    import tomllib
+
+    project = document.get("project") or {}
+    if not isinstance(project, Mapping):
+        return None
+    name = str(project.get("name") or "")
+    if not name:
+        return None
+    version = str(project.get("version") or "0.0.0")
+    sources = root / "plugin-sources"
+    if not sources.is_dir():
+        return None
+    for candidate in sorted(sources.glob("*/pyproject.toml")):
+        try:
+            other = tomllib.loads(candidate.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        declared = other.get("project") or {}
+        if not isinstance(declared, Mapping):
+            continue
+        if str(declared.get("name") or "") != name:
+            continue
+        other_version = str(declared.get("version") or "0.0.0")
+        if other_version != version:
+            raise InstallError("venv", f"two plugins declare the package name {name!r} at different "
+                                       f"versions ({version!r} and {other_version!r}): align the copies "
+                                       "before the environment is built")
+        return candidate.parent
+    return None
+
+
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = (),
                       target: Mapping[str, str] | None = None) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
@@ -610,6 +652,15 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
     declaration = read_python_declaration(plugin_dir)
     pyproject = declaration.pyproject
     if pyproject is not None:
+        if not virtual:
+            # A buildable member cannot be renamed, so the same plugin installed in two
+            # profiles used to declare its package name twice and abort every `uv lock`
+            # of the workspace ("Two workspace members are both named ..."). One
+            # environment holds one copy of a package: the second copy of the plugin
+            # reuses the member the first one made instead of declaring the name again.
+            shared = _member_declaring(root, document)
+            if shared is not None:
+                return shared
         member = root / "plugin-sources" / key
         shutil.copytree(plugin_dir, member, symlinks=True,
                         ignore=_member_ignored)

@@ -1786,7 +1786,16 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
     *error_context* is the turn's (``extract_api_error_context``); *classified* brings the
     classifier's own context, where a welcome-tier ``rate_limited`` refusal and its ``reset_at``
     live. A long welcome reset is an exhausted allowance whatever the headers say, and the one
-    place the user is told that signing in lifts it."""
+    place the user is told that signing in lifts it.
+
+    A usage-window *check outage* (503 ``usage_window_unavailable``) is never genuine: it carries no
+    rate-limit headers, so the decision would rest on a stale ``last_known_state`` and trip the
+    cross-session breaker over an outage — blocking every Nous model instead of falling back."""
+    if (getattr(classified, "error_context", None) or {}).get("usage_window_outage"):
+        logger.info(
+            "Nous rate-limit guard skipped: usage-window check outage (503), not a genuine account limit"
+        )
+        return False
     _genuine = False
     try:
         from agent.nous_rate_guard import (

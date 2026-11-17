@@ -135,6 +135,41 @@ def test_usage_window_503_code_from_another_provider_keeps_the_overload_rules():
     assert "usage_window" not in result.error_context
 
 
+def test_usage_window_503_outage_never_trips_the_nous_rate_breaker():
+    """The breaker reads headers or a *last-known* state; a 503 carries neither, so without this
+    exemption an exhausted stale snapshot would park every Nous model instead of falling back."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from agent.turn_recovery import _is_genuine_nous_rate_limit
+
+    agent = SimpleNamespace(provider="nous", _rate_limit_state=None, log_prefix="")
+    outage = SimpleNamespace(error_context={"usage_window": True, "usage_window_outage": True})
+    plan_limit = SimpleNamespace(error_context={"usage_window": True})
+    with patch("agent.nous_rate_guard.is_genuine_nous_rate_limit", return_value=True):
+        assert _is_genuine_nous_rate_limit(agent, RuntimeError("503"), {}, outage) is False
+        # the plan-limit path keeps its existing behaviour
+        assert _is_genuine_nous_rate_limit(agent, RuntimeError("402"), {}, plan_limit) is True
+
+
+def test_usage_window_cooldown_is_model_scoped_on_a_pool_entry():
+    import time
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from agent.credential_pool import PooledCredential
+    from agent.credential_pool_model_cooldowns import (
+        FAILURE_REASON_USAGE_WINDOW, CredentialPoolModelCooldownMixin, model_cooldown_until)
+
+    mixin = cast(Any, CredentialPoolModelCooldownMixin())
+    mixin.provider = "nous"
+    assert mixin._is_model_scoped_failure(503, "model-a", FAILURE_REASON_USAGE_WINDOW) is True
+    entry = cast(PooledCredential, SimpleNamespace(
+        model_cooldowns={"model-a": time.time() + 600}, last_status="ok"))
+    assert model_cooldown_until(entry, "model-a") is not None   # refused model is benched
+    assert model_cooldown_until(entry, "model-b") is None       # sibling models stay usable
+
+
 def test_not_a_multimodal_model_is_an_image_rejection():
     body = str(_status(openai.BadRequestError, 400, NOT_MULTIMODAL_400))
     assert _looks_like_image_content_rejection(body), f"image rejection not recognised: {body[:120]}"

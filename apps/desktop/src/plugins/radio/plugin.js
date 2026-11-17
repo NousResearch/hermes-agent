@@ -7,6 +7,16 @@ import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'radio'
+// Optional launch behavior lives in plugin storage, beside the other Radio settings.
+const AUTOPLAY_KEY = 'local.autoplay'
+
+function autoplayOnLaunch(storage) {
+  return storage?.get?.(AUTOPLAY_KEY, false) === true
+}
+
+function shouldAutoplay(storage, station) {
+  return autoplayOnLaunch(storage) && validStation(station)
+}
 const NIGHTRIDE = 'https://stream.nightride.fm/'
 const PRESETS = [
   { id: 'chillsynth', name: 'Chillsynth', description: 'Soft focus · warm synths', provider: 'Nightride FM', url: `${NIGHTRIDE}chillsynth.mp3`, homepage: 'https://nightride.fm/?station=chillsynth' },
@@ -29,15 +39,23 @@ const EN = {
   directory: 'Search powered by Radio Browser', note: 'Live radio · next switches stations',
   streamError: 'This stream could not connect. Try again or choose another station.',
   close: 'Close radio', nowPlaying: 'Now playing', elsewhere: 'Paused — playing in another window',
+  settingsTitle: 'Radio', autoplayLabel: 'Start the last station on launch',
+  autoplayDescription: 'Plays the station you listened to last when Hermes opens. Off by default; with it off nothing plays until you press play.',
+  restoreLabel: 'Restore the default stations', restoreDescription: 'Adds back any station that shipped with Radio and is no longer in your list. Stations you added and names you changed stay as they are.',
+  restoreAction: 'Restore', restoreNone: 'All default stations are already in your list.', restoreSome: 'Restored',
+  rename: 'Rename station', remove: 'Delete station', confirmRemove: 'Click again to delete',
+  add: 'Add station', addName: 'Station name', addUrl: 'Stream URL (http or https)', addSave: 'Add', cancel: 'Cancel',
+  addInvalid: 'Enter an http or https stream address.', addExists: 'That stream URL is already in your list.',
+  edit: 'Edit station', editName: 'Station name', editUrl: 'Stream URL', editSave: 'Save', editInvalid: 'Enter an http or https stream address.',
   'chillsynthDescription': 'Soft focus · warm synths', 'nightrideDescription': 'Synthwave · after hours',
   'darksynthDescription': 'Dark electronics · high energy', 'spacesynthDescription': 'Cosmic synths · retro futures',
   'paradise-mainDescription': 'Eclectic · human selected', 'paradise-mellowDescription': 'A gentler pace'
 }
 const LOCALES = {
   en: EN,
-  ja: { ...EN, artistProfile: 'アーティストのプロフィールを開く', audioOnly: '再生中 · 波形を表示できません', radio: 'ラジオ', browse: 'ステーションを選択', play: 'ラジオを再生', pause: 'ラジオを一時停止', next: '次のステーション', live: 'ライブ', paused: '一時停止', connecting: '接続中', error: '再生できません', retry: '再試行', search: 'ステーションを検索…', volume: '音量', mute: 'ミュート', unmute: 'ミュート解除', save: 'ステーションを固定', unsave: '固定を解除', visit: '公式サイトを開く', noResults: '見つかりませんでした', searchHint: '名前で検索。jazz、ambient、house など。', searchError: '検索できません。おすすめは再生できます。', searching: '検索中', directory: 'Radio Browser による検索', note: 'ライブ放送 · 次へでステーションを切り替え', streamError: '接続できませんでした。再試行するか別のステーションを選んでください。', close: 'ラジオを閉じる', nowPlaying: '再生中', elsewhere: '別のウィンドウで再生中', 'chillsynthDescription': 'やさしい集中 · 暖かなシンセ', 'nightrideDescription': 'シンセウェーブ · 深夜', 'darksynthDescription': 'ダークな電子音 · 高揚感', 'spacesynthDescription': '宇宙的シンセ · レトロな未来', 'paradise-mainDescription': '多彩な選曲 · 人がキュレーション', 'paradise-mellowDescription': 'ゆったりした時間' },
-  zh: { ...EN, artistProfile: '访问艺人主页', audioOnly: '正在播放 · 无法显示波形', radio: '电台', browse: '选择电台', play: '播放电台', pause: '暂停电台', next: '下一个电台', live: '直播', paused: '已暂停', connecting: '正在连接', error: '无法播放', retry: '重试', search: '搜索电台…', volume: '音量', mute: '静音', unmute: '取消静音', save: '置顶电台', unsave: '取消置顶', visit: '访问电台网站', noResults: '没有找到电台', searchHint: '按名称搜索，例如 jazz、ambient 或 house。', searchError: '暂时无法搜索，精选电台仍可使用。', searching: '正在搜索', directory: '搜索由 Radio Browser 提供', note: '直播电台 · 下一首将切换电台', streamError: '无法连接，请重试或选择其他电台。', close: '关闭电台', nowPlaying: '正在播放', elsewhere: '已暂停，正在其他窗口播放', 'chillsynthDescription': '轻松专注 · 温暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑电子 · 充满能量', 'spacesynthDescription': '宇宙合成器 · 复古未来', 'paradise-mainDescription': '多元风格 · 人工精选', 'paradise-mellowDescription': '放慢节奏' },
-  'zh-hant': { ...EN, artistProfile: '造訪藝人主頁', audioOnly: '播放中 · 無法顯示波形', radio: '電台', browse: '選擇電台', play: '播放電台', pause: '暫停電台', next: '下一個電台', live: '直播', paused: '已暫停', connecting: '正在連線', error: '無法播放', retry: '重試', search: '搜尋電台…', volume: '音量', mute: '靜音', unmute: '取消靜音', save: '釘選電台', unsave: '取消釘選', visit: '造訪電台網站', noResults: '找不到電台', searchHint: '按名稱搜尋，例如 jazz、ambient 或 house。', searchError: '暫時無法搜尋，精選電台仍可使用。', searching: '正在搜尋', directory: '搜尋由 Radio Browser 提供', note: '直播電台 · 下一首會切換電台', streamError: '無法連線，請重試或選擇其他電台。', close: '關閉電台', nowPlaying: '正在播放', elsewhere: '已暫停，正在其他視窗播放', 'chillsynthDescription': '輕鬆專注 · 溫暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑電子 · 充滿能量', 'spacesynthDescription': '宇宙合成器 · 復古未來', 'paradise-mainDescription': '多元風格 · 人工精選', 'paradise-mellowDescription': '放慢節奏' }
+  ja: { ...EN, artistProfile: 'アーティストのプロフィールを開く', audioOnly: '再生中 · 波形を表示できません', radio: 'ラジオ', browse: 'ステーションを選択', play: 'ラジオを再生', pause: 'ラジオを一時停止', next: '次のステーション', live: 'ライブ', paused: '一時停止', connecting: '接続中', error: '再生できません', retry: '再試行', search: 'ステーションを検索…', volume: '音量', mute: 'ミュート', unmute: 'ミュート解除', save: 'ステーションを固定', unsave: '固定を解除', visit: '公式サイトを開く', noResults: '見つかりませんでした', searchHint: '名前で検索。jazz、ambient、house など。', searchError: '検索できません。おすすめは再生できます。', searching: '検索中', directory: 'Radio Browser による検索', note: 'ライブ放送 · 次へでステーションを切り替え', streamError: '接続できませんでした。再試行するか別のステーションを選んでください。', close: 'ラジオを閉じる', nowPlaying: '再生中', elsewhere: '別のウィンドウで再生中', 'chillsynthDescription': 'やさしい集中 · 暖かなシンセ', 'nightrideDescription': 'シンセウェーブ · 深夜', 'darksynthDescription': 'ダークな電子音 · 高揚感', 'spacesynthDescription': '宇宙的シンセ · レトロな未来', 'paradise-mainDescription': '多彩な選曲 · 人がキュレーション', 'paradise-mellowDescription': 'ゆったりした時間', restoreLabel: '既定のステーションを復元', restoreAction: '復元' },
+  zh: { ...EN, artistProfile: '访问艺人主页', audioOnly: '正在播放 · 无法显示波形', radio: '电台', browse: '选择电台', play: '播放电台', pause: '暂停电台', next: '下一个电台', live: '直播', paused: '已暂停', connecting: '正在连接', error: '无法播放', retry: '重试', search: '搜索电台…', volume: '音量', mute: '静音', unmute: '取消静音', save: '置顶电台', unsave: '取消置顶', visit: '访问电台网站', noResults: '没有找到电台', searchHint: '按名称搜索，例如 jazz、ambient 或 house。', searchError: '暂时无法搜索，精选电台仍可使用。', searching: '正在搜索', directory: '搜索由 Radio Browser 提供', note: '直播电台 · 下一首将切换电台', streamError: '无法连接，请重试或选择其他电台。', close: '关闭电台', nowPlaying: '正在播放', elsewhere: '已暂停，正在其他窗口播放', 'chillsynthDescription': '轻松专注 · 温暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑电子 · 充满能量', 'spacesynthDescription': '宇宙合成器 · 复古未来', 'paradise-mainDescription': '多元风格 · 人工精选', 'paradise-mellowDescription': '放慢节奏', restoreLabel: '恢复默认电台', restoreAction: '恢复' },
+  'zh-hant': { ...EN, artistProfile: '造訪藝人主頁', audioOnly: '播放中 · 無法顯示波形', radio: '電台', browse: '選擇電台', play: '播放電台', pause: '暫停電台', next: '下一個電台', live: '直播', paused: '已暫停', connecting: '正在連線', error: '無法播放', retry: '重試', search: '搜尋電台…', volume: '音量', mute: '靜音', unmute: '取消靜音', save: '釘選電台', unsave: '取消釘選', visit: '造訪電台網站', noResults: '找不到電台', searchHint: '按名稱搜尋，例如 jazz、ambient 或 house。', searchError: '暫時無法搜尋，精選電台仍可使用。', searching: '正在搜尋', directory: '搜尋由 Radio Browser 提供', note: '直播電台 · 下一首會切換電台', streamError: '無法連線，請重試或選擇其他電台。', close: '關閉電台', nowPlaying: '正在播放', elsewhere: '已暫停，正在其他視窗播放', 'chillsynthDescription': '輕鬆專注 · 溫暖合成器', 'nightrideDescription': '合成器浪潮 · 深夜', 'darksynthDescription': '暗黑電子 · 充滿能量', 'spacesynthDescription': '宇宙合成器 · 復古未來', 'paradise-mainDescription': '多元風格 · 人工精選', 'paradise-mellowDescription': '放慢節奏', restoreLabel: '恢復預設電台', restoreAction: '恢復' }
 }
 
 // Disk plugins are not scanned by Tailwind. Only plugin layout lives here;
@@ -85,10 +103,26 @@ const CSS = `
 .hermes-radio-row[data-current=true] .hermes-radio-row-icon{color:var(--ui-accent)}
 .hermes-radio-row-copy{min-width:0;flex:1}
 .hermes-radio-row-name{display:block;font-size:12px;line-height:17px;color:var(--ui-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hermes-radio-row-edit{opacity:0;pointer-events:none}
+.hermes-radio-row:hover .hermes-radio-row-edit,.hermes-radio-row:focus-within .hermes-radio-row-edit{opacity:1;pointer-events:auto}
+@media(hover:none){.hermes-radio-row-edit{opacity:1;pointer-events:auto}}
+.hermes-radio-row[data-armed=true] .hermes-radio-row-remove{color:var(--ui-accent)}
+.hermes-radio-edit,.hermes-radio-add{display:flex;flex-direction:column;gap:4px;padding:5px 6px 6px;width:100%}
+.hermes-radio-edit input,.hermes-radio-add input{width:100%;min-width:0;height:22px;padding:0 5px;border-radius:4px;border:1px solid var(--ui-stroke-secondary);background:transparent;color:var(--ui-text-primary);font:inherit;font-size:12px}
+.hermes-radio-edit input:focus-visible,.hermes-radio-add input:focus-visible{outline:1px solid var(--ui-accent);outline-offset:-1px}
+.hermes-radio-edit-actions,.hermes-radio-add-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.hermes-radio-add-note{font-size:11px;line-height:16px;color:var(--ui-text-secondary)}
+.hermes-radio-actions{display:flex;align-items:center;gap:3px;padding:0 4px 5px}
+.hermes-radio-addbtn{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:0;border-radius:999px;background:var(--ui-bg-quaternary);color:var(--ui-text-secondary);cursor:pointer;flex-shrink:0;opacity:1;pointer-events:auto}
+.hermes-radio-addbtn[data-active=true]{color:var(--ui-accent);box-shadow:inset 0 0 0 1px var(--ui-accent)}
 .hermes-radio-volume{display:flex;align-items:center;gap:4px;height:28px;padding:2px 2px 0}
 .hermes-radio-volume-space{flex:1;min-width:6px}
 .hermes-radio-volume input{width:76px;min-width:0;height:3px;accent-color:var(--ui-accent);cursor:pointer}
 .hermes-radio-error{font-size:11px;line-height:17px;color:var(--ui-text-secondary);padding:4px 4px 12px}
+.hermes-radio-setting{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 0}
+.hermes-radio-setting-text{display:flex;flex-direction:column;gap:4px;max-width:62ch}
+.hermes-radio-setting-label{font-size:13px;font-weight:500}
+.hermes-radio-setting-note{font-size:12px;opacity:.72;line-height:1.45}
 `
 
 function httpsUrl(value) {
@@ -99,7 +133,18 @@ function httpsUrl(value) {
 }
 
 function validStation(value) {
-  return value && typeof value.id === 'string' && typeof value.name === 'string' && httpsUrl(value.url)
+  return Boolean(value) && typeof value.id === 'string' && typeof value.name === 'string' && Boolean(streamUrl(value.url))
+}
+
+// Stream addresses are handed to an <audio> element, not fetched with credentials.
+// Shoutcast still serves many stations over plain http, so both schemes are allowed;
+// website and artist links keep the stricter https rule above.
+function streamUrl(value) {
+  try {
+    const url = new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null
+    return url.href
+  } catch { return null }
 }
 
 async function fetchJson(url, signal) {
@@ -157,8 +202,15 @@ function uniqueStations(items) {
 function createPlayer(ctx) {
   const saved = ctx.storage.get('local.favorites', [])
   const favorites = atom(uniqueStations(Array.isArray(saved) ? saved.filter(validStation) : []))
+  const stored = ctx.storage.get('local.stations', null)
+  // Seed once, then trust the stored list: a renamed or deleted station must
+  // not come back on the next launch.
+  const stations = atom(uniqueStations(Array.isArray(stored) ? stored.filter(validStation) : PRESETS.map(item => ({ ...item }))))
   const previous = ctx.storage.get('local.station', null)
-  const station = atom(validStation(previous) ? previous : PRESETS[0])
+  const restored = validStation(previous)
+    ? uniqueStations([...stations.get(), ...favorites.get()]).find(item => sameStation(item, previous)) ?? null
+    : null
+  const station = atom(restored ?? stations.get()[0] ?? PRESETS[0])
   const storedVolume = ctx.storage.get('local.volume', 25)
   const volume = atom(Number.isFinite(storedVolume) ? Math.max(0, Math.min(100, storedVolume)) : 25)
   const status = atom('paused')
@@ -295,7 +347,7 @@ function createPlayer(ctx) {
   }
 
   function next() {
-    const queue = uniqueStations([...favorites.get(), ...PRESETS, station.get()])
+    const queue = uniqueStations([...favorites.get(), ...stations.get(), station.get()])
     const index = queue.findIndex(item => sameStation(item, station.get()))
     void play(queue[(index + 1) % queue.length])
   }
@@ -318,6 +370,77 @@ function createPlayer(ctx) {
     const nextFavorites = current.some(value => sameStation(value, item)) ? current.filter(value => !sameStation(value, item)) : [...current, item]
     favorites.set(nextFavorites)
     ctx.storage.set('local.favorites', nextFavorites)
+  }
+
+  function saveStations(next) {
+    stations.set(next)
+    ctx.storage.set('local.stations', next)
+  }
+
+  function missingDefaults() {
+    const list = stations.get()
+    return PRESETS.filter(seed => !list.some(item => item.id === seed.id || item.url === seed.url))
+  }
+
+  function restoreDefaults() {
+    const missing = missingDefaults()
+    if (!missing.length) return 0
+    saveStations([...stations.get(), ...missing.map(item => ({ ...item }))])
+    return missing.length
+  }
+
+  function tidyName(value) {
+    return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 80)
+  }
+
+  function updateStation(item, changes) {
+    const label = tidyName(changes.name)
+    const address = streamUrl(changes.url ?? item.url)
+    if (!label || !address) return false
+    const apply = value => sameStation(value, item) ? { ...value, name: label, url: address } : value
+    saveStations(stations.get().map(apply))
+    if (favorites.get().some(value => sameStation(value, item))) {
+      const nextFavorites = favorites.get().map(apply)
+      favorites.set(nextFavorites)
+      ctx.storage.set('local.favorites', nextFavorites)
+    }
+    if (!sameStation(station.get(), item)) return true
+    const before = station.get()
+    const updated = apply(before)
+    station.set(updated)
+    ctx.storage.set('local.station', updated)
+    if (updated.url !== before.url && (status.get() === 'live' || status.get() === 'connecting')) void play(updated)
+    return true
+  }
+
+  function removeStation(item) {
+    saveStations(stations.get().filter(value => !sameStation(value, item)))
+    if (favorites.get().some(value => sameStation(value, item))) {
+      const nextFavorites = favorites.get().filter(value => !sameStation(value, item))
+      favorites.set(nextFavorites)
+      ctx.storage.set('local.favorites', nextFavorites)
+    }
+    if (!sameStation(station.get(), item)) return
+    const remaining = uniqueStations([...favorites.get(), ...stations.get()])
+    if (remaining.length) void play(remaining[0])
+    else stop()
+  }
+
+  function addStation({ name, url }) {
+    const address = streamUrl(url)
+    if (!address) return { station: null, added: false }
+    const existing = uniqueStations([...stations.get(), ...favorites.get()]).find(value => value.url === address)
+    if (existing) return { station: existing, added: false }
+    const host = new URL(address).hostname
+    const item = { id: `custom-${randomUuid()}`, name: tidyName(name) || host, url: address, provider: 'Custom station', description: host, homepage: null }
+    saveStations([...stations.get(), item])
+    return { station: item, added: true }
+  }
+
+  function startIfRequested() {
+    if (!shouldAutoplay(ctx.storage, restored)) return false
+    void play(restored)
+    return true
   }
 
   bus.onmessage = event => {
@@ -363,7 +486,7 @@ function createPlayer(ctx) {
     bus.close()
     if (audioContext) void audioContext.close()
   })
-  return { station, favorites, volume, status, meterMode, open, play, stop, toggle, next, setVolume, mute, favorite, waveform }
+  return { station, stations, favorites, volume, status, meterMode, open, play, stop, toggle, next, setVolume, mute, favorite, updateStation, removeStation, addStation, waveform, startIfRequested, restoreDefaults }
 }
 
 function brailleTrace(samples, rows = 2) {
@@ -573,15 +696,49 @@ function StationRow({ station, player }) {
   const t = usePluginI18n(ID)
   const current = sameStation(useValue(player.station), station)
   const status = useValue(player.status)
+  const editable = useValue(player.stations).some(item => sameStation(item, station))
   const active = status === 'live' || status === 'connecting'
   const failed = current && status === 'error'
   const saved = useValue(player.favorites).some(item => sameStation(item, station))
-  return jsxs('div', { className: 'hermes-radio-row', 'data-current': current, 'data-pinned': saved, children: [
-    jsxs(RowButton, { className: 'hermes-radio-row-main', 'aria-label': `${t(failed ? 'retry' : current && active ? 'pause' : 'play')}: ${station.name}`, title: failed ? t('streamError') : undefined, 'aria-current': current ? 'true' : undefined,
-      onClick: () => current ? player.toggle() : void player.play(station), children: [
-        jsx('span', { className: 'hermes-radio-row-icon', role: failed ? 'status' : undefined, 'aria-label': failed ? t('error') : undefined, children: jsx(failed ? icons.AlertCircle : current && active ? icons.Pause : icons.Play, { size: 12 }) }),
-        jsx('span', { className: 'hermes-radio-row-copy', children: jsx('span', { className: 'hermes-radio-row-name', children: station.name }) })
-      ] }),
+  const [editing, setEditing] = useState(false)
+  const [armed, setArmed] = useState(false)
+  const [draftName, setDraftName] = useState(station.name)
+  const [draftUrl, setDraftUrl] = useState(station.url)
+  const [note, setNote] = useState('')
+  useEffect(() => {
+    if (!armed) return
+    const timer = setTimeout(() => setArmed(false), 4000)
+    return () => clearTimeout(timer)
+  }, [armed])
+  const open = () => { setDraftName(station.name); setDraftUrl(station.url); setNote(''); setArmed(false); setEditing(true) }
+  const cancel = () => { setEditing(false); setNote('') }
+  const commit = () => {
+    if (!streamUrl(draftUrl) || !player.updateStation(station, { name: draftName, url: draftUrl })) { setNote(t('editInvalid')); return }
+    setEditing(false)
+    setNote('')
+  }
+  return jsxs('div', { className: 'hermes-radio-row', 'data-current': current, 'data-pinned': saved, 'data-armed': armed, 'data-editing': editing, children: [
+    editing
+      ? jsxs('div', { className: 'hermes-radio-edit', children: [
+        jsx('input', { value: draftName, autoFocus: true, 'aria-label': t('editName'), placeholder: t('editName'), onChange: event => setDraftName(event.target.value),
+          onKeyDown: event => { if (event.key === 'Enter') { event.preventDefault(); commit() } else if (event.key === 'Escape') { event.preventDefault(); cancel() } } }),
+        jsx('input', { value: draftUrl, 'aria-label': t('editUrl'), placeholder: t('editUrl'), spellCheck: false, onChange: event => setDraftUrl(event.target.value),
+          onKeyDown: event => { if (event.key === 'Enter') { event.preventDefault(); commit() } else if (event.key === 'Escape') { event.preventDefault(); cancel() } } }),
+        jsxs('div', { className: 'hermes-radio-edit-actions', children: [
+          jsx(Button, { variant: 'secondary', size: 'micro', onClick: commit, children: t('editSave') }),
+          jsx(Button, { variant: 'ghost', size: 'micro', onClick: cancel, children: t('cancel') }),
+          note && jsx('span', { className: 'hermes-radio-add-note', role: 'status', children: note })
+        ] })
+      ] })
+      : jsxs(RowButton, { className: 'hermes-radio-row-main', 'aria-label': `${t(failed ? 'retry' : current && active ? 'pause' : 'play')}: ${station.name}`, title: failed ? t('streamError') : undefined, 'aria-current': current ? 'true' : undefined,
+        onClick: () => current ? player.toggle() : void player.play(station), children: [
+          jsx('span', { className: 'hermes-radio-row-icon', role: failed ? 'status' : undefined, 'aria-label': failed ? t('error') : undefined, children: jsx(failed ? icons.AlertCircle : current && active ? icons.Pause : icons.Play, { size: 12 }) }),
+          jsx('span', { className: 'hermes-radio-row-copy', children: jsx('span', { className: 'hermes-radio-row-name', children: station.name }) })
+        ] }),
+    editable && jsx(SmallAction, { label: `${t('edit')}: ${station.name}`, icon: icons.Pencil, size: 'icon-xs', className: 'hermes-radio-row-edit', onClick: open }),
+    editable && jsx(SmallAction, { label: `${t(armed ? 'confirmRemove' : 'remove')}: ${station.name}`, icon: icons.Trash2, size: 'icon-xs',
+      className: `hermes-radio-row-edit${armed ? ' hermes-radio-row-remove' : ''}`,
+      onClick: () => { if (armed) { setArmed(false); player.removeStation(station) } else setArmed(true) } }),
     jsx(SmallAction, { label: `${t(saved ? 'unsave' : 'save')}: ${station.name}`, icon: icons.Pin, onClick: () => player.favorite(station), size: 'icon-xs', pressed: saved, className: 'hermes-radio-pin' })
   ] })
 }
@@ -594,6 +751,10 @@ function Stations({ player }) {
   const listRef = useRef(null)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [draftName, setDraftName] = useState('')
+  const [draftUrl, setDraftUrl] = useState('')
+  const [addNote, setAddNote] = useState('')
   const text = search.trim()
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0
@@ -614,6 +775,14 @@ function Stations({ player }) {
   // result must not remove a row above it and move the target under the pointer.
   const anchored = results.some(item => sameStation(item, browseStation)) ? results : [browseStation, ...results]
   const items = anchored.some(item => sameStation(item, current)) ? anchored : [current, ...anchored]
+  const openAdd = () => { setAddNote(''); setDraftName(''); setDraftUrl(''); setAdding(true) }
+  const closeAdd = () => { setAdding(false); setDraftName(''); setDraftUrl(''); setAddNote('') }
+  const save = () => {
+    const outcome = player.addStation({ name: draftName, url: draftUrl })
+    if (!outcome.station) { setAddNote(t('addInvalid')); return }
+    if (!outcome.added) { setAddNote(t('addExists')); return }
+    closeAdd()
+  }
   const pending = text.length >= 2 && (text !== query || result.isFetching)
   const searchFailed = text.length >= 2 && query === text && result.isError
   return jsxs('div', { children: [
@@ -622,6 +791,20 @@ function Stations({ player }) {
       containerClassName: 'hermes-radio-search-field',
       trailingAction: pending ? jsx('span', { className: 'hermes-radio-search-loader', children: jsx(GlyphSpinner, { ariaLabel: t('searching') }) }) : null
     }) }),
+    jsxs('div', { className: 'hermes-radio-actions', children: [
+      jsx(Tip, { label: t('add'), children: jsx('button', { type: 'button', className: 'hermes-radio-addbtn', 'data-active': adding, 'aria-label': t('add'), 'aria-expanded': adding,
+        onClick: () => adding ? closeAdd() : openAdd(), children: jsx(icons.Plus, { size: 12 }) }) })
+    ] }),
+    adding && jsxs('div', { className: 'hermes-radio-add', children: [
+      jsx('input', { value: draftName, autoFocus: true, placeholder: t('addName'), 'aria-label': t('addName'), onChange: event => setDraftName(event.target.value) }),
+      jsx('input', { value: draftUrl, placeholder: t('addUrl'), 'aria-label': t('addUrl'), spellCheck: false, onChange: event => setDraftUrl(event.target.value),
+        onKeyDown: event => { if (event.key === 'Enter') { event.preventDefault(); save() } else if (event.key === 'Escape') { event.preventDefault(); closeAdd() } } }),
+      jsxs('div', { className: 'hermes-radio-add-actions', children: [
+        jsx(Button, { variant: 'secondary', size: 'micro', onClick: save, children: t('addSave') }),
+        jsx(Button, { variant: 'ghost', size: 'micro', onClick: closeAdd, children: t('cancel') }),
+        addNote && jsx('span', { className: 'hermes-radio-add-note', role: 'status', children: addNote })
+      ] })
+    ] }),
     jsxs('div', { ref: listRef, className: 'hermes-radio-list', 'data-radio-pending': pending, children: [
       ...items.map(station => jsx(StationRow, { station, player }, station.id)),
       searchFailed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('searchError') }),
@@ -679,7 +862,31 @@ function RadioBar({ player, ctx }) {
   ] })
 }
 
-export { artistProfile, resolveArtist, trackCredit }
+function RadioSettingsPage({ ctx, player }) {
+  const t = usePluginI18n(ID)
+  const [on, setOn] = useState(autoplayOnLaunch(ctx.storage))
+  const [restored, setRestored] = useState(null)
+  const restore = () => setRestored(typeof player?.restoreDefaults === 'function' ? player.restoreDefaults() : 0)
+  return jsxs('div', { children: [
+    jsxs('div', { className: 'hermes-radio-setting', children: [
+      jsxs('div', { className: 'hermes-radio-setting-text', children: [
+        jsx('span', { className: 'hermes-radio-setting-label', children: t('autoplayLabel') }),
+        jsx('span', { className: 'hermes-radio-setting-note', children: t('autoplayDescription') })
+      ] }),
+      jsx('input', { type: 'checkbox', checked: on, 'aria-label': t('autoplayLabel'), onChange: event => { setOn(event.target.checked); ctx.storage.set(AUTOPLAY_KEY, event.target.checked) } })
+    ] }),
+    jsxs('div', { className: 'hermes-radio-setting', children: [
+      jsxs('div', { className: 'hermes-radio-setting-text', children: [
+        jsx('span', { className: 'hermes-radio-setting-label', children: t('restoreLabel') }),
+        jsx('span', { className: 'hermes-radio-setting-note', children: t('restoreDescription') })
+      ] }),
+      jsx(Button, { variant: 'secondary', size: 'micro', onClick: restore, children: t('restoreAction') })
+    ] }),
+    restored !== null && jsx('div', { className: 'hermes-radio-setting-note', role: 'status', children: restored ? `${t('restoreSome')} ${restored}` : t('restoreNone') })
+  ] })
+}
+
+export { artistProfile, resolveArtist, trackCredit, autoplayOnLaunch, shouldAutoplay, RadioSettingsPage, streamUrl, validStation, PRESETS }
 
 export default {
   id: ID,
@@ -694,5 +901,9 @@ export default {
     ctx.onDispose(() => style.remove())
     const player = createPlayer(ctx)
     ctx.register({ id: 'player', area: STATUSBAR_AREAS.right, order: 10, render: () => jsx(RadioBar, { player, ctx }) })
+    if (typeof ctx.registerSettingsPage === 'function') {
+      ctx.registerSettingsPage({ id: ID, title: 'Radio', icon: 'radio-tower', order: 70, render: () => jsx(RadioSettingsPage, { ctx, player }) })
+    }
+    if (autoplayOnLaunch(ctx.storage)) setTimeout(() => player.startIfRequested(), 1200)
   }
 }

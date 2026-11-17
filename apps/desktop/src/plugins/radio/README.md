@@ -12,9 +12,20 @@ website link. Next changes stations; live broadcasts do not support skipping
 songs. Pause releases the stream; playing again returns to live.
 
 Presets include Nightride FM, Radio Paradise, and EVE Radio (GamingNow).
+The first launch copies that list into plugin storage. After that, the stored
+list is authoritative: you can add an http or https stream by address, edit a
+station's name and address in one form, and delete a stored station by clicking
+its delete control twice. Delete is intentionally deliberate so a stray click
+cannot remove a station. Restoring defaults adds back shipped stations that are
+missing; it does not overwrite names you changed or remove stations you added.
+Userinfo in stream URLs is rejected, and website links remain https only.
+
 Search combines local stations with [Radio Browser](https://api.radio-browser.info/)
-results, accepts HTTPS non-HLS streams, and deduplicates by ID and URL.
-Pins, station, and volume use plugin-scoped local storage.
+results and deduplicates by ID and URL. Pins, station, volume, the station list,
+and the launch preference use plugin-scoped local storage. A settings page under
+Plugins ▸ Radio has "Start the last station on launch" (off by default) and
+"Restore the default stations". Without the launch preference, enabling the
+plugin does not start audio.
 
 ## Plugin boundary
 
@@ -45,8 +56,10 @@ while the picker shows live metadata; results are cached for a day. MusicBrainz
 requests are paced across windows. No account or API key is needed.
 
 Audio connects directly to broadcasters. Searches send the typed station query
-to Radio Browser. There are no accounts, keys, analytics, recording, or
-rebroadcasting. Disabled plugins perform no work; enabling does not autoplay.
+to Radio Browser. Station failures use `console.error` and a bundled backend
+log under the active Hermes home's `plugin-data/radio/station-log.jsonl`; the log
+records station name, address, reason, and time. There are no accounts, keys,
+analytics, recording, or rebroadcasting. Disabled plugins perform no work.
 Stream availability, regional restrictions, and metadata vary. Hermes is not
 endorsed by these broadcasters.
 

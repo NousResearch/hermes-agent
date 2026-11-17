@@ -2,11 +2,10 @@
 import asyncio
 from unittest.mock import AsyncMock
 
-import acp
 import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError
+from acp_adapter import wire as acp_wire
 
 
 @pytest.mark.asyncio
@@ -23,7 +22,7 @@ async def test_path_and_unknown_slash_text_is_submitted_as_the_prompt(text):
         return {"admission_id": "a"}
 
     agent._gateway.rpc.side_effect = rpc
-    response = await asyncio.wait_for(agent.prompt([acp.text_block(text)], "s"), 5)
+    response = await asyncio.wait_for(agent.prompt([acp_wire.text_block(text)], "s"), 5)
     assert response.stop_reason == "end_turn"
     assert agent._gateway.rpc.await_args.kwargs["text"] == text
 
@@ -43,7 +42,7 @@ async def test_registered_command_the_owner_refuses_is_a_named_reply_not_a_faile
         raise GatewayRPCError("unsupported_command")
 
     agent._gateway.rpc.side_effect = rpc
-    response = await agent.prompt([acp.text_block("/rollback")], "s")
+    response = await agent.prompt([acp_wire.text_block("/rollback")], "s")
     assert response.stop_reason == "end_turn"
     assert calls == [("slash.exec", {"session_id": "s", "command": "/rollback"})]
     shown = agent._conn.session_update.await_args.kwargs["update"].content.text

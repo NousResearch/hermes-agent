@@ -13,7 +13,7 @@ OWNER = {'edit_approval_policy': 'session'}  # another viewer already chose Don'
 
 
 def _set_model(agent):
-    return agent.set_session_model('p:m', 's')
+    return agent.set_config_option('model', 's', 'p:m')
 
 
 async def _deferred_confirm(agent):
@@ -31,7 +31,7 @@ def _command(text):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('install', [_set_model, _deferred_confirm, _command('new'), _command('compress'),
                                      _command('model p:m'), _command('undo'), _command('retry')],
-                         ids=['set_session_model', 'deferred_confirm', 'new', 'compress', 'model', 'undo', 'retry'])
+                         ids=['set_config_option', 'deferred_confirm', 'new', 'compress', 'model', 'undo', 'retry'])
 async def test_a_mode_change_queued_behind_a_new_watermark_still_repaints_the_editor(install, monkeypatch):
     agent = GatewayACPAgent()
     agent._conn = AsyncMock()
@@ -47,6 +47,8 @@ async def test_a_mode_change_queued_behind_a_new_watermark_still_repaints_the_ed
         if method == 'session.mutate':
             return {'session_id': 's', 'operation': params['operation'], 'revision': 3, 'model': 'm',
                     'provider': 'p', 'rewound_count': 1, 'target_message': {'content': 'hello'}}
+        if method == 'session.info':
+            return {**OWNER, 'model': 'm', 'provider': 'p'}
         if method == 'session.stats':
             return {'context_length': 1000, 'context_tokens': 0}
         raise AssertionError(method)

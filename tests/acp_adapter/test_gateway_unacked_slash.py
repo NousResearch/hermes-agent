@@ -2,7 +2,6 @@
 import asyncio
 from types import SimpleNamespace
 
-import acp
 import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
@@ -14,6 +13,7 @@ from hermes_cli.gateway_client import GatewayClientError
 from hermes_state_runtime import list_session_admissions
 from tests.acp_adapter.test_gateway_submit_retry import Wire
 from tests.waiting import async_wait_until
+from acp_adapter import wire as acp_wire
 
 
 class SlashWire(Wire):
@@ -57,11 +57,11 @@ async def test_repeated_prompt_after_slash_command_is_new_work(tmp_path, monkeyp
     agent._event_task = asyncio.create_task(agent._events())
     try:
         with pytest.raises(GatewayClientError, match='outcome is unknown'):
-            await agent.prompt([acp.text_block('yes')], s)
+            await agent.prompt([acp_wire.text_block('yes')], s)
         await async_wait_until(lambda: 'ACK_yes' in updates, timeout=5, what='the lost-ack reply update')
         # Read-only slash work between the lost-ack prompt and the deliberate repeat.
-        await asyncio.wait_for(agent.prompt([acp.text_block('/compress --preview')], s), 5)
-        response = await asyncio.wait_for(agent.prompt([acp.text_block('yes')], s), 5)
+        await asyncio.wait_for(agent.prompt([acp_wire.text_block('/compress --preview')], s), 5)
+        response = await asyncio.wait_for(agent.prompt([acp_wire.text_block('yes')], s), 5)
         assert response.stop_reason == 'end_turn'
         assert executed == ['yes', 'yes']
         assert len(list_session_admissions(authority.db, session_id=s, pending_only=False)) == 2

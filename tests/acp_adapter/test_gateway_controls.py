@@ -32,7 +32,7 @@ async def test_cancel_uses_observed_generation_and_mutations_fail_explicitly(tmp
     # Model changes are prepared canonical mutations: a stale authority answer propagates
     # verbatim instead of being retried through any alternate writer.
     with pytest.raises(GatewayClientError, match="stale_generation"):
-        await agent.set_session_model(session_id="shared", model_id="new-model")
+        await agent.set_config_option(session_id="shared", config_id="model", value="new-model")
     methods = [method for method, _ in calls]
     assert methods and set(methods) <= {"session.resume", "session.mutate"}, methods
     # An edit-policy mode is the same canonical mutation: a stale answer propagates verbatim too.

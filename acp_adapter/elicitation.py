@@ -55,7 +55,7 @@ def elicited_answer(response: Any) -> str | None:
 def build_clarify_permission(prompt: dict):
     """``(tool_call, options, answers)``: one option per offered choice plus Skip; ``answers``
     maps each option id to the exact ``clarify.respond`` answer."""
-    import acp
+    from acp_adapter import wire as acp_wire
     from acp.schema import PermissionOption
 
     choices = list(prompt.get("choices") or [])
@@ -64,8 +64,8 @@ def build_clarify_permission(prompt: dict):
     options.append(PermissionOption(option_id=SKIP_OPTION, kind="reject_once", name="Skip"))
     answers = {f"choice-{index}": choice for index, choice in enumerate(choices)}
     answers[SKIP_OPTION] = ""
-    tool_call = acp.update_tool_call(
+    tool_call = acp_wire.update_tool_call(
         f"clarify-{prompt['prompt_id']}", title=prompt["question"], kind="other", status="pending",
-        content=[acp.tool_content(acp.text_block(prompt["question"]))],
+        content=[acp_wire.tool_content(acp_wire.text_block(prompt["question"]))],
         raw_input={"question": prompt["question"], "choices": choices})
     return tool_call, options, answers

@@ -35,14 +35,15 @@ wheels = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.9.0"
+version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
+    { name = "pydantic-core" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/13/3b893421369767e7043cc115d6ef0df417c298b84563be3a12df0416158d/agent_client_protocol-0.9.0.tar.gz", hash = "sha256:f744c48ab9af0f0b4452e5ab5498d61bcab97c26dbe7d6feec5fd36de49be30b", size = 71853, upload-time = "2026-03-26T01:21:00.379Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/14/e2/085f4857cb864c3a423d76e205f75e1da1643862fd452e5cec47c3078d79/agent_client_protocol-1.0.0.tar.gz", hash = "sha256:24914d9996aaeeb08931191382d0ca1028b83743e2797cc05ded39b3bb754425", size = 187237, upload-time = "2026-11-09T00:34:01.706Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/ed/c284543c08aa443a4ef2c8bd120be51da8433dd174c01749b5d87c333f22/agent_client_protocol-0.9.0-py3-none-any.whl", hash = "sha256:06911500b51d8cb69112544e2be01fc5e7db39ef88fecbc3848c5c6f194798ee", size = 56850, upload-time = "2026-03-26T01:20:59.252Z" },
+    { url = "https://files.pythonhosted.org/packages/30/a1/7e29d00f01fede44ffdc84099552720727f8bfda942fea79a4f7d5ef1294/agent_client_protocol-1.0.0-py3-none-any.whl", hash = "sha256:179c14266997841438ee15245a2668d31b2c695c13bff87d01c36e016185ddd0", size = 128090, upload-time = "2026-11-09T00:34:00.324Z" },
 ]
 
 [[package]]
@@ -2610,7 +2611,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=1.0.0,<2" },
     { name = "aiohttp", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==3.14.5" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.14.5" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.14.5" },

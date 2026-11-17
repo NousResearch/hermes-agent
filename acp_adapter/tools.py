@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
-import acp
 from acp.schema import ToolCallLocation, ToolCallProgress, ToolCallStart, ToolKind
 
 from agent.display import build_tool_preview
+from acp_adapter import wire as acp_wire
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ def make_tool_call_id() -> str:
 
 
 def _text(content: str) -> Any:
-    return acp.tool_content(acp.text_block(content))
+    return acp_wire.tool_content(acp_wire.text_block(content))
 
 
 def _arg(args: Optional[Args], *keys: str, default: str = "") -> str:
@@ -644,7 +644,7 @@ def _parse_unified_diff_content(diff_text: str) -> list[Any]:
         path = new_path if new_path and new_path != "/dev/null" else old_path
         if path and path != "/dev/null":
             path = str(path).strip()
-            content.append(acp.tool_diff_content(
+            content.append(acp_wire.tool_diff_content(
                 path=path[2:] if path.startswith(("a/", "b/")) else path,
                 old_text="\n".join(state["old_lines"]) if state["old_lines"] else None,
                 new_text="\n".join(state["new_lines"]),
@@ -715,12 +715,12 @@ def _start_skill_manage(args: Args) -> Any:
     path = f"skills/{name}/{file_path}"
     if action == "patch":
         old = str(args.get("old_string") or "")
-        return acp.tool_diff_content(path=path, old_text=old or None, new_text=str(args.get("new_string") or ""))
+        return acp_wire.tool_diff_content(path=path, old_text=old or None, new_text=str(args.get("new_string") or ""))
     if action in {"edit", "create"}:
-        return acp.tool_diff_content(path=path, new_text=str(args.get("content") or ""))
+        return acp_wire.tool_diff_content(path=path, new_text=str(args.get("content") or ""))
     if action == "write_file":
         target = str(args.get("file_path") or "file")
-        return acp.tool_diff_content(path=f"skills/{name}/{target}", new_text=str(args.get("file_content") or ""))
+        return acp_wire.tool_diff_content(path=f"skills/{name}/{target}", new_text=str(args.get("file_content") or ""))
     if action in {"delete", "remove_file"}:
         return f"Removing {args.get('file_path') or file_path!s} from skill '{name}'"
     return f"Running skill_manage action '{action}' on skill '{name}' ({file_path})"
@@ -788,14 +788,14 @@ def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit
     except Exception as exc:
         logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
         safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
-        return acp.start_tool_call(tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[])
+        return acp_wire.start_tool_call(tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[])
 
 
 def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit_diff: Any = None) -> ToolCallStart:
     """Build the ToolCallStart event (unguarded; see ``build_tool_start``)."""
     raw_input = None
     if tool_name in ("patch", "write_file") and edit_diff is not None:
-        content = [acp.tool_diff_content(path=edit_diff.path, old_text=edit_diff.old_text, new_text=edit_diff.new_text)]
+        content = [acp_wire.tool_diff_content(path=edit_diff.path, old_text=edit_diff.old_text, new_text=edit_diff.new_text)]
     elif tool_name in _START_CONTENT_BUILDERS:
         built = builder(arguments) if (builder := _START_CONTENT_BUILDERS[tool_name]) is not None else None
         content = None if built is None else [_text(built) if isinstance(built, str) else built]
@@ -806,7 +806,7 @@ def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edi
     else:  # unknown tool with arguments: echo them as content and raw_input
         content = [_text(_args_json(arguments))]
         raw_input = arguments
-    return acp.start_tool_call(
+    return acp_wire.start_tool_call(
         tool_call_id, build_tool_title(tool_name, arguments), kind=get_tool_kind(tool_name),
         content=content, locations=extract_locations(arguments), raw_input=raw_input,
     )
@@ -825,7 +825,7 @@ def build_tool_complete(
     else:
         content = _build_tool_complete_content(tool_name, result, function_args=function_args, snapshot=snapshot)
     structured = isinstance(_json_loads_maybe(result), (dict, list))
-    return acp.update_tool_call(
+    return acp_wire.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name),
         status="failed" if is_error or _tool_result_failed(result, tool_name) else "completed", content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
@@ -838,7 +838,7 @@ def build_tool_abandoned(tool_call_id: str, tool_name: str) -> ToolCallProgress:
     A blocked or permission-denied call projects no ``tool.completed``, so the
     turn ends with its bubble still spinning; ``failed`` is the honest terminal
     state — the tool did not produce a result."""
-    return acp.update_tool_call(
+    return acp_wire.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name), status="failed",
         content=[_text("This tool call ended without a result (blocked, denied, or interrupted).")],
     )

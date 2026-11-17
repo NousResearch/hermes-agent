@@ -54,7 +54,7 @@ def _build_permission_options(
 def _build_permission_tool_call(command: str, description: str):
     """Return the ``ToolCallUpdate`` (not ``ToolCallStart``) payload attached to a
     permission request; unique ``perm-check-N`` ids keep concurrent requests apart."""
-    import acp as _acp
+    from acp_adapter import wire as _acp
 
     content_text = f"{description}\n$ {command}" if description else f"$ {command}"
     return _acp.update_tool_call(
@@ -101,7 +101,7 @@ def await_permission(
         future.cancel()
         logger.warning("%s failed: %s", what, exc)
     if send_update is not None:
-        import acp as _acp
+        from acp_adapter import wire as _acp
 
         # Duck-typed like the callers' own allow checks (``outcome == "selected"`` is the wire
         # discriminator), so the bubble's terminal status always matches the decision taken.

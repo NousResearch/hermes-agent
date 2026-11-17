@@ -2,10 +2,10 @@
 import asyncio
 from unittest.mock import AsyncMock
 
-import acp
 import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
+from acp_adapter import wire as acp_wire
 
 COMMENTARY, FINAL = "Let me check the file. ", "FINAL-ANSWER-OMEGA"
 SHAPES = {
@@ -62,7 +62,7 @@ async def test_each_delivery_shape_reaches_the_editor_once_and_the_pump_survives
             gateway.rpc.return_value = {"admission_id": admission_id}
             for kind, payload in frames:
                 gateway.publish(admission_id, kind, payload)
-            response = await asyncio.wait_for(agent.prompt([acp.text_block(prompt)], "s"), 5)
+            response = await asyncio.wait_for(agent.prompt([acp_wire.text_block(prompt)], "s"), 5)
             assert response.stop_reason == "end_turn"
             assert agent._failure is None
             text = editor_text(agent._conn)

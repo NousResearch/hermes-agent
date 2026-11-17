@@ -7,6 +7,7 @@ import pytest
 
 from acp_adapter.gateway_server import GatewayACPAgent
 from hermes_cli.gateway_client import GatewayClientError
+from acp_adapter import wire as acp_wire
 
 
 def _agent(rpc):
@@ -26,7 +27,7 @@ async def test_queue_submits_its_text_as_the_next_prompt():
         return {'admission_id': 'a'}
 
     agent = _agent(rpc)
-    response = await asyncio.wait_for(agent.prompt([acp.text_block('/queue run the linter')], 's'), 5)
+    response = await asyncio.wait_for(agent.prompt([acp_wire.text_block('/queue run the linter')], 's'), 5)
     assert response.stop_reason == 'end_turn'
 
 
@@ -47,7 +48,7 @@ async def test_steer_reaches_this_editors_running_turn():
 
     agent = _agent(rpc)
     agent._admissions['s'] = 'mine'
-    response = await agent.prompt([acp.text_block('/steer use pytest')], 's')
+    response = await agent.prompt([acp_wire.text_block('/steer use pytest')], 's')
     assert response.stop_reason == 'end_turn'
     assert 'Steer queued for the active turn: use pytest' in \
         agent._conn.session_update.await_args.kwargs['update'].content.text
@@ -68,7 +69,7 @@ async def test_a_steer_that_ended_the_voice_chat_is_reported_and_never_resent_as
 
     agent = _agent(rpc)
     agent._admissions['s'] = 'mine'
-    response = await agent.prompt([acp.text_block('/steer stop')], 's')
+    response = await agent.prompt([acp_wire.text_block('/steer stop')], 's')
     assert response.stop_reason == 'end_turn'
     assert calls == ['prompt.receipt', 'session.steer']
     assert t('cli.voice.stop_phrase_typed') in agent._conn.session_update.await_args.kwargs['update'].content.text
@@ -89,7 +90,7 @@ async def test_steer_while_this_editors_prompt_waits_behind_another_clients_turn
 
     agent = _agent(rpc)  # generation 7 is the other client's running turn
     agent._admissions['s'] = 'mine'
-    response = await asyncio.wait_for(agent.prompt([acp.text_block('/steer use pytest')], 's'), 5)
+    response = await asyncio.wait_for(agent.prompt([acp_wire.text_block('/steer use pytest')], 's'), 5)
     assert response.stop_reason == 'end_turn' and calls == ['prompt.receipt', 'prompt.submit']
 
 
@@ -107,7 +108,7 @@ async def test_a_refused_steer_is_reported_and_never_resent_as_a_prompt():
     agent = _agent(rpc)
     agent._admissions['s'] = 'mine'
     with pytest.raises(GatewayRPCError, match='unsupported_control'):
-        await agent.prompt([acp.text_block('/steer use pytest')], 's')
+        await agent.prompt([acp_wire.text_block('/steer use pytest')], 's')
     assert calls == ['prompt.receipt', 'session.steer']
 
 
@@ -129,7 +130,7 @@ async def test_a_steer_for_a_turn_that_just_ended_becomes_the_next_prompt():
 
     agent = _agent(rpc)
     agent._admissions['s'] = 'mine'
-    response = await asyncio.wait_for(agent.prompt([acp.text_block('/steer use pytest')], 's'), 5)
+    response = await asyncio.wait_for(agent.prompt([acp_wire.text_block('/steer use pytest')], 's'), 5)
     assert response.stop_reason == 'end_turn' and calls == ['prompt.receipt', 'session.steer', 'prompt.submit']
 
 
@@ -245,7 +246,7 @@ def _boundary_agent(messages):
 @pytest.mark.asyncio
 async def test_reset_empties_the_editors_context_indicator():
     agent = _boundary_agent([])
-    await agent.prompt([acp.text_block('/reset')], 's')
+    await agent.prompt([acp_wire.text_block('/reset')], 's')
     assert _context_shown(agent) == [(200000, 0)]
 
 
@@ -254,5 +255,5 @@ async def test_compress_shows_the_compressed_transcripts_occupancy():
     from agent.model_metadata import estimate_request_tokens_rough
     kept = [{'role': 'user', 'content': 'summary of the earlier turns ' * 40}]
     agent = _boundary_agent(kept)
-    await agent.prompt([acp.text_block('/compress')], 's')
+    await agent.prompt([acp_wire.text_block('/compress')], 's')
     assert _context_shown(agent) == [(200000, estimate_request_tokens_rough(kept))]

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 
-import acp
+from acp_adapter import wire as acp_wire
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class GatewayReplyMixin:
         """An assistant (or thought) chunk carrying the session's current ``messageId``: ACP clients group
         chunks into one reply by it and start a new bubble when it changes."""
         from acp_adapter.events import AssistantMessageIdAllocator
-        update = (acp.update_agent_thought_text if thought else acp.update_agent_message_text)(text)
+        update = (acp_wire.update_agent_thought_text if thought else acp_wire.update_agent_message_text)(text)
         update.message_id = self._message_ids.setdefault(sid, AssistantMessageIdAllocator()).current()
         return update
 
@@ -137,7 +137,7 @@ class GatewayReplyMixin:
             option.option_id == getattr(outcome, "option_id", None) and option.kind.startswith("allow")
             for option in options)
         try:
-            await self._conn.session_update(session_id=editor_id, update=acp.update_tool_call(
+            await self._conn.session_update(session_id=editor_id, update=acp_wire.update_tool_call(
                 tool_call.tool_call_id, status="completed" if allowed else "failed"))
         except Exception:
             # Boundary: display only; a failed close must never cost the user's answer its delivery.

@@ -18,6 +18,7 @@ from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 from hermes_constants import get_hermes_home
 from acp_adapter.gateway_reply import GatewayReplyMixin, _text
 from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
+from acp_adapter import wire as acp_wire
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _notify_unknown(self, session_id):
         """The classic chat's resume notice: say why the next prompt will be refused and how to recover."""
         if self._has_unknown(session_id) and self._conn:
-            await self._conn.session_update(session_id=self._editor_id(session_id), update=acp.update_agent_message_text(
+            await self._conn.session_update(session_id=self._editor_id(session_id), update=acp_wire.update_agent_message_text(
                 self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: ") + "\n"))
 
     def _transport_closed(self):
@@ -318,8 +319,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
-        return {"models": models, "modes": modes, "field_meta": meta,
-                "config_options": options}
+        return {"config_options": options, "modes": modes, "field_meta": meta}
 
     async def _after_attach(self, session_id, editor_id):
         from acp_adapter.gateway_session_meta import available_commands_update
@@ -358,7 +358,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if self._moved(info, cwd):
             info = await self._move_workspace(client, session_id, cwd)
         if "cwd" not in info and self._conn:
-            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
+            await self._conn.session_update(session_id=held_id, update=acp_wire.update_agent_message_text(
                 "Attached to the gateway's existing session policy; editor cwd is not applied.\n"))
         resume_params = {}
         if mcp_servers:
@@ -477,9 +477,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await self._request_live_reasoning(client, child)
         return ForkSessionResponse(session_id=child, **await self._session_fields(child, info, child))
 
-    async def set_session_model(self, model_id, session_id, **kwargs):
-        from acp.schema import SetSessionModelResponse
-        session_id = self._aliases.get(session_id, session_id)
+    async def _set_model_config(self, model_id, session_id):
+        """Apply the owner's existing model mutation, including confirmation and deferred picks."""
         client = await self._client()
         from hermes_cli.models import parse_model_input
         # Picker IDs include the provider, as on the in-process ACP switch path.
@@ -497,8 +496,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # A pick during a running turn lands for the next one (#139604); say so, as Desktop does.
             from acp_adapter.gateway_commands import deferred_pick_text
             await self._conn.session_update(session_id=self._editor_id(session_id),
-                                            update=acp.update_agent_message_text(deferred_pick_text(result) + "\n"))
-        return SetSessionModelResponse()
+                                            update=acp_wire.update_agent_message_text(deferred_pick_text(result) + "\n"))
 
     async def _confirm_deferred_pick(self, session_id, editor_id, ask):
         """The owner's boundary ask for a guarded deferred pick (``confirmation_required``; nothing
@@ -510,7 +508,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
         async def say(text):
             if self._conn:
-                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(text + "\n"))
+                await self._conn.session_update(session_id=editor_id, update=acp_wire.update_agent_message_text(text + "\n"))
         target = ask.get("target_model") or (ask.get("payload") or {}).get("model")
         committed = {"model": ask.get("committed_model"), "provider": ask.get("committed_provider"),
                      "target_model": target}
@@ -550,10 +548,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             from agent.i18n import t
             from hermes_cli.gateway_mutations import confirmation_title
             title = confirmation_title(refusal)
-            tool_call = acp.update_tool_call(
+            tool_call = acp_wire.update_tool_call(
                 f"model-confirm-{uuid.uuid4().hex[:12]}", title=f"{title}: {refusal.get('target_model', '')}",
                 kind="other", status="pending",
-                content=[acp.tool_content(acp.text_block(refusal['confirm_message']))],
+                content=[acp_wire.tool_content(acp_wire.text_block(refusal['confirm_message']))],
                 raw_input={'model': refusal.get('target_model'), 'provider': refusal.get('target_provider'),
                            'guards': [w.get('kind') for w in refusal.get('warnings') or []]})
             options = [PermissionOption(option_id="allow_once", kind="allow_once",
@@ -581,7 +579,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
     async def set_config_option(self, config_id, session_id, value=None, **kwargs):
         """The pickers ``config_options`` advertises: the edit mode is the modes select's owner setting,
-        the model ``set_session_model``'s pick, the effort the owner's ``reasoning`` mutation (``default``
+        the model ``_set_model_config``'s pick, the effort the owner's ``reasoning`` mutation (``default``
         = ``/reasoning reset``), and the tier its session-scoped speed setting.
         Another id is accepted so editors do not fail on their own config writes,
         as main did. The reply is the full list, read back from the owner."""
@@ -591,15 +589,16 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             reasoning_choices, session_config_options,
         )
         from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
-        editor_id, session_id = session_id, self._held_session(session_id)
+        from acp_adapter.model_catalog import MODEL_CONFIG_ID
+        session_id = self._held_session(session_id)
+        if config_id in (EDIT_APPROVAL_POLICY_CONFIG_ID, MODEL_CONFIG_ID) and not isinstance(value, str):
+            raise acp.RequestError.invalid_params({"details": f"{config_id} requires a select value"})
         if config_id == EDIT_APPROVAL_POLICY_CONFIG_ID:
             if value not in EDIT_APPROVAL_POLICY_TO_MODE:
                 raise GatewayClientError("invalid_params")
             await self._set_edit_policy(session_id, value)
-        elif config_id == "model":
-            if not isinstance(value, str):
-                raise GatewayClientError("invalid_params")
-            await self.set_session_model(model_id=value, session_id=editor_id)
+        elif config_id == MODEL_CONFIG_ID:
+            await self._set_model_config(value, session_id)
         elif config_id == REASONING_CONFIG_ID:
             if value not in reasoning_choices():
                 raise GatewayClientError("invalid_params")
@@ -638,7 +637,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                     + self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: "))
             if self._conn:
                 await self._conn.session_update(session_id=self._editor_id(session_id),
-                                                update=acp.update_agent_message_text(text + "\n"))
+                                                update=acp_wire.update_agent_message_text(text + "\n"))
             raise acp.RequestError(-32603, text) from exc
         self._mutations.acknowledge(session_id, operation, payload)
 
@@ -746,7 +745,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             self._pending_cancels.discard(session_id)
             if self._conn:
                 from agent.i18n import t
-                await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
+                await self._conn.session_update(session_id=held_id, update=acp_wire.update_agent_message_text(
                     t('cli.voice.stop_phrase_typed') + '\n'))
             return None
         admission_id = receipt["admission_id"]
@@ -775,7 +774,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if reply is None:
             return False, text
         if self._conn:
-            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(reply + '\n'))
+            await self._conn.session_update(session_id=held_id, update=acp_wire.update_agent_message_text(reply + '\n'))
         return True, None
 
     async def _prepare_submit(self, session_id, prompt):
@@ -1056,14 +1055,14 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         if kind == "session.tools_changed":
             if self._conn:
-                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(
+                await self._conn.session_update(session_id=editor_id, update=acp_wire.update_agent_message_text(
                     _tools_changed_notice(payload)))
             return
         if kind == "session.updated" and payload.get("operation") == "model" and payload.get("status") == "refused":
             # A deferred pick that no longer resolved at the turn boundary: dropped, named here.
             if self._conn:
                 from acp_adapter.gateway_commands import refused_pick_text
-                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(
+                await self._conn.session_update(session_id=editor_id, update=acp_wire.update_agent_message_text(
                     refused_pick_text(payload) + "\n"))
             return
         if (kind == "session.updated" and payload.get("operation") == "model"

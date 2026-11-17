@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -252,3 +253,45 @@ def test_quick_snapshot_captures_read_only_source_files(tmp_path) -> None:
     assert snapshot_id is not None
     copied = home / "state-snapshots" / snapshot_id / "config.yaml"
     assert copied.read_text(encoding="utf-8") == "model: {}\n"
+
+
+@pytest.mark.platforms("posix")  # directory fsync is skipped on Windows
+def test_quick_snapshot_is_not_published_when_only_a_directory_sync_fails(tmp_path, monkeypatch) -> None:
+    """File bytes synced but a staged directory entry not: the snapshot could lose names on a crash."""
+    home = tmp_path / ".hermes"
+    (home / "cron").mkdir(parents=True)
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    (home / "cron" / "jobs.json").write_text('{"jobs": []}\n', encoding="utf-8")
+    real_fsync = os.fsync
+
+    def dir_fsync_fails(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "Input/output error")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", dir_fsync_fails)
+    with pytest.raises(OSError):
+        create_quick_snapshot(hermes_home=home)
+
+    assert list_quick_snapshots(hermes_home=home) == []
+    assert list((home / "state-snapshots").iterdir()) == []
+
+
+@pytest.mark.platforms("posix")
+def test_quick_snapshot_publishes_where_directories_cannot_be_fsynced(tmp_path, monkeypatch) -> None:
+    """EINVAL from a directory fsync means the filesystem has no such operation, not lost data."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    real_fsync = os.fsync
+
+    def dir_fsync_unsupported(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "Invalid argument")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", dir_fsync_unsupported)
+    snapshot_id = create_quick_snapshot(hermes_home=home)
+
+    assert snapshot_id is not None
+    assert (home / "state-snapshots" / snapshot_id / "config.yaml").is_file()

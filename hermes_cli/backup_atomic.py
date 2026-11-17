@@ -1,4 +1,5 @@
 """Atomic, owner-only publication of backup archives."""
+import errno
 import os
 import shutil
 import stat
@@ -8,6 +9,8 @@ from typing import Callable, Optional
 
 from hermes_cli.backup_staging import staged_backup_file
 from utils import fsync_directory
+
+_DIR_FSYNC_UNSUPPORTED = frozenset({errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP})
 
 
 def _fsync_file(path: Path) -> None:
@@ -19,6 +22,26 @@ def _fsync_file(path: Path) -> None:
         os.close(fd)
 
 
+def _fsync_staged_dir(path: Path) -> None:
+    """Flush a staged directory's entries, failing on real I/O errors.
+
+    Unlike the best-effort ``fsync_directory`` used after a rename, this runs before publication:
+    an EIO here means a staged file's name may not survive a crash, so the tree must not be
+    published. A filesystem that cannot fsync directories at all (EINVAL/ENOTSUP) has nothing to
+    wait for, so that is not a failure; neither is Windows, where directories cannot be opened.
+    """
+    if os.name == "nt":
+        return
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in _DIR_FSYNC_UNSUPPORTED:
+            raise
+    finally:
+        os.close(fd)
+
+
 def _sync_tree(root: Path) -> None:
     """Flush every regular file under *root*, then every directory including *root*."""
     entries = [p for p in root.rglob("*") if not p.is_symlink()]
@@ -26,7 +49,7 @@ def _sync_tree(root: Path) -> None:
         if path.is_file():
             _fsync_file(path)
     for directory in (*(p for p in entries if p.is_dir()), root):
-        fsync_directory(directory)
+        _fsync_staged_dir(directory)
 
 
 def _normalize_private_modes(root: Path, staging_dir: Path) -> None:

@@ -558,7 +558,6 @@ Rules for fork code that reads credentials or platform settings:
   [tests/gateway/test_multiplex_fork_features.py](tests/gateway/test_multiplex_fork_features.py);
   cron: [tests/cron/test_multiplex_cron_per_profile.py](tests/cron/test_multiplex_cron_per_profile.py).
 - Known limitation: `terminal.cwd` is bridged once from the default's config.
-||||||| 4e71360af5
 
 ### Cron delivery format — [cron/scheduler.py](cron/scheduler.py) `_deliver_result`
 

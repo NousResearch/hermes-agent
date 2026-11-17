@@ -126,6 +126,15 @@ class GatewayStartupMixin:
         )
         return True
 
+    def _owns_startup_resume_claim(self, session_key: str, event: MessageEvent) -> bool:
+        """True for the exact synthetic resume event whose slot ``_schedule_resume_pending_sessions``
+        pre-claimed: it may take that slot past the busy-session guard instead of bouncing off its
+        own claim. Any other event, inbound included, stays behind the guard."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        state = self._peek_session_state(session_key)
+        return bool(getattr(event, "_startup_resume_claim", False) and state is not None
+                    and state.turn.agent is _AGENT_PENDING_SENTINEL and state.turn.event is event)
+
     async def _run_startup_resume_event(
         self, adapter: BasePlatformAdapter, event: MessageEvent, session_key: str,
     ) -> None:
@@ -141,8 +150,10 @@ class GatewayStartupMixin:
                 await asyncio.shield(task)
         finally:
             # Release the pre-claimed slot if handle_message raised before _handle_message took ownership.
+            # Only this event's own claim: another event's pending claim is not ours to release.
             _pre_state = self._peek_session_state(session_key)
-            if (_pre_state.turn.agent if _pre_state else None) is _AGENT_PENDING_SENTINEL:
+            if (_pre_state is not None and _pre_state.turn.agent is _AGENT_PENDING_SENTINEL
+                    and _pre_state.turn.event is event):
                 self._release_running_agent_state(session_key)
 
     def _queue_startup_restore_event(self, event: MessageEvent) -> None:
@@ -662,6 +673,10 @@ class GatewayStartupMixin:
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
+            # The claim names its event, so the turn admits it (_owns_startup_resume_claim) instead of
+            # queueing it behind its own sentinel, and the wrapper releases only this claim.
+            event._startup_resume_claim = True
+            _resume_state.turn.event = event
             task = self._retain_background_task(
                 asyncio.create_task(self._run_startup_resume_event(adapter, event, entry.session_key))
             )

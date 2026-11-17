@@ -124,6 +124,22 @@ def test_listing_is_paginated_newest_first():
 
 
 @pytest.mark.parametrize("tool, args", [
+    ("artifact_get", {"version": "1"}),
+    ("artifact_get", {"version": True}),
+    ("artifact_show", {"version": "1"}),
+    ("artifact_update", {"base_version": "2", "files": HTML}),
+])
+def test_numbers_are_not_coerced_from_strings_or_booleans(store, tool, args):
+    """The hosted server's integer fields are strict: "1" or true is an error, not 1."""
+    store, artifact_id = store
+    server = fake.build_server(store)
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    with pytest.raises(ToolError, match="validation error"):
+        asyncio.run(server.call_tool(tool, {"id": artifact_id, **args}))
+
+
+@pytest.mark.parametrize("tool, args", [
     ("artifact_get", {"version": None}),
     ("artifact_show", {"version": None}),
     ("artifact_list", {"cursor": None}),

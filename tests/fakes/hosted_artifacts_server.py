@@ -33,6 +33,8 @@ import sys
 import threading
 from typing import Any, Callable, Optional
 
+from pydantic import StrictInt
+
 MCP_PATH = "/v1/artifacts/mcp"
 VIEWER_URI = "ui://hermes/artifact-viewer"
 VIEWER_MIME = "text/html;profile=mcp-app"
@@ -291,13 +293,13 @@ def build_server(store: Store):
         return result(store.create(title, files))
 
     @server.tool()
-    def artifact_update(id: str, base_version: int, title: str = None,  # noqa: RUF013 -- null is refused
+    def artifact_update(id: str, base_version: StrictInt, title: str = None,  # noqa: RUF013 -- null is refused
                         edits: list[dict] = None, files: list[dict] = None):  # noqa: RUF013
         """New version from exact {path, old, new} edits or a full file set; base_version must be the head."""
         return result(store.update(id, base_version, title, edits, files))
 
     @server.tool()
-    def artifact_get(id: str, version: int = None):  # noqa: RUF013 -- null is refused
+    def artifact_get(id: str, version: StrictInt = None):  # null is refused
         """Read one version's files."""
         return result(store.read(id, version))
 
@@ -308,12 +310,12 @@ def build_server(store: Store):
 
     @server.tool()
     def artifact_share(id: str, scope: str, subjects: list[str] = None,  # noqa: RUF013 -- null is refused
-                       pin: str | int = None):  # noqa: RUF013
+                       pin: str | StrictInt = None):
         """Replace the artifact's share."""
         return result(store.share(id, scope, subjects, pin))
 
     @server.tool(meta={"ui": {"resourceUri": VIEWER_URI}})
-    def artifact_show(id: str, version: int = None):  # noqa: RUF013 -- null is refused
+    def artifact_show(id: str, version: StrictInt = None):  # null is refused
         """Show an artifact version in the viewer."""
         return result(store.show(id, version))
 

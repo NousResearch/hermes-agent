@@ -287,6 +287,8 @@ def test_nulls_never_reach_the_hosted_server():
     assert ha.call_arguments(ha.SERVER_NAME, args) == {"id": "a", "files": [{"path": "x", "content": "y"}],
                                                        "title": ""}
     assert args["version"] is None  # the caller's dict is left alone
+    listed = {"id": "a", "scope": "MEMBERS", "subjects": [None, "u1", None]}
+    assert ha.call_arguments(ha.SERVER_NAME, listed) == {"id": "a", "scope": "MEMBERS", "subjects": ["u1"]}
     assert ha.call_arguments("other-server", args) is args
 
 

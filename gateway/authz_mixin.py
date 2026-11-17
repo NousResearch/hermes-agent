@@ -854,7 +854,9 @@ class GatewayAuthorizationMixin:
         An observed shared-session turn that absorbed another sender's input has no recipient: none is recorded."""
         if not getattr(source, "is_bot", False):
             return
-        sender = event.sender_id() or source.user_id
+        # A merged turn deliberately uses event.user_id == "" to mean no single recipient.
+        # sender_id() already falls back to source.user_id when the event author is None.
+        sender = event.sender_id()
         if sender:
             self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().note_reply(
                 self._bot_loop_guard_conversation(source), str(sender)))

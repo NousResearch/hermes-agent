@@ -1585,9 +1585,12 @@ class SessionSessionsMixin:
         self, source: str | None = None, sources: list[str] | None = None, cwd_prefix: str | None = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
-        local_created_sources: Sequence[str] | None = None,
+        local_created_sources: Sequence[str] | None = None, include_hidden: bool = False,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches.
+        Hidden rows follow the list's rule (dropped unless ``include_hidden``, kept in the
+        archived-only view): counting rows the pages never serve promises pages that never
+        arrive. Storage-wide stats pass ``include_hidden=True``."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
@@ -1597,6 +1600,8 @@ class SessionSessionsMixin:
         if exclude_children:
             from hermes_state_local import exclude_superseded_segments
             exclude_superseded_segments(self, where_clauses, params)
+        if not include_hidden and not archived_only:
+            where_clauses.append("s.hidden = 0")
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
     def session_count_ge(self, n: int = 1) -> bool:

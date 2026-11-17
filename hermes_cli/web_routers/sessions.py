@@ -543,8 +543,9 @@ async def get_session_stats(profile: Optional[str] = None):
             # exclude_children=True: the dashboard Sessions page pairs these counts with
             # list_sessions_rich rows, which collapse compression chains to one row carrying
             # the tip's id — the raw row count is inflated by the hidden chain links (#54298).
-            "total": db.session_count(include_archived=True, exclude_children=True),
-            "active_store": db.session_count(include_archived=False, exclude_children=True),
+            # Hidden (Bot Mode) rows are stored rows too: these totals count them.
+            "total": db.session_count(include_archived=True, exclude_children=True, include_hidden=True),
+            "active_store": db.session_count(include_archived=False, exclude_children=True, include_hidden=True),
             "archived": db.session_count(archived_only=True, exclude_children=True), "messages": db.message_count(),
             "by_source": {}}
         try:

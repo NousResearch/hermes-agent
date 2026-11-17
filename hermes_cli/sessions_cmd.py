@@ -1342,9 +1342,10 @@ def _cmd_refresh_prompts(db, args):
 
 def _cmd_stats(db, args):
     reader = _surface_reader(db)
-    print(f"Total sessions: {db.session_count()}\nTotal messages: {db.message_count()}")
+    # Storage-wide counts: hidden (Bot Mode) rows are stored rows too.
+    print(f"Total sessions: {db.session_count(include_hidden=True)}\nTotal messages: {db.message_count()}")
     for src in ("cli", "telegram", "discord", "whatsapp", "slack"):
-        if (c := reader.session_count(source=src)) > 0:
+        if (c := reader.session_count(source=src, include_hidden=True)) > 0:
             print(f"  {src}: {c} sessions")
     if db.db_path.exists():
         print(f"Database size: {_size_mb(db.db_path):.1f} MB")

@@ -79,9 +79,12 @@ def writer(cid, s, q):
     try:
         while (data := q.get()) is not None:
             s.sendall(data)
-        s.shutdown(socket.SHUT_WR)  # pump() sees the client's EOF next and closes the socket
     except OSError:
         close(cid)
+    try:
+        s.shutdown(socket.SHUT_RDWR)  # wakes pump() out of recv() so its thread and socket end too
+    except OSError:
+        pass
 
 def serve(idx, ls):
     while True:
@@ -89,7 +92,7 @@ def serve(idx, ls):
         with lock:
             seq[0] += 1
             cid = seq[0]
-        q = queue.Queue()
+        q = queue.Queue(256)  # a client that reads slowly is dropped, not buffered without limit
         conns[cid] = (s, q)
         threading.Thread(target=writer, args=(cid, s, q), daemon=True).start()
         send(b"O", cid, str(idx).encode())
@@ -110,10 +113,22 @@ for line in sys.stdin.buffer:
     if entry is None:
         continue
     if parts[0] == b"D":
-        entry[1].put(base64.b64decode(parts[2]) if len(parts) > 2 else b"")
-    elif parts[0] == b"C":
-        conns.pop(int(parts[1]), None)
-        entry[1].put(None)
+        try:
+            entry[1].put_nowait(base64.b64decode(parts[2]) if len(parts) > 2 else b"")
+        except queue.Full:
+            close(int(parts[1]))
+            try:
+                entry[0].shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+    elif parts[0] == b"C" and conns.pop(int(parts[1]), None) is not None:
+        try:
+            entry[1].put_nowait(None)
+        except queue.Full:
+            try:
+                entry[0].shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 '''
 
 
@@ -124,13 +139,30 @@ class RelayHub:
 
     def __init__(self, send_line: Callable[[str], None], targets: tuple[tuple[str, int], tuple[str, int]]):
         self._send_line, self._targets = send_line, targets
-        self._send_lock = threading.Lock()
         self._inboxes: dict[int, queue.Queue] = {}
         self.ready = threading.Event()
+        # Outbound frames go through one writer thread: feed_line() runs on the transport's reader
+        # (on Modal, the event loop the write itself needs), so it must never wait on a send. Data
+        # frames take a slot first, so a slow stream backpressures iron-proxy, not host memory.
+        self._outbox: queue.SimpleQueue = queue.SimpleQueue()
+        self._data_slots = threading.BoundedSemaphore(_INBOX_FRAMES)
+        spawn_context_thread(self._write_frames, name="hermes-egress-relay-send").start()
+
+    def _write_frames(self) -> None:
+        while (item := self._outbox.get()) is not None:
+            line, is_data = item
+            try:
+                self._send_line(line)
+            except Exception:  # health: allow BLE001 -- the stream died; its reader closes the hub
+                logger.debug("egress relay: frame send failed", exc_info=True)
+            finally:
+                if is_data:
+                    self._data_slots.release()
 
     def _send(self, op: str, cid: int, data: bytes = b"") -> None:
-        with self._send_lock:
-            self._send_line(f"{op} {cid} {base64.b64encode(data).decode('ascii')}\n")
+        if op == "D":
+            self._data_slots.acquire()
+        self._outbox.put((f"{op} {cid} {base64.b64encode(data).decode('ascii')}\n", op == "D"))
 
     def feed_line(self, line: str) -> None:
         # A PTY can prefix the first frame with terminal control output ending in a bare CR.
@@ -143,7 +175,7 @@ class RelayHub:
         elif op == "O":
             if len(self._inboxes) >= MAX_CONNECTIONS:
                 logger.warning("egress relay: %d connections open, refusing another", MAX_CONNECTIONS)
-                self._send_quietly("C", cid)
+                self._send("C", cid)
                 return
             self._inboxes[cid] = inbox = queue.Queue(_INBOX_FRAMES)
             spawn_context_thread(self._serve, name="hermes-egress-relay-conn", args=(cid, payload, inbox)).start()
@@ -154,16 +186,13 @@ class RelayHub:
                 logger.warning("egress relay: connection %d backlog over %d frames, dropping it", cid, _INBOX_FRAMES)
                 self._end(cid)
 
-    def _send_quietly(self, op: str, cid: int) -> None:
-        with contextlib.suppress(Exception):  # health: allow BLE001 -- the stream may already be gone; cleanup must go on
-            self._send(op, cid)
 
     def _end(self, cid: int) -> None:
         """Forget a connection and wake its writer; tell the agent, best effort."""
         if (inbox := self._inboxes.pop(cid, None)) is not None:
             with contextlib.suppress(queue.Full):
                 inbox.put_nowait(None)
-            self._send_quietly("C", cid)
+            self._send("C", cid)
 
     def _serve(self, cid: int, payload: bytes, inbox: queue.Queue) -> None:
         host, port = self._targets[1 if payload == b"1" else 0]
@@ -196,9 +225,10 @@ class RelayHub:
             sock.close()
 
     def close(self) -> None:
-        """End every connection (the stream is gone or the sandbox is closing)."""
+        """End every connection and the frame writer (the stream is gone or the sandbox is closing)."""
         for cid in list(self._inboxes):
             self._end(cid)
+        self._outbox.put(None)
 
     def wait_ready(self, backend: str) -> None:
         if not self.ready.wait(READY_TIMEOUT_S):

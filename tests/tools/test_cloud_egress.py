@@ -5,7 +5,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.environments import cloud_egress, egress_relay
+from tests.waiting import wait_until
 from tools.environments.egress_relay import AGENT_SOURCE, LineSplitter, RelayHub
 
 
@@ -57,11 +57,11 @@ def test_relay_carries_a_connection_over_the_exec_stream(tmp_path, monkeypatch):
     port = _free_port_pair()
     proc = subprocess.Popen([sys.executable, "-u", str(agent), str(port)],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    def _send(line: str) -> None:
+        proc.stdin.write(line.encode("ascii"))
+        proc.stdin.flush()
+    hub = RelayHub(_send, (("127.0.0.1", upstream.getsockname()[1]),) * 2)
     try:
-        def _send(line: str) -> None:
-            proc.stdin.write(line.encode("ascii"))
-            proc.stdin.flush()
-        hub = RelayHub(_send, (("127.0.0.1", upstream.getsockname()[1]),) * 2)
         splitter = LineSplitter(hub.feed_line)
         splitter.feed("\x1b[?2004hbash# stty raw -echo; exec python3 ...\r\n\x1b[?2004l\r")  # PTY echo + reset
 
@@ -74,13 +74,12 @@ def test_relay_carries_a_connection_over_the_exec_stream(tmp_path, monkeypatch):
         with real_dial(("127.0.0.1", port), timeout=10) as client:
             assert dialling.wait(10)
             client.sendall(b"hello")  # reaches the hub while its dial is held open
-            deadline = time.monotonic() + 10
-            while not any(not q.empty() for q in hub._inboxes.values()) and time.monotonic() < deadline:
-                time.sleep(0.01)
+            wait_until(lambda: any(not q.empty() for q in hub._inboxes.values()), what="data frame queued mid-dial")
             release.set()
             reply = client.recv(100)
         assert reply == b"ECHO:hello"
     finally:
+        hub.close()
         proc.kill()
         proc.wait()
         upstream.close()

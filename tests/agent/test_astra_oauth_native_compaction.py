@@ -1,5 +1,4 @@
-"""gpt-6-astra (and its ``-900k`` picker alias) is native-compaction eligible only on official
-Codex OAuth (#103720).
+"""Supported GPT-6 Codex models are native-compaction eligible only on official Codex OAuth.
 
 Both the destination capability (``resolve_native_compaction_capabilities``) and the
 per-request gate (``native_compaction_context_management``) must agree, and the request
@@ -32,6 +31,13 @@ _CODEX = "https://chatgpt.com/backend-api/codex"
     ("gpt-6-astra", "openai-codex", None, False),
     ("gpt-6-astra-mini", "openai-codex", _CODEX, False),
     ("gpt-6-other", "openai-codex", _CODEX, False),
+    ("gpt-6-luna", "openai-codex", _CODEX, True),
+    ("gpt-6-sol-900k", "openai-codex", _CODEX, True),
+    ("gpt-6.1-sol-2026-10-14", "openai-codex", _CODEX, True),
+    ("openai/gpt-6-luna", "openai-codex", _CODEX, True),
+    ("gpt-6-luna", "openai", "https://api.openai.com/v1", False),
+    ("gpt-6-sol", "openai-codex", "https://relay.example/v1", False),
+    ("gpt-6.1-sol", "openai", _CODEX, False),
     ("gpt-5.6", "openai", "https://api.openai.com/v1", True),
     ("gpt-5.6", "openai-codex", _CODEX, True),
 ])

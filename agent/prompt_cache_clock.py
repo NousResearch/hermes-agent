@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -95,6 +96,7 @@ class CacheEvent:
     estimated_until: Optional[float] = None
     session_id: str = ""
     generation: Optional[int] = None  # SessionDB.prompt_cache_generation when recorded
+    upstream: Optional[str] = None  # :func:`response_upstream` of the reply, when the wire names it
 
 
 @dataclass(frozen=True)
@@ -295,6 +297,29 @@ def _route_key(provider: Any, base_url: Any, model: Any) -> tuple[str, str, str]
     return (str(provider or ""), normalize_route_base_url(str(base_url or "")), str(model or ""))
 
 
+#: Reply fields that name the upstream a gateway routed the request to (OpenRouter's ``provider``).
+_UPSTREAM_FIELDS = ("provider",)
+_ID_FAMILY = re.compile(r"^([A-Za-z]+)[-_]")
+
+
+def response_upstream(response: Any) -> Optional[str]:
+    """Which upstream served ``response``, as far as the wire tells: a field the gateway names it in,
+    else the family of the response id (Nous serves one Claude model from two upstreams, ``chatcmpl-*``
+    and ``gen-*`` ids, and each keeps its own cache). None when the reply carries neither."""
+    for name in _UPSTREAM_FIELDS:
+        value = getattr(response, name, None)
+        if isinstance(value, str) and value:
+            return value
+    rid = getattr(response, "id", None)
+    match = _ID_FAMILY.match(rid) if isinstance(rid, str) else None
+    return match.group(1) if match else None
+
+
+def upstream_switched(before: Optional[str], after: Optional[str]) -> bool:
+    """Both replies name their upstream and the names differ: a miss there is routing, not lifetime."""
+    return bool(before and after and before != after)
+
+
 def _display_route(agent: Any) -> tuple[str, str, str]:
     return _route_key(getattr(agent, "provider", ""), getattr(agent, "base_url", ""), getattr(agent, "model", ""))
 
@@ -416,19 +441,22 @@ def _moa_destination(agent: Any) -> tuple[Optional[dict], Optional[dict]]:
 
 
 def _learn(previous: Optional[CacheEvent], provider: str, base_url: str, model: str, attempt: dict[str, Any],
-           read: int, write: int, at: float) -> None:
+           read: int, write: int, at: float, *, upstream: Optional[str] = None, session_id: str = "") -> None:
     """Feed the cross-session route store (``agent.prompt_cache_routes``) with this response: its gap
-    since the same prefix was last touched, against the tier the clock held for it."""
+    since the same prefix was last touched, against the tier the clock held for it. A reply from another
+    upstream than the one that cached the prefix teaches nothing about how long that cache lives."""
     from agent.prompt_cache_routes import observe
 
+    if previous is not None and upstream_switched(previous.upstream, upstream):
+        return
     tier_s = TTL_SECONDS.get(previous.tier or "") if previous is not None else None
     observe(provider=provider, base_url=base_url, model=model, explicit=attempt.get("marker_ttl") is not None,
             read=read, write=write, gap_s=(at - previous.sent_at) if previous is not None else None, tier_s=tier_s,
-            replay=bool(attempt.get("replay")))
+            replay=bool(attempt.get("replay")), session_id=session_id)
 
 
 def _learn_silent_miss(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,
-                       attempt: Optional[dict[str, Any]]) -> None:
+                       attempt: Optional[dict[str, Any]], upstream: Optional[str] = None) -> None:
     """An automatic cache that reports nothing at all on a miss (no read, no write) still taught us
     something when the same prefix, big enough to cache, was cached moments ago on this route."""
     from agent.prompt_cache_lifecycle import MIN_CACHEABLE_PREFIX_TOKENS
@@ -440,22 +468,25 @@ def _learn_silent_miss(agent: Any, usage: Any, *, model: str, provider: str, bas
             or _agent_invalid_reason(agent, previous, _agent_generation(agent))):
         return
     attempt = attempt or getattr(agent, "_prompt_cache_attempt", None) or {}
-    _learn(previous, provider, base_url, model, attempt, 0, 0, float(attempt.get("sent_at") or time.time()))
+    _learn(previous, provider, base_url, model, attempt, 0, 0, float(attempt.get("sent_at") or time.time()),
+           upstream=upstream, session_id=str(getattr(agent, "session_id", "") or ""))
 
 
 def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,
                           api_mode: str, attempt: Optional[dict[str, Any]] = None,
                           witness: Optional[tuple[str, Optional[int], int, tuple[str, str, str]]] = None,
-                          ) -> Optional[CacheEvent]:
+                          upstream: Optional[str] = None) -> Optional[CacheEvent]:
     """Fold one response into the clock. ``model``/``provider``/``base_url``/``api_mode`` are the
     request's destination; a MoA client's resolved aggregator route and payload win over them.
     ``attempt`` (:func:`attempt_facts`) and ``witness`` (:func:`context_witness` when it was armed)
     are for a request sent outside the loop (a keep-alive): the event is stamped with the context
     that request was built from, so a rewrite committed meanwhile leaves the window unknown.
+    ``upstream`` is :func:`response_upstream` of the reply.
     Returns the new event, or None when the response touched no cache (the previous window stands)."""
     read, write = int(getattr(usage, "cache_read_tokens", 0) or 0), int(getattr(usage, "cache_write_tokens", 0) or 0)
     if read + write <= 0:
-        _learn_silent_miss(agent, usage, model=model, provider=provider, base_url=base_url, attempt=attempt)
+        _learn_silent_miss(agent, usage, model=model, provider=provider, base_url=base_url, attempt=attempt,
+                           upstream=upstream)
         return None
     moa_route, moa_attempt = _moa_destination(agent)
     if moa_route is not None:
@@ -478,7 +509,7 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     if previous is not None and (previous.destination != destination or previous.route_class != ctx.route_class):
         previous = None
     at = float(attempt.get("sent_at") or time.time())
-    _learn(previous, provider, base_url, model, attempt, read, write, at)
+    _learn(previous, provider, base_url, model, attempt, read, write, at, upstream=upstream, session_id=session_id)
     coverage, carried = _fold_coverage(previous, verdict, ctx.route_class, at, read, write)
     guaranteed = _ends(coverage)[0]
     estimated = _estimated_end(coverage, base_url=base_url, retention=ctx.retention, at=at, previous=previous,
@@ -490,6 +521,7 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
         tier=min(coverage, key=coverage.__getitem__) if coverage else None,
         confidence=confidence if coverage else UNKNOWN, reason=reason, coverage=coverage,
         guaranteed_until=guaranteed, estimated_until=estimated, session_id=session_id, generation=generation,
+        upstream=upstream,
     )
     agent._prompt_cache_clock_restored = True  # a live event supersedes a store that could not be read
     _set_event(agent, event, mark=mark)
@@ -669,7 +701,10 @@ def cache_window_payload(agent: Any) -> Optional[dict[str, Any]]:
     learned = display_rule(rule_for(getattr(agent, "provider", ""), getattr(agent, "base_url", ""),
                                     getattr(agent, "model", ""), bool(getattr(agent, "_use_prompt_caching", False)),
                                     tier_s=TTL_SECONDS.get(window.tier or "")))
-    return {**asdict(window), "warming_off": prompt_cache_warming_disabled(agent), "learned": learned}
+    from agent.prompt_cache_lifecycle.tier import tier_pending
+
+    return {**asdict(window), "warming_off": prompt_cache_warming_disabled(agent), "learned": learned,
+            "tier_pending": tier_pending(agent)}
 
 
 def _field(window: Any, name: str) -> Any:
@@ -723,6 +758,8 @@ def render_prompt_cache_line(window: Optional[dict[str, Any]], *, now: Optional[
         return None
     estimated = window.get("estimated_until")
     line = _cache_line(window, estimated, now)
+    if window.get("tier_pending"):
+        line = f"{line} {t('gateway.context.cache_tier_pending')}"
     if window.get("learned"):
         line = f"{line} {t('gateway.context.cache_learned', rule=window['learned'])}"
     return f"{line} {t('gateway.context.cache_warming_off')}" if window.get("warming_off") else line

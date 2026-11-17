@@ -553,8 +553,10 @@ class PromptCacheWindow(Result):
     reason: str
     refreshed_at: float | None = None
     coverage: dict[str, float] = {}
-    #: A keep-alive missed on this route: nothing is warmed again this session.
+    #: Keep-alives missed on this route (two real misses in a row): nothing is warmed again this session.
     warming_off: bool = False
+    #: ``cache_ttl: auto`` on a person's chat still on 5m: it moves to 1h at its first pause over 5 minutes.
+    tier_pending: bool = False
     #: A rule learned from this route's own usage (``no-cache`` | ``write-on-hit`` | ``short-lived``).
     learned: str | None = None
 

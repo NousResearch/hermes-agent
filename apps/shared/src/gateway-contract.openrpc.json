@@ -33646,6 +33646,11 @@
             "title": "Warming Off",
             "type": "boolean"
           },
+          "tier_pending": {
+            "default": false,
+            "title": "Tier Pending",
+            "type": "boolean"
+          },
           "learned": {
             "anyOf": [
               {

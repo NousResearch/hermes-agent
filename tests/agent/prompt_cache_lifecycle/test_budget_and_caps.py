@@ -189,8 +189,8 @@ def test_a_keep_alive_on_the_wire_when_its_run_is_replaced_still_counts_against_
 
 
 def test_a_miss_that_lands_after_its_run_was_replaced_still_ends_the_budget_and_decides_step_two():
-    """The first keep-alive is on the wire when the next tool round's reply arms a replacement run, and
-    it comes back a miss. The user turn's budget is over: the replacement stops (nothing more is sent)
+    """A keep-alive is on the wire when the next tool round's reply arms a replacement run, and it comes
+    back the miss that ends warming (the second real one in a row). The user turn's budget is over: the replacement stops (nothing more is sent)
     and step 2 decides on the prompt the turn now holds, with no further real reply needed."""
     client = _Client()
     agent = _chat(client=client)
@@ -205,6 +205,7 @@ def test_a_miss_that_lands_after_its_run_was_replaced_still_ends_the_budget_and_
         return response
 
     client.messages = SimpleNamespace(create=_miss)
+    warmer._miss_streak = (1, 1)  # an earlier real miss was retried: this one ends warming
     sender = threading.Thread(target=warmer._refresh, args=(stale,))
     sender.start()
     assert client.entered.wait(10)

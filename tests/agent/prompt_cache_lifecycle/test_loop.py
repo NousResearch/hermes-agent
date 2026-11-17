@@ -179,13 +179,14 @@ def test_a_five_minute_window_warms_three_times_then_expires_without_compacting(
     assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "short_window:300s"
 
 
-def test_a_keep_alive_that_misses_ends_warming():
+def test_a_keep_alive_that_misses_twice_in_a_row_ends_warming():
     agent = _chat(client=_Client(read=0, write=119_950))
     warmer = pcl.get_prompt_cache_warmer(agent)
     assert _respond(agent, _request(), _WRITE_1H) is None
+    _fire(warmer)  # one real miss is retried
     _fire(warmer)
     assert warmer._run is None and warmer.status["reason"].startswith("cache refresh missed")
-    assert len(agent._anthropic_client.calls) == 1
+    assert len(agent._anthropic_client.calls) == 2
 
 
 def test_a_miss_goes_straight_to_the_compact_or_offload_decision():
@@ -194,13 +195,16 @@ def test_a_miss_goes_straight_to_the_compact_or_offload_decision():
     warmer = pcl.get_prompt_cache_warmer(agent)
     _respond(agent, _request(), _WRITE_1H)
     _fire(warmer)
+    _fire(warmer)
     assert warmer._spent is not None
     assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "due"
 
     small = _chat(client=_Client(read=0, write=119_950), tokens=50_000)
     small.session_id = "small"  # another chat: the first one's miss is its own
+    small.model = "claude-sonnet-4-6"  # on its own route: two chats never reading back would learn no-cache
     w2 = pcl.get_prompt_cache_warmer(small)
     _respond(small, _request(), _WRITE_1H)
+    _fire(w2)
     _fire(w2)
     assert pcl.get_prompt_cache_warmer(small).edge_decision(now=w2._spent.due_at).compact == "small_context"
     after_window = small._prompt_cache_clock.estimated_until + 1

@@ -185,10 +185,21 @@ def auto_cache_ttl_for_agent(agent: Any) -> str:
     return ttl
 
 
+def auto_start_cache_ttl(agent: Any) -> str:
+    """The tier an ``auto`` session starts on: the source's choice, a 1h choice starting on 5m until
+    the chat's first pause (``prompt_cache_lifecycle.tier``)."""
+    from agent.prompt_cache_lifecycle.tier import adaptive_start_tier
+
+    return adaptive_start_tier(agent, auto_cache_ttl_for_agent(agent))
+
+
 def refresh_auto_cache_ttl(agent: Any) -> None:
     """Re-resolve an auto tier after a platform stamp, preserving side agents and explicit pins."""
     if getattr(agent, "_cache_ttl_auto", False) and not getattr(agent, "side_agent", False):
-        agent._cache_ttl = auto_cache_ttl_for_agent(agent)
+        upgraded = getattr(agent, "_cache_ttl_adaptive", False) and agent._cache_ttl == "1h"
+        agent._cache_ttl = auto_start_cache_ttl(agent)
+        if upgraded and agent._cache_ttl_adaptive:  # an upgraded session keeps 1h: its prefix carries 1h markers
+            agent._cache_ttl = "1h"
 
 
 def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "", base_url: str = "",

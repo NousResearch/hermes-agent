@@ -569,7 +569,7 @@ def _init_prompt_cache_config(agent):
     # writes against "extra usage", proxies injecting their own cache_control, #13477); the disable
     # survives /model switches and fallback re-derivation. An unreadable config falls back to "auto".
     from agent.agent_runtime_helpers import cache_ttl_means_disabled
-    from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_agent
+    from agent.prompt_caching import AUTO_CACHE_TTL, auto_start_cache_ttl
     ttl = AUTO_CACHE_TTL
     try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
@@ -589,9 +589,9 @@ def _init_prompt_cache_config(agent):
     if ttl in ("5m", "1h"):  # a tuple: an unhashable YAML value (a list) must not raise here
         agent._cache_ttl = ttl
     elif ttl == AUTO_CACHE_TTL and not getattr(agent, "side_agent", False):
-        # Decided once per session from its source (a delegated child is clamped to 5m again in
-        # delegate_tool). A side agent (/background, /btw, /refine) runs one finite task: it keeps 5m.
-        agent._cache_ttl = auto_cache_ttl_for_agent(agent)
+        # From the session's source (delegate_tool clamps children to 5m; a side agent keeps 5m); a 1h
+        # choice starts on 5m and upgrades at the first pause over 5 minutes (prompt_cache_lifecycle.tier).
+        agent._cache_ttl = auto_start_cache_ttl(agent)
     elif cache_ttl_means_disabled(ttl):
         agent._use_prompt_caching = False
         agent._use_native_cache_layout = False

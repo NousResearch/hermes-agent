@@ -39,8 +39,17 @@ logger = logging.getLogger(__name__)
 #: Idle keep-alives per user message (sent while no tool runs); a new user message starts a budget.
 #: Keep-alives while a tool runs are not counted: one tool wait is bounded by the rewrite it prevents.
 WARM_BUDGET = 3
-#: Why a session warms no more after a keep-alive missed on its route.
+#: Why a session warms no more after its keep-alives missed on its route.
 WARMING_DISABLED = "prompt cache warming disabled for session: keep-alive missed"
+#: Consecutive real misses (same upstream, nothing read back) that end warming for the session: the first
+#: is retried, since one stray miss is routing noise more often than a cache that dies early.
+REAL_MISSES_TO_STOP = 2
+#: Consecutive misses of any kind that end warming too: a routing blip does not repeat back to back, a
+#: cache whose conversation part dies early while a shared system prefix survives does.
+ANY_MISSES_TO_STOP = 3
+#: A miss that still read at least this share of the stable system + tools prefix (rough size) found the
+#: route's cache alive: the conversation part was served by another upstream.
+_PARTIAL_READ_SHARE = 0.5
 #: Replays are one HTTP round trip; never let a hung socket pin the timer thread.
 WARM_REQUEST_TIMEOUT_S = 60.0
 
@@ -128,6 +137,12 @@ class _Run:
     tool_spent_usd: float = 0.0
     #: Whether the keep-alive in flight was reserved against the tool wait (else the idle budget).
     inflight_tool: bool = False
+    #: ``prompt_cache_clock.response_upstream`` of the reply that last cached this prefix.
+    upstream: Optional[str] = None
+    #: Rough size of the stable system + tools prefix: a miss that read at least half of it was a routing blip.
+    stable_prefix_tokens: int = 0
+    #: What the last keep-alive was billed (``None`` when unpriced).
+    last_billed_usd: Optional[float] = None
 
     @property
     def warm_count(self) -> int:
@@ -180,6 +195,9 @@ class PromptCacheWarmer:
         #: long as assumed there, so nothing is warmed again this session (new user messages and
         #: compactions included). A model/provider switch is a different cache and clears it.
         self._missed_route: Optional[tuple] = None
+        #: Keep-alive misses since the last hit: ``(real, any)``. Upstream switches and partial reads are
+        #: not real misses (:meth:`_miss_ends_warming`).
+        self._miss_streak = (0, 0)
 
     # -- read side ------------------------------------------------------------------------------
     @property
@@ -267,7 +285,8 @@ class PromptCacheWarmer:
         self._last_decision = decision
         if decision.action != "warm":
             return self._stop(decision.stop_reason)
-        from agent.prompt_cache_clock import context_witness
+        from agent.prompt_cache_clock import context_witness, response_upstream
+        from agent.prompt_cache_lifecycle.tier import idle_warming_allowed
 
         api_calls = getattr(agent, "session_api_calls", 0)
         model = getattr(agent, "model", "")
@@ -290,7 +309,8 @@ class PromptCacheWarmer:
             cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
             deadline_at=window[0], is_current=_is_current, api_mode=api_mode,
             witness=context_witness(agent), billing=self._billing_snapshot(),
-            idle_ok=human_paced(agent), budget=budget,
+            idle_ok=human_paced(agent) and idle_warming_allowed(agent), budget=budget,
+            upstream=response_upstream(response), stable_prefix_tokens=_stable_prefix_tokens(api_kwargs, api_mode),
         )
         with self._lock:
             self._run = run
@@ -509,19 +529,24 @@ class PromptCacheWarmer:
         finally:
             run.refreshing = False
         miss = self._record(run, message, decision, sent_at, reserved)
-        if miss is not None:
-            if miss.startswith("cache refresh missed"):
-                # The entry was gone and this send re-wrote it: the cache does not live as long as the
-                # clock assumed on this route, so no keep-alive goes out again this session; the budget
-                # is over, so step 2 (compact) or step 3 (expire + offload) is decided now.
-                self._disable_warming(run)
-                window = guaranteed_window(self.agent)
-                if window is not None:
-                    run.deadline_at, run.ttl_s = window
-                self._end_budget(run, miss, due_at=time.time())
-            else:
-                self._stop_if_current(run, miss)
+        if miss is not None and not miss.startswith("cache refresh missed"):
+            self._stop_if_current(run, miss)
             return
+        if miss is not None and self._miss_ends_warming(run, message):
+            # The entry was gone again and this send re-wrote it: the cache does not live as long as the
+            # clock assumed on this route, so no keep-alive goes out again this session; the budget is
+            # over, so step 2 (compact) or step 3 (expire + offload) is decided now.
+            self._disable_warming(run)
+            window = guaranteed_window(self.agent)
+            if window is not None:
+                run.deadline_at, run.ttl_s = window
+            self._end_budget(run, miss, due_at=time.time())
+            return
+        if miss is None:
+            self._miss_streak = (0, 0)
+        else:
+            self._uncharge_miss(run)
+        # A hit, a routing blip or the one retried miss: the reply (re)wrote the prefix, warm on its window.
         with self._lock:
             if self._run is not run:
                 return
@@ -532,14 +557,45 @@ class PromptCacheWarmer:
             window = guaranteed_window(self.agent)
             if window is not None:
                 window, learned = learned_window(self.agent, window, self._marked)
-                if window is None:
-                    self._stop(f"learned: {learned}")
+                if window is None:  # the budget is over all the same: steps 2/3 decide at its next send
+                    self._end_budget(run, f"learned: {learned}", due_at=run.next_warm_at)
                     return
             if window is None:
                 self._stop("cache window not guaranteed warm")
                 return
             run.deadline_at, run.ttl_s = window
             self._schedule(run)
+
+    def _miss_ends_warming(self, run: _Run, message: Any) -> bool:
+        """Whether this keep-alive miss ends warming for the session. Not when the reply came from another
+        upstream than the one that cached the prefix (``response_upstream``), nor when it still read the
+        stable system prefix (a partial read: the route's cache is alive): routing, not lifetime. A real
+        miss ends it only on the :data:`REAL_MISSES_TO_STOP`-th in a row (one retry), and any
+        :data:`ANY_MISSES_TO_STOP` misses in a row end it too."""
+        from agent.prompt_cache_clock import response_upstream, upstream_switched
+        from agent.usage_pricing import normalize_usage
+
+        upstream = response_upstream(message)
+        switched = upstream_switched(run.upstream, upstream)
+        run.upstream = upstream or run.upstream  # the prefix now lives where this reply wrote it
+        read = normalize_usage(message.usage, provider=run.billing["provider"], api_mode=run.api_mode).cache_read_tokens
+        partial = 0 < run.stable_prefix_tokens * _PARTIAL_READ_SHARE <= read
+        real, anyk = self._miss_streak
+        self._miss_streak = (real, anyk) = (real + (not (switched or partial)), anyk + 1)
+        logger.info("%sprompt cache keep-alive missed (%s; real misses in a row %d)", self._prefix(),
+                    "upstream switch" if switched else "partial read" if partial else "nothing read", real)
+        return real >= REAL_MISSES_TO_STOP or anyk >= ANY_MISSES_TO_STOP
+
+    def _uncharge_miss(self, run: _Run) -> None:
+        """A miss that does not end warming re-wrote the prefix: that rewrite is what the keep-alives were
+        bounded by, not one of them, so it leaves the money limit and the next reservation as they were."""
+        with self._lock:
+            amount, run.last_billed_usd = run.last_billed_usd or 0.0, None
+            if run.inflight_tool:
+                run.tool_spent_usd -= amount
+            else:
+                run.budget.spent_usd -= amount
+            run.budget.last_warm_usd = 0.0
 
     def _disable_warming(self, run: _Run) -> None:
         from agent.prompt_cache_clock import _route_key
@@ -634,13 +690,14 @@ class PromptCacheWarmer:
                     else:
                         run.budget.spent_usd += amount - reserved
                     run.budget.last_warm_usd = amount
+                    run.last_billed_usd = amount
             # Compression keeps the running counters (a refresh still adds to them); only
             # ``reset_session_state`` zeroes them, and it advances the reset epoch with them under
             # this same lock, so a reset never lands between the epoch check and the add.
             with self._lock:
                 if getattr(agent, "_session_reset_epoch", 0) == b["reset_epoch"]:
                     self._add_to_session_totals(canonical, amount)
-            clock = self._fold_clock(run, canonical, sent_at)
+            clock = self._fold_clock(run, canonical, sent_at, message)
             db = getattr(agent, "_session_db", None)
             if db is not None and b["session_id"]:
                 db.queue_token_counts(
@@ -673,14 +730,14 @@ class PromptCacheWarmer:
             return "cache refresh cost unavailable"
         return None
 
-    def _fold_clock(self, run: _Run, canonical: Any, sent_at: float) -> dict[str, str]:
+    def _fold_clock(self, run: _Run, canonical: Any, sent_at: float, message: Any = None) -> dict[str, str]:
         """Record the refresh in the shared clock while this run still owns the live prefix (the
         loop cancels the run under the same lock before it stamps its own next request), and
         return the ``prompt_cache_clock`` column for its token row. A reply to a prefix a
         compaction or route switch has since replaced is accounted but certifies nothing: the
         event is stamped with the arm-time witness, so a rewrite committing even now leaves the
         clock unknown rather than vouching for the new prefix."""
-        from agent.prompt_cache_clock import attempt_facts, record_cache_response
+        from agent.prompt_cache_clock import attempt_facts, record_cache_response, response_upstream
         from agent.turn_usage import cache_clock_column
 
         agent, b = self.agent, run.billing
@@ -690,7 +747,7 @@ class PromptCacheWarmer:
             attempt = dict(attempt_facts(run.api_kwargs) or {}, sent_at=sent_at, replay=True)
             event = record_cache_response(agent, canonical, model=b["model"], provider=b["provider"],
                                           base_url=b["base_url"], api_mode=b["api_mode"], attempt=attempt,
-                                          witness=run.witness)
+                                          witness=run.witness, upstream=response_upstream(message))
         return cache_clock_column(event)
 
     def _add_to_session_totals(self, canonical: Any, amount: Optional[float]) -> None:
@@ -791,6 +848,23 @@ class PromptCacheWarmer:
         return getattr(self.agent, "log_prefix", "") or ""
 
 
+def _stable_prefix_tokens(api_kwargs: dict[str, Any], api_mode: str) -> int:
+    """Rough token size of the part of the prompt every request of the session shares: the system prompt
+    and the tools (on Chat Completions the system message leads ``messages``)."""
+    import json
+
+    from agent.model_metadata import estimate_tokens_rough
+
+    stable: list[Any] = [api_kwargs.get("tools") or []]
+    if api_mode == "anthropic_messages":
+        stable.append(api_kwargs.get("system") or [])
+    else:
+        messages = api_kwargs.get("messages") or []
+        if messages and isinstance(messages[0], dict) and messages[0].get("role") in ("system", "developer"):
+            stable.append(messages[0])
+    return estimate_tokens_rough(json.dumps(stable, default=str))
+
+
 # -- agent-facing seams (each a no-op when nothing is armed) ---------------------------------------
 
 #: Session id -> the route whose keep-alive missed. A miss ends warming for the SESSION, which outlives
@@ -843,12 +917,17 @@ def session_totals_lock(agent: Any) -> Any:
 def reset_prompt_cache_session(agent: Any) -> None:
     """A fresh session (``/new``, a session switch): the old one's keep-alive miss, budget and edge
     latches no longer apply (its turn counter restarts, so a kept budget would be mistaken for the new
-    chat's). Compaction keeps the session, and the miss with it."""
+    chat's), and an adaptive ``auto`` tier starts on 5m again. Compaction keeps the session, the miss and
+    the tier with it."""
+    from agent.prompt_cache_lifecycle.tier import reset_cache_tier
+
+    reset_cache_tier(agent)
     warmer = getattr(agent, "_prompt_cache_warmer", None)
     if warmer is not None:
         warmer.cancel("session reset")
         with warmer._lock:
             warmer._missed_route = None  # a new session id: nothing remembered for it
+            warmer._miss_streak = (0, 0)
             warmer._budget, warmer._spent, warmer._compacted, warmer._offloaded = None, None, False, False
 
 

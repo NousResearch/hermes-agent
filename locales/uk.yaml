@@ -442,7 +442,8 @@ gateway:
     cache_unknown_route: "Кеш промпту: невідомо (цей провайдер не публікує термін зберігання кешу)."
     cache_unknown_runtime: "Кеш промпту: невідомо (це середовище виконання задає власні параметри кешу, яких Hermes не бачить)."
     cache_unknown_storage: "Кеш промпту: невідомо (не вдалося прочитати сховище сесії)."
-    cache_warming_off: "Keep-alive: вимк. (один промахнувся)."
+    cache_warming_off: "Keep-alive: вимк. (два промахи)."
+    cache_tier_pending: "Рівень: 5m до першої паузи довше 5 хвилин, потім 1h."
     cache_learned: "Вивчено: {rule}."
     cache_confidence:
       proven: "підтверджено"

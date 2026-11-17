@@ -3,8 +3,9 @@
 1. The cache spec follows the API spec: a request with ``cache_control`` markers is Claude rules on any
    wire or gateway (the 5m/1h it asks for is declared and trusted, a route ceiling still clamps); a
    request with none is OpenAI rules (30 minutes, renewed by a read).
-2. The first keep-alive that misses ends warming for the rest of the session: a new user message does
-   not re-arm it, a compaction does not either, a model/provider switch (a different cache) does.
+2. Two real keep-alive misses in a row end warming for the rest of the session (the first is retried;
+   a miss from another upstream or one that still read the system prefix is routing, not a real miss):
+   a new user message does not re-arm it, a compaction does not either, a model/provider switch does.
 3. While a tool call runs the cache is kept warm until it returns, past the idle budget of three,
    bounded only by the cost of the one rewrite those keep-alives prevent.
 
@@ -151,14 +152,16 @@ def test_ruling_1_a_marked_request_is_claude_rules_on_any_wire_and_an_unmarked_o
     assert (event.route_class, event.tier, event.guaranteed_until) == ("openai_spec", "30m", 2_800.0)
 
 
-def test_ruling_2_the_first_miss_ends_warming_for_the_rest_of_the_session():
+def test_ruling_2_two_real_misses_in_a_row_end_warming_for_the_rest_of_the_session():
     client = _Client(read=0, write=119_950)  # the entry was gone: the keep-alive re-wrote it
     agent = _chat(client=client)
     warmer = pcl.get_prompt_cache_warmer(agent)
     assert _respond(agent) is None
     pcl.end_turn_prompt_cache_warming(agent)
+    _fire(warmer)  # the first real miss is retried
+    assert len(client.calls) == 1 and warmer._run is not None
     _fire(warmer)
-    assert len(client.calls) == 1 and warmer._run is None
+    assert len(client.calls) == 2 and warmer._run is None
     assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "due"  # the fallthrough still runs
 
     agent._user_turn_count = 2  # the person sends another message, then goes idle again
@@ -168,7 +171,7 @@ def test_ruling_2_the_first_miss_ends_warming_for_the_rest_of_the_session():
     agent.context_compressor.compression_count = 1  # a compaction keeps the session, and its miss
     agent._user_turn_count = 3
     _respond(agent)
-    assert warmer._run is None and len(client.calls) == 1
+    assert warmer._run is None and len(client.calls) == 2
     assert warmer.status["reason"] == "prompt cache warming disabled for session: keep-alive missed"
     assert pcl.prompt_cache_warming_disabled(agent)
     assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact != "budget_not_spent"  # steps 2/3 still decide

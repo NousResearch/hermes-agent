@@ -77,6 +77,117 @@ def test_normalized_twin_of_reply_counts_as_present(kept_shape):
     _assert_no_same_role_adjacency(compressed)
 
 
+def test_older_assistant_at_slot_absorbs_the_delivered_reply():
+    """#144546: the engine kept an older assistant row ("noted") exactly where the delivered reply
+    would go. Inserting a peer would create assistant;assistant, so the delivered TEXT is merged
+    into that older row instead of being dropped: no row is added, alternation holds, and the
+    reply the user just read is still in the context the next turn builds on."""
+    original = [
+        {"role": "user", "content": "Audit the auth module."},
+        {"role": "assistant", "content": "noted"},
+        {"role": "user", "content": "ok"},
+        {"role": "assistant", "content": REPLY, "finish_reason": "stop"},
+        {"role": "user", "content": FOLLOWER},
+    ]
+    compressed = [
+        {"role": "user", "content": SUMMARY},
+        {"role": "assistant", "content": "noted"},
+        {"role": "user", "content": FOLLOWER},
+    ]
+
+    inserted = _ensure_compressed_keeps_last_assistant_reply(original, compressed)
+
+    assert inserted is None, "the reply must not be inserted as a peer row"
+    assert len(compressed) == 3
+    _assert_no_same_role_adjacency(compressed)
+    merged = compressed[1]["content"]
+    assert merged.startswith("noted"), "the older row keeps its own text first"
+    assert REPLY.strip() in merged, "the delivered reply text must survive the compaction"
+    assert compressed[2]["content"] == FOLLOWER
+
+
+def test_parts_list_neighbour_keeps_its_shape():
+    """An engine that re-rendered the retained row as a parts list must not have it flattened to a
+    string: the delivered text joins as one more text part."""
+    original = [
+        {"role": "user", "content": "Audit the auth module."},
+        {"role": "assistant", "content": [{"type": "text", "text": "noted"}]},
+        {"role": "user", "content": "ok"},
+        {"role": "assistant", "content": REPLY, "finish_reason": "stop"},
+        {"role": "user", "content": FOLLOWER},
+    ]
+    compressed = [
+        {"role": "user", "content": SUMMARY},
+        {"role": "assistant", "content": [{"type": "text", "text": "noted"}]},
+        {"role": "user", "content": FOLLOWER},
+    ]
+
+    assert _ensure_compressed_keeps_last_assistant_reply(original, compressed) is None
+
+    merged = compressed[1]["content"]
+    assert isinstance(merged, list)
+    assert merged[0] == {"type": "text", "text": "noted"}
+    assert merged[-1] == {"type": "text", "text": REPLY.strip()}
+    _assert_no_same_role_adjacency(compressed)
+
+
+def test_neighbour_without_visible_text_is_not_rewritten():
+    """Reasoning-only rows are out of scope: an assistant neighbour with no visible content has
+    nothing to merge into, so the old skip stands and the row is left exactly as the engine built
+    it (no content invented, no row added)."""
+    original = [
+        {"role": "user", "content": "Audit the auth module."},
+        {"role": "assistant", "content": "noted"},
+        {"role": "assistant", "content": REPLY, "finish_reason": "stop"},
+        {"role": "user", "content": FOLLOWER},
+    ]
+    compressed = [
+        {"role": "user", "content": SUMMARY},
+        {"role": "assistant", "content": None},
+        {"role": "user", "content": FOLLOWER},
+    ]
+
+    assert _ensure_compressed_keeps_last_assistant_reply(original, compressed) is None
+    assert len(compressed) == 3
+    assert compressed[1]["content"] is None
+    _assert_no_same_role_adjacency(compressed)
+
+
+def test_compaction_handoff_neighbour_is_not_rewritten():
+    """The assistant row at the slot can be the engine's compaction handoff (its summary standing
+    in for the whole folded region). That row is not an older reply, so the delivered text must not
+    be folded into it: the handoff identity has to survive verbatim."""
+    original = [
+        {"role": "user", "content": "persisted question"},
+        {"role": "assistant", "content": "persisted answer"},
+        {"role": "user", "content": FOLLOWER},
+    ]
+    handoff = {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"}
+    compressed = [handoff]
+
+    assert _ensure_compressed_keeps_last_assistant_reply(original, compressed) is None
+    assert compressed == [handoff]
+    assert compressed[0]["content"] == "[CONTEXT COMPACTION] summary"
+
+
+def test_tool_call_neighbour_is_still_skipped():
+    """A tool-call assistant is a neighbour the merge must NOT touch: its row owns an atomic call
+    group, so the reply is left folded (and logged) rather than merged into the call."""
+    original = [
+        {"role": "user", "content": "Audit the auth module."},
+        {"role": "assistant", "content": REPLY, "finish_reason": "stop"},
+        {"role": "user", "content": FOLLOWER},
+    ]
+    compressed = [
+        {"role": "user", "content": SUMMARY},
+        *_tool_chain("call_1"),
+    ]
+
+    assert _ensure_compressed_keeps_last_assistant_reply(original, compressed) is None
+    assert [m.get("role") for m in compressed] == ["user", "assistant", "tool"]
+    assert compressed[1]["content"] is None
+    _assert_no_same_role_adjacency(compressed)
+
 
 def _tool_chain(*call_ids):
     """Content-less tool-call assistants + their ``tool`` results, one round per id."""
@@ -239,10 +350,11 @@ class TestEngineDropsReplyEndToEnd:
             "not reinserting" in r.getMessage() and skip_reason in r.getMessage() for r in caplog.records
         )
 
-    def test_older_assistant_at_slot_is_not_displaced(self, tmp_path):
-        """The engine kept an older assistant row ("noted") right where the reply would go,
-        with "ok" twins around it: reinsertion would either create assistant;assistant or
-        put the newest reply before an older one. Invariant beats recovery."""
+    def test_older_assistant_at_slot_absorbs_the_reply(self, tmp_path):
+        """The engine kept an older assistant row ("noted") right where the reply would go, with
+        "ok" twins around it. Inserting a peer would create assistant;assistant, so the delivered
+        text is merged into that row (#144546): no extra row, alternation intact, and the reply the
+        user just read is still in the active set."""
         fold = [
             {"role": "user", "content": SUMMARY},
             {"role": "assistant", "content": "noted"},
@@ -255,11 +367,15 @@ class TestEngineDropsReplyEndToEnd:
         out_messages = _compress(agent, messages)
 
         live = db.get_messages_as_conversation(session_id)
-        live_contents = [m.get("content") for m in live]
+        live_contents = [str(m.get("content")) for m in live]
         for view in (out_messages, live):
             _assert_no_same_role_adjacency(view)
             assert view[-1].get("role") == "user"
-        # The reply is not forced in beside "noted", and chronology holds ("noted" still
-        # precedes the last "ok" that followed it).
+        # One assistant row, not two: the reply never becomes a peer of "noted".
         assert _count_reply(live) == 0
-        assert live_contents.index("noted") < len(live_contents) - 1 == live_contents.index("ok")
+        # ...but the text the user read survives inside the row that took its slot, before the
+        # last "ok" that followed it (chronology holds).
+        absorbed = [i for i, content in enumerate(live_contents) if "noted" in content]
+        assert len(absorbed) == 1
+        assert REPLY.strip() in live_contents[absorbed[0]]
+        assert absorbed[0] < live_contents.index("ok", absorbed[0])

@@ -48,7 +48,7 @@ AdmissionId = NewType("AdmissionId", str)
 
 
 class AdmissionIntent(StrEnum):
-    """The stored ``intent`` strings; records carry the plain string."""
+    """The stored ``intent`` strings; ``AdmissionRecord.intent`` carries the member."""
 
     QUEUE = "queue"
     STEER = "steer"
@@ -56,7 +56,7 @@ class AdmissionIntent(StrEnum):
 
 
 class AdmissionStatus(StrEnum):
-    """The stored ``status`` strings; records carry the plain string."""
+    """The stored ``status`` strings; ``AdmissionRecord.status`` carries the member."""
 
     QUEUED = "queued"
     STARTED = "started"
@@ -65,7 +65,7 @@ class AdmissionStatus(StrEnum):
 
 
 class AdmissionOutcome(StrEnum):
-    """The stored ``outcome`` strings; records carry the plain string (``None`` until terminal)."""
+    """The ``outcome`` strings the store writes; records carry the stored string (``None`` until terminal), which compares equal to its member."""
 
     COMPLETED = "completed"
     INTERRUPTED = "interrupted"
@@ -96,11 +96,17 @@ class AdmissionRecord:
     principal_id: str
     target_session_id: str
     payload: Mapping[str, Any]
-    intent: str
-    status: str
+    intent: AdmissionIntent
+    status: AdmissionStatus
     outcome: str | None
     owner_epoch: int | None
     generation: int | None
+
+    def __post_init__(self) -> None:
+        # The stored intent and status are CHECK-constrained sets: built from a row they become their enums (equal to the
+        # strings), and a value outside them is refused here. ``outcome`` has no CHECK, so it stays the stored string.
+        object.__setattr__(self, "intent", AdmissionIntent(self.intent))
+        object.__setattr__(self, "status", AdmissionStatus(self.status))
 
 
 @dataclass(frozen=True, slots=True)

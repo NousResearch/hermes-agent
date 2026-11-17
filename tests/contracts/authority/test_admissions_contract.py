@@ -8,6 +8,7 @@ Test-construction seams: the epoch comes from ``SessionRuntimeRepository.begin_e
 from __future__ import annotations
 
 import dataclasses
+import json
 
 
 import pytest
@@ -72,7 +73,7 @@ def _admit(backend, scope, epoch, *, request_id: str = "req-1", session_id: Sess
 
 
 def test_admission_record_is_the_row_without_digest_or_lineage():
-    # CONTRACT: the record carries the row's columns without digest and lineage, as plain strings.
+    # CONTRACT: the record carries the row's columns without digest and lineage; intent, status and outcome are their StrEnums, equal to the stored strings.
     record = AdmissionRecord(seq=1, admission_id="adm-1", request_id="req-1", principal_id=PRINCIPAL, target_session_id=SESSION,
                              payload={}, intent="queue", status="queued", outcome=None, owner_epoch=1, generation=None)
     assert [f.name for f in dataclasses.fields(record)] == [
@@ -80,6 +81,15 @@ def test_admission_record_is_the_row_without_digest_or_lineage():
     with pytest.raises(dataclasses.FrozenInstanceError):
         record.status = "started"  # type: ignore[misc]
     assert record.status == AdmissionStatus.QUEUED and record.intent == AdmissionIntent.QUEUE
+    assert type(record.status) is AdmissionStatus and type(record.intent) is AdmissionIntent
+    # The outcome column carries no CHECK on main, so a stored outcome outside AdmissionOutcome still reads back as its string.
+    settled = dataclasses.replace(record, status="terminal", outcome="completed")
+    assert settled.outcome == AdmissionOutcome.COMPLETED and json.dumps(settled.outcome) == '"completed"'
+    # CONTRACT: an intent or status outside the stored vocabulary (the columns' CHECK sets) is refused where the record is built.
+    with pytest.raises(ValueError):
+        dataclasses.replace(record, status="finished")
+    with pytest.raises(ValueError):
+        dataclasses.replace(record, intent="later")
 
 
 # ── admit ─────────────────────────────────────────────────────────────────────

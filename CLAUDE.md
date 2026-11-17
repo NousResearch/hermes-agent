@@ -712,8 +712,16 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   process, and with none an `UnreadableConfig` deny sentinel (writes and
   posts refused, write guard + 4e ON, autonomy `off`, inbound ignored). A
   missing file is "not configured" only if no good parse was ever seen.
+  **Sticky until restart:** once a path parsed with the write guard,
+  `agent_write_guard` or a posting list on, a later parse that drops or
+  disables it (an indentation slip, a partial read of an in-place save)
+  keeps the earlier value, logging an ERROR — an admin turns a guard off by
+  editing AND restarting the gateway. Versions are keyed on mtime, ctime,
+  inode and size; only a strictly newer version replaces the last good one.
   Logged at ERROR once per file version. Gated ingress also fails closed on
-  any exception.
+  any exception, 4e (`agent_write_guard`) denies when its own check errors
+  and protects the realpath of a symlinked config.yaml, and `github_pr`
+  reads its repo policy through the same reader.
 - **Notion write guard** — [tools/notion_write_guard.py](tools/notion_write_guard.py),
   enforced inside `notion_api` (before `ntn` runs) AND in the `model_tools`
   execution backstop, fail-closed. Config under the profile's
@@ -741,14 +749,19 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   itself writable (Notion updates the other side — otherwise editing a Draft
   row could rewrite an Approved row's links); `single_property` relations
   don't write the far side and aren't checked. The one way into a PRD: a
-  Draft Release Kit row's `prd_relation_property` may be **set once** (from
-  empty) to PRD pages — never removed or repointed, since that link decides
-  which tickets gate the release's posts; if two-way, its PRD side must be
-  exactly `prds.back_relation_property`. Create bodies need exactly one
+  Release Kit row's `prd_relation_property` may be set **only in that row's
+  create body**, to PRD pages — never added, removed or repointed by a
+  PATCH, since that link decides which tickets gate the release's posts (a
+  missing or wrong link is fixed by the team); if two-way, its PRD side must
+  be exactly `prds.back_relation_property`. Create bodies need exactly one
   parent id key (matching `parent.type`); `synced_from` / synced blocks are
   refused.
   `allow_deleting_content` (markdown `replace_content`) and `child_database`
-  anywhere in a body are refused. **The guard requires `agent_write_guard`**
+  anywhere in a body are refused, as is any markdown (a create body's
+  `markdown`, the `pages/<id>/markdown` endpoint) containing an
+  object-creating enhanced-markdown tag (`<page`, `<database`,
+  `<data-source`, `<synced…`, `<mention-…`) — conservative, not verified
+  tag-by-tag against Notion's spec. **The guard requires `agent_write_guard`**
   (4e) in the same config.yaml — without it the block is invalid (deny all
   writes), since the agent could edit its own rules. Known gap: a human
   changing a row between the guard's page GET and the write. Reads (GET, `search`,
@@ -760,7 +773,8 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   `zendesk_create_draft` and gated posting share `autonomy_precondition`
   (guard enforcing AND `agent_write_guard` on) for every level but `off`.
   Autonomy actions `advance_asset_status` / `ideas_accept_own` are built for
-  `off` only; any other value breaks the guard closed.
+  `off` only; any other value breaks the guard closed. (A bare YAML `off`
+  parses as `False`; `resolve_level` reads that as `off`.)
 - **Posting policy** — [agent/slack_post_policy.py](agent/slack_post_policy.py):
   `slack.post_allowed_channels` (when set, the only channels
   `slack_post_thread` and **cron delivery** reach — `_apply_post_policy` in
@@ -784,9 +798,15 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   act on a not-yet-Approved row only from `pre_approval_statuses`, default
   Draft / In review — a rejected row never posts). The gating Jira keys come
   **only from the linked PRD** — `prd_relation_path` (default `[Release,
-  PRD]`) to pages in the PRD data source (`release_updates.prd_data_sources`,
-  else `notion.write_guard.prds.data_sources`), its `prd_jira_property`
-  (`JIRA`) — never from the agent-drafted row; each must be in
+  <release_kits.prd_relation_property>]`, and it must end with that guard
+  property) to pages in `notion.write_guard.prds.data_sources`, its
+  `prd_jira_property` (`JIRA`) — never from the agent-drafted row. Every row
+  between the asset and the PRD (the Release row) must be in
+  `release_kits.data_sources` and **moved past Draft** by the team (while
+  Draft the agent could still edit it). The kit and PRD data sources come
+  only from the write guard (`release_updates.prd_data_sources` is refused;
+  the Release Assets data source must be one of the guard's kit sources);
+  an inconsistent or invalid guard refuses posting and is a startup error. each must be in
   `jira_done_statuses` (default `Done`), read with `get_secret` creds and
   `jira_api_tool._jira_request`. No PRD, no key, or a truncated relation
   refuses; veto/auto also need the PRD's `Release Comms Status = In
@@ -800,8 +820,11 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   an `in_flight` ledger entry is written BEFORE the Slack call, so a failure
   after it starts (a timeout after Slack accepted it) blocks the row until an
   operator checks Slack and removes
-  `autonomy/ledger/post_release_update/<row>.json`; a Slack `ok: false`
-  (`SlackRejected`) clears it. A failed writeback is recorded and retried by
+  `autonomy/ledger/post_release_update/<row>.json`. Only a DEFINITE pre-send
+  failure clears it (`SlackRejected`: HTTP 200 + `ok: false` + an error in
+  `DEFINITE_SLACK_FAILURES` such as `not_in_channel` / `ratelimited`);
+  `internal_error`, `fatal_error`, non-JSON or non-200 replies keep it. The
+  bot token is resolved before the in-flight entry is written. A failed writeback is recorded and retried by
   the next call, never reposted. Veto: announced in
   `autonomy.announce_channel` with the PRD(s), the ticket set and the FULL
   text it will post (all three are in the veto sha, so a change is `stale`),

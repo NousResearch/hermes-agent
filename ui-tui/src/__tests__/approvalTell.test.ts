@@ -32,6 +32,18 @@ describe('"No, and tell Hermes what to do instead" (#25693)', () => {
     expect(approvalRows({ ...req, choices: ['once', 'session'] })).toEqual(['once', 'session'])
   })
 
+  it('shows the local hold option only when the gateway offers it', () => {
+    expect(approvalRows({ ...req, choices: ['once', 'deny', 'session', 'always', 'hold'] })).toEqual([
+      'once',
+      'session',
+      'always',
+      'deny',
+      'hold',
+      'tell'
+    ])
+    expect(approvalRows({ ...req, choices: ['once', 'deny'] })).toEqual(['once', 'deny', 'tell'])
+  })
+
   it('steers the instruction into the running turn and queues nothing', async () => {
     const rpc = vi.fn(async () => ({ status: 'queued' }))
     const enqueue = vi.fn()

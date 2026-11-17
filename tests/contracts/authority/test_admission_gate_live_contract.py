@@ -1,6 +1,6 @@
 """The admission gate as a callable, read inside the write.
 
-Main re-checks the owner's drain inside the write transaction, so a drain that began while a write waited on the writer still refuses it. ``gate`` may therefore be a zero-argument callable returning ``GateRefusal | None``: it reads owner memory only (never the store) and the backend calls it at the gate's fixed point inside the write, on every attempt. These cases flip the callable's answer after the call starts but before the write's gate point, by flipping it from inside the write's own first read.
+A drain that begins while a write waits on the writer still refuses it, so ``gate`` may be a zero-argument callable returning ``GateRefusal | None``: it reads owner memory only (never the store) and the backend calls it at the gate's fixed point inside the write, on every attempt. These cases flip the callable's answer after the call starts but before the write's gate point, by flipping it from inside the write's own first read.
 """
 
 from __future__ import annotations

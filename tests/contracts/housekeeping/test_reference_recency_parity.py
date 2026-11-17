@@ -46,5 +46,5 @@ def test_started_at_is_only_the_fallback_when_no_activity_or_message_stamp_exist
     for sid in ("imported-history", "no-messages"):
         store_a.sessions.end(sid, "done")
     criteria = PruneCriteria(last_active_before=(now - timedelta(days=1)).timestamp())
-    # CONTRACT: recency is the freshest of the activity stamp and the newest message stamp, and started_at only when neither exists (main's COALESCE(MAX(activity, newest message), started_at)): a row started an hour ago whose newest message is ten days old matches a one-day cutoff; a row with no message falls back to its recent start and does not.
+    # CONTRACT: recency is the freshest of the activity stamp and the newest message stamp, and started_at only when neither exists: a row started an hour ago whose newest message is ten days old matches a one-day cutoff; a row with no message falls back to its recent start and does not.
     assert [row.session_id for row in store_a.maintenance.list_prune_candidates(criteria=criteria)] == ["imported-history"]

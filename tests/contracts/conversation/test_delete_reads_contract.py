@@ -23,7 +23,7 @@ def test_a_deleted_sessions_transcript_and_usage_are_gone(backend, scope_a):
     assert store_a.usage.flush_usage()
     before = store_a.usage.usage_totals().tokens
     store_a.sessions.delete(gone, media_root=MEDIA_ROOT)
-    # CONTRACT: a delete removes the session's messages with its row, as main deletes its messages; nothing of the deleted conversation stays readable.
+    # CONTRACT: a delete removes the session's messages with its row; nothing of the deleted conversation stays readable.
     assert store_a.messages.read_transcript(gone) == ()
     # CONTRACT: usage totals read only stored sessions, so the deleted session's tokens leave them; the kept session's stay.
     assert store_a.usage.usage_totals().tokens == before - 100

@@ -155,7 +155,7 @@ class InMemoryProfileIdentityRepository:
             return ProfileRekeyCounts()
         old_ns, new_ns = profile_namespace(old), profile_namespace(new)
         self._check_collisions(old, new, old_ns, new_ns)
-        # One write, as main's rename is one transaction: a failure anywhere (the receipts' publish included) restores every facet.
+        # One write: a failure anywhere (the receipts' publish included) restores every facet.
         with authority_state(self._backend, self._backend.scope).guarded():
             return self._rekey_all(old, new, old_ns, new_ns)
 

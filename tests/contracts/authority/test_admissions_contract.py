@@ -82,7 +82,7 @@ def test_admission_record_is_the_row_without_digest_or_lineage():
         record.status = "started"  # type: ignore[misc]
     assert record.status == AdmissionStatus.QUEUED and record.intent == AdmissionIntent.QUEUE
     assert type(record.status) is AdmissionStatus and type(record.intent) is AdmissionIntent
-    # The outcome column carries no CHECK on main, so a stored outcome outside AdmissionOutcome still reads back as its string.
+    # The outcome column is not constrained to a set, so a stored outcome outside AdmissionOutcome still reads back as its string.
     settled = dataclasses.replace(record, status="terminal", outcome="completed")
     assert settled.outcome == AdmissionOutcome.COMPLETED and json.dumps(settled.outcome) == '"completed"'
     # CONTRACT: an intent or status outside the stored vocabulary (the columns' CHECK sets) is refused where the record is built.

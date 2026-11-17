@@ -19,7 +19,7 @@ def test_a_rename_that_fails_at_publish_moves_nothing(backend, scope_a):
     state.failpoints.arm(state.PUBLISH)
     with pytest.raises(InjectedFailure):
         store_a.profile_identity.rekey_profile(OLD, NEW)
-    # CONTRACT: a rename is one write, as main's is one transaction; a failure at publish leaves the session, routing, topic and receipt facets all under the old name.
+    # CONTRACT: a rename is one write; a failure at publish leaves the session, routing, topic and receipt facets all under the old name.
     assert keys_of(backend, scope_a, OLD, "t1") == before
     assert (store_a.bindings.api_binding(api_sid), store_a.bindings.receipt(local_sid)) == receipts
     assert before["session"][0].startswith(profile_namespace(OLD) + f"{NS}:")

@@ -130,8 +130,7 @@ class SessionDeleteMixin:
             del workers[execution_id]
         for sid in doomed:
             sessions.pop(sid, None)
-        # Main deletes the rows' messages with them, and its session_model_usage rows cascade on the row's delete:
-        # the deleted conversation's transcript and usage leave in the same transition.
+        # A deleted conversation's messages and usage rows leave with its row, in the same transition.
         messages = staged_scope.get("messages", {})
         usage = staged_scope.get("usage", {})
         for sid in doomed:

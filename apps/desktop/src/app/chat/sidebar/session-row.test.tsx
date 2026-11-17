@@ -204,6 +204,31 @@ describe('SidebarSessionRow running arc', () => {
   })
 })
 
+// The activity subtitle is the turn's last durable stamp, and only a live row
+// shows it — an idle row with a stale label must keep its legacy layout.
+describe('SidebarSessionRow activity subtitle', () => {
+  afterEach(() => {
+    clearAllSessionStates()
+  })
+
+  const subtitle = (container: HTMLElement) => container.querySelector('[data-session-activity]')
+  const described = { last_activity_description: 'executing tool: terminal', title: 'Busy' }
+
+  it('shows what a working session is doing under its title', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    const { container } = renderRow(makeSession(described))
+
+    expect(subtitle(container)?.textContent).toBe('executing tool: terminal')
+  })
+
+  it('leaves an idle row unchanged even when a stale label is stored', () => {
+    const { container } = renderRow(makeSession(described))
+
+    expect(subtitle(container)).toBeNull()
+  })
+})
+
 describe('SidebarSessionRow', () => {
   afterEach(() => {
     vi.useRealTimers()

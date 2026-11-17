@@ -3431,6 +3431,7 @@ export interface SessionActiveItem {
   started_at: number
   status: LiveSessionStatus
   title: string
+  activity?: string | null
 }
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working' | 'streaming' | 'resuming'
 /** ``session_id`` is the STORED id. */

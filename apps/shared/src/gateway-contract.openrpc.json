@@ -37064,6 +37064,18 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "activity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Activity"
           }
         },
         "required": [

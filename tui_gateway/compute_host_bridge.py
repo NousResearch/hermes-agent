@@ -137,6 +137,7 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                     if (session.get("running") and params.get("turn_id")
                             and session.get("_compute_host_turn_id") == params["turn_id"]):
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
+                        session["_compute_host_activity_desc"] = str(params.get("description") or "")
         return True  # Internal observation, not a client event or replay entry.
     if (isinstance(message, dict) and message.get("method") == "event" and isinstance(params, dict)
             and not params.get("session_id")):
@@ -330,6 +331,7 @@ def _submit_prompt_to_compute_host(
     with session["history_lock"]:
         session["_compute_host_turn_id"] = turn_id
         session.pop("_compute_host_activity_ns", None)
+        session.pop("_compute_host_activity_desc", None)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure via the callback before re-raising;
@@ -340,6 +342,7 @@ def _submit_prompt_to_compute_host(
                     return
                 session.pop("_compute_host_turn_id", None)
                 session.pop("_compute_host_activity_ns", None)
+                session.pop("_compute_host_activity_desc", None)
             _on_compute_host_turn_done(rid, sid, session, done)
     try:
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
@@ -348,6 +351,7 @@ def _submit_prompt_to_compute_host(
             if session.get("_compute_host_turn_id") == turn_id:
                 session.pop("_compute_host_turn_id", None)
                 session.pop("_compute_host_activity_ns", None)
+                session.pop("_compute_host_activity_desc", None)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
         session["_compute_host_active"] = True

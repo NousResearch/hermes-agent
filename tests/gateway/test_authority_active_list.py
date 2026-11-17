@@ -63,6 +63,30 @@ async def test_a_running_turn_reads_working_until_it_settles(owner):
 
 
 @pytest.mark.asyncio
+async def test_a_working_row_carries_its_activity_stamp(owner):
+    # Desktop's working-row subtitle: the list endpoints are not re-read on an activity heartbeat.
+    owner.authority.db.touch_session_activity('chat', description='executing tool: terminal')
+    assert 'activity' not in (await owner.active())['chat']
+    await owner.submit('hi')
+    owner.authority.db.touch_session_activity('chat', description='executing tool: terminal')
+    assert (await owner.active())['chat']['activity'] == 'executing tool: terminal'
+
+
+@pytest.mark.asyncio
+async def test_a_compressed_turn_reads_its_activity_off_the_continuation(owner, monkeypatch):
+    # After compression the agent stamps the continuation and the ended root's label is cleared.
+    db = owner.authority.db
+    db.create_session('chat-tip', source='telegram', parent_session_id='chat')
+    db.touch_session_activity('chat-tip', description='tool running: terminal')
+    real_tip = type(db)._compression_tip_on
+    # Stand-in for a published rotation: the chain walk itself is covered in tests/hermes_state.
+    monkeypatch.setattr(type(db), '_compression_tip_on',
+                        lambda self, conn, sid: 'chat-tip' if sid == 'chat' else real_tip(self, conn, sid))
+    await owner.submit('hi')
+    assert (await owner.active())['chat']['activity'] == 'tool running: terminal'
+
+
+@pytest.mark.asyncio
 async def test_a_row_names_its_source(owner):
     # Desktop's poll can see a messaging turn settle before its messaging row loads; the source
     # on the live row is what keeps that settle from reading as a Desktop completion.

@@ -592,6 +592,11 @@ export interface SessionInfo {
   actual_cost_usd?: null | number
   estimated_cost_usd?: null | number
   is_active: boolean
+  /** What the running turn was last doing (`sessions.last_activity_description`,
+   *  e.g. "executing tool: terminal"), bounded server-side. Cleared when the
+   *  turn ends, so it is only meaningful while the row reads working/stalled.
+   *  Undefined against older backends. */
+  last_activity_description?: null | string
   /** Cron run rows only (`source === 'cron'`): the scheduler still OWNS this
    *  never-closed run — its in-flight execution is held by a live process.
    *  Unlike {@link is_active} (a 300s activity window) it stays true through a

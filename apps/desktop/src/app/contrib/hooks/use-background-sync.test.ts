@@ -16,6 +16,7 @@ import {
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
+import { $liveActivityBySession } from '@/store/session-live-activity'
 import {
   $attentionSessionIds,
   $sessionTiles,
@@ -34,6 +35,7 @@ import {
   reconcileActiveTranscript,
   reconcileTileTranscripts as reconcileTileTranscriptsForTest,
   rehydrateLiveSessionStatuses,
+  resetLiveRuntimeTracking,
   resetTypingActivityTracking,
   resolveActiveTranscriptSession,
   TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS,
@@ -1245,6 +1247,24 @@ describe('rehydrateLiveSessionStatuses', () => {
     expect($workingSessionIds.get()).toEqual([])
     expect($attentionSessionIds.get()).toEqual([])
     expect($stalledSessionIds.get()).toEqual([])
+  })
+
+  // The sidebar subtitle reads this map: the session list is not re-read on an
+  // activity heartbeat, so the live snapshot is what moves it mid-turn.
+  it('tracks what each working turn is doing, and drops it when the turn ends', () => {
+    const working = { id: 'runtime-busy', session_key: 'busy', status: 'working' as const }
+
+    rehydrateLiveSessionStatuses({ sessions: [{ ...working, activity: 'starting new turn' }] }, Date.now(), 'p')
+    rehydrateLiveSessionStatuses({ sessions: [{ ...working, activity: 'tool running: terminal' }] }, Date.now(), 'p')
+    // Another profile's snapshot owns its own bucket: the same stored id there is a different chat.
+    rehydrateLiveSessionStatuses({ sessions: [{ ...working, activity: 'reading files' }] }, Date.now(), 'q')
+    expect($liveActivityBySession.get()).toEqual({ p: { busy: 'tool running: terminal' }, q: { busy: 'reading files' } })
+
+    rehydrateLiveSessionStatuses({ sessions: [{ ...working, status: 'idle' }] }, Date.now(), 'p')
+    expect($liveActivityBySession.get()).toEqual({ p: {}, q: { busy: 'reading files' } })
+
+    resetLiveRuntimeTracking()
+    expect($liveActivityBySession.get()).toEqual({})
   })
 })
 

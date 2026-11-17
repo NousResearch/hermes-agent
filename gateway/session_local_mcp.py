@@ -126,6 +126,13 @@ def _frozen_toolset(data, toolset):
     return toolset.startswith(f"mcp-editor_{hashlib.sha256(data['scope'].encode()).hexdigest()[:20]}_")
 
 
+def _spawn_cwd(policy):
+    """The directory an editor's stdio server starts in. These servers run on THIS host, so a remote
+    backend's cwd (a path on the ssh target) is no directory for them: they inherit the daemon's."""
+    from gateway.session_policy import terminal_uses_host_cwd
+    return policy.cwd if terminal_uses_host_cwd(json.loads(policy.terminal_json)) else None
+
+
 def _configs(servers, names, cwd):
     configs = {}
     for i, name in names.items():
@@ -247,7 +254,7 @@ def rebind_editor_mcp(authority, sid, policy, servers):
             # Fresh discovery: a held connection keeps the schemas it was first frozen with.
             _disconnect(held, scope)
         names = _server_names(scope, servers)
-        with _borrowed(authority, scope, servers, names, policy.cwd, partial=True) as (schemas, connected):
+        with _borrowed(authority, scope, servers, names, _spawn_cwd(policy), partial=True) as (schemas, connected):
             for i in sorted(set(names) - set(connected)):
                 logger.warning("Editor MCP server %r failed discovery; session %s continues without it",
                                servers[i].get('name'), sid)
@@ -423,7 +430,7 @@ async def _refreeze(authority, ref):
 
     def probe():
         names = _frozen_names(data, servers)
-        with _borrowed(authority, data['scope'], servers, names, policy.cwd, partial=True) as (schemas, connected):
+        with _borrowed(authority, data['scope'], servers, names, _spawn_cwd(policy), partial=True) as (schemas, connected):
             complete = len(connected) == len(names)
             # A held connection keeps the registry schemas it was discovered with: ask the server.
             return schemas, complete, complete and _live_tools_changed(data['scope'], names)
@@ -503,7 +510,7 @@ def editor_mcp_scope(authority, policy):
     servers = getattr(authority, '_local_editor_mcp', {}).get(data['scope'])
     if servers is None:
         raise AuthorityRefusal('launch_credentials_unavailable')
-    with _borrowed(authority, data['scope'], servers, _frozen_names(data, servers), policy.cwd) as (schemas, _):
+    with _borrowed(authority, data['scope'], servers, _frozen_names(data, servers), _spawn_cwd(policy)) as (schemas, _):
         if schemas != data['schemas']:
             # Drift is re-frozen by the drain before a claim; inside an execution the manifest never changes.
             raise AuthorityRefusal('acp_mcp_schema_changed')

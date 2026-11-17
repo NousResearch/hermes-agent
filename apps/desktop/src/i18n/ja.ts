@@ -2145,6 +2145,14 @@ export const jaOverrides = {
     copyPath: 'パスをコピー'
   },
 
+  hostedArtifact: {
+    untitled: 'アーティファクト',
+    version: version => `バージョン ${version}`,
+    newerVersion: version => `バージョン ${version} があります`,
+    openViewer: 'ビューアで開く',
+    linkOnly: 'このアーティファクトはビューアで表示できます。',
+    frameTitle: title => `アーティファクト: ${title}`
+  },
   artifactCard: {
     kind: { code: 'コード', html: 'インタラクティブページ', svg: 'グラフィック' },
     generating: lines => `生成中… ${lines} 行`,

@@ -2405,6 +2405,14 @@ export const ruOverrides = {
     copyPath: 'Копировать путь'
   },
 
+  hostedArtifact: {
+    untitled: 'Артефакт',
+    version: version => `Версия ${version}`,
+    newerVersion: version => `Доступна версия ${version}`,
+    openViewer: 'Открыть в просмотрщике',
+    linkOnly: 'Откройте просмотрщик, чтобы увидеть этот артефакт.',
+    frameTitle: title => `Артефакт: ${title}`
+  },
   artifactCard: {
     kind: { code: 'Код', html: 'Интерактивная страница', svg: 'Графика' },
     generating: lines => `Генерация… ${lines} ${RU_NOUN(lines, 'строка', 'строки', 'строк')}`,

@@ -3610,6 +3610,14 @@ export const frOverrides = {
     copyUrl: "Copier l'URL",
     copyPath: 'Copier le chemin'
   },
+  hostedArtifact: {
+    untitled: 'Artefact',
+    version: version => `Version ${version}`,
+    newerVersion: version => `Version ${version} disponible`,
+    openViewer: 'Ouvrir dans la visionneuse',
+    linkOnly: 'Ouvrez la visionneuse pour voir cet artefact.',
+    frameTitle: title => `Artefact : ${title}`
+  },
   artifactCard: {
     kind: {
       code: 'Code',

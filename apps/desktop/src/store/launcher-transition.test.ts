@@ -117,3 +117,72 @@ describe("the launcher's status decides whether a drop is planned", () => {
     expect(backendTransitionFor('work')).toMatchObject({ kind: 'stopping', source: 'switch' })
   })
 })
+
+// The launcher's answer describes the moment it was asked. Whatever happened to the profile's
+// transition while the request was out (a switch began, the socket opened, the profile left the
+// launcher) stands: the late answer publishes nothing.
+describe("a launcher answer that arrives late never replaces the profile's newer state", () => {
+  function pendingStatus() {
+    let answer: (status: { state: string }) => void = () => undefined
+
+    api.hermesApi.mockReturnValueOnce(new Promise<{ state: string }>(resolve => (answer = resolve)))
+
+    return (state: string) => answer({ state })
+  }
+
+  it('the first probe: a switch that began while it was out keeps its state and gets no launcher poll', async () => {
+    const answer = pendingStatus()
+    const probe = probeLauncherTransition('work')
+
+    beginBackendTransition('work', 'stopping', { source: 'switch' })
+    answer('restarting')
+
+    await expect(probe).resolves.toBe(true)
+    expect(backendTransitionFor('work')).toMatchObject({ kind: 'stopping', source: 'switch' })
+    await vi.advanceTimersByTimeAsync(LAUNCHER_POLL_MS * 3)
+    expect(api.hermesApi).toHaveBeenCalledTimes(1)
+  })
+
+  it('the first probe: a profile that left the launcher while it was out starts no transition', async () => {
+    const answer = pendingStatus()
+    const probe = probeLauncherTransition('work')
+
+    $profileRemoteOverrides.set({})
+    answer('stopping')
+
+    await expect(probe).resolves.toBe(false)
+    expect(backendTransitionFor('work')).toBeNull()
+  })
+
+  it('the watched poll: a switch that began while it was out keeps its state, and is not reconnected', async () => {
+    for (const late of ['restarting', 'running']) {
+      api.hermesApi.mockResolvedValueOnce({ state: 'restarting' })
+      const onReady = vi.fn()
+      await probeLauncherTransition('work', onReady)
+
+      const answer = pendingStatus()
+      await vi.advanceTimersByTimeAsync(LAUNCHER_POLL_MS)
+      beginBackendTransition('work', 'stopping', { source: 'switch' })
+      answer(late)
+      await vi.advanceTimersByTimeAsync(LAUNCHER_POLL_MS * 3)
+
+      expect(backendTransitionFor('work')).toMatchObject({ kind: 'stopping', source: 'switch' })
+      expect(onReady).not.toHaveBeenCalled()
+      resetBackendTransitionsForTests()
+    }
+  })
+
+  it('the watched poll: a state the open socket ended while it was out does not come back', async () => {
+    api.hermesApi.mockResolvedValueOnce({ state: 'restarting' })
+    await probeLauncherTransition('work')
+
+    const answer = pendingStatus()
+    await vi.advanceTimersByTimeAsync(LAUNCHER_POLL_MS)
+    endLauncherTransitionOnOpen('work')
+    answer('restarting')
+    await vi.advanceTimersByTimeAsync(LAUNCHER_POLL_MS * 3)
+
+    expect(backendTransitionFor('work')).toBeNull()
+    expect(api.hermesApi).toHaveBeenCalledTimes(2)
+  })
+})

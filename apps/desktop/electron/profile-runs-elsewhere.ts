@@ -33,8 +33,9 @@ function markedProfiles(dir: string): Error | Set<string> {
         .map(name => name.slice(0, -'.json'.length))
     )
   } catch (error) {
-    // Missing, not a folder, or not listable (the backend a plugin runs elsewhere): nothing is marked.
-    return ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(errorCode(error)) ? new Set() : (error as Error)
+    // Missing, or not listable (the backend a plugin runs elsewhere is denied the folder): nothing is
+    // marked. Any other error, a file in the folder's place included, marks every profile, as in core.
+    return ['ENOENT', 'EACCES', 'EPERM'].includes(errorCode(error)) ? new Set() : (error as Error)
   }
 }
 
@@ -42,7 +43,8 @@ function markedProfiles(dir: string): Error | Set<string> {
  * The marker for `profile`, or null when nothing marks it. Fails closed the way
  * core does: a marker that cannot be read or parsed still marks the profile
  * (its plugin is just unknown), and a marker folder that fails to list for any
- * reason other than missing or permission denied marks every profile.
+ * reason other than missing or permission denied (a file in its place, an I/O
+ * error) marks every profile.
  */
 export function readRunElsewhereMarker(
   hermesRoot: string,

@@ -191,12 +191,16 @@ describe('desktop plugin root', () => {
     write(path.join(home, 'profiles', 'work', 'plugins', 'planted', 'desktop', 'plugin.js'), 'export default {}')
     write(path.join(home, 'profiles', 'work', 'desktop-plugins', 'scoped', 'plugin.js'), 'export default {}')
     write(path.join(home, 'profiles', 'other', 'plugins', 'fine', 'desktop', 'plugin.js'), 'export default {}')
+    write(path.join(home, 'profiles', 'other', 'desktop-plugins', 'moved', 'plugin.js'), 'export default {}')
+    // The scan's caller creates the app root first (fs-ipc.ts desktopPluginsRoot); without it nothing can move.
+    fs.mkdirSync(appRoot)
 
     const isLaunched = (profile: string) => profile === 'work'
 
     await migrateProfileScopedDesktopPlugins(home, appRoot, isLaunched)
     const touched = await reconcileUnifiedDesktopHalves(home, appRoot, isLaunched)
 
+    expect(fs.existsSync(path.join(appRoot, 'moved', 'plugin.js'))).toBe(true)
     expect(touched.map(dir => path.basename(dir)).sort()).toEqual(['fine', 'safe'])
     expect(fs.existsSync(path.join(appRoot, 'planted'))).toBe(false)
     expect(fs.existsSync(path.join(appRoot, 'scoped'))).toBe(false)
@@ -242,12 +246,18 @@ describe('profiles_run_elsewhere marker', () => {
     write(path.join(root, PROFILES_RUN_ELSEWHERE_DIR, 'default.json'), 'not json')
     expect(readRunElsewhereMarker(root, 'default')).toEqual({ plugin: null })
     expect(readRunElsewhereMarker(root, '')).toEqual({ plugin: null })
+  })
 
-    // A file where the folder should be marks nothing (core: NotADirectoryError).
-    const fileRoot = tempDir('hermes-run-elsewhere-file-')
+  it('marks every profile when a file sits where the marker folder belongs, as core does', () => {
+    const root = tempDir('hermes-run-elsewhere-file-')
 
-    write(path.join(fileRoot, PROFILES_RUN_ELSEWHERE_DIR), 'a file, not a folder')
-    expect(readRunElsewhereMarker(fileRoot, 'work')).toBeNull()
+    // A missing folder marks nothing. A file in its place cannot be listed, so the app cannot tell
+    // which profiles it may start (core: NotADirectoryError refuses every profile).
+    write(path.join(root, PROFILES_RUN_ELSEWHERE_DIR), 'a file, not a folder')
+
+    expect(readRunElsewhereMarker(root, 'work')).toEqual({ plugin: null })
+    expect(readRunElsewhereMarker(root, 'default')).toEqual({ plugin: null })
+    expect(() => assertProfileMayRunLocally(root, 'work')).toThrow(/"work" runs through a plugin,/)
   })
 
   it('refuses a local start of a marked profile, naming the profile and the plugin', () => {
@@ -322,6 +332,63 @@ describe('the host for a launched profile', () => {
     expect(await host.rosterBackend('remote', async () => 'registry-backend')).toBe('registry-backend')
     expect(ensureProfileBackend).toHaveBeenCalledWith('zed')
     expect(startPrimary).not.toHaveBeenCalled()
+  })
+
+  it('lists from a profile that runs on this computer, never from one connected to a remote host', async () => {
+    const { ensureProfileBackend, home, host } = hostFor(
+      {
+        profiles: {
+          default: launchedConfig().profiles.work,
+          notes: { mode: 'remote', url: 'https://box.example', token: TOKEN },
+          ops: { mode: 'ssh', host: 'box.example' }
+        }
+      },
+      'default'
+    )
+
+    fs.mkdirSync(path.join(home, 'profiles', 'ops'))
+
+    // "notes" and "ops" come first by name, but their backends are on another computer.
+    expect(await host.ensureHostBackend()).toBe('work-backend')
+    expect(ensureProfileBackend.mock.calls).toEqual([['work']])
+
+    fs.rmSync(path.join(home, 'profiles', 'work'), { recursive: true })
+    await expect(host.ensureHostBackend()).rejects.toThrow(/runs through a plugin or connects to a remote host/)
+  })
+
+  it('answers a listing pinned to "This device" too, and leaves a pinned remote connection alone', async () => {
+    const { fetchJson, host, startPrimary } = hostFor(launchedConfig(), 'default')
+    const dial = vi.fn(async () => 'this-device-backend')
+    const pinned = (kind: string) => ({ dial, kind: () => kind })
+
+    // This device's own backend answers, as the registry resolves it (the v1 primary can be remote).
+    expect(await host.answer({ path: '/api/profiles', profile: 'work' }, pinned('local'))).toEqual({
+      backend: 'this-device-backend',
+      requestPath: '/api/profiles'
+    })
+    expect(await host.answer({ path: '/api/profiles/active', profile: 'work' }, pinned('local'))).toEqual({
+      active: 'default',
+      current: 'work'
+    })
+    expect(startPrimary).not.toHaveBeenCalled()
+
+    // A registered gateway on another computer lists its own profiles, a same-named one included.
+    for (const kind of ['remote', 'cloud', 'ssh']) {
+      expect(await host.answer({ path: '/api/profiles', profile: 'work' }, pinned(kind))).toBeUndefined()
+    }
+
+    expect(fetchJson).toHaveBeenCalledTimes(1)
+  })
+
+  it('answers a pinned listing for a launched primary from another local profile, not through its route', async () => {
+    const { host } = hostFor({ profiles: { default: launchedConfig().profiles.work } }, 'default')
+    const dial = vi.fn(async () => 'the-sandbox')
+
+    expect(await host.answer({ path: '/api/profiles' }, { dial, kind: () => 'local' })).toEqual({
+      backend: 'notes-backend',
+      requestPath: '/api/profiles'
+    })
+    expect(dial).not.toHaveBeenCalled()
   })
 
   it("refuses a marked profile the host backend would serve by scope, unless a remote serves it", () => {

@@ -38,6 +38,13 @@ import { freezeQueuedDraftText } from './use-composer-queue'
 const sameOccurrence = (a: ComposerAttachment, b: ComposerAttachment) =>
   a.id === b.id && a.occurrenceId === b.occurrenceId
 
+// A request another surface sends through the composer (the review pane's ship button, a reply's
+// Continue, a preview widget, a plugin) is not taken while the input is off, nor while the profile moves
+// to another backend (store/backend-transition.ts): sent or steered now it would run on the backend about
+// to go away, and nothing is queued across the change. Like a typed message, it is not sent later by itself.
+const refusesExternalSubmit = (inputDisabled: boolean, backendTransition: BackendTransitionKind | null) =>
+  inputDisabled || changesBackend(backendTransition)
+
 // Whether `scope`'s stashed draft is still the message just sent. By the time
 // the send is accepted the user may have typed the next one and the debounce
 // saved it there; that draft is not the sent one and stays.
@@ -243,7 +250,7 @@ export function useComposerSubmit({
           surfaceId !== null &&
           requestedSurfaceId === surfaceId &&
           paneVisible &&
-          !inputDisabled
+          !refusesExternalSubmit(inputDisabled, backendTransition)
         ) {
           const current = externalSubmitRef.current
           const queueKey = activeQueueSessionKeyRef.current
@@ -309,7 +316,7 @@ export function useComposerSubmit({
           }
         }
       }),
-    [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
+    [activeQueueSessionKeyRef, backendTransition, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
   // A phone keyboard the user put away stays down after a send, so the reply

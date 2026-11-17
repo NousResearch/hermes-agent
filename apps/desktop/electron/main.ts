@@ -10038,9 +10038,7 @@ async function teardownPrimaryBackendAndWait({ soft = false }: { soft?: boolean 
   }
 }
 
-// `detail.profile`: the apply moved only that profile's route (a plugin took it
-// over or gave it back), so the window redials it in place.
-function sendConnectionApplied(detail: { profile?: string } = {}) {
+function sendConnectionApplied() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
@@ -10051,7 +10049,7 @@ function sendConnectionApplied(detail: { profile?: string } = {}) {
     return
   }
 
-  webContents.send('hermes:connection:applied', detail)
+  webContents.send('hermes:connection:applied')
 }
 
 // Registry lifecycle push: a connection was removed or materially edited, so
@@ -15098,11 +15096,11 @@ registerProfileBackendIpc(ipcMain, {
   assertCanMutateRouting: assertCanMutateManagedPrimaryRouting,
   cancelAndWait: scope => sshBootstrapCoordinator.cancelAndWait(scope),
   encryptToken: token => encryptDesktopSecret(token, { allowPlainText: true }),
+  forgetDial: claimKey => backendDialClaims.forget(claimKey),
   mainWindow: () => mainWindow,
   primaryProfile: primaryProfileKey,
   profileExists: profile => PROFILE_NAME_RE.test(profile) && directoryExists(path.join(HERMES_HOME, 'profiles', profile)),
   readConfig: readDesktopConnectionConfig,
-  sendApplied: sendConnectionApplied,
   stopPool: stopPoolBackend,
   teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
   teardownSsh: scope => teardownSshConnection(scope || null),
@@ -15696,6 +15694,22 @@ async function handleHermesApiRequest(request) {
   // Explicit `local` stays registry-pinned so it cannot inherit a v1 remote.
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
+  // A launched profile's listing is this computer's to answer, also when the
+  // request is pinned to "This device"; a pinned remote gateway answers its own.
+  const launchedAnswer = await launchedProfiles.answer(
+    request,
+    registryConnectionId
+      ? {
+          dial: () => ensureRegistryBackend(registryConnectionId, null),
+          kind: () => registryConnectionKind(registryConnectionId)
+        }
+      : undefined
+  )
+
+  if (launchedAnswer !== undefined) {
+    return launchedAnswer
+  }
+
   if (registryConnectionId) {
     if (isAllProfilesSessionListRequest(request?.method, request?.path)) {
       const aggregate = await interceptSessionRequestForRemote(request, registryConnectionId)
@@ -15706,12 +15720,6 @@ async function handleHermesApiRequest(request) {
     }
 
     return dispatchRegistryApiRequest(request, registryConnectionId)
-  }
-
-  const launchedAnswer = await launchedProfiles.answer(request)
-
-  if (launchedAnswer !== undefined) {
-    return launchedAnswer
   }
 
   // Remote-profile session requests would otherwise hit the local primary off

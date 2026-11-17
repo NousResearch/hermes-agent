@@ -577,7 +577,8 @@ export function useComposerQueue({
 
   const sendQueuedNow = useCallback(
     (id: string) => {
-      if (!activeQueueSessionKey || id === queueEdit?.entryId) {
+      // Held like the rest of the queue while the profile's backend is in a planned transition (runDrain).
+      if (backendSwitching || !activeQueueSessionKey || id === queueEdit?.entryId) {
         return false
       }
 
@@ -604,7 +605,7 @@ export function useComposerQueue({
 
       return runDrain(entries => entries.find(e => e.id === id))
     },
-    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
+    [activeQueueSessionKey, backendSwitching, busy, onCancel, queueEdit, runDrain]
   )
 
   // Deliver a queued entry as a mid-turn redirect — the queue-panel sibling of
@@ -615,7 +616,8 @@ export function useComposerQueue({
   // busy — idle has no turn to redirect, and `sendQueuedNow` already covers it.
   const steerQueuedNow = useCallback(
     async (id: string): Promise<boolean> => {
-      if (!onSteer || !busy || !activeQueueSessionKey || id === queueEditRef.current?.entryId) {
+      // Not into a reply on a backend in a planned transition: the entry waits in the queue (runDrain).
+      if (backendSwitching || !onSteer || !busy || !activeQueueSessionKey || id === queueEditRef.current?.entryId) {
         return false
       }
 
@@ -656,7 +658,7 @@ export function useComposerQueue({
 
       return true
     },
-    [activeQueueSessionKey, busy, onSteer, queueEditRef, t.composer]
+    [activeQueueSessionKey, backendSwitching, busy, onSteer, queueEditRef, t.composer]
   )
 
   // Double-Enter while busy. The entry usually sits in the queue because the

@@ -1505,14 +1505,22 @@ already connects to a remote host or runs through another plugin. It resolves
   `prepare()` for `{ url, token }`, then switches without asking again. The
   profile stays on this computer's backend until then. A Cancel never calls
   `prepare`; if it throws, nothing changes and the error propagates.
-- On a switch, only that profile's chats reconnect, in place; the window stays
-  on the profile it shows. The profile rail marks it Sandboxed, the app lists
-  profiles from this computer for it, and it stops copying desktop plugins out
-  of that profile's home.
+- On a switch, only that profile's chats reconnect, in place, in every open
+  window; each window stays on the profile it shows. The profile rail marks it
+  Sandboxed, the app lists profiles from this computer for it, and it stops
+  copying desktop plugins out of that profile's home.
 - `host.clearProfileBackend()` routes the profile back after the same kind of
   confirm. Pass `beforeApply` to stop your backend in between (and clear core's
   `profiles_run_elsewhere` marker): the app asks, awaits `beforeApply()`, then
-  switches back without asking again.
+  switches back without asking again. A profile that had its own local entry
+  (saved SSH settings) gets it back.
+- The app skips that home's desktop plugins only while the profile is routed
+  to your backend or marked. After the switch back the home is this computer's
+  again and is read like any other profile's: desktop plugins found in it are
+  copied out and loaded, and Hermes's own backend uses its `config.yaml`,
+  hooks, cron jobs and skills. If your sandbox can write the home, grant
+  `plugins/` and `desktop-plugins/` read-only inside it, and treat whatever
+  else it can write there as input the user's own backend will trust.
 - While core's `profiles_run_elsewhere/<profile>.json` marker names a profile,
   the app refuses to start it on this computer, so a lost route fails closed.
 - While the profile's connection is down, the app asks
@@ -1520,12 +1528,18 @@ already connects to a remote host or runs through another plugin. It resolves
   `{ "state": "starting" | "restarting" | "stopping" }` for a planned
   transition and `"running"` once the backend is back: the status bar and
   composer then show "Restarting sandbox…" instead of offline, and requests wait
-  for the backend instead of failing. Any other answer is a failure.
+  for the backend instead of failing. Any other answer is a failure. With no
+  planned transition, a request whose connection went silent (a heartbeat
+  timeout) is not sent again: its caller gets the error.
 - The composer keeps a message away from a backend that is about to go away.
   During a switch (`"starting"`, `"stopping"`) the message stays in the composer
-  until the profile is on its new backend. During `"restarting"` it waits in the
-  chat's queue and is sent when the backend is back, so report `"restarting"`
-  only when the same backend returns with the same sessions.
+  until the profile is on its new backend. During a switch the composer also
+  does not take `host.composer.submit` or other requests sent through it:
+  nothing is sent or queued, although the call still returns `true` while a
+  composer is visible.
+  During `"restarting"` a message waits in the chat's queue and is sent when the
+  backend is back, so report `"restarting"` only when the same backend returns
+  with the same sessions.
 
 Feature-detect with `typeof host.setProfileBackend === 'function'` and
 `host.profileBackendFeatures`.

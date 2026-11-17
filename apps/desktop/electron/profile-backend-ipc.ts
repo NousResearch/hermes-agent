@@ -1,13 +1,17 @@
+import { isDeepStrictEqual } from 'node:util'
+
 import { BrowserWindow, dialog, type IpcMain, type IpcMainInvokeEvent } from 'electron'
 
 import { applyConnectionChange } from './connection-apply'
 import {
+  localProfileEntry,
   normalizeLauncherUrl,
   normalizeProfileLauncher,
   profileHasRemoteConnection,
   profileLauncher
 } from './connection-config'
-import { applyConnectionConfigAtomically } from './connection-config-apply'
+import { backendScopeKey } from './connection-registry'
+import { primaryDialClaimKey } from './primary-boot-join'
 import {
   clearProfileBackendConfirm,
   type ProfileBackendConfirmCopy,
@@ -33,12 +37,12 @@ export interface ProfileBackendIpcDeps {
   assertCanMutateRouting: () => void
   cancelAndWait: (scope: string) => Promise<void>
   encryptToken: (token: string) => unknown
+  /** Drop the dial in flight under this claim key; its callers are told to ask again (BackendDialClaims.forget). */
+  forgetDial: (claimKey: string) => void
   mainWindow: () => BrowserWindow | null
   primaryProfile: () => string
   profileExists: (profile: string) => boolean
   readConfig: () => ConnectionConfig
-  /** Tell the window that `profile`'s route moved (and only that profile's). */
-  sendApplied: (detail: { profile: string }) => void
   stopPool: (scope: string) => unknown
   teardownPrimary: () => Promise<void>
   teardownSsh: (scope: null | string) => Promise<void>
@@ -115,36 +119,83 @@ export function registerProfileBackendIpc(ipcMain: IpcMain, deps: ProfileBackend
     return current ? { plugin, profile } : null
   }
 
-  // Write the profile's entry and retire whatever served it, with the same
-  // atomic write and teardown a per-profile Settings apply uses. The route
-  // lives only in connection.json: the machine's saved-gateways list (shared
-  // with the Webapp) is neither rewritten nor restored, so a switch leaves its
-  // revision alone and a failed one cannot drop a gateway saved meanwhile.
+  const entryOf = (profile: string): ConnectionConfig | null => deps.readConfig().profiles?.[profile] ?? null
+
+  // What main still holds for the route a write replaced: the profile's pooled
+  // descriptor and any dial in flight for it. A launcher is gone seconds before
+  // its route is cleared, and a window that lost its socket asks main for the
+  // profile's backend in that gap: that dial waits on the launcher's address for
+  // main's whole readiness limit, and a dial in flight answers every later one
+  // of its profile. Left alone it answers the dials the windows make once they
+  // are told the profile moved, and the profile has no backend for minutes.
+  const retireDials = (profile: string) => {
+    const claimKey = backendScopeKey(null, profile)
+
+    deps.stopPool(profile)
+    deps.forgetDial(claimKey)
+    deps.forgetDial(primaryDialClaimKey(claimKey, true))
+  }
+
+  // Replace one profile's entry in connection.json as it is now; every other
+  // entry stays. In the same tick the old route's dials are retired, so every
+  // dial from here on reads the entry just written.
+  const writeEntry = (profile: string, entry: ConnectionConfig | null) => {
+    const config = deps.readConfig()
+    const { [profile]: _previous, ...others } = config.profiles || {}
+
+    deps.writeConfig({ ...config, profiles: entry ? { ...others, [profile]: entry } : others })
+    retireDials(profile)
+  }
+
+  // Every window dials the profile on its own socket, and a plugin's page runs
+  // in any of them: each one is told that the profile's route moved (and only
+  // that profile's), not the main window alone.
+  const sendApplied = (profile: string) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send('hermes:connection:applied', { profile })
+      }
+    }
+  }
+
+  // Write the profile's entry and retire whatever served it, with the teardown
+  // a per-profile Settings apply uses. The route lives only in connection.json:
+  // the machine's saved-gateways list (shared with the Webapp) is neither
+  // rewritten nor restored, so a switch leaves its revision alone and a failed
+  // one cannot drop a gateway saved meanwhile.
   const applyEntry = async (profile: string, entry: ConnectionConfig | null) => {
-    const previousConfig = deps.readConfig()
-    const { [profile]: _previous, ...others } = previousConfig.profiles || {}
-    const profiles = entry ? { ...others, [profile]: entry } : others
+    const previous = entryOf(profile)
 
-    await applyConnectionConfigAtomically({
-      previousConfig,
-      previousRegistry: null,
-      nextConfig: { ...previousConfig, profiles },
-      nextRegistry: null,
-      writeConfig: deps.writeConfig,
-      writeRegistry: () => undefined,
-      apply: () =>
-        applyConnectionChange({
-          cancelAndWait: deps.cancelAndWait,
-          isPrimary: profile === deps.primaryProfile(),
-          scope: profile,
-          sendApplied: () => undefined,
-          stopPool: deps.stopPool,
-          teardownPrimary: deps.teardownPrimary,
-          teardownSsh: deps.teardownSsh
-        })
-    })
+    writeEntry(profile, entry)
+    const written = entryOf(profile)
 
-    deps.sendApplied({ profile })
+    try {
+      await applyConnectionChange({
+        cancelAndWait: deps.cancelAndWait,
+        isPrimary: profile === deps.primaryProfile(),
+        scope: profile,
+        sendApplied: () => undefined,
+        // Done with the write (retireDials): a descriptor pooled since then is the new route's.
+        stopPool: () => undefined,
+        teardownPrimary: deps.teardownPrimary,
+        teardownSsh: deps.teardownSsh
+      })
+    } catch (error) {
+      // The teardown failed. Put back this profile's entry alone, and only
+      // while it is still the one written here: another profile's switch, or a
+      // newer route for this one, that landed during the teardown stays.
+      try {
+        if (isDeepStrictEqual(entryOf(profile), written)) {
+          writeEntry(profile, previous)
+        }
+      } catch {
+        // Keep the teardown's error.
+      }
+
+      throw error
+    }
+
+    sendApplied(profile)
   }
 
   ipcMain.handle('hermes:profile-backend:confirm-set', async (event, payload) => {
@@ -172,18 +223,29 @@ export function registerProfileBackendIpc(ipcMain: IpcMain, deps: ProfileBackend
     assertSettable({ plugin, profile })
 
     // A grant from confirm-set stands for the user's answer; anything else asks now.
-    const confirmed =
-      grants.redeem(payload?.grant, 'set', plugin, profile) ||
-      (await confirm(event, setProfileBackendConfirm({ plugin, profile, purpose: payload?.purpose, url })))
+    if (!grants.redeem(payload?.grant, 'set', plugin, profile)) {
+      if (!(await confirm(event, setProfileBackendConfirm({ plugin, profile, purpose: payload?.purpose, url })))) {
+        return { applied: false }
+      }
 
-    if (!confirmed) {
-      return { applied: false }
+      // The dialog can stay open for minutes: who routes the profile is checked again.
+      assertSettable({ plugin, profile })
     }
 
     // The launcher keeps its own token in host-only storage, so a computer
     // without a keyring may store this loopback token as plain text too.
     const stored = deps.encryptToken(token)
-    await applyEntry(profile, { mode: 'remote', url, authMode: 'token', token: stored, launcher: { plugin } })
+    // A profile's own local entry holds its saved SSH settings; they ride on the launcher entry until the clear.
+    const kept = localProfileEntry(entryOf(profile))
+
+    await applyEntry(profile, {
+      mode: 'remote',
+      url,
+      authMode: 'token',
+      token: stored,
+      launcher: { plugin },
+      ...(kept ? { savedSsh: kept.savedSsh } : {})
+    })
 
     return { applied: true }
   })
@@ -201,22 +263,28 @@ export function registerProfileBackendIpc(ipcMain: IpcMain, deps: ProfileBackend
 
   ipcMain.handle('hermes:profile-backend:clear', async (event, payload) => {
     deps.assertCanMutateRouting()
-    const current = clearable(payload)
+    let current = clearable(payload)
 
     if (!current) {
       return { applied: false }
     }
 
     // A grant from confirm-clear stands for the user's answer; anything else asks now.
-    const confirmed =
-      grants.redeem(payload?.grant, 'clear', current.plugin, current.profile) ||
-      (await confirm(event, clearProfileBackendConfirm(current)))
+    if (!grants.redeem(payload?.grant, 'clear', current.plugin, current.profile)) {
+      if (!(await confirm(event, clearProfileBackendConfirm(current)))) {
+        return { applied: false }
+      }
 
-    if (!confirmed) {
-      return { applied: false }
+      // The dialog can stay open for minutes: who routes the profile is checked again.
+      current = clearable(payload)
+
+      if (!current) {
+        return { applied: false }
+      }
     }
 
-    await applyEntry(current.profile, null)
+    // The local entry the switch on replaced comes back (its saved SSH settings); a profile that had none has none.
+    await applyEntry(current.profile, localProfileEntry(entryOf(current.profile)))
 
     return { applied: true }
   })

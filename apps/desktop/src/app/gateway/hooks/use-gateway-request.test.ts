@@ -309,8 +309,7 @@ describe('useGatewayRequest', () => {
     { error: new Error('connection closed'), label: 'closed message' },
     { error: new Error('ECONNRESET'), label: 'reset message' },
     { error: Object.assign(new Error('socket failed'), { code: 'ECONNRESET' }), label: 'error code' },
-    { error: Object.assign(new Error('socket failed'), { cause: { code: 'ECONNRESET' } }), label: 'cause code' },
-    { error: new Error('WebSocket heartbeat acknowledgement timed out'), label: 'heartbeat timeout' }
+    { error: Object.assign(new Error('socket failed'), { cause: { code: 'ECONNRESET' } }), label: 'cause code' }
   ])('recovers the registered remote source after a $label failure', async ({ error }) => {
     const { desktop, gateway } = await activateRemoteGateway()
     gateway.request.mockResolvedValueOnce({ turn: 1 }).mockRejectedValueOnce(error).mockResolvedValueOnce({ turn: 2 })
@@ -684,5 +683,30 @@ describe('a planned sandbox restart of a plugin-run profile', () => {
     await expect(sent).resolves.toBe(cut)
     expect(primary.request).toHaveBeenCalledTimes(1)
     expect(backendTransitionFor('work')).toBeNull()
+  })
+
+  // With no planned transition a heartbeat timeout says the socket went silent, not that the backend
+  // is gone: it may already have run the request (a turn, a paid generation), so it is not sent again.
+  it.each([
+    { label: 'a profile no plugin runs', launched: false },
+    { label: 'a plugin-run profile whose launcher reports no restart', launched: true }
+  ])('a heartbeat timeout outside a planned transition is not sent again ($label)', async ({ launched }) => {
+    const primary = launched ? launchedPrimary() : makePrimaryGateway()
+    const silent = new Error('WebSocket heartbeat acknowledgement timed out')
+    primary.request.mockRejectedValueOnce(silent).mockResolvedValueOnce({ token: 'a second run' })
+
+    if (!launched) {
+      setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+      $gateway.set(primary as unknown as HermesGateway)
+      $gatewayState.set('open')
+    }
+
+    const { result } = renderHook(() => useGatewayRequest())
+
+    await act(async () => {
+      await expect(result.current.requestGateway('pet.generate', { prompt: 'a fox' })).rejects.toBe(silent)
+    })
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(primary.connect).not.toHaveBeenCalled()
   })
 })

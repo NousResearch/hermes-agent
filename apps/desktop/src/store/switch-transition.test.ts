@@ -55,4 +55,19 @@ describe("the switch's one state lasts until the window is on the new route", ()
     endSwitchTransition('notes', true)
     expect(backendTransitionFor('notes')).toBeNull()
   })
+
+  it('leaves a newer switch of the same profile alone: only that switch ends its own state', async () => {
+    endSwitchTransition('work', true)
+    $gatewayState.set('connecting')
+    // Switched off again before the first switch's socket opened.
+    beginBackendTransition('work', 'stopping', { source: 'switch' })
+
+    $gatewayState.set('open')
+    expect(backendTransitionFor('work')).toMatchObject({ kind: 'stopping', source: 'switch' })
+    await vi.advanceTimersByTimeAsync(SWITCH_SETTLE_MAX_MS)
+    expect(backendTransitionFor('work')).toMatchObject({ kind: 'stopping', source: 'switch' })
+
+    endSwitchTransition('work', false)
+    expect(backendTransitionFor('work')).toBeNull()
+  })
 })

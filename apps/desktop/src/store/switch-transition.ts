@@ -1,7 +1,7 @@
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 
-import { endBackendTransition, transitionProfileKey } from './backend-transition'
+import { backendTransitionFor, endBackendTransition, transitionProfileKey } from './backend-transition'
 
 /** The longest a switch's state may cover the window's reconnect to the new route. */
 export const SWITCH_SETTLE_MAX_MS = 30_000
@@ -25,6 +25,8 @@ export function endSwitchTransition(profile: string, applied: boolean): void {
   }
 
   const startedAt = Date.now()
+  // The state this switch leaves to settle. A newer switch of the profile replaces it, and ends its own.
+  const settling = backendTransitionFor(key)
   let sawDrop = $gatewayState.get() !== 'open'
   let off: () => void = () => undefined
 
@@ -32,7 +34,10 @@ export function endSwitchTransition(profile: string, applied: boolean): void {
     off()
     clearTimeout(minTimer)
     clearTimeout(maxTimer)
-    endBackendTransition(key, { ok, source: 'switch' })
+
+    if (backendTransitionFor(key) === settling) {
+      endBackendTransition(key, { ok, source: 'switch' })
+    }
   }
 
   const check = () => {

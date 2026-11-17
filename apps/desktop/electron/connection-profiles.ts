@@ -8,6 +8,15 @@ import {
 } from './connection-config'
 import { DESKTOP_PROFILE_NAME_RE as PROFILE_NAME_RE } from './desktop-profile'
 
+// The `savedSsh` field a stored per-profile entry keeps: the SSH settings a
+// local entry remembers. A launcher entry carries them for the local entry it
+// replaced, which the plugin's clear puts back.
+function savedSshField(cleaned: { launcher?: unknown; mode: string }, value: unknown): { savedSsh?: object } {
+  const savedSsh = cleaned.mode === 'local' || cleaned.launcher ? normalizeSshConfig(value) : null
+
+  return savedSsh ? { savedSsh } : {}
+}
+
 // Validate + normalize the per-profile remote overrides map read from disk.
 // Drops malformed names/entries and keeps only the recognized fields so a
 // hand-edited or stale connection.json can't inject junk into resolution.
@@ -61,13 +70,7 @@ export function sanitizeConnectionProfiles(raw: Record<string, any>) {
     // silent unsandboxed start.
     Object.assign(cleaned, profileLauncherField(cleaned.mode, entry.launcher))
 
-    if (cleaned.mode === 'local') {
-      const savedSsh = normalizeSshConfig(entry.savedSsh)
-
-      if (savedSsh) {
-        cleaned.savedSsh = savedSsh
-      }
-    }
+    Object.assign(cleaned, savedSshField(cleaned, entry.savedSsh))
 
     const url = String(entry.url || '').trim()
 

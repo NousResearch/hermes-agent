@@ -138,6 +138,13 @@ export async function probeLauncherTransition(
   }
 
   const reading = launcherReading(await readLauncherStatus(key, plugin))
+  // The answer describes the moment it was asked. A transition that began meanwhile (a switch, another
+  // probe) keeps its state, and a profile that left this launcher gets none from it.
+  const begun = backendTransitionFor(key)
+
+  if (begun || launcherPluginFor(key) !== plugin) {
+    return begun !== null
+  }
 
   if (!reading.planned) {
     return false
@@ -182,8 +189,9 @@ export function watchLauncherTransition(profile: string, onReady?: () => void): 
   const tick = async () => {
     timer = null
     const plugin = launcherPluginFor(key)
+    const watched = backendTransitionFor(key)
 
-    if (stopped || backendTransitionFor(key)?.source !== 'launcher') {
+    if (stopped || watched?.source !== 'launcher') {
       return stop()
     }
 
@@ -197,6 +205,12 @@ export function watchLauncherTransition(profile: string, onReady?: () => void): 
 
     if (stopped) {
       return
+    }
+
+    // The answer is for the transition that was asked about. One that ended or was replaced meanwhile
+    // (the socket opened, its deadline, a switch) is not this poll's to change or to bring back.
+    if (backendTransitionFor(key) !== watched) {
+      return stop()
     }
 
     const reading = launcherReading(status)

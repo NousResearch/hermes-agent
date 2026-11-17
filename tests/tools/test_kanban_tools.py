@@ -82,6 +82,26 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_returns_the_cards_idempotency_key(worker_env):
+    """A loop that files cards under an ``idempotency_key`` must be able to read the key back
+    (a card filed under the wrong key is a duplicate waiting to happen), and ``kanban_show``
+    is the only place a model sees a card's columns."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    key = "loop:subject:1"
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="keyed card", idempotency_key=key)
+        assert kb.create_task(conn, title="same subject again", idempotency_key=key) == tid
+    finally:
+        conn.close()
+
+    shown = json.loads(kt._handle_show({"task_id": tid}))["task"]
+    assert shown["idempotency_key"] == key
+
+
 def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):
     """#91431: chat profiles with the kanban toolset call kanban_show bare to orient
     themselves; with no dispatcher task in scope there is nothing to show, so the

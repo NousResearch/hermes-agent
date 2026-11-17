@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from persistence.authority.bindings import local_session_id
 from persistence.authority.runtime import COMPACTED_TARGET_DETAIL, MutationCommand, PreparedMutation
+from persistence.conversation.sessions import TitleSource, sanitize_title
 from persistence.core.canonical import canonical_json
 from persistence.core.conventions import RowVisibility
 from persistence.core.errors import AuthorityRefusal, CapabilityUnsupported
@@ -23,6 +24,7 @@ from session_rules.turns import typed_prompt_content
 
 from .._authority import session_runtime
 from ..conversation import _turn_policy as policy
+from ..conversation.lineage import compression_tip
 from ..conversation.transcript_store import _messages_namespace, _replay_dict, advance_conversation_generation, insert_rows
 from . import admissions_rows as rows
 from . import mutation_guards as guards
@@ -43,9 +45,20 @@ def _metadata(repo: Any, session_id: str, payload: Mapping[str, Any]) -> tuple[s
     result: dict[str, Any] = {}
     for key, value in payload.items():
         if key == "title":
-            if store.sessions.set_title(SessionId(session_id), value):
-                affected.add(session_id)
-            result[key] = repo._tables()["sessions"][session_id]["title"]
+            # The listing shows a compressed conversation under its live tip's title, so the rename lands there; every
+            # segment can rename that tip, so a committed write advances the whole lineage's revision.
+            tip = compression_tip(store, store.scope, session_id)
+            written = store.sessions._write_title(store.scope, SessionId(tip), value, TitleSource.USER)
+            affected.update(written)
+            if written:
+                lineage = store.sessions._lineage_ids(repo._tables()["sessions"], session_id)
+                affected.update(lineage)
+                if not sanitize_title(value):
+                    # An untitled tip lists under an ancestor's title, so a clear clears the lineage, each row through
+                    # the same title rules (the canonical Bot Chat's name refuses).
+                    for sid in lineage:
+                        affected.update(store.sessions._write_title(store.scope, SessionId(sid), value, TitleSource.USER))
+            result[key] = repo._tables()["sessions"][tip]["title"]
             continue
         column = "last_read_at" if key == "unread" else key
         values: dict[str, Any] = {column: (0.0 if value else time.time()) if key == "unread" else bool(value)}

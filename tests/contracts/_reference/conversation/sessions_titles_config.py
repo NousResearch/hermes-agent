@@ -131,35 +131,34 @@ class SessionTitlesConfigMixin:
             return holder_id
         raise TitleConflict(title, SessionId(holder_id))
 
-    def _write_title(self, scope: ProfileScope, session_id: SessionId, title: Optional[str], source: TitleSource) -> bool:
-        """Write a title under provenance precedence: a user write always lands, an automatic one only over an untitled row or strictly lower authority; nothing moves the hidden canonical Bot Chat off its title."""
+    def _write_title(self, scope: ProfileScope, session_id: SessionId, title: Optional[str], source: TitleSource) -> list[str]:
+        """Write a title under provenance precedence: a user write always lands, an automatic one only over an untitled row or strictly lower authority; nothing moves the hidden canonical Bot Chat off its title. Returns the ids written: the row the uniqueness rule freed the name from, then the row itself (empty when nothing landed)."""
         clean = sanitize_title(title)
         table = self._table(scope)
         row = table.get(session_id)
         if row is None:
-            return False
+            return []
         is_user = source is TitleSource.USER
         if row["title"] == CANONICAL_BOT_CHAT_TITLE and row["hidden"] and clean != CANONICAL_BOT_CHAT_TITLE:
             if is_user:
                 raise CanonicalTitleLocked(session_id)
-            return False
+            return []
         if not is_user and row["title"] is not None and _TITLE_RANK[row["title_source"]] >= _TITLE_RANK[source]:
-            return False
-        if clean:
-            self._resolve_title_conflict(scope, table, str(session_id), clean)
+            return []
+        freed = self._resolve_title_conflict(scope, table, str(session_id), clean) if clean else None
         row["title"] = clean
         row["title_source"] = source if clean else None
-        return True
+        return [*([freed] if freed else []), str(session_id)]
 
     def set_title(self, session_id: SessionId, title: Optional[str]) -> bool:
         scope = self._backend.scope
-        return self._write_title(scope, session_id, title, TitleSource.USER)
+        return bool(self._write_title(scope, session_id, title, TitleSource.USER))
 
     def set_auto_title(self, session_id: SessionId, title: str, *, source: TitleSource) -> bool:
         scope = self._backend.scope
         if source is TitleSource.USER:
             raise ValueError(f"invalid automatic title source: {source.value!r}")
-        return self._write_title(scope, session_id, title, source)
+        return bool(self._write_title(scope, session_id, title, source))
 
     def set_title_source(self, session_id: SessionId, source: TitleSource) -> bool:
         scope = self._backend.scope

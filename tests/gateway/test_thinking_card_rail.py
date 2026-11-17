@@ -326,7 +326,7 @@ async def test_thinking_card_reopen_reseeds_full_projection(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tool_and_thinking_streams_are_separate_slots(monkeypatch):
-    adapter, client = _slack_adapter(monkeypatch)
+    adapter, _client = _slack_adapter(monkeypatch)
     md = {"thread_ts": "100.1"}
     await adapter.send_native_task_card_progress(
         "D1", tasks=[{"id": "t1", "title": "terminal", "status": "in_progress"}],

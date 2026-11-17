@@ -35,7 +35,7 @@ MAX_FEED_CHARS = 24_000
 # A reasoning block gets its "Thinking…" row once it has run this long; shorter blocks never show.
 REASONING_CARD_AFTER_S = 1.5
 REASONING_TAIL_CHARS = 200
-_TRUNCATION_ROW = "[... narration truncated at %d chars]" % MAX_FEED_CHARS
+_TRUNCATION_ROW = f"[... narration truncated at {MAX_FEED_CHARS} chars]"
 _REASONING_EVENTS = frozenset({"reasoning", "reasoning.end"})
 
 

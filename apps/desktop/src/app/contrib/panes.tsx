@@ -47,6 +47,19 @@ const SEVERITY_TEXT: Record<LogSeverity, string> = {
 
 type LogsScope = 'all' | 'session'
 
+const STAMPED_LINE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/
+
+/** Per-line tint; an unstamped line (traceback frame) continues the record above it. */
+function recordSeverities(lines: readonly string[]): (LogSeverity | null)[] {
+  let carry: LogSeverity | null = null
+
+  return lines.map(line => {
+    carry = STAMPED_LINE.test(line) ? logLineSeverity(line) : carry
+
+    return carry
+  })
+}
+
 export function LogsPane() {
   const { t } = useI18n()
   const sessionId = useStore($focusedStoredSessionId)
@@ -101,6 +114,8 @@ export function LogsPane() {
     )
   }
 
+  const severities = recordSeverities(data.lines)
+
   const scopes: { id: LogsScope; label: string }[] = [
     { id: 'all', label: t.sidebar.logsAllSessions },
     { id: 'session', label: t.sidebar.logsThisSession }
@@ -139,7 +154,7 @@ export function LogsPane() {
           <span className="text-(--ui-text-quaternary)">{t.sidebar.logsNoSessionLines}</span>
         ) : (
           data.lines.map((line, index) => {
-            const severity = logLineSeverity(line)
+            const severity = severities[index]
 
             return (
               <span className={severity ? SEVERITY_TEXT[severity] : undefined} key={index}>

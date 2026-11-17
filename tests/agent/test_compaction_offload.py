@@ -282,3 +282,16 @@ def test_compaction_window_archives_structured_tool_text_instead_of_losing_it(ho
     assert path.read_bytes() == json.dumps(body, ensure_ascii=False).encode("utf-8")
     assert "api_content" not in projected[1]  # no stale full body can bypass the stub
     assert msgs[1]["content"] == body  # the source transcript stays untouched
+
+
+@pytest.mark.parametrize("body", ["receipt: command completed", "[Duplicate tool output: receipt]"])
+def test_compaction_archives_small_string_results(home, summarizer, body):
+    msgs = _transcript()
+    msgs[5]["content"] = body
+    c = _compressor()
+    _plan, _n, start, end = c._plan_compaction_window(msgs)
+    assert start <= 5 < end
+    compressed = c.compress(msgs, current_tokens=c.threshold_tokens + 1)
+    files = _archived(home)
+    assert any(p.read_bytes() == body.encode("utf-8") for p in files)
+    assert all(f"cache/pruned/{p.name}" in str(compressed) for p in files)

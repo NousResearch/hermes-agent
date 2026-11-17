@@ -373,11 +373,12 @@ def _tool_search_scoped_names(agent) -> frozenset:
     except Exception:
         return frozenset()
     try:
+        from tools.hosted_artifacts import late_attach_drops
         return _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
             enabled_toolsets=getattr(agent, "enabled_toolsets", None),
             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
             quiet_mode=True, skip_tool_search_assembly=True,
-        ) or [])
+        ) or []) - late_attach_drops(agent)  # artifacts never reach a session that started without them
     except Exception:
         return frozenset()
 

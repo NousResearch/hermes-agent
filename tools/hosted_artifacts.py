@@ -7,8 +7,9 @@ A profile signed in to Nous whose ``/api/oauth/account`` body says ``artifacts_a
 
 The server joins a conversation only at its start. MCP discovery can finish after a session has
 built its tool list, and the between-turns MCP refresh would then append the new tools mid-session;
-:func:`late_attach_drops` latches, per session, whether the server was registered at the first tool
-load and keeps its tools out of that session for good when it was not.
+:func:`latch_session_surface` records, per session, whether the server's tools were in that
+session's first tool load (its definitions, or the Tool Search catalog of its own toolset selection),
+and :func:`late_attach_drops` keeps them out of that session for good when they were not.
 
 Every failure (config off, no base URL, signed out, account unreadable, not entitled) leaves the
 server out; the gateway stays authoritative for entitlement on every call.
@@ -282,35 +283,82 @@ def _registered_tool_names() -> frozenset[str]:
     return frozenset(registry.get_tool_names_for_toolset(TOOLSET_NAME) or ())
 
 
-def _latch(agent: Any) -> bool:
-    latched = getattr(agent, "_hosted_artifacts_at_start", None)
-    if isinstance(latched, bool):
-        return latched
+def _artifact_names() -> frozenset[str]:
+    return contract_tool_names() | _registered_tool_names()
+
+
+def _catalog_names(agent: Any) -> frozenset[str]:
+    """Every tool *agent*'s toolset selection offers before Tool Search collapses it into the bridge.
+    Empty when that cannot be read (the latch then fails closed)."""
+    try:
+        import model_tools
+
+        return frozenset((tool.get("function") or {}).get("name") for tool in model_tools.get_tool_definitions(
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            quiet_mode=True, skip_tool_search_assembly=True) or [])
+    except Exception as exc:  # health: allow BLE001 -- a catalog failure must only ever narrow the session
+        logger.debug("Hosted artifacts: tool catalog unreadable at session start: %s", exc)
+        return frozenset()
+
+
+def _surface_names(agent: Any, tools: list[dict[str, Any]]) -> frozenset[str]:
+    """Every tool name *tools* (a session's first tool load) offers: its definitions and, when the
+    Tool Search bridge stands in for deferred tools, the deferred catalog of the session's selection."""
+    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+
+    names = frozenset((tool.get("function") or {}).get("name") for tool in tools or ())
+    return names | _catalog_names(agent) if names & BRIDGE_TOOL_NAMES else names
+
+
+def _session_key(agent: Any) -> Optional[tuple[str, str]]:
     from hermes_constants import get_hermes_home
 
     session_id = getattr(agent, "session_id", None)
-    key = (str(get_hermes_home()), session_id) if isinstance(session_id, str) and session_id else None
-    with _decisions_lock:
-        if key is not None and key in _session_latch:
-            latched = _session_latch[key]
-        else:
-            latched = bool(_registered_tool_names())
-            if key is not None:
-                _session_latch[key] = latched
-                while len(_session_latch) > _SESSION_LATCH_MAX:
-                    _session_latch.popitem(last=False)
+    return (str(get_hermes_home()), session_id) if isinstance(session_id, str) and session_id else None
+
+
+def _store_latch(agent: Any, latched: bool) -> None:
     try:
         agent._hosted_artifacts_at_start = latched
     except AttributeError:
         pass
+
+
+def _recorded_latch(agent: Any) -> Optional[bool]:
+    latched = getattr(agent, "_hosted_artifacts_at_start", None)
+    if isinstance(latched, bool):
+        return latched
+    key = _session_key(agent)
+    with _decisions_lock:
+        latched = _session_latch.get(key) if key is not None else None
+    if latched is not None:
+        _store_latch(agent, latched)
     return latched
 
 
+def latch_session_surface(agent: Any, tools: list[dict[str, Any]]) -> None:
+    """Record, once per session, whether *tools* (the session's first tool load, before any drop)
+    carried the hosted artifacts tools. Later loads (a rebuilt agent, a toggled toolset,
+    ``/reload-mcp``, a model switch) find the record and never widen it."""
+    if agent is None or _recorded_latch(agent) is not None:
+        return
+    latched = bool(_surface_names(agent, tools) & _artifact_names())
+    key = _session_key(agent)
+    with _decisions_lock:
+        if key is not None:
+            latched = _session_latch.setdefault(key, latched)
+            while len(_session_latch) > _SESSION_LATCH_MAX:
+                _session_latch.popitem(last=False)
+    _store_latch(agent, latched)
+
+
 def late_attach_drops(agent: Any) -> frozenset[str]:
-    """The hosted server's tool names when *agent*'s session started without them, else empty."""
-    if agent is None or _latch(agent):
+    """The hosted server's tool names unless *agent*'s session started with them. A session whose
+    first tool load was never recorded (:func:`latch_session_surface`) gets none of them."""
+    if agent is None or _recorded_latch(agent) is True:
         return frozenset()
-    return contract_tool_names() | _registered_tool_names()
+    return _artifact_names()
 
 
 def session_has_artifacts(tool_names: Any) -> bool:

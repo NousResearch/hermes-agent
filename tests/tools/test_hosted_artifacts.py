@@ -186,32 +186,103 @@ def test_nous_auth_is_refused_when_not_entitled(monkeypatch):
 
 
 class _Agent:
-    def __init__(self, session_id="s1"):
+    def __init__(self, session_id="s1", *, enabled=None, disabled=None):
         self.session_id = session_id
         self.platform = "cli"
+        self.enabled_toolsets = enabled
+        self.disabled_toolsets = disabled or []
+        self.tools = []
+        self.valid_tool_names = set()
+
+
+SHOW = "mcp__hermes_artifacts__artifact_show"
+
+
+def _defs(*names):
+    return [{"type": "function", "function": {"name": name, "parameters": {"type": "object"}}} for name in names]
+
+
+def _names(defs):
+    return {tool["function"]["name"] for tool in defs}
 
 
 def test_session_started_without_the_server_never_gains_it(monkeypatch):
     import toolsets
 
-    registered = set()
-    monkeypatch.setattr(ha, "_registered_tool_names", lambda: frozenset(registered))
     agent = _Agent("late")
-    assert ha.contract_tool_names() <= toolsets.agent_tool_drops(agent)  # first load latches "absent"
-    registered.update(ha.contract_tool_names())  # discovery finishes mid-session
-    assert ha.contract_tool_names() <= toolsets.agent_tool_drops(agent)
+    assert toolsets.agent_tool_surface(agent, _defs("terminal")) == _defs("terminal")  # first load: no artifacts
+    later = _defs("terminal", *ha.contract_tool_names())  # discovery finishes mid-session
+    assert _names(toolsets.agent_tool_surface(agent, later)) == {"terminal"}
     rebuilt = _Agent("late")  # same conversation rebuilt in this process
-    assert ha.contract_tool_names() <= toolsets.agent_tool_drops(rebuilt)
-    assert not (ha.contract_tool_names() & toolsets.agent_tool_drops(_Agent("new-session")))
+    assert _names(toolsets.agent_tool_surface(rebuilt, later)) == {"terminal"}
+    assert _names(toolsets.agent_tool_surface(_Agent("new-session"), later)) == _names(later)
 
 
-def test_session_started_with_the_server_keeps_it(monkeypatch):
-    registered = set(ha.contract_tool_names())
-    monkeypatch.setattr(ha, "_registered_tool_names", lambda: frozenset(registered))
+def test_session_started_with_the_server_keeps_it():
+    import toolsets
+
     agent = _Agent("early")
+    first = _defs("terminal", *ha.contract_tool_names())
+    assert toolsets.agent_tool_surface(agent, first) == first
     assert ha.late_attach_drops(agent) == frozenset()
-    registered.clear()
-    assert ha.late_attach_drops(agent) == frozenset()
+    assert ha.late_attach_drops(_Agent("early")) == frozenset()  # rebuilt: the session's record holds
+
+
+def test_unrecorded_session_gets_no_artifact_tools():
+    assert ha.contract_tool_names() <= ha.late_attach_drops(_Agent("never-loaded"))
+
+
+def test_registered_but_disabled_at_start_cannot_be_enabled_mid_session(monkeypatch):
+    """Registered in the process, but this session started with the toolset disabled: a refresh that
+    enables it (toolset toggle, ``/reload-mcp``) must not add the tools."""
+    import model_tools
+    import toolsets
+    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+
+    monkeypatch.setattr(ha, "_registered_tool_names", lambda: frozenset({SHOW}))
+    agent = _Agent("disabled-at-start", enabled=[], disabled=[ha.TOOLSET_NAME])
+    assert toolsets.agent_tool_surface(agent, []) == []
+    assert agent._hosted_artifacts_at_start is False
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **_: _defs(SHOW))
+    added = refresh_agent_mcp_tools(agent, enabled_override=[ha.TOOLSET_NAME], disabled_override=[])
+    assert SHOW not in added and SHOW not in agent.valid_tool_names
+
+
+def test_deferred_artifact_tools_count_as_the_sessions_surface(monkeypatch):
+    """Under Tool Search the first load carries the bridge, not the deferred MCP tools; the session's own
+    catalog decides, so such a session keeps artifacts and one without them never reaches them."""
+    import model_tools
+    import toolsets
+    from tools.tool_search_catalog import TOOL_CALL_NAME
+
+    catalog = []
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **_: list(catalog))
+    catalog[:] = _defs(SHOW)
+    with_tools = _Agent("deferred-with")
+    toolsets.agent_tool_surface(with_tools, _defs(TOOL_CALL_NAME))
+    assert ha.late_attach_drops(with_tools) == frozenset()
+
+    catalog[:] = []
+    without = _Agent("deferred-without")
+    toolsets.agent_tool_surface(without, _defs(TOOL_CALL_NAME))
+    catalog[:] = _defs(SHOW)  # registered mid-session
+    assert SHOW in ha.late_attach_drops(without)
+
+
+def test_tool_search_bridge_refuses_artifacts_to_a_session_started_without_them(monkeypatch):
+    import model_tools
+    import toolsets
+    from agent.tool_executor import _tool_search_scoped_names
+    from tools import tool_search
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **_: _defs(SHOW, "mcp__other__tool"))
+    monkeypatch.setattr(tool_search, "scoped_deferrable_names", lambda defs: frozenset(_names(defs)))
+    started_without = _Agent("bridge-without")
+    toolsets.agent_tool_surface(started_without, _defs("terminal"))
+    assert _tool_search_scoped_names(started_without) == {"mcp__other__tool"}
+    started_with = _Agent("bridge-with")
+    toolsets.agent_tool_surface(started_with, _defs(SHOW))
+    assert SHOW in _tool_search_scoped_names(started_with)
 
 
 def test_probe_constant_is_stable():

@@ -337,8 +337,10 @@ contract (success without a save) or kills the fork at its first compaction.
 
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the
-historical contract: the raw message list, exactly as before. Version 2
-checkpoint providers receive normalized direct evidence instead:
+historical raw-message contract, after Hermes removes host-only display data
+such as a withheld prompt and a plugin card's text/directive. Version 2
+checkpoint providers receive normalized direct evidence instead, with the
+same host-only display data removed:
 user/assistant text rows only — tool results, system messages, the
 `tool_calls` payload of assistant messages (their prose is kept), and prior
 compaction summaries are filtered host-side. Prior summaries are recognized

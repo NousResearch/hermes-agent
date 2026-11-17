@@ -115,7 +115,7 @@ describe('main process wiring', () => {
     const handler = main.slice(main.indexOf("on('will-frame-navigate'"))
 
     expect(handler.slice(0, 1500)).toMatch(
-      /hostedArtifactFrameNavigation\(frameOrigin, url, hostedArtifactFramePolicy\(\)\)/
+      /hostedArtifactFrameNavigation\(frameOrigin, url, HOSTED_ARTIFACT_FRAME_POLICY\)/
     )
     expect(handler.slice(0, 1500)).toMatch(/if \(artifactVerdict === 'deny'\) \{\s*event\.preventDefault\(\)/)
   })

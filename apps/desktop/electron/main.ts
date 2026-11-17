@@ -589,6 +589,7 @@ import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } f
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { registerStreamWorkClock } from './stream-work-clock'
+import { findFrameByIdentifier, safeFrameOrigin, safeUrlOrigin } from './subframe'
 import { installSystemCaTrust } from './system-ca'
 import { terminalGatewayTarget } from './terminal-gateway-target'
 import { registerTerminalIpc } from './terminal-ipc'
@@ -784,6 +785,8 @@ if (process.env.HERMES_DESKTOP_TMPDIR) {
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+// Unpackaged (development) runs may also frame the local artifacts server.
+const HOSTED_ARTIFACT_FRAME_POLICY = { dev: !IS_PACKAGED }
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -6748,9 +6751,8 @@ function installMediaPermissions() {
   // (hub-iframe-policy.ts): the picker's Copy controls write to the clipboard,
   // and every other frame — artifact previews included — stays denied.
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    // A hosted artifact frame is untrusted content on its own origin: it is
-    // granted nothing, whatever it asks for.
-    if (isHostedArtifactRequestingUrl(details?.requestingUrl, hostedArtifactFramePolicy())) {
+    // A hosted artifact frame is untrusted content: it is granted nothing.
+    if (isHostedArtifactRequestingUrl(details?.requestingUrl, HOSTED_ARTIFACT_FRAME_POLICY)) {
       callback(false)
 
       return
@@ -6773,7 +6775,7 @@ function installMediaPermissions() {
   // permissions — identical policy to the request handler below, just without
   // the metadata refinement (absent metadata is allowed there too).
   session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
-    if (isHostedArtifactRequestingUrl(requestingOrigin, hostedArtifactFramePolicy())) {
+    if (isHostedArtifactRequestingUrl(requestingOrigin, HOSTED_ARTIFACT_FRAME_POLICY)) {
       return false
     }
 
@@ -6822,52 +6824,6 @@ function isHermesHubPickerUrl(url: string): boolean {
   } catch {
     return false
   }
-}
-
-/** Look up a subframe by its process/routing id; never throws. */
-function findFrameByIdentifier(
-  webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
-  frameProcessId: number,
-  frameRoutingId: number
-): { origin?: string; reload?: () => void } | null {
-  const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
-    processId?: number
-    routingId?: number
-    frameProcessId?: number
-    frameRoutingId?: number
-    origin?: string
-    reload?: () => void
-  }>
-
-  return (
-    candidates.find(
-      f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
-    ) ?? null
-  )
-}
-
-/** Hosted artifact framing policy for this build: unpackaged (development)
- *  runs also accept the local artifacts server. */
-function hostedArtifactFramePolicy() {
-  return { dev: !IS_PACKAGED }
-}
-
-/** A URL's origin for logs: never the path or query (a view ticket). */
-function safeUrlOrigin(url: string): string {
-  try {
-    return new URL(url).origin
-  } catch {
-    return '(unparseable)'
-  }
-}
-
-/** `frame.origin` as a safe string; destroyed frames report opaque/'null'. */
-function safeFrameOrigin(frame: { origin?: string } | null | undefined): string | null {
-  if (!frame?.origin || frame.origin === 'null') {
-    return null
-  }
-
-  return frame.origin
 }
 
 // ---------------------------------------------------------------------------
@@ -11864,10 +11820,9 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
     const frameOrigin = safeFrameOrigin(frame)
 
-    // Hosted artifact frames: an artifact stays on its own origin, and a
-    // frame enters the artifact namespace only on an origin this build may
-    // frame (hosted-artifact-frame.ts). Everything else is not ours.
-    const artifactVerdict = hostedArtifactFrameNavigation(frameOrigin, url, hostedArtifactFramePolicy())
+    // Hosted artifact frames stay on their own origin, and only origins this
+    // build may frame are entered (hosted-artifact-frame.ts).
+    const artifactVerdict = hostedArtifactFrameNavigation(frameOrigin, url, HOSTED_ARTIFACT_FRAME_POLICY)
 
     if (artifactVerdict === 'deny') {
       event.preventDefault()

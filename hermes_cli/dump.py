@@ -24,8 +24,8 @@ def _dotenv_key_names() -> set[str]:
     from .env, invisible to the launchd backend).
     """
     try:
-        env_path = get_env_path()
-        text = env_path.read_text(encoding="utf-8-sig", errors="ignore")
+        from hermes_secret_routing import read_env_text  # the selected secret store's view
+        text = read_env_text(get_env_path(), errors="ignore")
     except (OSError, UnicodeError):
         return set()
     names: set[str] = set()

@@ -57,18 +57,23 @@ def _auth_json_path() -> Path:
 
 
 def _load_auth() -> dict[str, Any]:
+    from hermes_secret_routing import auth_json_exists, read_auth_json  # the selected secret store's view
     path = _auth_json_path()
-    if not path.exists():
+    if not auth_json_exists(path):
         return {}
     try:
-        with path.open("r", encoding="utf-8-sig") as fh:
-            return json.load(fh) or {}
+        return read_auth_json(path) or {}
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("photon: could not read %s: %s", path, e)
         return {}
 
 
 def _save_auth(data: dict[str, Any]) -> None:
+    from hermes_secret_routing import routed_provider
+    if routed_provider() is not None:  # the selected secret store keeps the records, not this file
+        from hermes_cli.auth import _save_auth_store
+        _save_auth_store(data)
+        return
     path = _auth_json_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # Random per-process temp name (no collisions / pre-planted symlinks), created 0o600

@@ -418,7 +418,7 @@ def build_subprocess_env(
         if is_multiplex_active():
             # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
             # values the child already inherits byte-identical.
-            env.update(current_secret_scope() or {})
+            env.update(_materialize_secret_scope(current_secret_scope()))
             # Administrator-managed values keep their precedence over the routed profile's own .env,
             # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
             restore_managed_env(env)
@@ -431,6 +431,16 @@ def build_subprocess_env(
     strip_supervised_process_identity(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
+
+
+def _materialize_secret_scope(secrets: Mapping[str, str] | None) -> dict[str, str]:
+    """Plain dict of a bound scope at a child-spawn boundary. A store's live view materialises
+    atomically through its own ``copy``; any other ``Mapping`` (``set_secret_scope``'s contract,
+    which does not promise ``copy``) through ``dict`` exactly as before."""
+    from agent.secret_scope import LiveSecretScope
+    if secrets is None:
+        return {}
+    return secrets.copy() if isinstance(secrets, LiveSecretScope) else dict(secrets)
 
 
 def served_profile_child_env(
@@ -474,7 +484,7 @@ def served_profile_child_env(
                     "", "served_profile_child_env(inherit_credentials=True) called with no target home and "
                     "no profile secret scope bound while multiplexing is on; the child would inherit the "
                     "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
-        env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
+        env.update((k, v) for k, v in _materialize_secret_scope(secrets).items() if v is not None)
         if not (_is_routed_home(target) if target else secrets is not None):
             _restore_bootstrap_tokens(env, os.environ if base is None else base)
     _carry_bridge_markers(env, base if base is not None else os.environ, own_profile=not routed)
@@ -543,7 +553,8 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     launch profile. The authority test is "does this task serve a routed home", not "is the
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
-    from agent.secret_scope import _is_global_env, load_env_file
+    from agent.secret_scope import _is_global_env
+    from hermes_secret_routing import read_profile_env  # the launch profile's env as the secret store serves it
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
     if not target or not _is_routed_home(target):
@@ -569,7 +580,7 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     managed_names = {key.upper() for key in managed_dotenv_keys()} | set(deployment_env_names())
     residue_names = {
         key.upper() for key in
-        set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
+        set(read_profile_env(launch_home / ".env")) | set(launch_dotenv_keys())
         | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
         if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
     drop_bridge_markers(env)  # the LAUNCH profile's YAML values and their markers, never the target's

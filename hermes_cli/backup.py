@@ -28,7 +28,7 @@ from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_atomic import _atomic_output_path
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.backup_staging import prune_backup_staging, reclaim_backup_staging, staged_backup_file, warn_legacy_backup_file
-from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
+from hermes_cli.config_backend import drop_other_access, require_profile_file_tooling as require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import BRIDGE_LOG_PARTS, PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 

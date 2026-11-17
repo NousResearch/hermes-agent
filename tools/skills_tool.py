@@ -123,9 +123,9 @@ def load_env() -> dict[str, str]:
 
     if worker_config_snapshot() is not None:
         return {}
-    from agent.secret_scope import load_env_file
+    from hermes_secret_routing import read_profile_env  # the selected secret store's view
 
-    return load_env_file(get_hermes_home() / ".env")
+    return read_profile_env(get_hermes_home() / ".env")
 
 
 def set_secret_capture_callback(callback) -> None:

@@ -128,11 +128,12 @@ def _remove_env_source(provider: str, removed) -> RemovalResult:
     env_in_process = bool(os.getenv(env_var))
     env_in_dotenv = False
     try:
+        from hermes_secret_routing import env_file_exists, read_env_text  # the selected secret store's view
         env_path = get_env_path()
-        if env_path.exists():
+        if env_file_exists(env_path):
             env_in_dotenv = any(
                 line.strip().startswith(f"{env_var}=")
-                for line in env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                for line in read_env_text(env_path, errors="replace").splitlines()
             )
     except OSError:
         pass

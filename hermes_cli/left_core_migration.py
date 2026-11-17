@@ -133,8 +133,8 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
     (:func:`platform_configured_on`), or the ``homeassistant`` / ``hermes-homeassistant`` toolset selected for
     another platform or in the top-level ``toolsets`` list. *process_env* (the active home at startup only)
     also counts a ``HASS_TOKEN`` the process received from its environment (systemd unit, Docker, shell export)."""
-    from agent.secret_scope import load_env_file
-    if (load_env_file(home / ".env").get("HASS_TOKEN") or "").strip():
+    from hermes_secret_routing import read_profile_env
+    if (read_profile_env(home / ".env").get("HASS_TOKEN") or "").strip():
         return True
     if process_env:
         try:
@@ -217,8 +217,12 @@ def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
 
 def _auth_store(home: Path) -> dict:
     """*home*'s ``auth.json``; ``{}`` when missing, unreadable or invalid (no login we can see)."""
-    from utils import read_json_or_empty
-    return read_json_or_empty(home / "auth.json")
+    from hermes_secret_routing import read_auth_json  # the selected secret store's view
+    try:
+        store = read_auth_json(home / "auth.json")
+    except (OSError, ValueError):
+        return {}
+    return store if isinstance(store, dict) else {}
 
 
 def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:

@@ -274,7 +274,6 @@ def _resolve_platform_config(platform_name, config):
 def _not_configured_error(platform_name, platform, entry):
     """Name the resolved home and what each credential source held, so the user edits the file this
     process actually read (a hardcoded ``~/.hermes`` does not exist on a Windows or profile home)."""
-    from agent.secret_scope import load_env_file
     from gateway.config import _getenv
     from gateway.config_env import _ENV_ENABLE_CREDENTIALS
     from hermes_constants import get_hermes_home
@@ -283,9 +282,10 @@ def _not_configured_error(platform_name, platform, entry):
     env_names = list(_ENV_ENABLE_CREDENTIALS.get(platform) or (entry.required_env if entry else ()))
     names = "/".join(env_names) or "credentials"
     env_path, config_path = home / ".env", home / "config.yaml"
-    dotenv_keys = load_env_file(env_path)
+    from hermes_secret_routing import env_file_exists, read_profile_env  # the selected secret store's view
+    dotenv_keys = read_profile_env(env_path)
     dotenv_state = (f"{names} present" if any(n in dotenv_keys for n in env_names) else f"no {names}") \
-        if env_path.exists() else "missing"
+        if env_file_exists(env_path) else "missing"
     try:
         from hermes_cli.config_effective import load_user_config_effective
         user_config = load_user_config_effective(config_path) or {}

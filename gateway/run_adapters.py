@@ -1130,8 +1130,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         in_dotenv = False
         if profile_home:
             try:
-                from agent.secret_scope import load_env_file
-                in_dotenv = (load_env_file(Path(profile_home) / ".env").get(env_name) or "").strip() == token
+                from hermes_secret_routing import read_profile_env
+                in_dotenv = (read_profile_env(Path(profile_home) / ".env").get(env_name) or "").strip() == token
             except Exception:
                 in_dotenv = False
         if in_dotenv:

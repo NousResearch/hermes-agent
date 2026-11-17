@@ -1,0 +1,585 @@
+{
+  "source": "2a436d8f287e2",
+  "rows": [
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=plain\n",
+      "base": "plain"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=abc$def\n",
+      "base": "abc$def"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=$$\n",
+      "base": "$$"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${\n",
+      "base": "${"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${OPENAI_API_KEY}\n",
+      "base": "launch-private-marker"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_OUTSIDE}\n",
+      "base": "launch-outside"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING:-fallback}\n",
+      "base": "fallback"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING}\n",
+      "base": ""
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_INNER}\n",
+      "base": "earlier"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a\\nb\n",
+      "base": "a\\nb"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a\\tb\n",
+      "base": "a\\tb"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a\\\\b\n",
+      "base": "a\\\\b"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a\\\"b\n",
+      "base": "a\\\"b"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a'b\n",
+      "base": "a'b"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a # comment\n",
+      "base": "a"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a#part\n",
+      "base": "a#part"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE= leading trailing \n",
+      "base": "leading trailing"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\n",
+      "base": ""
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${:-$}\n",
+      "base": "$"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${MISSING:-${NEST}}\n",
+      "base": "${NEST}"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='plain'\n",
+      "base": "plain"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='abc$def'\n",
+      "base": "abc$def"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='$$'\n",
+      "base": "$$"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${'\n",
+      "base": "${"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${OPENAI_API_KEY}'\n",
+      "base": "launch-private-marker"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_OUTSIDE}'\n",
+      "base": "launch-outside"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING:-fallback}'\n",
+      "base": "fallback"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING}'\n",
+      "base": ""
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_INNER}'\n",
+      "base": "earlier"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a\\nb'\n",
+      "base": "a\\nb"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a\\tb'\n",
+      "base": "a\\tb"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\\b'\n",
+      "base": "a\\\\b"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\"b'\n",
+      "base": "a\\\"b"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a # comment'\n",
+      "base": "a # comment"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a#part'\n",
+      "base": "a#part"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=' leading trailing '\n",
+      "base": " leading trailing "
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=''\n",
+      "base": ""
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${:-$}'\n",
+      "base": "$"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${MISSING:-${NEST}}'\n",
+      "base": "${NEST}"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"plain\"\n",
+      "base": "plain"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"abc$def\"\n",
+      "base": "abc$def"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"$$\"\n",
+      "base": "$$"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${\"\n",
+      "base": "${"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${OPENAI_API_KEY}\"\n",
+      "base": "launch-private-marker"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_OUTSIDE}\"\n",
+      "base": "launch-outside"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING:-fallback}\"\n",
+      "base": "fallback"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING}\"\n",
+      "base": ""
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_INNER}\"\n",
+      "base": "earlier"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\nb\"\n",
+      "base": "a\\nb"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\tb\"\n",
+      "base": "a\\tb"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\\\b\"\n",
+      "base": "a\\b"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a'b\"\n",
+      "base": "a'b"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a # comment\"\n",
+      "base": "a # comment"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a#part\"\n",
+      "base": "a#part"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\" leading trailing \"\n",
+      "base": " leading trailing "
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"\"\n",
+      "base": ""
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${:-$}\"\n",
+      "base": "$"
+    },
+    {
+      "home": "process",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${MISSING:-${NEST}}\"\n",
+      "base": "${NEST}"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=plain\n",
+      "base": "plain"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=abc$def\n",
+      "base": "abc$def"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=$$\n",
+      "base": "$$"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${\n",
+      "base": "${"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${OPENAI_API_KEY}\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_OUTSIDE}\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING:-fallback}\n",
+      "base": "fallback"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_MISSING}\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${RV10_INNER}\n",
+      "base": "earlier"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a\\nb\n",
+      "base": "a\\nb"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a\\tb\n",
+      "base": "a\\tb"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a\\\\b\n",
+      "base": "a\\\\b"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a\\\"b\n",
+      "base": "a\\\"b"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a'b\n",
+      "base": "a'b"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a # comment\n",
+      "base": "a"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=a#part\n",
+      "base": "a#part"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE= leading trailing \n",
+      "base": "leading trailing"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${:-$}\n",
+      "base": "$"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=${MISSING:-${NEST}}\n",
+      "base": "${NEST}"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='plain'\n",
+      "base": "plain"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='abc$def'\n",
+      "base": "abc$def"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='$$'\n",
+      "base": "$$"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${'\n",
+      "base": "${"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${OPENAI_API_KEY}'\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_OUTSIDE}'\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING:-fallback}'\n",
+      "base": "fallback"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_MISSING}'\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${RV10_INNER}'\n",
+      "base": "earlier"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a\\nb'\n",
+      "base": "a\\nb"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a\\tb'\n",
+      "base": "a\\tb"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\\b'\n",
+      "base": "a\\\\b"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a\\\"b'\n",
+      "base": "a\\\"b"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a # comment'\n",
+      "base": "a # comment"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='a#part'\n",
+      "base": "a#part"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=' leading trailing '\n",
+      "base": " leading trailing "
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=''\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${:-$}'\n",
+      "base": "$"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE='${MISSING:-${NEST}}'\n",
+      "base": "${NEST}"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"plain\"\n",
+      "base": "plain"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"abc$def\"\n",
+      "base": "abc$def"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"$$\"\n",
+      "base": "$$"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${\"\n",
+      "base": "${"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${OPENAI_API_KEY}\"\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_OUTSIDE}\"\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING:-fallback}\"\n",
+      "base": "fallback"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_MISSING}\"\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${RV10_INNER}\"\n",
+      "base": "earlier"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\nb\"\n",
+      "base": "a\\nb"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\tb\"\n",
+      "base": "a\\tb"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a\\\\b\"\n",
+      "base": "a\\b"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a'b\"\n",
+      "base": "a'b"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a # comment\"\n",
+      "base": "a # comment"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"a#part\"\n",
+      "base": "a#part"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\" leading trailing \"\n",
+      "base": " leading trailing "
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"\"\n",
+      "base": ""
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${:-$}\"\n",
+      "base": "$"
+    },
+    {
+      "home": "satellite",
+      "text": "RV10_INNER=earlier\nRV10_VALUE=\"${MISSING:-${NEST}}\"\n",
+      "base": "${NEST}"
+    }
+  ]
+}

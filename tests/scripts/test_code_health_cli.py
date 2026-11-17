@@ -33,6 +33,7 @@ _GUARD_SCRIPTS = (
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py", "scripts/ci/check_line_endings.py",
     "scripts/ci/check_dockerfile_downloads.py", "scripts/check_tool_discovery.py",
     "scripts/check_packaged_imports.py",
+    "scripts/check_secret_file_access.py",
 )
 _SUPPORT = ("scripts/ci/profile_scope_patterns.json", "scripts/install_root_lint_baseline.json", "agent/subdirectory_hints.py",
             "tools/__init__.py", "tools/registry.py", "hermes_constants.py", *_GUARD_SCRIPTS)
@@ -100,6 +101,10 @@ def _add_engine(repo: Path, checker: bool = True) -> list[str]:
     for rel in _SUPPORT:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / current_path(rel), repo / rel)
+    # The secret-file guard scans top-level modules: carry the real allowlist's lines for the copied ones.
+    allow = json.loads((REPO / "scripts/secret_file_access_allowlist.json").read_text(encoding="utf-8"))
+    _write(repo, {"scripts/secret_file_access_allowlist.json":
+                  json.dumps({k: v for k, v in allow.items() if k in _SUPPORT}, indent=1) + "\n"})
     (repo / "hermes_agent").mkdir(exist_ok=True)
     shutil.copy2(REPO / "hermes_agent/__init__.py", repo / "hermes_agent/__init__.py")
     shutil.copytree(REPO / "hermes_agent/compat", repo / "hermes_agent/compat",

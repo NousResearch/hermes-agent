@@ -1,6 +1,8 @@
 """Tests for the profile-scoped credential primitive (Workstream A / Phase 2)."""
 import pytest
 
+pytest_plugins = ["tests.agent.test_secret_layer_precedence"]
+
 from agent import secret_scope as ss
 from hermes_constants import hermes_home_key
 
@@ -381,8 +383,9 @@ class TestEnvFileParsing:
             ss.reset_secret_scope(token)
             ss.set_multiplex_active(False)
 
-    def test_build_profile_secret_scope(self, tmp_path):
-        (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-profile\n")
+    def test_build_profile_secret_scope(self, profile_store):
+        tmp_path, seed = profile_store
+        seed({"ANTHROPIC_API_KEY": "sk-profile"})
         assert ss.build_profile_secret_scope(tmp_path) == {
             "ANTHROPIC_API_KEY": "sk-profile"
         }

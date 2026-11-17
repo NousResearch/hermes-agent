@@ -69,6 +69,7 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     for name in ("pm", "hermes_cli", "hermes_platform", "hermes_agent", "utils"):
         shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "hermes_bootstrap.py",
+                 "hermes_secret_routing.py", "hermes_secret_port.py", "hermes_scope.py",
                  "setup-hermes.sh"):
         shutil.copy2(ROOT / name, source / name)
     # The CLI's user-facing text resolves through the i18n kernel (agent.i18n + the English catalog),

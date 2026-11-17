@@ -158,7 +158,7 @@ class _CatalogBackend:
 
     def _install(self, name: str, env: dict[str, str]) -> list[str]:
         from agent.secret_scope import (
-            current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope)
+            current_secret_scope, current_secret_scope_home, overlay_secret_scope, reset_secret_scope, set_secret_scope)
         from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
         from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
 
@@ -174,7 +174,7 @@ class _CatalogBackend:
         # The merged scope keeps the bound scope's home stamp: dropping it would
         # reopen the env fallthrough under a routed profile with multiplex off.
         token = set_secret_scope(
-            {**dict(current_secret_scope() or {}), **env},
+            overlay_secret_scope(current_secret_scope() or {}, env),
             profile_home=current_secret_scope_home())
         try:
             tools = [str(tool[0]) for tool in (_probe_single_server(name, cfg) or [])]

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["tests.agent.test_secret_layer_precedence"]
+
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -270,12 +272,11 @@ def test_cold_profile_hydration_seeds_op_env_bootstrap(tmp_path, monkeypatch):
     assert os.environ.get("OP_SERVICE_ACCOUNT_TOKEN") is None
 
 
-def test_cold_profile_hydration_dotenv_wins_over_op_env(tmp_path, monkeypatch):
+def test_cold_profile_hydration_dotenv_wins_over_op_env(profile_store, monkeypatch):
     """.env takes precedence over .op.env for the same key (setdefault)."""
+    tmp_path, seed = profile_store
     monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
-    (tmp_path / ".env").write_text(
-        "OP_SERVICE_ACCOUNT_TOKEN=ops_from-dotenv\n", encoding="utf-8"
-    )
+    seed({"OP_SERVICE_ACCOUNT_TOKEN": "ops_from-dotenv"})
     (tmp_path / ".op.env").write_text(
         "OP_SERVICE_ACCOUNT_TOKEN=ops_from-op-env\n", encoding="utf-8"
     )

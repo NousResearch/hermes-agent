@@ -161,14 +161,14 @@ def run_worker(
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     try:
         from agent.secret_scope import (
-            build_profile_secret_scope, reset_secret_scope, set_secret_scope)
+            build_profile_secret_scope, overlay_secret_scope, reset_secret_scope, set_secret_scope)
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
         from tools.mcp_oauth import force_interactive_oauth
         home_token = secret_token = None
         try:
             home_token = set_hermes_home_override(hermes_home)
             secret_token = set_secret_scope(
-                {**build_profile_secret_scope(Path(hermes_home)), **(env or {})}, profile_home=hermes_home)
+                overlay_secret_scope(build_profile_secret_scope(Path(hermes_home)), env or {}), profile_home=hermes_home)
             if not (reuse_saved and flow is not None
                     and _reuse_saved_authorization(server_name, cfg, flow, on_commit)):
                 with force_interactive_oauth(), dashboard_oauth_flow(flow):

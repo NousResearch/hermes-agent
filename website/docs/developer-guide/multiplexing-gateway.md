@@ -145,7 +145,80 @@ state:
   as routed. It refuses inside a hosted scope.
 - `bind_state(scope, ...)` returns the change's token, for a host that holds it
   across calls (the TUI turn, the managed worker) or deliberately binds less.
-- `bind_turn(session_id, turn_id, fence)` marks a turn inside a bound scope.
+- `bind_turn(session_id, turn_id, fence, store=path)` marks a turn inside a bound scope.
+  It also records the turn (`hermes_scope.current_turn()`) for the body's duration, with the
+  path of the session store that issued the claim, whether or not a scope is bound.
+
+### Session storage ports
+
+`hermes_state_port.py` defines the session store and turn admission as ports at
+the level today's callers use, never SQL and never a connection: `SessionStore`
+(session rows and transcripts, transcript rewrites and rewinds, compression
+publication, usage) and `TurnAdmission` (the owner lock, owner epoch and each
+session's FIFO, whose claims issue turn fences; steering and its settlement,
+runtime-session mutations, worker executions and their receipts). A
+`SessionStorageProvider` supplies both.
+
+This is an interface for a follow-up migration, not a switch: no production
+caller goes through the ports yet, and nothing in config.yaml selects a
+backend. Today's callers still use `SessionDB` and `hermes_state_runtime`
+directly. `resolve_session_storage(name)` takes the backend's name explicitly:
+`"local"` is the local backend (`hermes_state_port_local.py`: today's
+per-profile `state.db`, the `hermes_state_runtime` ledger and the
+`gateway.lock` owner lock, each operation pinned and then delegated to the call
+the code makes today). Any other name is a provider plugin under
+`plugins/session_storage/<name>/` or `$HERMES_HOME/plugins/<name>/`; a named
+provider that is missing or unavailable raises, never falling back to the local
+file. Providers load in-process only: under `plugins.isolation: host` a user
+provider is refused with the reason (typed port proxies with a scope envelope
+on every call are a follow-up). A user provider's module is namespaced by its
+canonical directory, so same-named providers in two profiles never share code.
+
+Every operation reads its pin from `hermes_scope.current_scope()` when it runs.
+The local backend serves the local tenant and its own profile home only; any
+other bound scope raises `StoragePinRefused` before anything is read or written.
+With no scope bound, the pin is the ambient profile, as for every local caller
+today. The store's database file and owning profile are frozen when the ports
+open: a symlinked profile directory is the same profile, a database file that
+links into another directory is refused. `SessionStore.append_turn` is the
+turn-path write: it requires the session's claimed turn to be bound
+(`TurnFenceRequiredError` otherwise). `TurnAdmission.claim_next` takes typed
+`ClaimPreconditions` (the validated head and the owner's `AdmissionGate`) that
+the backend checks inside the claim's transaction. `assert_isolating()` is
+abstract: every backend must check that it isolates tenants in storage itself.
+
+A backend proves itself against the conformance suite, which ships in the
+installed package as `hermes_conformance.storage`: a plugin's tests subclass
+`StorageConformance` and supply a `Backend` fixture. Pin refusal is tested for
+every mutating operation of both ports, and stale-fence refusal for every turn
+write (session creation included), both asserting that nothing observable
+changed, auxiliary usage per task included. The admission gate is tested while
+the claim waits for the writer, so a gate asked only before the claim's
+transaction fails. The suite's docstring
+lists the invariants it does not cover yet (participant visibility, actor- and
+owner-level resolution, child inheritance, retention, the hosted isolation
+assertion, transaction-local scope pinning); passing it does not establish them.
+
+### Fenced turn writes
+
+A claimed turn has one identity: the bound `TurnScope` (session, turn, fence) plus the store
+that issued its claim (`hermes_scope.TurnMark`, recorded by `bind_turn`; a `TurnScope` bound
+without one is fenced on its profile's `state.db`). Every write made in the turn's context to
+that store checks the fence inside the write's own transaction (`hermes_state_fence`, called
+from `SessionDB._execute_write`). If the profile's owner epoch or the session's
+`runtime_generation` has moved since the claim, the write raises `TurnFenceSupersededError` (a
+`SessionTurnLeaseLostError`) and nothing of it lands.
+
+The identity is immutable and never closes. Threads and tasks the turn starts (the title
+upgrade, a late reply) stay the turn's work for their whole lifetime, so after a takeover or the
+session's next claim their writes are refused, while those of a turn still holding its lease land
+as before. A token update queued for the background writer carries the turn it was queued under,
+is applied in that turn's fence, and never coalesces with another claim's. Two exceptions are
+explicit: the owner's own work (the drain that claims and settles turns, which keeps the ledger's
+owner-epoch/generation checks) runs under `agent.runtime_scope.owner_operation()`, and work
+designed to outlive the turn (async delegation, background review) runs under `outlive_turn()`,
+which keeps only the owner-epoch half of the fence. Writes to another profile's store, CLI/TUI
+turns (durable turn lease) and maintenance between turns are not turn writes.
 
 Inside a hosted scope, a bind must keep the tenant, agent, actor, owner and
 administration right; anything else raises `ScopeSwitchRefused`.

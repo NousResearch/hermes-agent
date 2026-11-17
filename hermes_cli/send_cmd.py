@@ -167,12 +167,13 @@ def _load_hermes_env() -> None:
         return
     from agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() if is_multiplex_active() else None
-    if isinstance(scope, dict):
-        target: dict = scope
+    if scope is not None:
+        target = scope
     else:
         target = os.environ
         env_path = home / ".env"
-        if env_path.exists():
+        from hermes_secret_routing import env_file_exists
+        if env_file_exists(env_path):
             try:
                 from hermes_cli.env_loader import _load_dotenv_with_fallback
                 _load_dotenv_with_fallback(env_path, override=True)

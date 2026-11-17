@@ -433,7 +433,8 @@ class PreparedCompaction:
 
             # Profile and secret scope ride the contextvars into the pass.
             thread = spawn_context_thread(
-                self._run_pass, name="compaction-prepare", args=(worker, copy.deepcopy(turns), focus, token, origin),
+                self._run_pass_outliving_turn, name="compaction-prepare",
+                args=(worker, copy.deepcopy(turns), focus, token, origin),
             )
             thread.start()
             _record("pass_started", origin=origin)
@@ -448,6 +449,15 @@ class PreparedCompaction:
             logger.debug("prepared compaction: maybe_prepare failed", exc_info=True)
             _record("internal_error", origin=origin, failure_class="exception")
             return None
+
+    def _run_pass_outliving_turn(
+        self, worker: Any, turns: list[dict[str, Any]], focus: Optional[str], token: _PendingPass, origin: str,
+    ) -> None:
+        """The pass summarises this turn's own ask, like the title upgrade: the session's next claim
+        must not refuse its usage row (another owner taking the profile over still does)."""
+        from agent.runtime_scope import outlive_turn
+        with outlive_turn():
+            self._run_pass(worker, turns, focus, token, origin)
 
     def _run_pass(
         self, worker: Any, turns: list[dict[str, Any]], focus: Optional[str], token: _PendingPass, origin: str,

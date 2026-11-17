@@ -16,7 +16,6 @@ clear "sign in" error from :meth:`search` rather than a silently different backe
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict
 
 from plugins.web._common import BaseWebSearchProvider, search_fail
@@ -46,10 +45,12 @@ def has_codex_credentials() -> bool:
     try:
         from hermes_constants import get_hermes_home
 
+        from hermes_secret_routing import auth_json_exists, read_auth_json  # the selected secret store's view
+
         auth_path = get_hermes_home() / "auth.json"
-        if not auth_path.exists():
+        if not auth_json_exists(auth_path):
             return False
-        store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
+        store = read_auth_json(auth_path)
         tokens = _dget(_dget(_dget(store, "providers"), "openai-codex"), "tokens")
         if str(_dget(tokens, "access_token") or "").strip():
             return True

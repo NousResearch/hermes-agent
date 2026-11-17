@@ -604,13 +604,24 @@ def deployment_env_names() -> frozenset:
     launch profile's ``.env``, which a child acting for ANOTHER profile drops as launch residue
     (``strip_launch_profile_env``). Such a child re-reads only its own profile's ``.env`` and would
     silently select the file backend, so these names are never residue. Credentials are not part
-    of it: the child resolves its own, and fails closed without them."""
-    return get_config_backend().deployment_env_names()
+    of it: the child resolves its own, and fails closed without them. The selected secret store's
+    deployment (``HERMES_SECRET_STORE`` and where it lives) is the instance's in the same way."""
+    from hermes_secret_routing import deployment_env_names as secret_store_deployment
+    return get_config_backend().deployment_env_names() | secret_store_deployment()
 
 
 def supports_file_tooling() -> bool:
     """Gate for tools that copy, edit or back up the config FILE itself (§4.3, §4.7)."""
     return get_config_backend().supports_file_tooling()
+
+
+def require_profile_file_tooling(what: str) -> None:
+    """:func:`require_file_tooling` for a tool that also copies the profile's secret FILES
+    (``.env``, ``auth.json``: backup, import, snapshot restore, profile clone and install): refused
+    as well when the selected secret store keeps the profile's secrets elsewhere."""
+    require_file_tooling(what)
+    from hermes_secret_routing import require_file_tooling as require_secret_file_tooling
+    require_secret_file_tooling(what)
 
 
 def require_file_tooling(what: str) -> None:

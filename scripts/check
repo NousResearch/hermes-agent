@@ -123,7 +123,9 @@ _GUARDS = {
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
 # (the blob-size step of repo-guards.yml).
-_DIFF_GUARDS = {"blob-size": ["scripts/ci/check_blob_size.py"]}
+_DIFF_GUARDS = {"blob-size": ["scripts/ci/check_blob_size.py"],
+                # its allowlist is a ratchet against the base's
+                "secret-files": ["scripts/check_secret_file_access.py"]}
 _CHECKS = (*_GUARDS, *_DIFF_GUARDS, "ruff", "health")
 
 

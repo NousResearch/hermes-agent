@@ -735,6 +735,8 @@ include = [
   "tools.*",
   "utils",
   "utils.*",
+  "hermes_conformance",
+  "hermes_conformance.*",
 ]
 
 [tool.setuptools.package-data]

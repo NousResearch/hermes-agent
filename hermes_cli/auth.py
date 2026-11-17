@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
+from hermes_secret_routing import auth_view_version as _routed_auth_view_version, routed_auth_loader, save_auth_store as _routed_auth_save
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -504,16 +505,16 @@ def _global_auth_file_path() -> Optional[Path]:
 
 
 def _load_global_auth_store() -> dict[str, Any]:
-    """Load the global-root auth store (read-only fallback, mtime-memoised); ``{}`` when absent or
-    unreadable — a malformed global store must never break profile reads."""
+    """The global-root auth store (read-only fallback, memoised); ``{}`` when absent or unreadable."""
     global _global_auth_store_cache
     global_path = _global_auth_file_path()
-    if global_path is None or not global_path.exists():
+    view_version = None if global_path is None else _routed_auth_view_version(global_path)  # None: local store
+    if global_path is None or (view_version is None and not global_path.exists()):
         _global_auth_store_cache = None
         return {}
     try:
-        cache_key: Optional[tuple[str, tuple[Any, ...]]] = (
-            str(global_path.resolve(strict=False)), file_cache_version(global_path))
+        cache_key: Optional[tuple[str, tuple[Any, ...]]] = (str(global_path.resolve(strict=False)),
+            file_cache_version(global_path) if view_version is None else ("view", view_version))
     except Exception:
         cache_key = None
     cached = _global_auth_store_cache
@@ -725,8 +726,8 @@ def _empty_auth_store() -> dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
+@routed_auth_loader  # the selected secret store's view over the file's bootstrap records (local: the file)
 def _load_auth_store(auth_file: Optional[Path] = None) -> dict[str, Any]:
-    auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
         return _empty_auth_store()
     try:
@@ -786,9 +787,8 @@ def _save_auth_store(auth_store: dict[str, Any], target_path: Optional[Path] = N
     """Atomically persist *auth_store* (0o600, parent tightened to 0o700) to the active store, or to
     an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
-    auth_store["version"] = AUTH_STORE_VERSION
-    auth_store["updated_at"] = datetime.now(UTC).isoformat()
-    _save_private_json(auth_file, auth_store, fsync_dir=True)
+    auth_store.update(version=AUTH_STORE_VERSION, updated_at=datetime.now(UTC).isoformat())
+    _save_private_json(auth_file, _routed_auth_save(auth_file, auth_store) or auth_store, fsync_dir=True)
     if target_path is not None:
         # A write-through to the global root must not be masked by the mtime memo: on coarse-mtime
         # filesystems a read-after-write in the same tick would keep serving the pre-write store.

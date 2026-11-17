@@ -278,7 +278,8 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     if result.mirrored["auth"] is not True:
         # From the outcome, not the flags: a profile with no auth.json of its own reads the root's
         # (``--clone-all`` brings its own copy; ``mirror_credentials=False`` still reads the root's).
-        result.mirrored["auth"] = "shared" if not (path / "auth.json").exists() else False
+        from hermes_secret_routing import auth_json_exists  # a store's view counts as the profile's own
+        result.mirrored["auth"] = "shared" if not auth_json_exists(path / "auth.json") else False
     return result
 
 
@@ -478,15 +479,31 @@ def inherit_launch_model(path: Path) -> bool:
 
 
 
+class CredentialMirrorRefused(RuntimeError):
+    """Credential mirroring does not apply: the selected secret store keeps credentials elsewhere."""
+
+
 def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_auth: bool = False,
                               clone_channels: bool = False) -> tuple[str, ...]:
     """Copy the launch profile's .env / auth.json / voice sections into a new profile, recording each
     item in ``mirrored`` (best-effort per item). ``share_auth`` skips the auth copy when the launch
     profile is the root: the new profile then reads the root's auth.json, i.e. the launch logins. From a
     named launch profile that fallback would pair its keys with the root's logins, so its auth is copied.
-    Returns the providers whose single-use logins were left out of a copy (read from the root instead)."""
+    Returns the providers whose single-use logins were left out of a copy (read from the root instead).
+    Under any secret store but the local one it copies the non-secret sections only, then raises
+    :class:`CredentialMirrorRefused` for the .env / auth.json copy it skipped."""
     from hermes_cli.auth import _global_auth_file_path
     from hermes_constants import get_hermes_home
+    from hermes_secret_routing import routed_provider, selected_store_name
+    if routed_provider() is not None:
+        # The files hold only the store's local bootstrap entries: copying them would report keys
+        # and logins as carried over that never were. The config sections hold no secrets.
+        mirrored["env"] = mirrored["auth"] = False
+        mirrored["voice"] = _try("voice sections", lambda: _mirror_voice_sections(path), False)
+        raise CredentialMirrorRefused(
+            f"not copied: the {selected_store_name()!r} secret store keeps API keys and logins outside the "
+            "profile's .env / auth.json, so no API keys or logins were copied from the launch profile; add the new "
+            "profile's credentials to the secret store")
     launch_home = get_hermes_home()
     # Same test as the auth fallback that makes sharing work: share only when it reads the launch store.
     share_auth = share_auth and _global_auth_file_path() is None

@@ -105,9 +105,9 @@ _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     """KEY names assigned in a dotenv file (including empty ``KEY=``), via the same tokenizer that installs
     profile scopes — a key the installer sees is a key the dashboard scrub sees (BOM'd first line included)."""
-    from agent.secret_scope import load_env_file
+    from hermes_secret_routing import read_profile_env
 
-    return set(load_env_file(path))
+    return set(read_profile_env(path))
 
 
 def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
@@ -117,7 +117,8 @@ def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
     Does **not** run when the ``.env`` file does not exist (bare-profile case, which follows ``#66930`` /
     ``#67027`` semantics).
     """
-    if not path.exists():
+    from hermes_secret_routing import env_file_exists
+    if not env_file_exists(path):
         return
     defined = _env_keys_defined_in_dotenv(path)
     for key in _PROFILE_MANAGED_ENV_KEYS:
@@ -255,7 +256,9 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         from agent.secret_sources.registry import apply_all
 
         local_env = {name: value for name, value in os.environ.items() if _is_global_env(name)}
-        local_env.update(load_env_file(home / ".env"))
+        from hermes_secret_routing import read_profile_env
+
+        local_env.update(read_profile_env(home / ".env"))
         # Mirror load_hermes_dotenv()'s .op.env bootstrap (1Password token lives in gitignored .op.env)
         # or cold profiles fail 1Password hydration. .env wins.
         # Without seeding it here a cold profile configured for the supported .op.env flow fails 1Password
@@ -398,6 +401,10 @@ def _sanitize_loaded_credentials() -> None:
 
 def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
     """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order."""
+    from hermes_secret_routing import routed_profile_env
+    routed = routed_profile_env(path)
+    if routed is not None:
+        return list(routed.items())
     raw = path.read_bytes()
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
@@ -448,9 +455,10 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included.
-    *lookup_env* replaces that environment: another profile's file must not resolve against this one's."""
+    *lookup_env* replaces that environment: another profile's file must not resolve against this one's.
+    With a secret store that keeps the profile's secrets off disk, the home's layer is what the
+    launch load publishes for it instead: the file's bootstrap names plus the store's view, as is."""
     from hermes_cli import managed_scope
-
     managed_dir = managed_scope.get_managed_dir()
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
     if lookup_env is not None:
@@ -464,7 +472,8 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
             assignments = _parse_dotenv_file(path)
         except OSError:
             continue
-        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=True).items():
+        resolved = _resolve_dotenv_assignments(assignments, lookup_env, override=True)
+        for name, value in resolved.items():
             if value is not None:
                 lookup_env[name] = out[name] = value
     return out
@@ -639,6 +648,11 @@ def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_
     env = _bootstrap_env(home, project_env)
     # The selector itself always, so a file deployment is not read as another kind meanwhile.
     names = {BACKEND_ENV} | set(backend_names((env.get(BACKEND_ENV) or "").strip().lower() or "file"))
+    # The secret store is selected the same way, before the first secret read.
+    from hermes_secret_port import SECRET_STORE_ENV
+    from hermes_secret_routing import bootstrap_env_names_for
+
+    names |= bootstrap_env_names_for(env.get(SECRET_STORE_ENV))
     for name in names:
         value = env.get(name)
         if value is not None and os.environ.get(name) != value:
@@ -745,7 +759,38 @@ def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     return True
 
 
-def load_hermes_dotenv(
+def _boot_stores(home_path: Path, project_env_path: Path | None) -> None:
+    """Boot the config backend, then the secret store, for *home_path*.
+
+    The config backend is selected here — after the .env files, before the first config.yaml read
+    (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
+    process before any reader could fall back to defaults (config-config design §4.4, D11/D32). A
+    remote backend fetches this home's config here, failing closed; the file backend does nothing.
+
+    The administrator-managed .env is part of the deployment the backend boots from (it may be
+    where the selector, plane URL or instance id live). The override=True loads before this may have
+    replaced those names with the home's values, so re-publish the deployment names (only those)
+    with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
+    still applies once, last, where it keeps its precedence over secret-source results.
+
+    The secret store boots next, before the first secret read: a store that keeps secrets off disk
+    fetches this home's view here (failing closed) and it is published like the .env was."""
+    from hermes_cli.config_backend import bootstrap_deployment, get_config_backend
+    from hermes_secret_routing import boot_secret_store
+
+    bootstrap_deployment(home_path, project_env_path)
+    get_config_backend().boot(home_path)
+    boot_secret_store(home_path)
+
+
+def load_hermes_dotenv(*, hermes_home=None, project_env=None, load_external_secrets=True):
+    """Load the ordinary dotenv layers, substituting only a routed profile's raw read."""
+    from hermes_secret_routing import load_profile_dotenv
+    return load_profile_dotenv(_load_hermes_dotenv, hermes_home=hermes_home,
+                               project_env=project_env, load_external_secrets=load_external_secrets)
+
+
+def _load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
@@ -809,9 +854,15 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists() and _load_user_dotenv(user_env, load_pass=load_pass):
+    from hermes_secret_routing import routed_provider
+    routed = routed_provider() is not None  # the selector bootstrap_deployment just published
+    if (user_env.exists() or routed) and _load_user_dotenv(user_env, load_pass=load_pass):
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
+    # A store that keeps the profile's secrets off disk publishes its view HERE, where the local
+    # profile .env loads: .op.env and the project .env (its ${VAR} expansion too) see it the same way.
+    if routed:
+        _boot_stores(home_path, project_env_path)
 
     # .op.env AFTER .env so .env wins, but the bootstrap OP_SERVICE_ACCOUNT_TOKEN reaches
     # apply_onepassword_secrets() even in cron with no shell state; gitignored so the token never enters
@@ -821,7 +872,8 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not user_env.exists(), load_pass=load_pass)
+        _load_dotenv_with_fallback(project_env_path, override=not (user_env.exists() or routed),
+                                   load_pass=load_pass)
         loaded.append(project_env_path)
 
     # The override=True loads above wrote the raw .env line (``__BITWARDEN_MANAGED__`` placeholder, stale
@@ -833,19 +885,8 @@ def load_hermes_dotenv(
             if os.environ.get(name) != value:
                 os.environ[name] = value
 
-    # The config backend is selected here — after the .env files, before the first config.yaml read
-    # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
-    # process before any reader could fall back to defaults (config-config design §4.4, D11/D32). A
-    # remote backend fetches this home's config here, failing closed; the file backend does nothing.
-    from hermes_cli.config_backend import get_config_backend
-
-    # The administrator-managed .env is part of the deployment the backend boots from (it may be
-    # where the selector, plane URL or instance id live). The override=True loads above may have
-    # replaced those names with the home's values, so re-publish the deployment names (only those)
-    # with the bootstrap precedence -- managed last -- before the boot. The full managed overlay
-    # still applies once, last below, where it keeps its precedence over secret-source results.
-    bootstrap_deployment(home_path, project_env_path)
-    get_config_backend().boot(home_path)
+    if not routed:
+        _boot_stores(home_path, project_env_path)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
@@ -931,9 +972,9 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
     if not writes and not claims:
         return
     try:
-        from agent.secret_scope import load_env_file
+        from hermes_secret_routing import read_profile_env
 
-        owned_by_dotenv = set(load_env_file(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
+        owned_by_dotenv = set(read_profile_env(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
     except Exception:
         owned_by_dotenv = set(_MANAGED_DOTENV_KEYS)
     _revoke_value_writes(home_key, writes or {}, keep, owned_by_dotenv)

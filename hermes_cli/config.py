@@ -35,6 +35,7 @@ from hermes_cli import managed_scope
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.left_core_migration import profile_env_names as _left_core_profile_env
 from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_secret_routing import route_env_write
 # Managed-mode, container and HERMES_UID/GID policy live in hermes_constants (import-safe);
 # re-exported here so existing callers/patch targets keep working.
 from hermes_constants import (
@@ -2315,9 +2316,9 @@ def load_env() -> dict[str, str]:
     # through the owner-installed scope, so the .env layer is empty here.
     if _worker_config_snapshot() is not None:
         return {}
-    from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
+    from hermes_secret_routing import read_profile_env  # the one .env tokenizer, through the secret store
 
-    env = load_env_file(get_env_path())
+    env = read_profile_env(get_env_path())
     _note_policy("note_env_policy", env.get("HERMES_REDACT_SECRETS"))
     return env
 
@@ -2496,32 +2497,8 @@ def _env_line_defines_key(line: str, key: str, *, is_windows: Optional[bool] = N
 
 
 def _publish_env_value(key: str, value: Optional[str]) -> None:
-    """Publish a just-persisted ``.env`` change to the live process.
-    Under a multiplexed gateway a routed profile's write must not land in the SHARED
-    ``os.environ`` where every profile sees it; the installed scope mapping is updated instead so
-    same-turn reads see the change. All other callers keep the legacy ``os.environ`` publish.
-
-    ``save_env_value`` / ``remove_env_value`` already target the right file (``get_env_path()`` honors the
-    profile-home override), but the in-process mirror historically went straight to ``os.environ``. See
-    #77490, #88441.
-    """
-    try:
-        from agent.secret_scope import current_secret_scope, serves_routed_profile
-
-        scope, routed = current_secret_scope(), serves_routed_profile()
-    except Exception:
-        scope, routed = None, False
-    # The launch profile's own body runs under a scope snapshot even single-profile (the TUI /
-    # dashboard launch scope), so a same-request read after the write must see it there too; a
-    # routed profile's value never reaches the shared process env.
-    targets = [scope] if isinstance(scope, dict) else []
-    if not routed and not is_launch_only_env_key(key) and (scope is None or isinstance(scope, dict)):
-        targets.append(os.environ)
-    for target in targets:
-        if value is None:
-            target.pop(key, None)
-        else:
-            target[key] = value
+    from hermes_cli.config_env_publication import publish_env_value
+    publish_env_value(key, value)
 
 
 def env_write_refusal(key: str, action: str) -> Optional[str]:
@@ -2571,20 +2548,19 @@ def save_env_value(key: str, value: str):
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
-
-    with _env_write_lock(env_path):
-        lines = _read_env_lines(env_path) if env_path.exists() else []
-        serialized_value = _quote_env_value(value)
-
-        idx = next((i for i, line in enumerate(lines) if _env_line_defines_key(line, key)), None)
-        if idx is not None:
-            lines[idx] = f"{key}={serialized_value}\n"
-        else:
-            if lines and not lines[-1].endswith("\n"):
-                lines[-1] += "\n"
-            lines.append(f"{key}={serialized_value}\n")
-
-        _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
+    # The selected secret store takes the write; None: the file is the store (local, or a bootstrap name).
+    if route_env_write(env_path, key, value) is None:
+        with _env_write_lock(env_path):
+            lines = _read_env_lines(env_path) if env_path.exists() else []
+            serialized_value = _quote_env_value(value)
+            idx = next((i for i, line in enumerate(lines) if _env_line_defines_key(line, key)), None)
+            if idx is not None:
+                lines[idx] = f"{key}={serialized_value}\n"
+            else:
+                if lines and not lines[-1].endswith("\n"):
+                    lines[-1] += "\n"
+                lines.append(f"{key}={serialized_value}\n")
+            _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
     _publish_env_value(key, value)
     invalidate_env_cache()
 
@@ -2605,10 +2581,10 @@ def remove_env_value(key: str) -> bool:
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
-    if not env_path.exists():
+    routed = route_env_write(env_path, key, None)  # the selected secret store's removal; None: the file's
+    if routed is not None or not env_path.exists():
         _publish_env_value(key, None)
-        return False
-
+        return bool(routed)
     with _env_write_lock(env_path):
         lines = _read_env_lines(env_path)
         new_lines = [line for line in lines if not _env_line_defines_key(line, key)]

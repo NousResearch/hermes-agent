@@ -139,8 +139,8 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
 
 def _write_web_ui_build_stamp(project_root: Path, web_dir: Path) -> None:
     """Historical updater entrypoint; current builders publish their own receipts."""
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import stop_historical_updater
+    stop_historical_updater("hermes_cli.main_web_build._write_web_ui_build_stamp")
 
 
 def _console_print(text: str) -> None:
@@ -156,22 +156,22 @@ def _run_with_idle_timeout(
     cmd: list[str], cwd: Path, *, idle_timeout_seconds: int = 180, indent: str = "    ",
     env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Stop an old updater instead of running the retired build path."""
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import stop_historical_updater
+    stop_historical_updater("hermes_cli.main_web_build._run_with_idle_timeout")
 
 
 def _nixos_build_env() -> dict[str, str] | None:
     """Stop an old updater instead of running the retired build path."""
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import stop_historical_updater
+    stop_historical_updater("hermes_cli.main_web_build._nixos_build_env")
 
 
 def _run_npm_install_deterministic(
     npm: str, cwd: Path, *, extra_args: tuple[str, ...] = (), capture_output: bool = True,
     env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Stop an old updater instead of running the retired build path."""
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli._old_updater import stop_historical_updater
+    stop_historical_updater("hermes_cli.main_web_build._run_npm_install_deterministic")
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:

@@ -206,6 +206,12 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
+    # Longest prompt-cache tier this route actually keeps ("5m" | "1h"); None = whatever is asked.
+    # Hermes clamps the requested tier to it and the prompt-cache clock never believes more.
+    # Config ``prompt_caching.route_ttl_ceilings`` overrides it per provider. Keyword-only so
+    # plugin subclasses' positional fields keep their slots.
+    prompt_cache_max_ttl: str | None = field(default=None, kw_only=True)
+
     # Private replay carriers use a namespaced '<provider>.native_assistant' type
     # in reasoning_details. Only this profile may receive its matching carrier;
     # other providers (including an unregistered fallback) get ordinary details only.
@@ -221,6 +227,11 @@ class ProviderProfile:
     process_args: tuple = ()             # default argv tail, e.g. ("--mode", "acp")
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
+    # The CLI's own sign-in, as an argv tail after the resolved binary, e.g. ("auth", "login"). Sign-in
+    # hints (error copy, cron notices, the Desktop card) show it; empty keeps ``hermes model``. Declared,
+    # not probed: hints are built on the gateway's event loop, so they never run ``setup_status()``.
+    # Keyword-only so a plugin subclass's own positional option keeps its slot.
+    login_args: tuple = field(default=(), kw_only=True)
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.

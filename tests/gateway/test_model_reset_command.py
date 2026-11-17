@@ -11,6 +11,8 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore, build_session_key
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 def _event(text: str, source: SessionSource) -> MessageEvent:
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)

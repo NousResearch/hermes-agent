@@ -914,11 +914,11 @@ class TestSlackProxyBehavior:
 
             def action(self, action_id):
                 self.registered_actions.append(action_id)
-
                 def decorator(fn):
                     return fn
 
                 return decorator
+            view = action  # Bolt's view(callback_id) decorator: same registration shape
 
         class FakeSocketModeHandler:
             def __init__(self, app, app_token, proxy=None):

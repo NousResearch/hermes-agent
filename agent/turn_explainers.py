@@ -122,8 +122,9 @@ class TurnExplainersMixin:
         failure time. A later success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
-        if tool_name not in _FILE_MUTATING_TOOLS:
-            return
+        from tools.hosted_tool_policy import host_feature_enabled
+        if tool_name not in _FILE_MUTATING_TOOLS or not host_feature_enabled("file_mutation_bookkeeping"):
+            return  # hosted: the target is in the agent's sandbox; it is never resolved or stat'd here
         state = getattr(self, "_turn_failed_file_mutations", None)
         if state is None:
             return

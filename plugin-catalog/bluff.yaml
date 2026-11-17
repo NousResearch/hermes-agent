@@ -16,6 +16,7 @@ category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/salch-cred/bluff
 version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/bluff/15d0b14cb502e0fb8e09674082a7c0d20f689124/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

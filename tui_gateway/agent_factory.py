@@ -138,11 +138,11 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
-    model = str(row.get("model") or model_config.get("model") or "").strip()
-    # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
-    # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
+    # Canonical model + route readers shared with CLI --resume: the pick, not a fallback that rewrote the
+    # billing column; then nested ``gateway_runtime`` before the TUI's top-level keys, then a routable
+    # ``billing_provider`` (#125942).
     from hermes_state import SessionDB
-    route = SessionDB.session_gateway_runtime(row)
+    model, route = SessionDB.session_resume_route(row)
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
@@ -188,13 +188,24 @@ def _scoped_session_provider(agent, session: dict) -> str:
         return _runtime_model_config(agent).get("provider") or "custom"
 
 
+def _session_route_view(agent):
+    """The agent as the SESSION's own route: a voice turn's route and a turn-scoped provider fallback both
+    leave the live fields on another model until the next turn restores the primary, so a settings save in
+    between must persist the primary snapshot, never the route standing in for it."""
+    from agent.voice_turn_route import _SessionRuntimeView, session_runtime_view
+    view = session_runtime_view(agent)
+    primary = getattr(agent, "_primary_runtime", None)
+    if getattr(agent, "_provider_fallback_active", False) is True and isinstance(primary, dict) and primary.get("model"):
+        view = _SessionRuntimeView(view, {"snapshot": primary, "reasoning_config": getattr(view, "reasoning_config", None)})
+    return view
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     """Merge the agent's CURRENT runtime identity onto the row's persisted ``model_config``. Falsy agent
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
-    from agent.voice_turn_route import session_runtime_view
-    agent = session_runtime_view(agent)
+    agent = _session_route_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, base_url = attr("model"), attr("base_url")
     from hermes_cli.runtime_provider_custom import session_provider_identity
@@ -211,6 +222,11 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
+    if isinstance(nested := config.get("gateway_runtime"), dict) and nested.get("provider"):
+        # Resume reads the nested route first, and its model before the top-level pick: an older CLI or
+        # gateway route left in place would undo this pick on reopen, so it takes the live pair too.
+        config["gateway_runtime"] = {k: v for k, v in (
+            ("provider", provider), ("base_url", base_url), ("api_mode", attr("api_mode")), ("model", model)) if v}
     return config
 
 
@@ -660,7 +676,7 @@ def _make_agent(
     with _sessions_lock:
         session = _sessions.get(sid)
     agent = AIAgent(
-        model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+        model=model, max_iterations=_cfg_max_turns(cfg), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
@@ -691,7 +707,7 @@ def _make_agent(
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
     if fallback_notice:
-        # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
+        # Emitted once at the start of the next turn via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
     return agent
 

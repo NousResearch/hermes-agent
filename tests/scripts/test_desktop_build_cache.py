@@ -178,7 +178,7 @@ def test_keys_follow_every_python_module_desktop_preparation_imports(tmp_path):
     assert not stale, f"desktop cache key ignores imported modules: {stale}"
 
 
-@pytest.mark.parametrize("package", ["scripts/bundles", "scripts/build", "pm"])
+@pytest.mark.parametrize("package", ["scripts/bundles", "scripts/build", "pm", "apps/desktop/scripts"])
 def test_a_new_module_in_a_preparation_package_misses_the_input_cache(tmp_path, package):
     """A late import of a module added to a preparation package needs no key-list edit."""
     from scripts.ci.desktop_build_cache import describe_cache

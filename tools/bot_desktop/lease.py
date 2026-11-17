@@ -249,14 +249,3 @@ def assert_agent_may_act(profile_key: Optional[str] = None) -> Lease:
             "A human has taken over this desktop (they may be entering a credential). Screen actions and "
             "captures are refused until they hand control back. Tell the user what you need in your reply.")
     return lease
-
-
-def _reset_for_tests() -> None:
-    with _lock:
-        _listeners.clear()
-    p = get_hermes_home() / "bot-desktop" / "lease.json"
-    for f in (p, p.with_suffix(".lock"), p.with_suffix(".json.tmp")):
-        try:
-            f.unlink()
-        except OSError:
-            pass

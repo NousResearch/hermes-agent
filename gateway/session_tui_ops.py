@@ -236,7 +236,7 @@ async def rollback(connection, ref, params, *, kind):
     terminal = json.loads(policy.terminal_json)
 
     def run() -> dict:
-        from tools.checkpoint_manager import CheckpointManager
+        from agent.checkpoints.manager import CheckpointManager
         from tui_gateway.checkpoints import _resolve_checkpoint_hash
         mgr = CheckpointManager(enabled=bool(kwargs['checkpoints_enabled']), **{
             key[len('checkpoint_'):]: value for key, value in kwargs.items() if key.startswith('checkpoint_')})
@@ -245,8 +245,9 @@ async def rollback(connection, ref, params, *, kind):
             return {'enabled': False, 'checkpoints': []} if kind == 'list' else {'enabled': False}
         # Host checkpoints are not a container-backed session's tree (main's _container_checkpoint_refusal),
         # classified under the session's frozen terminal policy, not the owner's ambient one.
-        from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-        token = set_terminal_scope(terminal)
+        from agent.runtime_scope import bind_terminal_policy
+        from tools.terminal_scope import reset_terminal_scope
+        token = bind_terminal_policy(terminal, profile_home=authority.profile_id)
         try:
             refusal = mgr.unsupported_backend_reason(task_id)
         finally:
@@ -261,7 +262,7 @@ async def rollback(connection, ref, params, *, kind):
                 # whose newest row bounds the span from below, so a turn started since cannot move it;
                 # without it ``undo_since`` is already bounded by the client (the rewired classic CLI).
                 from gateway.session_local_recovery import transcript_target
-                from tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
+                from agent.checkpoints.undo_hint import undo_hint_payload, undo_span_start
                 kept, transcript = [], transcript_target(authority, ref)
                 if (cut := params.get('undo_message_id')) is not None:
                     kept = [m for m in authority.db.get_messages_as_conversation(
@@ -290,7 +291,7 @@ async def rollback(connection, ref, params, *, kind):
         if refusal:
             return {'success': False, 'error': refusal}
         # Main's whole-tree /rollback keeps the user's hand-edits unless ``--all`` (``all``) says otherwise.
-        from tools.checkpoint_undo_hint import checkpoint_taken_at
+        from agent.checkpoints.undo_hint import checkpoint_taken_at
         taken.append(checkpoint_taken_at(cwd, target))
         return mgr.restore(cwd, target, file_path=file_path or None,
                            safe=not file_path and not params.get('all'))
@@ -343,7 +344,7 @@ async def _rewind_last_turn(connection, ref, taken=None):
     authority = connection.authority
     from agent.context_compressor import user_originated_turn_view
     from gateway.session_local_recovery import local_history
-    from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
+    from agent.checkpoints.undo_hint import rollback_rewinds_newest_turn
     rows = [row for row in await asyncio.to_thread(local_history, authority, ref) if not row.get('archived')]
     users = [i for i, row in enumerate(rows) if isinstance(row.get('row_id'), int)
              and user_originated_turn_view(row) is not None]

@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
@@ -31,6 +34,37 @@ def replied_voice_typed_text(event: Any) -> str | None:
     return getattr(event, VOICE_TYPED_ATTR, None)
 
 
+# A bot token as a path segment: a ``--local`` telegram-bot-api stores every file under
+# ``<server dir>/<token>/<kind>/file_N.ext`` and returns that absolute path from getFile.
+_TOKEN_SEGMENT = re.compile(r"^\d+:[A-Za-z0-9_-]+$")
+
+
+def local_root(adapter: Any) -> str | None:
+    """``extra.local_bot_api_root``: the host directory a ``--local`` server's storage is mounted at."""
+    extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+    return str(extra.get("local_bot_api_root") or "").strip() or None
+
+
+def local_bot_api_path(file_path: Any, root: str) -> Path | None:
+    """The host copy of a ``--local`` Bot API file under ``root`` (``extra.local_bot_api_root``),
+    or ``None``. The server reports its OWN path (``/var/lib/telegram-bot-api/<token>/videos/x``,
+    or that path behind ``base_file_url`` once PTB found it unreadable here); the part after the
+    token segment is looked up as ``root/<token>/<rest>`` then ``root/<rest>``. Two stats, no
+    directory walk; ``..`` never escapes ``root``. Blocking: call it via ``to_thread``."""
+    raw = unquote(urlsplit(str(file_path or "")).path)
+    parts = [p for p in raw.replace("\\", "/").split("/") if p]
+    # ``bot<token>`` (the URL prefix) never matches: the pattern starts with the numeric bot id.
+    token_at = next((i for i, p in enumerate(parts) if _TOKEN_SEGMENT.match(p)), None)
+    if token_at is None or token_at == len(parts) - 1 or ".." in parts:
+        return None
+    base = Path(root).expanduser()
+    rest = parts[token_at + 1:]
+    for candidate in (base.joinpath(parts[token_at], *rest), base.joinpath(*rest)):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def is_retryable_fetch_error(exc: Exception) -> bool:
     """A transport failure (PTB ``NetworkError``/``TimedOut`` or a bare httpx/OS error) other than a
     Bot API refusal or a pool timeout (the local pool is exhausted; an immediate replay stalls too)."""
@@ -41,9 +75,10 @@ def is_retryable_fetch_error(exc: Exception) -> bool:
         "ReadTimeout", "ReadError", "ConnectTimeout", "ConnectError", "RemoteProtocolError"}
 
 
-async def fetch_telegram_file(source: Any, what: str) -> tuple[Any, bytes]:
+async def fetch_telegram_file(source: Any, what: str, local_root: str | None = None) -> tuple[Any, bytes]:
     """``(file_obj, bytes)`` for one attachment. ``get_file()`` and the download retry as one unit:
-    a half-read download is not resumable."""
+    a half-read download is not resumable. ``local_root`` (``extra.local_bot_api_root``): where a
+    ``--local`` server's storage is mounted on this host (``local_bot_api_path``)."""
     from plugins.platforms.telegram.adapter import _redact_telegram_error_text
     delays = list(FETCH_RETRY_DELAYS)
     attempt = 0
@@ -51,6 +86,9 @@ async def fetch_telegram_file(source: Any, what: str) -> tuple[Any, bytes]:
         attempt += 1
         try:
             file_obj = await source.get_file()
+            if local_root and (host_path := await asyncio.to_thread(
+                    local_bot_api_path, getattr(file_obj, "file_path", None), local_root)):
+                return file_obj, await asyncio.to_thread(host_path.read_bytes)
             return file_obj, bytes(await file_obj.download_as_bytearray())
         except Exception as exc:
             if not delays or not is_retryable_fetch_error(exc):

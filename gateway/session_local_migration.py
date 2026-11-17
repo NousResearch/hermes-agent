@@ -101,6 +101,13 @@ def legacy_launch_params(row):
         # A provider's own pseudo-address (process://, moa://) is not an endpoint the session picked,
         # and replayed as a launch override it is refused (#142779, #147676). The provider is the route.
         route.pop('base_url')
+    if route.get('provider', '').lower() == 'custom' and 'base_url' not in route:
+        # Bare ``custom`` with no endpoint is the billing class an older Desktop/TUI stamped when it
+        # could not name the entry, not a route: pre-authority resume dropped it and ran the profile's
+        # route. Frozen as a route it strips the profile's endpoint and key (AuthError every turn).
+        # Without a provider, adoption below heals it to the entry serving the model, else the profile.
+        route.pop('provider')
+        route.pop('api_mode', None)
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
     params.update({key: route[key] for key in ('provider', 'base_url') if key in route})

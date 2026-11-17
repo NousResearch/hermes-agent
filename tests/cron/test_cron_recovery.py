@@ -162,11 +162,11 @@ def test_owner_refused_fire_is_booked_failed_and_retires_its_journal(tmp_path, m
 def test_admission_journal_survives_power_loss(tmp_path, monkeypatch):
     """The journal is the only evidence that a lost reply may have been admitted, so its rename
     is made durable (directory fsync), not left in the page cache until the next flush."""
-    import utils
+    import utils.files
     from cron import scheduler_authority
     synced = []
-    real = utils.fsync_directory
-    monkeypatch.setattr(utils, 'fsync_directory', lambda path: (synced.append(str(path)), real(path)))
+    real = utils.files.fsync_directory
+    monkeypatch.setattr(utils.files, 'fsync_directory', lambda path: (synced.append(str(path)), real(path)))
     workdir = tmp_path / 'work'
     workdir.mkdir()
     with jobs.use_cron_store(tmp_path / 'cron'):

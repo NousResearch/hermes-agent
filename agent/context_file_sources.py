@@ -4,7 +4,7 @@ Read-only: enumerates the same candidates ``build_context_files_prompt`` loads (
 ``agent.prompt_builder.discover_context_files`` — one discovery walk, so the listing cannot drift from the
 prompt) and reports, per file, its size and whether it was loaded, truncated over the context-file cap,
 shadowed by a higher-priority context type, blocked by the injection scan (or, for the user's own SOUL.md,
-flagged but loaded), empty/unreadable, or suppressed by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
+flagged but loaded), empty/unreadable, skipped by the containment check, or suppressed by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
 is free of cache impact.
 
 Approximations (the manifest re-derives, it does not re-render): the truncation check sizes the raw
@@ -30,6 +30,7 @@ _STATUS_DISPLAY = {
     "flagged": ("⚠", "loaded — matched prompt-injection pattern(s); review the file"),
     "empty": ("○", "not loaded — empty file"),
     "unreadable": ("✗", "not loaded — could not be read"),
+    "skipped": ("✗", "not loaded — resolves outside the project or to a protected file"),
     "suppressed": ("○", "not loaded — cwd fell back to the Hermes install tree"),
 }
 
@@ -65,7 +66,7 @@ def list_context_file_sources(
 
     Same signature semantics as ``build_context_files_prompt`` (``cwd=None`` → launch dir, install-tree guard
     unless *allow_install_tree_fallback*). Keys: ``label``, ``path``, ``chars``, ``est_tokens``, ``loaded``
-    and ``status`` ∈ loaded / truncated / flagged / shadowed / blocked / empty / unreadable / suppressed.
+    and ``status`` ∈ loaded / truncated / flagged / shadowed / blocked / empty / unreadable / skipped / suppressed.
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     max_chars = _pb._get_context_file_max_chars(context_length)
@@ -73,7 +74,9 @@ def list_context_file_sources(
     sources: list[dict[str, Any]] = []
     winner: Optional[str] = None
     for kind, label, path, content in _pb.discover_context_files(cwd_path):
-        if not content:
+        if content is None:  # refused by containment; stat would follow the link to the refused target
+            content, status = "", "skipped"
+        elif not content:
             status = _empty_status(path)
         elif suppressed:
             status = "suppressed"
@@ -89,7 +92,7 @@ def list_context_file_sources(
         home = Path(home_override) if home_override is not None else _pb.get_hermes_home()
         soul_path = home / "SOUL.md"
         if _pb._exists_or_denied(soul_path):
-            content = _pb._read_context_file(soul_path)
+            content = _pb._read_context_file(soul_path) or ""  # None only with a containment root
             status = (_loaded_status(content, len(content), max_chars, user_authored=True) if content
                       else _empty_status(soul_path))
             sources.append(_entry("SOUL.md", soul_path, content, status))

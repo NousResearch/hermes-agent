@@ -16,6 +16,7 @@ from hermes_cli.doctor_report import (
     warn_on_error,
 )
 from hermes_constants import is_termux as _is_termux
+from hermes_cli._startup_fast import project_root_str
 
 
 def _python_repair_hint() -> str:
@@ -125,7 +126,8 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
     ``database.journal_mode: delete`` that never took effect."""
     from hermes_cli.doctor import HERMES_HOME
     from hermes_state_wal import (
-        _path_on_cross_vm_fs, _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable, resolve_journal_mode,
+        _path_on_cross_vm_fs, _path_on_network_fs, _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable,
+        resolve_journal_mode,
     )
     vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
     configured = resolve_journal_mode()
@@ -169,6 +171,13 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
                        "(WAL can silently corrupt across the VM boundary; stop every Hermes process and run "
                        f"`hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`, then "
                        "set `database.journal_mode: delete` — or move the database onto a native/named volume)")
+        elif mode == "wal" and _path_on_network_fs(str(path)):
+            # #110848 remainder: an existing WAL file on a network mount keeps WAL (never live-downgraded); its
+            # -shm locks are network round trips, and concurrent writers are one step from silent corruption.
+            check_warn(f"{name} is in WAL mode on a network filesystem (nfs/cifs/smb/sshfs, {size})",
+                       "(WAL shared-memory locking is slow and unsafe across network filesystems; stop every Hermes "
+                       f"process and run `hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`, "
+                       "then set `database.journal_mode: delete` — or move the database onto local disk)")
         elif mode == "wal" and vulnerable:
             exposed.append(name)
             check_warn(f"{name} is in WAL mode ({size})", "(exposed to the WAL-reset bug until SQLite is upgraded)")
@@ -322,7 +331,7 @@ def _desktop_app_bundle() -> Path | None:
     The only layout whose ad-hoc re-signed bundle can invalidate TCC grants. ``/Applications/Hermes.app`` is
     deliberately not probed: it is the separately-signed, certificate-anchored Hermes-Setup launcher.
     """
-    release_dir = Path(__file__).resolve().parents[1] / "apps" / "desktop" / "release"
+    release_dir = Path(project_root_str()) / "apps" / "desktop" / "release"
     candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 

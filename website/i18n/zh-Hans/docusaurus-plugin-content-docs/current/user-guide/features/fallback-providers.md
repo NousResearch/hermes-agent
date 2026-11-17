@@ -278,7 +278,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` 优先于 `provider`。Hermes 使用配置的 `api_key` 进行认证，若未设置则回退到 `OPENAI_API_KEY`。对于自定义端点，**不会**复用 `OPENROUTER_API_KEY`。
+`base_url` 优先于 `provider`。Hermes 使用配置的 `api_key` 进行认证；未设置时，仅对 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之精确配对的 `OPENAI_BASE_URL` 回退到 `OPENAI_API_KEY`。对于自定义端点，**不会**复用 `OPENROUTER_API_KEY`。
 
 ---
 

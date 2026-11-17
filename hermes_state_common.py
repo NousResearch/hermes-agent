@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
@@ -148,7 +149,7 @@ _PREVIEW_RAW_SELECT = (
     f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW}) || '{SKILL_EXCERPT_JOINT}'"
     f" || SUBSTR({_PREVIEW_CONTENT_SQL}, -{_PREVIEW_SCAFFOLD_WINDOW})"
     f" WHEN {_PREVIEW_SCAFFOLDED_SQL} THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW * 2})"
-    f" ELSE SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_HEAD_CHARS}) END")
+    f" ELSE SUBSTR({_sql_ltrim_whitespace(_PREVIEW_CONTENT_SQL)}, 1, {_PREVIEW_HEAD_CHARS}) END")
 
 
 def _shape_preview(raw: Any) -> str:
@@ -530,6 +531,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_read_at REAL,
     tool_names TEXT,
     transcript_revision INTEGER NOT NULL DEFAULT 0,
+    prompt_cache_clock TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
@@ -751,6 +753,21 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
     -- from the canonical schema (#94691).
     origin_session_id TEXT NOT NULL DEFAULT ''
+);
+
+-- Durable subagent records (tools/delegate_tool_resumable.py): what delegate_task(action='continue') rebuilds a
+-- child from after a restart or crash, and the worktree pin the startup sweep honours (``pinned``).
+CREATE TABLE IF NOT EXISTS resumable_subagents (
+    subagent_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    stop_cause TEXT,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    record_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    expires_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -1503,3 +1520,14 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
     except (json.JSONDecodeError, TypeError):
         logger.warning(warning)
         return fallback
+
+
+def path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)

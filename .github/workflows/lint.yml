@@ -5,8 +5,7 @@ name: Lint (ruff + ty)
 # whether or not the others failed (`!cancelled()`), so one red check never hides another:
 #   1. Windows footguns and sibling static guards (blocking, `python`). They run first, on the
 #      setup-pm interpreter, before the pinned-tool install below re-points `python`.
-#   2. Blocking ``ruff check .`` (`python`) — enforces the explicit rules in
-#      ``[tool.ruff.lint.select]`` (currently PLW1514).
+#   2. Blocking ``ruff check .`` (`python`) — enforces the rules selected in ``ruff.toml``.
 #   3. Blocking code-health ratchet (``scripts/code_health``) for Python and TypeScript (PRs).
 #   4. Advisory ruff + ty diff vs the target branch (PRs, `python`). Writes a Markdown summary
 #      to the run page and never fails the job.
@@ -112,6 +111,18 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only profile-create-entry
 
+      # Inside a tools/ package discovery imports only <pkg>/tool.py, so a tool registered from any
+      # other module in the package is missing with no error.
+      - name: Forbid tool registrations that discovery never imports
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
+        run: just check --only tool-discovery
+
+      # A module turned into a folder ships only if pyproject's packages.find include matches the
+      # new package; otherwise the installed wheel cannot import it while a checkout still can.
+      - name: Forbid imports of packages the wheel would not ship
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
+        run: just check --only packaged-imports
+
       # The OS lanes import only files carrying the matching marker, so a test that fakes
       # macOS (is_macos -> True, sys.platform -> "darwin") without `platforms("macos")` is green on
       # Linux over a faked branch and never runs on macOS (#111866, tests/AGENTS.md § Don't fake the host OS).
@@ -124,6 +135,12 @@ jobs:
       - name: Keep every AGENTS.md under its truncation cap
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only agents-md
+
+      # Files at old module paths that shipped updaters still reach after a move are generated from
+      # hermes_agent/compat/{moves,required_names}.py and must match the generator byte for byte.
+      - name: Keep the move shims in sync with their generator
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
+        run: just check --only shims
 
       # ── Advisory footgun-family reports (pull requests, python lane) ──────────────────────
 
@@ -187,11 +204,10 @@ jobs:
 
       # ── Blocking ruff (python lane) ────────────────────────────────────────────────────────
 
-      # Enforce the rules in pyproject.toml [tool.ruff.lint.select]. Currently
-      # PLW1514 (unspecified-encoding) — catches bare ``open()`` /
-      # ``read_text()`` / ``write_text()`` calls that default to locale
-      # encoding on Windows. No --exit-zero, no || true: the exit code fails the
-      # job, which fails the required-check gate.
+      # Enforce the rules selected in ruff.toml, the only ruff config (PLW1514 among them:
+      # bare ``open()`` / ``read_text()`` / ``write_text()`` calls that default to the locale
+      # encoding on Windows). No --exit-zero, no || true: the exit code fails the job, which
+      # fails the required-check gate.
       - name: ruff check  .
         if: ${{ !cancelled() && steps.tools.outcome == 'success' && inputs.python }}
         run: |

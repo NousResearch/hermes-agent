@@ -27,6 +27,20 @@ def sanitize_context(text: str) -> str:
     return text
 
 
+def fence_recalled_context(text: str) -> str:
+    """Drop recalled-context spans from a completed reply with the streaming grammar.
+
+    Unlike ``sanitize_context`` this keeps inline prose mentioning the tag (only block-shaped
+    spans are dropped), so it is safe on model output; an unterminated span drops its tail.
+    Unchanged text is returned as-is, changed text is stripped of the gap the span left.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    scrubber = StreamingContextScrubber()
+    fenced = scrubber.feed(text) + scrubber.flush()
+    return text if fenced == text else fenced.strip()
+
+
 class StreamingContextScrubber:
     """Stateful scrubber for streaming text whose memory-context spans may straddle deltas.
 

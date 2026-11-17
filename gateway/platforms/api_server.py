@@ -9,7 +9,6 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 import asyncio
 import errno
 import hashlib
-import hmac
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
@@ -129,6 +128,7 @@ from gateway.readiness import collect_runtime_readiness
 
 from gateway.parked_route_refusal import ParkedRouteRefused
 from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import secrets_match
 from gateway.platforms.tcp_site import start_tcp_site
 from hermes_state_errors import SessionActiveWriteGuardError
 
@@ -1427,9 +1427,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            # Compare as bytes: compare_digest raises TypeError on non-ASCII str, and the
-            # token is raw client input — a stray byte must 401, not 500.
-            if hmac.compare_digest(token.encode(), expected_key.encode()):
+            if secrets_match(token, expected_key):
                 return None
         logger.warning("API server rejected invalid API key: %s", self._request_audit_log_suffix(request))
         return self._auth_failed_response()
@@ -2194,18 +2192,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
-        # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps
-        # run_conversation() errors distinct.
+        # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps run_conversation() errors distinct.
         try:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         except RuntimeError as exc:
             raise _ProviderAuthResolutionError(str(exc)) from exc
-        # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
-        # must not collide with the ``**runtime_kwargs`` spread).
+        # A fallback runtime's own ``model`` overrides config and must not collide with the spread.
         model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
         runtime_kwargs.pop("_fallback_notice", None)  # raw API surface: the switch is already logged
-        request_reasoning_config = _request_reasoning_config(model_options)
-        request_service_tier = _request_service_tier(model_options)
+        from agent.primary_auth_fallback import RUNTIME_KEY, attach_primary_auth_failure, failure_for_route, route_snapshot
+        _primary_auth_failure, resolved_route = runtime_kwargs.pop(RUNTIME_KEY, None), route_snapshot(runtime_kwargs)
+        request_reasoning_config, request_service_tier = _request_reasoning_config(model_options), _request_service_tier(model_options)
         model, session_override, request_model, request_provider = self._select_agent_runtime(
             runtime_kwargs, model,
             requested_model=requested_model, requested_provider=requested_provider, route=route,
@@ -2251,6 +2248,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        attach_primary_auth_failure(agent, failure_for_route(_primary_auth_failure, resolved_route, runtime_kwargs))
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override
@@ -2289,10 +2287,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         api_platform["metrics"] = api_status
         platforms["api_server"] = api_platform
         # Served BY the gateway process, so gateway_running is True by definition; busy/
-        # drainable use the same shared contract as /api/status so the two never disagree.
+        # drainable share /api/status's contract; its probe waits on _live_lock, run off-loop.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
         from gateway.run import _resolve_gateway_model
-        readiness = collect_runtime_readiness(
+        readiness = await asyncio.to_thread(collect_runtime_readiness,
             configured_model=_resolve_gateway_model(), runtime_status=runtime,
             active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
             active_delegations=active_delegations)
@@ -3277,7 +3275,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     _JOB_ID_RE = re.compile(r"[a-f0-9]{12}")
     # Update whitelist — prevents clients injecting arbitrary keys.
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled", "timezone"}
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -3317,17 +3315,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 return web.json_response({"error": scan_error}, status=400)
         return None
 
-    def _job_response(self, fn, job_id: str, *, notify: bool) -> web.Response:
-        """Run ``fn(job_id)``: 404 when falsy, else ``{"job": ...}``; exceptions -> 500."""
-        try:
-            job = fn(job_id)
-            if not job:
-                return web.json_response({"error": "Job not found"}, status=404)
-            if notify:
-                _notify_cron_provider_jobs_changed()
-            return web.json_response({"job": job})
-        except Exception as e:
-            return self._cron_error_response(e)
+    def _job_response(self, fn, job_id: str, *, notify: bool, invalid_input=()) -> web.Response:
+        from gateway.platforms.api_server_cron_jobs import job_response
+        return job_response(self, fn, job_id, notify=notify, invalid_input=invalid_input)
 
     async def _job_lookup_or_mutate(self, request: web.Request, fn, *, notify: bool) -> web.Response:
         job_id, err = self._cron_request_guard(request, need_job_id=True)
@@ -3371,7 +3361,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "prompt": prompt, "schedule": schedule, "name": name,
                 "deliver": body.get("deliver", "local"),
                 "origin": self._cron_origin_from_request(request)}
-            for key in ("paused", "paused_reason"):
+            for key in ("paused", "paused_reason", "timezone"):
                 if key in body:
                     kwargs[key] = body[key]
             if skills:
@@ -3392,24 +3382,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     async def _handle_update_job(self, request: web.Request) -> web.Response:
         """PATCH /api/jobs/{job_id} — update a cron job."""
-        job_id, err = self._cron_request_guard(request, need_job_id=True)
-        if err:
-            return err
-        try:
-            body = await request.json()
-            # Whitelist allowed fields to prevent arbitrary key injection
-            sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
-            if not sanitized:
-                return web.json_response({"error": "No valid fields to update"}, status=400)
-            if "name" in sanitized and len(sanitized["name"]) > self._MAX_NAME_LENGTH:
-                return web.json_response({"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400)
-            if "prompt" in sanitized:
-                prompt_err = self._validate_cron_prompt(sanitized["prompt"])
-                if prompt_err:
-                    return prompt_err
-        except Exception as e:
-            return self._cron_error_response(e)
-        return self._job_response(lambda jid: _cron_update(jid, sanitized), job_id, notify=True)
+        from gateway.platforms.api_server_cron_jobs import handle_update_job
+        return await handle_update_job(self, request)
 
     async def _handle_delete_job(self, request: web.Request) -> web.Response:
         """DELETE /api/jobs/{job_id} — delete a cron job."""

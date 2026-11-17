@@ -16,6 +16,7 @@ category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/salch-cred/spine
 version: "0.1.0"
+image: https://raw.githubusercontent.com/salch-cred/spine/467f968561cf569ee630ff48442fbbba52588ea3/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

@@ -1,7 +1,7 @@
 name: relatedb-memory
 repo: https://github.com/loheander/hermes-relatedb
 sha: 3e47ce4696f6a4af0e5854e0cecaad8b58104e43
-description: "Bi-temporal long-term memory on an embedded RelateDB graph with local fastembed embeddings. Facts are superseded instead of overwritten, so the agent can recall what is true now, what it believed on a past date, and which conversation each fact came from. Six agent tools (remember, recall, forget, as_of, provenance, read-only Cypher). Disclosure: downloads the embedding model from Hugging Face on first use; no other network calls, no telemetry, no credentials. Conversation turns and Hermes memory writes are stored locally in the profile's memory/ directory."
+description: "Bi-temporal long-term memory on an embedded RelateDB graph with local fastembed embeddings. Facts are superseded instead of overwritten, so the agent can recall what is true now, what it believed on a past date, and which conversation each fact came from. Six agent tools (remember, recall, forget, as_of, provenance, read-only Cypher). Disclosure — stores primary-session conversation turns and Hermes memory writes in a local RelateDB store under the profile's memory/ directory; downloads the fastembed embedding model (BAAI/bge-small-en-v1.5 by default) from Hugging Face on first use; no other network calls, no telemetry, no credentials. The optional `hermes relatedb-memory` subcommands run only when you invoke them: `init-diffable` edits `.gitattributes` and sets a `git config` diff driver in the current repository, `mcp --launch` starts the `relate` binary from the relate-db package, and the repo's standalone `tools/migrate_embeddings.py` re-embeds an existing store only when you run it."
 maintainer: loheander
 tier: community
 category: memory

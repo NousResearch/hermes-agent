@@ -397,6 +397,7 @@ def _check_config_backend(backend, home, f: Finding) -> bool:
 
 def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
     from hermes_cli.config import check_config_version, migrate_config, newer_stamp_message
+    from hermes_cli.config_migrations import support_floor_message
     current_ver, latest_ver = check_config_version()
     if current_ver > latest_ver:
         check_warn(f"Config version v{current_ver} is newer than this build (v{latest_ver})", "(read as is)")
@@ -412,16 +413,23 @@ def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
         return
     try:
         results = migrate_config(interactive=False, quiet=False)
-        if results.get("failed_step") is not None:
-            check_warn(f"Config migration stopped at v{results['failed_step']}",
-                       f"(kept the steps before it, now v{check_config_version()[0]})")
-            f.manual_issues.append(results["failed_warning"])
-            return
-        check_ok("Config migrated to latest version")
-        f.fixed += 1
-    except Exception as mig_err:
+    except Exception as mig_err:  # health: allow BLE001 -- doctor turns any migration failure into a reported finding
         check_warn(f"Auto-migration failed: {mig_err}")
         f.issues.append("Run 'hermes setup' to migrate config")
+        return
+    if results.get("failed_step") is not None:
+        check_warn(f"Config migration stopped at v{results['failed_step']}",
+                   f"(kept the steps before it, now v{check_config_version()[0]})")
+        f.manual_issues.append(results["failed_warning"])
+        return
+    # Below the support floor migrate_config() leaves the file untouched rather than raising.
+    after_ver, _ = check_config_version()
+    if after_ver < latest_ver:
+        check_warn(f"Config was not migrated (still v{after_ver})")
+        f.manual_issues.append(support_floor_message())
+        return
+    check_ok("Config migrated to latest version")
+    f.fixed += 1
 
 
 def _failing_boot_migration():

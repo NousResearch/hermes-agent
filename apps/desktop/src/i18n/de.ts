@@ -5038,8 +5038,8 @@ export const deOverrides = {
             `Hermes konnte für diesen Chat keine Verbindung zu ${provider} herstellen. Versuchen Sie es erneut; wenn es weiter fehlschlägt, prüfen Sie den Anbieter in den Einstellungen.`
         },
         SESSION_NOT_OWNED: {
-          title: 'Chat ist woanders geöffnet',
-          body: 'Dieser Chat ist in einem anderen Hermes-Fenster oder Terminal geöffnet. Starten Sie hier einen neuen Chat oder schließen Sie ihn zuerst dort.'
+          title: 'Chat wird woanders verwendet',
+          body: 'Ein anderes Hermes-Fenster oder Terminal hält diesen Chat, auch wenn er dort nicht mehr geöffnet ist. Schließen Sie ihn dort oder warten Sie bis zu 15 Minuten, bis er sich selbst freigibt, und senden Sie dann erneut, oder starten Sie hier einen neuen Chat.'
         },
         disk_full: {
           title: 'Ihre Festplatte ist voll',

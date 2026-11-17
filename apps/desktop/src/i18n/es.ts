@@ -5022,8 +5022,8 @@ export const esOverrides = {
             `Hermes no pudo conectar con ${provider} para este chat. Reinténtalo; si sigue fallando, revisa el proveedor en Configuración.`
         },
         SESSION_NOT_OWNED: {
-          title: 'Chat abierto en otro sitio',
-          body: 'Este chat está abierto en otra ventana de Hermes o en un terminal. Empieza un chat nuevo aquí o ciérralo allí primero.'
+          title: 'Chat en uso en otro sitio',
+          body: 'Otra ventana de Hermes o un terminal retiene este chat, aunque ya no esté abierto allí. Ciérralo allí o espera hasta 15 minutos a que se libere solo y vuelve a enviar tu mensaje, o empieza un chat nuevo aquí.'
         },
         disk_full: {
           title: 'Tu disco está lleno',

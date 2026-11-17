@@ -141,8 +141,12 @@ def _live_count_field(db, session_id) -> dict:
 
     The denormalized ``message_count`` also counts folded rows (orphaned compaction marks, full
     rewinds, model-only rows), which once made the roster wait for history no reader serves."""
+    # The count reads the whole session, so it is reused while the session's display set has not
+    # moved: the store-wide roster memo never holds on a store that workers write all the time.
+    from tui_gateway.profile_roster_cache import cached_live_count
+
     try:
-        return {"live_message_count": db.display_message_count(str(session_id))}
+        return {"live_message_count": cached_live_count(db, str(session_id))}
     except sqlite3.Error:
         return {}
 

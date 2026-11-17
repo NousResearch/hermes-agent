@@ -27,6 +27,7 @@ cache declared there would be written to one copy and read from another.
 from __future__ import annotations
 
 import copy
+import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -39,6 +40,8 @@ _UI_META_CACHE: dict[str, tuple[tuple, dict]] = {}
 # The canonical gateway's rows also depend on who reads them (its owner filter): keyed by
 # (profile path, reader).
 _READER_SESSION_CACHE: dict[tuple, tuple[tuple, dict]] = {}
+# ``live_message_count`` per (state.db path, session id) -> (display-set fingerprint, count).
+_LIVE_COUNT_CACHE: dict[tuple[str, str], tuple[tuple, int]] = {}
 _MAX_ENTRIES = 512
 
 _STORE_FILES = ("state.db", "state.db-wal")
@@ -109,6 +112,58 @@ def cached_ui_meta_fields(profile_dir: str | Path, compute: Callable[[], dict]) 
                    compute, copy.deepcopy)
 
 
+def live_count_signature(db, session_id: str) -> tuple:
+    """Cheap fingerprint of what ``db.display_message_count(session_id)`` counts.
+
+    The count reads every display row of the session, table rows included (its visibility filter
+    parses ``display_metadata``, its tool-copy filter probes sibling rows), which on a long chat in a
+    large store costs from tens of milliseconds warm to seconds on cold pages, once per chat per
+    ``profiles.list``. This reads only the partial index ``idx_messages_display_page`` (the display
+    set, ``active = 1 OR compacted = 1``) plus the session's own row: the set's size, how much of it is
+    still ``active`` (compaction archives a row without changing the size), its highest id (an
+    append), its ``display_order`` groups (the count is one per group, and a backfill or re-fold
+    moves rows between groups without touching any revision), and the write-side
+    ``transcript_revision`` (the triggers bump it on a content, role or display-metadata rewrite).
+    Raises ``sqlite3.Error`` on a store without these columns.
+    """
+    from hermes_state_messages import _DISPLAY_ACTIVE_CLAUSE
+
+    row = db._read_one(
+        "SELECT COUNT(*), COALESCE(SUM(active), 0), COALESCE(MAX(id), 0),"
+        " COUNT(DISTINCT display_order), COUNT(display_order),"
+        " (SELECT COALESCE(transcript_revision, 0) FROM sessions WHERE id = ?)"
+        f" FROM messages WHERE session_id = ?{_DISPLAY_ACTIVE_CLAUSE}", (session_id, session_id))
+    return tuple(int(v or 0) for v in row)
+
+
+def cached_live_count(db, session_id: str) -> int:
+    """``db.display_message_count(session_id)``, reused while the session's display set has not moved.
+
+    ``profiles.list`` asks for the canonical chat and the newest chat of every profile on every
+    poll, and on a store that background workers write all the time the store-wide memo above
+    never holds. The fingerprint is read BEFORE the count, so a write landing between the two is
+    cached under the older fingerprint and recounted on the next call, never served under the
+    newer one. No fingerprint (an older schema, an in-memory store) means no memo: it just counts.
+    """
+    session_id = str(session_id)
+    path = getattr(db, "db_path", None)
+    if not path or str(path) == ":memory:":
+        return db.display_message_count(session_id)
+    try:
+        signature = live_count_signature(db, session_id)
+    except sqlite3.Error:
+        return db.display_message_count(session_id)
+    key = (str(path), session_id)
+    hit = _LIVE_COUNT_CACHE.get(key)
+    if hit is not None and hit[0] == signature:
+        return hit[1]
+    count = db.display_message_count(session_id)
+    if len(_LIVE_COUNT_CACHE) >= _MAX_ENTRIES:
+        _LIVE_COUNT_CACHE.clear()
+    _LIVE_COUNT_CACHE[key] = (signature, count)
+    return count
+
+
 def invalidate(profile_path: str | Path | None = None) -> None:
     """Drop one profile's memos, or all of them. For tests and for a caller that knows better."""
     for cache in (_SESSION_CACHE, _UI_META_CACHE):
@@ -116,5 +171,8 @@ def invalidate(profile_path: str | Path | None = None) -> None:
             cache.clear()
         else:
             cache.pop(str(profile_path), None)
+    store = None if profile_path is None else str(Path(profile_path) / "state.db")
+    for key in [key for key in _LIVE_COUNT_CACHE if store is None or key[0] == store]:
+        _LIVE_COUNT_CACHE.pop(key, None)
     for key in [key for key in _READER_SESSION_CACHE if profile_path is None or key[0] == str(profile_path)]:
         _READER_SESSION_CACHE.pop(key, None)

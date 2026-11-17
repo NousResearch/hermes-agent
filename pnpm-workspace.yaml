@@ -35,12 +35,20 @@ minimumReleaseAge: 20160
 minimumReleaseAgeExclude:
   - electron@44.10.2  # CVE-2026-111497 (Node2Shell, CISA KEV): 44.9.3 bundles vulnerable Node 24.22.0; 44.10.2 bundles 24.22.2
   - pele@1.13.0  # the desktop diagram swap was parity-checked on it (math labels need 1.8.0+)
+  - follow-redirects@1.16.2  # GHSA-mrwp-f3q8-3g9p; remove after 2026-11-08 21:33 UTC
+  - joi@18.3.1  # GHSA-4528-x5fx-h6hg; remove after 2026-11-11 10:00 UTC
+  - glob@14.0.2  # GHSA-3g3m-2fjr-6pw4; remove after 2026-11-10 22:07 UTC
+  - minimatch@11.0.1  # GHSA-g3hv-75wg-m249; remove after 2026-11-10 22:26 UTC
+  - '@isaacs/nonrecursive-glob-match@1.0.1'  # minimatch 11 transitive for GHSA-g3hv-75wg-m249; remove after 2026-11-10 04:25 UTC
+  - path-scurry@3.0.0  # glob 14 transitive for GHSA-3g3m-2fjr-6pw4; remove after 2026-11-10 21:15 UTC
 
 overrides:
   '@electron/osx-sign>isbinaryfile': 5.0.7
   lodash: 4.18.1
   protobufjs: '^8.7.1'
-  brace-expansion: 5.0.12
+  brace-expansion@^1: 1.1.21
+  brace-expansion@^2: 2.1.7
+  brace-expansion@^5: 5.0.12
   dompurify: 3.4.17
   katex: 0.19.0
   ip-address: 10.7.4
@@ -49,6 +57,16 @@ overrides:
   js-yaml@^4: 4.3.2
   undici@^6: 6.29.1
   undici@^7: 7.30.1
+  follow-redirects: 1.16.2
+  joi: 18.3.1
+  '@electron/asar@4>glob': 14.0.2
+  'cacache@18>glob': 14.0.2
+  'node-gyp@10>glob': 14.0.2
+  '@electron/asar@4>minimatch': 11.0.1
+  '@eslint/config-array>minimatch': 11.0.1
+  '@typescript-eslint/typescript-estree>minimatch': 11.0.1
+  'app-builder-lib>minimatch': 11.0.1
+  'eslint>minimatch': 11.0.1
   postcss: 8.5.29
   postcss-selector-parser: 7.1.6
   tar: 7.5.22

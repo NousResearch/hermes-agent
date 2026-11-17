@@ -95,7 +95,7 @@ DELEGATION_FAILURE_WINDOW_SECONDS = 24 * 3600.0
 #: Session sources whose workers may dispatch delegations.
 DELEGATION_ORIGIN_SOURCES = ("cli", "tui", "gui", "tool", "oneshot")
 #: The terminal statuses a completion may carry; the stored state becomes this value.
-DELEGATION_COMPLETION_STATUSES = ("completed", "success", "error", "interrupted", "stalled", "unknown")
+DELEGATION_COMPLETION_STATUSES = ("completed", "error", "interrupted", "stalled", "unknown")
 #: The delivery a completion is recorded with: ``pending`` is offered to the parent; ``delivered`` is never offered (every child of the unit waits on a promised automatic resume, which reports on its own).
 COMPLETION_DELIVERIES = ("pending", "delivered")
 #: The task payload keys a worker dispatch carries.
@@ -304,9 +304,7 @@ class DelegationState(StrEnum):
 
     RUNNING = "running"
     STALLING = "stalling"
-    FINALIZING = "finalizing"
     COMPLETED = "completed"
-    SUCCESS = "success"
     ERROR = "error"
     FAILED = "failed"
     FAILURE = "failure"
@@ -357,7 +355,7 @@ class PendingCompletion:
 
 @dataclass(frozen=True, slots=True)
 class InflightDelegation:
-    """A ``running`` or ``finalizing`` row with what the recovery helper needs to build its event."""
+    """A ``running`` row with what the recovery helper needs to build its event."""
 
     delegation_id: DelegationId
     origin_session: str
@@ -654,7 +652,7 @@ class CoordinationRepository(SubagentLedger, Protocol):
         ...
 
     def list_inflight_delegations(self) -> tuple[InflightDelegation, ...]:
-        """One read: every ``running`` or ``finalizing`` delegation row."""
+        """One read: every ``running`` delegation row."""
         ...
 
     def has_replayable_completions(self) -> bool:

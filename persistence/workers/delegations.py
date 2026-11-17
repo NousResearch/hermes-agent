@@ -121,7 +121,7 @@ class WorkerDelegationLedger(Protocol):
         ...
 
     def claim_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:
-        """``delegation.claim`` (:132-143): ownership and token text; a running or finalizing delegation answers False; a pending delivery whose claim is free or older than ``DELEGATION_CLAIM_STALE_SECONDS`` takes the token and one attempt."""
+        """``delegation.claim`` (:132-143): ownership and token text; a running delegation answers False; a pending delivery whose claim is free or older than ``DELEGATION_CLAIM_STALE_SECONDS`` takes the token and one attempt."""
         ...
 
     def ack_delegation_delivery(self, *, epoch: AuthorityEpoch, execution_id: WorkerExecutionId, session_id: SessionId, generation: ExecutionGeneration, sequence: int, claim: WorkerDelegationClaim | WorkerDelegationPayload, worker_pid: int, worker_birth: float) -> bool:

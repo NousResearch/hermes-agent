@@ -157,7 +157,7 @@ def _claim(step: Step, payload: dict[str, Any]) -> dict[str, Any]:
     row = _owned(_ledger(step), step.session_id, step.worker["execution_id"], payload["delegation_id"])
     _text(payload["claim_id"])
     now = time.time()
-    if row["state"] in ("running", "finalizing"):
+    if row["state"] == "running":
         return {"value": False}
     if row["delivery_state"] != "pending" or not (row["delivery_claim"] is None or row["delivery_claimed_at"] < now - DELEGATION_CLAIM_STALE_SECONDS):
         return {"value": False}

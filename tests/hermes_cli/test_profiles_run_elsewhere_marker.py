@@ -89,7 +89,7 @@ def test_a_profile_home_spelled_in_another_letter_case_reads_its_profiles_marker
     assert pre.run_elsewhere_for_home(root / "profiles" / "QA").profile == "qa"
 
 
-@pytest.mark.skipif(os.name != "nt", reason="only Windows resolves a path to the letter case on disk")
+@pytest.mark.platforms("windows")  # only Windows resolves a path to the letter case on disk
 def test_a_profiles_folder_spelled_in_another_letter_case_reads_the_marker_on_windows(root):
     pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
     assert pre.run_elsewhere_for_home(root / "PROFILES" / "OPS").profile == "ops"

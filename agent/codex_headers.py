@@ -18,7 +18,6 @@ from urllib.parse import urlparse
 CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 logger = logging.getLogger(__name__)
-_warned_opt_in_read = False
 
 
 def is_official_codex_base_url(base_url: str) -> bool:
@@ -87,22 +86,17 @@ def codex_account_headers(access_token: str) -> dict[str, str]:
 
 
 def _codex_compression_opted_in() -> bool:
-    """``agent.codex_request_compression: true``, ignored under ``--ignore-user-config``.
-
-    An ordinary read failure means plain JSON, not a lost HTTP client: the caller builds the whole
-    keepalive client and drops it (proxy and keepalive policy with it) on any exception.
-    ``ConfigBackendUnavailable`` is a ``SystemExit`` and still propagates (fail-closed backend).
-    """
-    global _warned_opt_in_read
+    """``agent.codex_request_compression: true``, ignored under ``--ignore-user-config``."""
     if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
         return False
+    from hermes_cli.config_backend import ConfigBackendUnavailable
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
         return cfg_get(load_config_readonly(), "agent", "codex_request_compression", default=False) is True
-    except Exception:
-        if not _warned_opt_in_read:
-            _warned_opt_in_read = True
-            logger.warning("Could not read agent.codex_request_compression; sending plain JSON", exc_info=True)
+    # The caller drops its whole HTTP client on an exception, and a refused backend read is a
+    # SystemExit that would end the gateway turn worker; plain JSON is the safe default for both.
+    except (Exception, ConfigBackendUnavailable):  # health: allow BLE001 -- unreadable config keeps plain JSON
+        logger.warning("Could not read agent.codex_request_compression; sending plain JSON", exc_info=True)
         return False
 
 

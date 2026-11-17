@@ -20,6 +20,7 @@ import {
   cancelInlineRename,
   closeFileActionDialog,
   copyFilePath,
+  downloadFolderZip,
   downloadRemoteFile,
   executeFileDelete,
   executeFileRename,
@@ -89,6 +90,12 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
           <>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => void downloadRemoteFile(path)}>{m.download}</ContextMenuItem>
+          </>
+        )}
+        {isDirectory && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => void downloadFolderZip(path)}>{m.downloadZip}</ContextMenuItem>
           </>
         )}
         {localFs && (

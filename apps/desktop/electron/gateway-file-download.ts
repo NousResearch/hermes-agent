@@ -94,6 +94,18 @@ export interface GatewayFileBackendRoute<T> {
   connectionId: null | string
   profile: null | string
 }
+/** What the renderer's `saveGatewayFile` bridge sends; every field is checked before use. */
+export interface GatewayFileSavePayload {
+  sessionId?: string
+  connectionId?: unknown
+  downloadPath?: unknown
+  /** `zip`: *path* is a folder, saved as one archive. */
+  format?: unknown
+  path?: unknown
+  profile?: unknown
+  suggestedName?: unknown
+}
+
 export interface GatewayFileRequestPaths {
   /** The capped data-URL read a gateway without the streaming route falls back to; absent for a
    *  route that has no such twin. */
@@ -129,7 +141,8 @@ export function gatewayFileRequestPaths(
   filePath: string,
   scopePath: (requestPath: string) => string,
   sessionId?: string,
-  downloadPath?: unknown
+  downloadPath?: unknown,
+  format?: unknown
 ): GatewayFileRequestPaths {
   if (downloadPath !== undefined && downloadPath !== null && downloadPath !== '') {
     return { download: scopePath(explicitDownloadPath(downloadPath)) }
@@ -137,6 +150,11 @@ export function gatewayFileRequestPaths(
 
   const encodedPath = encodeURIComponent(filePath)
   const session = sessionId === undefined ? '' : `&session_id=${encodeURIComponent(sessionId)}`
+
+  // A folder packed as one zip: no capped data-URL twin, a folder has no such read.
+  if (format === 'zip') {
+    return { download: scopePath(`/api/fs/download?path=${encodedPath}${session}&format=zip`) }
+  }
 
   return {
     dataUrl: scopePath(`/api/fs/read-data-url?path=${encodedPath}${session}`),
@@ -180,8 +198,24 @@ export function downloadTempPath(destPath: string): string {
 // the returned promise rejects. (Opening `destPath` directly truncated it on the
 // spot and the error path then unlinked it, destroying a pre-existing file the
 // user had chosen to overwrite; #96597.)
-export function pumpStreamToFile(res: ReadableLike, destPath: string, deps: PumpDeps): Promise<void> {
+/** The SHA-256 a response says its body has (`X-Content-SHA256`, a folder zip), lowercased, or ''. */
+export function declaredContentSha256(headers: GatewayDownloadResponse['headers']): string {
+  const raw = headers['x-content-sha256'] ?? headers['X-Content-SHA256']
+  const value = String(Array.isArray(raw) ? raw[0] : raw || '').trim().toLowerCase()
+
+  return /^[0-9a-f]{64}$/.test(value) ? value : ''
+}
+
+// `expectedSha256`: the body must hash to it, checked before the rename, so a corrupt or cut
+// transfer never lands at the destination.
+export function pumpStreamToFile(
+  res: ReadableLike,
+  destPath: string,
+  deps: PumpDeps,
+  expectedSha256 = ''
+): Promise<void> {
   return new Promise((resolve, reject) => {
+    const digest = expectedSha256 ? crypto.createHash('sha256') : null
     const tempPath = (deps.tempPathFor ?? downloadTempPath)(destPath)
     const ws = deps.createWriteStream(tempPath)
     let failed = false
@@ -290,6 +324,7 @@ export function pumpStreamToFile(res: ReadableLike, destPath: string, deps: Pump
       }
 
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+      digest?.update(buffer)
       const ok = ws.write(buffer)
 
       // Backpressure: pause the source until the file stream drains so we never
@@ -306,6 +341,14 @@ export function pumpStreamToFile(res: ReadableLike, destPath: string, deps: Pump
 
     res.on('end', () => {
       if (failed) {
+        return
+      }
+
+      const actual = digest?.digest('hex')
+
+      if (actual !== undefined && actual !== expectedSha256) {
+        fail(new Error(`Download corrupted: SHA-256 ${actual} does not match ${expectedSha256}`))
+
         return
       }
 
@@ -418,6 +461,8 @@ export interface GatewayFileSaveResult {
   canceled?: boolean
   path?: string
   saved: boolean
+  /** The saved bytes' SHA-256, when the gateway declared one and the save matched it. */
+  sha256?: string
 }
 
 export interface GatewaySaveDialogOptions {
@@ -518,9 +563,10 @@ export async function finalizeGatewayDownload(
       throw responseError
     }
 
-    await pumpStreamToFile(response, result.filePath, deps.pump ?? fsPumpDeps())
+    const sha256 = declaredContentSha256(response.headers)
+    await pumpStreamToFile(response, result.filePath, deps.pump ?? fsPumpDeps(), sha256)
 
-    return { path: result.filePath, saved: true }
+    return { path: result.filePath, saved: true, ...(sha256 ? { sha256 } : {}) }
   } catch (error) {
     abort()
     throw error

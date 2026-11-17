@@ -109,6 +109,8 @@ class FileTicketRequest(BaseModel):
     path: str
     profile: Optional[str] = None
     session_id: Optional[str] = None
+    #: ``zip`` tickets a folder download (``/api/fs/download?format=zip``).
+    format: Optional[Literal["zip"]] = None
 
 class ModelAssignment(BaseModel):
     """POST /api/model/set — assign a provider/model to a slot.

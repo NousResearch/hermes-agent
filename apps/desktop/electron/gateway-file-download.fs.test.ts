@@ -8,6 +8,7 @@
 // collision, and no owned `.part` file is ever left behind.
 
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -149,4 +150,18 @@ test('writeBufferToFile into a missing directory fails without creating anything
   })
 
   assert.deepEqual(await listing(), [])
+})
+
+test('a body that does not hash to its declared SHA-256 never reaches the destination', async () => {
+  const dest = path.join(dir, 'project.zip')
+  const declared = crypto.createHash('sha256').update('the archive the gateway packed').digest('hex')
+
+  await fs.promises.writeFile(dest, 'OLD CONTENT')
+
+  await assert.rejects(pumpStreamToFile(body(['a cut-off ', 'archive']), dest, fsPumpDeps(), declared), /SHA-256/)
+  assert.equal(await fs.promises.readFile(dest, 'utf8'), 'OLD CONTENT')
+  assert.deepEqual(await listing(), ['project.zip'])
+
+  await pumpStreamToFile(body(['the archive ', 'the gateway packed']), dest, fsPumpDeps(), declared)
+  assert.equal(await fs.promises.readFile(dest, 'utf8'), 'the archive the gateway packed')
 })

@@ -348,6 +348,8 @@ declare global {
         /** A route that serves this file from the host that wrote it (an allow-listed
          *  `/api/ops/...` download), read instead of the workspace's `/api/fs/download`. */
         downloadPath?: string
+        /** `zip`: *path* is a folder, saved as one archive (`/api/fs/download?format=zip`). */
+        format?: 'zip'
         path: string
         profile?: null | string
         sessionId?: string
@@ -356,6 +358,8 @@ declare global {
         canceled?: boolean
         path?: string
         saved: boolean
+        /** The saved bytes' SHA-256, checked against the gateway's `X-Content-SHA256`. */
+        sha256?: string
       }>
       /** Browser media elements need an authenticated HTTP source, not Electron's custom protocol. */
       getGatewayFileStreamUrl?: (payload: {

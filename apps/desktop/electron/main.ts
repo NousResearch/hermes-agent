@@ -274,6 +274,7 @@ import { downloadViaTokenToFile as downloadViaNativeGatewayToFile } from './gate
 import type {
   GatewayFileSaveContext,
   GatewayFileSaveDeps,
+  GatewayFileSavePayload,
   GatewayFileSaveResult,
   GatewaySaveDialogOptions,
   GatewaySaveDialogResult
@@ -7434,15 +7435,6 @@ interface GatewayFileConnection extends RegistryBackendRequestScope {
   token?: null | string
 }
 
-interface GatewayFileSavePayload {
-  sessionId?: string
-  connectionId?: unknown
-  downloadPath?: unknown
-  path?: unknown
-  profile?: unknown
-  suggestedName?: unknown
-}
-
 function gatewayFileRequestPath(
   connection: GatewayFileConnection,
   connectionId: null | string,
@@ -7474,7 +7466,8 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
     filePath,
     requestPath => gatewayFileRequestPath(connection, connectionId, profile, requestPath),
     payload.sessionId,
-    payload.downloadPath
+    payload.downloadPath,
+    payload.format
   )
 
   const deps: GatewayFileSaveDeps = {

@@ -219,8 +219,9 @@ def test_idle_broadcasts_past_the_receive_high_water_mark_keep_the_connection(ow
 
 
 def test_owner_stall_shorter_than_the_receipt_budget_does_not_fail_on_a_ping_deadline(owner, tmp_path, monkeypatch):
-    """The receipt budget (20 s) is the only per-call deadline: a library keepalive whose pong is held
-    by the same stall must not close the connection first. The library defaults (20 s / 20 s) are
+    """The receipt budget (``RECEIPT_BUDGET_S``, sourced from the server's write patience) is
+    the only per-call deadline: a library keepalive whose pong is held by the same stall must
+    not close the connection first. The library defaults (20 s / 20 s) are
     scaled down so an inherited keepalive would fire inside the stall."""
     from websockets.sync import client
     from agent.runtime_session_store import WorkerRPC
@@ -271,3 +272,22 @@ def test_an_owner_error_reply_keeps_the_connection_for_the_next_call(owner, tmp_
     assert rpc('worker.persist') == {'n': 2}
     assert owner.requests == ['fail', 'worker.persist']
     assert (owner.connections, owner.tickets) == (1, 1)
+
+
+def test_the_receipt_wait_passes_the_full_receipt_budget_to_the_owner_link(owner, tmp_path, monkeypatch):
+    """The one call site of the receipt wait must hand ``RECEIPT_BUDGET_S`` to
+    ``_OwnerLink.receive`` — a re-hardcoded number there (the pre-fix ``receive(20)``) would
+    silently re-shorten the client budget below the server's write patience while every
+    constant-level test stayed green (gate t_0b006df6 YELLOW-1, mutant M7)."""
+    from agent import runtime_session_store as store
+    seen = []
+    real_receive = store._OwnerLink.receive
+
+    def spy(self, timeout):
+        seen.append(timeout)
+        return real_receive(self, timeout)
+
+    monkeypatch.setattr(store._OwnerLink, 'receive', spy)
+    rpc = store.WorkerRPC(tmp_path)
+    assert rpc('worker.persist') == {'n': 1}
+    assert seen == [store.RECEIPT_BUDGET_S]

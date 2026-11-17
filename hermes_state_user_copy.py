@@ -86,6 +86,16 @@ _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
         "another Hermes process took over this session",
         "Wait for it to finish, then send your message again.",
     ),
+    # The receipt/transport layer (agent/runtime_session_store.py): the outcome is UNKNOWN once
+    # the request was sent (a lost ACK can still have committed), so the copy confirms nothing
+    # in either direction — never "not saved", never "saved" — and names no disk or lock cause:
+    # the store may be perfectly healthy (gate t_3aad2064 RED-2, t_0b006df6 YELLOW-2).
+    "receipt_transport": (
+        "storage_busy",
+        "Hermes could not confirm the message was saved (the gateway was busy or unreachable)",
+        "Send your message again after the other turn finishes; if it persists, "
+        "run `hermes {profile_arg}doctor`.",
+    ),
     "unknown": (
         "storage_unavailable",
         "the session database could not be opened",

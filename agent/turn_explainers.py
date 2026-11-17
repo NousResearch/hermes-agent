@@ -50,7 +50,12 @@ _EXIT_REASON_PREFIX_EXPLANATIONS = tuple(
 )
 
 # ``session_persistence_failed`` refined by the classified cause (lock contention ≠ disk full).
-_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk"})
+# Derived from the classifier's own cause set (stdlib-only import) so a new cause can never
+# silently fall through to the generic disk/lock copy here (gate t_0b006df6 YELLOW-3);
+# "unknown" is the deliberate fall-through to explainer.persistence.default.
+from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+
+_PERSISTENCE_CAUSES = frozenset(PERSISTENCE_ERROR_CAUSES) - {"unknown"}
 
 
 def _persistence_explanation_key(cause: Optional[str]) -> str:

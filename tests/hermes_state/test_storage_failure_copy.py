@@ -35,6 +35,38 @@ def test_details_line_is_flattened_and_bounded():
     assert "\n" not in details and len(details) == 60 and details.endswith("...")
 
 
+def test_every_classifier_cause_has_a_copy_row():
+    """Enumeration guard (gate t_0b006df6 RED-2): the table is keyed by the classifier's
+    cause buckets and feeds every surface, so a new cause with no row silently renders the
+    "could not be opened" fallback on CLI/TUI/Desktop/gateway. "unknown" IS the fallback and
+    "disk" is split to disk_full at lookup; every other cause needs its own row."""
+    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+    from hermes_state_user_copy import _STORAGE_FAILURES
+
+    uncovered = (set(PERSISTENCE_ERROR_CAUSES) - {"unknown", "disk"}) - set(_STORAGE_FAILURES)
+    assert not uncovered, f"causes without a copy row: {sorted(uncovered)}"
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["worker_receipt_timeout", "pending_receipt", "outbox_full", "owner_unavailable"],
+)
+def test_receipt_transport_cause_gets_the_receipt_row(token):
+    """The four client-side receipt strings must land on the receipt row (storage_busy,
+    outcome-neutral copy), never on the storage_unavailable "could not be opened" fallback
+    that sent operators hunting disk on a healthy store (fleet incident 2026-11-13)."""
+    failure = describe_storage_failure(token)
+    assert failure.cause == "receipt_transport"
+    assert failure.code == "storage_busy"
+    assert "confirm" in failure.gloss.lower()
+    # Outcome unknown (a lost ACK can have committed): the copy claims nothing either way.
+    assert "not saved" not in failure.gloss.lower()
+    # No disk/lock blame: the store may be perfectly healthy.
+    for wrong in ("disk", "drive", "space", "locked", "holding the database"):
+        assert wrong not in failure.gloss.lower(), wrong
+    assert "doctor" in failure.action
+
+
 def test_action_command_is_pinned_to_the_failing_profile(monkeypatch, tmp_path):
     """The action names the profile whose store failed (multi-profile backends serve sessions
     whose state.db is not the process default; a bare ``hermes`` follows active_profile)."""

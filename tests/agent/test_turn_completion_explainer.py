@@ -371,6 +371,81 @@ def test_classify_persistence_error_turn_lease_lost_is_distinct():
     ) == "turn_lease"
 
 
+def test_classify_persistence_error_receipt_timeout_is_not_disk_or_lock():
+    """The exact observed string of the 2026-11-13 fleet incident: a managed worker's
+    ``worker.persist`` receipt expired (agent/runtime_session_store.py raises
+    ``TimeoutError('worker_receipt_timeout')`` and the store sticks ``str(exc)`` as its
+    failure). It matched no bucket, classified as ``unknown``, and the user was told
+    'the drive is out of room, or another Hermes process is holding the database' on a
+    host with 511 GiB free and no lock error anywhere. Receipt-layer failures must
+    classify to the receipt/transport cause, never to disk or locked."""
+    from hermes_state import classify_persistence_error
+    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+
+    observed = "worker_receipt_timeout"  # verbatim WorkerPersistenceError message
+    assert classify_persistence_error(observed) == "receipt_transport"
+    # The sibling client strings from the same module (sticky-failure and startup paths).
+    for token in ("pending_receipt", "outbox_full", "owner_unavailable"):
+        assert classify_persistence_error(token) == "receipt_transport", token
+    # The exception form the worker raises directly (type carries the same text).
+    from agent.runtime_session_store import WorkerPersistenceError
+    assert classify_persistence_error(WorkerPersistenceError(observed)) == "receipt_transport"
+    assert "receipt_transport" in PERSISTENCE_ERROR_CAUSES
+
+
+def test_explanation_persistence_receipt_transport_never_blames_disk_or_lock():
+    """The operator-facing text must say what actually happened and nothing more: the
+    gateway did not confirm the write (busy or unreachable), the outcome is unknown — a
+    lost ACK can still have committed — so the copy confirms nothing in either direction
+    and never sends the operator hunting disk or locks (gate t_0b006df6 YELLOW-2)."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "receipt_transport"
+    )
+    lower = out.lower()
+    assert "confirm" in lower
+    assert "busy" in lower
+    assert "send your message again" in lower
+    # Never overclaim in either direction: the outcome is unknown once sent.
+    assert "not saved" not in lower
+    assert "nothing was lost" not in lower
+    for wrong in ("disk", "drive", "space", "holding the database", "free some"):
+        assert wrong not in lower, wrong
+
+
+def test_every_classifier_cause_has_an_explainer_cause_key_and_catalog_row():
+    """Drift guard (gate t_0b006df6 YELLOW-3): ``_PERSISTENCE_CAUSES`` is derived from
+    ``PERSISTENCE_ERROR_CAUSES``, so the two sets cannot disagree — but a new cause still
+    needs its ``explainer.persistence.<cause>`` row in the English catalog, or it silently
+    renders the generic disk/lock copy. Enumerate the derived set against the catalog."""
+    from pathlib import Path
+
+    import hermes_yaml as yaml
+
+    from agent.turn_explainers import _PERSISTENCE_CAUSES
+    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+
+    assert _PERSISTENCE_CAUSES == frozenset(PERSISTENCE_ERROR_CAUSES) - {"unknown"}
+    en_path = Path(__file__).resolve().parents[2] / "locales" / "en.yaml"
+    catalog = yaml.safe_load(en_path.read_text(encoding="utf-8"))
+    rows = catalog["explainer"]["persistence"]
+    missing = {cause for cause in _PERSISTENCE_CAUSES if cause not in rows}
+    assert not missing, f"causes without explainer copy: {sorted(missing)}"
+
+
+def test_receipt_budget_never_shorter_than_server_write_patience():
+    """The client's receipt budget must be >= the server's own contention budget: the
+    gateway applies a receipt as a transaction that legitimately waits sibling writers
+    for up to _TRANSCRIPT_WRITE_PATIENCE_S, so a shorter client budget always loses the
+    race and reports a healthy-but-busy store as a dead one. Sourced from the same
+    constant (drift guard); a longer budget would only make the failure slow, so equal
+    — the "not above" half pins it (gate t_0b006df6 YELLOW-1, mutant M6)."""
+    from agent.runtime_session_store import RECEIPT_BUDGET_S
+    from hermes_state import SessionDB
+
+    assert RECEIPT_BUDGET_S >= SessionDB._TRANSCRIPT_WRITE_PATIENCE_S
+    assert RECEIPT_BUDGET_S <= SessionDB._TRANSCRIPT_WRITE_PATIENCE_S
+
+
 def test_persistence_error_causes_tuple_matches_classifier():
     """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
     return (consumers like cron suppression iterate it)."""
@@ -386,6 +461,10 @@ def test_persistence_error_causes_tuple_matches_classifier():
         "FATAL: state.db was replaced underneath the gateway",
         "FATAL: a live process holds a deleted state.db-wal or state.db-shm inode.",
         "database or disk is full",
+        "worker_receipt_timeout",
+        "pending_receipt",
+        "outbox_full",
+        "owner_unavailable",
         "something else entirely",
         None,
     )

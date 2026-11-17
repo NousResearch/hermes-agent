@@ -27,14 +27,25 @@ _REPOSITORIES = (
 
 # The verbs whose declared return is a context manager: entered on the loop thread, the block's reads would run on other threads.
 _CONTEXT_VERBS = {("messages", "read_snapshot")}
+# The verbs that stream rows lazily: awaited whole they would hold every row at once and could not stop early.
+_STREAMED_VERBS = {("messages", "terminal_tool_call_payloads"), ("messages", "blocked_tool_result_payloads")}
 
 
 def test_every_repository_has_its_awaitable_form(backend, scope_a):
     store = backend.open(scope_a)
     for name in _REPOSITORIES:
         repository = getattr(store, name)
-        verbs = [v for v in dir(repository) if not v.startswith("_") and callable(getattr(repository, v)) and (name, v) not in _CONTEXT_VERBS]
+        verbs = [v for v in dir(repository) if not v.startswith("_") and callable(getattr(repository, v)) and (name, v) not in _CONTEXT_VERBS | _STREAMED_VERBS]
         assert verbs and all(callable(getattr(getattr(store.aio, name), v)) for v in verbs)
+
+
+def test_a_streamed_verb_has_no_awaitable_form(backend, scope_a):
+    store = backend.open(scope_a)
+    # CONTRACT: a verb that streams its rows is refused in the awaitable form, like a context-manager verb; event-loop code iterates the plain verb off the loop.
+    for name, verb in _STREAMED_VERBS:
+        with pytest.raises(AttributeError, match=f"{verb}.*plain"):
+            getattr(getattr(store.aio, name), verb)
+    assert list(store.messages.terminal_tool_call_payloads(since_ts=0.0)) == []
 
 
 def test_a_verb_returning_a_context_manager_has_no_awaitable_form(backend, scope_a):

@@ -23,8 +23,10 @@ HELPERS = {
     ),
     "hermes_state_holders": ("read_only_db_uri",),
     "hermes_state_lockowners": ("log_write_lock_holders",),
+    "hermes_state_readpool": ("note_read_pool_exhausted",),
     "hermes_state_repair": ("repair_state_db_schema",),
     "hermes_state_wal": ("apply_database_pragmas", "apply_wal_with_fallback"),
+    "hermes_state_write": ("WriterMutexTimeout", "maintain_after_commit", "write_site", "writer_mutex_until"),
 }
 
 

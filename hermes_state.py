@@ -57,6 +57,9 @@ from hermes_state_coverage import SessionCoverageMixin
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
 from hermes_state_repair import preflight_db_writability, repair_state_db_schema
+# Published through hermes_state on main (plugin API: the whole module); kept so outside importers still find them.
+from hermes_state_readpool import note_read_pool_exhausted
+from hermes_state_write import WriterMutexTimeout, maintain_after_commit, write_site, writer_mutex_until
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_prompt_refresh import SessionPromptRefreshMixin
 from hermes_state_usage import SessionUsageMixin

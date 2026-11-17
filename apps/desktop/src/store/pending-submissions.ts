@@ -1,4 +1,5 @@
 import { noteListedSubmissions } from './admitted-submissions'
+import type { ComposerAttachment } from './composer'
 import { getQueuedPrompts, type QueuedPromptEntry, queuedSubmissionId, writeSessionQueue } from './composer-queue'
 import { $sessions, resolveComposerSessionKey } from './session'
 
@@ -18,7 +19,20 @@ interface PendingSubmission {
   seen?: PendingSnapshotFence
   /** The snapshot's queued-row controls; carried to the card only, never journaled. */
   controls?: string[]
+  /** What the sending window attached, as its card shows them (no bytes, no `blob:` URLs): the
+   *  owner's listing carries only text, so without these a queued screenshot reads as text-only. */
+  attachments?: ComposerAttachment[]
 }
+
+/** A sent attachment as its queued card shows it: identity, label, the saved file and the bounded
+ *  thumbnail only (never a window-local `blob:` URL or full-size bytes). */
+const queuedCardAttachment = ({ id, kind, label, path, thumbnailUrl }: ComposerAttachment): ComposerAttachment => ({
+  id,
+  kind,
+  label,
+  ...(path ? { path } : {}),
+  ...(kind === 'image' && thumbnailUrl?.startsWith('data:') ? { thumbnailUrl } : {})
+})
 
 /** A canonical pending snapshot's place in its session's event order: the replay epoch and the
  *  event sequence it reflects (a live `session.info` frame's own seq, or a resume snapshot's
@@ -170,7 +184,11 @@ function adoptJournal(from: string, to: string): void {
 const adoptedLineages = new Set<string>()
 
 // Not an outbox: an uncertain accepted input must never be replayed automatically.
-export function trackPendingSubmission(storedId: string, entry: PendingSubmission): void {
+export function trackPendingSubmission(
+  storedId: string,
+  entry: PendingSubmission,
+  sent: ComposerAttachment[] = []
+): void {
   const key = journalKey(storedId)
   const lineage = JSON.stringify([storedId, key])
 
@@ -180,7 +198,8 @@ export function trackPendingSubmission(storedId: string, entry: PendingSubmissio
   }
 
   const held = readPendingSubmission(key, entry.id)
-  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(mergeReceipt(held, entry)))
+  const card = sent.length ? { ...entry, attachments: sent.map(queuedCardAttachment) } : entry
+  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(mergeReceipt(held, card)))
 }
 
 // Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.
@@ -188,6 +207,14 @@ type RawReceipts = any[]
 
 // Retired identities are remembered per session only as long as a late snapshot can matter.
 const RETIRED_MEMORY = 200
+
+/** The attachments this window sent with the input an admission was made from (journaled under the
+ *  submission id, which the owner lists as `input_id`), so its queued card shows them. */
+const sentAttachments = (raw: any, known: Record<string, PendingSubmission>): Pick<PendingSubmission, 'attachments'> => {
+  const attachments = typeof raw?.input_id === 'string' ? known[raw.input_id]?.attachments : undefined
+
+  return attachments?.length ? { attachments } : {}
+}
 
 const isStale = (raw: { admission_id: string; status: string }, known: Record<string, PendingSubmission>) =>
   (STATUS_RANK[raw.status] ?? 0) < (STATUS_RANK[known[raw.admission_id]?.status ?? ''] ?? -1)
@@ -215,6 +242,7 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
     }
 
     receipts.set(id, {
+      ...sentAttachments(raw, known),
       ...known[id],
       id,
       text: typeof raw.user === 'string' ? raw.user : (known[id]?.text ?? ''),
@@ -266,7 +294,7 @@ function projectQueue(
         id: receipt.id,
         text: receipt.text,
         displayText: receipt.displayText,
-        attachments: [],
+        attachments: receipt.attachments ?? [],
         queuedAt: Date.now(),
         serverStatus: receipt.status,
         serverControls: receipt.controls
@@ -291,6 +319,9 @@ function inOwnerOrder(entries: QueuedPromptEntry[], order: Map<string, number>):
 }
 
 function updateKnownReceipts(known: Record<string, PendingSubmission>, value: RawReceipts, fence?: PendingSnapshotFence): void {
+  // Read before the retirement pass below wipes the sent record the admission was made from.
+  const sent = new Map(value.map(raw => [raw?.admission_id, sentAttachments(raw, known)]))
+
   // Only observed server records may be retired by their later absence. The retirement is kept
   // (text dropped) so a stale snapshot that still lists the admission cannot resurrect its card.
   for (const [id, entry] of Object.entries(known)) {
@@ -317,6 +348,7 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
         // A steer in transfer reads `started` but can still go back to its queue place: it never
         // raises the admission's rank, so the owner's later `queued` listing repaints its card.
         status: raw.steering === true ? (previous?.status ?? 'queued') : raw.status,
+        ...(previous?.attachments ? {} : sent.get(raw.admission_id)),
         ...(fence && !predates(fence, previous?.seen) ? { seen: fence } : {})
       }
     }

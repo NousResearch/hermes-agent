@@ -295,3 +295,18 @@ it('tracking a submission reads its own record without enumerating other session
   })
   expect(readPendingSubmissions('late-root').next).toMatchObject({ status: 'queued' })
 })
+
+// A screenshot queued behind a live turn used to land on a text-only card: the owner lists only text,
+// so the sent images were dropped from the queue panel (paperclipai/paperclip#20367 port).
+it('a queued admission keeps the attachments its window sent, as bounded card fields only', () => {
+  trackPendingSubmission('chat', { id: 'sub-1', text: 'look at this' }, [
+    { id: 'img', kind: 'image', label: 'shot.png', path: '/work/shot.png', previewUrl: 'blob:window-local' }
+  ])
+  const listing = [{ admission_id: 'adm-1', input_id: 'sub-1', status: 'queued', user: 'look at this' }]
+  reconcilePendingSubmissions('chat', listing)
+  reconcilePendingSubmissions('chat', listing)
+
+  expect(getQueuedPrompts('chat').map(({ id, attachments }) => ({ id, attachments }))).toEqual([
+    { id: 'adm-1', attachments: [{ id: 'img', kind: 'image', label: 'shot.png', path: '/work/shot.png' }] }
+  ])
+})

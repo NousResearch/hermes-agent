@@ -343,11 +343,50 @@ _FILL_JS_TEMPLATE = """(() => {
       // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
       // composed: a component listening on its shadow host must see the value change too.
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
+      // data: is what a framework-controlled input reads. React/Vue ignore an InputEvent without it
+      // and leave their own state empty, which reads as a filled DOM field the page still rejects.
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, data: f.value, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  // Stamps stay on the controls: this script cannot tell whether a controlled input kept the value,
+  // because the framework re-renders after it returns. build_fill_verify_js reads back and unstamps.
   return JSON.stringify({ filled });
+})()"""
+
+
+def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
+    """Build a JS expression that reads the filled controls back and removes the inspection stamps.
+
+    The fill script's count is a claim about the write; this is the claim about the page. Called one
+    turn of the event loop later, it catches a framework that reverted the value, a field that was
+    re-rendered (stamp gone) and a partial write. Returns counts only — no value leaves the page.
+    """
+    payload = json.dumps(
+        [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
+    )
+    return (_VERIFY_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+
+
+_VERIFY_JS_TEMPLATE = """(() => {
+  const fills = __FILLS__;
+  const nonce = __NONCE__;
+  const roots = [];
+  (function walk(root) {
+    roots.push(root);
+    for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
+  })(document);
+  const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
+  let landed = 0;
+  let reverted = 0;
+  const missing = [];
+  for (const f of fills) {
+    const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+    if (!el) { missing.push(f.index); continue; }
+    if (el.tagName === "SELECT") { landed += 1; continue; }
+    if (String(el.value) === String(f.value)) landed += 1; else reverted += 1;
+  }
+  find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  return JSON.stringify({ landed, reverted, missing });
 })()"""

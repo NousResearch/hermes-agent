@@ -1940,10 +1940,16 @@ def route_classified_error(
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    # A spent allowance (usage-window 402) never switches models on its own: the limit card
+    # offers that choice. A usage-window *outage* (503 ``usage_window_unavailable``) is not a
+    # spent allowance — the requested model may be perfectly servable — so it falls back like
+    # any other 503 once the backoff budget is spent.
+    _classified_ctx = getattr(classified, "error_context", None) or {}
+    _plan_limit = _classified_ctx.get("usage_window") and not _classified_ctx.get("usage_window_outage")
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
-    ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
+    ) and not _plan_limit  # never switch models on a plan limit
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.

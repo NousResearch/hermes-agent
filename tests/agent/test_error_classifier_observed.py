@@ -62,6 +62,13 @@ OBSERVED = [
     ("router-no-workers", "custom", _status(openai.InternalServerError, 500, {"error": {
         "message": "No available workers (all circuits open or unhealthy)"}}),
      FailoverReason.server_error, True, False),
+    # 2026-11-16 agent.log: the Nous usage-window check itself was down, not the model's capacity.
+    # Read as overloaded it backed off on the same model and never switched, so every turn that hit
+    # it during the outage failed with no fallback.
+    ("nous-503-usage-window-unavailable", "nous", _status(openai.InternalServerError, 503, {
+        "status": 503, "code": "usage_window_unavailable",
+        "message": "Hermes usage checks are temporarily unavailable. Please try again in a moment."}),
+     FailoverReason.rate_limit, True, True),
 ]
 
 
@@ -82,6 +89,39 @@ def test_affordable_402_classifies_as_billing_with_a_parseable_budget():
     result = classify_api_error(error, provider="openrouter", model="anthropic/claude-opus-5.5")
     assert result.reason == FailoverReason.billing
     assert _affordable_max_tokens_from_error(error) == 81664 - 64
+
+
+def test_usage_window_check_outage_is_a_limit_hit_that_may_fall_back():
+    """The 503 carries the ``usage_window`` tag (the credentials pool and the limit card read it)
+    but keeps the fallback the 402 refuses: the allowance was never shown to be spent, so the
+    requested model can still be served elsewhere. ``usage_window_outage`` is what the eager-fallback
+    guard reads to tell this apart from a spent allowance."""
+    body = {"status": 503, "code": "usage_window_unavailable",
+            "message": "Hermes usage checks are temporarily unavailable. Please try again in a moment."}
+    result = classify_api_error(_status(openai.InternalServerError, 503, body), provider="nous", model="m")
+    assert result.reason == FailoverReason.rate_limit
+    assert result.error_context["usage_window"] is True
+    assert result.error_context["usage_window_outage"] is True
+    assert result.retryable and result.should_fallback
+
+
+def test_spent_usage_window_402_still_never_falls_back_on_its_own():
+    """The other side of the guard: a usage-window *plan limit* keeps ``should_fallback`` False and
+    carries no outage tag, so turn_recovery's plan-limit guard still blocks the model switch."""
+    body = {"status": 402, "code": "usage_window_and_credits_exhausted",
+            "message": "You've hit your daily limit."}
+    result = classify_api_error(_status(openai.APIStatusError, 402, body), provider="nous", model="m")
+    assert result.reason == FailoverReason.billing
+    assert result.error_context["usage_window"] is True
+    assert "usage_window_outage" not in result.error_context
+    assert result.should_fallback is False
+
+
+def test_usage_window_rate_limit_benches_the_model_not_the_whole_credential():
+    from agent.credential_pool_model_cooldowns import FAILURE_REASON_USAGE_WINDOW, pool_failure_reason
+
+    assert pool_failure_reason(FailoverReason.rate_limit, {"usage_window": True}, False) == FAILURE_REASON_USAGE_WINDOW
+    assert pool_failure_reason(FailoverReason.rate_limit, {}, False) == FailoverReason.rate_limit.value
 
 
 def test_not_a_multimodal_model_is_an_image_rejection():

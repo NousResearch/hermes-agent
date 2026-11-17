@@ -874,7 +874,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
+| `GET` | `/board?tenant=<name>&include_archived=…&done_limit=…` | Board grouped by status column, plus tenants + assignees for filter dropdowns. `done_limit` keeps only the newest done cards (`0` = all; default `dashboard.kanban.board_done_limit`); `done_total` always carries the full done count |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
 | `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
 | `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
@@ -906,6 +906,8 @@ dashboard:
     lane_by_profile: true             # default for the "lanes by profile" toggle
     include_archived_by_default: false
     render_markdown: true             # set false for plain <pre> rendering
+    board_done_limit: 0               # newest done cards GET /board returns when a client
+                                      # sends no done_limit (0 = all; the desktop asks for 100)
 ```
 
 Each key is optional and falls back to the shown default.

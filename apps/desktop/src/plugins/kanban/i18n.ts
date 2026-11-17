@@ -42,6 +42,8 @@ type KanbanMessages = {
   noHeartbeat: string
   expand: (label: string) => string
   collapse: (label: string) => string
+  /** Done lane footer when the board holds only its newest cards. */
+  showMoreDone: (page: number, hidden: number) => string
   newTaskIn: (label: string) => string
   empty: string
   unassigned: string
@@ -273,6 +275,7 @@ export const en: KanbanMessages = {
   noHeartbeat: 'no heartbeat',
   expand: label => `Expand ${label}`,
   collapse: label => `Collapse ${label}`,
+  showMoreDone: (page, hidden) => `Show ${page} more (${hidden} older)`,
   newTaskIn: label => `New task in ${label}`,
   empty: 'Empty',
   unassigned: 'unassigned',
@@ -505,6 +508,7 @@ const ja: KanbanMessages = {
   noHeartbeat: 'ハートビートなし',
   expand: label => `${label} を展開`,
   collapse: label => `${label} を折りたたむ`,
+  showMoreDone: (page, hidden) => `さらに ${page} 件表示（古い ${hidden} 件）`,
   newTaskIn: label => `${label} に新しいタスク`,
   empty: '空',
   unassigned: '未割り当て',
@@ -735,6 +739,7 @@ const zh: KanbanMessages = {
   noHeartbeat: '无心跳',
   expand: label => `展开 ${label}`,
   collapse: label => `折叠 ${label}`,
+  showMoreDone: (page, hidden) => `再显示 ${page} 条（还有 ${hidden} 条更早的）`,
   newTaskIn: label => `在 ${label} 新建任务`,
   empty: '空',
   unassigned: '未分配',
@@ -963,6 +968,7 @@ const zhHant: KanbanMessages = {
   noHeartbeat: '無心跳',
   expand: label => `展開 ${label}`,
   collapse: label => `摺疊 ${label}`,
+  showMoreDone: (page, hidden) => `再顯示 ${page} 筆（還有 ${hidden} 筆更早的）`,
   newTaskIn: label => `在 ${label} 新增任務`,
   empty: '空',
   unassigned: '未指派',

@@ -18,6 +18,7 @@ from tests.waiting import async_wait_until
 
 PUBLIC_URL = "https://hermes.example.com"
 ARGS = {"feed_id": "11111111-1111-4111-8111-111111111111"}
+_EVENT_UTILITY_KEYS = ("list_event_types", "subscribe_event", "unsubscribe_event")
 
 
 @pytest.fixture
@@ -81,8 +82,8 @@ class TestUtilitySelection:
         return {entry["handler_key"] for entry in _select_utility_schemas("ambush", server, config)}
 
     def test_event_tools_need_the_opt_in(self):
-        assert not self._keys({}) & set(events.EVENT_UTILITY_KEYS)
-        assert set(events.EVENT_UTILITY_KEYS) <= self._keys({"events": True})
+        assert not self._keys({}) & set(_EVENT_UTILITY_KEYS)
+        assert set(_EVENT_UTILITY_KEYS) <= self._keys({"events": True})
 
     def test_a_native_list_events_tool_keeps_every_event_utility(self):
         # Calendar servers commonly ship a native ``list_events`` tool; a native tool shadows a utility
@@ -90,12 +91,12 @@ class TestUtilitySelection:
         from tools import mcp_tool_registration as reg
         from tools.mcp_tool_schema import _build_utility_schemas
         native = SimpleNamespace(name="list_events", description="Calendar events", inputSchema={"type": "object"})
-        utilities = [e for e in _build_utility_schemas("cal") if e["handler_key"] in events.EVENT_UTILITY_KEYS]
+        utilities = [e for e in _build_utility_schemas("cal") if e["handler_key"] in _EVENT_UTILITY_KEYS]
         candidates = reg._tool_candidates("cal", [native], lambda name: True, 30)
         candidates += reg._utility_candidates("cal", utilities, 30)
         kept = {c.origin for c in reg._resolve_name_collisions("cal", candidates)}
         assert "tool 'list_events'" in kept
-        assert {f"generated utility {key!r}" for key in events.EVENT_UTILITY_KEYS} <= kept
+        assert {f"generated utility {key!r}" for key in _EVENT_UTILITY_KEYS} <= kept
 
 
 class TestList:
@@ -141,6 +142,29 @@ class TestSubscribe:
         first = next(iter(data.values()))
         _subscribe(FakeSession(_grant()))
         assert list(_routes(home).values()) == [first]  # identical: in-flight runs keep their route digest
+
+    def test_a_new_route_is_pinned_to_timestamp_bound_signatures(self, home):
+        """MCP servers sign with Standard Webhooks; an unpinned route would also take a body-only
+        GitHub/Linear MAC under the same secret, which carries no timestamp (#84265)."""
+        _subscribe(FakeSession(_grant()))
+        assert next(iter(_routes(home).values()))["signature"] == "generic"
+
+    def test_resubscribing_a_pre_pin_route_keeps_it_unpinned(self, home):
+        _subscribe(FakeSession(_grant()))
+        data = _routes(home)
+        del next(iter(data.values()))["signature"]  # a route written before pins existed
+        (home / "webhook_subscriptions.json").write_text(json.dumps(data))
+        _subscribe(FakeSession(_grant()))
+        assert _routes(home) == data  # identical bytes: in-flight runs keep their route digest
+
+    @pytest.mark.parametrize("pin", ["github", False, ""])  # the gateway refuses an invalid pin; dropping it unpins
+    def test_resubscribing_keeps_a_stored_pin(self, home, pin):
+        _subscribe(FakeSession(_grant()))
+        data = _routes(home)
+        next(iter(data.values()))["signature"] = pin
+        (home / "webhook_subscriptions.json").write_text(json.dumps(data))
+        _subscribe(FakeSession(_grant()))
+        assert _routes(home) == data
 
     def test_a_fresh_subscription_ignores_state_left_by_a_removed_route(self, home):
         name = events._route_name("ambush", "feed.emission.created", ARGS)  # e.g. after `hermes webhook remove`

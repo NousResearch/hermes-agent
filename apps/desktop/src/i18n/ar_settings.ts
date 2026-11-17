@@ -77,7 +77,7 @@ export const arSettings = {
       advancedOutput: 'حدود المخرجات',
       advancedDelegation: 'الوكلاء الفرعيون',
       advancedDesktop: 'سطح المكتب وبدء التشغيل',
-      gatewayConnection: 'هذه النافذة',
+      gatewayConnection: 'البوابة الأساسية',
       gatewayDevices: 'الاتصالات المحفوظة',
       gatewayManagedUpdates: 'التحديثات البعيدة',
       gatewayManagedUpdatesUnavailable: 'تتطلب التحديثات البعيدة إصدار سطح مكتب يدعم تحديثات SSH المُدارة.',
@@ -122,6 +122,8 @@ export const arSettings = {
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
       sessions: 'الجلسات',
+      backup: 'النسخ الاحتياطي والنقل',
+      backupOnly: 'النسخ الاحتياطي',
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
@@ -266,6 +268,17 @@ export const arSettings = {
         backgroundDone: {
           label: 'اكتملت مهمة الخلفية',
           description: 'اكتمل أمر طرفية يعمل في الخلفية.'
+        }
+      },
+      browserPermission: {
+        title: 'إشعارات المتصفح',
+        allow: 'السماح',
+        states: {
+          default: 'يعرض هذا المتصفح التنبيهات عندما تكون علامة التبويب في الخلفية. إلى أن تسمح بذلك، يومض عنوان علامة التبويب فقط.',
+          granted: 'مسموح. تظهر التنبيهات عندما تكون علامة التبويب هذه في الخلفية، ويومض عنوانها أيضًا.',
+          denied: 'محظور في إعدادات الموقع لهذا المتصفح. سيظل عنوان علامة التبويب يومض.',
+          insecure: 'يتطلب HTTPS، مثل Tailscale serve. عبر HTTP العادي يومض عنوان علامة التبويب فقط.',
+          unsupported: 'لا يستطيع هذا المتصفح عرض الإشعارات. سيظل عنوان علامة التبويب يومض.'
         }
       },
       test: 'إرسال إشعار تجريبي',
@@ -590,7 +603,10 @@ export const arSettings = {
       invalidJson: 'JSON غير صالح',
       voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
       voiceShortcutHintDesc:
-        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف المحادثة الصوتية»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.',
+      desktopReadAloudTitle: 'قراءة الردود صوتياً في هذا التطبيق',
+      desktopReadAloudDesc:
+        'ينطق كل رد مكتمل في Desktop. هو نفس مفتاح زر حقل الكتابة؛ ينطبق على كل النوافذ المفتوحة، وإيقافه يوقف الرد أثناء قراءته. خيار «قراءة الردود صوتياً» أدناه مخصص للمراسلة وCLI.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',
@@ -661,7 +677,14 @@ export const arSettings = {
       unavailableDesc: 'جسر IPC في سطح المكتب لا يوفّر إعدادات البوابة.',
       webappHostTitle: 'مضيف Hermes',
       webappHostDesc:
-        'يستخدم Webapp دائمًا مضيف Hermes الذي يقدّمه. لتبديل البوابة أو تسجيل الدخول إلى Hermes Cloud أو إدارة الاتصالات المحفوظة، استخدم تطبيق Hermes Desktop.',
+        'يعمل Webapp دائمًا على مضيف Hermes الذي يقدّمه. الاتصالات المحفوظة أدناه هي قائمة هذا الجهاز، مشتركة مع تطبيق Hermes Desktop؛ ويتم الوصول إلى البوابات الأخرى عبر هذا المضيف.',
+      webappOauthPaste: {
+        title: 'إكمال تسجيل الدخول',
+        description: 'إذا انتهت علامة تبويب تسجيل الدخول على عنوان لا يُحمَّل (هذا المتصفح ليس على جهاز البوابة)، فالصق ذلك العنوان هنا.',
+        placeholder: 'http://127.0.0.1:…/webapp/gateway-connections/oauth/callback?…',
+        finish: 'إكمال',
+        failed: 'تعذّر إكمال تسجيل الدخول'
+      },
       title: 'اتصال البوابة',
       envOverride: 'تجاوز من البيئة',
       intro:
@@ -744,6 +767,13 @@ export const arSettings = {
         restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
         startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
         stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
+        startStages: {
+          preparing: 'جارٍ تجهيز تطبيق الويب. قد يستغرق إنشاؤه بضع دقائق.',
+          building: 'جارٍ إنشاء تطبيق الويب. قد يستغرق ذلك بضع دقائق.',
+          registering: 'جارٍ إعداد تسجيل الدخول عبر Nous لهذا العنوان.',
+          restarting: 'جارٍ إعادة تشغيل البوابة لتقديم تطبيق الويب.'
+        },
+        startElapsed: time => `الوقت المنقضي: ${time}`,
         start: 'تشغيل',
         stop: 'إيقاف',
         restartGateway: 'إعادة تشغيل البوابة',
@@ -850,10 +880,6 @@ export const arSettings = {
         compression: {
           label: 'الضغط',
           hint: 'ضغط السياق'
-        },
-        skills_hub: {
-          label: 'مركز المهارات',
-          hint: 'بحث المهارات'
         },
         approval: {
           label: 'الموافقة',
@@ -964,6 +990,13 @@ export const arSettings = {
       clearDirFailed: 'تعذر مسح المجلد الافتراضي'
     },
     toolsets: {
+      browserRealProfile: {
+        reimportSignins: 'إعادة استيراد تسجيلات الدخول',
+        signinsImportedTitle: 'تسجيلات الدخول في المتصفح المدمج',
+        signinsImported: count => `تم تسجيل الدخول إلى المتصفح المدمج باستخدام ${count} من ملفات تعريف الارتباط من ملف متصفحك.`,
+        signinsRemote: 'تعمل هذه الواجهة الخلفية على جهاز آخر، لذا لا يُستورد ملف متصفحها إلى المتصفح المدمج.',
+        signinsFailed: 'تعذر استيراد تسجيلات الدخول إلى المتصفح المدمج',
+      },
       loadingConfig: 'جار تحميل الإعدادات',
       savedTitle: 'تم حفظ بيانات الاعتماد',
       savedMessage: key => `تم تحديث ${key}.`,

@@ -25,6 +25,9 @@ from plugins.config_backends.remote.paths import decode, encode
 from plugins.config_backends.remote.values import secret_literal_path
 
 TOKEN = "plane-token-1"
+# Cloud mode: the agent sends its Nous Portal access token; the stub also serves the Portal's
+# refresh route (``/api/oauth/token``), which hands out NOUS_TOKEN.
+NOUS_TOKEN = "nous-access-token-1"
 CLIENT_ID = "agent-client"
 CLIENT_SECRET = "agent-secret"
 INSTANCE = "inst-0001"
@@ -66,6 +69,7 @@ class StubPlane:
         self.fail_status: Optional[int] = None   # every /self request returns this
         self.requests: list[dict[str, Any]] = []
         self.token_requests = 0
+        self.nous_refreshes = 0
         self.home: Optional[Path] = None  # the test's HERMES_HOME, set by the fixture
         self.lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -130,6 +134,12 @@ class StubPlane:
                 return json.loads(self.rfile.read(n) or b"{}")
 
             def do_POST(self):
+                if self.path == "/api/oauth/token":
+                    self.rfile.read(int(self.headers.get("Content-Length") or 0))  # a form body
+                    with plane.lock:
+                        plane.nous_refreshes += 1
+                    return self._send(200, {"access_token": NOUS_TOKEN, "refresh_token": "nous-refresh-2",
+                                            "token_type": "Bearer", "expires_in": 3600})
                 if self.path != "/token":
                     return self._send(404, {"error": "not_found"})
                 n = int(self.headers.get("Content-Length") or 0)
@@ -154,7 +164,7 @@ class StubPlane:
                         "if_none_match": self.headers.get("If-None-Match")})
                     if plane.fail_status is not None:
                         return self._send(plane.fail_status, {"error": "unavailable", "message": "stub outage"})
-                    if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+                    if self.headers.get("Authorization") not in (f"Bearer {TOKEN}", f"Bearer {NOUS_TOKEN}"):
                         return self._send(401, {"error": "unauthorized", "message": "bad token"})
                     if self.headers.get("X-Hermes-Instance-Id") != INSTANCE:
                         return self._send(403, {"error": "config_agent_unknown", "message": "unknown instance"})

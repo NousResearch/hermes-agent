@@ -126,7 +126,7 @@ class TestStatelessChannelForcesSyncDelegation:
         }
         monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
         monkeypatch.setattr(dt, "_run_single_child", _child)
-        monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+        monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
         monkeypatch.setattr(
             "tools.async_delegation.dispatch_async_delegation_batch", _fake_dispatch
         )
@@ -207,6 +207,8 @@ class TestTerminalNotifyGate:
         assert d.get("notify_on_complete") is False
         assert d.get("notify_unsupported"), "must explain the limitation"
         assert "poll" in d["notify_unsupported"].lower()
+        from tools.process_registry import PROCESS_SCHEMA
+        assert f"{PROCESS_SCHEMA['name']}(action=" in d["notify_unsupported"]
         assert len(process_registry.pending_watchers) == 0
 
 

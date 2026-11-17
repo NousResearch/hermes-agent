@@ -33,6 +33,7 @@ async def test_metadata_completion_admits_only_retained_content(pending):
         "server_url": "http://bluebubbles.invalid", "password": "test-password",
         "send_read_receipts": False, "require_mention": False,
     }))
+    adapter.set_authorization_check(lambda *_: True)
     admitted, requests = [], []
     download_ready = False
 

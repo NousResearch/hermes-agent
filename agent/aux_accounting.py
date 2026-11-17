@@ -2,7 +2,7 @@
 
 Aux calls (vision, compression, title generation, web_extract, session_search, ...) go
 through ``agent.auxiliary_client`` which has no session handle, so their usage was
-historically discarded. The agent loop publishes ``(session_db, session_id)`` here
+historically discarded. The agent loop publishes its store, storage interface handle and session id here
 (mirroring ``agent.portal_tags``) and the aux client records usage at its single
 response-validation chokepoint. ContextVar semantics isolate concurrent agents, propagate
 to worker threads via ``tools.thread_context`` and to asyncio tasks automatically.
@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# (session_db, session_id) for the active agent turn, or None outside one.
+# (session_db, interface handle or None, session_id) for the active agent turn, or None outside one.
 _accounting: ContextVar[Optional[tuple]] = ContextVar("aux_accounting_context", default=None)
 
 # MoA advisor/aggregator usage is already folded into conversation_loop's
@@ -24,14 +24,16 @@ _accounting: ContextVar[Optional[tuple]] = ContextVar("aux_accounting_context", 
 _EXCLUDED_TASKS = frozenset({"moa_reference", "moa_aggregator"})
 
 
-def set_accounting_context(session_db: Any, session_id: Optional[str]):
+def set_accounting_context(session_db: Any, session_id: Optional[str], *, persistence: Any = None):
     """Publish the active session's accounting handles; returns the token for ``reset_accounting_context``.
 
-    ``None`` handles (no DB / no session id) clear the context.
+    ``None`` handles (no DB / no session id) clear the context. Usage records through the
+    writer handle ``persistence`` when it is one beside ``session_db``, else on ``session_db``.
     """
     if session_db is None or not session_id:
         return _accounting.set(None)
-    return _accounting.set((session_db, session_id))
+    from agent.agent_init_session import writer_interface
+    return _accounting.set((session_db, writer_interface(persistence, session_db), session_id))
 
 
 def reset_accounting_context(token) -> None:
@@ -59,7 +61,7 @@ def record_aux_usage(
         ctx = _accounting.get()
         if ctx is None:
             return
-        session_db, session_id = ctx
+        session_db, store, session_id = ctx
         raw_usage = getattr(response, "usage", None)
         if raw_usage is None:
             return
@@ -84,6 +86,19 @@ def record_aux_usage(
         # Inside a Relay-driven tool callback the thread runs Relay's loop; a worker store refuses
         # synchronous RPC there (#139029).
         from agent.runtime_session_store import call_off_event_loop
+        if store is not None:
+            from persistence.conversation.usage import TokenCounts
+            call_off_event_loop(
+                store.usage.record_auxiliary_usage,
+                session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,
+                tokens=TokenCounts(
+                    input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
+                    reasoning_tokens=usage.reasoning_tokens,
+                ),
+                estimated_cost_usd=estimated_cost,
+            )
+            return
         call_off_event_loop(
             session_db.record_auxiliary_usage,
             session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,

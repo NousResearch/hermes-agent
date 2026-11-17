@@ -121,6 +121,12 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     title: "This chat's API key changed",
     body: 'This chat started with an API key that has since changed or been removed, so your message was not sent. An open chat never switches to a different key on its own. Start a new session to use your current key.'
   },
+  local_runtime_unavailable: {
+    title: "Can't reach the local model server",
+    body: "The local model server isn't serving yet: it may still be starting. Retry in a moment, or switch to another model.",
+    bodyNoRetry:
+      'The local model server is turned off. Start it from the Hermes desktop app or `hermes model` in a terminal, or switch to another model.'
+  },
   SESSION_OWNER_UNCONFIRMED: {
     title: 'Your message may already be queued',
     body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'

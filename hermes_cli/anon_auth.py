@@ -1029,11 +1029,15 @@ def _account_state_from_token(
 ) -> dict[str, Any]:
     """The ``providers.nous`` shape for the signed-in account (same fields the device-code login writes)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, _coerce_ttl_seconds, _optional_base_url, _tls_state_from_verify
-    from hermes_cli.auth_nous import _NOUS_EMPTY_AGENT_KEY_FIELDS, _iso_after, refresh_nous_oauth_from_state
+    from hermes_cli.auth_nous import (
+        _NOUS_EMPTY_AGENT_KEY_FIELDS, _iso_after, _validate_nous_inference_url_from_network,
+        refresh_nous_oauth_from_state)
     now = datetime.now(UTC)
     ttl = _coerce_ttl_seconds(token_data.get("expires_in", 0))
+    # The token response is network input and this URL receives the account bearer: same allowlist
+    # as the device-code login and refresh; a refused value falls back to the registry default.
     inference_url = (
-        _optional_base_url(token_data.get("inference_base_url"))
+        _validate_nous_inference_url_from_network(_optional_base_url(token_data.get("inference_base_url")))
         or PROVIDER_REGISTRY["nous"].inference_base_url.rstrip("/"))
     state = {
         "portal_base_url": portal_base_url, "inference_base_url": inference_url,

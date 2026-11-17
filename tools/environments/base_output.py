@@ -34,8 +34,16 @@ class _BoundedOutputCollector:
     # Hard ceiling on spill file size; protects disk from runaway output.
     _SPILL_CAP_CHARS = 5_000_000
 
-    def __init__(self, max_chars: int, spill_path: Path | None = None):
+    # Longest control line held back (a path); past it the prefix is plain output.
+    _CONTROL_SCAN_CHARS = 4096
+
+    def __init__(self, max_chars: int, spill_path: Path | None = None, control_marker: str = ""):
         self.max_chars = max(1, int(max_chars))
+        # The ``\n<marker>value<marker>\n`` line the wrapper prints before the command runs (so it
+        # leads the stream) is cut out here, before the head/tail window can truncate it.
+        self._control_marker = control_marker
+        self._pending: str | None = "" if control_marker else None
+        self.control_value: str | None = None
         self._head_limit = int(self.max_chars * 0.4)
         self._tail_limit = self.max_chars - self._head_limit
         self._head: list[str] = []
@@ -98,49 +106,77 @@ class _BoundedOutputCollector:
         with self._lock:
             return self._total_chars
 
+    def _take_control_line(self, final: bool) -> bool:
+        """Cut a leading control line out of the held-back prefix; True once it may be released."""
+        pending, opener = self._pending or "", "\n" + self._control_marker
+        if not pending.startswith(opener):
+            return final or not opener.startswith(pending)
+        close = pending.find(self._control_marker, len(opener))
+        line_end = pending.find("\n", close + len(self._control_marker)) if close != -1 else -1
+        if line_end == -1:
+            return final or len(pending) > self._CONTROL_SCAN_CHARS
+        self.control_value = pending[len(opener):close].strip() or None
+        self._pending = pending[line_end + 1:]
+        return True
+
+    def _release_pending(self, final: bool) -> None:
+        if self._pending is not None and self._take_control_line(final):
+            held, self._pending = self._pending, None
+            self._append_locked(held)
+
     def append(self, text: str) -> None:
         if not text:
             return
         with self._lock:
-            text_len = len(text)
-            # Spill tee activates at the first overflow, then mirrors every chunk.
-            if self._spill_path is not None and (
-                self._spill_fh is not None or self._total_chars + text_len > self.max_chars):
-                self._maybe_spill(text)
-            self._total_chars += text_len
-            start = 0
-
-            if self._head_chars < self._head_limit:
-                take = min(self._head_limit - self._head_chars, text_len)
-                if take:
-                    self._head.append(text[:take])
-                    self._head_chars += take
-                    start = take
-
-            remaining = text_len - start
-            if remaining <= 0 or self._tail_limit <= 0:
+            if self._pending is not None:
+                self._pending += text
+                self._release_pending(final=False)
                 return
-            if remaining >= self._tail_limit:
-                self._tail.clear()
-                self._tail.append(text[-self._tail_limit :])
-                self._tail_chars = self._tail_limit
-                return
+            self._append_locked(text)
 
-            chunk = text[start:]
-            self._tail.append(chunk)
-            self._tail_chars += len(chunk)
-            while (excess := self._tail_chars - self._tail_limit) > 0:
-                first = self._tail[0]
-                if len(first) <= excess:
-                    self._tail.popleft()
-                    self._tail_chars -= len(first)
-                else:
-                    self._tail[0] = first[excess:]
-                    self._tail_chars -= excess
+    def _append_locked(self, text: str) -> None:
+        if not text:
+            return
+        text_len = len(text)
+        # Spill tee activates at the first overflow, then mirrors every chunk.
+        if self._spill_path is not None and (
+            self._spill_fh is not None or self._total_chars + text_len > self.max_chars):
+            self._maybe_spill(text)
+        self._total_chars += text_len
+        start = 0
+
+        if self._head_chars < self._head_limit:
+            take = min(self._head_limit - self._head_chars, text_len)
+            if take:
+                self._head.append(text[:take])
+                self._head_chars += take
+                start = take
+
+        remaining = text_len - start
+        if remaining <= 0 or self._tail_limit <= 0:
+            return
+        if remaining >= self._tail_limit:
+            self._tail.clear()
+            self._tail.append(text[-self._tail_limit :])
+            self._tail_chars = self._tail_limit
+            return
+
+        chunk = text[start:]
+        self._tail.append(chunk)
+        self._tail_chars += len(chunk)
+        while (excess := self._tail_chars - self._tail_limit) > 0:
+            first = self._tail[0]
+            if len(first) <= excess:
+                self._tail.popleft()
+                self._tail_chars -= len(first)
+            else:
+                self._tail[0] = first[excess:]
+                self._tail_chars -= excess
 
     def render(self, *, suffix: str = "") -> str:
         """Render within ``max_chars``, preserving a required status suffix."""
         with self._lock:
+            self._release_pending(final=True)
             if len(suffix) >= self.max_chars:
                 return suffix[-self.max_chars :]
 
@@ -166,20 +202,23 @@ class _BoundedOutputCollector:
             return head[:head_chars] + notice[:available] + rendered_tail + suffix
 
 
-def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollector:
+def _new_output_collector(proc, bounded_capture: bool, control_marker: str = "") -> _BoundedOutputCollector:
     """Build the collector for one ``_wait_for_process`` call. ``bounded_capture`` (foreground
     terminal path only) caps retention at ``tool_output.max_bytes`` and tees overflow to a
     spill file under ``$HERMES_HOME/cache/terminal-output`` (created only on actual overflow;
     spills older than 7 days are pruned opportunistically). Otherwise the collector is
     effectively unbounded so internal consumers keep full-fidelity output."""
     if not bounded_capture:
-        return _BoundedOutputCollector(_UNBOUNDED_CAPTURE_CHARS)
+        return _BoundedOutputCollector(_UNBOUNDED_CAPTURE_CHARS, control_marker=control_marker)
     try:
         from tools.tool_output_limits import get_max_bytes
         capture_limit = get_max_bytes()
     except Exception:
         capture_limit = 50_000
     spill_path = None
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("tool_host_artifacts"):  # a hosted agent's output is never teed here
+        return _BoundedOutputCollector(capture_limit, control_marker=control_marker)
     try:
         spill_dir = get_hermes_home() / "cache" / "terminal-output"
         spill_path = spill_dir / f"out-{int(time.time())}-{os.getpid()}-{id(proc) & 0xffff:x}.log"
@@ -193,7 +232,7 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
                     pass
     except Exception:
         spill_path = None
-    return _BoundedOutputCollector(capture_limit, spill_path=spill_path)
+    return _BoundedOutputCollector(capture_limit, spill_path=spill_path, control_marker=control_marker)
 
 
 def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, returncode: int | None) -> dict:

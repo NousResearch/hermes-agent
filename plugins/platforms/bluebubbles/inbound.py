@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from copy import deepcopy
@@ -14,7 +15,9 @@ from urllib.parse import parse_qs, quote
 
 import httpx
 
+from gateway.platforms._shared import secrets_match
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.helpers import spoken_mention_clips, voice_mention_gate_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,11 @@ def _ok():
     return web.Response(text="ok")
 
 
+def _is_voice_attachment(att: dict[str, Any]) -> bool:
+    """An audio attachment or a CAF memo that may lack an audio MIME."""
+    return (att.get("mimeType") or "").lower().startswith("audio/") or (att.get("uti") or "").endswith("caf")
+
+
 class BlueBubblesInboundMixin:
     @staticmethod
     async def _wait_for_attachment_retry(delay):
@@ -71,7 +79,12 @@ class BlueBubblesInboundMixin:
             while True:
                 remaining = state.attachment_deadline - time.monotonic()
                 await self._wait_for_attachment_retry(min(_ATTACHMENT_RETRY_SECONDS, max(0, remaining)))
-                response = await self._process_inbound(state.retry_payload, {}, message_id, held=state)
+                if state.retry_payload is None:
+                    return
+                payload = state.retry_payload
+                response = await self._process_inbound(payload, {}, message_id, held=state)
+                if state.retry_payload is None:
+                    return
                 if response.status != 503 and state.accepted and all(
                         not isinstance(a, dict) or not a.get("guid") or a["guid"] in state.delivered
                         for a in state.record.get("attachments") or []):
@@ -114,6 +127,7 @@ class BlueBubblesInboundMixin:
         media_urls: list[str] = []
         media_types: list[str] = []
         collected: set[str] = set()
+        voice_paths: list[str] = []
         msg_type = MessageType.TEXT
         for att in record.get("attachments") or []:
             if not isinstance(att, dict):
@@ -146,15 +160,19 @@ class BlueBubblesInboundMixin:
             mime = (att.get("mimeType") or "").lower()
             if state is not None:
                 state.downloaded[att_guid] = cached, mime
+            is_voice = _is_voice_attachment(att)
+            if is_voice:
+                voice_paths.append(cached)
+                if not mime.startswith("audio/"):
+                    mime = "audio/x-caf"
             media_urls.append(cached)
             media_types.append(mime)
             collected.add(att_guid)
-            is_voice = mime.startswith("audio/") or (att.get("uti") or "").endswith("caf")
             msg_type = (MessageType.PHOTO if mime.startswith("image/") else MessageType.VOICE if is_voice
                         else MessageType.VIDEO if mime.startswith("video/") else MessageType.DOCUMENT)
         if len(media_urls) > 1 and any(m.split("/")[0] == "image" for m in media_types):  # any image → PHOTO
             msg_type = MessageType.PHOTO
-        return media_urls, media_types, msg_type, collected
+        return media_urls, media_types, msg_type, collected, voice_paths
 
     def _webhook_token(self, request) -> Optional[str]:
         return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
@@ -394,60 +412,94 @@ class BlueBubblesInboundMixin:
             self._remember_chat_guid(chat_id, chat_guid)
         return chat_guid, chat_id, chat_identifier, sender, is_group
 
+    async def _refresh_pending_attachments(self, state, message_id):
+        if not state.attachment_deadline:
+            state.attachment_deadline = time.monotonic() + _ATTACHMENT_WAIT_SECONDS
+        remaining = state.attachment_deadline - time.monotonic()
+        if self.client and remaining > 0:
+            try:
+                async with asyncio.timeout(remaining):
+                    self._merge_inbound_record(state.record, await self._hydrate_inbound_record(message_id))
+            except (httpx.HTTPError, OSError, ValueError, TimeoutError) as exc:
+                logger.warning("[bluebubbles] attachment hydration failed: %s", type(exc).__name__)
+
+    async def _spoken_mention_matches(self, state, source, media_urls, voice_paths):
+        if voice_paths and await spoken_mention_clips(
+                voice_paths, self._mention_patterns, adapter=self, source=source):
+            return True
+        # The speech helper discards the audio on a miss. Release the rest of the envelope too.
+        for path in set(media_urls) - set(voice_paths):
+            with suppress(OSError):
+                os.remove(path)
+        state.downloaded.clear()
+        state.retry_payload = None
+        return False
+
     async def _deliver_inbound_message(self, payload, state, message_id, route):
         from aiohttp import web
 
         _chat_guid, chat_id, chat_identifier, sender, is_group = route
         record = state.record
+        chat_type = "group" if is_group else "dm"
+        gated = is_group and self.require_mention
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
-        # Known unmentioned group text needs no media I/O; sparse text can still hydrate below.
-        if is_group and self.require_mention and text and not self._message_matches_mention_patterns(text):
+        if gated and text and not self._message_matches_mention_patterns(text):
             return _ok()
-        if record.get("attachments") and not state.attachment_deadline:
-            state.attachment_deadline = time.monotonic() + _ATTACHMENT_WAIT_SECONDS
-        if (record.get("attachments") and self.client
-                and time.monotonic() < state.attachment_deadline):
-            try:
-                async with asyncio.timeout(state.attachment_deadline - time.monotonic()):
-                    self._merge_inbound_record(record, await self._hydrate_inbound_record(message_id))
-            except (httpx.HTTPError, OSError, ValueError, TimeoutError) as exc:
-                logger.warning("[bluebubbles] attachment hydration failed: %s", type(exc).__name__)
-        text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
-        if is_group and self.require_mention:
+        authorized = self._is_sender_authorized(sender, chat_type, chat_id) is True
+        has_attachments = bool(record.get("attachments"))
+        if has_attachments and authorized:
+            await self._refresh_pending_attachments(state, message_id)
+            text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
+        spoken = (gated and not text and voice_mention_gate_enabled(self.config.extra)
+                  and any(_is_voice_attachment(att) for att in record.get("attachments") or []
+                          if isinstance(att, dict)))
+        if gated and not spoken:
             if not self._message_matches_mention_patterns(text):
                 return _ok()
             text = self._clean_mention_text(text)
-        self._restore_admitted_content(state, message_id)
-        media_urls, media_types, msg_type, collected = await self._collect_attachments(record, state=state)
-        attachments = {att.get("guid") for att in record.get("attachments") or []
-                       if isinstance(att, dict) and att.get("guid")} - state.delivered
-        if not attachments <= collected:
-            if not state.attachment_deadline or time.monotonic() < state.attachment_deadline:
-                self._schedule_attachment_retry(payload, state, message_id)
-                return _ok()
-            if state.accepted:
-                return web.json_response({"error": "attachments not ready"}, status=503)
-            text = (text + "\n\n[An attachment was included, but could not be retrieved within five minutes.]").strip()
-            attachments = collected
-        if state.accepted:
-            if not media_urls:
-                return _ok()
-            text = "(attachment)"
-        elif not text and media_urls:
-            text = "(attachment)"
-        if not text:
-            return web.json_response({"error": "missing message fields"}, status=400)
+
+        media_urls, media_types, msg_type, collected, voice_paths = [], [], MessageType.TEXT, set(), []
+        if has_attachments and authorized:
+            self._restore_admitted_content(state, message_id)
+            media_urls, media_types, msg_type, collected, voice_paths = await self._collect_attachments(
+                record, state=state)
+            pending = {att["guid"] for att in record.get("attachments") or []
+                       if isinstance(att, dict) and att.get("guid")} - state.delivered - collected
+            if pending:
+                if time.monotonic() < state.attachment_deadline:
+                    self._schedule_attachment_retry(payload, state, message_id)
+                    return _ok()
+                if state.accepted:
+                    return web.json_response({"error": "attachments not ready"}, status=503)
+                text = (text + "\n\n[An attachment was included, but could not be retrieved within five minutes.]").strip()
+        elif not authorized:
+            state.retry_payload = None
+
+        if state.accepted and not media_urls:
+            return _ok()
         chats = record.get("chats") or []
         chat_name = self._value(chats[0].get("displayName") if chats and isinstance(chats[0], dict) else None,
                                 chat_identifier, chat_id)
-        source = self.build_source(chat_id=chat_id, chat_name=chat_name,
-                                   chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
-                                   chat_id_alt=chat_identifier)
+        source = self.build_source(chat_id=chat_id, chat_name=chat_name, chat_type=chat_type,
+                                   user_id=sender, user_name=sender, chat_id_alt=chat_identifier)
+        if spoken and not state.accepted:
+            if not await self._spoken_mention_matches(state, source, media_urls, voice_paths):
+                return _ok()
+            msg_type = MessageType.VOICE
+        if state.accepted or (not text and has_attachments):
+            text = "(attachment)"
+        if not text:
+            return web.json_response({"error": "missing message fields"}, status=400)
         event = MessageEvent(
             text=text, message_type=msg_type, source=source,
             raw_message={**payload, "data": deepcopy(record)}, message_id=message_id,
             reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
             media_urls=media_urls, media_types=media_types)
+        return await self._admit_inbound_event(event, state, collected, authorized)
+
+    async def _admit_inbound_event(self, event, state, attachments, authorized):
+        from aiohttp import web
+
         if state.accepted:
             # Native admission keys by message GUID plus revision. New media is a new input,
             # while the original GUID must remain intact for provider replies and reactions.
@@ -459,14 +511,17 @@ class BlueBubblesInboundMixin:
             # Admission, not model/output completion, is the point of no replay.
             if event._gateway_accepted:
                 state.accepted = True
-                self._remember_admitted_content(message_id, attachments)
+                self._remember_admitted_content(event.message_id, attachments)
                 state.delivered.update(attachments)
                 for guid in attachments:
                     state.downloaded.pop(guid, None)
         if not event._gateway_accepted:
-            return web.json_response({"error": "gateway did not accept message"}, status=503)
-        if self.send_read_receipts:
-            task = asyncio.create_task(self.mark_read(chat_id))
+            # The runner still sees a denied or unpaired sender, without media or retry work.
+            return web.json_response({"error": "gateway did not accept message"}, status=503) if authorized else _ok()
+        source = event.source
+        if (self.send_read_receipts
+                and self._is_sender_authorized(source.user_id, source.chat_type, source.chat_id) is True):
+            task = asyncio.create_task(self.mark_read(source.chat_id))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
         return _ok()
@@ -474,7 +529,7 @@ class BlueBubblesInboundMixin:
     async def _handle_webhook(self, request):
         from aiohttp import web
 
-        if self._webhook_token(request) != self.password:
+        if not secrets_match(self._webhook_token(request), self.password):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = self._parse_webhook_body(await request.read())

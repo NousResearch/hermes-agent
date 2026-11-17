@@ -19,8 +19,9 @@ def _make_adapter(monkeypatch, **extra):
             **extra,
         },
     )
-    adapter = BlueBubblesAdapter(cfg)
-    return adapter
+    instance = BlueBubblesAdapter(cfg)
+    instance.set_authorization_check(lambda *_: True)
+    return instance
 
 
 class _FakeBlueBubblesRequest:
@@ -51,10 +52,12 @@ class Request:
 def adapter():
     from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
 
-    return BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
+    instance = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://example.invalid", "password": "synthetic-secret",
         "send_read_receipts": False, "require_mention": False,
     }))
+    instance.set_authorization_check(lambda *_: True)
+    return instance
 
 async def settle(instance):
     while instance._background_tasks:

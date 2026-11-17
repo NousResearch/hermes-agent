@@ -105,5 +105,11 @@ export const jaErrorCodes: Partial<ThreadCopy['errorCodes']> = {
   launch_credentials_unavailable: {
     title: 'このチャットの API キーが変更されました',
     body: 'このチャットの開始時の API キーがその後変更または削除されたため、メッセージは送信されませんでした。開いているチャットが自動で別のキーに切り替わることはありません。「新しいセッションを開始」で現在のキーを使ってください。'
+  },
+  local_runtime_unavailable: {
+    title: 'ローカルモデルサーバーに接続できません',
+    body: 'ローカルモデルサーバーはまだ動作していません。起動中の可能性があります。少し待ってから再試行するか、別のモデルに切り替えてください。',
+    bodyNoRetry:
+      'ローカルモデルサーバーはオフになっています。Hermes デスクトップアプリか、ターミナルの `hermes model` から起動するか、別のモデルに切り替えてください。'
   }
 }

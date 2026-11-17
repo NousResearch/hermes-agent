@@ -1,0 +1,34 @@
+name: goneby
+repo: https://github.com/rahlquist/goneby
+sha: a4e326e5ba87c56de64e7f44d837f538b703180f
+title: GoneBy
+description: "Retroactive project memory for LLM agents. Captures every turn into an encrypted per-project write-ahead log (zero tokens during work), then at project close walks the log backward from the shipped product — the oracle — keeping only entries that verifiably contributed; survivors are embedded (MRL-truncated) and stored in Valkey or Qdrant for semantic search in later sessions. General plugin: coexists with any memory provider instead of replacing it. Disclosure — On by default, GoneBy records every chat turn of each project (your messages, the assistant's replies and tool output text) into an encrypted log under your Hermes profile's plugin-data folder. When you close a project, it sends the log to your configured model to choose which entries to keep, sends the kept text to the embedding endpoint you configure (default localhost), and stores it unencrypted in your Valkey or Qdrant database (default localhost). Turn capture off with the `auto_capture` setting or `/goneby gate off`."
+maintainer: rahlquist
+tier: community
+category: memory
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/rahlquist/goneby/blob/main/docs/OVERVIEW.md
+image: https://raw.githubusercontent.com/rahlquist/goneby/a4e326e5ba87c56de64e7f44d837f538b703180f/docs/gallery/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/rahlquist/goneby/a4e326e5ba87c56de64e7f44d837f538b703180f/docs/gallery/screenshot-tape.png
+  - https://raw.githubusercontent.com/rahlquist/goneby/a4e326e5ba87c56de64e7f44d837f538b703180f/docs/gallery/screenshot-verification.png
+  - https://raw.githubusercontent.com/rahlquist/goneby/a4e326e5ba87c56de64e7f44d837f538b703180f/docs/gallery/screenshot-retrieve.png
+  - https://raw.githubusercontent.com/rahlquist/goneby/a4e326e5ba87c56de64e7f44d837f538b703180f/docs/gallery/screenshot-endcard.png
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - wall_append
+    - wall_read
+    - walk_backward
+    - store_memory
+    - query_memory
+    - goneby_status
+    - goneby_project
+  provides_hooks:
+    - pre_llm_call
+    - post_compaction
+  provides_middleware: []
+  requires_env:
+    - GONEBY_ENCRYPTION_KEY

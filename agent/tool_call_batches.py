@@ -3,7 +3,8 @@
 from copy import deepcopy
 import json
 
-from agent.message_sanitization import coalesce_tool_call_id, deterministic_call_id, uniquify_tool_call_ids
+from agent.message_sanitization import deterministic_call_id, uniquify_tool_call_ids
+from session_rules.turns import coalesce_tool_call_id
 from agent.transports.types import ToolCall
 from tools.connectors import is_connector_name
 from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
@@ -52,22 +53,26 @@ def expand_local_tool_batches(tool_calls: list, *, provider_data: dict | None = 
             children.append(child)
         replacements[parent_id] = children
     uniquify_tool_call_ids(expanded)
-    # Native providers replay ordered blocks instead of rebuilding them from
-    # tool_calls. Replace the matching tool block in place, preserving signed
-    # thinking/text blocks and their order exactly.
     if provider_data and replacements:
-        for key, replace in (("anthropic_content_blocks", _anthropic_children),
-                             ("bedrock_content_blocks", _bedrock_children)):
-            if blocks := provider_data.get(key):
-                provider_data[key] = [child for block in blocks for child in replace(block, replacements)]
+        replace_native_tool_blocks(provider_data, replacements)
     return expanded
+
+
+def replace_native_tool_blocks(provider_data: dict, replacements: dict) -> None:
+    """Native providers replay ordered blocks instead of rebuilding them from
+    tool_calls. Replace the matching tool block in place, preserving signed
+    thinking/text blocks and their order exactly."""
+    for key, replace in (("anthropic_content_blocks", _anthropic_children),
+                         ("bedrock_content_blocks", _bedrock_children)):
+        if blocks := provider_data.get(key):
+            provider_data[key] = [child for block in blocks for child in replace(block, replacements)]
 
 
 def _anthropic_children(block, replacements):
     children = replacements.get(block.get("id")) if block.get("type") == "tool_use" else None
     if children is None:
         return [block]
-    return [{**block, "id": coalesce_tool_call_id(child),
+    return [{**block, "id": coalesce_tool_call_id(child), "name": child.function.name,
              "input": json.loads(child.function.arguments)} for child in children]
 
 
@@ -76,5 +81,5 @@ def _bedrock_children(block, replacements):
     children = replacements.get(tool.get("toolUseId")) if isinstance(tool, dict) else None
     if children is None:
         return [block]
-    return [{**block, "toolUse": {**tool, "toolUseId": coalesce_tool_call_id(child),
+    return [{**block, "toolUse": {**tool, "toolUseId": coalesce_tool_call_id(child), "name": child.function.name,
                                  "input": json.loads(child.function.arguments)}} for child in children]

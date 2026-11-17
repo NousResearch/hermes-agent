@@ -1,19 +1,18 @@
 name: hermes-lang-cs
 repo: https://github.com/ostravajih/hermes-lang-cs
-sha: 59d0a6c289afb6320a128b95b912f8cc497171e6
+sha: dffcfdd272f844f6c35051f1a9b52b24c2f5865e
 title: Czech (Čeština) Language Pack
 description: >-
   Czech (Čeština) language pack for Hermes Agent covering all three UI surfaces — core
-  CLI/gateway/platforms (3,509/3,509 keys), the Ink TUI (1,385/1,385) and the Desktop app (5,333 of
-  5,456). Core and TUI keys match the English source of `main` at e82bf01 (2026-10-26) exactly: no
+  CLI/gateway/platforms (3,574/3,574 keys), the Ink TUI (1,443 of 1,445) and the Desktop app (5,489 of
+  5,611). Core keys match the English source of `main` at f65af53f28 (2026-11-15) exactly: no
   key upstream has since removed and no placeholder divergence, checked by flattening both sides.
-  The remaining 123 Desktop keys are the ones whose English value is a function with branching
-  (plural counts such as `cron.count`, conditional labels such as `assistant.thread.errorSwitchToModel`),
-  which the pack format cannot express as one template — they are omitted so they fall back to
-  English instead of rendering a wrong Czech form. Two core strings (`display.verb_connector.search`
-  and `.default`) drop an invisible zero-width space the upstream English catalog carries for
-  spacing; the install scanner rates it HIGH while the visible text is identical. Ships the same
-  text as upstream PR #105503, so if that PR lands the bundled locale and this pack agree. Manifest-only
+  The remaining TUI keys are 2 whose English value is a function with branching (image plural
+  counts), and the remaining 122 Desktop keys are 120 of the same kind (plural counts such as
+  `cron.count`, conditional labels such as `assistant.thread.errorSwitchToModel`) plus two array
+  values, which the pack format cannot express as one template — they are omitted so
+  they fall back to English instead of rendering a wrong Czech form. Ships the same text as upstream
+  PR #105503, so if that PR lands the bundled locale and this pack agree. Manifest-only
   plugin: flat dotted YAML catalogs under locales/, no network, no dependencies. Disclosure — an
   `__init__.py` whose `register()` is a no-op is included so the Desktop "Install from Git" flow
   accepts the pack (#138118); registering the pack never changes display.language, the user opts in
@@ -23,7 +22,7 @@ tier: community
 category: general
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/ostravajih/hermes-lang-cs#readme
-version: "1.0.0"
+version: "1.0.1"
 platforms: []
 capabilities:
   provides_tools: []

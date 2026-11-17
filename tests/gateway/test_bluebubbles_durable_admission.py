@@ -9,7 +9,6 @@ from gateway.session_authority import SessionAuthority, initialize_session_autho
 from gateway.session_ingress_context import native_callback
 from gateway.session_envelope import restore_native
 from hermes_constants import get_hermes_home
-from hermes_state_runtime import list_session_admissions
 from tests.gateway.bluebubbles_test_support import Request, adapter
 
 
@@ -45,16 +44,16 @@ async def test_same_message_late_media_has_distinct_durable_admissions(tmp_path,
                 "guid": guid, "mimeType": "text/plain"}])
             assert (await instance._handle_webhook(request)).status == 200
             assert (await instance._handle_webhook(request)).status == 200
-        rows = [row for sid in authority.sessions for row in list_session_admissions(
-            authority.db, session_id=sid, pending_only=False)]
+        rows = [row for sid in authority.sessions for row in authority.persistence.admissions.list(
+            session_id=sid, pending_only=False)]
         assert len(rows) == 3
-        assert len({row["request_id"] for row in rows}) == 3
+        assert len({row.request_id for row in rows}) == 3
         assert [event.message_id for event in events] == ["same-message"] * 3
         assert [event.text for event in events] == ["caption", "(attachment)", "(attachment)"]
         assert downloads == ["first-file", "second-file"]
-        retained = [restore_native(row["payload"]).media_urls or [] for row in rows]
+        retained = [restore_native(row.payload).media_urls or [] for row in rows]
         assert [len(media) for media in retained] == [0, 1, 1]
         assert [Path(media[0]).read_text() for media in retained[1:]] == [
             "synthetic attachment first-file", "synthetic attachment second-file"]
     finally:
-        authority.db.close()
+        authority.persistence.close()

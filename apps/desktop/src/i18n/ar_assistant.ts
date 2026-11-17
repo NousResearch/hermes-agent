@@ -3,6 +3,12 @@ import type { TranslationOverrides } from './define-locale'
 
 export const arAssistant = {
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `يشغّل: ${target}`,
+      launchRemote: target => `يتصل بـ: ${target}`,
+      launchEnv: keys => `متغيرات البيئة: ${keys}`,
+      launchCwd: dir => `مجلد العمل: ${dir}`
+    },
     catalogInstall: {
       preparing: 'جارٍ تجهيز التثبيت…',
       install: 'تثبيت',
@@ -207,6 +213,12 @@ export const arAssistant = {
         launch_credentials_unavailable: {
           title: 'تغيّر مفتاح API لهذه المحادثة',
           body: 'بدأت هذه المحادثة بمفتاح API تم تغييره أو حذفه منذ ذلك الحين، لذا لم تُرسل رسالتك. المحادثة المفتوحة لا تنتقل أبدًا إلى مفتاح مختلف من تلقاء نفسها. استخدم «بدء جلسة جديدة» لاستخدام مفتاحك الحالي.'
+        },
+        local_runtime_unavailable: {
+          title: 'تعذّر الوصول إلى خادم النماذج المحلي',
+          body: 'خادم النماذج المحلي لا يعمل بعد: ربما لا يزال قيد التشغيل. أعد المحاولة بعد لحظة، أو انتقل إلى نموذج آخر.',
+          bodyNoRetry:
+            'خادم النماذج المحلي متوقف. شغّله من تطبيق Hermes لسطح المكتب أو عبر `hermes model` في الطرفية، أو انتقل إلى نموذج آخر.'
         }
       },
       errorAuthKinds: {
@@ -257,6 +269,7 @@ export const arAssistant = {
       readAloud: 'قراءة بصوت عال',
       copyFullResponse: 'نسخ الرد الكامل',
       readAloudFullResponseHint: 'انقر مع الضغط على Shift: قراءة الرد الكامل بصوت عال',
+      contentRefusedNotice: 'رفض فلتر الأمان في النموذج هذه الرسالة — جرّب طلبًا مختلفًا.',
       editMessage: 'تحرير الرسالة',
       scrollToBottom: 'التمرير إلى الأسفل',
       stop: 'إيقاف',

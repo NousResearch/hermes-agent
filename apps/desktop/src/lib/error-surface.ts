@@ -62,6 +62,9 @@ export const ERROR_CODE_KEYS = [
   // The API key this chat started with changed or was removed (gateway: a chat never switches keys
   // on its own): Retry repeats it; a new chat runs on the current key.
   'launch_credentials_unavailable',
+  // The managed local model server is down (starting, or switched off): named as itself, not as
+  // the custom-server endpoint copy, and with no Desktop-only pane (the Webapp shares this card).
+  'local_runtime_unavailable',
   // The owner did not confirm a forwarded send in time; it may already be queued: no Retry.
   'SESSION_OWNER_UNCONFIRMED',
   'agent_init_failed',
@@ -436,6 +439,24 @@ function usageWindowActions(surface: ErrorSurface): ErrorCardActions {
     : { primary: credits, secondary: 'retry_at_reset' }
 }
 
+/** Actions for a model server the user runs (custom endpoint or the managed local runtime). */
+function endpointActions(surface: ErrorSurface, key: ErrorCardKey): ErrorCardActions | null {
+  // The managed local model server is down: another model is the fix the card can offer, and a
+  // server that is still starting (retryable) is worth one more try.
+  if (surface.code === 'local_runtime_unavailable') {
+    return surface.retryable ? { primary: 'retry', secondary: 'switch_provider' } : { primary: 'switch_provider' }
+  }
+
+  // errorCardKey routes a custom/local server's timeout or TLS failure to the endpoint copy.
+  if ('layer' in key && key.layer === 'endpoint') {
+    return surface.code === 'timeout'
+      ? { primary: 'retry', secondary: 'open_setup_guide_local' }
+      : { primary: 'open_setup_guide_local' }
+  }
+
+  return null
+}
+
 export function errorCardActions(surface: ErrorSurface | null | undefined): ErrorCardActions {
   if (!surface) {
     return { primary: 'retry' }
@@ -450,12 +471,10 @@ export function errorCardActions(surface: ErrorSurface | null | undefined): Erro
   }
 
   const key = errorCardKey(surface)
+  const endpoint = endpointActions(surface, key)
 
-  // errorCardKey routes a custom/local server's timeout or TLS failure to the endpoint copy.
-  if ('layer' in key && key.layer === 'endpoint') {
-    return surface.code === 'timeout'
-      ? { primary: 'retry', secondary: 'open_setup_guide_local' }
-      : { primary: 'open_setup_guide_local' }
+  if (endpoint) {
+    return endpoint
   }
 
   if (surface.code === 'usage_window') {

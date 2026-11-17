@@ -3,6 +3,12 @@ import { zhHantThemePicker } from './zh-hant_theme_picker'
 
 export const zhHantAssistant = {
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `將執行：${target}`,
+      launchRemote: target => `將連線：${target}`,
+      launchEnv: keys => `環境變數：${keys}`,
+      launchCwd: dir => `工作目錄：${dir}`
+    },
     catalogInstall: {
       preparing: '正在準備安裝…',
       install: '安裝',
@@ -226,6 +232,12 @@ export const zhHantAssistant = {
         launch_credentials_unavailable: {
           title: '此聊天的 API 金鑰已變更',
           body: '此聊天開始時使用的 API 金鑰後來已被變更或刪除，因此你的訊息未送出。開啟中的聊天不會自行切換到其他金鑰。請使用「開始新工作階段」以使用目前的金鑰。'
+        },
+        local_runtime_unavailable: {
+          title: '無法連線到本機模型伺服器',
+          body: '本機模型伺服器尚未執行：它可能仍在啟動中。請稍後重試，或切換到其他模型。',
+          bodyNoRetry:
+            '本機模型伺服器已關閉。請在 Hermes 桌面應用程式或終端機中的 `hermes model` 啟動它，或切換到其他模型。'
         }
       },
       errorLayers: {
@@ -264,6 +276,7 @@ export const zhHantAssistant = {
       readAloud: '朗讀',
       copyFullResponse: '複製完整回覆',
       readAloudFullResponseHint: '按住 Shift 點擊：朗讀完整回覆',
+      contentRefusedNotice: '此訊息被模型的安全篩選器拒絕 — 請改用其他問題重試。',
       editMessage: '編輯訊息',
       stop: '停止',
       restorePrevious: '還原至上一個檢查點',

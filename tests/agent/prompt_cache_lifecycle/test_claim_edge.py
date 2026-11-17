@@ -9,25 +9,25 @@ import agent.prompt_cache_lifecycle as pcl
 from agent.prompt_cache_lifecycle import edge
 
 
-def _due_warmer(monkeypatch):
+def test_two_racing_owners_get_one_compaction(monkeypatch):
+    """Both owners pause after the decision returns: only the latch under the lock keeps it to one."""
     warmer = pcl.PromptCacheWarmer(SimpleNamespace(compression_enabled=True))
     warmer._spent = edge._Spent(due_at=0.0, tier_s=3600.0, witness=())
-    barrier = threading.Barrier(2, timeout=1)
-
-    def slow_gate(agent):
-        try:
-            barrier.wait()  # both claimers are inside the decision at once (only possible unlocked)
-        except threading.BrokenBarrierError:
-            pass
-
-    monkeypatch.setattr(edge, "_session_gate", slow_gate)
+    monkeypatch.setattr(edge, "_session_gate", lambda agent: None)
     monkeypatch.setattr(edge, "_window_gate", lambda agent, spent, now: None)
     monkeypatch.setattr(edge, "_grew_enough", lambda agent: True)
-    return warmer, barrier
+    barrier = threading.Barrier(2, timeout=1)
+    decide = pcl.PromptCacheWarmer.edge_decision
 
+    def decide_then_pause(self, **kw):
+        result = decide(self, **kw)
+        try:
+            barrier.wait()  # both owners hold a "compact" decision at once (only possible unlatched)
+        except threading.BrokenBarrierError:
+            pass
+        return result
 
-def test_two_racing_owners_get_one_compaction(monkeypatch):
-    warmer, barrier = _due_warmer(monkeypatch)
+    monkeypatch.setattr(pcl.PromptCacheWarmer, "edge_decision", decide_then_pause)
     results = []
     threads = [threading.Thread(target=lambda: results.append(warmer.claim_edge(now=1.0))) for _ in range(2)]
     for t in threads:

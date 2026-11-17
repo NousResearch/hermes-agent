@@ -20,7 +20,7 @@ When a chat's cache is about to expire the controller makes ONE decision, in thi
    of the compaction threshold, and it grew since its last compaction; at most one compaction per
    idle stretch. The summary is a fresh auxiliary request, so whether the old prefix is still warm
    does not change its cost and is not checked. Nothing is sent after it until the next user message.
-   The surface that owns the chat (CLI input loop, TUI ticker, gateway watcher) polls
+   The surface that owns the chat (TUI ticker, gateway watcher: the CLI's turns run in the gateway) polls
    ``PromptCacheWarmer.claim_edge`` and runs the action it returns through the normal pipeline. A
    budget ends at whichever comes first: its keep-alives, or the owner releasing the agent (gateway
    idle/LRU eviction, TUI idle reap); at release the owner asks ``claim_edge(releasing=True)`` and acts

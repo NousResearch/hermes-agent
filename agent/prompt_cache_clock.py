@@ -269,14 +269,30 @@ def _estimated_end(coverage: dict[str, float], *, base_url: str, retention: Any,
     retention (and never shortened below what a carried event already estimated)."""
     from agent.model_metadata import is_local_endpoint
 
-    if not coverage or is_local_endpoint(base_url):
+    if not coverage:
         return None
+    if is_local_endpoint(base_url):
+        return _managed_unload_end(base_url, at)
     estimated = max(coverage.values())
     if isinstance(retention, str) and retention in _RETENTION_SECONDS:
         estimated = max(estimated, at + _RETENTION_SECONDS[retention])
     if carried and previous is not None and previous.estimated_until is not None:
         estimated = max(estimated, previous.estimated_until)
     return estimated
+
+
+def _managed_unload_end(base_url: str, at: float) -> Optional[float]:
+    """When Hermes' own managed llama-server has certainly unloaded an idle model (and its prompt cache):
+    the idle-unload limit plus two sweeps after the last request. A user's own local server has no
+    time-based expiry (None)."""
+    from hermes_cli.local_runtime.growth import is_managed_endpoint
+
+    if not is_managed_endpoint(base_url):
+        return None
+    from hermes_cli.local_runtime.bootstrap import _SWEEP_EVERY_S
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    return at + LlamaServerSupervisor.IDLE_UNLOAD_S + 2 * _SWEEP_EVERY_S
 
 
 def _confidence(verdict: _Verdict, previous: Optional[CacheEvent], carried: bool, write: int) -> tuple[str, str]:
@@ -514,6 +530,8 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     guaranteed = _ends(coverage)[0]
     estimated = _estimated_end(coverage, base_url=base_url, retention=ctx.retention, at=at, previous=previous,
                                carried=carried)
+    if guaranteed is not None and estimated is not None:
+        guaranteed = min(guaranteed, estimated)  # never warm past the moment the entry is certainly gone
     confidence, reason = _confidence(verdict, previous, carried, write)
     event = CacheEvent(
         route=route, destination=destination, route_class=ctx.route_class,

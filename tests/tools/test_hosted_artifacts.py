@@ -282,6 +282,28 @@ def test_profile_bound_connections_are_never_adopted_across_profiles(auth, adopt
     assert _same_server_route(server, config, cross_profile=True, resolved_identity="digest") is adoptable
 
 
+def test_nulls_never_reach_the_hosted_server():
+    args = {"id": "a", "version": None, "files": [{"path": "x", "content": "y", "encoding": None}], "title": ""}
+    assert ha.call_arguments(ha.SERVER_NAME, args) == {"id": "a", "files": [{"path": "x", "content": "y"}],
+                                                       "title": ""}
+    assert args["version"] is None  # the caller's dict is left alone
+    assert ha.call_arguments("other-server", args) is args
+
+
+def test_the_mcp_tool_handler_sends_the_hosted_server_no_nulls(monkeypatch):
+    from tools import mcp_tool_handlers
+
+    seen = []
+
+    def gate(server_name, tool_name, booked, args):
+        seen.append((server_name, args))
+        return "stop here"
+    monkeypatch.setattr(mcp_tool_handlers, "_trust_gate_check", gate)
+    for server in (ha.SERVER_NAME, "other"):
+        mcp_tool_handlers._make_tool_handler(server, "artifact_get", 5)({"id": "a", "version": None})
+    assert seen == [(ha.SERVER_NAME, {"id": "a"}), ("other", {"id": "a", "version": None})]
+
+
 class _Agent:
     def __init__(self, session_id="s1", *, enabled=None, disabled=None):
         self.session_id = session_id

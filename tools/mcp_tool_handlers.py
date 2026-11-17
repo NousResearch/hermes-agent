@@ -839,6 +839,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
+        from tools.hosted_artifacts import call_arguments
+        args = call_arguments(server_name, args)  # the hosted artifacts server refuses nulls
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         booked: list = []  # a costed call's charge; refunded when the call never reaches the server
         cached_read_only = _tool_is_read_only(server_name, tool_name)

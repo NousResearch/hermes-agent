@@ -303,6 +303,23 @@ def nous_bearer_auth(url: str):
 
 
 
+def _without_nulls(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _without_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_without_nulls(item) for item in value]
+    return value
+
+
+def call_arguments(server_name: str, args: Any) -> Any:
+    """*args* as sent to *server_name*. The hosted server's input schemas are non-nullable and refuse
+    a null, so for it a null a model wrote for an optional field (``"version": null``) means "not
+    given" and is left out, at any depth. Every other server gets *args* unchanged."""
+    if server_name != SERVER_NAME or not isinstance(args, dict):
+        return args
+    return _without_nulls(args)
+
+
 def _registered_tool_names() -> frozenset[str]:
     from tools.registry import registry
 

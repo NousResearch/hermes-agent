@@ -163,9 +163,19 @@ def _catalog_quick_commands(cat: _Catalog, load_cfg) -> None:
         if not isinstance(qc, dict):
             continue
         qtype = qc.get("type", "")
-        default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}"}
+        default_desc = {"exec": f"exec: {qc.get('command', '')}", "alias": f"alias → {qc.get('target', '')}",
+                        "prompt": "prompt"}
         desc = str(qc.get("description") or default_desc.get(qtype, qtype or "quick command"))
+        builtin = f"/{qname}" in cat.commands or f"/{qname}".lower() in cat.canon  # read before add()
         cat.add(f"/{qname}", desc, "User commands")
+        if qtype == "prompt" and not builtin:
+            # Free-text args ({args}); ``review_button`` surfaces it as a Desktop Review pane action.
+            # A name a built-in owns keeps the built-in's meta: it runs the built-in, never the prompt.
+            meta: dict = {"argument_mode": "text", "desktop": None}
+            from hermes_cli.quick_commands import review_button_label
+            if label := review_button_label(qname, qc):
+                meta["review_button"] = label
+            cat.commands[f"/{qname}"] = meta
 
 
 def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:

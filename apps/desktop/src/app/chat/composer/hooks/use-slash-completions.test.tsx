@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
+import { $composerCommandsCatalogs } from '@/lib/review-prompt-buttons'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 
 import { isSkillItem } from '../composer-utils'
@@ -41,7 +42,8 @@ const RANKED_CATALOG = {
 const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
-function harness(gateway: HermesGateway, options: { profile?: string } = {}) {
+function harness(gateway: HermesGateway, initial: { profile?: string } = {}) {
+  let options = initial
   const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
 
   function Probe() {
@@ -51,9 +53,14 @@ function harness(gateway: HermesGateway, options: { profile?: string } = {}) {
     return null
   }
 
-  render(<Probe />)
+  const view = render(<Probe />)
 
-  return api as { search: (query: string) => readonly Unstable_TriggerItem[] }
+  return Object.assign(api as { search: (query: string) => readonly Unstable_TriggerItem[] }, {
+    rescope: (next: { profile?: string }) => {
+      options = next
+      view.rerender(<Probe />)
+    }
+  })
 }
 
 /** Drive the adapter until its async fetch has settled into `search`'s result. */
@@ -93,6 +100,64 @@ describe('useSlashCompletions', () => {
     await act(async () => invalidateSlashCompletions())
     await completions(api, '')
     expect(request).toHaveBeenCalledTimes(2)
+  })
+
+  // The warm-up is the usual writer of the Review pane's catalog; when it fails,
+  // the first successful `/` fetch must fill it instead of leaving the buttons gone.
+  it('publishes a catalog recovered by the `/` fetch after a failed warm-up', async () => {
+    $composerCommandsCatalogs.set({})
+    const request = vi.fn().mockRejectedValueOnce(new Error('warm-up blip')).mockResolvedValue(CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(Object.values($composerCommandsCatalogs.get()).filter(Boolean)).toHaveLength(0)
+
+    await completions(api, '')
+    expect(Object.values($composerCommandsCatalogs.get()).filter(Boolean)).toHaveLength(1)
+  })
+
+  // A `/` answer for a scope the composer already left must not replace the new scope's buttons.
+  it('drops a late `/` catalog that lands after the composer switched profile', async () => {
+    $composerCommandsCatalogs.set({})
+    const catalogB = { ...CATALOG, commands: { '/b-only': { review_button: 'B' } } }
+    let resolveLate: (value: unknown) => void = () => {}
+
+    const late = new Promise(resolve => {
+      resolveLate = resolve
+    })
+
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('warm-up blip'))
+      .mockImplementation((_method: string, params: { profile?: string }) =>
+        params.profile === 'profile-b' ? Promise.resolve(catalogB) : late
+      )
+
+    const api = harness({ request } as unknown as HermesGateway, { profile: 'profile-a' })
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    // The `/` for profile A is still in flight when the composer moves to profile B.
+    await act(async () => {
+      api.search('')
+      await new Promise(resolve => setTimeout(resolve, 120))
+    })
+    api.rescope({ profile: 'profile-b' })
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(Object.values($composerCommandsCatalogs.get())).toEqual([catalogB])
+
+    await act(async () => {
+      resolveLate(CATALOG)
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(Object.values($composerCommandsCatalogs.get())).toEqual([catalogB])
   })
 
   // A draft has no session yet, so the backend would otherwise scan the LAUNCH

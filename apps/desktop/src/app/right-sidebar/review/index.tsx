@@ -38,6 +38,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
+import { ReviewPromptButtons } from './prompt-buttons'
 import { ReviewScopeRow } from './scope-row'
 import { ReviewShipBar } from './ship-bar'
 
@@ -212,6 +213,7 @@ export function ReviewPane() {
         </div>
       )}
 
+      <ReviewPromptButtons />
       <ReviewShipBar />
 
       <ConfirmDialog

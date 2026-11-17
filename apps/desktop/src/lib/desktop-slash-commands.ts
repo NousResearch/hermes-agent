@@ -13,6 +13,8 @@ export interface CommandCatalogMeta {
   desktop?: string | null
   /** Subcommands the desktop surface may offer and forward; absent = all. */
   desktop_subcommands?: readonly string[] | null
+  /** `type: prompt` quick commands that opted into the Review pane: the button label. */
+  review_button?: string | null
 }
 
 export interface CommandsCatalogLike {
@@ -474,6 +476,14 @@ let rememberedCatalog: CommandsCatalogLike | undefined
  *  without waiting for another `/` keystroke. */
 export function rememberDesktopCommandsCatalog(catalog: CommandsCatalogLike | undefined): void {
   rememberedCatalog = catalog
+}
+
+/** True when the desktop itself handles `/name` (a local or registry spec, or an alias of one):
+ *  submitting such a name runs that action, never a same-named saved prompt. */
+export function isDesktopOwnedCommand(command: string): boolean {
+  const name = normalizeCommand(command)
+
+  return SPEC_BY_NAME.has(ALIAS_TO_CANONICAL.get(name) ?? name)
 }
 
 function liveCatalog(): CommandsCatalogLike | undefined {

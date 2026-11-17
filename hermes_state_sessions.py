@@ -1599,6 +1599,14 @@ class SessionSessionsMixin:
             exclude_superseded_segments(self, where_clauses, params)
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
+    def count_active_sessions(self, idle_seconds: float = 300.0, *, now: Optional[float] = None) -> int:
+        """Unfinished sessions active within *idle_seconds*, under the default listing's filters (children, archived,
+        hidden out). Not a page of ``list_sessions_rich``: newest-started first, it misses long-running sessions."""
+        where_clauses, params = _session_filter_where(exclude_children=True)
+        where_clauses += ["s.hidden = 0", "s.ended_at IS NULL", f"{_sql_session_last_active('s')} > ?"]
+        cutoff = (time.time() if now is None else now) - idle_seconds
+        return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", (*params, cutoff))[0]
+
     def session_count_ge(self, n: int = 1) -> bool:
         """At least N sessions exist (archived included); LIMIT short-circuits session_count()'s scan."""
         return len(self._read_all("SELECT 1 FROM sessions LIMIT ?", (n,))) >= n

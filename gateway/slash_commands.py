@@ -123,6 +123,19 @@ def _home_thread_from_source(source) -> Optional[str]:
     return str(thread_id)
 
 
+def _profile_gateway_config(runner: Any, source: Any) -> Any:
+    """Slash-policy config for *source*'s profile (fork, multiplex fix 4b).
+
+    ``runner.config`` single-profile (unchanged); under multiplex the source
+    profile's config via ``GatewayRunner._gateway_config_for_source``, so one
+    bot's ``allow_admin_from`` never gates the other bot's users.
+    """
+    resolver = getattr(runner, "_gateway_config_for_source", None)
+    if callable(resolver):
+        return resolver(source)
+    return getattr(runner, "config", None)
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -416,7 +429,7 @@ class GatewaySlashCommandsMixin:
         from gateway.slash_access import policy_for_source as _policy_for_source
 
         source = event.source
-        policy = _policy_for_source(self.config, source)
+        policy = _policy_for_source(_profile_gateway_config(self, source), source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = (source.chat_type if source else "") or "dm"
         scope = "DM" if chat_type.lower() in {"dm", "direct", "private", ""} else "group/channel"
@@ -1099,7 +1112,7 @@ class GatewaySlashCommandsMixin:
         """
         try:
             from gateway.slash_access import policy_for_source
-            policy = policy_for_source(self.config, source)
+            policy = policy_for_source(_profile_gateway_config(self, source), source)
             uid = getattr(source, "user_id", None)
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:
@@ -4183,7 +4196,7 @@ class GatewaySlashCommandsMixin:
         # This mutates profile-wide security policy. The central slash gate can
         # allow selected commands to non-admin users, so enforce admin again at
         # this side-effect boundary. Unconfigured policies remain unrestricted.
-        policy = policy_for_source(self.config, event.source)
+        policy = policy_for_source(_profile_gateway_config(self, event.source), event.source)
         if requested and not policy.is_admin(event.source.user_id):
             return "Only gateway admins can change the persistent approval mode."
         result = run_approval_mode_command(requested)

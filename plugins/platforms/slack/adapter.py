@@ -984,6 +984,122 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
+# ── Multiplex-aware settings (fork; multiplex fix 2) ─────────────────────────
+#
+# The adapter historically read its settings from ``os.environ`` (bridged from
+# config.yaml by ``_apply_yaml_config`` under a first-writer-wins guard). Under
+# ``gateway.multiplex_profiles`` that environment is the DEFAULT profile's, so a
+# secondary bot inherited the default's flags and vice versa. With multiplexing
+# on, a setting resolves: adapter ``extra`` → this profile's ``slack:`` block
+# (``extra[PROFILE_SETTINGS_KEY]``) → this profile's secret scope → default.
+# With multiplexing off every reader runs exactly today's lookup.
+
+PROFILE_SETTINGS_KEY = "profile_settings"
+
+# config.yaml ``slack:`` keys carried into ``extra[PROFILE_SETTINGS_KEY]``.
+_PROFILE_SETTING_KEYS = (
+    "require_mention",
+    "strict_mention",
+    "ignore_other_user_mentions",
+    "thread_require_mention",
+    "wake_in_bot_authored_threads",
+    "allow_bots",
+    "allow_bots_channels",
+    "free_response_channels",
+    "quiet_channels",
+    "require_mention_channels",
+    "mention_patterns",
+    "reactions",
+    "reaction_triggers",
+    "reaction_trigger_target",
+    "home_channel_prompt",
+    "disable_dms",
+    "allowed_channels",
+    "ignored_channels",
+)
+
+_UNSET = object()
+
+# Keys the adapter used to read from os.environ ONLY (single-profile, .env
+# beats config.yaml for these). Under multiplex config.yaml wins, so a value
+# set differently in both places flips when multiplex is switched on.
+_ENV_ONLY_SETTING_KEYS = (
+    "strict_mention",
+    "ignore_other_user_mentions",
+    "thread_require_mention",
+    "wake_in_bot_authored_threads",
+    "allow_bots",
+    "require_mention_channels",
+    "reactions",
+    "reaction_triggers",
+    "reaction_trigger_target",
+    "home_channel_prompt",
+    "disable_dms",
+    "allowed_channels",
+    "ignored_channels",
+)
+
+
+def _setting_text(value) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(sorted(str(v).strip() for v in value if str(v).strip()))
+    if isinstance(value, str) and "," in value:
+        return ",".join(sorted(p.strip() for p in value.split(",") if p.strip()))
+    return str(value).strip().lower()
+
+
+def env_yaml_precedence_conflicts(slack_cfg: dict, env) -> List[str]:
+    """Env-only Slack keys set in both ``env`` and ``slack_cfg`` with different
+    values — the ones whose effective value flips under multiplex (config.yaml
+    wins there, .env wins single-profile). Returns key NAMES only."""
+    out: List[str] = []
+    if not isinstance(slack_cfg, dict):
+        return out
+    for key in _ENV_ONLY_SETTING_KEYS:
+        if slack_cfg.get(key) is None:
+            continue
+        raw = (env or {}).get(f"SLACK_{key.upper()}")
+        if raw is None or not str(raw).strip():
+            continue
+        if _setting_text(raw) != _setting_text(slack_cfg[key]):
+            out.append(key)
+    return out
+
+
+def _multiplex_on() -> bool:
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        return is_multiplex_active()
+    except Exception:
+        return False
+
+
+def _scoped_slack_env(name: str, default=None, scope=_UNSET):
+    """Read a ``SLACK_*`` env setting for the profile that owns this adapter.
+
+    Multiplex off: ``os.getenv(name, default)`` — today's read, unchanged.
+    Multiplex on: *scope* (the adapter's construction-time secret scope) or,
+    failing that, the current context's scope; a scoped miss returns
+    *default* and never falls through to ``os.environ``. With no scope at all
+    this is the default profile's unscoped adapter, whose own environment IS
+    ``os.environ``.
+    """
+    if not _multiplex_on():
+        return os.getenv(name, default)
+    if scope is _UNSET or scope is None:
+        try:
+            from agent.secret_scope import current_secret_scope
+
+            scope = current_secret_scope()
+        except Exception:
+            scope = None
+    if scope is not None:
+        val = scope.get(name)
+        return default if val is None else val
+    return os.getenv(name, default)
+
+
 def _slack_dedup_ttl_seconds() -> float:
     """Dedup window for redelivered Socket Mode events (#4777).
 
@@ -995,7 +1111,7 @@ def _slack_dedup_ttl_seconds() -> float:
     the TTL, so the window can safely span the worst-case reconnect gap.
     Override with ``SLACK_DEDUP_TTL_SECONDS``.
     """
-    raw = os.getenv("SLACK_DEDUP_TTL_SECONDS", "")
+    raw = _scoped_slack_env("SLACK_DEDUP_TTL_SECONDS", "")
     if raw:
         try:
             value = float(raw)
@@ -1156,6 +1272,17 @@ class SlackAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
+        # Multiplex: the secret scope this adapter was built under (its
+        # profile's .env). Settings reads use it even when a method runs
+        # outside that context. None for single-profile / unscoped default.
+        self._profile_secret_scope = None
+        if _multiplex_on():
+            try:
+                from agent.secret_scope import current_secret_scope
+
+                self._profile_secret_scope = current_secret_scope()
+            except Exception:
+                self._profile_secret_scope = None
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
@@ -2731,9 +2858,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_ignored_channels(self) -> set[str]:
         """Configured Slack channels the generic gateway must never touch."""
-        raw = self.config.extra.get("ignored_channels")
-        if raw is None:
-            raw = os.getenv("SLACK_IGNORED_CHANNELS")
+        raw = self._slack_setting("ignored_channels", "SLACK_IGNORED_CHANNELS")
         if raw is None:
             return set()
         if isinstance(raw, list):
@@ -3080,8 +3205,17 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Track the sent message ts so we can auto-respond to thread
             # replies without requiring @mention.
+            #
+            # Fork: not for cron deliveries (DeliveryRouter stamps
+            # ``job_id``). An unsolicited cron post is a bot-authored thread
+            # root, so it follows the same opt-in as wake check 4 — otherwise
+            # every item a feed job posts wakes the agent on every
+            # un-mentioned reply beneath it until the next restart.
             sent_ts = last_result.get("ts") if last_result else None
-            if sent_ts:
+            opens_wake_zone = not (metadata or {}).get("job_id") or (
+                self._slack_wake_in_bot_authored_threads()
+            )
+            if sent_ts and opens_wake_zone:
                 self._bot_message_ts.add(
                     self._workspace_message_marker(team_id, sent_ts)
                 )
@@ -3856,7 +3990,10 @@ class SlackAdapter(BasePlatformAdapter):
             return "all"
         raw = self.config.extra.get("allow_bots", "")
         if not raw:
-            raw = os.getenv("SLACK_ALLOW_BOTS", "none")
+            if _multiplex_on():
+                raw = self._slack_setting("allow_bots", "SLACK_ALLOW_BOTS", "none") or "none"
+            else:
+                raw = os.getenv("SLACK_ALLOW_BOTS", "none")
         value = str(raw).lower().strip()
         if value not in {"none", "mentions", "all"}:
             logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
@@ -3872,9 +4009,7 @@ class SlackAdapter(BasePlatformAdapter):
         needs a ``channel_roles`` entry for the app poster to be authorized
         and equipped (see ``authz_mixin._is_user_authorized``).
         """
-        raw = self.config.extra.get("allow_bots_channels")
-        if raw is None:
-            raw = os.getenv("SLACK_ALLOW_BOTS_CHANNELS", "")
+        raw = self._slack_setting("allow_bots_channels", "SLACK_ALLOW_BOTS_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         s = str(raw).strip() if raw is not None else ""
@@ -4520,7 +4655,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        raw = self._slack_setting("reactions", "SLACK_REACTIONS", "true", extra_first=False)
+        return str(raw).lower() not in {"false", "0", "no"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
@@ -5781,9 +5917,9 @@ class SlackAdapter(BasePlatformAdapter):
         or the ``SLACK_REACTION_TRIGGERS`` env var (``true``/``all`` or a
         comma-separated emoji-name list).
         """
-        raw = self.config.extra.get("reaction_triggers")
-        if raw is None:
-            raw = os.getenv("SLACK_REACTION_TRIGGERS") or None
+        raw = self._slack_setting("reaction_triggers", "SLACK_REACTION_TRIGGERS")
+        if raw is not None and not isinstance(raw, (bool, list, tuple, set)) and not raw:
+            raw = None
         if raw is None:
             return None
         if isinstance(raw, bool):
@@ -5806,9 +5942,7 @@ class SlackAdapter(BasePlatformAdapter):
         in that thread). Empty by default — reactions route into the
         thread of the reacted-to message.
         """
-        raw = self.config.extra.get("reaction_trigger_target")
-        if raw is None:
-            raw = os.getenv("SLACK_REACTION_TRIGGER_TARGET", "")
+        raw = self._slack_setting("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", "")
         target = str(raw or "").strip()
         if not target:
             return "", ""
@@ -7561,10 +7695,14 @@ class SlackAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        if os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        if str(self._slack_env("SLACK_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
             return True
 
         def _env(name: str) -> str:
+            if _multiplex_on():
+                # This adapter's profile only — a scoped miss is a miss; never
+                # borrow another profile's allowlist from os.environ (#86905).
+                return str(self._slack_env(name, "") or "").strip()
             # Multiplex: profile .env is in secret_scope, not process environ.
             try:
                 from agent.secret_scope import get_secret
@@ -9139,6 +9277,36 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ── Channel mention gating ─────────────────────────────────────────────
 
+    def _slack_env(self, name: str, default=None):
+        """``SLACK_*`` env read scoped to this adapter's profile (see
+        :func:`_scoped_slack_env`)."""
+        return _scoped_slack_env(
+            name, default, getattr(self, "_profile_secret_scope", None)
+        )
+
+    def _slack_setting(self, key: str, env_name: str, default=None, *, extra_first: bool = True):
+        """Raw configured value of a Slack setting, or *default*.
+
+        Multiplex off — today's lookup: ``extra[key]`` (only for readers that
+        consulted it, ``extra_first``) then ``os.environ``.
+        Multiplex on: ``extra[key]`` → this profile's ``slack:`` block
+        (``extra[PROFILE_SETTINGS_KEY]``) → this profile's scoped env.
+        """
+        extra = getattr(self.config, "extra", None) or {}
+        if not _multiplex_on():
+            if extra_first:
+                val = extra.get(key)
+                if val is not None:
+                    return val
+            return os.getenv(env_name, default)
+        val = extra.get(key)
+        if val is not None:
+            return val
+        profile = extra.get(PROFILE_SETTINGS_KEY)
+        if isinstance(profile, dict) and profile.get(key) is not None:
+            return profile[key]
+        return self._slack_env(env_name, default)
+
     def _slack_require_mention(self) -> bool:
         """Return whether channel messages require an explicit bot mention.
 
@@ -9146,34 +9314,24 @@ class SlackAdapter(BasePlatformAdapter):
         truthy parsing, since the safe default is True (gating on).
         Unrecognised or empty values keep gating enabled.
         """
-        configured = self.config.extra.get("require_mention")
+        configured = self._slack_setting("require_mention", "SLACK_REQUIRE_MENTION")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in {
-            "false",
-            "0",
-            "no",
-            "off",
-        }
+        return True
 
     def _slack_strict_mention(self) -> bool:
         """When true, channel threads require an explicit @-mention on every
         message. Disables all auto-triggers (mentioned-thread memory,
         bot-message follow-up, session-presence). Defaults to False.
         """
-        configured = self.config.extra.get("strict_mention")
+        configured = self._slack_setting("strict_mention", "SLACK_STRICT_MENTION")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("SLACK_STRICT_MENTION", "false").lower() in {
-            "true",
-            "1",
-            "yes",
-            "on",
-        }
+        return False
 
     def _slack_ignore_other_user_mentions(self) -> bool:
         """When true, ignore channel/thread messages addressed to another user.
@@ -9186,17 +9344,12 @@ class SlackAdapter(BasePlatformAdapter):
         mention ("addressed to"), so a message that merely references another
         user mid-sentence still reaches the bot.
         """
-        configured = self.config.extra.get("ignore_other_user_mentions")
+        configured = self._slack_setting("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("SLACK_IGNORE_OTHER_USER_MENTIONS", "false").lower() in {
-            "true",
-            "1",
-            "yes",
-            "on",
-        }
+        return False
 
     def _slack_wake_in_bot_authored_threads(self) -> bool:
         """When true, an un-mentioned reply under a thread the BOT started wakes it.
@@ -9216,17 +9369,12 @@ class SlackAdapter(BasePlatformAdapter):
         Operators who want upstream's behaviour (human replies in bot-initiated
         threads are heard without a mention) set this to true.
         """
-        configured = self.config.extra.get("wake_in_bot_authored_threads")
+        configured = self._slack_setting("wake_in_bot_authored_threads", "SLACK_WAKE_IN_BOT_AUTHORED_THREADS")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("SLACK_WAKE_IN_BOT_AUTHORED_THREADS", "false").lower() in {
-            "true",
-            "1",
-            "yes",
-            "on",
-        }
+        return False
 
     def _slack_thread_require_mention(self) -> bool:
         """When true, Slack thread replies require an explicit @-mention.
@@ -9237,17 +9385,12 @@ class SlackAdapter(BasePlatformAdapter):
         remain gated to prevent a bot from joining every follow-up in busy
         support threads.
         """
-        configured = self.config.extra.get("thread_require_mention")
+        configured = self._slack_setting("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("SLACK_THREAD_REQUIRE_MENTION", "false").lower() in {
-            "true",
-            "1",
-            "yes",
-            "on",
-        }
+        return False
 
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
         """Return True when ``text`` opens by @-mentioning a non-bot user.
@@ -9288,9 +9431,7 @@ class SlackAdapter(BasePlatformAdapter):
         ``_slack_free_response_channels``; config under ``slack.quiet_channels``
         (bridged into ``extra``) or ``SLACK_QUIET_CHANNELS``.
         """
-        raw = self.config.extra.get("quiet_channels")
-        if raw is None:
-            raw = os.getenv("SLACK_QUIET_CHANNELS", "")
+        raw = self._slack_setting("quiet_channels", "SLACK_QUIET_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         s = str(raw).strip() if raw is not None else ""
@@ -9300,9 +9441,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""
-        raw = self.config.extra.get("free_response_channels")
-        if raw is None:
-            raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")
+        raw = self._slack_setting("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
@@ -9323,9 +9462,7 @@ class SlackAdapter(BasePlatformAdapter):
         ``PlatformConfig.extra``) and the environment override
         ``SLACK_DISABLE_DMS``. Defaults to False for backward compatibility.
         """
-        raw = self.config.extra.get("disable_dms")
-        if raw is None:
-            raw = os.getenv("SLACK_DISABLE_DMS", "false")
+        raw = self._slack_setting("disable_dms", "SLACK_DISABLE_DMS", "false")
         if isinstance(raw, str):
             return raw.strip().lower() in {"true", "1", "yes", "on"}
         return bool(raw)
@@ -9338,9 +9475,7 @@ class SlackAdapter(BasePlatformAdapter):
         by ``_slack_disable_dms()``. Empty set means no channel restriction
         (fully backward compatible).
         """
-        raw = self.config.extra.get("allowed_channels")
-        if raw is None:
-            raw = os.getenv("SLACK_ALLOWED_CHANNELS", "")
+        raw = self._slack_setting("allowed_channels", "SLACK_ALLOWED_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
@@ -9357,9 +9492,7 @@ class SlackAdapter(BasePlatformAdapter):
         of the wake checks in :meth:`_should_wake_on_unmentioned_message`.
         Empty set means no per-channel force-mention override (#13855).
         """
-        raw = self.config.extra.get("require_mention_channels")
-        if raw is None:
-            raw = os.getenv("SLACK_REQUIRE_MENTION_CHANNELS", "")
+        raw = self._slack_setting("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
@@ -9382,8 +9515,12 @@ class SlackAdapter(BasePlatformAdapter):
             return cached
 
         patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        if patterns is None and _multiplex_on():
+            _profile = (self.config.extra or {}).get(PROFILE_SETTINGS_KEY)
+            if isinstance(_profile, dict):
+                patterns = _profile.get("mention_patterns")
         if patterns is None:
-            raw = os.getenv("SLACK_MENTION_PATTERNS", "").strip()
+            raw = str(self._slack_env("SLACK_MENTION_PATTERNS", "") or "").strip()
             if raw:
                 try:
                     import json as _json
@@ -9952,7 +10089,19 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     assignment is guarded by ``not os.getenv(...)`` so explicit env vars
     survive a config.yaml update. Returns ``None`` because no extras are
     seeded into ``PlatformConfig.extra`` directly (everything flows through env).
+
+    Fork (multiplex fix 2): returns ``{PROFILE_SETTINGS_KEY: {...}}`` — this
+    profile's raw ``slack:`` settings, merged into its own ``extra`` — and
+    skips every ``os.environ`` write when ``gateway.multiplex_profiles`` is
+    active, since that environment belongs to the default profile and the
+    first profile to load would otherwise set the other bot's flags.
     """
+    profile_settings = {
+        key: slack_cfg[key] for key in _PROFILE_SETTING_KEYS if slack_cfg.get(key) is not None
+    }
+    seeded = {PROFILE_SETTINGS_KEY: profile_settings} if profile_settings else None
+    if _multiplex_on():
+        return seeded
     if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
         os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
     if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
@@ -10020,7 +10169,9 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         if isinstance(ic, list):
             ic = ",".join(str(v) for v in ic)
         os.environ["SLACK_IGNORED_CHANNELS"] = str(ic)
-    return None  # all settings flow through env; nothing to merge into extras
+    # Settings flow through env single-profile; the profile copy in extra is
+    # consulted only under multiplex (see SlackAdapter._slack_setting).
+    return seeded
 
 
 def _is_connected(config) -> bool:

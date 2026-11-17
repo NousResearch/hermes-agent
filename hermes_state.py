@@ -430,7 +430,7 @@ class _SessionDB:
         turn_lease_holder: "Optional[str]" = None, turn_lease_ttl_seconds: "float" = 300.0,
         message_uid: "Optional[str]" = None,
     ) -> "int":
-        """``compression_lock_holder`` is accepted as the old class took it; the store takes no such argument."""
+        """``compression_lock_holder`` is accepted and not passed on: the store's append takes no such argument."""
         from persistence.conversation.messages import NewMessage
 
         message = dict(

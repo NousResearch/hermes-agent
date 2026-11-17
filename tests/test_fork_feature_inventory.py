@@ -46,6 +46,14 @@ WIRING = [
     ("webflow_asset_upload", "tools/webflow_asset_tool.py", "is_protected_data_path", "credential-read guard"),
     ("ownership tool", "tools/ownership_tool.py", 'toolset="ownership"', "floor toolset"),
     ("pdf_pages", "tools/pdf_pages_tool.py", 'toolset="pdf_pages"', "own toolset, fixed argv"),
+    ("github_pr_read", "tools/github_pr_tool.py", 'toolset="github_pr"', "own read toolset"),
+    ("github_pr_write", "tools/github_pr_tool.py", 'toolset="github_pr_write"', "own write toolset, never merges"),
+    ("github_pr_write", "tools/github_pr_tool.py", "default, err = await _default_branch(repo, token)", "live default-branch guard before every write"),
+    ("github_pr", "tools/github_pr_tool.py", "_authorize(repo, op, WRITE_OPS)", "per-repo action allowlist gates writes"),
+    ("github_pr", "tools/github_pr_tool.py", "get_secret(_TOKEN_ENV)", "token only via profile-scoped get_secret"),
+    ("github_pr", "tools/github_pr_tool.py", "if writes and not prefix:", "branch_prefix required for write repos"),
+    ("github_pr", "tools/github_pr_tool.py", "allow_redirects=False", "redirects never followed"),
+    ("github_pr_write", "tools/github_pr_tool.py", "if not base_tree:", "no base-tree-less commit (would delete the branch)"),
     ("allow_bots_channels", "plugins/platforms/slack/adapter.py", "def _slack_allow_bots_channels", "per-channel app admission"),
     ("allow_bots_channels", "gateway/authz_mixin.py", "_slack_allow_bots_channels(source)", "gate admits listed channels; RBAC outranks bypass"),
     # ── Cost attribution ──────────────────────────────────────────────────
@@ -234,7 +242,8 @@ def test_fork_toolsets_are_registered():
 
     all_toolsets = set(toolsets.get_all_toolsets())
     for name in ("notion", "jira", "jira_write", "slack_post", "webflow_assets",
-                 "ownership", "slack", "video_frames", "pdf_pages", "cost_budget"):
+                 "ownership", "slack", "video_frames", "pdf_pages", "cost_budget",
+                 "github_pr", "github_pr_write"):
         assert name in all_toolsets, (
             f"toolset '{name}' is not registered — RBAC cannot gate it, and any "
             f"role granting it becomes a no-op."

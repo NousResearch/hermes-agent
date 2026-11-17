@@ -48,7 +48,7 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
     model = config.get("model")
     model = dict(model) if isinstance(model, dict) else {"default": model} if model else {}
     config["model"] = model
-    if config.get("default_model") and not model.get("default"):
+    if config.get("default_model") and not any(model.get(k) for k in ("default", "model", "name")):
         model["default"] = config["default_model"]
     config.pop("default_model", None)
 

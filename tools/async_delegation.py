@@ -111,7 +111,7 @@ _LIVE_STATES = {"running", "stalling", "finalizing"}
 _ACTIVE_STATES = ("running", "stalling")
 # Routing origin persisted at dispatch so a restart-recovered completion can
 # reconstruct a full SessionSource (scope_id drives relay tenant egress).
-_ROUTING_KEYS = ("scope_id", "user_id", "user_name")
+_ROUTING_KEYS = ("scope_id", "user_id", "user_name", "origin_admission_id")
 # Structured stall metadata — additive, present only on stall finalizations.
 _STALL_META_KEYS = ("stalled_after_quiet_seconds", "stall_threshold_seconds", "stall_phase", "stall_grace_seconds")
 # Private stall bookkeeping on the record -> public field in list_async_delegations().
@@ -208,7 +208,12 @@ def _capture_routing_origin() -> dict[str, Any]:
     Best-effort: empty values are omitted."""
     try:
         from gateway.session_context import get_session_env
-        return {k: v for k in _ROUTING_KEYS if (v := get_session_env(f"HERMES_SESSION_{k.upper()}", ""))}
+        from gateway.session_display import current_admission_id
+        origin = {k: v for k in _ROUTING_KEYS if k != 'origin_admission_id'
+                  and (v := get_session_env(f"HERMES_SESSION_{k.upper()}", ""))}
+        if admission_id := current_admission_id():
+            origin['origin_admission_id'] = admission_id
+        return origin
     except Exception:
         return {}
 

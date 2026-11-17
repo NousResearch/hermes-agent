@@ -405,6 +405,12 @@ def _validate_turn_coordinates(payload: Mapping[str, Any], room: DiscussionRoom)
 # Each takes (kind, payload, actor, room) and returns the payload to record.
 def _validate_user_event(kind: str, payload: Payload, actor: Payload, room: DiscussionRoom) -> Payload:
     payload = validate_user_payload(payload)
+    if actor.get("kind") == "member":
+        member = _member_by_id(room, actor.get("id"))
+        expected = {**_member_actor(member, display_name=False), "connection_id": _peer_id(member)}
+        if any(actor.get(key) != value for key, value in expected.items()):
+            raise DiscussionValidationError("continuation actor does not match roster")
+        return payload
     if actor.get("kind") != "user":
         raise DiscussionValidationError("message.user requires a user actor")
     return payload
@@ -572,6 +578,9 @@ def _scheduled_job(event: _ValidatedEvent | None) -> str | None:
 
 
 def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
+    if event.kind == "message.user" and event.actor.get("kind") == "member":
+        text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
+        return f"@{_member_by_id(room, event.actor['id']).handle}: {text}"
     if event.kind == "message.user" and (job := _scheduled_job(event)) is None:
         return f"User (user): {event.payload['text']}"
     # Scheduled output is agent-written too (often a summary of fetched content), so it gets the same
@@ -650,6 +659,7 @@ def _requires_direct_reply(
     # Only the user's initial address requires a reply. A later peer handoff may
     # legitimately pass after this member has already answered that user.
     return (round_index == 0 and source is not None and source.kind == "message.user"
+            and source.actor.get("kind") == "user"
             and member in resolve_mentions((str(source.payload["text"]),), room.members, default_all=False))
 
 
@@ -770,6 +780,10 @@ def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
 def _first_round_responders(discussion: _ValidatedEvent, room: DiscussionRoom) -> tuple[DiscussionMember, ...]:
     """The human's message with no mention addresses everyone. A scheduled post is only a message in the
     room: it pulls in exactly the members it @mentions, and a failure notice pulls in nobody."""
+    if discussion.actor.get("kind") == "member":
+        return tuple(member for member in resolve_mentions((str(discussion.payload["text"]),), room.members,
+                                                          default_all=False)
+                     if member.member_id != discussion.actor.get("id"))
     scheduled = scheduled_post_kind(discussion.actor)
     if scheduled == "notice":
         return ()

@@ -48,7 +48,7 @@ _JOURNAL_MODE_LOCK_RETRIES = 8
 _EVENT_KIND_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _CONTROL_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost", "room.disbanded", "room.stop_requested"})
 _EVENT_KINDS_BY_ACTOR = {
-    "user": frozenset({"message.user"}), "member": frozenset({"message.member"}),
+    "user": frozenset({"message.user"}), "member": frozenset({"message.member", "message.user"}),
     "gateway": frozenset({
         "member.unavailable", "room.activity", "room.assignment", "room.continued", "room.routed", "room.stop_requested",
         "turn.deferred", "turn.reassigned",

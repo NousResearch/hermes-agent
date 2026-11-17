@@ -582,6 +582,7 @@ class ProcessSession:
     # Session-db id of the spawning conversation; lets the gateway drop completions whose
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
+    origin_admission_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
     completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
     watch_patterns: list[str] = field(default_factory=list)
@@ -656,7 +657,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "wsl_chain", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
+    "parent_session_id", "origin_admission_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds", "persist_on_release", "output_log")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
@@ -886,18 +887,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     @staticmethod
     def _watch_event_base(session: ProcessSession) -> dict:
         """Session identity + watcher routing fields shared by every watch event."""
-        return {
-            "event_id": uuid.uuid4().hex,
-            "started_at": session.started_at,
-            "parent_session_id": session.parent_session_id,
-            "session_id": session.id,
-            "session_key": session.session_key,
-            "task_id": session.task_id,
-            "owner_task_id": session.owner_task_id,
-            **producer_fields(session.sandbox_key),
-            "command": session.command,
-            **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
-        }
+        from tools.process_registry_notifications import watch_event_base
+        return watch_event_base(session)
 
     @staticmethod
     def _global_watch_event(type_: str, message: str, **extra) -> dict:
@@ -1087,12 +1078,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     @staticmethod
     def _new_session(command, task_id, owner_task_id, session_key, cwd, **extra) -> ProcessSession:
         from gateway.session_context import get_session_env
+        from gateway.session_display import current_admission_id
         from tools.environments.sandbox_scope import current_sandbox_key
 
         return ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id, session_key=session_key, cwd=cwd, sandbox_key=current_sandbox_key(),
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
+            origin_admission_id=current_admission_id(),
             wsl_chain=_is_wsl_launcher_command(command),
             started_at=time.time(), **extra)
 
@@ -1574,6 +1567,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         if was_running and session.notify_on_complete:
             notification = {
                 "type": "completion",
+                "origin_admission_id": session.origin_admission_id,
                 "session_id": session.id,
                 "session_key": session.session_key,
                 "task_id": session.task_id,

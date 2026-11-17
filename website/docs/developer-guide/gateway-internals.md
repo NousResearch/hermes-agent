@@ -929,6 +929,28 @@ every producer identity, a "N background process results" header), cancelling th
 the same transaction. Only the tail folds, so a prompt queued after a completion keeps its place
 between them; a waiting row claimed first leaves the new completion to queue alone.
 
+Canonical Bot Group turns capture their admission ID when they start a delegation or notified
+background process. A completion follows this durable lineage to the original room task; it
+does not infer its destination from the latest chat message or from child-written text.
+Eligible completions wake the parent even without a Desktop viewer. The room driver reads only
+the parent's settled final response, publishes it once as a member-authored discussion input
+on the original thread, and routes explicit peer mentions through the normal bounded planner.
+Reports wait until the thread's preceding discussion has settled, including its terminal
+publication. Each report's peer handoff finishes before the next report on that thread is
+published; a pending report leaves the read cursor unchanged for durable retry. A bounded
+discussion waits for the existing Continue/Stop control rather than resetting its budget.
+Raw child/process output is never published directly. Completion batches from different origin
+admissions remain separate. The publication ID and persisted read cursor tolerate a crash after
+publication but before cursor commit without replaying inference or duplicating the report.
+
+Room Stop, disband, removed members, changed task generations, authority epochs, and a newer
+human request on the same thread fence old completions. Revoked work cannot wake the parent
+or publish a late report; the publication transaction checks the fences again. Reports whose
+original driver task has aged out of retention are not published. This applies to canonical
+gateway-owned rooms with local profile members, not legacy Desktop-only groups or peer gateways.
+Work dispatched before admission capture was installed has no trusted lineage and is not
+retroactively republished. Process completion still requires the existing notify policy.
+
 Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

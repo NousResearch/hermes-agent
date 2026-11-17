@@ -336,6 +336,13 @@ class HostedRoomAuthorityRPC:
         return self._call('results', profile=profile, session_id=session_id, source=source,
                           admission_ids=admission_ids)
 
+    async def _completions(self, params):
+        from gateway.session_hosted_completions import completion_page
+        return await asyncio.to_thread(completion_page, self, params.get('after_seq', 0))
+
+    def completions(self, *, profile, session_id, source, after_seq=0):
+        return self._call('completions', profile=profile, session_id=session_id, source=source, after_seq=after_seq)
+
     def info(self, *, profile, session_id, source):
         return self._call('info', profile=profile, session_id=session_id, source=source)
 

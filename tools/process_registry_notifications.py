@@ -13,6 +13,21 @@ _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared"}
 
 
+def watch_event_base(session):
+    """Keep the spawning admission beside the watcher address through queue delivery."""
+    import uuid
+    from tools.process_registry import _WATCHER_ROUTE_KEYS
+    from tools.environments.sandbox_scope import producer_fields
+    return {
+        "event_id": uuid.uuid4().hex, "started_at": session.started_at,
+        "parent_session_id": session.parent_session_id, "origin_admission_id": session.origin_admission_id,
+        "session_id": session.id, "session_key": session.session_key,
+        "task_id": session.task_id, "owner_task_id": session.owner_task_id, "command": session.command,
+        **producer_fields(session.sandbox_key),
+        **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessNotificationBatch:
     """Keep completion identity until the owning surface starts its turn."""

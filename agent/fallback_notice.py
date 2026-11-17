@@ -77,6 +77,15 @@ def fallback_trigger_text(agent, reason: FailoverReason | None) -> str:
     return f"{label}: {detail}"
 
 
+def fallback_notice_hidden(agent) -> bool:
+    """A background wake turn (a completed process, a plugin's scheduled check: no user message) shows
+    no switch notice. Most of those turns end silent, and the notice is posted before anyone knows,
+    so during an outage every wake would post one into the chat. The kind is known at turn start,
+    so a turn the user sent still gets its notice before the fallback answers."""
+    from gateway.response_filters import is_machinery_display_kind
+    return is_machinery_display_kind(getattr(agent, "_turn_display_kind", None))
+
+
 def announce_fallback_switch(agent, notice: str) -> None:
     """Show the switch now, before the fallback model starts answering: the user must see which
     model this turn runs on while it runs, not after it ends. Display-only (status rail), so the
@@ -85,6 +94,9 @@ def announce_fallback_switch(agent, notice: str) -> None:
 
     Its own ``fallback`` kind: messaging adapters edit one status message per kind in a turn, so on
     the shared ``lifecycle`` kind the next retry or re-prompt line replaced it (Telegram)."""
+    if fallback_notice_hidden(agent):
+        logger.info("fallback switch notice not shown on a background wake turn: %s", notice)
+        return
     from gateway.warning_notifications import DiagnosticText
     try:
         agent._emit_status_kind(FALLBACK_STATUS_KIND, DiagnosticText(notice), origin="fallback_switch")

@@ -23,10 +23,10 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
-    # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
-    # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
-    # of switching the turn to a fallback model.
-    "fallback": {"min_switch_reset_seconds": 0, "confirm": False},
+    # min_switch_reset_seconds: opt-in (0 = off): stay on a rate-limited primary resetting sooner.
+    # on_subscription_limit: switch|wait|ask when a subscription primary's limit meets a per-token
+    # fallback (see website/docs/user-guide/features/fallback-providers.md).
+    "fallback": {"min_switch_reset_seconds": 0, "on_subscription_limit": "switch"},
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

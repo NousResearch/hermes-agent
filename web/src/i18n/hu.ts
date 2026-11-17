@@ -83,6 +83,7 @@ export const hu: Translations = {
     modelToolsSheetSubtitle: "és eszközök",
     modelToolsSheetTitle: "Modell",
     navigation: "Navigáció",
+    apiHint: { label: "API- és CLI-megfelelő", docs: "dokumentáció" },
     openDocumentation: "Dokumentáció megnyitása új lapon",
     openNavigation: "Navigáció megnyitása",
     pluginNavSection: "Bővítmények",

@@ -18,6 +18,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { usePollInterval } from "@/hooks/usePollInterval";
 // Level classification is unit-tested in @/lib/log-classify; it prefers the
 // structured level token and falls back to word-boundary matching so payload
 // text like "parse_errors=0" can't render an INFO line red.
@@ -151,11 +152,12 @@ export default function LogsPage() {
     fetchLogs();
   }, [fetchLogs]);
 
+  const pollMs = usePollInterval("logs");
   useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(fetchLogs, 5000);
+    const interval = setInterval(fetchLogs, pollMs);
     return () => clearInterval(interval);
-  }, [autoRefresh, fetchLogs]);
+  }, [autoRefresh, fetchLogs, pollMs]);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">

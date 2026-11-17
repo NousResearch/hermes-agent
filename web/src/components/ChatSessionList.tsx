@@ -29,9 +29,9 @@ import { ChatWorkspacePicker } from "@/components/ChatWorkspacePicker";
 import { useI18n } from "@/i18n";
 import { api, type SessionInfo } from "@/lib/api";
 import { cn, timeAgo } from "@/lib/utils";
+import { usePollInterval } from "@/hooks/usePollInterval";
 
 const SESSION_LIMIT = 30;
-const SESSION_REFRESH_MS = 20_000;
 interface ChatSessionListProps {
   /** Active resume target (the session currently shown in the terminal). */
   activeSessionId: string | null;
@@ -126,9 +126,10 @@ export function ChatSessionList({
     // `reloadNonce` is a manual refetch trigger (Refresh button / row pick).
   }, [isActive, load, reloadNonce]);
 
+  const refreshMs = usePollInterval("chatSessions");
   useEffect(() => {
     if (!isActive) return;
-    const interval = window.setInterval(reload, SESSION_REFRESH_MS);
+    const interval = window.setInterval(reload, refreshMs);
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") reload();
     };
@@ -137,7 +138,7 @@ export function ChatSessionList({
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [isActive, reload]);
+  }, [isActive, refreshMs, reload]);
 
   // Picking a row sets `/chat?resume=<id>`. Re-picking the row already in
   // the terminal is a no-op (avoids a needless PTY teardown).

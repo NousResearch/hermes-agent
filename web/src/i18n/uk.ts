@@ -83,6 +83,7 @@ export const uk: Translations = {
     modelToolsSheetSubtitle: "та інструменти",
     modelToolsSheetTitle: "Модель",
     navigation: "Навігація",
+    apiHint: { label: "Відповідник в API та CLI", docs: "документація" },
     openDocumentation: "Відкрити документацію в новій вкладці",
     openNavigation: "Відкрити навігацію",
     pluginNavSection: "Плагіни",

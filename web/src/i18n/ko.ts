@@ -83,6 +83,7 @@ export const ko: Translations = {
     modelToolsSheetSubtitle: "및 도구",
     modelToolsSheetTitle: "모델",
     navigation: "내비게이션",
+    apiHint: { label: "API 및 CLI 대응 명령", docs: "문서" },
     openDocumentation: "새 탭에서 문서 열기",
     openNavigation: "내비게이션 열기",
     pluginNavSection: "플러그인",

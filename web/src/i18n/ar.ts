@@ -83,6 +83,7 @@ export const ar = defineLocale({
     modelToolsSheetSubtitle: "& أدوات",
     modelToolsSheetTitle: "النموذج",
     navigation: "التنقل",
+    apiHint: { label: "المكافئ في واجهة API وسطر الأوامر", docs: "التوثيق" },
     openDocumentation: "فتح التوثيق في تبويب جديد",
     openNavigation: "فتح التنقل",
     pluginNavSection: "المكوِّنات الإضافية",

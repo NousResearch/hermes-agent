@@ -83,6 +83,7 @@ export const af: Translations = {
     modelToolsSheetSubtitle: "& gereedskap",
     modelToolsSheetTitle: "Model",
     navigation: "Navigasie",
+    apiHint: { label: "API- en CLI-ekwivalent", docs: "dokumentasie" },
     openDocumentation: "Maak dokumentasie in 'n nuwe oortjie oop",
     openNavigation: "Maak navigasie oop",
     pluginNavSection: "Inproppe",

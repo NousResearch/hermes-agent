@@ -83,6 +83,7 @@ export const zhHant: Translations = {
     modelToolsSheetSubtitle: "與工具",
     modelToolsSheetTitle: "模型",
     navigation: "導覽",
+    apiHint: { label: "API 與 CLI 對應指令", docs: "文件" },
     openDocumentation: "在新分頁開啟文件",
     openNavigation: "開啟導覽",
     pluginNavSection: "外掛",

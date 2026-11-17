@@ -109,6 +109,8 @@ export interface Translations {
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
     navigation: string;
+    /** Page footer naming the REST route + `hermes` command behind the page. */
+    apiHint: { label: string; docs: string };
     openDocumentation: string;
     openNavigation: string;
     pluginNavSection: string;

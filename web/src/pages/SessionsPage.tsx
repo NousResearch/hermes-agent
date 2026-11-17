@@ -32,10 +32,8 @@ import {
 import { api } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
-import {
-  importSummary,
-  parseImportSessions,
-} from "@/lib/session-import";
+import { importSummary, parseImportSessions } from "@/lib/session-import";
+import { usePollInterval } from "@/hooks/usePollInterval";
 import type {
   SessionInfo,
   SessionMessage,
@@ -1052,7 +1050,7 @@ export default function SessionsPage() {
       cancelled = true;
     };
   }, [loadSessions, page, refreshEmptyCount]);
-
+  const overviewPollMs = usePollInterval("sessions");
   useEffect(() => {
     let cancelled = false;
     const loadOverview = () => {
@@ -1083,12 +1081,12 @@ export default function SessionsPage() {
         .catch(() => {});
     };
     loadOverview();
-    const id = setInterval(loadOverview, 5000);
+    const id = setInterval(loadOverview, overviewPollMs);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [loadSessions, sessionQueryOptions]);
+  }, [loadSessions, overviewPollMs, sessionQueryOptions]);
 
   useEffect(() => {
     const el = logScrollRef.current;

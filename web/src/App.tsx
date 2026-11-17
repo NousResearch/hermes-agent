@@ -63,6 +63,7 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
+import { ApiHint } from "@/components/ApiHint";
 import { CockpitSidebarSlot } from "@/components/CockpitSidebarSlot";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
@@ -757,7 +758,7 @@ export default function App() {
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
-                <ProfileKeyedRoutes>
+                <ProfileKeyedRoutes manifests={manifests}>
                   <Suspense fallback={<RouteFallback />}>
                     <Routes>
                       {routes.map(({ key, path, element }) => (
@@ -823,9 +824,18 @@ export default function App() {
  * the new scope. The persistent ChatPage host below handles its own
  * remount (channel keyed on scopedProfile).
  */
-function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
+function ProfileKeyedRoutes({ children, manifests }: { children: ReactNode; manifests: PluginManifest[] }) {
   const { profile } = useProfileScope();
-  return <div key={profile || "__own__"} className="contents">{children}</div>;
+  const { pathname } = useLocation();
+  const path = pathname.replace(/\/$/, "") || "/";
+  // A plugin that replaces a built-in page owns it; the built-in route's hint would be wrong there.
+  const replaced = manifests.some((m) => m.tab.override === path);
+  return (
+    <div key={profile || "__own__"} className="contents">
+      {children}
+      {!replaced && <ApiHint pathname={path} />}
+    </div>
+  );
 }
 
 function SidebarNavLink({

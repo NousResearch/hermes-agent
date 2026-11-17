@@ -82,6 +82,7 @@ export const zh: Translations = {
     modelToolsSheetSubtitle: "与工具",
     modelToolsSheetTitle: "模型",
     navigation: "导航",
+    apiHint: { label: "API 与 CLI 对应命令", docs: "文档" },
     openDocumentation: "在新标签页中打开文档",
     openNavigation: "打开导航",
     pluginNavSection: "插件",

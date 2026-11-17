@@ -83,6 +83,7 @@ export const ja: Translations = {
     modelToolsSheetSubtitle: "とツール",
     modelToolsSheetTitle: "モデル",
     navigation: "ナビゲーション",
+    apiHint: { label: "API と CLI の対応コマンド", docs: "ドキュメント" },
     openDocumentation: "ドキュメントを新しいタブで開く",
     openNavigation: "ナビゲーションを開く",
     pluginNavSection: "プラグイン",

@@ -83,6 +83,7 @@ export const tr: Translations = {
     modelToolsSheetSubtitle: "& araçlar",
     modelToolsSheetTitle: "Model",
     navigation: "Gezinti",
+    apiHint: { label: "API ve CLI karşılığı", docs: "belgeler" },
     openDocumentation: "Dokümantasyonu yeni sekmede aç",
     openNavigation: "Gezintiyi aç",
     pluginNavSection: "Eklentiler",

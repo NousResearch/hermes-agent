@@ -83,6 +83,7 @@ export const ga: Translations = {
     modelToolsSheetSubtitle: "agus uirlisí",
     modelToolsSheetTitle: "Samhail",
     navigation: "Nascleanúint",
+    apiHint: { label: "Comhionann API agus CLI", docs: "doiciméadú" },
     openDocumentation: "Oscail an doiciméadú i gcluaisín nua",
     openNavigation: "Oscail an nascleanúint",
     pluginNavSection: "Plugins",

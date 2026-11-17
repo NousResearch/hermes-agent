@@ -83,6 +83,7 @@ export const pt: Translations = {
     modelToolsSheetSubtitle: "e ferramentas",
     modelToolsSheetTitle: "Modelo",
     navigation: "Navegação",
+    apiHint: { label: "Equivalente na API e na CLI", docs: "documentação" },
     openDocumentation: "Abrir documentação num novo separador",
     openNavigation: "Abrir navegação",
     pluginNavSection: "Plugins",

@@ -96,6 +96,7 @@ def _log_storage_failure(profile, method, session_id, exc: sqlite3.Error) -> Non
 _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
+                               'delivery.status',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
@@ -227,6 +228,7 @@ class AuthorityConnection:
                     'plugins.list': self.plugins_list, 'command.observe': self.command_observe,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
+                    'delivery.status': self.delivery_status,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
                     'bot_relay.settle': self.bot_settle, 'bot_relay.cancel': self.bot_cancel,
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
@@ -398,6 +400,10 @@ class AuthorityConnection:
     async def kanban_run(self, ref, params):
         from gateway.session_kanban import run_task
         return await run_task(self, params)
+
+    async def delivery_status(self, ref, params):
+        from gateway.session_delivery_status import delivery_status
+        return await delivery_status(self, ref, params)
 
     async def cron_recover(self, ref, params):
         from gateway.session_cron import rpc

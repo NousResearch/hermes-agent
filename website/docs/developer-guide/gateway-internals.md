@@ -66,6 +66,42 @@ the owner's process-local registry cannot truthfully describe another interprete
 Control mutations (`session.control`), process mutations and subagent steering are
 not enabled by these read projections.
 
+## Delivery status (`delivery.status`, Q5)
+
+The status bar's read-only answer to "what deferred deliveries does this session still
+owe?" — one session (`session_id`) or every visible session (`scope="all"`, same 1..200
+limit as `session.list`). Neither is a default: a call with neither is `invalid_params`
+(fail-closed), so a bare poll never leaks another session's deliveries. Requires
+`session:read` and the owning profile, resolved exactly like `session.list` /
+`session.info`; a foreign profile answers `profile_mismatch` with no data. It is a
+`RESTART_WAIT_WS_METHODS` read, so it answers during the restart drain like
+`session.list`.
+
+Two sources, and only these — the response's `source` map names which feeds each number:
+
+- the transcript: detached API delegation deliveries, `user` rows with
+  `display_kind IN ('async_delegation_complete', 'hidden')` and
+  `display_metadata.delegation_id`. `pending` counts the rows recorded after the
+  session's last assistant row: the documented approximation of "recorded and not yet
+  consumed by a turn". The core keeps no "seen" column on `messages` (that would be a
+  schema change of its own), so a delivery already seen through another channel still
+  counts until the next turn runs; `last_delivery_at` lets the client reason for itself.
+- the bot relay mailbox: per-delivery receipts under the profile home's
+  `runtime/bot_live_delivery/`, filtered by session and by `profile_home`. `failed`
+  receipts are the `dead_letter` count (the transcript has no dead-letter state);
+  `settled` receipts inside `window_seconds` (default 86400) join `delivered_recent`.
+
+NOT covered: the plugin outbox (`delivery_store.py` / `deliveries.db` in the plugin's
+own home). The core never reads it, so this verb cannot promise its numbers; a client
+that needs the plugin outbox's pending count reads the plugin's own surface.
+
+The verb writes nothing (no transcript rows, no receipts, no mailbox dir created when
+none exists), touches no turn, lease or cache, and caches no result: every call reads
+the current state. Per session it is two indexed `SELECT`s over the session's resume
+lineage (`session_id IN (...)` under `idx_messages_session`, deduped by `message_uid` so
+a compaction's carried tail counts once) plus the mailbox scan; `scope="all"` walks the
+same visible feed `session.list` defaults to.
+
 ## Shared authority pending-input snapshots
 
 `session.resume` returns each pending admission with its original `input_id` and

@@ -549,3 +549,106 @@ def hold_error(reasons) -> Exception:
             super().__init__("desktop_screen_hold")
 
     return _Hold(reasons)
+
+
+# ---------------------------------------------------------------------------
+# Desktop serve chat gate (cycle 1c, owner-approved 17 Nov 2026)
+#
+# The Desktop app's isolated ``hermes serve`` backend runs viewer turns
+# through ``hermes_cli/cli_chat_turn_mixin.chat`` - a path that never
+# reaches the gateway admission gate (``SessionAuthority._submit``),
+# which is why the 17 Nov live test passed an injection through
+# unscreened. ``chat_gate`` screens the SAME model-visible texts with
+# the SAME engine gate for desktop/gui-sourced sessions, before the
+# user message is staged or any model call is made.
+
+
+class _ChatAuthority:
+    """Minimal authority adapter for the serve chat path: the gate only
+    needs the session store (``session_in_scope`` reads the frozen
+    launch source from it)."""
+
+    def __init__(self, db):
+        self.db = db
+        self.launch_sources = {}
+
+
+def _message_texts(message) -> list:
+    """Model-visible text pieces of one chat() message. Viewer strings
+    and multimodal text parts are screened; ``TimelineNotification``
+    rows are machine-produced UI metadata (never viewer input) and
+    images are A6-deferred, so neither is screened."""
+    if isinstance(message, str):
+        return [message] if message.strip() else []
+    if isinstance(message, list):
+        parts: list = []
+        for item in message:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                if item["text"].strip() and item["text"] not in parts:
+                    parts.append(item["text"])
+            elif isinstance(item, str):
+                if item.strip() and item not in parts:
+                    parts.append(item)
+        return parts
+    return []
+
+
+def _screen_texts_sync(subject: str, session_id: str, texts: list) -> tuple:
+    """Sync bridge for the non-async serve chat thread. Shares ONE
+    screening budget across the message's texts and reuses the SAME
+    async ``screen`` so chunking, budget, tiers, outcome reporting and
+    logging are identical to the gateway gate. Returns
+    ``(held, reasons)``. When the caller is inside a running event
+    loop, the screen runs on a dedicated thread with its own loop
+    (the chat path may be invoked from async serve code)."""
+    if not texts:
+        return False, []
+
+    def _run() -> tuple:
+        deadline = time.monotonic() + _SCREEN_BUDGET_S
+        held, reasons = False, []
+        for text in texts:
+            held, reasons = asyncio.run(
+                screen(subject, session_id, text, deadline=deadline))
+            if held:
+                return True, reasons
+        return False, reasons
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _run()
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_run).result()
+
+
+def chat_gate(chat, agent, message) -> str | None:
+    """Screen one Desktop serve chat turn; returns the hold notice text
+    when the submit is held (the caller shows it instead of running
+    the turn), None when the turn may proceed. NEVER raises: every
+    failure degrades to 'proceed', logged."""
+    try:
+        if not desktop_screen_enabled():
+            return None
+        session_id = str(getattr(chat, "session_id", "")
+                         or getattr(agent, "session_id", "") or "")
+        if not session_id:
+            return None
+        db = getattr(agent, "_session_db", None)
+        if db is None:
+            return None
+        if not session_in_scope(_ChatAuthority(db), session_id):
+            return None
+        texts = _message_texts(message)
+        if not texts:
+            return None
+        held, reasons = _screen_texts_sync("desktop-chat", session_id, texts)
+        if not held:
+            return None
+        shown = "; ".join(reasons[:3]) if reasons else "block tier"
+        return f"{_hold_notice()} [{shown}]"
+    except Exception:
+        logger.warning("desktop_screen: chat gate failed; proceeding",
+                       exc_info=True)
+        return None

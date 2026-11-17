@@ -88,6 +88,21 @@ class CLIChatTurnMixin:
         if agent is None:
             return None
         self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
+        # W1c desktop chat gate (cycle 1c): the Desktop app's isolated
+        # `hermes serve` backend runs viewer turns through THIS path,
+        # which never reaches the gateway admission gate. Screen the
+        # viewer's message BEFORE staging it or any model call; a held
+        # message shows the notice instead of a reply. See
+        # gateway/desktop_screen.chat_gate (never raises).
+        try:
+            from gateway.desktop_screen import chat_gate
+            held = chat_gate(self, agent, message)
+        except Exception:
+            held = None
+        if held:
+            from cli import ChatConsole
+            ChatConsole().print(held)
+            return held
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):

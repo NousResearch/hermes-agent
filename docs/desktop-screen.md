@@ -63,6 +63,25 @@ prompt) and `cli_turn_v1.turn_author.name` reaches memory
 attribution providers, not the model prompt; neither is screened
 this cycle (same A6 deferral as attachments/voice_context).
 
+## Desktop serve chat path (cycle 1c, 17 Nov 2026)
+
+The 17 Nov live test exposed a route the admission gate cannot see:
+the Desktop app's isolated ``hermes serve`` backend runs viewer turns
+through ``hermes_cli/cli_chat_turn_mixin.chat`` in-process, which
+never calls ``SessionAuthority._submit`` (proven: the
+``gateway.desktop_screen`` module was never imported by the serve
+process). Cycle 1c closes it: ``chat_gate`` screens the message in
+that path BEFORE it is staged or any model call is made - same
+engine, same chunking/budget/tier semantics, same log and outcome
+reporting, sync-bridged (a dedicated thread when the caller is inside
+a running event loop). Scope identical: desktop/gui frozen source,
+env-gated, fail-open, hold shows the notice text as the reply with
+the tier reasons. Multimodal text parts are screened (deduplicated);
+machine ``TimelineNotification`` rows and images are not. Not
+screened here: text the serve path receives from already-screened
+gateway transfers (unchanged behaviour), attachments/voice_context
+(A6 deferral).
+
 Judge philosophy unchanged: the judge advises, it never replaces
 owner gates. Texts are split into 32k-char chunks with a 1 KB seam
 overlap: a payload of up to 1024 chars is GUARANTEED to sit whole

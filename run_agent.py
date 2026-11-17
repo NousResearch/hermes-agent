@@ -406,9 +406,10 @@ class AIAgent(
         With ``previous_messages`` / ``old_session_id`` / ``carry_over_context`` the context engine gets the
         full transition lifecycle instead of a bare reset.
         """
-        from agent.prompt_cache_lifecycle import session_totals_lock
+        from agent.prompt_cache_lifecycle import reset_prompt_cache_session, session_totals_lock
 
         with session_totals_lock(self):  # a keep-alive in flight adds to these under the same lock
+            reset_prompt_cache_session(self)  # a fresh session: an old keep-alive miss no longer stops warming
             for counter in (
                 "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
                 "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",

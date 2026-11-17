@@ -442,6 +442,7 @@ gateway:
     cache_unknown_route: "İstem önbelleği: bilinmiyor (bu sağlayıcı önbellek saklama süresini yayımlamıyor)."
     cache_unknown_runtime: "İstem önbelleği: bilinmiyor (bu çalışma ortamı kendi önbellek seçeneklerini belirliyor ve Hermes bunları göremiyor)."
     cache_unknown_storage: "İstem önbelleği: bilinmiyor (oturum deposu okunamadı)."
+    cache_warming_off: "Canlı tutma: kapalı (biri kaçtı)."
     cache_confidence:
       proven: "kanıtlandı"
       declared: "beyan edildi"

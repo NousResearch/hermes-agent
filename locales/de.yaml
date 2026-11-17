@@ -442,6 +442,7 @@ gateway:
     cache_unknown_route: "Prompt-Cache: unbekannt (dieser Anbieter veröffentlicht seine Cache-Aufbewahrung nicht)."
     cache_unknown_runtime: "Prompt-Cache: unbekannt (diese Laufzeit setzt eigene Cache-Optionen, die Hermes nicht sehen kann)."
     cache_unknown_storage: "Prompt-Cache: unbekannt (der Sitzungsspeicher konnte nicht gelesen werden)."
+    cache_warming_off: "Keep-alives: aus (einer verfehlt)."
     cache_confidence:
       proven: "belegt"
       declared: "angefordert"

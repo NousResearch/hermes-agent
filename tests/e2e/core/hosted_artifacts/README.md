@@ -46,9 +46,7 @@ HERMES_ARTIFACTS_E2E_BASE_URL=... HERMES_ARTIFACTS_E2E_PORTAL_URL=... HERMES_ART
 ```
 
 A pass shows the `[real]` cells as passed, not skipped. The runner starts tests from an empty
-environment, so `scripts/run_tests.sh` must list `HERMES_ARTIFACTS_E2E_BASE_URL`,
-`HERMES_ARTIFACTS_E2E_PORTAL_URL` and `HERMES_ARTIFACTS_E2E_TOKEN_FILE` in its `TEST_ENV` allowlist;
-if `[real]` skips with all three exported, check that list first.
+environment and forwards only the three variables above (its `TEST_ENV` allowlist).
 
 ## Probe: does this Hermes support hosted artifacts?
 

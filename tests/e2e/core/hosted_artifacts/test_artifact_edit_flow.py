@@ -40,7 +40,6 @@ from tests.e2e.core.hosted_artifacts._helpers import (
     real_plane,
     refuses,
     tool,
-    xfail_known_attach_gaps,
 )
 from tests.e2e.core.mcp_plugins._helpers import FINAL, _tool_msgs_this_turn, call_tool, payload, provider, run_chat_q
 from tests.e2e.core.mcp_plugins._plugin_helpers import reap_tagged
@@ -144,7 +143,6 @@ def flow(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactor
     assert proc.returncode == 0 and FINAL in proc.stdout, (
         f"turn did not complete: exit {proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-3000:]}")
     assert mains, "the model was never called"
-    xfail_known_attach_gaps(eh, mains[0])
     out["seen"] = _results(mains[-1])
     return out
 

@@ -15,7 +15,6 @@ import base64
 import contextlib
 import json
 import os
-import re
 import signal
 import socket
 import subprocess
@@ -26,7 +25,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.mcp_plugins._helpers import REPO_ROOT, E2EHome, build_home, wait_until
 from tests.fakes.nous_portal_account import FakePortal
 from tests.fakes.providers.catalog_oauth import make_jwt
@@ -205,28 +203,3 @@ def offered(body: dict[str, Any]) -> str:
     """Everything a provider request offers the model as tools (names, descriptions, and any Tool
     Search listing), as one string."""
     return json.dumps(body.get("tools") or [])
-
-
-# Client gaps open on this branch: (symptom pattern, reason). Each XFAILs only on its own symptom and
-# passes once fixed (``known_failure``); delete an entry when its fix lands.
-GAP_AUTH_CLASS = (r"^hosted server never connected: .*Invalid \"auth\" argument",
-                  "hosted artifacts: the Nous bearer auth is a Hermes httpx.Auth, but the MCP SDK's client "
-                  "(httpx2 on mcp >= 2.0) rejects any other Auth class, so the server never connects")
-GAP_TOOLSET = (r"^hosted server registered its tools but the session was not offered them",
-               "hosted artifacts: the attached server is not among the enabled MCP servers "
-               "(hermes_cli.tools_config.enabled_mcp_server_names), so no session enables its toolset")
-
-
-def xfail_known_attach_gaps(eh: E2EHome, first_request: dict[str, Any]) -> None:
-    """XFAIL the calling cell when the attach failed in one of the known client gaps above; any other
-    attach failure is left to the caller's own assertions."""
-    log_path = eh.hermes_home / "logs" / "agent.log"
-    log = log_path.read_text(encoding="utf-8-sig", errors="replace") if log_path.exists() else ""
-    auth = re.search(rf"MCP server '{SERVER}'.*Invalid \"auth\" argument.*", log)
-    if auth:
-        with known_failure(*GAP_AUTH_CLASS):
-            raise AssertionError(f"hosted server never connected: {auth.group(0)[:300]}")
-    if re.search(rf"MCP server '{SERVER}' \(HTTP\): registered", log) and "mcp__hermes_artifacts__" not in offered(
-            first_request):
-        with known_failure(*GAP_TOOLSET):
-            raise AssertionError("hosted server registered its tools but the session was not offered them")

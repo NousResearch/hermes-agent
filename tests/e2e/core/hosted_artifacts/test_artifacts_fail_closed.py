@@ -24,7 +24,6 @@ from tests.e2e.core.hosted_artifacts._helpers import (
     fake_portal,
     nous_token,
     offered,
-    xfail_known_attach_gaps,
 )
 from tests.e2e.core.mcp_plugins._helpers import FINAL, provider, run_chat_q
 from tests.e2e.core.mcp_plugins._plugin_helpers import reap_tagged
@@ -77,7 +76,6 @@ def test_hosted_artifacts_attach_only_for_an_entitled_profile(tmp_path: Path, ca
     offered_tools = [offered(body) for body in got["mains"]]
     methods = [e["msg"].get("method") for e in got["entries"] if isinstance(e["msg"], dict)]
     if attaches:
-        xfail_known_attach_gaps(got["eh"], got["mains"][0])
         assert all(TOOL_PREFIX in tools for tools in offered_tools), (
             f"control: the entitled profile was not offered the {SERVER} tools (harness broken?)")
         assert "tools/list" in methods, f"control: the server was never listed: {methods}"

@@ -335,7 +335,6 @@ import { createKeepAwakeController } from './keep-awake-controller'
 import { launchBuildIdentity } from './launch-build-identity'
 import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
-import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
   clearLinuxGpuBootMarker,
   createLinuxGpuBootWindow,
@@ -432,6 +431,7 @@ import {
 } from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
+import { CHROMIUM_LOG_FILENAME, enableCrashDiagnostics, platformCrashDiagnostics } from './platform-crash-diagnostics'
 import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
@@ -1361,7 +1361,7 @@ const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
 // and the discard ceiling live in log-rotation.ts, shared with the Chromium
 // log below.
 
-// #100573: keep the FATAL line and a local minidump for the next Linux SIGTRAP.
+// #100573/#139856: keep the FATAL line and local minidumps for the next silent death.
 // Both must be wired before `app` is ready; the log-file switch is inherited by
 // every child process, so a zygote or GPU CHECK lands in the same file.
 // Chromium opens an explicit --log-file with APPEND_TO_OLD_LOG_FILE, so this
@@ -1369,10 +1369,10 @@ const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
 // way, and never let optional diagnostics fail the shell's startup.
 const CRASH_DIAGNOSTICS_LOGS_DIR = path.dirname(DESKTOP_LOG_PATH)
 
-const CRASH_DIAGNOSTICS = linuxCrashDiagnostics(CRASH_DIAGNOSTICS_LOGS_DIR)
+const CRASH_DIAGNOSTICS = platformCrashDiagnostics(CRASH_DIAGNOSTICS_LOGS_DIR)
 const CHROMIUM_LOG_PATH = path.join(CRASH_DIAGNOSTICS_LOGS_DIR, CHROMIUM_LOG_FILENAME)
 
-enableLinuxCrashDiagnostics(CRASH_DIAGNOSTICS, CRASH_DIAGNOSTICS_LOGS_DIR, {
+enableCrashDiagnostics(CRASH_DIAGNOSTICS, CRASH_DIAGNOSTICS_LOGS_DIR, {
   ensureLogsDir: dir => fs.mkdirSync(dir, { recursive: true }),
   reclaimChromiumLog: file => rotateLogIfNeededSync(file),
   appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),

@@ -6,10 +6,12 @@ import path from 'node:path'
 // (#100573: ten Linux reports, one shared trap address, zero fatal messages).
 // The message itself goes to stderr a moment before the trap, and every Linux
 // launcher (.desktop entry, Omarchy's hermes-desktop wrapper) discards stderr.
-// Route Chromium's own log to a file next to desktop.log and let Crashpad keep
-// local minidumps, so the next crash carries its FATAL line with it.
+// Windows dies just as wordlessly (#139856): a stall-into-death left no WER
+// entry, no Crashpad minidump and no Chromium log at all. Route Chromium's own
+// log to a file next to desktop.log and let Crashpad keep local minidumps, so
+// the next crash carries its FATAL line with it.
 
-export interface LinuxCrashDiagnostics {
+export interface CrashDiagnosticsPlan {
   /** Chromium command-line switches, applied before `app` is ready. */
   switches: ReadonlyArray<readonly [name: string, value: string]>
   /** `crashReporter.start` options; local database only, nothing leaves the machine. */
@@ -22,11 +24,13 @@ const CHROMIUM_LOG_LEVEL_ERROR = '2'
 
 export const CHROMIUM_LOG_FILENAME = 'desktop-chromium.log'
 
-export function linuxCrashDiagnostics(
+// Linux (#100573) and Windows (#139856) are the platforms with silent-death
+// reports. macOS has none yet — add it here when one lands, not before.
+export function platformCrashDiagnostics(
   logsDir: string,
   platform: NodeJS.Platform = process.platform
-): LinuxCrashDiagnostics | null {
-  if (platform !== 'linux') {
+): CrashDiagnosticsPlan | null {
+  if (platform !== 'linux' && platform !== 'win32') {
     return null
   }
 
@@ -47,15 +51,15 @@ export interface CrashDiagnosticsHost {
   /** Bound the Chromium log before Chromium appends to it (APPEND_TO_OLD_LOG_FILE). */
   reclaimChromiumLog(file: string): void
   appendSwitch(name: string, value: string): void
-  startCrashReporter(options: LinuxCrashDiagnostics['crashReporter']): void
+  startCrashReporter(options: CrashDiagnosticsPlan['crashReporter']): void
 }
 
 // Diagnostics are optional; startup is not. Every step is best-effort, because
 // a read-only or invalid HERMES_HOME/logs must degrade to "no crash log", never
 // to a desktop that dies before app readiness. The existing desktop log path
 // swallows the same failures for the same reason.
-export function enableLinuxCrashDiagnostics(
-  plan: LinuxCrashDiagnostics | null,
+export function enableCrashDiagnostics(
+  plan: CrashDiagnosticsPlan | null,
   logsDir: string,
   host: CrashDiagnosticsHost
 ): void {

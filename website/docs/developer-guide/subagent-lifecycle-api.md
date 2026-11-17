@@ -86,3 +86,29 @@ from operator config.
 The lifecycle API does not consult `delegation.backend`: the plugin that launches a child already chooses
 its route. To change how `delegate_task` routes the model's subagents, write a
 [delegation provider plugin](delegation-provider-plugin.md).
+
+## HTTP cancellation for delegated children
+
+The API server advertises `features.session_subagents` and `features.session_subagent_stop`
+through authenticated `GET /v1/capabilities`. `GET /api/sessions/{session_id}/subagents` lists the
+live children the session owns (same ownership rule as below). To stop one, a client may request:
+
+```http
+POST /api/sessions/{session_id}/subagents/{subagent_id}/stop
+Authorization: Bearer <the-owning-profile-api-key>
+```
+
+The `/p/{profile}/` mirror uses that profile's credential and SessionDB. The
+session must exist with source `api_server`; the live child must belong to that
+session's compression lineage and exact profile DB. A guessed child ID cannot
+control a sibling conversation or another profile. This route operates on
+`delegate_task` registry children, not plugin lifecycle handles.
+
+An accepted cooperative stop returns HTTP 202 with `{"status":"stopping"}`.
+Repeated admission for the same live child does not interrupt it again. Recent
+finished children return 409; foreign or unknown targets return 404 without
+revealing their owner. Missing API-key configuration is rejected. Request
+acceptance is not worker completion: the normal child teardown/completion path
+keeps partial output and records the eventual interrupted result. The parent
+and sibling workers are not stopped. A gateway restart does not revive a
+finished or lost child merely because a Stop request is retried.

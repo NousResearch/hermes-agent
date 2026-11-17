@@ -50,6 +50,8 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "session_compress": True, "session_context_meter": True, "session_subagents": True,
+    "session_subagent_stop": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
@@ -77,7 +79,10 @@ _CAPABILITY_ENDPOINTS = (
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
-    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")))
+    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
+    ("session_compress", ("POST", "/api/sessions/{session_id}/compress")),
+    ("session_subagents", ("GET", "/api/sessions/{session_id}/subagents")),
+    ("session_subagent_stop", ("POST", "/api/sessions/{session_id}/subagents/{subagent_id}/stop")))
 
 
 def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
@@ -113,6 +118,9 @@ from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_session_compress as _session_compress
+from gateway.platforms import api_server_subagents as _api_subagents
+from gateway.platforms.api_server_session_projection import session_response
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
@@ -1585,6 +1593,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
+        routes.extend(_session_compress._http_routes(self, error_response=_error_response))
+        routes.extend(_api_subagents._http_routes(self, error_response=_error_response))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -2434,40 +2444,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _session_db_unavailable() -> web.Response:
         return _error_response("Session database unavailable", 503, code="session_db_unavailable")
 
-    @staticmethod
-    def _session_response(session: dict[str, Any]) -> dict[str, Any]:
-        """Return a stable, client-safe session representation."""
-        safe_keys = (
-            "id", "source", "user_id", "model", "title", "started_at", "ended_at", "end_reason",
-            "message_count", "tool_call_count", "input_tokens", "output_tokens",
-            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
-            "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
-        payload = {key: session.get(key) for key in safe_keys if key in session}
-        # SQLite stores the flags as 0/1.
-        payload.update(
-            {f: bool(payload[f]) for f in ("pinned", "archived", "hidden") if f in payload})
-        # Full system prompts / model_config never cross the client API; only their presence.
-        payload["has_system_prompt"] = bool(session.get("system_prompt"))
-        payload["has_model_config"] = bool(session.get("model_config"))
-        raw_model_config = session.get("model_config")
-        try:
-            model_config = (
-                json.loads(raw_model_config)
-                if isinstance(raw_model_config, str)
-                else raw_model_config
-            )
-        except (TypeError, json.JSONDecodeError):
-            model_config = None
-        # Exact-id consumers may inspect/resume delegate children even though
-        # list endpoints intentionally omit them. Project only the provenance
-        # bit the client needs so it cannot accidentally promote such a row
-        # into an ordinary session list; never expose the model snapshot.
-        payload["is_internal_child"] = bool(
-            isinstance(model_config, dict)
-            and model_config.get("_delegate_from") is not None
-        )
-        return payload
+    _session_response = staticmethod(session_response)
 
     @staticmethod
     def _message_response(message: dict[str, Any]) -> dict[str, Any]:
@@ -2645,6 +2622,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(request.match_info["session_id"])
         if err:
             return err
+        session = await _session_compress.with_context_meter(self, session)
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
     @_require_auth

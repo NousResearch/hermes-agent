@@ -6,6 +6,8 @@ import logging
 import json
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
 from tools.registry import tool_error
@@ -66,7 +68,7 @@ def _unregister_subagent(subagent_id: str, *, agent: Any = None, stopping: bool 
         sid = record.get("subagent_id")
         if not sid:
             return
-        retained = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id")}
+        retained = {k: record.get(k) for k in ("goal", "delegation_id", "owner_agent_session_id", "owner_db_path")}
         owners = set()
         prev = _recent_subagents.get(sid)
         if prev is not None:
@@ -146,6 +148,56 @@ def interrupt_subagent(subagent_id: str) -> bool:
         logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
         return False
 
+def _owned_by_session_db(record: dict[str, Any], session_id: str, db: Any) -> bool:
+    """The record belongs to ``session_id``'s conversation lineage in exactly ``db``'s profile store."""
+    db_path, path = getattr(db, "db_path", None), record.get("owner_db_path")
+    if not isinstance(db_path, (str, Path)) or not isinstance(path, (str, Path)):
+        return False
+    if Path(path).resolve() != Path(db_path).resolve():
+        return False
+    return _owns_subagent_record(record, SimpleNamespace(session_id=session_id, _session_db=db))
+
+
+def list_session_subagents(session_id: str, db: Any) -> list[dict[str, Any]]:
+    """Live children owned by ``session_id`` in ``db``'s profile (copies, private keys kept for the caller)."""
+    with _active_subagents_lock:
+        records = [dict(r) for r in _active_subagents.values()]
+    # Lineage resolution may read the session DB: evaluated outside the registry lock.
+    return [r for r in records if _owned_by_session_db(r, session_id, db)]
+
+
+def request_session_subagent_stop(subagent_id: str, session_id: str, db: Any) -> Optional[str]:
+    """Admit a single cooperative stop only for the owning profile DB and session lineage.
+
+    The registry record owns idempotency, so it expires with the child. A recent owned
+    completion returns 'finished'; unknown and foreign children are indistinguishable.
+    Acceptance never claims that the worker already exited or rewrites its manifest.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id) or _recent_subagents.get(subagent_id)
+    # Ownership may read the DB (lineage tips): never under the registry lock.
+    if record is None or not _owned_by_session_db(record, session_id, db):
+        return None
+    with _active_subagents_lock:
+        if _active_subagents.get(subagent_id) is not record:
+            return "finished"
+        agent = record.get("agent")
+        if agent is None:
+            return "finished"
+        if record.get("api_stop_requested"):
+            return "stopping"
+        record["api_stop_requested"] = True
+    try:
+        if request_hard_interrupt(agent, "Stop requested via session API", tool_reason="subagent stop"):
+            return "stopping"
+    except Exception:
+        logger.exception("session subagent stop failed")
+    with _active_subagents_lock:
+        if _active_subagents.get(subagent_id) is record:
+            record.pop("api_stop_requested", None)
+    return "failed"
+
+
 def _subagent_transport_matches(record, transport) -> bool:
     """Authority follows the owning session's LIVE transport slot, read at check time.
 
@@ -210,7 +262,7 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
+_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer", "owner_db_path", "api_stop_requested"})
 
 def list_active_subagents() -> list[dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,

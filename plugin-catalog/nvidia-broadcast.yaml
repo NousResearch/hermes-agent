@@ -9,6 +9,7 @@ description: "NVIDIA Broadcast control through its local MCP gateway: camera, mi
   desktop session. Disclosure: the tools change live audio and video effects on this machine; nothing
   leaves loopback."
 title: NVIDIA Broadcast
+app_download_url: https://www.nvidia.com/en-us/geforce/broadcasting/broadcast-app/
 maintainer: NousResearch
 tier: verified
 category: tools

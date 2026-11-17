@@ -1,5 +1,5 @@
 """``presence_for(names)``: catalog plugins by name for the desktop questionnaire — unknown and removed
-names dropped, other-OS entries dropped, order kept, manifests read in parallel, ``unknown`` when the
+names dropped, other-OS entries reported, order kept, manifests read in parallel, ``unknown`` when the
 pinned manifest cannot be read."""
 
 from __future__ import annotations
@@ -44,13 +44,15 @@ def catalog(monkeypatch):
     ]
     monkeypatch.setattr(pc, "load_catalog_live", lambda: entries)
     monkeypatch.setattr(presence_mod, "_manifests", {})
-    # Every fetch waits for the other two: a serial reader would break the barrier and read nothing.
+    # The three local entries prove parallel fetch; the other-OS entry fails immediately.
     barrier = threading.Barrier(3, timeout=5)
     manifests = {"app": NEEDS_APP, "dashed": {"name": "dashed"}}
 
     def get(url, **kwargs):
-        barrier.wait()
         repo = url.split("/")[4]
+        if repo == "elsewhere":
+            raise httpx.ConnectError("unreachable")
+        barrier.wait()
         if repo not in manifests:
             raise httpx.ConnectError("unreachable")
         return SimpleNamespace(status_code=200, content=json.dumps(manifests[repo]).encode())
@@ -59,17 +61,19 @@ def catalog(monkeypatch):
     return entries
 
 
-def test_rows_in_the_order_asked_without_removed_or_other_os_names(catalog):
+def test_rows_in_the_order_asked_without_removed_names(catalog):
     rows = presence_mod.presence_for(["broken", "removed-from-catalog", "elsewhere", "app", "dashed", "app"])
 
-    assert [row["name"] for row in rows] == ["broken", "app", "dashed"]
+    assert [row["name"] for row in rows] == ["broken", "elsewhere", "app", "dashed"]
 
 
 def test_row_shape_state_and_disclosure(catalog):
     rows = {row["name"]: row for row in presence_mod.presence_for(["app", "dashed", "broken"])}
 
     assert rows["app"] == {"name": "app", "title": "Fx App", "state": "missing_app", "sentence": "needs Fx App",
-                           "disclosure": "the tools change Fx settings; nothing leaves loopback."}
+                           "disclosure": "the tools change Fx settings; nothing leaves loopback.",
+                           "reason": "missing_app", "app_title": "Fx App", "required_version": None,
+                           "found_version": None, "download_url": None}
     assert rows["dashed"]["title"] == "dashed"
     assert rows["dashed"]["disclosure"] == "reads the cron file under HERMES_HOME."
     assert rows["dashed"]["state"] == "unknown"  # a manifest without a declared app

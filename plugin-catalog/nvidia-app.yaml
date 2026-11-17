@@ -9,6 +9,7 @@ description: "NVIDIA App control through its local MCP server: overlay capture a
   connection, so a changed port or token needs no reconfiguration. Disclosure: the tools read and change
   NVIDIA App settings on this machine; nothing leaves loopback."
 title: NVIDIA App
+app_download_url: https://www.nvidia.com/en-us/software/nvidia-app/
 maintainer: NousResearch
 tier: verified
 category: tools

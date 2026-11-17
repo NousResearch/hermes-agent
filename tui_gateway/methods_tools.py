@@ -1780,7 +1780,10 @@ def _plugins_install(rid, params):
         ref=str(params.get("ref") or "").strip() or None,
         inspected_sha=str(params.get("inspected_sha") or "").strip() or None)
     if not result.get("ok"):
-        return _err(rid, 5026, result.get("error") or "install failed", data=_refusal_data(result))
+        # One ``data`` slot, disjoint shapes: the app-prerequisite guidance (``reason`` + ``app_title``, which
+        # the client validates) or a refusal marker (``reason: source_moved`` / ``exists``, no title).
+        return _err(rid, 5026, result.get("error") or "install failed",
+                    data=result.get("app_guidance") or _refusal_data(result))
     return _ok(rid, _with_activation(result, str(result.get("plugin_name") or "")) if result.get("enabled") else result)
 
 

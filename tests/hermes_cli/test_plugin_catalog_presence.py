@@ -47,6 +47,17 @@ def test_app_state_comes_from_the_pinned_declaration(catalog):
     assert rows["here-only"]["app_state"] == "unknown" and rows["here-only"]["sentence"] == ""
 
 
+def test_named_presence_rejects_catalog_platform_before_app_probe(catalog, monkeypatch):
+    monkeypatch.setattr(presence_mod, "_pinned_manifest", lambda *_: NEEDS_APP)
+    monkeypatch.setattr(presence_mod, "_server_presence", lambda *_: presence_mod.Presence("present", reason="available"))
+
+    row, = presence_mod.presence_for(["elsewhere"])
+
+    assert row["state"] != "present"
+    assert row["reason"] == "unsupported_os"
+    assert row["download_url"] is None
+
+
 def test_unreadable_liveness_is_unknown_never_present(tmp_path, monkeypatch):
     """A liveness block that fails validation must not render as a healthy 'present' card:
     the module contract is that an unreadable declaration is unknown."""
@@ -61,4 +72,4 @@ def test_unreadable_liveness_is_unknown_never_present(tmp_path, monkeypatch):
         {"app": True}, where="test")
     bad = {"kind": "server_json", "path": "relative/no.json"}  # unrooted on every OS
     assert presence_mod._server_presence(decl, bad, "App") is presence_mod.UNKNOWN
-    assert presence_mod._server_presence(decl, None, "App") == presence_mod.Presence("present")
+    assert presence_mod._server_presence(decl, None, "App") == presence_mod.Presence("present", reason="available")

@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -76,6 +77,31 @@ def is_https_url(url: str) -> bool:
     except ValueError:  # "https://[": a malformed authority drops the link, never the whole catalog
         return False
     return parts.scheme == "https" and bool((parts.hostname or "").strip())
+
+
+# A WHATWG URL parser (Electron, every browser) reads a host whose last label is a number (decimal,
+# octal or 0x hex) as IPv4: "127.1" and "0x7f.0.0.1" open loopback. Mirrored in
+# scripts/validate_plugin_catalog.py, which must stay importable without hermes_cli.
+_NUMERIC_HOST_LABEL = re.compile(r"(?:0x[0-9a-f]*|[0-9]+)", re.IGNORECASE)
+# Special-use names that never reach a public vendor (RFC 6761, RFC 6762, RFC 8375, ICANN .internal).
+_LOCAL_HOST_SUFFIXES = ("localhost", "local", "internal", "home.arpa")
+
+
+def is_safe_app_download_url(url: str) -> bool:
+    """Accept only a direct HTTPS vendor hostname, never credentials, an IP literal or a special-use name."""
+    if not isinstance(url, str) or any(c.isspace() or ord(c) < 32 for c in url):
+        return False
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if parts.scheme != "https" or not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", host):
+            return False
+        if parts.username is not None or parts.password is not None or parts.port is not None or parts.fragment:
+            return False
+    except ValueError:
+        return False
+    return not (_NUMERIC_HOST_LABEL.fullmatch(host.rsplit(".", 1)[-1])
+                or any(host == suffix or host.endswith("." + suffix) for suffix in _LOCAL_HOST_SUFFIXES))
 _NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 
@@ -113,6 +139,7 @@ class PluginCatalogEntry:
     readme: bool = False         # the Marketplace renders the README from the pinned commit on the entry's page
     platforms: list[str] = field(default_factory=list)  # empty = all OSes
     title: str = ""              # human name ("NVIDIA App"); empty = derived from ``name``
+    app_download_url: str = ""  # reviewed HTTPS vendor URL for the one app the pinned plugin.json declares
     onboarding: bool = False     # curated: offered on the desktop onboarding card
     default: bool = False        # installed and enabled once in every home (official/verified only)
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
@@ -132,7 +159,7 @@ class PluginCatalogEntry:
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
             "screenshots": list(self.screenshots), "readme": self.readme,
             "platforms": list(self.platforms), "title": self.title, "onboarding": self.onboarding,
-            "default": self.default,
+            "default": self.default, "app_download_url": self.app_download_url,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -204,6 +231,9 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         version=version, image=image, screenshots=screenshots, readme=data.get("readme") is not False,
         platforms=_str_list(data.get("platforms")),
         title=str(data.get("title") or "").strip(), onboarding=data.get("onboarding") is True, default=default,
+        app_download_url=(str(data.get("app_download_url") or "").strip()
+                          if data.get("title") and is_safe_app_download_url(str(data.get("app_download_url") or ""))
+                          else ""),
         known_issues=_str_list(data.get("known_issues")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
@@ -567,7 +597,7 @@ def load_catalog_live() -> list[PluginCatalogEntry]:
 # Curated display fields a published doc older than the field does not carry. ``generated_at`` is the
 # docs build time, not the content time, so a rebuild of an older catalog outranks a checkout that added
 # the field; a doc that has the key (even ``false``) decides.
-_CURATED_FIELDS = ("onboarding", "title", "default")
+_CURATED_FIELDS = ("onboarding", "title", "default", "app_download_url")
 
 
 def _with_curated_fields(live: PluginCatalogEntry, tree: Optional[PluginCatalogEntry], raw: dict[str, Any]

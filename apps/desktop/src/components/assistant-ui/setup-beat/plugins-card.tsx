@@ -7,18 +7,29 @@ import { Puzzle } from 'lucide-react'
 import { useEffect } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
-import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { $pluginRecords, installedDesktopCatalogEntries } from '@/contrib/plugins-store'
 import { useI18n } from '@/i18n'
-import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
+import { type CatalogLookupReply, lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
-import { $agentPlugins, $agentPluginsProfile, loadAgentPlugins } from '@/store/agent-plugins'
+import {
+  $agentPlugins,
+  $agentPluginsByOwner,
+  $agentPluginsError,
+  $agentPluginsErrorByOwner,
+  $agentPluginsLoadingByOwner,
+  $agentPluginsProfile,
+  $agentPluginsStatus,
+  type AgentPluginRow,
+  type AgentPluginsStatus,
+  loadAgentPlugins,
+  pluginInventoryKey
+} from '@/store/agent-plugins'
 import type { ConnectionOwner } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
-import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
+import { notifyPluginCatalogLookupError, openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 
 import { CARD_ACTION_CLASS, CARD_CHIP_CLASS, CARD_LABEL_CLASS } from './card-type'
 
@@ -36,13 +47,53 @@ async function readPresence(owner: ConnectionOwner, names: string[]): Promise<Ca
   return result.presence ?? []
 }
 
-async function openInstall(name: string, title: string, profile: string): Promise<void> {
-  const lookup = await lookupPluginCatalogEntry(name)
+async function openInstall(name: string, title: string, owner: ConnectionOwner): Promise<void> {
+  const lookup = await lookupPluginCatalogEntry(name, {
+    request: (method, params) =>
+      requestGatewayForAgent<CatalogLookupReply>(owner.connectionId, owner.profile, method, params)
+  })
 
   if (lookup.ok) {
     // The card stays in the chat and flips the row to Installed when the plugin list reloads.
-    openCatalogPluginInstall(lookup.entry, profile, { stayAfterInstall: true, title })
+    openCatalogPluginInstall(lookup.entry, owner, { stayAfterInstall: true, title })
+  } else {
+    notifyPluginCatalogLookupError(name, lookup.error)
   }
+}
+
+function loadOwnerInventory(owner: ConnectionOwner): Promise<void> {
+  return loadAgentPlugins(
+    (method, params, timeoutMs) => requestGatewayForAgent(owner.connectionId, owner.profile, method, params, timeoutMs),
+    owner.profile,
+    owner.connectionId
+  )
+}
+
+function cardInventory(
+  owner: ConnectionOwner | null,
+  state: {
+    snapshots: Record<string, AgentPluginRow[]>
+    errors: Record<string, string | null>
+    loading: Record<string, boolean>
+    shared: AgentPluginRow[]
+    sharedError: string | null
+    sharedStatus: AgentPluginsStatus
+    loadedProfile: string | null | undefined
+  }
+) {
+  const key = owner?.connectionId ? pluginInventoryKey(owner.connectionId, owner.profile) : null
+
+  const rows = key
+    ? state.snapshots[key]
+    : owner && state.loadedProfile === owner.profile && state.sharedStatus === 'ready'
+      ? state.shared
+      : undefined
+
+  const error = key ? state.errors[key] : state.sharedStatus === 'error' ? state.sharedError : null
+  const pending = key ? rows === undefined || Boolean(state.loading[key]) : Boolean(owner) && rows === undefined
+  const installed = new Set((rows ?? []).flatMap(row => (row.catalog_name ? [row.catalog_name, row.name] : [row.name])))
+
+  return { installed, error, pending }
 }
 
 const PLUGIN_ICON = (
@@ -50,6 +101,44 @@ const PLUGIN_ICON = (
     <Puzzle className="size-4" />
   </span>
 )
+
+function PluginChips({
+  rows,
+  installed,
+  owner,
+  installedLabel,
+  installLabel
+}: {
+  rows: CatalogPluginPresence[]
+  installed: Set<string>
+  owner: ConnectionOwner | null
+  installedLabel: string
+  installLabel: string
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2 p-1">
+      {rows.map(row => {
+        const on = installed.has(row.name)
+
+        return (
+          <Chip
+            className={cn('w-full', CARD_CHIP_CLASS)}
+            icon={PLUGIN_ICON}
+            key={row.name}
+            label={row.title || row.name}
+            on={on}
+            onToggle={() => {
+              if (!on && owner) {
+                void openInstall(row.name, row.title || row.name, owner)
+              }
+            }}
+            sub={on ? installedLabel : row.sentence || installLabel}
+          />
+        )
+      })}
+    </div>
+  )
+}
 
 /** The plugins this OS runs, from the card payload; Install opens the reviewed install dialog in place,
  *  Continue answers with the ones installed; it reads Skip until one is. */
@@ -65,17 +154,21 @@ export function PluginsCard({
   const copy = t.firstRun
   const storedId = useStore(useSessionView().$storedId)
   const owner = useConnectionOwner(storedId, true)
-  const plugins = useStore($agentPlugins)
-  const pluginsProfile = useStore($agentPluginsProfile)
+  const inventories = useStore($agentPluginsByOwner)
+  const ownerErrors = useStore($agentPluginsErrorByOwner)
+  const ownerLoading = useStore($agentPluginsLoadingByOwner)
+  const shared = useStore($agentPlugins)
+  const sharedError = useStore($agentPluginsError)
+  const sharedStatus = useStore($agentPluginsStatus)
+  const loadedProfile = useStore($agentPluginsProfile)
   const records = useStore($pluginRecords)
-  const { requestGateway } = useGatewayRequest()
 
   // The shared plugin list may be empty or another profile's: load the chat's own.
   useEffect(() => {
     if (owner) {
-      void loadAgentPlugins(requestGateway, owner.profile)
+      void loadOwnerInventory(owner)
     }
-  }, [owner, requestGateway])
+  }, [owner])
 
   const presence = useQuery({
     enabled: Boolean(owner) && names.length > 0,
@@ -84,13 +177,22 @@ export function PluginsCard({
     staleTime: Infinity
   })
 
-  const ownRows = owner && pluginsProfile === owner.profile ? plugins : []
+  const {
+    installed: agentInstalled,
+    error: inventoryError,
+    pending: inventoryPending
+  } = cardInventory(owner, {
+    snapshots: inventories,
+    errors: ownerErrors,
+    loading: ownerLoading,
+    shared,
+    sharedError,
+    sharedStatus,
+    loadedProfile
+  })
 
   // Desktop plugins live in one app-level folder, not a profile's: a desktop-only entry installed is installed.
-  const installed = new Set([
-    ...ownRows.flatMap(row => (row.catalog_name ? [row.catalog_name, row.name] : [row.name])),
-    ...installedDesktopCatalogEntries(records).keys()
-  ])
+  const installed = new Set([...agentInstalled, ...installedDesktopCatalogEntries(records).keys()])
 
   const rows = presence.data ?? []
 
@@ -100,30 +202,40 @@ export function PluginsCard({
         <p className={CARD_LABEL_CLASS} role="status">
           {copy.loading}
         </p>
+      ) : presence.isError ? (
+        <div role="alert">
+          <p className={CARD_LABEL_CLASS}>
+            {t.skills.plugins.loadFailed}: {String(presence.error)}
+          </p>
+          <Button onClick={() => void presence.refetch()} size="sm" variant="outline">
+            {t.catalog.retry}
+          </Button>
+        </div>
+      ) : inventoryError ? (
+        <div role="alert">
+          <p className={CARD_LABEL_CLASS}>
+            {t.skills.plugins.loadFailed}: {inventoryError}
+          </p>
+          {owner && (
+            <Button onClick={() => void loadOwnerInventory(owner)} size="sm" variant="outline">
+              {t.catalog.retry}
+            </Button>
+          )}
+        </div>
+      ) : inventoryPending ? (
+        <p className={CARD_LABEL_CLASS} role="status">
+          {copy.loading}
+        </p>
       ) : rows.length === 0 ? (
         <p className={CARD_LABEL_CLASS}>{copy.noPlugins}</p>
       ) : (
-        <div className="grid grid-cols-2 gap-2 p-1">
-          {rows.map(row => {
-            const on = installed.has(row.name)
-
-            return (
-              <Chip
-                className={cn('w-full', CARD_CHIP_CLASS)}
-                icon={PLUGIN_ICON}
-                key={row.name}
-                label={row.title || row.name}
-                on={on}
-                onToggle={() => {
-                  if (!on && owner) {
-                    void openInstall(row.name, row.title || row.name, owner.profile)
-                  }
-                }}
-                sub={on ? copy.installed : row.sentence || copy.install}
-              />
-            )
-          })}
-        </div>
+        <PluginChips
+          installed={installed}
+          installedLabel={copy.installed}
+          installLabel={copy.install}
+          owner={owner}
+          rows={rows}
+        />
       )}
       <div>
         <Button

@@ -105,6 +105,21 @@ def test_resume_after_model_switch_then_fallback_first_call_keeps_the_switched_p
     assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
         "claude-sonnet-5", "anthropic")
 
+    # A fallback then serves a turn, and a settings save (reasoning level) lands before the next turn
+    # restores the primary: the save must keep the pick, not record the fallback pair standing in for it.
+    agent.model, agent.provider = "deepseek/deepseek-v4-flash", "openrouter"
+    agent._provider_fallback_active = True
+    agent._primary_runtime = {"model": "claude-sonnet-5", "provider": "anthropic", "base_url": "", "api_mode": ""}
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    config = _runtime_model_config(agent, _parse_model_config(row["model_config"]))
+    db.update_session_meta("s1", json.dumps(config), config.get("model"))
+    row = db.get_session("s1")
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-sonnet-5", "anthropic")
+    assert config["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
+        "claude-sonnet-5", "anthropic")
+
 
 @pytest.mark.parametrize("picked", [
     {"model": "claude-opus-4", "provider": "anthropic"},

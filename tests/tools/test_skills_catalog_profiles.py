@@ -197,3 +197,31 @@ def test_catalog_cache_tracks_context_dependent_kanban_visibility(
     }
     context["kanban"] = False
     assert _listed_skills(_dispatch_skills_list(profile)) == {}
+
+
+def test_cli_inventory_reuses_catalog_without_leaking_kanban_visibility(isolated_catalog, monkeypatch):
+    skills_tool, _skill_utils, tmp_path = isolated_catalog
+    from gateway.session_local_inventory import _cli_skills
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile = tmp_path / "profiles" / "shared"
+    _write_skill(profile, "workflow/general", "general", "General")
+    _write_skill(profile, "workflow/kanban-only", "kanban-only", "Kanban", environments=["kanban"])
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    reads = []
+    real_read = skills_tool._read_skill_text
+
+    def count_read(path):
+        reads.append(path)
+        return real_read(path)
+
+    monkeypatch.setattr(skills_tool, "_read_skill_text", count_read)
+    token = set_hermes_home_override(profile)
+    try:
+        assert [s["name"] for s in skills_tool.find_all_skills()] == ["general"]
+        assert sorted(_cli_skills()["workflow"]) == ["general", "kanban-only"]
+        assert [s["name"] for s in skills_tool.find_all_skills()] == ["general"]
+    finally:
+        reset_hermes_home_override(token)
+    assert len(reads) == 2  # all three views share the same parsed records

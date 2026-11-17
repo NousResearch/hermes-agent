@@ -1,28 +1,7 @@
 name: rule-injector
 repo: https://github.com/klautimus/hermes-rule-injector
 sha: 7da7aa39de85aec0c0a387800d279e7ebf036da6
-description: >-
-  Moves agent behavioural rules out of the system prompt and injects each one at
-  the point of need, through three hooks: pre_llm_call for behavioural guards,
-  transform_tool_result for corrections the model reads in place, and pre_verify
-  as a completion gate. A rule is {trigger, inject} — matched on keywords, regex,
-  tool name, tool error, path or session scope, or a boolean compound of those —
-  with a per-turn injection budget and an undroppable always-on floor. An
-  optional adjudicator adds a semantic second pass over ambiguous turns, and
-  propose.py drafts a rule from a user correction. Ships a local web dashboard
-  (`python3 dashboard.py`, FastAPI, read-only) that lists the rule set and the
-  recent activation trace, and seven starter rules; rules.json is a template the
-  user replaces. Disclosure — writes one activation trace line per fired rule to
-  the active HERMES_HOME's logs/ directory and writes rules.json when a rule is
-  created through its own CLI (paths resolve through
-  hermes_constants.get_hermes_home, so a profile is honoured); no shell and no
-  telemetry; the dashboard reads that rules file and trace log from disk and adds
-  fastapi + uvicorn only if the user installs and runs it; semantic triggers
-  download a sentence-transformers embedding model from Hugging Face once and
-  then infer locally; the optional adjudicator, only when enabled, sends the
-  current turn to the host's active model through ctx.llm.complete (Hermes' plugin
-  LLM facade) — the plugin holds no key, reads no credential store and sends no
-  provider override.
+description: "Moves agent behavioural rules out of the system prompt and injects each one at the point of need, through three hooks: pre_llm_call for behavioural guards, transform_tool_result for corrections the model reads in place, and pre_verify as a completion gate. A rule is {trigger, inject} — matched on keywords, regex, tool name, tool error, path or session scope, or a boolean compound of those — with a per-turn injection budget and an undroppable always-on floor. An optional adjudicator adds a semantic second pass over ambiguous turns, and propose.py drafts a rule from a user correction. Ships a local web dashboard (`python3 dashboard.py`, FastAPI, read-only) that lists the rule set and the recent activation trace, and seven starter rules; rules.json is a template the user replaces. Disclosure — writes one activation trace line per fired rule, a rule-drafting audit line, and (only with the adjudicator enabled) a 48-hour verdict log holding excerpts of the user message and recent turns, all under the active HERMES_HOME's logs/ directory, and writes the plugin's rules.json when a rule is created through its own CLI; no shell and no telemetry; the optional dashboard (`python3 dashboard.py`, fastapi + uvicorn installed by the user) binds 127.0.0.1 and only reads the rules file and trace log; semantic triggers download a sentence-transformers embedding model from Hugging Face once and then run locally; the optional adjudicator, only when enabled, sends the current turn to the user's active model through Hermes' plugin LLM facade and holds no key of its own."
 maintainer: klautimus
 tier: community
 category: automation

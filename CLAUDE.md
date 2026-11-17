@@ -1070,6 +1070,26 @@ Design: "Dependencies → 3. Cost budget + alerts" in
 Plan:
 [docs/superpowers/plans/2026-11-16-cost-budget-alerts.md](docs/superpowers/plans/2026-11-16-cost-budget-alerts.md).
 
+### Educator profile package — [deploy/educator/](deploy/educator/)
+
+The deployable Product Education teammate (a second bot on the `educator`
+profile under multiplex): `config.yaml.template` + `values.example.yaml` +
+`render_config.py`, `SOUL.md`, `.env.example`, the two cron jobs
+(`cron-jobs.yaml`, applied by an admin with `apply_cron_jobs.py` because the
+CLI cannot set `enabled_toolsets` / `required_toolsets` / `discretionary`),
+their no-LLM wake-gate scripts (`scripts/educator_*.py`, installed into
+`<profile>/scripts/`), the Slack manifest, the Ideas DB schema and
+**`ROLLOUT.md`** (start there). Facts the package depends on: cron strips
+`SLACK_*` from script env, so the scripts only *detect* due veto actions and
+the agent runs `…(run_due=true)`; the script is not told its job id (it finds
+its job by script filename); script state lives in
+`<profile>/cron/educator-state/` (agent-unwritable); the Releases data source
+needs a one-way `PRD` relation added by hand; the Release Assets Slack type is
+`Slack post`; PRD `JIRA` is a URL; BA's status is `Ready for staging`. The
+template is validated through the real readers in
+[tests/deploy/](tests/deploy/) — change a boundary key and that test tells
+you. Plan: [docs/superpowers/plans/2026-11-17-educator-profile-package.md](docs/superpowers/plans/2026-11-17-educator-profile-package.md).
+
 ### Slack quiet channels + `slack_react`
 
 For low-noise "hidden assistant" channels. Config under the top-level `slack:`

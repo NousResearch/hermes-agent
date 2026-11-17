@@ -15,6 +15,7 @@ import pytest
 
 import tools.process_registry as module
 from tools.process_registry import ProcessRegistry, ProcessSession
+from tools.process_registry_termination import ENV_GONE_MARKER, ENV_SURVIVORS_MARKER
 
 
 def _session(sid: str, **fields) -> ProcessSession:
@@ -250,8 +251,8 @@ class _SandboxEnv:
         self.delta, self.alive, self.hooks = delta, alive, hooks or {}
 
     def execute(self, command, **_kwargs):
-        if command.startswith("kill "):
-            return {"output": ""}
+        if ENV_SURVIVORS_MARKER in command:  # the group kill: report the group gone
+            return {"output": f"{ENV_GONE_MARKER}\n", "returncode": 0}
         hook = self.hooks.pop("poll", None)
         if hook:
             hook()

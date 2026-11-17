@@ -88,6 +88,8 @@ export const itSettings = {
       plugins: 'Plugin',
       archivedChats: 'Chat archiviate',
       sessions: 'Sessioni',
+      backup: 'Backup e trasferimento',
+      backupOnly: 'Backup',
       about: 'Informazioni',
       billing: 'Fatturazione',
       notifications: 'Notifiche',
@@ -968,7 +970,10 @@ export const itSettings = {
         'Apre ogni link su cui fai clic nel browser di sistema invece che nel browser integrato. “Apri nel browser integrato” nel menu contestuale continua a funzionare.',
       voiceShortcutHintTitle: 'Scorciatoia di registrazione vocale',
       voiceShortcutHintDesc:
-        'Imposta la scorciatoia di registrazione vocale in Impostazioni → Scorciatoie da tastiera (“Avvia / interrompi conversazione vocale”). Il valore di configurazione voice.record_key si applica solo a CLI e TUI.'
+        'Imposta la scorciatoia di registrazione vocale in Impostazioni → Scorciatoie da tastiera (“Avvia / interrompi conversazione vocale”). Il valore di configurazione voice.record_key si applica solo a CLI e TUI.',
+      desktopReadAloudTitle: 'Leggi le risposte ad alta voce in questa app',
+      desktopReadAloudDesc:
+        'Legge ad alta voce ogni risposta completata nel Desktop. È lo stesso interruttore del pulsante del compositore: si applica a tutte le finestre aperte e spegnerlo interrompe la risposta a metà frase. “Leggi le risposte ad alta voce” qui sotto vale per la messaggistica e la CLI.'
     },
     hudModifier: {
       title: 'Premi per mostrare l’HUD',

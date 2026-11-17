@@ -1199,6 +1199,15 @@ export const itApp = {
     fieldSkillsPlaceholder: 'nomi delle skill separati da virgole (facoltativo)',
     fieldDeliver: 'Consegna a',
     fieldDeliverOnly: 'Consegna solo il payload',
+    fieldSignature: 'Firma',
+    fieldSignatureHint:
+      'L’unico schema di firma che questa rotta accetta. Le consegne GitHub, GitLab e Linear richiedono il loro PIN dedicato.',
+    signatureOptions: {
+      generic: 'Generico (con timestamp)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Istruzioni per l’agente quando questo webhook si attiva (facoltativo)',
     nameRequired: 'Nome obbligatorio',

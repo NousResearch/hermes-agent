@@ -254,6 +254,8 @@ export const itSettingsModels = {
       updateTitle: 'È disponibile un aggiornamento del motore',
       updateDetail: (next, current) =>
         `È disponibile una build più recente di llama.cpp (${next}) pronta da installare; hai ${current}. I modelli continuano a funzionare durante lo scaricamento.`,
+      updateSameBuildDetail: tag =>
+        `Hermes ora integra llama.cpp ${tag} insieme ai file che servono per eseguirlo. L’aggiornamento riscarica il motore; i modelli continuano a funzionare durante lo scaricamento.`,
       updateAction: 'Aggiorna motore',
       updating: 'Aggiornamento del motore…',
       upToDateTitle: 'Motore aggiornato',

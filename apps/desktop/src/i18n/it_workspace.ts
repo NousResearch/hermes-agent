@@ -257,7 +257,10 @@ export const itWorkspace = {
       backupDesc: 'Comprimi configurazione, memorie, skills e sessioni in un file ZIP',
       debugShare: 'Condividi dati di debug',
       debugShareDesc:
-        'Carica un rapporto e log con i dati sensibili oscurati e ottieni link da condividere (eliminati automaticamente dopo 6 h)',
+        'Carica un riepilogo (versioni, chiavi di configurazione, conteggi di errori; nessun testo di log) e ottieni un link condivisibile (eliminato automaticamente dopo 6 h)',
+      debugShareConfirm: 'Caricare il rapporto di debug su un paste pubblico?',
+      debugShareConfirmDesc:
+        'Carica un riepilogo su un servizio di paste pubblico: versioni di Hermes, Python e del sistema operativo, nomi delle piattaforme e dei toolset connessi, nomi delle chiavi di configurazione (senza valori) e conteggi di avvisi ed errori. Non contiene righe di log né testo dei messaggi. I paste si eliminano automaticamente dopo 6 ore; se paste.rs non è raggiungibile, il ripiego su dpaste.com li mantiene pubblici per 1 giorno e non è possibile eliminarli prima.',
       debugShareRunning: 'Caricamento del rapporto di debug…',
       debugShareLinks: 'Link da condividere',
       debugShareFailed: 'Impossibile condividere i dati di debug',
@@ -670,7 +673,7 @@ export const itWorkspace = {
       '/topup': 'Mostra il tuo saldo Nous e gestisci la fatturazione nel portale',
       '/platform': 'Metti in pausa, riprendi o elenca una piattaforma del gateway in errore',
       '/version': 'Mostra la versione di Hermes Agent',
-      '/debug': 'Carica un report di debug (informazioni di sistema + log) e ottieni link da condividere',
+      '/debug': 'Rapporto di debug (versioni, chiavi di configurazione, conteggi di errori; nessun testo di log): mostra l’informativa sulla privacy; /debug upload condivide i link',
       '/model': 'Cambia il modello di questa sessione'
     },
     hotkeyDescs: {

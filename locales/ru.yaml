@@ -442,7 +442,8 @@ gateway:
     cache_unknown_route: "Кэш промпта: неизвестно (этот провайдер не публикует срок хранения кэша)."
     cache_unknown_runtime: "Кэш промпта: неизвестно (эта среда выполнения задаёт собственные параметры кэша, которые Hermes не видит)."
     cache_unknown_storage: "Кэш промпта: неизвестно (не удалось прочитать хранилище сессии)."
-    cache_warming_off: "Keep-alive: выкл. (один промахнулся)."
+    cache_warming_off: "Keep-alive: выкл. (два промаха)."
+    cache_tier_pending: "Уровень: 5m до первой паузы дольше 5 минут, затем 1h."
     cache_learned: "Изучено: {rule}."
     cache_confidence:
       proven: "подтверждено"

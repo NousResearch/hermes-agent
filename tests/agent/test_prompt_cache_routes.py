@@ -6,6 +6,7 @@ keep-alives on the learned lifetime (never past the tier), or none when that is 
 automatic cache that dies early while the explicit one reads -> prefer markers. One stray miss never
 downgrades; facts expire after seven days; each profile learns on its own."""
 
+import itertools
 from types import SimpleNamespace
 
 import pytest
@@ -23,9 +24,13 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _obs(model, *, explicit=True, read=0, write=0, gap=10.0, tier=3600.0, at=_T0, replay=False):
+_SESSIONS = itertools.count()
+
+
+def _obs(model, *, explicit=True, read=0, write=0, gap=10.0, tier=3600.0, at=_T0, replay=False, session=None):
+    """One response's usage; each sample comes from its own chat unless ``session`` names one."""
     routes.observe(provider="nous", base_url=_NOUS, model=model, explicit=explicit, read=read, write=write,
-                   gap_s=gap, tier_s=tier, now=at, replay=replay)
+                   gap_s=gap, tier_s=tier, now=at, replay=replay, session_id=session or f"chat-{next(_SESSIONS)}")
 
 
 def _agent(model):
@@ -111,17 +116,19 @@ def test_each_profile_learns_on_its_own(home, monkeypatch):
 
 
 def test_the_clock_feeds_the_store_from_real_responses(home, monkeypatch):
-    """Two real loop responses on a never-reading explicit route: the clock folds each and the store
-    learns from the second (the first is a write with nothing before it)."""
+    """Real loop responses on a never-reading explicit route in two chats: the clock folds each and the
+    store learns from each chat's second (the first is a write with nothing before it)."""
     from agent.prompt_cache_clock import record_cache_response
     from agent.usage_pricing import CanonicalUsage
 
     agent = SimpleNamespace(provider="nous", base_url=_NOUS, model="openai/gpt-5.6-luna", api_mode="chat_completions",
                             session_id="s", _session_db=None, _prompt_cache_clock_restored=True,
                             context_compressor=SimpleNamespace(compression_count=0))
-    for at in (_T0, _T0 + 5, _T0 + 10):
-        agent._prompt_cache_attempt = {"sent_at": at, "marker_ttl": "1h"}
-        record_cache_response(agent, CanonicalUsage(input_tokens=3, cache_write_tokens=6013), model=agent.model,
-                              provider="nous", base_url=_NOUS, api_mode="chat_completions")
+    for session in ("s1", "s2"):  # two chats, each a write then a miss
+        agent.session_id, agent._prompt_cache_clock = session, None
+        for at in (_T0, _T0 + 5):
+            agent._prompt_cache_attempt = {"sent_at": at, "marker_ttl": "1h"}
+            record_cache_response(agent, CanonicalUsage(input_tokens=3, cache_write_tokens=6013), model=agent.model,
+                                  provider="nous", base_url=_NOUS, api_mode="chat_completions")
     monkeypatch.setattr(routes.time, "time", lambda: _T0 + 20)
     assert routes.rule_for("nous", _NOUS, "openai/gpt-5.6-luna", True) == "no-cache"

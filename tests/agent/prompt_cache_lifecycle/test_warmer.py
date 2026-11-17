@@ -294,18 +294,19 @@ def _cc_request():
 
 
 def test_a_refresh_that_misses_the_cache_stops_warming_and_says_why(priced, caplog):
-    """A refresh billed as a cache WRITE (entry already gone, or the replay re-wrote it) ends the
-    run at once: every further refresh would pay write prices, not the cheap read assumed."""
+    """Refreshes billed as a cache WRITE twice in a row (entry already gone, or the replay re-wrote it)
+    end the run: every further refresh would pay write prices, not the cheap read assumed."""
     with _chat_completions_stub(_cc_usage(read=0, write=120_000, uncached=0)) as (client, requests):
         agent = _cc_agent(client)
         warmer = pcw.get_prompt_cache_warmer(agent)
         assert _arm(agent, _cc_request(), _RESPONSE) is None
         with caplog.at_level(logging.INFO, logger=pcw.warmer.__name__):
+            _fire(warmer)  # one real miss is retried
             _fire(warmer)
-        assert warmer._run is None and len(requests) == 1
+        assert warmer._run is None and len(requests) == 2
     reason = warmer.status["reason"]
     assert reason.startswith("cache refresh missed (read=0, write=120000")
-    assert agent.session_cache_write_tokens == 120_000  # the miss is still accounted
+    assert agent.session_cache_write_tokens == 240_000  # both misses are still accounted
     assert any("prompt cache warming stopped: cache refresh missed" in r.getMessage()
                and r.levelno == logging.INFO for r in caplog.records)
 

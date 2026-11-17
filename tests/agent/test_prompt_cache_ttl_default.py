@@ -1,6 +1,6 @@
 """The shipped ``prompt_caching.cache_ttl`` default is ``auto``: with no explicit setting a session a
-person types into (CLI, Telegram, ...) requests the 1h Anthropic cache tier and a machine-paced one
-(cron, subagent, the API server, the skill curator) stays on 5m.
+person types into (CLI, Telegram, ...) starts on 5m and moves to the 1h Anthropic cache tier at its first
+pause over five minutes; a machine-paced one (cron, subagent, the API server, the skill curator) stays on 5m.
 """
 
 from pathlib import Path
@@ -31,9 +31,9 @@ def test_background_platform_labels_are_machine_paced():
 
 @pytest.mark.parametrize(
     "platform, side_agent, expected",
-    [("cli", False, "1h"), ("tui", False, "1h"), ("desktop", False, "1h"),
-     ("acp", False, "1h"), ("telegram", False, "1h"), ("cron", False, "5m"), ("subagent", False, "5m"),
-     ("api_server", False, "5m"), ("cli", True, "5m"), ("tui", True, "5m")],
+    [("cli", False, True), ("tui", False, True), ("desktop", False, True),
+     ("acp", False, True), ("telegram", False, True), ("cron", False, False), ("subagent", False, False),
+     ("api_server", False, False), ("cli", True, False), ("tui", True, False)],
 )
 def test_unconfigured_agent_resolves_tier_from_its_platform(tmp_path, monkeypatch, platform, side_agent, expected):
     """A real AIAgent on a config.yaml with no ``prompt_caching`` section at all. A side agent
@@ -49,7 +49,8 @@ def test_unconfigured_agent_resolves_tier_from_its_platform(tmp_path, monkeypatc
         provider="openrouter", api_mode="chat_completions", model="anthropic/claude-sonnet-4.6", quiet_mode=True,
         skip_context_files=True, skip_memory=True, save_trajectories=False, enabled_toolsets=["file"])
     try:
-        assert agent._cache_ttl == expected
+        # Every session starts on 5m; only a person's chat is marked to upgrade to 1h at its first pause.
+        assert (agent._cache_ttl, bool(getattr(agent, "_cache_ttl_adaptive", False))) == ("5m", expected)
         assert agent._use_prompt_caching and not agent._cache_disabled
     finally:
         close = getattr(agent, "close", None)

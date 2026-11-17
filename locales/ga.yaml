@@ -442,7 +442,8 @@ gateway:
     cache_unknown_route: "Taisce an phrompta: anaithnid (ní fhoilsíonn an soláthraí seo a choinneáil taisce)."
     cache_unknown_runtime: "Taisce an phróimpte: anaithnid (socraíonn an timpeallacht rite seo a roghanna taisce féin, nach féidir le Hermes a fheiceáil)."
     cache_unknown_storage: "Taisce an phróimpte: anaithnid (níorbh fhéidir stór an tseisiúin a léamh)."
-    cache_warming_off: "Coimeád beo: múchta (chaill ceann)."
+    cache_warming_off: "Coimeád beo: múchta (chaill faoi dhó)."
+    cache_tier_pending: "Leibhéal: 5m go dtí an chéad sos os cionn 5 nóiméad, ansin 1h."
     cache_learned: "Foghlamtha: {rule}."
     cache_confidence:
       proven: "cruthaithe"

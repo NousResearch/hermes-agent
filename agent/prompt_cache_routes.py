@@ -12,13 +12,16 @@ that read nothing), ``write_on_hit`` (a keep-alive, an unchanged replay, that hi
 tokens as it read: the same prefix again; an ordinary turn appends new content, so its sizes prove nothing),
 the gaps (seconds since the prefix was last touched) of hits and misses, and ``updated``.
 
-Rules (each needs two consistent samples, so one stray miss never downgrades a route):
+Rules (each needs two consistent samples from two DIFFERENT sessions, so one stray miss, or one chat's
+routing streak, never downgrades a route; a miss served by another upstream than the one that cached the
+prefix is never a sample, see ``prompt_cache_clock.response_upstream``):
 
 - ``no-cache``: never read back after >= 2 attempts. No keep-alives; an explicit route stops sending
   markers (they only buy the write premium).
 - ``write-on-hit``: >= 2 hits that re-wrote the prefix. No keep-alives (a keep-alive cannot save).
-- learned lifetime: >= 2 misses at a gap longer than every hit seen, shorter than the tier. Keep-alives
-  fire at 5/6 of the shortest such gap, or stop when that is under a minute. Never longer than the tier.
+- learned lifetime: >= 2 misses at a gap longer than the longest hit ever seen (kept apart from the
+  recent gaps, so it survives their trim), shorter than the tier. Keep-alives fire at 5/6 of the shortest
+  such gap, or stop when that is under a minute. Never longer than the tier.
 - ``explicit``: the implicit cache dies early (learned lifetime) while the explicit one reads: prefer
   markers for the model.
 
@@ -82,8 +85,21 @@ def _save(path: Path, data: dict[str, dict[str, Any]]) -> None:
     atomic_json_write(path, data)
 
 
-def _push(entry: dict[str, Any], field: str, gap: float) -> None:
+def _push(entry: dict[str, Any], field: str, gap: float, session_id: str = "") -> None:
+    """Append ``gap`` (and, for misses, the session it came from in ``<field>_sessions``), keeping the
+    last :data:`_GAPS_KEPT`."""
     entry[field] = ([*entry.get(field, []), round(gap, 1)])[-_GAPS_KEPT:]
+    if field != "hit_gaps":
+        sessions = [*entry.get(f"{field}_sessions", []), session_id][-_GAPS_KEPT:]
+        entry[f"{field}_sessions"] = sessions
+
+
+def _sessions(entry: dict[str, Any], field: str, keep: Optional[list[bool]] = None) -> int:
+    """How many distinct sessions the samples in ``field`` came from (only those ``keep`` marks)."""
+    sids = list(entry.get(f"{field}_sessions") or ())
+    values = list(entry.get(field) or ())
+    sids = ([""] * len(values) + sids)[-len(values):] if values else []  # older entries kept no sessions
+    return len({sid for i, sid in enumerate(sids) if keep is None or keep[i]})
 
 
 def _routine_hit(entry: dict[str, Any], gap_s: Optional[float], read: int, write: int, now: float) -> bool:
@@ -96,11 +112,12 @@ def _routine_hit(entry: dict[str, Any], gap_s: Optional[float], read: int, write
 
 def observe(*, provider: str, base_url: str, model: str, explicit: bool, read: int, write: int,
             gap_s: Optional[float], tier_s: Optional[float], now: Optional[float] = None,
-            replay: bool = False) -> None:
+            replay: bool = False, session_id: str = "") -> None:
     """Fold one response's cache usage. ``gap_s`` is the time since the same prefix was last touched
     (None when the clock knows no earlier touch); ``tier_s`` the lifetime the clock assumed for it;
-    ``replay`` whether the request re-sent the prefix unchanged (a keep-alive). A response that read and
-    wrote nothing still counts as a miss when the prefix had a cache entry."""
+    ``replay`` whether the request re-sent the prefix unchanged (a keep-alive); ``session_id`` the chat it
+    came from (a downgrade needs samples from two). A response that read and wrote nothing still counts
+    as a miss when the prefix had a cache entry."""
     now = time.time() if now is None else now
     hit = read > 0
     known = gap_s is not None and tier_s is not None and gap_s < tier_s
@@ -118,11 +135,13 @@ def observe(*, provider: str, base_url: str, model: str, explicit: bool, read: i
                 entry["reads"] = int(entry.get("reads", 0)) + 1
                 if gap_s is not None:
                     _push(entry, "hit_gaps", gap_s)
+                    entry["longest_hit"] = max(float(entry.get("longest_hit") or 0.0), round(gap_s, 1))
                 if replay and abs(write - read) <= _SAME_PREFIX_SHARE * read:
                     entry["write_on_hit"] = int(entry.get("write_on_hit", 0)) + 1
+                    _push(entry, "write_on_hit_gaps", gap_s or 0.0, session_id)
             else:
                 entry["attempts"] = int(entry.get("attempts", 0)) + 1
-                _push(entry, "miss_gaps", gap_s or 0.0)
+                _push(entry, "miss_gaps", gap_s or 0.0, session_id)
             entry["samples"] = int(entry.get("samples", 0)) + 1
             entry["updated"] = now
             _save(path, data)
@@ -138,10 +157,15 @@ def _entry(key: str, now: float) -> dict[str, Any]:
 
 
 def learned_lifetime(entry: dict[str, Any], tier_s: float) -> Optional[float]:
-    """The shortest miss gap past every hit and under the tier, when >= 2 misses agree; else None."""
-    longest_hit = max(entry.get("hit_gaps") or [0.0])
-    early = [g for g in entry.get("miss_gaps") or () if longest_hit < g < tier_s]
-    return min(early) if len(early) >= MIN_SAMPLES else None
+    """The shortest miss gap past the longest hit ever seen and under the tier, when >= 2 such misses
+    from >= 2 sessions agree; else None."""
+    longest_hit = max([float(entry.get("longest_hit") or 0.0), *(entry.get("hit_gaps") or ())])
+    gaps = list(entry.get("miss_gaps") or ())
+    keep = [longest_hit < g < tier_s for g in gaps]
+    early = [g for g, k in zip(gaps, keep) if k]
+    if len(early) < MIN_SAMPLES or _sessions(entry, "miss_gaps", keep) < MIN_SAMPLES:
+        return None
+    return min(early)
 
 
 def rule_for(provider: str, base_url: str, model: str, explicit: bool, *, tier_s: Optional[float] = None,
@@ -152,9 +176,10 @@ def rule_for(provider: str, base_url: str, model: str, explicit: bool, *, tier_s
     entry = _entry(route_key(provider, base_url, model, explicit), now)
     if not entry:
         return None
-    if not entry.get("reads") and int(entry.get("attempts", 0)) >= MIN_SAMPLES:
+    if (not entry.get("reads") and int(entry.get("attempts", 0)) >= MIN_SAMPLES
+            and _sessions(entry, "miss_gaps") >= MIN_SAMPLES):
         return "no-cache"
-    if int(entry.get("write_on_hit", 0)) >= MIN_SAMPLES:
+    if int(entry.get("write_on_hit", 0)) >= MIN_SAMPLES and _sessions(entry, "write_on_hit_gaps") >= MIN_SAMPLES:
         return "write-on-hit"
     if tier_s and (life := learned_lifetime(entry, tier_s)) is not None:
         from agent.prompt_cache_lifecycle import cache_warming_delay_s

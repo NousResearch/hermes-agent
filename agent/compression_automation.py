@@ -7,6 +7,8 @@ def carry_compression_automation(agent, old_session_id):
     carry_chain(old_session_id, agent.session_id)
     from agent.prompt_cache_lifecycle import carry_missed_route
     carry_missed_route(old_session_id, agent.session_id)  # a keep-alive miss ends warming for the conversation
+    from agent.prompt_cache_lifecycle.tier import carry_cache_tier
+    carry_cache_tier(old_session_id, agent.session_id)  # and a 5m -> 1h upgrade stays
     from agent.runtime_session_store import RuntimeSessionStore
     if isinstance(agent._session_db, RuntimeSessionStore):
         # The owner moved these exact sidecars atomically with child publication.

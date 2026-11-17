@@ -446,7 +446,8 @@ gateway:
     cache_unknown_route: "Prompt cache: unknown (this provider does not publish its cache retention)."
     cache_unknown_runtime: "Prompt cache: unknown (this runtime sets its own cache options, which Hermes cannot observe)."
     cache_unknown_storage: "Prompt cache: unknown (the session store could not be read)."
-    cache_warming_off: "Keep-alives: off (one missed)."
+    cache_warming_off: "Keep-alives: off (missed twice)."
+    cache_tier_pending: "Tier: 5m until the first pause over 5 minutes, then 1h."
     cache_learned: "Learned: {rule}."
     cache_confidence:
       proven: "proven"

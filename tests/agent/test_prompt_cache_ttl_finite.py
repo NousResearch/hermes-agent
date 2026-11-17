@@ -28,9 +28,11 @@ def test_gateway_finite_admission_keeps_5m_without_launch_env(init_cache, unatte
     # Managed workers construct the agent on the admission's finite-turn context;
     # the gateway daemon has neither CLI launch environment marker.
     with finite_turn_scope(True, unattended=unattended):
-        assert init_cache(platform="cli")._cache_ttl == "5m"
-    with finite_turn_scope(False):
-        assert init_cache(platform="cli")._cache_ttl == "1h"
+        agent = init_cache(platform="cli")
+        assert (agent._cache_ttl, agent._cache_ttl_adaptive) == ("5m", False)
+    with finite_turn_scope(False):  # a person's chat: 5m until its first pause, then 1h
+        agent = init_cache(platform="cli")
+        assert (agent._cache_ttl, agent._cache_ttl_adaptive) == ("5m", True)
 
 
 def test_direct_z_launch_marker_keeps_5m(init_cache, monkeypatch):
@@ -91,6 +93,8 @@ def test_bedrock_switch_at_request_time_preserves_only_explicit_pin(monkeypatch,
     history = [{"role": "system", "content": "Stable prompt"}, {"role": "user", "content": "Hello"}]
     before = copy.deepcopy(history)
     try:
+        if ttl == "auto":
+            agent._cache_ttl = "1h"  # the chat already paused once and upgraded
         assert agent._cache_ttl == "1h"
         agent.provider = "bedrock"
         agent._current_turn_timestamp = 1.0
@@ -127,7 +131,8 @@ def test_unreadable_config_still_builds_an_agent_on_auto(monkeypatch):
     agent = SimpleNamespace(_anthropic_prompt_cache_policy=lambda: (True, True), platform="cli",
                             provider="nous", base_url="https://inference-api.nousresearch.com/v1", model="claude")
     _init_prompt_cache_config(agent)
-    assert (agent._cache_ttl, agent._cache_ttl_auto, agent._cache_disabled) == ("1h", True, False)
+    assert (agent._cache_ttl, agent._cache_ttl_auto, agent._cache_disabled) == ("5m", True, False)
+    assert agent._cache_ttl_adaptive  # a person's chat on auto: upgrades to 1h at its first pause
 
 
 def test_malformed_prompt_caching_yaml_builds_an_agent_and_sends(tmp_path, monkeypatch):
@@ -141,7 +146,8 @@ def test_malformed_prompt_caching_yaml_builds_an_agent_and_sends(tmp_path, monke
     agent = SimpleNamespace(_anthropic_prompt_cache_policy=lambda: (True, False), platform="cli",
                             provider="openrouter", base_url="https://openrouter.ai/api/v1", model="anthropic/claude-sonnet-4.6")
     _init_prompt_cache_config(agent)
-    assert agent._cache_ttl == "1h"
+    assert (agent._cache_ttl, agent._cache_ttl_adaptive) == ("5m", True)
+    agent._cache_ttl = "1h"  # after its first pause
     assert effective_cache_ttl(agent._cache_ttl, provider=agent.provider, base_url=agent.base_url,
                                model=agent.model, auto=True) == "1h"
 
@@ -182,6 +188,7 @@ def test_auto_chat_started_on_a_5m_route_sends_1h_after_switching_to_openrouter(
         assert sent_markers() and all(marker.get("ttl") in (None, "5m") for marker in sent_markers())
         agent.provider, agent.base_url = "openrouter", "https://openrouter.ai/api/v1"
         agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy()
+        agent._cache_ttl = "1h"  # the chat paused once and upgraded; the route clamp no longer applies
         markers = sent_markers()
         assert markers and all(marker == {"type": "ephemeral", "ttl": "1h"} for marker in markers)
     finally:

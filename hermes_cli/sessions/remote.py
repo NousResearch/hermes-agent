@@ -85,25 +85,31 @@ class _Waiter:
     def idle(self):
         return [sid for sid, rows in self.pending.items() if not busy(rows)]
 
+    async def _apply(self, event):
+        if isinstance(event, Exception):
+            raise event
+        params = event.get("params", {})
+        sid = params.get("session_id")
+        if sid not in self.pending:
+            return
+        if params.get("type") == "session.info" and "pending" in (params.get("payload") or {}):
+            self.pending[sid] = params["payload"]["pending"]
+        elif params.get("type") == "session.replay_gap":
+            self.pending[sid] = (await self.client.rpc("session.resume", session_id=sid,
+                                                       omit_messages=True)).get("pending") or []
+        else:
+            return
+        self.changed.set()
+
     async def follow(self):
         while True:
-            event = await self.client.events.get()
-            if isinstance(event, Exception):
-                raise event
-            params = event.get("params", {})
-            sid = params.get("session_id")
-            if sid not in self.pending:
-                continue
-            if params.get("type") == "session.info" and "pending" in (params.get("payload") or {}):
-                self.pending[sid] = params["payload"]["pending"]
-            elif params.get("type") == "session.replay_gap":
-                self.pending[sid] = (await self.client.rpc("session.resume", session_id=sid,
-                                                           omit_messages=True)).get("pending") or []
-            else:
-                continue
-            self.changed.set()
+            await self._apply(await self.client.events.get())
 
     async def until(self, enough):
+        # Updates that arrived while later sessions were attaching are newer than the earlier
+        # snapshots: apply them before the first verdict, so a turn that started meanwhile counts.
+        while not self.client.events.empty():
+            await self._apply(self.client.events.get_nowait())
         reader = asyncio.create_task(self.follow())
         try:
             while not enough(self.idle()):

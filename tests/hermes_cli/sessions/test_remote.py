@@ -32,7 +32,7 @@ def _store_sessions(tmp_path):
     return here
 
 
-async def _owner(monkeypatch, calls, *, busy_until_info=False):
+async def _owner(monkeypatch, calls, *, busy_until_info=False, starts_during_attach=False):
     """A fake gateway owner: resume answers for whatever id it is asked, a submit is admitted and
     settles with a reply, and (``busy_until_info``) the session stays busy until a session.info."""
     from websockets.asyncio.server import serve
@@ -58,6 +58,11 @@ async def _owner(monkeypatch, calls, *, busy_until_info=False):
                 await ws.send(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {
                     "type": "message.complete", "session_id": sid, "admission_id": "adm-1",
                     "payload": {"text": "PONG", "outcome": "completed", "admission_id": "adm-1"}}}))
+            if method == "session.resume" and starts_during_attach and len(calls) == 1:
+                # A turn starts on the first session while the second is still attaching.
+                await ws.send(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {
+                    "type": "session.info", "session_id": sid,
+                    "payload": {"pending": [{"admission_id": "late", "status": "started"}]}}}))
             if method == "session.resume" and busy_until_info and len(calls) > 1:
                 await ws.send(json.dumps({"jsonrpc": "2.0", "method": "event", "params": {
                     "type": "session.info", "session_id": sid, "payload": {"pending": []}}}))
@@ -93,7 +98,8 @@ async def test_send_wait_resolves_prefix_or_this_workspaces_last_session_and_pri
 @pytest.mark.asyncio
 async def test_wait_times_out_with_124_on_a_busy_session_and_returns_0_once_it_is_idle(monkeypatch, capsys, tmp_path):
     """`wait` never interrupts: past --timeout it exits 124; a session.info clearing the pending
-    rows ends the wait with 0."""
+    rows ends the wait with 0. A turn that starts on the first session while the second is still
+    attaching (both snapshots read idle) keeps `--all` waiting."""
     monkeypatch.chdir(_store_sessions(tmp_path))
     calls = []
     server = await _owner(monkeypatch, calls, busy_until_info=True)
@@ -106,3 +112,10 @@ async def test_wait_times_out_with_124_on_a_busy_session_and_returns_0_once_it_i
         server.close()
     assert not any(method == "session.interrupt" for method, _ in calls)
     assert "Timed out after 0.5s" in capsys.readouterr().err
+    raced = []
+    server = await _owner(monkeypatch, raced, starts_during_attach=True)
+    try:
+        both = _parser().parse_args(["sessions", "wait", "local-aaaa", "local-bbbb", "--timeout", "0.5"])
+        assert await asyncio.to_thread(both.func, both) == 124
+    finally:
+        server.close()

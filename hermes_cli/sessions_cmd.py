@@ -1409,8 +1409,12 @@ _DB_HANDLERS = {
 }
 
 
-def _print_empty_store(action: str, args) -> None:
+def _print_empty_store(action: str, args):
     """A profile that never created state.db: report empty instead of opening a writer that creates it."""
+    if action == "log":  # a named session that cannot exist is a lookup error, as with a store
+        print(f"Error: No session found matching '{args.session}'. Use 'hermes sessions list' to see available sessions.",
+              file=sys.stderr)
+        return 1
     if action == "stats":
         print("Total sessions: 0\nTotal messages: 0")
     elif action == "pinned":

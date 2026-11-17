@@ -371,8 +371,6 @@ def clear_session(session_key: str) -> None:
             # the prompt was withdrawn, nobody denied it.
             entry.cancelled = "the session ended before the prompt was answered"
             entry.event.set()
-    from tools.approval_tool_gate import forget_session
-    forget_session(session_key)
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
     # finished conversation cannot leak a live interpreter.
@@ -1418,9 +1416,6 @@ def check_all_command_guards(command: str, env_type: str,
     prepared = consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
         return prepared
-    from tools.approval_tool_gate import consume_gate_approved_command
-    if consume_gate_approved_command(command):
-        return _approved()
 
     approval_mode = approval_context._get_approval_mode()
     # A command the hardline scan could not finish is human-only: no bypass, allowlist glob,

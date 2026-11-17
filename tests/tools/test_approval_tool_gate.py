@@ -26,10 +26,12 @@ class _Human:
         self.answers = list(answers)
         self.prompts: list[tuple[str, str]] = []
         self.titles: list[str | None] = []
+        self.options: list[dict] = []
 
-    def __call__(self, command, description, *, title=None, **_kwargs):
+    def __call__(self, command, description, *, title=None, **kwargs):
         self.prompts.append((command, description))
         self.titles.append(title)
+        self.options.append(kwargs)
         return self.answers.pop(0) if self.answers else "deny"
 
 
@@ -129,17 +131,54 @@ def test_terminal_asks_per_command_and_session_grant_is_exact(gate_env):
     assert len(human.prompts) == 2
 
 
-def test_dangerous_command_is_asked_once(gate_env):
+def test_dangerous_command_is_asked_once_by_the_command_guard(gate_env):
+    from tools.approval_tool_gate import pop_record
+
     target = gate_env["workspace"] / "scratch"
     target.mkdir()
     command = f"rm -rf {target}"
     assert approval.detect_dangerous_command(command)[0]
     human = _Human("once")
     set_approval_callback(human)
-    result = _call("terminal", {"command": command})
+    result = _call("terminal", {"command": command}, tool_call_id="call-rm")
     assert not result.get("error"), result
     assert not target.exists()
+    assert len(human.prompts) == 1 and "Tool call:" not in human.prompts[0][1]
+    assert pop_record("terminal", "call-rm") == {"decision": "deferred", "to": "command_guard"}
+
+
+_UNREAD = "\n".join(['v=$(grep -o "[^\\"]*" f)'] * 500)  # benign, but the hardline scan cannot finish it
+
+
+def test_unread_command_stays_human_only_under_a_bypass(gate_env, monkeypatch):
+    from tools import approval_context
+
+    assert approval.hardline_scan_incomplete(_UNREAD)
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
+    set_approval_callback(lambda *a, **k: pytest.fail("a bypass never prompts"))
+    result = _call("terminal", {"command": _UNREAD})
+    assert "BLOCKED" in json.dumps(result)
+
+
+def test_unread_command_offers_once_or_deny_only(gate_env):
+    human = _Human("deny")
+    set_approval_callback(human)
+    _call("terminal", {"command": _UNREAD})
     assert len(human.prompts) == 1
+    assert human.options[0].get("allow_session") is False and human.options[0].get("allow_permanent") is False
+
+
+def test_terminal_session_grant_is_bound_to_the_working_directory(gate_env):
+    other = gate_env["workspace"] / "other"
+    other.mkdir()
+    human = _Human("session", "deny")
+    set_approval_callback(human)
+    assert not _call("terminal", {"command": "echo here", "workdir": str(gate_env["workspace"])}).get("error")
+    assert not _call("terminal", {"command": "echo here", "workdir": str(gate_env["workspace"])}).get("error")
+    assert len(human.prompts) == 1
+    moved = _call("terminal", {"command": "echo here", "workdir": str(other)})
+    assert "BLOCKED" in json.dumps(moved) and len(human.prompts) == 2
+    assert str(other) in human.prompts[1][0]
 
 
 def test_deny_rule_blocks_before_the_human_is_asked(gate_env):
@@ -158,8 +197,9 @@ def test_decision_is_recorded_off_the_model_visible_result(gate_env):
     first = _call("terminal", {"command": "echo recorded"}, tool_call_id="call-1")
     second = _call("terminal", {"command": "echo recorded"}, tool_call_id="call-2")
     assert "approval" not in first and "approval" not in second
-    assert pop_record("terminal", "call-1") == {
-        "decision": "approved", "by": "user", "choice": "session", "scope": "this exact command only"}
+    record = pop_record("terminal", "call-1")
+    assert record["decision"] == "approved" and record["by"] == "user" and record["choice"] == "session"
+    assert record["scope"].startswith("this exact command in ")
     assert pop_record("terminal", "call-2")["by"] == "session_grant"
     assert len(human.prompts) == 1
 
@@ -221,7 +261,7 @@ def test_write_file_grant_does_not_cover_patch(gate_env):
     assert (gate_env["workspace"] / "notes.txt").read_text(encoding="utf-8-sig") == "workspace-notes\n"
 
 
-def test_dangerous_match_is_flagged_and_titled_apart_from_a_plain_call(gate_env):
+def test_dangerous_command_is_titled_apart_from_plain_calls(gate_env):
     target = gate_env["workspace"] / "scratch"
     target.mkdir()
     human = _Human("deny", "deny", "deny")
@@ -229,8 +269,6 @@ def test_dangerous_match_is_flagged_and_titled_apart_from_a_plain_call(gate_env)
     _call("terminal", {"command": f"rm -rf {target}"})
     _call("terminal", {"command": "echo plain"})
     _call("read_file", {"path": str(gate_env["outside"] / "secret.txt")})
-    assert "dangerous pattern" in human.prompts[0][1]
-    assert "dangerous pattern" not in human.prompts[1][1]
     assert len(set(human.titles)) == 3 and "read_file" in human.titles[2]
 
 

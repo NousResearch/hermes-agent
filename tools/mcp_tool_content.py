@@ -137,8 +137,8 @@ def _mcp_native_image_part(path: str) -> Optional[tuple[dict[str, Any], Optional
     note maps embedded coordinates back to the original image (a screenshot's pixels are the screen's)."""
     from pathlib import Path
     from PIL import Image
-    from tools.vision_tools import (_EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _build_scale_note,
-                                    _resize_image_for_vision)
+    from tools.vision_tools import (_EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _MIN_EMBED_EDGE,
+                                    _build_scale_note, _resize_image_for_vision)
     from tools.vision_tools_history_budget import resolve_embed_target_bytes
     from tools.vision_tools_image_prep import (_detect_image_mime_type_from_bytes, _normalize_to_supported_image,
                                                _validate_raster_image_decodable)
@@ -163,10 +163,13 @@ def _mcp_native_image_part(path: str) -> Optional[tuple[dict[str, Any], Optional
     finally:
         if normalized != src:
             normalized.unlink(missing_ok=True)
-    # The resizer is best-effort on both caps (a 64 px short-edge floor keeps a 60000x64 strip at 60000 px; the
-    # quality ladder can bottom out above a low vision.embed_target_bytes). The part is re-sent every later turn,
-    # so attach only what fits both; the MEDIA: path still carries the rest (vision_analyze can read it).
-    if max(scale.get("new_width", dims[0]), scale.get("new_height", dims[1])) > _EMBED_MAX_DIMENSION:
+    # Re-sent every later turn: attach only inside _EMBED_MAX_DIMENSION and under target, and a part
+    # the resizer shrank must also keep _MIN_EMBED_EDGE on both sides. A part the resizer left
+    # untouched reports no new size, so both checks read the source dims.
+    new_w, new_h = scale.get("new_width", dims[0]), scale.get("new_height", dims[1])
+    if max(new_w, new_h) > _EMBED_MAX_DIMENSION:
+        return None
+    if scale and min(new_w, new_h) < _MIN_EMBED_EDGE:
         return None
     if len(url) > target:
         return None

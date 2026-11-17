@@ -1,9 +1,6 @@
 """A ledger's table setup waits for the store's locks no longer than the ledgers' lock wait.
 
-``_ledger_setup`` took the process-wide setup lock and the holder's writer lock with bare ``with`` blocks: a writer
-holding the holder's lock (another thread's long write) kept the setup, and every ledger read or write behind it, waiting
-without a bound, while its own deadline only covered the retry loop. Main's writes take that lock under the write
-patience (``writer_mutex_until``).
+The setup takes the process-wide setup lock and the holder's writer lock against one deadline, as every write takes the writer lock under its patience (``writer_mutex_until``): a writer holding the holder's lock (another thread's long write) refuses the setup with the store's contention error instead of holding it, and every ledger verb behind it, without a bound.
 """
 
 from __future__ import annotations

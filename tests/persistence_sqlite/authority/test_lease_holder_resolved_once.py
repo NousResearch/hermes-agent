@@ -1,9 +1,6 @@
 """A lease verb resolves its store holder once, outside the write: a profile sweep during the write cannot deadlock it.
 
-The lease writes ran ``self._store.holder()`` inside their write transaction. After ``close_all_under`` cleared the
-holder's registry ownership, that call reacquired from the registry, which waits on the sweep's teardown, which waits on
-the write lock the transaction holds. Main's lease writes resolve nothing inside the transaction (they work on the
-connection they were given).
+Resolving the holder inside the write transaction would reacquire it from the registry after ``close_all_under`` cleared its ownership, and that waits on the sweep's teardown, which waits on the write lock the transaction holds. The lease writes work only on the connection they are given.
 """
 
 from __future__ import annotations

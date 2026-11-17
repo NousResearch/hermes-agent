@@ -76,6 +76,9 @@ nous = NousProfile(
     # The Portal keeps (and bills) Claude's 1h tier: a 1h entry still read back after 25 idle minutes,
     # its write billed at 2x. Declaring it lets the prompt-cache clock trust the 1h it asks for.
     prompt_cache_max_ttl="1h",
+    # Measured: Qwen 3.7 Max with markers kept its 1h entry 13 idle minutes (without markers its
+    # automatic cache was gone at 4); the catalog lists a cache-write rate for every such model.
+    prompt_cache_markers_from_catalog=True,
 )
 
 register_provider(nous)

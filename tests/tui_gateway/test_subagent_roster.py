@@ -8,12 +8,13 @@ import pytest
 
 @pytest.fixture()
 def roster(monkeypatch, tmp_path):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
     from tools import delegate_tool_registry as reg
     from tui_gateway import server
 
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session("parent-a", source="tui")
+    db = open_persistence(profile_scope(home=tmp_path))
+    seed_session(db, "parent-a", "tui")
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(reg, "_active_subagents", {})
     monkeypatch.setattr(reg, "_active_subagents_lock", threading.RLock())
@@ -50,12 +51,13 @@ def test_roster_resolves_a_background_process_route_key_to_its_stored_conversati
     """On the gateway path a ``terminal(background=true)`` process carries the conversation's ROUTE
     (``agent:main:local:dm:...``) as its ``session_key``, not the stored id; the roster still reports it
     under the stored conversation that route belongs to, so a background-only row lights after a reload."""
+    from tests.fixtures.storage_seed import seed_session
     from tools.process_registry import ProcessSession, process_registry
     from tui_gateway import server
 
     _, call = roster
     route = "agent:main:local:dm:desktop-chat-1"
-    server._get_db().create_session("local-abc123", source="local", session_key=route)
+    seed_session(server._get_db(), "local-abc123", "local", session_key=route)
     proc = ProcessSession(id="proc_route", command="sleep 90", session_key=route)
     monkeypatch.setattr(process_registry, "list_sessions", lambda **_: [{"session_id": proc.id}])
     monkeypatch.setattr(process_registry, "get", lambda pid: proc if pid == proc.id else None)

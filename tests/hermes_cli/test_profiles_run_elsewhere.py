@@ -188,20 +188,19 @@ def test_worktree_sweep_reads_the_pins_of_a_marked_profile(root, tmp_path):
     import sqlite3
     import time
 
-    from hermes_state import SessionDB
     from tools import delegate_tool_resumable as resumable
+
+    def record(db, sid, document, *, state, pinned):
+        assert resumable._write(db, lambda ledger: resumable._upsert(
+            ledger, sid, document, state=state, pinned=pinned, expires_at=time.time() + 3600, expected=None))
 
     trees = {}
     for name in ("ops", "dev"):
         db = root / "profiles" / name / "state.db"
-        SessionDB(db_path=db).close()
         trees[name] = tmp_path / "repo" / ".worktrees" / f"subagent-{name}"
-        with sqlite3.connect(db) as conn:  # health: allow HX015 -- temp-home store
-            resumable._upsert(conn, f"sa-{name}", {"cwd": str(trees[name]), "pin_paths": [str(trees[name])]},
-                              state="resumable", pinned=True, expires_at=time.time() + 3600)
-            resumable._upsert(conn, f"run-{name}", {"owner_pid": os.getpid()}, state="running", pinned=False,
-                              expires_at=time.time() + 3600)
-        conn.close()
+        record(db, f"sa-{name}", {"cwd": str(trees[name]), "pin_paths": [str(trees[name])]},
+               state="resumable", pinned=True)
+        record(db, f"run-{name}", {"owner_pid": os.getpid()}, state="running", pinned=False)
     pre.mark_profile_run_elsewhere("ops", "sandbox-plugin")
 
     pins = resumable.pinned_worktrees()

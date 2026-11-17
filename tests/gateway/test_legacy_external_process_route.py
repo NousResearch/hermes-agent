@@ -14,6 +14,7 @@ import json
 
 import pytest
 
+from tests.fixtures.storage_seed import seed_session
 from tests.gateway.test_session_follow_profile_config import _owner
 
 PROVIDER = 'proc-provider'
@@ -40,12 +41,10 @@ def _profile(home, **model):
     (home / 'config.yaml').write_text(json.dumps({'model': {'provider': PROVIDER, 'default': 'profile-model', **model}}))
 
 
-def _legacy(db, home, sid, title=None, provider=PROVIDER, address=ADDRESS, **model_config):
-    db.create_session(sid, cwd=str(home), source='gui', model='picked-model', model_config={
-        'provider': provider, 'base_url': address, 'api_mode': 'chat_completions', **model_config})
-    if title:
-        db.set_session_title(sid, title)
-    db.end_session(sid, 'tui_close')
+def _legacy(store, home, sid, title=None, provider=PROVIDER, address=ADDRESS, **model_config):
+    seed_session(store, sid, 'gui', cwd=str(home), model='picked-model', model_config={
+        'provider': provider, 'base_url': address, 'api_mode': 'chat_completions', **model_config},
+        title=title or None, end_reason='tui_close')
 
 
 def _model(runner, live):
@@ -63,7 +62,7 @@ async def test_a_bot_chat_with_a_held_pick_on_a_process_provider_adopts(home, pr
     _profile(home, **({'base_url': profile_url} if profile_url else {}))
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    _legacy(authority.db, home, 'old-bot', title='Bot Chat',
+    _legacy(authority.persistence, home, 'old-bot', title='Bot Chat',
             composer_override_profile={'model': 'profile-model', 'provider': PROVIDER})
     authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
     try:
@@ -84,7 +83,7 @@ async def test_an_old_desktop_chat_on_a_process_provider_keeps_its_provider_and_
     _profile(home, provider='custom', base_url='http://127.0.0.1:1/v1', api_key='k1')
     store, runner, authority, owner = _owner(home)
     runner._peek_session_state = lambda key: None
-    _legacy(authority.db, home, 'old-desktop', provider=provider, address=address)
+    _legacy(authority.persistence, home, 'old-desktop', provider=provider, address=address)
     authority._native_legacy_transports = {owner.actor.transport_id: owner.actor}
     try:
         live = authority.sessions[resolve_local_target(authority, owner.actor, 'old-desktop').session_id]

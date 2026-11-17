@@ -208,7 +208,7 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     """
     if not _scan_on_install_enabled():
         return None
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
+    from hermes_cli.plugins_install_scan import format_scan_report, scan_plugin, should_allow_plugin_install
     result = scan_plugin(plugin_dir, source=identifier)
     allowed, reason = should_allow_plugin_install(result, force=force)
     if allowed is None and reviewed_pin:

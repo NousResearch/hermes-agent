@@ -5,6 +5,10 @@ import json
 import time
 
 from gateway import hosted_rooms
+from persistence.gateway import hosted_rooms as contract
+from persistence.gateway.hosted_rooms import room_grant_hard_expiry
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def _grant(expires_at: float, nonce: str) -> str:
@@ -14,28 +18,27 @@ def _grant(expires_at: float, nonce: str) -> str:
 
 
 def _rows(db):
-    import sqlite3
-    with sqlite3.connect(db) as conn:
-        return conn.execute("SELECT member_id, expires_at, attempts FROM hosted_room_owed_revokes "
-                            "ORDER BY member_id, expires_at").fetchall()
+    with raw_holder(db)._read_ctx() as conn:
+        return [tuple(row) for row in conn.execute(
+            "SELECT member_id, expires_at, attempts FROM hosted_room_owed_revokes "
+            "ORDER BY member_id, expires_at").fetchall()]
 
 
 def _owe(db, grant, *, member="peer", room="ended", expires_at=None):
-    from gateway.hosted_room_peer import room_grant_hard_expiry
     hosted_rooms.owe_room_grant_revoke(
-        db, room_id=room, member_id=member, target_url="http://127.0.0.1:9", grant=grant,
+        db, placement="profile", room_id=room, member_id=member, target_url="http://127.0.0.1:9", grant=grant,
         expires_at=room_grant_hard_expiry(grant) if expires_at is None else expires_at)
 
 
 def test_an_owed_revoke_lives_no_longer_than_the_longest_signed_horizon(tmp_path):
-    db, now = tmp_path / "state.db", time.time()
+    db, now = storage_handle(tmp_path), time.time()
     _owe(db, _grant(now + 10**9, "forever"))  # an unsigned payload claiming 30 years
     (_member, expires_at, _attempts), = _rows(db)
-    assert expires_at <= now + hosted_rooms.MAX_OWED_REVOKE_SECONDS + 60
+    assert expires_at <= now + contract.MAX_OWED_REVOKE_SECONDS + 60
 
 
 def test_repeated_and_many_grants_for_one_member_keep_a_few_rows(tmp_path):
-    db, now = tmp_path / "state.db", time.time()
+    db, now = storage_handle(tmp_path), time.time()
     same = _grant(now + 3600, "same")
     for _ in range(5):
         _owe(db, same)
@@ -44,20 +47,20 @@ def test_repeated_and_many_grants_for_one_member_keep_a_few_rows(tmp_path):
     for index in range(50):
         try:
             _owe(db, _grant(now + 3600 + index, f"g{index}"))
-        except hosted_rooms.OwedRevokesFullError:
+        except contract.OwedRevokesFullError:
             refused += 1  # the caller revokes that grant at once (HostedRoomService.owe_grant_revoke)
-    assert len(_rows(db)) == hosted_rooms.MAX_OWED_REVOKES_PER_MEMBER
-    assert refused == 51 - hosted_rooms.MAX_OWED_REVOKES_PER_MEMBER
+    assert len(_rows(db)) == contract.MAX_OWED_REVOKES_PER_MEMBER
+    assert refused == 51 - contract.MAX_OWED_REVOKES_PER_MEMBER
 
 
 def test_an_owed_revoke_is_retried_until_its_grant_expires(tmp_path):
-    db, now = tmp_path / "state.db", time.time()
+    db, now = storage_handle(tmp_path), time.time()
     _owe(db, _grant(now + 30 * 86400, "unreachable"))
     for attempt in range(200):
-        owed, = hosted_rooms.due_room_grant_revokes(db, limit=5, now=now + attempt + 1)
+        owed, = hosted_rooms.due_room_grant_revokes(db, placement="profile", limit=5, now=now + attempt + 1)
         hosted_rooms.settle_room_grant_revoke(
-            db, room_id=owed["room_id"], member_id=owed["member_id"], grant_digest=owed["grant_digest"],
-            retry_at=now + attempt + 1)
+            db, placement="profile", room_id=owed["room_id"], member_id=owed["member_id"],
+            grant_digest=owed["grant_digest"], retry_at=now + attempt + 1)
     assert [attempts for _member, _expires, attempts in _rows(db)] == [200]
-    assert hosted_rooms.due_room_grant_revokes(db, limit=5, now=now + 30 * 86400 + 1) == []
+    assert hosted_rooms.due_room_grant_revokes(db, placement="profile", limit=5, now=now + 30 * 86400 + 1) == []
     assert _rows(db) == []

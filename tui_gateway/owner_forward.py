@@ -232,6 +232,28 @@ def forward_rpc(home: Path, endpoint, method: str, params: dict) -> Any:
     return asyncio.run(call())
 
 
+#: Ceiling on one forwarded session RPC: a Desktop panel polls these, and an unanswered owner must
+#: not hold the legacy dispatcher's thread longer than a poll is worth.
+SESSION_RPC_TIMEOUT_S = 10.0
+
+
+def forward_session_rpc(home: Path, key: str, method: str, params: dict) -> Any:
+    """``method`` on the owner serving ``home``, for stored session ``key``: the owner's answer.
+
+    For calls the owner answers from its own live objects (a background subagent's row, tail, steer
+    or stop): this backend's registries cannot see them. Attaches as a viewer first (``session.resume``
+    without the transcript, as the owner's ancillary reads require a live session); the owner applies
+    its own authorization. Raises ``OwnerNotRunning`` when no gateway serves the home."""
+    endpoint = discover_owner(home)
+
+    async def call():
+        async with asyncio.timeout(SESSION_RPC_TIMEOUT_S):
+            async with connect_owner(home, endpoint) as client:
+                attached = await client.rpc("session.resume", session_id=key, omit_messages=True)
+                return await client.rpc(method, **{**params, "session_id": str(attached.get("session_id") or key)})
+    return asyncio.run(call())
+
+
 def forward_prompt(sid: str, session: dict, text: str, *, emit=None, home: Path | None = None) -> dict:
     """Admit ``text`` into the owner's FIFO for this session; the owner's receipt.
 

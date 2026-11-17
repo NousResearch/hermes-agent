@@ -50,6 +50,32 @@ def _visible_subagent_records(session_id, transport, owner):
             or _owns_subagent_record(r, agent)]
 
 
+def _from_gateway(owner, method, params):
+    """The owning gateway's answer to ``method`` when that gateway runs this chat's background subagents
+    (a remote Desktop on a standalone ``hermes serve``, after a gateway turn dispatched them): their
+    records live in its memory, so this process's registry has no row for them. None otherwise, or when
+    the forward fails: the caller then answers from this process, as before."""
+    if not gateway_runs_delegations(owner):  # session_lifecycle, bound onto server.py
+        return None
+    from tui_gateway import owner_forward
+    key = str(owner.get("session_key") or "")
+    try:
+        return owner_forward.forward_session_rpc(
+            Path(owner.get("profile_home") or _hermes_home).resolve(), key, method, params)
+    except Exception:
+        logger.info("%s for %s: the owning gateway did not answer", method, key, exc_info=True)
+        return None
+
+
+def _steer_in_gateway(owner, subagent_id, text) -> bool:
+    """``subagent.steer`` for a child this process does not hold: whether the gateway serving this chat
+    (``_from_gateway``) queued it. No session: nothing to ask."""
+    if owner is None:
+        return False
+    remote = _from_gateway(owner, "subagent.steer", {"subagent_id": subagent_id, "text": text})
+    return isinstance(remote, dict) and remote.get("status") == "queued"
+
+
 @method("subagent.list")
 def _(rid, params):
     session_id = _str_param(params, "session_id")
@@ -57,11 +83,13 @@ def _(rid, params):
     if transport is None or owner is None:
         return _err(rid, 4001, "session not found or not owned by this transport")
     live = _visible_subagent_records(session_id, transport, owner)
-    return _ok(rid, {
-        "subagents": [{**{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS},
-                       "child_session_id": _child_session_id(r)} for r in live],
-        "delegations": _failed_delegations(session_id, owner),
-    })
+    rows = [{**{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS},
+             "child_session_id": _child_session_id(r)} for r in live]
+    remote = _from_gateway(owner, "subagent.list", {})
+    if isinstance(remote, dict) and isinstance(remote.get("subagents"), list):
+        here = {row["subagent_id"] for row in rows}
+        rows += [row for row in remote["subagents"] if isinstance(row, dict) and row.get("subagent_id") not in here]
+    return _ok(rid, {"subagents": rows, "delegations": _failed_delegations(session_id, owner)})
 
 
 def _child_session_id(record):
@@ -126,8 +154,6 @@ def _(rid, params):
     process hosts several profiles, so only conversations stored in the requested profile's state.db are
     returned — a caller never learns another profile's session ids."""
     owners = _live_work_owners()
-    if not owners:
-        return _ok(rid, {"sessions": []})
     scope = params if isinstance(params, dict) else {}
     if not str(scope.get("profile") or "").strip():
         # A legacy-fallback socket ticketed to a non-launch profile answers for that profile only.
@@ -135,14 +161,39 @@ def _(rid, params):
         if home := connection_profile_home():
             scope = {"profile": Path(home).name}
     counts = {}
-    namespaces = _route_namespaces(_profile_home(scope.get("profile")))
+    profile_home = _profile_home(scope.get("profile"))
+    import os
+    if not owners and not _live_gateway_pids(profile_home) - {os.getpid()}:
+        return _ok(rid, {"sessions": []})  # nothing live here, and no gateway that could run any
+    namespaces = _route_namespaces(profile_home)
     with _profile_db(scope) as db:
         if db is None:
             return _ok(rid, {"sessions": []})
         for kind, owner_ids in owners:
             if sid := _stored_owner(db, owner_ids, namespaces):
                 counts.setdefault(sid, {"subagents": 0, "background": 0})[kind] += 1
+        for sid in _gateway_child_owners(db, profile_home):
+            counts.setdefault(sid, {"subagents": 0, "background": 0})["subagents"] += 1
     return _ok(rid, {"sessions": [{"session_id": sid, **c} for sid, c in counts.items()]})
+
+
+def _gateway_child_owners(db, profile_home):
+    """One stored session id per running background unit that a live gateway serving this profile runs
+    (a remote Desktop on a standalone ``hermes serve``: those children are not in this process's
+    registry). Read from the profile's own ledger; ``[]`` on any failure."""
+    from tools.async_delegation import live_delegations_in_other_processes
+    read_ctx = getattr(db, "_read_ctx", None)
+    try:
+        with read_ctx() as conn:
+            rows = live_delegations_in_other_processes(conn)
+        if not rows:
+            return []
+        gateways = _live_gateway_pids(profile_home)
+        return [r["parent_session_id"] for r in rows
+                if r["owner_pid"] in gateways and r["parent_session_id"] and db.get_session(r["parent_session_id"])]
+    except Exception:
+        logger.debug("subagent.roster: gateway delegation read failed", exc_info=True)
+        return []
 
 
 def _failed_delegations(session_id, owner):
@@ -174,6 +225,8 @@ def _(rid, params):
     record = next((r for r in _owned_subagent_records(session_id, transport, owner)
                    if r.get("subagent_id") == subagent_id), None)
     agent = record.get("agent") if record else None
+    if record is None and isinstance(remote := _from_gateway(owner, "subagent.interrupt", {"subagent_id": subagent_id}), dict):
+        return _ok(rid, {"found": bool(remote.get("found")), "subagent_id": subagent_id})
     # Interrupt the authorized object, never re-resolve a globally recyclable id.
     found = False
     if agent is not None:
@@ -196,6 +249,8 @@ def _(rid, params):
     result = {"subagent_id": subagent_id, "available": False, "text": "", "truncated": False}
     record = next((r for r in _owned_subagent_records(session_id, transport, owner)
                    if r.get("subagent_id") == subagent_id), None)
+    if record is None and isinstance(remote := _from_gateway(owner, "subagent.tail", {"subagent_id": subagent_id}), dict):
+        return _ok(rid, {**result, **{k: remote[k] for k in ("available", "text", "truncated") if k in remote}})
     path = getattr(record.get("agent"), "_live_transcript_path", None) if record else None
     if not path:
         return _ok(rid, result)

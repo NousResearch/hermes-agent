@@ -51,10 +51,7 @@ def read_terminal_tool(
 READ_TERMINAL_SCHEMA = {
     "name": "read_terminal",
     "description": (
-        "Read the in-app terminal pane beside this chat. No args = visible "
-        "screen + total_lines; page scrollback with start_line (0 = oldest) "
-        "+ count. JSON: {total_lines, start, end, viewport_rows, cursor_row, "
-        "text}."
+        "Read the in-app terminal pane beside this chat. Shows scrollback and current output as JSON: {total_lines, start, end, viewport_rows, cursor_row, text}. No arguments required; displays visible screen or uses start_line and count for page scrollback. Do NOT use to execute or run shell commands (use the terminal tool instead). Use this to inspect logged output, errors, or program output already displayed."
     ),
     "parameters": {
         "type": "object",

@@ -49,6 +49,14 @@ export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE)
 export const composerHasDraft = (cState: { input: string; inputBuf: string[]; tokens?: unknown[] }): boolean =>
   Boolean(cState.input || cState.inputBuf.length || cState.tokens?.length)
 
+/** Ctrl+K is also the composer's kill-to-end, so it sends the next queued message only from an empty
+ *  composer, and never while a queued item is being edited. */
+export const sendsNextQueued = (
+  cState: Parameters<typeof composerHasDraft>[0] & { queueEditIdx: null | number },
+  queued: number,
+  sid: unknown
+): boolean => !composerHasDraft(cState) && cState.queueEditIdx === null && queued > 0 && Boolean(sid)
+
 export function handleInputSelectionClipboard(
   selection: ReturnType<typeof getInputSelection>,
   action: 'copy' | 'cut'
@@ -1039,7 +1047,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
+    if (isAction(key, ch, 'k') && sendsNextQueued(cState, cRefs.queueRef.current.length, live.sid)) {
       const next = cActions.dequeue(true)
 
       if (next) {

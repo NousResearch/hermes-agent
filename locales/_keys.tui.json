@@ -403,6 +403,7 @@
   "hints.pasteExpand",
   "hints.redraw",
   "hints.rewindPicker",
+  "hints.sendQueued",
   "hints.sessionSwitcher",
   "hints.shell",
   "hints.undoRedo",

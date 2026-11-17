@@ -92,6 +92,7 @@ hermes --tui
 - **`/terminal-setup`** — 安装本地 VS Code / Cursor / Windsurf 终端绑定，以在 macOS 上获得更好的 `Cmd+Enter` 和撤销/重做一致性。
 - **斜杠自动补全** — 以带描述的浮动面板形式展开，而非内联下拉菜单。
 - **`Ctrl+X`** — 当排队消息被高亮（在 agent 仍在运行时发送的消息）时，从队列中删除该消息。**`Esc`** 取消编辑并取消高亮，但不删除。
+- **`Ctrl+K`**（macOS 上为 `Cmd+K`）— 删除到行尾。输入框为空且有排队消息时，改为立即发送下一条排队消息。
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — 在 `$EDITOR` 中打开当前输入缓冲区，用于多行/长 prompt 编写；保存并退出后，内容将作为 prompt 发送回来。
 
 ## 斜杠命令

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.prompt_cache_clock import (
-    cache_certainly_cold, cache_certainly_warm, cache_window, record_attempt_sent, record_cache_response,
+    cache_certainly_cold, cache_certainly_warm, cache_window, context_witness, record_attempt_sent, record_cache_response,
     render_prompt_cache_line,
 )
 from agent.usage_pricing import normalize_usage
@@ -235,3 +235,31 @@ def test_a_1h_write_over_an_older_5m_prefix_is_priced_at_the_1h_rate(monkeypatch
     as_1h = estimate_usage_cost("claude-sonnet-4-6", priced, provider="anthropic").amount_usd
     as_5m = estimate_usage_cost("claude-sonnet-4-6", usage, provider="anthropic").amount_usd
     assert as_1h - as_5m == Decimal("2.25")
+
+
+@pytest.mark.parametrize("durable", [False, True], ids=["process-rewrite", "durable-generation"])
+def test_delayed_cache_reply_keeps_its_arm_time_context_witness(monkeypatch, durable):
+    agent = _agent("anthropic", "https://api.anthropic.com", "claude-sonnet-4-6",
+                   api_mode="anthropic_messages")
+    generation = [0]
+    if durable:
+        agent._session_db = SimpleNamespace(prompt_cache_generation=lambda sid: generation[0])
+    agent._prompt_cache_clock_restored = True
+    witness = context_witness(agent)
+    usage = SimpleNamespace(cache_read_tokens=4096, cache_write_tokens=0)
+    request = {"sent_at": 1000.0, "marker_ttl": "1h"}
+
+    def reply():
+        return record_cache_response(agent, usage, model=agent.model, provider=agent.provider,
+                                     base_url=agent.base_url, api_mode=agent.api_mode,
+                                     attempt=request, witness=witness)
+
+    reply()
+    assert cache_window(agent).confidence == "declared"  # unchanged context still renews normally
+    if durable:
+        generation[0] += 1
+    else:
+        agent.context_compressor.compression_count += 1
+    reply()  # a rewrite can commit after the caller's last witness comparison
+    assert cache_window(agent).reason == "compacted"
+    assert cache_window(agent).confidence == "unknown"

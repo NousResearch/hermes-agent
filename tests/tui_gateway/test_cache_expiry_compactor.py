@@ -200,3 +200,135 @@ def test_the_session_cap_defers_only_the_excess_and_never_overshoots(server, mon
     for thread in [t for t in threading.enumerate() if t.name.startswith("cache-expiry-release-")]:
         thread.join(timeout=10)
     assert closed == ["s0"] and sorted(server._sessions) == ["s1", "s2"]
+
+
+@pytest.mark.parametrize("state", ["running", "closing", "in_flight", "compute_host", "not_due"])
+def test_cache_tick_checks_eligibility_before_claiming(server, monkeypatch, state):
+    import agent.prompt_cache_lifecycle as decision
+
+    session = _session(_Agent())
+    monkeypatch.setattr(server, "_sessions", {"s": session})
+    monkeypatch.setattr(server, "_cache_expiry_in_flight", {"s"} if state == "in_flight" else set())
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda s: state == "compute_host")
+    session["running"], session["_closing"] = state == "running", state == "closing"
+    claims = []
+    monkeypatch.setattr(decision, "claim_compaction", lambda a: claims.append(a) or False)
+    monkeypatch.setattr(decision, "claim_offload", lambda a: False)
+    assert server._cache_expiry_tick() == []
+    assert len(claims) == (1 if state == "not_due" else 0)
+    assert "_cache_edge_action" not in session
+
+
+def test_finalized_chat_refuses_the_compression_claim(server):
+    from tui_gateway.session_compression import CompressionBusy
+
+    session = _session(_Agent())
+    session["_finalized"] = True
+    with pytest.raises(CompressionBusy, match="session closed"):
+        with server._manual_compress_turn("s", session):
+            pytest.fail("a finalized chat was admitted")
+    assert not session["running"]
+
+
+def test_offload_preserves_a_history_edit_during_the_prune(server, monkeypatch):
+    import agent.turn_proactive_prune as prune
+
+    session = _session(_Agent())
+    edited = [{"role": "user", "content": "new edit"}]
+
+    def offload(agent, history, task_id):
+        session["history"], session["history_version"] = edited, 4
+        return [{"role": "assistant", "content": "stale offload"}]
+
+    monkeypatch.setattr(prune, "offload_cold_history", offload)
+    server._offload_expired_cache("s", session)
+    assert session["history"] is edited and session["history_version"] == 4
+    assert not session["running"]
+
+
+def test_disabling_cap_while_a_release_is_queued_preserves_the_chat(server, monkeypatch):
+    import agent.prompt_cache_lifecycle as decision
+
+    release, started = threading.Event(), threading.Event()
+
+    class Slow(_Agent):
+        def _compress_context(self, messages, system_message, **kwargs):
+            started.set()
+            assert release.wait(timeout=10)
+            return super()._compress_context(messages, system_message, **kwargs)
+
+    cap = [2]
+    monkeypatch.setattr(decision, "claim_compaction_at_release", lambda a: True)
+    monkeypatch.setattr(server, "_max_live_sessions", lambda: cap[0])
+    monkeypatch.setattr(server, "_session_is_reapable", lambda *a: True)
+    monkeypatch.setattr(server, "_cache_expiry_releasing", set())
+    monkeypatch.setattr(server, "_sessions", {f"s{i}": _session(Slow()) for i in range(3)})
+    closed, threads = [], []
+    real = server._compact_then_close
+
+    def defer(sid, session, **kw):
+        thread = real(sid, session, **kw)
+        threads.append(thread)
+        return thread
+
+    def close(sid, *, predicate=None, **kw):
+        with server._sessions_lock:
+            if predicate is not None and not predicate(server._sessions[sid]):
+                return False
+            closed.append(sid)
+            server._sessions.pop(sid)
+        return True
+
+    monkeypatch.setattr(server, "_compact_then_close", defer)
+    monkeypatch.setattr(server, "_close_session_by_id", close)
+    try:
+        server._enforce_session_cap()
+        assert started.wait(timeout=10)
+        cap[0] = 0
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=10)
+    assert not closed and len(server._sessions) == 3
+
+
+@pytest.mark.parametrize("state", ["idle", "throttled", "running", "queued", "short"])
+def test_classic_cli_cache_idle_hook_preserves_input_priority(monkeypatch, state):
+    import contextlib
+    import queue
+    from types import SimpleNamespace
+    from hermes_cli.cli_session_mixin import CLISessionMixin
+    import agent.prompt_cache_lifecycle as decision
+    import agent.conversation_compression_manual as manual
+    import agent.turn_proactive_prune as prune
+
+    class CLI(CLISessionMixin):
+        pass
+
+    cli = CLI()
+    cli.agent, cli._agent_running, cli._pending_input = object(), state == "running", queue.Queue()
+    cli.conversation_history = [{"role": "user", "content": "question"}] * (3 if state == "short" else 8)
+    cli.session_id, cli._last_cache_expiry_check = "s", 999 if state == "throttled" else 0
+    cli._busy_command = lambda *a, **kw: contextlib.nullcontext()
+    adopted, claims, offloaded = [], [], []
+    cli._adopt_compress_result = adopted.append
+    if state == "queued":
+        cli._pending_input.put("next prompt")
+    monkeypatch.setattr("hermes_cli.cli_session_mixin.time.time", lambda: 1000)
+    monkeypatch.setattr(decision, "claim_compaction", lambda a, **kw: claims.append("compact") or True)
+    result = SimpleNamespace(status="compressed", after_messages=[{"role": "assistant", "content": "summary"}])
+    monkeypatch.setattr(manual, "compress_now", lambda *a, **kw: result)
+    cli._maybe_compact_before_cache_expiry()
+    assert claims == (["compact"] if state == "idle" else [])
+    assert adopted == ([result] if state == "idle" else [])
+    if state != "idle":
+        return
+    # Same idle loop twice: throttle, then test the expired-cache (no network) branch.
+    cli._maybe_compact_before_cache_expiry()
+    assert len(claims) == 1
+    cli._last_cache_expiry_check = 0
+    monkeypatch.setattr(decision, "claim_compaction", lambda a, **kw: False)
+    monkeypatch.setattr(decision, "claim_offload", lambda a, **kw: True)
+    monkeypatch.setattr(prune, "offload_cold_history", lambda a, h, sid: offloaded.append(sid) or result.after_messages)
+    cli._maybe_compact_before_cache_expiry()
+    assert offloaded == ["s"] and cli.conversation_history is result.after_messages

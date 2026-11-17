@@ -1490,7 +1490,7 @@ def context_engine_session_db(agent, session_db):
     engine is outside code written against ``SessionDB``, so over a storage interface handle it takes the deprecated
     ``hermes_state.SessionDB`` on the same profile's store, one per agent (``close_context_engine_session_db``)."""
     from agent.context_compressor import ContextCompressor
-    from persistence_assembly import Persistence, store_location
+    from persistence_assembly import Persistence
 
     if type(agent.context_compressor) is ContextCompressor or not isinstance(session_db, Persistence):
         return session_db
@@ -1499,7 +1499,7 @@ def context_engine_session_db(agent, session_db):
         import hermes_state
 
         plugin_db = agent._context_engine_session_db = hermes_state._engine_session_db(
-            agent.context_compressor, store_location(session_db.scope), read_only=session_db.read_only)
+            agent.context_compressor, session_db.scope.profile_dir / "state.db", read_only=session_db.read_only)
     return plugin_db
 
 

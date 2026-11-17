@@ -3286,8 +3286,8 @@ def _apply_post_policy(targets: List[dict], cfg: Optional[dict] = None) -> tuple
     try:
         from agent.slack_post_policy import channel_denial
         if cfg is None:
-            from hermes_cli.config import read_raw_config
-            cfg = read_raw_config()
+            from agent.boundary_config import read_boundary_config
+            cfg = read_boundary_config()
     except Exception as e:
         # Fail closed for Slack (the policy may be what forbids the target);
         # other platforms are outside the policy.

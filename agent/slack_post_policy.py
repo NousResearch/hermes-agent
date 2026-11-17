@@ -17,8 +17,10 @@ Two lists under the profile's top-level ``slack:`` block in ``config.yaml``::
   for them (``tools/release_update_post.py``); cron delivery never posts there.
 
 Channel ids are compared upper-cased. Platform settings come from the
-active profile's config (``read_raw_config`` resolves per profile under
-multiplex), never ``os.getenv``.
+active profile's config, read strictly through
+``agent.boundary_config.read_boundary_config`` (resolves per profile under
+multiplex; an unparseable config.yaml never reads as "no policy"), never
+``os.getenv``.
 """
 from __future__ import annotations
 
@@ -47,6 +49,9 @@ def _channels(raw, key: str) -> Optional[frozenset]:
 
 
 def post_policy(cfg) -> PostPolicy:
+    from agent.boundary_config import is_unreadable, unreadable_message
+    if is_unreadable(cfg):
+        return PostPolicy(frozenset(), frozenset(), unreadable_message(cfg))
     slack = cfg.get("slack") if isinstance(cfg, dict) and isinstance(cfg.get("slack"), dict) else {}
     try:
         allowed = _channels(slack.get("post_allowed_channels"), "post_allowed_channels")
@@ -67,7 +72,10 @@ def normalise(chat_id) -> str:
 
 
 def is_gated(chat_id, cfg) -> bool:
-    return normalise(chat_id) in post_policy(cfg).gated
+    """True for a gated channel — and for EVERY channel when the config is
+    unreadable (fail closed: no free text, no inbound answers)."""
+    from agent.boundary_config import is_unreadable
+    return is_unreadable(cfg) or normalise(chat_id) in post_policy(cfg).gated
 
 
 def channel_denial(chat_id, cfg, *, gated_ok: bool = False) -> Optional[str]:

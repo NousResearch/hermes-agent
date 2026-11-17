@@ -30252,16 +30252,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not channel_id:
             return False
         try:
+            from agent.boundary_config import read_boundary_config
             from agent.slack_post_policy import is_gated
-            from hermes_cli.config import read_raw_config
 
             if getattr(getattr(self, "config", None), "multiplex_profiles", False):
                 with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                    return is_gated(channel_id, read_raw_config())
-            return is_gated(channel_id, read_raw_config())
+                    return is_gated(channel_id, read_boundary_config())
+            return is_gated(channel_id, read_boundary_config())
         except Exception:
-            logger.warning("gated-channel check failed", exc_info=True)
-            return False
+            # Fail closed: an unanswered message beats free text in a gated channel.
+            logger.warning("gated-channel check failed; ignoring the message", exc_info=True)
+            return True
 
     def _multiplex_adapter_for(self, source, platform):
         """``self.adapters.get(platform)`` single-profile (unchanged); under

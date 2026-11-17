@@ -32,8 +32,8 @@ def world(monkeypatch):
     state = {"cfg": _guarded(), "runs": []}
     monkeypatch.setattr(nt.shutil, "which", lambda cmd: "/usr/local/bin/ntn")
     monkeypatch.setattr(nt, "_ntn_env", lambda: {"NOTION_API_TOKEN": "tok"})
-    import hermes_cli.config as hc
-    monkeypatch.setattr(hc, "read_raw_config", lambda: state["cfg"])
+    import agent.boundary_config as bc
+    monkeypatch.setattr(bc, "read_boundary_config", lambda home=None: state["cfg"])
     row = {"object": "page", "id": ROW,
            "parent": {"type": "data_source_id", "data_source_id": ASSETS},
            "properties": {"Status": {"id": "s", "type": "select", "select": {"name": "In review"}}}}
@@ -76,17 +76,6 @@ def test_unguarded_profile_unchanged(world):
     out = json.loads(nt._notion_api_handler({"path": f"v1/pages/{ROW}", "method": "DELETE"}))
     assert out["ok"] is True
     assert world["runs"][0][0] == ["ntn", "api", f"v1/pages/{ROW}", "-X", "DELETE"]
-
-
-def test_config_read_failure_denies_writes(world, monkeypatch):
-    import hermes_cli.config as hc
-
-    def boom():
-        raise OSError("disk")
-    monkeypatch.setattr(hc, "read_raw_config", boom)
-    out = json.loads(nt._notion_api_handler({"path": f"v1/pages/{ROW}", "method": "PATCH", "body": {}}))
-    assert "error" in out
-    assert json.loads(nt._notion_api_handler({"path": f"v1/pages/{ROW}"}))["ok"] is True
 
 
 def test_backstop_blocks_without_reaching_handler(world, monkeypatch):

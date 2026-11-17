@@ -80,8 +80,8 @@ class _ContentChanged(RuntimeError):
 
 
 def _config() -> dict:
-    from hermes_cli.config import read_raw_config
-    return read_raw_config()
+    from agent.boundary_config import read_boundary_config
+    return read_boundary_config()
 
 
 def _now():

@@ -251,6 +251,9 @@ def load_guard(cfg) -> Optional[GuardConfig]:
     ``error`` set when the block is enabled but invalid (deny every write)."""
     if not is_enforcing(cfg):
         return None
+    from agent.boundary_config import is_unreadable, unreadable_message
+    if is_unreadable(cfg):
+        return GuardConfig(error=unreadable_message(cfg))
     try:
         return _parse(cfg)
     except GuardConfigError as e:
@@ -266,6 +269,9 @@ def autonomy_precondition(cfg) -> Optional[str]:
     must refuse every level but ``off``, or None. The row's Status is a human
     signal only while the agent can neither set it (this guard enforcing) nor
     rewrite its own rules (``agent_write_guard``)."""
+    from agent.boundary_config import is_unreadable, unreadable_message
+    if is_unreadable(cfg):
+        return unreadable_message(cfg)
     if not is_enforcing(cfg):
         return "the Notion write guard is not enforcing (notion.write_guard.enabled: true)"
     if not _agent_write_guard_on(cfg):
@@ -741,8 +747,8 @@ def guard_denial(method: str, path: str, body) -> Optional[str]:
     if str(method or "GET").strip().upper() == "GET":
         return None
     try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
+        from agent.boundary_config import read_boundary_config
+        cfg = read_boundary_config()
     except Exception as e:
         logger.error("[notion_write_guard] config read failed: %s", e)
         return "Notion write refused: the profile's config could not be read to check the write guard."

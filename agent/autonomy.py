@@ -78,8 +78,8 @@ def _block(config: dict) -> dict:
 def _load_config(config: Optional[dict]) -> dict:
     if config is not None:
         return config
-    from hermes_cli.config import read_raw_config
-    return read_raw_config()
+    from agent.boundary_config import read_boundary_config
+    return read_boundary_config()
 
 
 def resolve_level(action: str, config: Optional[dict] = None) -> str:
@@ -90,7 +90,11 @@ def resolve_level(action: str, config: Optional[dict] = None) -> str:
     action has no code path for. ``paused: true`` caps every level at
     ``signoff`` (``off`` stays ``off``).
     """
-    block = _block(_load_config(config))
+    config = _load_config(config)
+    from agent.boundary_config import is_unreadable
+    if is_unreadable(config):
+        return "off"  # unparseable config.yaml, no good version known: nothing acts
+    block = _block(config)
     built = _built(action)
     actions = block.get("actions") if isinstance(block.get("actions"), dict) else {}
     raw = actions.get(action)

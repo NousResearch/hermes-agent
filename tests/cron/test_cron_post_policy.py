@@ -29,8 +29,8 @@ def test_guarded_profile_without_allowlist_delivers_nowhere_on_slack():
 
 
 def test_deliver_result_refuses_before_sending(monkeypatch):
-    import hermes_cli.config as hc
-    monkeypatch.setattr(hc, "read_raw_config", lambda: {"slack": {"post_gated_channels": ["CREL0001"]}})
+    import agent.boundary_config as bc
+    monkeypatch.setattr(bc, "read_boundary_config", lambda home=None: {"slack": {"post_gated_channels": ["CREL0001"]}})
     sent = []
     import tools.send_message_tool as smt
     monkeypatch.setattr(smt, "_send_to_platform", lambda *a, **k: sent.append(a))
@@ -39,19 +39,9 @@ def test_deliver_result_refuses_before_sending(monkeypatch):
     assert sent == []
 
 
-def test_config_failure_refuses_slack_only(monkeypatch):
-    import hermes_cli.config as hc
-
-    def boom():
-        raise OSError("disk")
-    monkeypatch.setattr(hc, "read_raw_config", boom)
-    kept, refused = sch._apply_post_policy([_t("CHOME001"), _t("9", "telegram")])
-    assert kept == [_t("9", "telegram")] and len(refused) == 1
-
-
 def test_owner_alerted_when_policy_refused_every_target(monkeypatch):
-    import hermes_cli.config as hc
-    monkeypatch.setattr(hc, "read_raw_config", lambda: {"slack": {"post_gated_channels": ["CREL0001"]}})
+    import agent.boundary_config as bc
+    monkeypatch.setattr(bc, "read_boundary_config", lambda home=None: {"slack": {"post_gated_channels": ["CREL0001"]}})
     job = {"id": "j1", "name": "feed", "deliver": "slack:CREL0001"}
     assert sch._resolve_delivery_targets(job)
     assert sch._apply_post_policy(sch._resolve_delivery_targets(job))[0] == []

@@ -134,6 +134,9 @@ async def _slack_post_thread_handler(args: dict, **_kw) -> str:
     except Exception as e:  # fail closed: the posting policy can't be read
         logger.error("[slack_post_thread] config read failed: %s", e)
         return tool_error("Could not read this profile's config to check the posting policy.")
+    from agent.boundary_config import is_unreadable, unreadable_message
+    if is_unreadable(cfg):
+        return tool_error(unreadable_message(cfg))
 
     ops = await rup.handle_autonomy_ops(args, cfg)
     if ops is not None:

@@ -303,3 +303,26 @@ def test_the_kill_treats_a_zombie_only_group_as_gone():
         assert result.returncode == 0 and "__HERMES_PROCESS_TERMINATED__" in result.stdout.splitlines(), result
     finally:
         zombie.wait()
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("shell", ["bash", "sh"])
+@pytest.mark.parametrize("name", [b"bad\nname", b"x) S 1 1 1"])
+def test_a_process_name_cannot_hide_a_live_member(tmp_path, shell, name):
+    from tools.process_registry_env_log import group_liveness_shell
+
+    renamed = tmp_path / "renamed"
+    # prctl(PR_SET_NAME) sets the comm the kernel prints in /proc/<pid>/stat.
+    code = ("import ctypes, sys, time; ctypes.CDLL(None).prctl(15, bytes.fromhex(sys.argv[1])); "
+            "open(sys.argv[2], 'w').close(); time.sleep(30)")
+    member = subprocess.Popen([sys.executable, "-c", code, name.hex(), str(renamed)], process_group=0)
+    try:
+        wait_until(renamed.exists, what="renamed member")
+        assert psutil.Process(member.pid).name().encode() == name
+        result = subprocess.run([shell, "-c", group_liveness_shell(str(member.pid)) + "_hm"],
+                                capture_output=True, text=True, timeout=10, check=False)
+        assert result.stdout.split() == [str(member.pid)]
+        assert _poll_status(tmp_path, shell, str(member.pid)) == "run"
+    finally:
+        member.kill()
+        member.wait()

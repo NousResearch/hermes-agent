@@ -58,7 +58,8 @@ def group_liveness_shell(pgid_expr: str) -> str:
     ``_hm`` prints the group's live members: zombies are left out (a container whose
     PID 1 never reaps keeps a killed job's zombies forever), and a group id that is not a
     number has none. Members come from ``/proc`` (field 5 of ``stat`` is the pgid, split
-    after the last ``") "`` so a comm with spaces cannot shift it), else from ``ps``;
+    after the last ``") "`` of the whole file so a comm holding spaces, ``") "`` or a
+    newline cannot shift it), else from ``ps``;
     with neither it prints ``?``. Its stderr is dropped, so a process exiting mid-scan
     cannot leak a read error into the output.
 
@@ -68,7 +69,9 @@ def group_liveness_shell(pgid_expr: str) -> str:
     return (
         f'_hg={pgid_expr}; '
         '_hm() { case "$_hg" in ""|*[!0-9]*) return 0;; esac; '
-        'if [ -r /proc/self/stat ]; then for _s in /proc/[0-9]*/stat; do read -r _l < "$_s" || continue; '
+        # The whole stat file, lines joined: a comm (process name) may itself hold a newline.
+        'if [ -r /proc/self/stat ]; then for _s in /proc/[0-9]*/stat; do _l=; '
+        '{ while IFS= read -r _x || [ -n "$_x" ]; do _l="$_l $_x"; done; } < "$_s" || continue; '
         '_r=${_l##*) }; set -f; set -- $_r; set +f; '
         '[ "$3" = "$_hg" ] && [ "$1" != Z ] && { _p=${_s#/proc/}; echo "${_p%/stat}"; }; done; '
         'elif _o=$(ps -A -o pid= -o pgid= -o stat=); then printf \'%s\\n\' "$_o" | '

@@ -6,7 +6,7 @@ import threading
 from types import SimpleNamespace
 
 import agent.prompt_cache_lifecycle as pcl
-import agent.prompt_cache_lifecycle.edge as edge
+from agent.prompt_cache_lifecycle import edge
 
 
 def _due_warmer(monkeypatch):

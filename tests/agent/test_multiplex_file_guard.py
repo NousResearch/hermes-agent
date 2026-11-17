@@ -101,3 +101,76 @@ def test_read_file_tool_refuses(homes):
     with _As(edu):
         out = json.loads(read_file_tool(str(root / "SOUL.md")))
     assert "another profile" in (out.get("error") or "")
+
+
+# ── search_files: every hit is checked, not just the search root ───────────
+
+
+def _search(root, **kw):
+    from tools.file_tools import search_tool
+
+    return json.loads(search_tool(pattern="MARKER", path=str(root), task_id="mx", **kw))
+
+
+@pytest.fixture()
+def marked(homes):
+    root, edu, other = homes
+    for home in (root, edu, other):
+        for rel in FILES:
+            (home / rel).write_text(f"MARKER in {home.name}/{rel}\n", encoding="utf-8")
+    return homes
+
+
+def _hit_paths(result):
+    paths = [m.get("path", "") for m in result.get("matches", []) or []]
+    paths += list(result.get("files", []) or [])
+    paths += list((result.get("counts") or {}).keys())
+    # content mode: path-grouped text — each path on its own line, then
+    # indented "<line>: <content>" rows.
+    for line in (result.get("matches_text") or "").splitlines():
+        if line and not line[0].isspace():
+            paths.append(line.strip())
+    return paths
+
+
+@pytest.mark.parametrize("mode", ["content", "files_only", "count"])
+def test_search_from_default_root_hides_educator_hits(marked, mode):
+    root, edu, other = marked
+    with _As(root):
+        hits = _hit_paths(_search(root, output_mode=mode))
+    assert hits, "default should still find its own files"
+    assert not any(str(edu) in h for h in hits), hits
+    assert any(str(other) in h for h in hits)  # unserved profile is not a boundary
+
+
+@pytest.mark.parametrize("mode", ["content", "files_only", "count"])
+def test_search_from_educator_over_the_root_hides_default_hits(marked, mode):
+    root, edu, _ = marked
+    with _As(edu):
+        hits = _hit_paths(_search(root.parent, output_mode=mode))
+    assert any(str(edu) in h for h in hits), hits
+    leaked = [h for h in hits if h.startswith(str(root)) and str(root / "profiles") not in h]
+    assert not leaked, leaked
+
+
+def test_filename_search_hides_other_profile(marked):
+    root, edu, _ = marked
+    from tools.file_tools import search_tool
+
+    with _As(root):
+        out = json.loads(search_tool(pattern="SOUL.md", target="files", path=str(root), task_id="mx"))
+    files = out.get("files", []) or []
+    assert files and not any(str(edu) in f for f in files), files
+
+
+def test_guard_fails_closed_on_internal_error(homes, monkeypatch):
+    root, edu, _ = homes
+    import hermes_constants
+
+    def boom():
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", boom)
+    assert "could not verify" in mfg.cross_profile_denial(str(edu / "SOUL.md"))
+    ss.set_multiplex_active(False)
+    assert mfg.cross_profile_denial(str(edu / "SOUL.md")) is None

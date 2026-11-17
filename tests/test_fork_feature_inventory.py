@@ -177,6 +177,8 @@ WIRING = [
     ("Multiplex 4d: file boundary", "agent/file_safety.py", 'cross_profile_denial(resolved, verb="Read")', "read chokepoint"),
     ("Multiplex 4d: file boundary", "agent/file_safety.py", 'return "cross_profile"', "write chokepoint"),
     ("Multiplex 4d: file boundary", "gateway/run.py", "set_served_profile_homes(", "served homes registered"),
+    ("Multiplex 4d: search hits", "tools/file_tools.py", "omitted = _filter_read_blocked_search_results(result, task_id)", "every search hit re-checked"),
+    ("Multiplex 4d: search hits", "tools/file_tools.py", "    return get_read_block_error(str(resolved))", "hit check runs the read guard (incl. cross_profile_denial)"),
     ("Multiplex 4e: write guard", "agent/file_safety.py", 'return "write_guard"', "file tools"),
     ("Multiplex 4e: write guard", "tools/skill_manager_tool.py", "_profile_write_guard_error(action, name", "skill_manage"),
     ("Multiplex 4f: cron script env", "cron/scheduler.py", "env = build_subprocess_env(base=scoped_subprocess_env())", "script runs as its profile"),

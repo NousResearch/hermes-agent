@@ -74,8 +74,11 @@ def heal_dotenv(**kwargs) -> bool:
     return True
 
 
-def _process_profile_secret_keys() -> set:
-    """Non-global keys the process (default) profile's secret sources define."""
+def _process_profile_secret_keys() -> Optional[set]:
+    """Non-global keys the process (default) profile's secret sources define.
+
+    ``None`` when they cannot be enumerated — the caller then fails closed.
+    """
     try:
         from agent.secret_scope import _is_global_env, build_profile_secret_scope
         from hermes_constants import get_process_hermes_home
@@ -83,8 +86,12 @@ def _process_profile_secret_keys() -> set:
         keys = build_profile_secret_scope(get_process_hermes_home()).keys()
         return {k for k in keys if not _is_global_env(k)}
     except Exception:
-        logger.debug("could not enumerate process-profile secret keys", exc_info=True)
-        return set()
+        logger.warning(
+            "could not enumerate the default profile's secrets; stripping every "
+            "non-global variable from the child environment",
+            exc_info=True,
+        )
+        return None
 
 
 def scoped_subprocess_env(base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -93,12 +100,19 @@ def scoped_subprocess_env(base: Optional[Dict[str, str]] = None) -> Dict[str, st
     Multiplex off: ``dict(base or os.environ)`` — unchanged.
     Multiplex on: the process environment minus every secret the process
     (default) profile's ``.env`` / secret sources define, overlaid with the
-    current profile's secret scope. Unscoped → no overlay (fail closed).
+    current profile's secret scope. Unscoped → no overlay. If the default's
+    secrets cannot be enumerated, every non-global variable is stripped
+    (fail closed) before the overlay.
     """
     env = dict(base) if base is not None else dict(os.environ)
     if not is_multiplex_active():
         return env
-    for key in _process_profile_secret_keys():
+    keys = _process_profile_secret_keys()
+    if keys is None:
+        from agent.secret_scope import _is_global_env
+
+        keys = {k for k in env if not _is_global_env(k)}
+    for key in keys:
         env.pop(key, None)
     scope = current_secret_scope()
     if scope:

@@ -1,4 +1,9 @@
-"""Default-profile MCP servers never reach a secondary profile (4c)."""
+"""MCP servers never reach a secondary profile under multiplex (4c).
+
+MCP processes are process-wide and keyed by server name (the default
+profile's), so a secondary profile gets no MCP toolset at all — not even
+one its own config.yaml declares.
+"""
 from __future__ import annotations
 
 import json
@@ -42,12 +47,12 @@ class _In:
 TOOLSETS = ["file", "mcp-webflow", "webflow", "mcp-stripe", "mcp-zendesk_own", "web"]
 
 
-def test_secondary_drops_default_mcp_keeps_own(homes):
+def test_secondary_drops_every_mcp_toolset_even_its_own(homes):
     _, edu = homes
     ss.set_multiplex_active(True)
     with _In(edu):
         assert mg.is_secondary_profile_context() is True
-        assert mg.filter_foreign_mcp_toolsets(TOOLSETS) == ["file", "mcp-zendesk_own", "web"]
+        assert mg.filter_foreign_mcp_toolsets(TOOLSETS) == ["file", "web"]
 
 
 def test_default_profile_and_multiplex_off_unchanged(homes):
@@ -66,7 +71,8 @@ def test_dispatch_backstop(homes):
     ss.set_multiplex_active(True)
     with _In(edu):
         assert mg.foreign_mcp_denial("mcp__webflow__list_sites") is not None
-        assert mg.foreign_mcp_denial("mcp__zendesk_own__draft") is None
+        # Declared by educator's own config — still the shared process.
+        assert mg.foreign_mcp_denial("mcp__zendesk_own__draft") is not None
         assert mg.foreign_mcp_denial("read_file") is None
     with _In(root):
         assert mg.foreign_mcp_denial("mcp__webflow__list_sites") is None
@@ -75,17 +81,37 @@ def test_dispatch_backstop(homes):
         assert mg.foreign_mcp_denial("mcp__webflow__list_sites") is None
 
 
-def test_backstop_fails_closed_on_internal_error(homes, monkeypatch):
+def _boom(*a, **k):
+    raise RuntimeError("injected")
+
+
+def test_backstop_fails_closed_when_context_unresolvable(homes, monkeypatch):
+    root, _ = homes
+    ss.set_multiplex_active(True)
+    monkeypatch.setattr(mg, "is_secondary_profile_context", _boom)
+    with _In(root):  # even in the default's home: cannot tell → deny
+        assert mg.foreign_mcp_denial("mcp__webflow__list_sites") is not None
+        assert mg.foreign_mcp_denial("read_file") is None
+        assert mg.filter_foreign_mcp_toolsets(TOOLSETS) == ["file", "web"]
+
+
+def test_backstop_fails_closed_when_registry_unresolvable(homes, monkeypatch):
     _, edu = homes
     ss.set_multiplex_active(True)
+    from tools.registry import registry
 
-    def boom(*a, **k):
-        raise RuntimeError("config unreadable")
-
-    monkeypatch.setattr(mg, "profile_declared_mcp_servers", boom)
+    monkeypatch.setattr(registry, "get_toolset_for_tool", _boom)
     with _In(edu):
-        assert mg.foreign_mcp_denial("mcp__zendesk_own__draft") is not None
+        assert mg.foreign_mcp_denial("mcp__webflow__list_sites") is not None
         assert mg.foreign_mcp_denial("read_file") is None
+
+
+def test_errors_with_multiplex_off_stay_inert(homes, monkeypatch):
+    _, edu = homes
+    monkeypatch.setattr(mg, "is_secondary_profile_context", _boom)
+    with _In(edu):
+        assert mg.foreign_mcp_denial("mcp__webflow__list_sites") is None
+        assert mg.filter_foreign_mcp_toolsets(TOOLSETS) == TOOLSETS
 
 
 def test_handle_function_call_blocks_foreign_mcp(homes):
@@ -96,7 +122,7 @@ def test_handle_function_call_blocks_foreign_mcp(homes):
     ss.set_multiplex_active(True)
     with _In(edu):
         out = model_tools.handle_function_call("mcp__webflow__list_sites", {}, task_id="t")
-    assert "does not configure" in json.loads(out)["error"]
+    assert "MCP tool" in json.loads(out)["error"]
 
 
 def test_resolver_applies_filter_after_rbac(homes, monkeypatch):
@@ -117,7 +143,7 @@ def test_resolver_applies_filter_after_rbac(homes, monkeypatch):
     with _In(edu):
         out = runner._resolve_enabled_toolsets_for_source({}, src, "slack")
     assert "mcp-webflow" not in out and "webflow" not in out and "mcp-stripe" not in out
-    assert "mcp-zendesk_own" in out
+    assert "mcp-zendesk_own" not in out
 
 
 def test_cron_job_of_secondary_profile_drops_default_mcp(homes, monkeypatch):
@@ -128,13 +154,13 @@ def test_cron_job_of_secondary_profile_drops_default_mcp(homes, monkeypatch):
     ss.set_multiplex_active(True)
     with _In(edu):
         out = sched._cron_enabled_toolsets_with_ceiling({"id": "j"}, {})
-    assert out == ["file", "mcp-zendesk_own", "web"]
+    assert out == ["file", "web"]
     with _In(root):
         assert sched._cron_enabled_toolsets_with_ceiling({"id": "j"}, {}) == TOOLSETS
     monkeypatch.setattr(sched, "_cron_enabled_toolsets_rbac_capped", lambda job, cfg: None)
     with _In(edu):
         expanded = sched._cron_enabled_toolsets_with_ceiling({"id": "j"}, {})
-    assert expanded is not None and not any(t.startswith("mcp-webflow") for t in expanded)
+    assert expanded is not None and not any(t.startswith("mcp-") for t in expanded)
     ss.set_multiplex_active(False)
     with _In(edu):
         assert sched._cron_enabled_toolsets_with_ceiling({"id": "j"}, {}) is None

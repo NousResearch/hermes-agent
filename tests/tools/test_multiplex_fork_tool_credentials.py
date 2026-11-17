@@ -118,6 +118,19 @@ class TestScopedSubprocessEnv:
         assert "NOTION_API_KEY" not in env
 
 
+    def test_on_strips_every_non_global_key_when_default_secrets_unknown(self, monkeypatch):
+        import agent.fork_secrets as fs
+
+        monkeypatch.setattr(fs, "_process_profile_secret_keys", lambda: None)
+        monkeypatch.setenv("SOME_DEFAULT_SECRET", "x")
+        ss.set_multiplex_active(True)
+        with scope({"NOTION_API_KEY": "b-key"}):
+            env = fs.scoped_subprocess_env()
+        assert "SOME_DEFAULT_SECRET" not in env
+        assert env["NOTION_API_KEY"] == "b-key"
+        assert env.get("PATH")
+
+
 # ── Jira ──────────────────────────────────────────────────────────────────
 
 

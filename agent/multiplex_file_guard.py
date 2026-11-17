@@ -76,12 +76,20 @@ def _under(path: str, root: str) -> bool:
 
 
 def cross_profile_denial(path, *, verb: str = "Access") -> Optional[str]:
-    """Return a denial when *path* lies in another served profile's home."""
+    """Return a denial when *path* lies in another served profile's home.
+
+    Inert with multiplexing off. With it on, an internal error DENIES (fail
+    closed) — a guard that cannot evaluate a path must not let it through.
+    """
     try:
         from agent.secret_scope import is_multiplex_active
 
-        if not is_multiplex_active() or not _SERVED_HOMES:
-            return None
+        multiplex = is_multiplex_active()
+    except Exception:
+        return None  # cannot tell the mode: the single-profile path is the legacy one
+    if not multiplex or not _SERVED_HOMES:
+        return None
+    try:
         from hermes_constants import get_hermes_home
 
         target = _real(path)
@@ -89,13 +97,15 @@ def cross_profile_denial(path, *, verb: str = "Access") -> Optional[str]:
         for home in _SERVED_HOMES:
             if home == active or not _under(target, home):
                 continue
-            # A home that contains the profiles/ tree is the default (root)
-            # profile: other profiles' homes live under it and are judged on
-            # their own entries — including the active one.
+            # The default profile's home is the HERMES root, and the named
+            # profiles live under its profiles/ subtree. That subtree is not
+            # the default's: each served profile there is judged by its own
+            # entry in _SERVED_HOMES, and an unserved one is no boundary.
             if _under(target, os.path.join(home, "profiles")):
                 continue
-            # The active profile lives inside this home (e.g. a named profile
-            # nested under the root) — the subtree is the active profile's.
+            # Non-standard layout: the active home sits inside this served
+            # home but outside its profiles/ subtree. Paths under the active
+            # home are still the active profile's own.
             if _under(target, active) and _under(active, home):
                 continue
             audit_denial("cross_profile_denied", str(path))
@@ -104,5 +114,9 @@ def cross_profile_denial(path, *, verb: str = "Access") -> Optional[str]:
                 "this gateway. Each bot may only use files in its own profile."
             )
     except Exception:
-        return None
+        audit_denial("cross_profile_check_failed", str(path))
+        return (
+            f"{verb} denied: could not verify that '{path}' stays inside this "
+            "profile (multiplexed gateway; the guard fails closed)."
+        )
     return None

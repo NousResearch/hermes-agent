@@ -46,8 +46,8 @@ class _Store:
     def _named_profile_for_key(self, key):
         return None  # standalone gateway: every key is the launch profile's
 
-    def _db_for_key(self, key):
-        return None
+    def _persistence_for_key(self, key):
+        return None  # no store: a detached entry starts from its key alone
 
     def _lazy(self, name, factory):
         return self.__dict__.setdefault(name, factory())

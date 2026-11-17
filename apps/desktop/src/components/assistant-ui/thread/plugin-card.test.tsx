@@ -34,7 +34,7 @@ const TEXT = 'Share "deploy-checklist" with your team?'
 
 function storedRow(card: unknown = CARD): SessionMessage {
   return {
-    content: '[cwplug posted a card: Share "deploy-checklist" with your team?]',
+    content: '[cwplug posted a card share-1]',
     display_kind: 'plugin_card',
     display_metadata: { completion_note: ['x'], display_text: TEXT, plugin_card: card },
     role: 'user',

@@ -51,8 +51,8 @@ _CAPABILITY_ROWS = (
      "Run a background copy of your agent after a turn. It sees the whole session, including "
      "memory, can use the plugin's own tools, and spends your main model's tokens."),
     ("conversation.cards", (),
-     "Post cards into your conversations (no immediate model call; the text "
-     "is visible to your next model turn and may render as a card in Desktop)."),
+     "Post display-only cards into your conversations (no model call; the model is told a card "
+     "was posted, never its text; the card renders in Desktop or as a system line)."),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))

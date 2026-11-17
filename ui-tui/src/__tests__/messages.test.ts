@@ -102,13 +102,21 @@ describe('toTranscriptMessages', () => {
     const [message] = toTranscriptMessages([
       {
         role: 'user',
-        text: '[cwplug posted a card: Share it?]',
+        text: '[cwplug posted a card share-1]',
         display_kind: 'plugin_card',
         display_metadata: { display_text: 'Share "deploy-checklist" with your team?' }
       }
     ])
 
     expect(message).toMatchObject({ kind: 'event', role: 'system', text: 'Share "deploy-checklist" with your team?' })
+  })
+
+  it("falls back to the model's bounded line for a stored plugin card row without display_text", () => {
+    const [message] = toTranscriptMessages([
+      { role: 'user', text: '[cwplug posted a card share-1]', display_kind: 'plugin_card', display_metadata: {} }
+    ])
+
+    expect(message).toMatchObject({ kind: 'event', role: 'system', text: '[cwplug posted a card share-1]' })
   })
 })
 

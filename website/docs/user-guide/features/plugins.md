@@ -1080,7 +1080,9 @@ admitted on the gateway's event loop into a session the Hermes process owns.
 
 A plugin can put a card into a conversation from anywhere, including a timer or its own background
 thread, without starting a model turn. The card is saved in the session's history, so it is still there
-after a reload, and the model sees one short line saying which plugin posted what:
+after a reload. A card is display-only: people see it, and the model is told only that the plugin posted
+a card with that id (one line, `[<plugin id> posted a card <card id>]`). The model never reads the card's
+text, directive or attrs:
 
 ```python
 result = ctx.post_card(
@@ -1096,12 +1098,12 @@ result = ctx.post_card(
 **Signature:** `ctx.post_card(card: dict, *, session_key: str | None = None, origin: Mapping | None = None) -> dict`,
 and `await ctx.apost_card(...)` on the gateway's event loop. It never raises.
 
-- `text` (1 to 2,000 characters) is required. It is what every surface without the plugin's card shows, and
-  what the model reads.
+- `text` (1 to 2,000 characters) is required. It is what every surface without the plugin's card shows.
+  It is never shown to the model.
 - `directive` is optional. It names a [transcript directive](../../developer-guide/desktop-plugin-sdk.md) that
   the plugin's Desktop half registers in `transcript.directives`. Desktop renders that component with
   `attrs` (string values, at most 16 keys, 2,048 characters in all). If no plugin claims the name, the text
-  is shown. The model never sees `attrs`.
+  is shown. The model never sees `attrs` either.
 - `id` is optional. Posting the same `id` again with the same card does nothing (`status: "duplicate"`).
   Posting it with a different card is refused (`card_conflict`). A card is never edited: the plugin's
   component shows the current state for its `id`.
@@ -1131,8 +1133,9 @@ the gateway's own context, never the caller's: a card posted from a session fork
 hook inside a turn hands none of that turn's scopes to the session queue.
 
 Cards need the `conversation.cards` capability. Declare it in `plugin.yaml` and grant it on the consent
-screen. It is separate from `allow_gateway_injection` because a card runs no model and no tools and sends
-nothing to a platform.
+screen. It is separate from `allow_gateway_injection` because a card runs no model and no tools, sends
+nothing to a platform, and puts no plugin-authored text in front of the model: the model is told a card
+was posted, never its text.
 
 ## Injecting Messages
 

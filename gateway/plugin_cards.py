@@ -1,12 +1,14 @@
 """Where ``PluginContext.post_card`` lands: a card in a conversation of the plugin's own profile.
 
-A card is data, never a prompt. It is admitted into the target session's durable FIFO as a producer
-wake (``session_automation.admit_route_wake``, the path a local cron result takes), and at the FIFO
-head it is always written as a note (``session_completion_notes``): no model call, no tools, and the
-session's background review and forks keep running. The row's ``content`` is one factual line the
-next turn reads; the card itself (directive name and attrs) rides ``display_metadata`` and the live
-``plugin.card`` event, which only renderers read. Core sends nothing to a messaging platform: the
-plugin sends its own native card there, and the row records it for the model.
+A card is display-only data, never a prompt. It is admitted into the target session's durable FIFO
+as a producer wake (``session_automation.admit_route_wake``, the path a local cron result takes),
+and at the FIFO head it is always written as a note (``session_completion_notes``): no model call,
+no tools, and the session's background review and forks keep running. The row's ``content`` is one
+bounded core-authored line (``model_line``) that tells the next turn a card was posted, built from
+the validated plugin id and card id only: no plugin-authored text reaches the model. The card
+itself (text, directive name and attrs) rides ``display_metadata`` and the live ``plugin.card``
+event, which only renderers read. Core sends nothing to a messaging platform: the plugin sends its
+own native card there, and the row records that it did.
 """
 from __future__ import annotations
 
@@ -25,12 +27,14 @@ logger = logging.getLogger(__name__)
 DISPLAY_KIND = "plugin_card"
 PRODUCER = "plugin-card"
 TEXT_MAX = 2000  # session_automation._DISPLAY_TEXT_LIMIT
-MODEL_TEXT_MAX = 300
 ATTRS_MAX_KEYS = 16
 ATTRS_MAX_CHARS = 2048  # Desktop's DIRECTIVE_BODY_MAX
 RATE_LIMIT = (6, 60.0)  # cards per (plugin, session) per window seconds
 
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# A registry id (``manifest_key``: a bare name or ``<prefix>/<dir>``), identifier characters only: it
+# is the one plugin-supplied value the model line carries.
+_PLUGIN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@:-]{0,127}")
 _NAME_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")  # transcript-directives.ts SEGMENT_RE
 _ATTR_RE = re.compile(r"[a-z][A-Za-z0-9_-]{0,63}")
 _recent: dict[tuple[str, str], deque] = {}
@@ -59,7 +63,7 @@ def card_descriptor(raw: Any) -> Optional[dict]:
     if not isinstance(raw, Mapping) or set(raw) - {"plugin_id", "card_id", "directive"}:
         return None
     plugin_id, card_id = raw.get("plugin_id"), raw.get("card_id")
-    if not isinstance(plugin_id, str) or not plugin_id or len(plugin_id) > 128:
+    if not isinstance(plugin_id, str) or not _PLUGIN_ID_RE.fullmatch(plugin_id):
         return None
     if not isinstance(card_id, str) or not _ID_RE.fullmatch(card_id):
         return None
@@ -87,12 +91,11 @@ def validate(card: Any, plugin_id: str) -> tuple[Optional[dict], Optional[str]]:
     return {**stored, "text": text}, None
 
 
-def model_line(plugin_id: str, text: str) -> str:
-    """What the model reads: who posted what. Never the directive or its attrs."""
-    body = " ".join(text.split())
-    if len(body) > MODEL_TEXT_MAX:
-        body = body[:MODEL_TEXT_MAX - 1] + "…"
-    return f"[{plugin_id} posted a card: {body}]"
+def model_line(plugin_id: str, card_id: str) -> str:
+    """What the model reads: that *plugin_id* posted card *card_id*. Both are validated identifiers
+    (``card_descriptor``), so the line is bounded and carries no plugin-authored text, let alone the
+    card's text, directive or attrs."""
+    return f"[{plugin_id} posted a card {card_id}]"
 
 
 def _rate_limited(plugin_id: str, session_key: str) -> bool:
@@ -162,7 +165,7 @@ async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: s
                else runner._delivery_adapter_for(source))
     try:
         async with runner._plugin_injection_scope(source, plugin_home):
-            admitted = await admit_route_wake(runner, adapter, source, model_line(plugin_id, normalized["text"]),
+            admitted = await admit_route_wake(runner, adapter, source, model_line(plugin_id, normalized["card_id"]),
                                               PRODUCER, metadata, request_id=request_id)
     except AuthorityRefusal as exc:
         if exc.reason == "admission_conflict":

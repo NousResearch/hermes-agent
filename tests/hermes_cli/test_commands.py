@@ -270,30 +270,20 @@ class TestSlackNativeSlashes:
 
 
     def test_via_hermes_only_never_return_as_native_slashes(self, monkeypatch):
-        """At zero headroom the ceiling assertion is tautological: the
-        generator skips at the cap, so len <= 25 cannot fail while the
-        constant is pinned at 25. The live failure mode is *which* 25 win —
-        no _SLACK_VIA_HERMES_ONLY name may leak back into a native slot.
-        A plain leak intersection is tautological too (the generator filters
-        on the same set), so drive the filter itself: shrink the set by one
-        demoted name and require it back as a native slash — the only edit
-        direction in which the generator's set and the leak check's set can
-        disagree."""
+        """Demotion is the generator's filter, not a side effect of slot order:
+        over a fixed registry with room to spare, a demoted command never takes
+        a native slot, and taking it off the demotion set puts it back."""
         from hermes_cli import commands_platforms
 
-        # title ranks inside the 25-slot window once undemoted; if curation
-        # drops it, re-pick a name that does instead of weakening this test.
-        freed = "title"
-        assert freed in _SLACK_VIA_HERMES_ONLY, (
-            f"{freed!r} is no longer demoted; pick another name that ranks inside the cap"
-        )
-        shrunk = frozenset(_SLACK_VIA_HERMES_ONLY) - {freed}
-        monkeypatch.setattr(commands_platforms, "_SLACK_VIA_HERMES_ONLY", shrunk)
+        registry = [CommandDef(n, f"{n} command", "Session") for n in ("alpha", "beta", "gamma")]
+        monkeypatch.setattr(commands_platforms, "_gateway_available_commands", lambda: registry)
+        monkeypatch.setattr(commands_platforms, "_iter_plugin_command_entries", list)
 
-        native = {n for n, _d, _h in slack_native_slashes()}
-        assert freed in native, f"undemoting {freed!r} did not return it to native slashes"
-        leaked = native & shrunk
-        assert not leaked, f"demoted commands back as native slashes: {sorted(leaked)}"
+        monkeypatch.setattr(commands_platforms, "_SLACK_VIA_HERMES_ONLY", frozenset({"beta"}))
+        assert [n for n, _d, _h in slack_native_slashes()] == ["hermes", "alpha", "gamma"]
+
+        monkeypatch.setattr(commands_platforms, "_SLACK_VIA_HERMES_ONLY", frozenset())
+        assert [n for n, _d, _h in slack_native_slashes()] == ["hermes", "alpha", "beta", "gamma"]
 
 
     def test_every_demoted_name_still_resolves_via_hermes(self):
@@ -305,27 +295,24 @@ class TestSlackNativeSlashes:
         assert not dead, f"demoted names unreachable via /hermes: {dead}"
 
 
-    def test_plugin_commands_win_freed_slots_ahead_of_aliases(self, monkeypatch):
-        """The canonical -> plugins -> aliases order only becomes observable
-        once slots free up mid-list: with two kept commands demoted, two
-        installed plugin commands must take the freed slots before generated
-        aliases do (a dropped plugin command loses its only entry point; an
-        alias stays reachable via its canonical slash and /hermes)."""
+    def test_plugin_commands_win_slots_at_the_cap_ahead_of_aliases(self, monkeypatch):
+        """At the cap, plugin commands claim the remaining slots before generated
+        aliases: a dropped plugin command loses its only dedicated entry point,
+        while an alias stays reachable via its canonical slash and /hermes."""
         from hermes_cli import commands_platforms
 
-        monkeypatch.setattr(
-            commands_platforms, "_SLACK_VIA_HERMES_ONLY",
-            frozenset(set(_SLACK_VIA_HERMES_ONLY) | {"kanban", "memory"}))
+        registry = [CommandDef("alpha", "Alpha", "Session", aliases=("al",)),
+                    CommandDef("beta", "Beta", "Session", aliases=("be",))]
+        monkeypatch.setattr(commands_platforms, "_gateway_available_commands", lambda: registry)
+        monkeypatch.setattr(commands_platforms, "_SLACK_VIA_HERMES_ONLY", frozenset())
+        monkeypatch.setattr(commands_platforms, "_SLACK_MAX_SLASH_COMMANDS", 5)
         monkeypatch.setattr(
             commands_platforms, "_iter_plugin_command_entries",
             lambda: [("plug-alpha", "First plugin command", ""),
                      ("plug-beta", "Second plugin command", "")])
 
         native = [n for n, _d, _h in slack_native_slashes()]
-        assert native[-2:] == ["plug-alpha", "plug-beta"], (
-            f"plugins did not win the freed slots ahead of aliases: {native[-4:]}"
-        )
-        assert "reset" not in native and "fork" not in native
+        assert native == ["hermes", "alpha", "beta", "plug-alpha", "plug-beta"]
 
 
     def test_matcher_universe_stays_uncapped_for_grandfathered_apps(self):

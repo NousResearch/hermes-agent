@@ -1,13 +1,13 @@
 name: proof-run
 repo: https://github.com/raffieeey/hermes-proof-run
-sha: 6c491b2fe088c6d5081295b61905c828d4c9615f
+sha: 581b6e3691c417c21d158127aa0eb8544ad9e842
 subdir: proof-run
 description: "Proof Run records a successful Hermes task at the tool boundary and saves it as a procedure with named inputs. A guided run tells a cheaper follower each step and checks every action before it executes; strict exact guards and checked-execution workflows remain available beside it."
 maintainer: raffieeey
 tier: community
 category: automation
 requires_hermes: ">=0.21.0"
-version: "0.3.1"
+version: "0.3.2"
 platforms: [linux]
 capabilities:
   provides_tools: []

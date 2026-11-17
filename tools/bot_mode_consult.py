@@ -67,16 +67,6 @@ def _sticky_subagent(db: Any, asker_sid: str, profile: str) -> Optional[str]:
     return None
 
 
-def _mark_child(db: Any, asker_sid: str, subagent_id: str, profile: str) -> Optional[str]:
-    """Stamp the new child's session with the teammate it consults; returns that session id."""
-    from tools.delegate_tool_sessions import stored_child_session
-
-    child_sid = stored_child_session(db, subagent_id, _ancestors(db, asker_sid))
-    if child_sid:
-        db.patch_session_model_config(child_sid, {CONSULT_MARKER: profile})
-    return child_sid
-
-
 def _answer(raw: str, label: str, *, resumed: bool, child_sid: Optional[str]) -> tuple[Optional[str], str]:
     """``(subagent_id, tool result JSON)`` from a joined delegate_task result."""
     out = json.loads(raw)
@@ -89,6 +79,9 @@ def _answer(raw: str, label: str, *, resumed: bool, child_sid: Optional[str]) ->
                                "to": label, "subagent_id": sid, "resumed": resumed}
     if entry.get("status") == "completed":
         payload["answer"] = entry.get("summary") or ""
+        # A teammate that ran out of its iteration budget still hands back text: say it stopped early.
+        if entry.get("truncated"):
+            payload.update(truncated=True, exit_reason=entry.get("exit_reason"))
     else:
         payload["error"] = entry.get("error") or f"{label} did not answer."
     if child_sid:
@@ -134,14 +127,15 @@ def consult_teammate(target: str, body: str, sender: Any, signature: str) -> str
                 return _answer(raw_result, label, resumed=True,
                                child_sid=_sticky_child_sid(db, asker_sid, sid))[1]
         # Not retained here (a restart dropped its in-process route): a fresh thread, never a refusal.
+    # The marker rides the child's own session row with its _subagent_id (written by its first turn), so a
+    # restart mid-consult still finds this thread.
+    route = {"profile": profile, "label": label, "session_marks": {CONSULT_MARKER: profile}}
     raw_result = delegate_task(tasks=[{"goal": body, "context": _brief_context(signature)}], background=False,
-                               parent_agent=agent, credentials_cfg={"profile": profile, "label": label})
-    sid, payload = _answer(raw_result, label, resumed=False, child_sid=None)
-    if not sid:
-        return payload
+                               parent_agent=agent, credentials_cfg=route)
+    sid = (json.loads(raw_result).get("results") or [{}])[0].get("subagent_id")
     with _transcript_store(agent) as db:
-        child_sid = _mark_child(db, asker_sid, sid, profile)
-    return json.dumps({**json.loads(payload), **({"session_id": child_sid} if child_sid else {})}, ensure_ascii=False)
+        child_sid = _sticky_child_sid(db, asker_sid, sid) if sid and db is not None else None
+    return _answer(raw_result, label, resumed=False, child_sid=child_sid)[1]
 
 
 def _sticky_child_sid(db: Any, asker_sid: str, subagent_id: str) -> Optional[str]:

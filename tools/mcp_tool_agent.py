@@ -352,7 +352,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged.extend(t for t in fresh_defs if _def_name(t) not in pinned_names and _def_name(t) not in held)
     merged = _drop_gated_carried_tools(merged, carried)
     merged_names = {_def_name(t) for t in merged}
-    _reinject_authorized_dynamic_tools(agent, merged, merged_names)
+    _reinject_authorized_dynamic_tools(agent, merged, merged_names, held=pinned_defs)
     merged, merged_names = _drop_session_tools(agent, merged, merged_names)
     changed = merged != fresh_defs
     if changed:
@@ -401,16 +401,20 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
     return merged, {_def_name(t) for t in merged}
 
 
-def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set) -> None:
+def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set, held: Optional[list] = None) -> None:
     """``message_agent`` is injected by an auth gate, never registered, so a registry-derived
     rebuild drops it. Scrub any stale copy from the STAGED pair and re-add it only when the live
-    gate re-authorizes, so the publisher exposes a coherent ``(tools, valid_tool_names)``."""
+    gate re-authorizes, so the publisher exposes a coherent ``(tools, valid_tool_names)``. The
+    copy the conversation already sent (``held``: the session's pin, else the live tools) keeps its
+    bytes: its description carries config (the consult roster) that changes only at a new session."""
     from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, message_agent_authorized, message_agent_tool_schema
 
+    sent = next((d for d in (held if held is not None else _agent_tool_defs(agent))
+                 if _def_name(d) == MESSAGE_AGENT_TOOL_NAME), None)
     tools_list[:] = [entry for entry in tools_list if _def_name(entry) != MESSAGE_AGENT_TOOL_NAME]
     name_set.discard(MESSAGE_AGENT_TOOL_NAME)
     if message_agent_authorized(agent):
-        tools_list.append(message_agent_tool_schema())
+        tools_list.append(sent or message_agent_tool_schema())
         name_set.add(MESSAGE_AGENT_TOOL_NAME)
 
 

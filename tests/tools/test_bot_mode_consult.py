@@ -126,5 +126,16 @@ def test_consult_refuses_a_teammate_off_the_roster_and_stays_hidden_without_one(
         out = json.loads(message_agent_tool(target="scout", message="hi", mode="consult", agent=_asker(db, "a")))
     assert "consult roster" in out["error"] and out["teammates"] == ["coder"] and model.builds == []
 
+    # A tool rebuild inside the conversation (MCP refresh, agent rebuilt from its pin) keeps the bytes it sent,
+    # even after the roster changed on disk: the new roster is offered from the next session.
+    from tools.mcp_tool_agent import _reinject_authorized_dynamic_tools
+
+    asker = _asker(db, "b")
+    sent = message_agent_tool_schema()
+    _install(tmp_path, monkeypatch, ["coder", "scout"])
+    asker.tools, staged, names = [sent], [], set()
+    _reinject_authorized_dynamic_tools(asker, staged, names)
+    assert staged == [sent] and "message_agent" in names
+
     _install(tmp_path, monkeypatch, [])
     assert "mode" not in message_agent_tool_schema()["function"]["parameters"]["properties"]

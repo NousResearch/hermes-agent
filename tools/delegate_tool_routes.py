@@ -46,6 +46,8 @@ class TaskRoute:
     # The task's provider-declared parameters this route came from (no secrets): what a continue after a restart
     # re-routes with. None for an internal caller's explicit route (``route_for_config``), which cannot be rebuilt.
     request: Optional[dict[str, Any]] = None
+    # ``model_config`` keys an internal caller stamps on the child's session, written with its ``_subagent_id``.
+    session_marks: Optional[dict[str, Any]] = None
 
     def report(self) -> Optional[dict[str, Any]]:
         """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
@@ -352,6 +354,9 @@ def route_for_config(routing_cfg: dict[str, Any], parent_agent: Any) -> TaskRout
     their route. A ``profile`` key resolves exactly as a backend's profile route does."""
     if routing_cfg.get("profile"):
         # The profile name is all it takes to resolve this route again, so a continue after a restart rebuilds it.
-        return replace(_route_to_task_route(routing_cfg, parent_agent, {}),
-                       request={EXPLICIT_PROFILE_ROUTE: str(routing_cfg["profile"])})
+        marks = routing_cfg.get("session_marks")
+        route = {k: v for k, v in routing_cfg.items() if k != "session_marks"}
+        return replace(_route_to_task_route(route, parent_agent, {}),
+                       request={EXPLICIT_PROFILE_ROUTE: str(routing_cfg["profile"])},
+                       session_marks=dict(marks) if isinstance(marks, dict) else None)
     return TaskRoute(_resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg)

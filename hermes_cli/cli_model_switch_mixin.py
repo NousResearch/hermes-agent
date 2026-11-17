@@ -55,11 +55,11 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     canonical row reader is ``SessionDB.session_gateway_runtime`` (``model_config.gateway_runtime``,
     else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
     hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
-    stored_model = str((session_meta or {}).get("model") or "").strip()
+    from hermes_state import SessionDB as _SessionDB
+    stored_model, route_row = _SessionDB.session_resume_model(session_meta)
     if not stored_model:
         return None
-    from hermes_state import SessionDB as _SessionDB
-    runtime = _SessionDB.session_gateway_runtime(session_meta)
+    runtime = _SessionDB.session_gateway_runtime(route_row)
     base_url = runtime.get("base_url") or None
     api_mode = runtime.get("api_mode") or None
     stored_provider = runtime.get("provider") or None

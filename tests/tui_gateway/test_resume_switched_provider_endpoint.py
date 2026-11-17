@@ -70,6 +70,9 @@ def test_resume_after_fallback_served_first_call_keeps_the_picked_pair(tmp_path)
 
     restored = _stored_session_runtime_overrides(row)["model_override"]
     assert (restored["model"], restored["provider"]) == ("claude-opus-4", "anthropic")
+    # CLI --resume reads the same row through the same seam.
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
+        "claude-opus-4", "anthropic")
 
 
 @pytest.mark.parametrize("picked", [

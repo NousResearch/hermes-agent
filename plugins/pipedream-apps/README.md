@@ -47,7 +47,8 @@ The Apps tab requires the Desktop core build that includes the
 Mounted under `/api/plugins/pipedream-apps/` and authenticated by the gateway:
 
 - `GET /config` → `{ configured, environment, mcpBaseUrl }` (no secrets)
-- `GET /apps?q=&limit=&after=&before=&category=` → one page of apps + cursors
+- `GET /apps?q=&limit=&after=&before=&category=` → one page of the full Pipedream
+  app catalog (including apps without actions/triggers) + cursors
 - `GET /categories`
 - `GET /apps/{slug}`
 - `POST /connect` `{ externalUserId, appSlug }` → `{ token, connectLinkUrl, expiresAt }`

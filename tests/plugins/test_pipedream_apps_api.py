@@ -242,7 +242,7 @@ def test_apps_map_the_official_payload_and_cache_the_token(plugin, client):
     assert body["totalCount"] == 42
 
     upstream = next(r for r in recorder.requests if r.url.path == "/v1/connect/apps")
-    assert upstream.url.params.get("has_components") == "true"
+    assert "has_components" not in upstream.url.params
     assert upstream.url.params.get("q") == "slack"
     assert upstream.url.params.get("limit") == "10"
     assert upstream.url.params.get("category_ids") == "appcat_1"

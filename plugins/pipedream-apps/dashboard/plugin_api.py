@@ -504,10 +504,7 @@ async def list_apps(
 ) -> dict[str, Any]:
     _required_config()
     safe_limit = max(1, min(60, limit or 24))
-    params: list[tuple[str, str]] = [
-        ("limit", str(safe_limit)),
-        ("has_components", "true"),
-    ]
+    params: list[tuple[str, str]] = [("limit", str(safe_limit))]
 
     if q.strip():
         params.append(("q", q.strip()[:200]))

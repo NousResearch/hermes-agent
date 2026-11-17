@@ -51,7 +51,7 @@ from tools.delegate_tool_registry import (
 from tools.delegate_tool_tasks import (
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
 )
-from tools.delegate_tool_files import coerce_task_files, resolve_task_files, with_files
+from tools.delegate_files.inline import resolve_task_files, with_files
 from tools.delegate_tool_tuning import pin_child_service_tier
 from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
@@ -676,9 +676,7 @@ def delegate_task(
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
     if not err:
-        task_file_specs, err = coerce_task_files(task_list, files)
-    if not err:
-        task_files, err = resolve_task_files(task_file_specs, _resolve_workspace_hint(parent_agent))
+        task_files, err = resolve_task_files(task_list, files, parent_agent)
     if not err:
         # One route per task from the active delegation provider (delegation.backend), or from credentials_cfg
         # (internal callers only, e.g. /review → auxiliary.review: a per-call routing owner shaped like the

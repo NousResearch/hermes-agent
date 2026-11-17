@@ -916,7 +916,7 @@ class _ChildRun:
             register_container_alias(self.child_task_id, self.parent_task_id)
         self.child.tool_progress_callback = _edit_tracking(getattr(self.child, "tool_progress_callback", None), self.subagent_id)
         with _quiet("Marking inlined files as read failed: %s"):
-            from tools.delegate_tool_files import mark_files_read
+            from tools.delegate_files.inline import mark_files_read
             mark_files_read(self.child_task_id, getattr(self.child, "_delegate_files", None))
 
         if resumed is not None:

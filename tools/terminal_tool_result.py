@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from tools.terminal_reread_hint import reread_hint
+from tools.terminal_hints.reread import reread_hint
 
 logger = logging.getLogger("tools.terminal_tool")
 

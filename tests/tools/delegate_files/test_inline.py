@@ -3,7 +3,9 @@ count as already read in the child's read_file dedup state."""
 
 import json
 
-from tools import delegate_tool_files as dtf
+import pytest
+
+from tools.delegate_files import inline as dtf
 from tools.delegate_tool_progress import child_task_message
 
 
@@ -15,11 +17,19 @@ def _workspace(tmp_path):
     return ws
 
 
+@pytest.fixture(autouse=True)
+def _no_terminal_cwd(monkeypatch):
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+
+class _Parent:
+    def __init__(self, ws):
+        self.terminal_cwd = str(ws)
+
+
 def _brief(tmp_path, entries, context="ctx"):
     ws = tmp_path / "repo" if (tmp_path / "repo").is_dir() else _workspace(tmp_path)
-    specs, err = dtf.coerce_task_files([{"goal": "g", "files": entries}], None)
-    assert err is None
-    files, err = dtf.resolve_task_files(specs, str(ws))
+    files, err = dtf.resolve_task_files([{"goal": "g", "files": entries}], None, _Parent(ws))
     return ws, files, err, (child_task_message("do it", dtf.with_files(context, files[0])) if not err else None)
 
 
@@ -36,9 +46,9 @@ def test_files_land_in_first_turn_after_context_with_cap_marker(tmp_path):
 
 
 def test_files_total_cap_and_outside_workspace_refusal(tmp_path, monkeypatch):
-    monkeypatch.setattr(dtf, "MAX_TOTAL_BYTES", 200)
+    monkeypatch.setattr(dtf, "MAX_TOTAL_BYTES", 1000)
     _ws, files, err, message = _brief(tmp_path, ["big.py"])
-    assert err is None and len(files[0].block.encode()) < 400 and "[truncated: " in message
+    assert err is None and len(files[0].block.encode()) <= 1000 and "[truncated: " in message
 
     outside = tmp_path / "secret.txt"
     outside.write_text("nope\n", encoding="utf-8")
@@ -75,7 +85,7 @@ def test_delegate_task_passes_files_through_the_default_backend(tmp_path, monkey
         "model": "pinned-model", "base_url": "http://127.0.0.1:9/v1", "api_key": "k"}}), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     ws = _workspace(tmp_path)
-    monkeypatch.setattr(dt, "_resolve_workspace_hint", lambda parent: str(ws))
+    monkeypatch.setenv("TERMINAL_CWD", str(ws))
     built = []
     monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", lambda **kw: built.append(kw) or types.SimpleNamespace(
         tool_progress_callback=None, model=kw.get("model")))
@@ -92,3 +102,27 @@ def test_delegate_task_passes_files_through_the_default_backend(tmp_path, monkey
     refused = json.loads(dt.delegate_task(tasks=[{"goal": "edit the small module", "files": ["../x.py"]}],
                                           parent_agent=parent))
     assert "outside the child's workspace" in refused["error"] and len(built) == 1
+
+
+def test_files_follow_read_file_lines_cap_every_byte_and_tie_marks_to_the_shown_snapshot(tmp_path, monkeypatch):
+    """Ranges count newline bytes only (a form feed is not a line break), labels and markers count against the
+    total cap, a file that changes before the child starts is not marked read, and worktree isolation refuses."""
+    from tools.file_tools import read_file_tool
+
+    ws = _workspace(tmp_path)
+    (ws / "ff.py").write_text("a\fb\nsecond\nthird\n", encoding="utf-8")
+    _ws, files, err, message = _brief(tmp_path, ["ff.py:2-2"])
+    assert err is None and "2|second\n" in message and "third" not in message
+
+    monkeypatch.setattr(dtf, "MAX_TOTAL_BYTES", 2000)
+    _ws, files, err, _msg = _brief(tmp_path, ["small.py"] * 40)
+    assert len(files[0].block.encode()) <= 2000 and "over the 2000-byte cap: small.py" in files[0].block
+
+    _ws, files, err, _msg = _brief(tmp_path, ["ff.py"])
+    (ws / "ff.py").write_text("changed\n", encoding="utf-8")
+    dtf.mark_files_read("snapshot-task", files[0])
+    assert "1|changed" in json.loads(read_file_tool(str(ws / "ff.py"), task_id="snapshot-task"))["content"]
+
+    monkeypatch.setattr("tools.delegate_tool_config._get_worktree_isolation", lambda: True)
+    _ws, files, err, _msg = _brief(tmp_path, ["small.py"])
+    assert files == [] and "worktree_isolation" in err

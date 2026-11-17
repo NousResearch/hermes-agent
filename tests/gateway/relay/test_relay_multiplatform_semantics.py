@@ -112,3 +112,12 @@ class TestPerChatStreamSemantics:
         adapter._platform_by_chat["TG2"] = "telegram"
         with pytest.raises(NotImplementedError):
             await adapter.send_draft("TG2", 5, "x", metadata={})
+
+    def test_task_cards_resolve_per_chat(self):
+        """Native task cards follow the chat's platform descriptor, not the primary's."""
+        adapter, t = _multi_adapter(primary="slack", others=())
+        t._descs["telegram"] = _desc_for("telegram", supported_ops=("send", "edit", "typing"))
+        adapter._platform_by_chat["TG3"] = "telegram"
+        adapter._platform_by_chat["C3"] = "slack"
+        assert adapter.native_task_cards_enabled(chat_id="TG3") is False
+        assert adapter.native_task_cards_enabled(chat_id="C3") is True

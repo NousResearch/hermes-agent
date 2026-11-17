@@ -93,10 +93,16 @@ class PendingControls:
                 resolved = resolve_gateway_clarify(prompt_id, response['answer'] if response['answer'].strip() else SKIPPED)
                 self.snapshot(session_id, generation)
                 return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}
-            if not isinstance(response, dict) or set(response) != {'choice'} or response['choice'] not in prompt['choices']:
+            # 'reason' (optional, /deny <reason> parity) carries a deny-with-reason's free text;
+            # it rides the same string bound as a clarify answer.
+            if not isinstance(response, dict) or set(response) - {'choice', 'reason'} \
+                    or response['choice'] not in prompt['choices']:
+                raise AuthorityRefusal('invalid_params')
+            reason = response.get('reason')
+            if 'reason' in response and (not isinstance(reason, str) or len(reason) > 16384):
                 raise AuthorityRefusal('invalid_params')
             # The tools lock arbitrates native taps versus attached responders;
             # an exact request ID can never consume the next FIFO approval.
-            resolved = resolve_gateway_approval(route, response['choice'], request_id=prompt_id)
+            resolved = resolve_gateway_approval(route, response['choice'], request_id=prompt_id, reason=reason)
             self.snapshot(session_id, generation)
             return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}

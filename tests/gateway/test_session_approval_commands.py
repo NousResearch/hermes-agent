@@ -44,7 +44,7 @@ def test_typed_approve_and_deny_resolve_the_waiter_approval_respond_answers(tmp_
     work.mkdir()
     peer = ThreadingHTTPServer(('127.0.0.1', 0), PromptPeer)
     peer.requests = []
-    targets = {name: work / name for name in ('approved', 'denied', 'responded')}
+    targets = {name: work / name for name in ('approved', 'denied', 'responded', 'reasoned')}
     for target in targets.values():
         target.mkdir()
         (target / 'owned.txt').write_text('owned')
@@ -66,14 +66,20 @@ def test_typed_approve_and_deny_resolve_the_waiter_approval_respond_answers(tmp_
                                 cwd=str(work))
             sid = created['result']['session_id']
             for name, answer in (('approved', '/approve'), ('denied', '/deny not this one'),
-                                 ('responded', 'approval.respond')):
+                                 ('responded', 'approval.respond'), ('reasoned', 'approval.respond+reason')):
                 peer.target = targets[name]
                 await rpc(ws, 'prompt.submit', session_id=sid, input_id=name, text='ASK_APPROVAL')
                 prompt = await _pending_approval(ws, sid)
                 assert targets[name].exists()
-                if answer == 'approval.respond':
-                    reply = await rpc(ws, 'approval.respond', session_id=sid, prompt_id=prompt['prompt_id'],
-                                      execution_generation=prompt['execution_generation'], choice='once')
+                if answer.startswith('approval.respond'):
+                    # '+reason' answers a deny the panel way: the free text rides its own
+                    # field and must reach the agent's BLOCKED tool result (deny-with-reason).
+                    respond = {'session_id': sid, 'prompt_id': prompt['prompt_id'],
+                               'execution_generation': prompt['execution_generation'],
+                               'choice': 'deny' if answer.endswith('+reason') else 'once'}
+                    if answer.endswith('+reason'):
+                        respond['reason'] = 'answered from the panel'
+                    reply = await rpc(ws, 'approval.respond', **respond)
                     out[name] = reply['result']['status']
                     # The typed command finds nothing left: the same waiter was answered.
                     late = await rpc(ws, 'slash.exec', session_id=sid, command='approve')
@@ -97,10 +103,13 @@ def test_typed_approve_and_deny_resolve_the_waiter_approval_respond_answers(tmp_
     assert 'approved' in out['approved'].lower() and not targets['approved'].exists(), out
     assert 'denied' in out['denied'].lower() and targets['denied'].exists(), out
     assert out['responded'] == 'resolved' and not targets['responded'].exists(), out
+    assert out['reasoned'] == 'resolved' and targets['reasoned'].exists(), out
     for name in ('approved', 'denied'):
         late = out[name + ' late']
         assert late.get('status') == 'already_resolved' or 'message' in late, (name, late)
     assert 'no pending' in str(out['responded late']).lower() or 'output' in out['responded late'], out
     tools = [m for req in peer.requests for m in req.get('messages', []) if m['role'] == 'tool']
     assert any('not this one' in str(m['content']) for m in tools), tools
+    # The reason rides the model-facing BLOCKED text (JSON-escaped in the tool result).
+    assert any('answered from the panel' in str(m['content']) for m in tools), tools
     assert os.path.exists(home / 'config.yaml')

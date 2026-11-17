@@ -5556,7 +5556,7 @@
       },
       "ApprovalRespondParams": {
         "additionalProperties": false,
-        "description": "``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``\nresolves every pending approval, ``request_id`` a specific one, neither the oldest.",
+        "description": "``choice`` is one of the offered ``approval`` choices (once / session / always / deny); ``all``\nresolves every pending approval, ``request_id`` a specific one, neither the oldest. ``reason``\nis a deny's free text (deny-with-reason), relayed to the agent like /deny <reason>.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -5609,6 +5609,18 @@
             ],
             "default": null,
             "title": "Request Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
@@ -7723,6 +7735,18 @@
           "choice": {
             "title": "Choice",
             "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [

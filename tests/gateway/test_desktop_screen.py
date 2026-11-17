@@ -42,7 +42,8 @@ class EngineStubHandler(BaseHTTPRequestHandler):
     tier: str = "allow"
     block_pattern: str | None = None  # when set: block only texts containing this
     reject_pattern: str | None = None  # when set: 400 for texts containing this
-    rate_limit_after: int | None = None  # when set: 429 after N screen calls
+    rate_limit_after: int | None = None  # when set: error after N screen calls
+    rate_limit_code: int = 429  # which code that error uses (408/429/...)  
     blank_bodies = 0  # blank texts posted to the engine (must stay 0)
     screen_delay_s = 0.0  # simulate a slow engine (budget tests)
     outcome_delay_s = 0.0
@@ -80,7 +81,8 @@ class EngineStubHandler(BaseHTTPRequestHandler):
                 return
             rate = EngineStubHandler.rate_limit_after
             if rate is not None and EngineStubHandler.screen_calls > rate:
-                self.send_error(429, "rate limited by stub")
+                self.send_error(EngineStubHandler.rate_limit_code,
+                                "transient error by stub")
                 return
             if EngineStubHandler.malformed:
                 payload = json.dumps(["not", "a", "dict"]).encode()
@@ -130,6 +132,7 @@ class DesktopScreenTestCase(unittest.TestCase):
         EngineStubHandler.block_pattern = None
         EngineStubHandler.reject_pattern = None
         EngineStubHandler.rate_limit_after = None
+        EngineStubHandler.rate_limit_code = 429
         EngineStubHandler.blank_bodies = 0
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.outcome_delay_s = 0.0
@@ -524,6 +527,7 @@ class TestAuthorityGate(unittest.TestCase):
         EngineStubHandler.block_pattern = None
         EngineStubHandler.reject_pattern = None
         EngineStubHandler.rate_limit_after = None
+        EngineStubHandler.rate_limit_code = 429
         EngineStubHandler.blank_bodies = 0
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0
@@ -700,12 +704,19 @@ class TestAuthorityGate(unittest.TestCase):
         self._run({"text": "hello" + " " * 40000 + "how are you"})
         self.assertEqual(EngineStubHandler.blank_bodies, 0)
 
-    def test_transient_429_fails_open(self):
-        # Review r9-NOTE 2: a rate-limited (429) or proxy-timeout (408)
-        # engine is ALIVE but busy - fail open, never lock the owner out.
-        EngineStubHandler.rate_limit_after = 1
-        self._run({"text": "E" * 70000})
-        self.assertEqual(EngineStubHandler.screen_calls, 2)
+    def test_transient_408_and_429_fail_open(self):
+        # Review r9-NOTE 2 + round-10 mutation (e): a rate-limited (429)
+        # or proxy-timeout (408) engine is ALIVE but busy - fail open,
+        # never lock the owner out. Both codes are pinned separately;
+        # dropping either from the transient set must fail this test.
+        for code in (408, 429):
+            with self.subTest(code=code):
+                EngineStubHandler.rate_limit_after = 1
+                EngineStubHandler.rate_limit_code = code
+                EngineStubHandler.screen_calls = 0
+                self._run({"text": "E" * 70000})
+                self.assertEqual(EngineStubHandler.screen_calls, 2)
+                EngineStubHandler.rate_limit_after = None
 
     def test_engine_4xx_holds_not_failopen(self):
         # A deterministic client rejection means the engine cannot
@@ -820,6 +831,7 @@ class TestAuthorityWiring(unittest.TestCase):
         EngineStubHandler.block_pattern = None
         EngineStubHandler.reject_pattern = None
         EngineStubHandler.rate_limit_after = None
+        EngineStubHandler.rate_limit_code = 429
         EngineStubHandler.blank_bodies = 0
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0

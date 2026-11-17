@@ -1,5 +1,5 @@
 name: treg-jobs
-repo: https://github.com/YAN-XBT/hermes-jobs
+repo: https://github.com/YAN-XBT/treg-jobs
 sha: 369424062a8031bfb898d7e7579ee5884c7670cd
 description: >-
   Job hunt through treg's job API: search live roles across companies, semantic fit search, the
@@ -12,9 +12,9 @@ tier: community
 category: tools
 requires_hermes: ">=0.22"
 version: "0.3.0"
-docs_url: https://github.com/YAN-XBT/hermes-jobs/blob/main/README.md
+docs_url: https://github.com/YAN-XBT/treg-jobs/blob/main/README.md
 title: Treg Jobs
-image: https://raw.githubusercontent.com/YAN-XBT/hermes-jobs/369424062a8031bfb898d7e7579ee5884c7670cd/assets/card.jpg
+image: https://raw.githubusercontent.com/YAN-XBT/treg-jobs/369424062a8031bfb898d7e7579ee5884c7670cd/assets/card.jpg
 screenshots: []
 platforms: []
 known_issues:

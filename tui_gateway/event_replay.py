@@ -11,6 +11,11 @@ oldest evicted FIFO (their seq/truncation counters are retained so a revisited s
 monotonic within the epoch, #100122). Evicted or never-retained (oversized) frames leave a truncation watermark so a
 reconnecting client refetches instead of trusting a replay with holes. A torn-down session's ring is freed at
 teardown (``forget_session``) and never rebuilt by late frames.
+
+With ``dashboard.replay_coalesce_deltas`` on (:func:`configure`, set once when the listener is built),
+streamed deltas fold into one entry per open text block / tool tail (:mod:`tui_gateway.event_replay_deltas`):
+each still gets its own seq on the wire, but the ring holds records plus one run per block, so a long
+streamed turn no longer pushes its own ``message.start`` and tool frames out of the window.
 """
 
 from __future__ import annotations
@@ -20,13 +25,15 @@ import threading
 import uuid
 from collections import OrderedDict, deque
 
+from tui_gateway.event_replay_deltas import DeltaRun, delta_key
+
 # Seq counters live in-process, so a restart resets them to 1 while clients hold high
 # watermarks — events_since(sid, 97) would return [] with truncated=False forever. The
 # epoch lets clients detect the restart and reset their watermarks.
 _REPLAY_EPOCH = uuid.uuid4().hex
 
-# A long turn emits ~hundreds of token events; 512 covers minutes of streaming plus
-# all control events. Desktop users rarely exceed a dozen live chats.
+# Per-frame, a long turn's ~hundreds of token events fill 512 within minutes; with coalesced deltas the
+# entries are records plus one per streamed block. Desktop users rarely exceed a dozen live chats.
 _REPLAY_BUFFER_MAX = 512
 _REPLAY_SESSIONS_MAX = 64
 # A ring may legitimately hold many bounded 64 KiB tool results (512 of them ≈ 32 MiB per
@@ -36,9 +43,12 @@ _REPLAY_BUFFER_BYTES_MAX = 4 * 1024 * 1024
 _REPLAY_PROCESS_BYTES_MAX = 64 * 1024 * 1024
 
 _replay_lock = threading.Lock()
-# sid -> deque of (seq, frozen params JSON bytes without the server-owned seq, retained bytes).
-# Bytes detach the replay ring from the live event object: later caller mutation cannot grow or
-# rewrite an already-accounted cache entry.
+# dashboard.replay_coalesce_deltas: one process-wide ring, so one listener-level setting (like ws_ping_*).
+_coalesce_deltas = False
+# sid -> deque of (seq, entry, retained bytes). A record's entry is its frozen params JSON bytes
+# without the server-owned seq: bytes detach the ring from the live event object, so later caller
+# mutation cannot grow or rewrite an already-accounted cache entry. A delta run's entry is its
+# DeltaRun (detached text chunks) and its seq is the run's newest chunk.
 _replay_buffers: OrderedDict[str, deque] = OrderedDict()
 _replay_buffer_bytes: dict[str, int] = {}
 _replay_evicted_through: dict[str, int] = {}
@@ -53,6 +63,12 @@ _replay_forgotten: set[str] = set()
 def replay_epoch() -> str:
     """Opaque token identifying this server process's seq numbering."""
     return _REPLAY_EPOCH
+
+
+def configure(*, coalesce_deltas: bool) -> None:
+    """Apply the listener's ``dashboard.replay_coalesce_deltas``; frames already recorded keep their shape."""
+    global _coalesce_deltas
+    _coalesce_deltas = bool(coalesce_deltas)
 
 
 def _freeze_params(params: dict) -> bytes:
@@ -83,8 +99,10 @@ def _stamp_event(obj: dict) -> None:
     # Freeze OUTSIDE the lock (same rule as transport.write) so one large payload cannot stall
     # other threads' frames. The server-owned seq is restored when replaying, so the snapshot can
     # be serialized before sequence assignment without retaining the mutable params dict.
+    key = delta_key(params) if _coalesce_deltas else None
     payload = _freeze_params(params)
     size = len(payload)
+    fresh_run = DeltaRun.start(key, params) if key is not None else None
     with _replay_lock:
         global _replay_total_bytes
         _drain_released_locked()
@@ -103,7 +121,7 @@ def _stamp_event(obj: dict) -> None:
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
             _replay_evicted_through[sid] = seq
             return
-        buf.append((seq, payload, size))
+        size = _admit_locked(buf, seq, params, payload, size, key, fresh_run)
         _replay_buffer_bytes[sid] += size
         _replay_total_bytes += size
         while len(buf) > _REPLAY_BUFFER_MAX or _replay_buffer_bytes[sid] > _REPLAY_BUFFER_BYTES_MAX:
@@ -121,6 +139,24 @@ def _stamp_event(obj: dict) -> None:
                         _replay_evicted_through.get(evict_sid, 0), evicted_seq
                     )
                     break
+
+
+def _admit_locked(buf: deque, seq: int, params: dict, payload: bytes, size: int,
+                  key: str | None, fresh_run: DeltaRun | None) -> int:
+    """Append one stamped frame to *buf*; returns the retained bytes it added. A delta that
+    continues the newest entry's run folds into it; any other frame (records) closes that run."""
+    if fresh_run is None:
+        buf.append((seq, payload, size))
+        return size
+    last = buf[-1] if buf else None
+    if last is not None and isinstance(last[1], DeltaRun) and last[1].key == key:
+        run = last[1]
+        grown = run.add(seq, params)
+        buf[-1] = (seq, run, last[2] + grown)
+        return grown
+    fresh_run.add(seq, params)
+    buf.append((seq, fresh_run, fresh_run.size))
+    return fresh_run.size
 
 
 def _drop_ring_locked(sid: str) -> None:
@@ -195,8 +231,14 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
     """
     with _replay_lock:
         buf = _replay_buffers.get(sid or "")
-        snapshots = [(seq, payload) for seq, payload, _size in buf if seq > last_seen] if buf else []
-    return [_thaw_params(payload, seq) for seq, payload in snapshots]
+        snapshots = []
+        for seq, entry, _size in buf or ():
+            if seq <= last_seen:
+                continue
+            # A run is still growing under this lock: materialize its catch-up now (a string join).
+            snapshots.append(entry.catch_up(last_seen) if isinstance(entry, DeltaRun) else (seq, entry))
+    return [_thaw_params(entry, seq) if isinstance(entry, bytes) else {**entry, "seq": seq}
+            for seq, entry in snapshots]
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:

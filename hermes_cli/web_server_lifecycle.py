@@ -574,6 +574,8 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
         dash_cfg = load_config().get("dashboard") or {}
     except Exception:  # health: allow BLE001 -- same fail-open read as web_server._build_uvicorn_server: a broken config.yaml must not stop the listener
         dash_cfg = {}
+    from tui_gateway import event_replay
+    event_replay.configure(coalesce_deltas=dash_cfg.get("replay_coalesce_deltas") is True)
 
     def _ws_ping_setting(key: str, default: float = 20.0) -> float:
         try:

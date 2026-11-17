@@ -3,7 +3,7 @@ title: Hermes SafeGuard
 repo: https://github.com/robberdom/hermes-safeguard
 sha: 75941a4bd21f4949435fc09aea1d7a436082dfaa
 version: "0.1.0"
-description: "Deterministic security middleware, EVM simulation guard, and prompt injection defense for on-chain agent actions."
+description: "Deterministic security middleware, EVM simulation guard, and prompt injection defense for on-chain agent actions. Disclosure — Crypto: sends EVM transactions and NFT mints from an unlocked account on the RPC node you set in SAFEGUARD_RPC_URL, each one after Hermes' approval prompt; registers a pre_tool_call guard that inspects every tool call's arguments; can send transaction alerts through your own Telegram bot to your paired chat; fetches PeckShield/ScamSniffer/SlowMist threat feeds only from URLs you set."
 maintainer: robberdom
 tier: community
 category: tools
@@ -22,8 +22,11 @@ capabilities:
   requires_env:
     - SAFEGUARD_RPC_URL
     - SAFEGUARD_THREAT_POLL_INTERVAL
-    - TELEGRAM_BOT_TOKEN
-    - SAFEGUARD_PASSPHRASE
+    - SAFEGUARD_TELEGRAM_BOT_TOKEN
     - PECKSHIELD_API_URL
+    - PECKSHIELD_API_KEY
     - SCAMSNIFFER_API_URL
+    - SCAMSNIFFER_API_KEY
     - SLOWMIST_API_URL
+    - SLOWMIST_API_KEY
+    - SAFEGUARD_OPERATOR_PIN

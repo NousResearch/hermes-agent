@@ -3,7 +3,9 @@
 Regional support is published per region and per model, so ``*.api.openai.com`` is not a license:
 au/jp/in serve "Standard pay-as-you-go only", ca/sg/kr/gb have no regional processing, and EU Fast
 excludes GPT-6 Astra and GPT-6 Sol. Ultrafast needs no second table: only Ultrafast models get that
-tier, and GPT-6.1 Sol (US+EU) / GPT-6 Astra (US only) line up with this matrix.
+tier, and GPT-6.1 Sol (US+EU) / GPT-6 Astra (US only) line up with this matrix. GPT-6.2 Sol and Astra
+stay off the EU row: OpenAI documents EU Fast for them but US-only Ultrafast, which one row per host
+cannot express.
 https://developers.openai.com/api/docs/guides/data-residency
 https://developers.openai.com/api/docs/guides/fast-mode#is-fast-mode-compatible-with-data-residency-zero-data-retention-and-a-baa
 """

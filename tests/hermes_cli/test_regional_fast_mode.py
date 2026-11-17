@@ -57,3 +57,14 @@ def test_fast_route_boundaries_are_preserved(model, provider, base_url, expected
 ])
 def test_regional_hosts_only_get_documented_fast_tiers(model, host, tier):
     assert resolve_fast_mode_overrides(model, provider="openai-api", base_url=f"https://{host}/v1", tier=tier) is None
+
+
+@pytest.mark.parametrize("model", ["gpt-6.2-sol", "gpt-6.2-astra"])
+@pytest.mark.parametrize("host,expected", [
+    ("api.openai.com", {"service_tier": "ultrafast"}),
+    ("us.api.openai.com", {"service_tier": "ultrafast"}),
+    ("eu.api.openai.com", None),  # GPT-6.2 Ultrafast: US data residency only
+])
+def test_gpt62_ultrafast_reaches_global_and_us_hosts_only(model, host, expected):
+    assert resolve_fast_mode_overrides(
+        model, provider="openai-api", base_url=f"https://{host}/v1", tier="ultrafast") == expected

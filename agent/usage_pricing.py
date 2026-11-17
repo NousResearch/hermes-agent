@@ -324,10 +324,23 @@ for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _writ
     )
 del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above, _version
 
+
+def _openai_times_standard(model: str, factor: int, version: str) -> PricingEntry:
+    """``model``'s Standard row with every rate, in both context tiers, multiplied by ``factor``."""
+    standard = _OFFICIAL_DOCS_PRICING[("openai", model)]
+    rates = {f.name: getattr(standard, f.name) * factor for f in fields(PricingEntry)
+             if "_cost_per_million" in f.name and getattr(standard, f.name) is not None}
+    return replace(standard, **rates, pricing_version=version,
+                   source_url="https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast")
+
+
+_GPT62_ULTRAFAST_MODELS = ("gpt-6.2-sol", "gpt-6.2-astra")
+
 # OpenAI Ultrafast (``service_tier: "ultrafast"``): 6x Standard on every bucket, same 272K
 # whole-request tier. Selected by the tier the response reports it was SERVED at (a request asking
 # for Ultrafast can be served at ``default``, and is then billed at Standard).
 _OPENAI_ULTRAFAST_PRICING: dict[str, PricingEntry] = {
+    **{_m: _openai_times_standard(_m, 6, "openai-ultrafast-2026-11") for _m in _GPT62_ULTRAFAST_MODELS},
     "gpt-6-astra": _snap(
         "60.00", "300.00", "6.00", "75.00",
         url="https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
@@ -349,6 +362,10 @@ _OPENAI_ULTRAFAST_PRICING: dict[str, PricingEntry] = {
         cache_write_cost_per_million_above=Decimal("30.00"),
     ),
 }
+# GPT-6.2's launch rate: OpenAI bills its Ultrafast at 3x Standard until 2027-03-01 00:00 Pacific (PST).
+_OPENAI_ULTRAFAST_LAUNCH_ENDS = datetime(2027, 3, 1, 8, tzinfo=UTC)
+_OPENAI_ULTRAFAST_LAUNCH_PRICING: dict[str, PricingEntry] = {
+    _m: _openai_times_standard(_m, 3, "openai-ultrafast-launch-2026-11") for _m in _GPT62_ULTRAFAST_MODELS}
 
 # Context-tiered Gemini Pro: above 200k prompt tokens the *_above rates apply to
 # the whole request (see PricingEntry).
@@ -534,6 +551,14 @@ def _anthropic_fast_mode_entry(model: str) -> Optional[PricingEntry]:
     name = model.lower()
     return _ANTHROPIC_FAST_MODE_PRICING.get(name) or _ANTHROPIC_FAST_MODE_PRICING.get(
         _normalize_anthropic_model_name(name))
+
+
+def _openai_ultrafast_entry(model: str) -> Optional[PricingEntry]:
+    """The Ultrafast row in effect when the turn is billed: a launch rate until it ends, then the list rate."""
+    launch = _OPENAI_ULTRAFAST_LAUNCH_PRICING.get(model)
+    if launch is not None and _UTC_NOW() < _OPENAI_ULTRAFAST_LAUNCH_ENDS:
+        return launch
+    return _OPENAI_ULTRAFAST_PRICING.get(model)
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
@@ -761,7 +786,7 @@ def estimate_usage_cost(
         if not entry:
             return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
     if route.provider == "openai" and _served_openai_tier(usage) == "ultrafast":
-        entry = _OPENAI_ULTRAFAST_PRICING.get(route.model)
+        entry = _openai_ultrafast_entry(route.model)
         if not entry:
             return _unknown_cost("official_docs_snapshot", "ultrafast pricing unavailable for model")
     if not entry:

@@ -220,7 +220,7 @@ def _stop_in_profile(sid: str, backend: ComputerUseBackend, home: Optional[str])
             _stop_backend(backend, None, on_error)
             stopped = True
     except Exception:
-        logger.warning("computer_use: could not bind profile %s to release session %s's backend", home, sid,
+        logger.warning("computer_use: profile %s scope failed while releasing session %s's backend", home, sid,
                        exc_info=True)
     if not stopped:
         _stop_backend(backend, None, on_error)

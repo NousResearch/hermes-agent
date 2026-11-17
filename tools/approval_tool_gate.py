@@ -363,6 +363,8 @@ def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Op
         no_human_block_message=blocked, title=title,
     )
     if not result.get("approved"):
+        from tools.approval_tool_gate_preview import forget_plan
+        forget_plan(args)
         _record(tool_name, tool_call_id, {"decision": "denied", "scope": scope.grant})
         return str(result.get("message") or blocked)
     choice = result.get("choice")

@@ -112,8 +112,9 @@ class FileOperations(ABC):
 
     @abstractmethod
     def patch_replace(self, path: str, old_string: str, new_string: str,
-                      replace_all: bool = False) -> PatchResult:
-        """Replace text in a file using fuzzy matching."""
+                      replace_all: bool = False, expected_sha256: Optional[str] = None) -> PatchResult:
+        """Replace text in a file using fuzzy matching (refused when ``expected_sha256`` is given
+        and the file read no longer hashes to it)."""
 
     @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
@@ -1683,13 +1684,20 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                            correction_notes=correction_notes, line_ending=file_ending)
 
     def patch_replace(self, path: str, old_string: str, new_string: str,
-                      replace_all: bool = False) -> PatchResult:
+                      replace_all: bool = False, expected_sha256: Optional[str] = None) -> PatchResult:
         """Replace text in a file using fuzzy matching (``old_string`` must be
-        unique unless ``replace_all``). Returns a PatchResult with diff + lint."""
+        unique unless ``replace_all``). Returns a PatchResult with diff + lint.
+        ``expected_sha256``: the bytes an approval card was planned on; a file that changed since
+        (or a card that said nothing would be written) refuses instead of writing an unseen change."""
         from tools.fuzzy_match import boundary_note
         plan = self.plan_patch_replace(path, old_string, new_string, replace_all)
         if isinstance(plan, PatchResult):
             return plan
+        if expected_sha256 is not None and hashlib.sha256(plan.data).hexdigest() != expected_sha256:
+            return PatchResult(error=(
+                f"{plan.path} changed after this patch was approved, so the approved change is no longer "
+                "the one that would be written. Nothing was written. Re-read the file and run the patch "
+                "again to review the new change."))
         path, data, raw_content, content, new_content = (
             plan.path, plan.data, plan.raw_content, plan.content, plan.new_content)
         strategy, correction_notes = plan.strategy, plan.correction_notes

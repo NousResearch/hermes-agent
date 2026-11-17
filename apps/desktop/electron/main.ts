@@ -7437,6 +7437,7 @@ interface GatewayFileConnection extends RegistryBackendRequestScope {
 interface GatewayFileSavePayload {
   sessionId?: string
   connectionId?: unknown
+  downloadPath?: unknown
   path?: unknown
   profile?: unknown
   suggestedName?: unknown
@@ -7472,7 +7473,8 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
   const requestPaths = gatewayFileRequestPaths(
     filePath,
     requestPath => gatewayFileRequestPath(connection, connectionId, profile, requestPath),
-    payload.sessionId
+    payload.sessionId,
+    payload.downloadPath
   )
 
   const deps: GatewayFileSaveDeps = {
@@ -14937,23 +14939,20 @@ async function fetchJsonForBackend(
   }
 
   if (descriptor.authMode === 'oauth') {
-    // The OAuth cookie path rides electron.net with JSON headers; multipart
-    // isn't wired there. Fail loudly rather than corrupting the upload.
-    if (opts.upload) {
-      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-    }
+    const options = { method: opts.method, body: opts.body, timeoutMs: opts.timeoutMs, headers: descriptor.headers }
 
-    const options = {
-      method: opts.method,
-      body: opts.body,
-      timeoutMs: opts.timeoutMs,
-      headers: descriptor.headers
-    }
-
+    // The bearer leg is fetchJson, which carries multipart; the cookie leg rides electron.net with
+    // JSON headers only, so an upload there fails loudly rather than corrupting the file.
     return requestWithOauthFallback(descriptor.baseUrl, {
       ensureNativeAccessToken,
-      requestWithBearer: (bearer: string) => fetchJson(url, null, { ...options, bearer }),
-      requestWithCookie: () => fetchJsonViaOauthSession(url, options)
+      requestWithBearer: (bearer: string) => fetchJson(url, null, { ...options, upload: opts.upload, bearer }),
+      requestWithCookie: async () => {
+        if (opts.upload) {
+          throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+        }
+
+        return fetchJsonViaOauthSession(url, options)
+      }
     })
   }
 

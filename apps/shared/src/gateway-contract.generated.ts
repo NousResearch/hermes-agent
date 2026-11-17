@@ -4041,7 +4041,7 @@ export interface RollbackRestoreParams {
   profile?: string | null
   all?: boolean | null
 }
-/** ``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
+/** ``agent/checkpoints/manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
 export interface RollbackRestoreResult {
   success: boolean
   restored_to?: string | null
@@ -4664,7 +4664,7 @@ export interface PluginLiveSkill {
   description?: string
 }
 export type PluginRestartTarget = 'gateway' | 'backend'
-/** One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked. */
+/** One security-scan finding (``hermes_cli.plugins_install_scan``) on a plugin tree the scan blocked. */
 export interface PluginScanFinding {
   pattern_id: string
   severity: string

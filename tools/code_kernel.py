@@ -25,6 +25,7 @@ import os
 import queue
 import secrets
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -35,6 +36,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from agent import deadline as agent_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +345,26 @@ class _BoundedBuffer:
         return b"".join(chunks).decode("utf-8", errors="replace")
 
 
+def _kill_process_group(proc) -> None:
+    """Kill the kernel and its whole process tree via agent.deadline.kill_process_tree: SIGTERM
+    (killpg + psutil descendant sweep; ``taskkill /T /F`` on Windows, where sig is ignored), then
+    wait 5s and SIGKILL survivors. Never raises: falls back to ``proc.kill()``."""
+    def _tree_signal(sig) -> None:
+        try:
+            agent_deadline.kill_process_tree(proc.pid, sig=sig)
+        except Exception as e:
+            logger.debug("Could not terminate process tree: %s", e, exc_info=True)
+            try:
+                proc.kill()
+            except Exception as e2:
+                logger.debug("Could not kill process: %s", e2, exc_info=True)
+    _tree_signal(getattr(signal, "SIGTERM", None))
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _tree_signal(getattr(signal, "SIGKILL", None))
+
+
 class SessionKernel:
     """One live kernel process plus its RPC server and reader threads."""
 
@@ -378,8 +401,7 @@ class SessionKernel:
     def teardown(self) -> None:
         self.stop_event.set()
         if self.alive():
-            from tools.code_execution_tool import _kill_process_group
-            _kill_process_group(self.proc, escalate=True)
+            _kill_process_group(self.proc)
         if self.proc is not None and not _IS_WINDOWS:
             from hermes_cli.process_identity import release_process_group_once_empty
             release_process_group_once_empty(self.proc.pid, proc=self.proc)

@@ -43,7 +43,9 @@ class _FakeConsumer:
         self.segment_breaks += 1
 
 
-def _turn_runner(*, streaming_enabled: bool, supports_editing: bool) -> TurnRunner:
+def _turn_runner(
+    *, streaming_enabled: bool, supports_editing: bool, platform: Platform = Platform.TELEGRAM
+) -> TurnRunner:
     scfg = SimpleNamespace(enabled_for=lambda plat: streaming_enabled)
     adapter = SimpleNamespace(
         SUPPORTS_MESSAGE_EDITING=supports_editing,
@@ -62,7 +64,7 @@ def _turn_runner(*, streaming_enabled: bool, supports_editing: bool) -> TurnRunn
         interim_assistant_messages_enabled=True,
         scheduled_heartbeat=False,
         resolve_display_setting=lambda *_a, **_kw: None,
-        source=SimpleNamespace(platform=Platform.TELEGRAM, chat_id="42"),
+        source=SimpleNamespace(platform=platform, chat_id="42"),
         _status_thread_metadata=None,
         progress_queue=None,
         event_message_id=None,
@@ -86,9 +88,9 @@ def _fake_consumer(monkeypatch):
     return _FakeConsumer
 
 
-def _interim_cb(*, streaming_enabled: bool, supports_editing: bool):
+def _interim_cb(*, streaming_enabled: bool, supports_editing: bool, platform: Platform = Platform.TELEGRAM):
     turn = _turn_runner(
-        streaming_enabled=streaming_enabled, supports_editing=supports_editing
+        streaming_enabled=streaming_enabled, supports_editing=supports_editing, platform=platform
     )
     consumer, _delta_cb, interim_cb, want_interim = turn._setup_stream_consumer("telegram")
     assert want_interim is True
@@ -129,3 +131,19 @@ def test_unstreamed_commentary_still_reaches_the_consumer():
 
     assert consumer.commentary == ["working on it"]
     assert consumer.segment_breaks == 0
+
+
+def test_streamed_commentary_on_a_local_route_is_only_a_segment_break():
+    """A Desktop/TUI (local) route: the consumer takes no deltas, but the viewer
+    already received them as ``message.delta`` frames. Posting the text again
+    recorded the streamed answer as sent commentary, so the final that repeats
+    it went out empty (message.complete "") and the turn never settled."""
+    consumer, interim_cb = _interim_cb(
+        streaming_enabled=False, supports_editing=True, platform=Platform.LOCAL
+    )
+    assert consumer.stream_deltas_enabled is False
+
+    interim_cb("answered beside a todo", already_streamed=True)
+
+    assert consumer.commentary == []
+    assert consumer.segment_breaks == 1

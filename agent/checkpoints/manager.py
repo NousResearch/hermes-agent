@@ -39,7 +39,7 @@ a new worktree costs near-zero.
 The shadow store uses ``GIT_DIR`` + ``GIT_WORK_TREE`` + ``GIT_INDEX_FILE``
 so no git state leaks into the user's project directory.
 
-Auto-maintenance (``tools.checkpoint_maintenance``)
+Auto-maintenance (``agent.checkpoints.maintenance``)
 ---------------------------------------------------
 
 Shadow state accumulates over time.  ``prune_checkpoints`` deletes refs whose
@@ -66,24 +66,20 @@ from typing import Optional, Sequence
 
 from utils import env_int, env_var_enabled
 
-logger = logging.getLogger(__name__)
+# Pinned name: these lines stay under `hermes logs --component tools`.
+logger = logging.getLogger("tools.checkpoint_manager")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
-_CHECKPOINT_BASE_AT_IMPORT = CHECKPOINT_BASE
-
-
 def _resolve_checkpoint_base() -> Path:
-    """Active profile's checkpoint root at call time: the patched ``CHECKPOINT_BASE`` when a test
-    changed it, else live profile-scoped HERMES_HOME — under the multiplexed gateway one process
-    serves every profile, so the import-time constant would write every profile's code-edit
-    checkpoints into the launch profile's store."""
-    return CHECKPOINT_BASE if CHECKPOINT_BASE != _CHECKPOINT_BASE_AT_IMPORT else get_hermes_home() / "checkpoints"
+    """Active profile's checkpoint root, resolved per call: under the multiplexed gateway one
+    process serves every profile, so an import-time value would write every profile's
+    code-edit checkpoints into the launch profile's store."""
+    return get_hermes_home() / "checkpoints"
 
-# Single shared store directory under CHECKPOINT_BASE.
+# Single shared store directory under the checkpoint base.
 _STORE_DIRNAME = "store"
 _REFS_PREFIX = "refs/hermes"
 # Commit-body line carrying a snapshot's exact take time (listings read only the subject).
@@ -567,7 +563,7 @@ def _migrate_legacy_store(base: Path) -> Optional[Path]:
     """Move pre-v2 per-project shadow repos into a ``legacy-<ts>/`` dir.
 
     The pre-v2 layout had one shadow git repo per working directory directly
-    under ``CHECKPOINT_BASE``.  The v2 layout wants a single ``store/`` dir.
+    under the checkpoint base.  The v2 layout wants a single ``store/`` dir.
     Rather than delete the old data (users might want to recover), rename
     everything except our own v2 entries into ``legacy-<timestamp>/``.  The
     legacy dir is subject to the same retention sweep and can be manually
@@ -809,7 +805,7 @@ def _pre_v2_shadow_repos(base: Path) -> list[dict]:
     """Return pre-v2 per-project shadow repos still directly under ``base``.
 
     Pre-v2 layout kept one shadow git repo per working directory directly
-    under ``CHECKPOINT_BASE`` (identified by a ``HEAD`` file).  This is the
+    under the checkpoint base (identified by a ``HEAD`` file).  This is the
     single source of truth for that scan so a preview built from it (e.g.
     ``store_status``) always matches what ``prune_checkpoints`` deletes.
     """
@@ -1007,7 +1003,7 @@ class CheckpointManager:
         if not self.enabled:
             return
         try:
-            from tools.checkpoint_pruning import store_lock
+            from agent.checkpoints.pruning import store_lock
 
             path = _normalize_path(file_path)
             digest = _hash_file(path)
@@ -1116,7 +1112,7 @@ class CheckpointManager:
         self._checkpointed_dirs.add(abs_dir)
 
         try:
-            from tools.checkpoint_pruning import store_lock
+            from agent.checkpoints.pruning import store_lock
 
             with store_lock(_resolve_checkpoint_base()):
                 return self._take(abs_dir, reason)
@@ -1203,7 +1199,7 @@ class CheckpointManager:
 
     def diff(self, working_dir: str, commit_hash: str) -> dict:
         """Show diff between a checkpoint and the current working tree."""
-        from tools.checkpoint_pruning import PruneError, store_lock
+        from agent.checkpoints.pruning import PruneError, store_lock
 
         try:
             with store_lock(_resolve_checkpoint_base()):
@@ -1312,7 +1308,7 @@ class CheckpointManager:
         them from every checkpoint, and — only when a delete failed —
         ``failed_deletes`` listing paths that could not be removed.
         """
-        from tools.checkpoint_pruning import PruneError, store_lock
+        from agent.checkpoints.pruning import PruneError, store_lock
         from tools.hosted_tool_policy import host_feature_refusal
         if refusal := host_feature_refusal("checkpoints", "Checkpoint restore"):
             return {"success": False, "error": refusal}
@@ -1903,7 +1899,7 @@ class CheckpointManager:
     def _prune(self, store: Path, working_dir: str, ref: str) -> None:
         """Checkpoint-take path: snapshot-count budget plus one size round, gc deferred to the
         periodic prune — a repack here held the tool call for the whole gc on a large store."""
-        from tools.checkpoint_pruning import Pruner, PruneError
+        from agent.checkpoints.pruning import Pruner, PruneError
 
         pruner = Pruner(_run_git, store, working_dir, _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:

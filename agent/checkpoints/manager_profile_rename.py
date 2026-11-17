@@ -14,10 +14,11 @@ import shutil
 from pathlib import Path
 from typing import Dict
 
-from tools import checkpoint_manager as cm
-from tools import checkpoint_maintenance as maintenance
+from agent.checkpoints import manager as cm
+from agent.checkpoints import maintenance
 
-logger = logging.getLogger(__name__)
+# Pinned name: these lines stay under `hermes logs --component tools`.
+logger = logging.getLogger("tools.checkpoint_manager_profile_rename")
 
 
 def _rebase_ledger_paths(ledger: dict, old_workdir: Path, new_workdir: Path) -> dict:

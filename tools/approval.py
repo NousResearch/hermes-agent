@@ -165,10 +165,11 @@ def resolve_gateway_approval(session_key: str, choice: str,
         if not queue:
             return 0
         if request_id:
-            targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
-            if not targets:
+            entry = _entry_for_request(session_key, request_id)
+            if entry is None:
                 return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
+            queue.remove(entry)
+            targets = [entry]
         elif resolve_all:
             targets = list(queue)
             queue.clear()
@@ -187,8 +188,9 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
-def _card_target(session_key: str, request_id: Optional[str]):
-    """The entry a card tap resolves: its own request, never another. Caller holds ``_lock``."""
+def _entry_for_request(session_key: str, request_id: Optional[str]):
+    """The pending entry with this ``request_id`` (a fresh uuid per entry, so at most one), never
+    another. Caller holds ``_lock``."""
     if not request_id:
         return None
     return next((e for e in _gateway_queues.get(session_key) or [] if e.data.get("request_id") == request_id), None)
@@ -198,7 +200,7 @@ def restrict_gateway_approval_card_to_deny(session_key: str, request_id: Optiona
     """Mark a pending request whose card could not show the whole command: a card tap may only deny it.
     Every request starts marked; ``restricted=False`` lifts the mark once its card shows the whole command."""
     with _lock:
-        entry = _card_target(session_key, request_id)
+        entry = _entry_for_request(session_key, request_id)
         if entry is not None:
             entry.card_deny_only = restricted
 
@@ -222,7 +224,7 @@ def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Opt
     if not request_id:
         return 0
     with _lock:  # re-entrant: the settle below takes it again
-        target = _card_target(session_key, request_id)
+        target = _entry_for_request(session_key, request_id)
         if target is not None and choice != "deny" and target.card_deny_only:
             return 0
         if target is not None and actor_id is not None:
@@ -239,10 +241,10 @@ def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> 
     The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
     idling for the whole approvals.timeout (#112548). False when it is no longer pending."""
     with _lock:
-        queue = _gateway_queues.get(session_key, [])
-        entry = next((e for e in queue if e.data.get("request_id") == request_id), None)
+        entry = _entry_for_request(session_key, request_id)
         if entry is None:
             return False
+        queue = _gateway_queues[session_key]
         queue.remove(entry)
         if not queue:
             _gateway_queues.pop(session_key, None)
@@ -267,31 +269,27 @@ def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
     """Attach ``settle(reason)`` to one pending approval; it runs once when that wait ends by any path.
     False when the request is no longer pending (the surface should withdraw its prompt itself)."""
     with _lock:
-        for entry in _gateway_queues.get(session_key, []):
-            if entry.data.get("request_id") == request_id:
-                entry.settle = settle
-                return True
-    return False
+        entry = _entry_for_request(session_key, request_id)
+        if entry is None:
+            return False
+        entry.settle = settle
+        return True
 
 
 def observe_gateway_settle(session_key: str, request_id: str, observer) -> bool:
     """Observe a pending approval without replacing its existing settle hook."""
     with _lock:
-        for entry in _gateway_queues.get(session_key, []):
-            if entry.data.get("request_id") == request_id:
-                entry.observers.append(observer)
-                return True
-    return False
+        entry = _entry_for_request(session_key, request_id)
+        if entry is None:
+            return False
+        entry.observers.append(observer)
+        return True
 
 
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
-    """Record that a client received a particular pending approval request."""
+    """A client's receipt of one approval request: True while that request is still pending."""
     with _lock:
-        for entry in _gateway_queues.get(session_key, []):
-            if entry.data.get("request_id") == request_id:
-                entry.acknowledged = True
-                return True
-    return False
+        return _entry_for_request(session_key, request_id) is not None
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -1487,12 +1485,9 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     approving the script as a whole. Same dict contract as ``check_all_command_guards``.
     Documented limitation: a purely local non-interactive non-gateway session returns approved
     (the terminal auto-approve contract); the hardline floor still blocks catastrophic
-    ``terminal()`` commands the script issues.
-
-    See #30882.
-    The hardline floor still blocks catastrophic ``terminal()`` commands the script issues; running
-    arbitrary code headlessly without any approval surface is trusted-by-config (set a gateway/ask surface
-    or ``approvals.cron_mode`` to require approval). See #30882.
+    ``terminal()`` commands the script issues. Running arbitrary code headlessly without any
+    approval surface is trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode``
+    to require approval). See #30882.
     """
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION

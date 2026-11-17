@@ -5,13 +5,12 @@ import subprocess
 
 import pytest
 
-from tools import checkpoint_manager as cm
+from agent.checkpoints import manager as cm
 from utils import rmtree_readonly
 
 
 @pytest.fixture
 def checkpoint(tmp_path, monkeypatch):
-    monkeypatch.setattr(cm, "CHECKPOINT_BASE", tmp_path / "checkpoints")
     work = tmp_path / "workspace"
     work.mkdir()
     nested = work / "tool"

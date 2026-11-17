@@ -166,9 +166,7 @@ except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
 
 
-# Backward-compat constants (built once after discovery)
-TOOL_TO_TOOLSET_MAP: dict[str, str] = registry.get_tool_to_toolset_map()
-
+# Backward-compat constant (built once after discovery)
 TOOLSET_REQUIREMENTS: dict[str, dict] = registry.get_toolset_requirements()
 
 # Tool names from the last get_tool_definitions() call (execute_code sandbox fallback).

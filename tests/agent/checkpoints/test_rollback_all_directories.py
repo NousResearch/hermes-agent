@@ -8,8 +8,8 @@ under a different session cwd were invisible ("No checkpoints found for
 
 import json
 
-import tools.checkpoint_manager as cm
-from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
+import agent.checkpoints.manager as cm
+from agent.checkpoints.manager import CheckpointManager, format_checkpoint_list
 
 
 def _make_store_with_project(tmp_path, workdir: str):
@@ -26,7 +26,6 @@ class TestListAllCheckpoints:
     def test_aggregates_projects_and_labels_workdir(self, tmp_path, monkeypatch):
         workdir = str(tmp_path / "proj")
         store = _make_store_with_project(tmp_path, workdir)
-        monkeypatch.setattr(cm, "CHECKPOINT_BASE", tmp_path)
         monkeypatch.setattr(cm, "_store_path", lambda base=None: store)
 
         mgr = CheckpointManager(enabled=True)
@@ -43,7 +42,6 @@ class TestListAllCheckpoints:
         assert results[0]["workdir"] == workdir
 
     def test_empty_store_returns_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cm, "CHECKPOINT_BASE", tmp_path)
         monkeypatch.setattr(cm, "_store_path", lambda base=None: tmp_path / "missing")
         assert CheckpointManager(enabled=True).list_all_checkpoints() == []
 

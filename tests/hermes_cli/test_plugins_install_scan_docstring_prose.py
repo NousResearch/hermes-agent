@@ -1,6 +1,6 @@
 """Docstring prose in a plugin's Python files is documentation, not runtime behaviour (#155823).
 
-``plugin_guard`` already caps findings that sit in a whole-line ``#`` comment or a CHANGELOG entry
+``plugins_install_scan`` already caps findings that sit in a whole-line ``#`` comment or a CHANGELOG entry
 (``_is_defensive_documentation`` → ``_comment_severity``) so prose cannot make a plugin
 un-overridably ``dangerous``. A Python docstring is prose too, but it is a *string literal*, so it
 never matched a comment prefix: a plugin documenting its own defenses with realistic examples
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.plugin_guard import scan_plugin, should_allow_plugin_install
+from hermes_cli.plugins_install_scan import scan_plugin, should_allow_plugin_install
 
 PASSPHRASE = "/etc/passwd"
 

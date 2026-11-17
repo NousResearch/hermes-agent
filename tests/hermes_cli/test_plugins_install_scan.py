@@ -1,4 +1,4 @@
-"""Tests for tools/plugin_guard.py — plugin install security scanning.
+"""Tests for hermes_cli/plugins_install_scan.py — plugin install security scanning.
 
 Inspired by Claude Cowork's skill & plugin security scanning
 (pass/warn/fail on upload/edit). These tests exercise the plugin-adapted
@@ -18,7 +18,7 @@ from tests.hermes_cli.plugin_worker_support import (
     plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 from tools.skills_guard import format_scan_report
-from tools.plugin_guard import (
+from hermes_cli.plugins_install_scan import (
     PLUGIN_SCANNER_VERSION,
     scan_plugin,
     should_allow_plugin_install,

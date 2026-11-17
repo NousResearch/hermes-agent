@@ -60,11 +60,8 @@ OPENAI_MODELS = frozenset(STT_MODEL_CATALOG["openai"])
 GROQ_MODELS = frozenset(STT_MODEL_CATALOG["groq"])
 RETIRED_GROQ_MODELS = frozenset({"distil-whisper-large-v3-en"})
 
-# Providers with native handlers. Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES``
-# (a regression test fails on drift); plugins may not register under these names and the
-# dispatcher short-circuits them before command/plugin lookup.
-# The plugin hook from issue #30398-style follow-up rejects plugins registering under any of these names;
-# the dispatcher in ``transcribe_audio`` short-circuits them defensively as well.
+# Providers with native handlers. ``agent.transcription_registry`` rejects plugins registering
+# under these names, and the dispatcher short-circuits them before command/plugin lookup.
 BUILTIN_STT_PROVIDERS = frozenset({
     "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"})
 # Built-in providers that upload audio to a remote API.

@@ -928,7 +928,7 @@ def _install_default_tools_after_update() -> None:
 
 def _print_checkpoint_footprint_notice() -> None:
     """Surface a GB-scale /rollback store the user may not know is on (see the helper's docstring)."""
-    from tools.checkpoint_maintenance import checkpoint_footprint_notice
+    from agent.checkpoints.maintenance import checkpoint_footprint_notice
     notice = checkpoint_footprint_notice()
     if notice:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")

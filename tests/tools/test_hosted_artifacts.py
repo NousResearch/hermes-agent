@@ -270,6 +270,18 @@ def test_same_origin_redirect_does_not_receive_the_bearer(monkeypatch):
     assert seen == [(URL, "Bearer TOKEN"), (BASE + "/unrelated", None)]
 
 
+@pytest.mark.parametrize("auth, adoptable", [("nous", False), ("NOUS ", False), ("oauth", False), ("", True)])
+def test_profile_bound_connections_are_never_adopted_across_profiles(auth, adoptable):
+    """The hosted server's connection carries its owner's Nous sign-in: another profile with the same
+    route must connect with its own, exactly as for an OAuth server."""
+    from tools.mcp_tool_registration import _same_server_route
+
+    config = dict(ha.server_entry(URL), auth=auth)
+    server = SimpleNamespace(_config=config, _resolved_identity="digest")
+    assert _same_server_route(server, config, cross_profile=False)
+    assert _same_server_route(server, config, cross_profile=True, resolved_identity="digest") is adoptable
+
+
 class _Agent:
     def __init__(self, session_id="s1", *, enabled=None, disabled=None):
         self.session_id = session_id

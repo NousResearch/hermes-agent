@@ -86,6 +86,35 @@ def fallback_notice_hidden(agent) -> bool:
     return is_machinery_display_kind(getattr(agent, "_turn_display_kind", None))
 
 
+def surface_hidden_fallback(agent) -> None:
+    """Turn-start reconciliation of a switch a wake turn did not show (call after the primary-restore
+    attempt). The fallback still serving (a quota cooldown keeps it across turns): the next turn the
+    user watches announces the held notice before it runs, so a hidden switch is never an
+    undisclosed one. The primary back: the user never saw it leave, so the held notice is dropped."""
+    held = getattr(agent, "_hidden_fallback_notice", None)
+    if not held or fallback_notice_hidden(agent):
+        return
+    agent._hidden_fallback_notice = None
+    if getattr(agent, "_provider_fallback_active", False):
+        announce_fallback_switch(agent, held)
+
+
+def announce_primary_restored(agent, previous_model: str, previous_provider: str) -> None:
+    """The recovery line after a turn-start restore. None for a switch the user never saw (hidden
+    on a wake turn), and none on a wake turn: during an outage each wake would restore, re-fail and
+    post it again."""
+    unseen = getattr(agent, "_hidden_fallback_notice", None)
+    agent._hidden_fallback_notice = None
+    if unseen or fallback_notice_hidden(agent):
+        return
+    try:
+        agent._emit_diagnostic_status(
+            f"✅ Primary model restored: {agent.model} via {agent.provider}; "
+            f"fallback {previous_model} via {previous_provider} is no longer active.")
+    except Exception:  # health: allow BLE001 -- a surface failure must never undo a successful restore
+        logger.debug("primary restored notice failed to emit", exc_info=True)
+
+
 def announce_fallback_switch(agent, notice: str) -> None:
     """Show the switch now, before the fallback model starts answering: the user must see which
     model this turn runs on while it runs, not after it ends. Display-only (status rail), so the
@@ -96,7 +125,9 @@ def announce_fallback_switch(agent, notice: str) -> None:
     the shared ``lifecycle`` kind the next retry or re-prompt line replaced it (Telegram)."""
     if fallback_notice_hidden(agent):
         logger.info("fallback switch notice not shown on a background wake turn: %s", notice)
+        agent._hidden_fallback_notice = notice
         return
+    agent._hidden_fallback_notice = None
     from gateway.warning_notifications import DiagnosticText
     try:
         agent._emit_status_kind(FALLBACK_STATUS_KIND, DiagnosticText(notice), origin="fallback_switch")

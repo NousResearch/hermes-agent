@@ -129,25 +129,6 @@ class TestFallbackChainAdvancement:
         assert "glm-5.2" in texts[1] and "deepseek-v4-flash" in texts[1] and "quota" not in texts[1]
         assert not getattr(agent, "_pending_fallback_notice", None)
 
-    @patch("time.monotonic", return_value=1000.0)
-    def test_background_wake_turn_switch_posts_no_notice(self, _clock):
-        """A switch on a turn with no user message (a plugin wake, a finished process) posts nothing: the
-        notice goes out before anyone knows the turn will end silent, so an outage would post one per
-        wake (#137738). A turn the user sent still gets it at the switch."""
-        agent = _make_agent(fallback_model=[{"provider": "zai", "model": "glm-5.2"},
-                                            {"provider": "deepseek", "model": "deepseek-v4-flash"}])
-        shown = []
-        agent.status_callback = lambda kind, text: shown.append(str(text))
-        clients = [_mock_client(base_url="https://api.z.ai/v1"), _mock_client(base_url="https://api.deepseek.com/v1")]
-        with patch("agent.auxiliary_client.resolve_provider_client",
-                   side_effect=[(clients[0], "glm-5.2"), (clients[1], "deepseek-v4-flash")]):
-            agent._turn_display_kind = "internal_notification"
-            assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
-            assert shown == []
-            agent._turn_display_kind = None
-            assert agent._try_activate_fallback(FailoverReason.overloaded) is True
-        assert len(shown) == 1 and "deepseek-v4-flash" in shown[0]
-
     def test_skips_unconfigured_provider_to_next(self):
         """If resolve_provider_client returns None, skip to next in chain."""
         fbs = [

@@ -1239,7 +1239,8 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
-    from agent.fallback_notice import fallback_notice_hidden
+    from agent.fallback_notice import fallback_notice_hidden, surface_hidden_fallback
+    surface_hidden_fallback(agent)
     if getattr(agent, "_pending_fallback_notice", None) and not fallback_notice_hidden(agent):
         # A switch decided before this turn (primary credentials failed at build) is announced before the
         # turn starts, like an in-turn switch is announced when it happens: never after the answer. A

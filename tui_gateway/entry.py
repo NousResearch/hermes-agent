@@ -17,6 +17,7 @@ from contextlib import suppress
 
 from tui_gateway._env import env_float
 from tui_gateway._stdin_recovery import handle_spurious_eof
+from tui_gateway._input_limits import FrameTooLarge, read_frame
 
 from tui_gateway import server
 from tui_gateway.event_replay import replay_epoch
@@ -385,7 +386,15 @@ def _serve():
         logger.debug("picker cache prewarm (tui) failed to start", exc_info=True)
 
     while True:
-        raw = sys.stdin.readline()
+        try:
+            raw = read_frame(sys.stdin)
+        except FrameTooLarge as exc:
+            # Already drained to the end of the line; answer like a parse error and keep serving.
+            logger.warning("dropping oversized stdio request: %s", exc)
+            _write_or_exit(
+                {"jsonrpc": "2.0", "error": {"code": -32600, "message": str(exc)}, "id": None},
+                "frame-too-large response write failed (broken stdout pipe)")
+            continue
         if not raw:
             # Spurious (child flipped O_NONBLOCK on the shared description) or genuine EOF?
             if not handle_spurious_eof(_recovery_times, _log_exit):

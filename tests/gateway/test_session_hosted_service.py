@@ -44,6 +44,30 @@ async def test_room_owner_survives_service_restart_and_foreign_actor_cannot_clai
         db.close()
 
 
+def test_bindings_with_no_owned_rooms_skip_the_room_list_read(tmp_path, monkeypatch):
+    from gateway import hosted_rooms
+    from gateway.session_hosted_service import CanonicalHostedRoomService
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))
+        service = CanonicalHostedRoomService(authority, None)
+        calls = []
+        real_list_rooms = hosted_rooms.list_rooms
+
+        def counting_list_rooms(db_path, **kwargs):
+            calls.append(db_path)
+            return real_list_rooms(db_path, **kwargs)
+
+        monkeypatch.setattr(hosted_rooms, 'list_rooms', counting_list_rooms)
+        # A profile owning no rooms must not pay the room-table read on every driver tick.
+        assert service.bindings() == ()
+        assert calls == []
+        # Once a room is claimed, the list read runs and the owned filter applies again.
+        service.authorize_room('alice', 'room', create=True)
+        assert service.bindings() == ()
+        assert len(calls) == 1
+
+
 def test_private_hosted_policy_restores_without_public_source_admission(tmp_path):
     from dataclasses import asdict, replace
     from gateway.session_policy import build_policy, restore_policy

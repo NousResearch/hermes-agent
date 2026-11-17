@@ -98,7 +98,9 @@ const STOP_EXPLANATIONS: Record<string, UpdateStopExplanation> = {
 }
 
 export function explainUpdateStop(stopClass: string | null): UpdateStopExplanation | null {
-  return stopClass === null ? null : Object.prototype.hasOwnProperty.call(STOP_EXPLANATIONS, stopClass)
-    ? STOP_EXPLANATIONS[stopClass]
-    : null
+  return stopClass === null
+    ? null
+    : Object.prototype.hasOwnProperty.call(STOP_EXPLANATIONS, stopClass)
+      ? STOP_EXPLANATIONS[stopClass]
+      : null
 }

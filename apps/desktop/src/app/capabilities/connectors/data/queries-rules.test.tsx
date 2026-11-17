@@ -96,7 +96,11 @@ describe('a connected app first seen on a list read', () => {
 
   it('waits for the backend read when the page starts from saved connected rows', async () => {
     const request = gateway([{ ...row, connected: true }])
-    queryClient.setQueryData(connectorsListQueryKey('default'), { available: true, connectors: [{ ...row, connected: true }] }, { updatedAt: 1 })
+    queryClient.setQueryData(
+      connectorsListQueryKey('default'),
+      { available: true, connectors: [{ ...row, connected: true }] },
+      { updatedAt: 1 }
+    )
     const before = $freeTierTurnCompleted.get()
 
     mount()

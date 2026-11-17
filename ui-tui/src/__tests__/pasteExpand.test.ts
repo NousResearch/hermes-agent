@@ -43,7 +43,10 @@ describe('expanding a collapsed paste in the composer', () => {
     let tokens = [a, b]
 
     // Open the FIRST chip, edit it, fold it back; then the same for the second.
-    for (const [first, from, to] of [[true, 'ALPHA', 'ALPHA-2'], [false, 'BRAVO', 'BRAVO-2']] as const) {
+    for (const [first, from, to] of [
+      [true, 'ALPHA', 'ALPHA-2'],
+      [false, 'BRAVO', 'BRAVO-2']
+    ] as const) {
       const expanded = expandPasteChip(value, first ? value.indexOf(label) : value.lastIndexOf(label), tokens)!
       const edited = expanded.value.replace(from, to)
       const span = shiftSpan(expanded.value, edited, expanded.span)!
@@ -83,7 +86,13 @@ describe('sent message paste sections', () => {
     // A later submission with the same chip but a different body never sees these.
     stagePastes(`review: ${label}`, `review: ${other}`, [{ kind: 'paste', label, text: other }])
 
-    expect(takePastes(sent)).toEqual({ display, pastes: [{ label, text: body }, { label, text: other }] })
+    expect(takePastes(sent)).toEqual({
+      display,
+      pastes: [
+        { label, text: body },
+        { label, text: other }
+      ]
+    })
     expect(takePastes(sent)).toBeUndefined()
     expect(takePastes(`review: ${other}`)?.pastes).toEqual([{ label, text: other }])
   })

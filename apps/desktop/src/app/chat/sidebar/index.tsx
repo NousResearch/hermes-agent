@@ -85,7 +85,7 @@ import {
   type AgentProfileRoute,
   ALL_PROFILES,
   messagingTotalsKey,
-  normalizeProfileKey,
+  normalizeProfileKey
 } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'

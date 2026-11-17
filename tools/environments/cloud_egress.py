@@ -133,6 +133,8 @@ def start_modal_relay(egress: CloudEgress, sandbox, worker, remote_home: str) ->
             worker.run_coroutine(_read(), timeout=None)
         except Exception:  # health: allow BLE001 -- SDK stream errors are untyped; the next command restarts the relay
             logger.debug("Modal egress relay ended", exc_info=True)
+        finally:
+            hub.close()
 
     reader = spawn_context_thread(_reader, name="hermes-egress-relay-modal")
     reader.start()
@@ -153,6 +155,8 @@ def start_daytona_relay(egress: CloudEgress, sandbox, remote_home: str) -> Relay
                 splitter.feed(chunk)
         except Exception:  # health: allow BLE001 -- SDK PTY errors are untyped; the next command restarts the relay
             logger.debug("Daytona egress relay ended", exc_info=True)
+        finally:
+            hub.close()
 
     reader = spawn_context_thread(_reader, name="hermes-egress-relay-daytona")
     reader.start()

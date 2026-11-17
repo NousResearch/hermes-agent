@@ -197,7 +197,7 @@ class DaytonaEnvironment(BaseEnvironment):
                 with lock:
                     state["staged"] = remote_stdin
                 sandbox.fs.set_file_permissions(remote_stdin, mode="600")
-                command = self._redirect_stdin_from_file(cmd_string, remote_stdin)
+                command = self._redirect_stdin_from_file(command, remote_stdin)
             shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
             with lock:
                 if state["cancelled"]:

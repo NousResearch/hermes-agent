@@ -152,7 +152,7 @@ class ModalEnvironment(BaseEnvironment):
         self._persistent, self._task_id = persistent_filesystem, task_id
         self._sandbox = self._app = None
         # Resolved before the sandbox exists: a half-configured proxy refuses before any spend.
-        self._egress = cloud_egress_for_env("Modal")
+        self._egress, self._relay_lock = cloud_egress_for_env("Modal"), threading.Lock()
         self._worker = _AsyncWorker()
         self._sync_manager: FileSyncManager | None = None  # initialized after sandbox creation
         restored_snapshot_id, restored_from_legacy_key = (
@@ -201,8 +201,9 @@ class ModalEnvironment(BaseEnvironment):
 
     def _ensure_relay(self) -> None:
         """(Re)start the in-sandbox relay agent; its exec ends whenever the sandbox restarts."""
-        if self._relay is None or not self._relay.alive():
-            self._relay = start_modal_relay(self._egress, self._sandbox, self._worker, "/root")
+        with self._relay_lock:  # two commands seeing a dead relay must not both bind its ports
+            if self._relay is None or not self._relay.alive():
+                self._relay = start_modal_relay(self._egress, self._sandbox, self._worker, "/root")
 
     def _exec(self, cmd: str, *, timeout: int, stdin: str | None = None, fail_label: str | None = None,
               capture: bool = False):

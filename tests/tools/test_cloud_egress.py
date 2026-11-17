@@ -5,13 +5,14 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from tools.environments import cloud_egress
+from tools.environments import cloud_egress, egress_relay
 from tools.environments.egress_relay import AGENT_SOURCE, LineSplitter, RelayHub
 
 
@@ -28,9 +29,19 @@ def _free_port_pair() -> int:
             return port
 
 
-def test_relay_carries_a_connection_over_the_exec_stream(tmp_path):
+def test_relay_carries_a_connection_over_the_exec_stream(tmp_path, monkeypatch):
     """The in-sandbox agent and the host hub, joined only by the agent's stdin/stdout, round-trip a
-    TCP connection to the host-side target — and tolerate PTY noise before the first frame."""
+    TCP connection to the host-side target — tolerating PTY noise before the first frame and
+    keeping bytes that arrive while the host side is still dialling."""
+    dialling, release = threading.Event(), threading.Event()
+    real_dial = egress_relay.socket.create_connection
+
+    def _held_dial(*args, **kwargs):
+        dialling.set()
+        assert release.wait(10)
+        return real_dial(*args, **kwargs)
+    monkeypatch.setattr(egress_relay.socket, "create_connection", _held_dial)
+
     upstream = socket.socket()
     upstream.bind(("127.0.0.1", 0))
     upstream.listen()
@@ -60,8 +71,13 @@ def test_relay_carries_a_connection_over_the_exec_stream(tmp_path):
         threading.Thread(target=_pump, daemon=True).start()
         hub.wait_ready("test")
 
-        with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
-            client.sendall(b"hello")  # sent before the hub has dialled the target: must not be lost
+        with real_dial(("127.0.0.1", port), timeout=10) as client:
+            assert dialling.wait(10)
+            client.sendall(b"hello")  # reaches the hub while its dial is held open
+            deadline = time.monotonic() + 10
+            while not any(not q.empty() for q in hub._inboxes.values()) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            release.set()
             reply = client.recv(100)
         assert reply == b"ECHO:hello"
     finally:

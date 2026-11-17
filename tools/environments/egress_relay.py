@@ -37,10 +37,14 @@ REMOTE_AGENT_NAME = ".hermes-egress-relay.py"
 READY_TIMEOUT_S = 30.0
 _FRAME_RE = re.compile(r"^([RODC]) (\d+) ?([A-Za-z0-9+/=]*)$")
 _CHUNK = 32 * 1024
+# Host-side budget per sandbox: connections beyond this are refused, and a connection whose
+# unsent backlog exceeds the queue bound (iron-proxy stalled) is dropped instead of buffering.
+MAX_CONNECTIONS = 64
+_INBOX_FRAMES = 256
 
 # Runs inside the sandbox (stdlib only, python3.8+). argv[1] = tunnel_port.
 AGENT_SOURCE = r'''
-import base64, socket, sys, threading
+import base64, queue, socket, sys, threading
 PORT = int(sys.argv[1])
 out = sys.stdout.buffer
 lock = threading.Lock()
@@ -52,6 +56,12 @@ def send(op, cid, data=b""):
         out.write(b"%s %d %s\n" % (op, cid, base64.b64encode(data)))
         out.flush()
 
+def close(cid):
+    entry = conns.pop(cid, None)
+    if entry is not None:
+        entry[1].put(None)
+        send(b"C", cid)
+
 def pump(cid, s):
     try:
         while True:
@@ -61,9 +71,17 @@ def pump(cid, s):
             send(b"D", cid, data)
     except OSError:
         pass
-    if conns.pop(cid, None) is not None:
-        send(b"C", cid)
+    close(cid)
     s.close()
+
+def writer(cid, s, q):
+    # One writer per connection: a client that stops reading stalls only itself.
+    try:
+        while (data := q.get()) is not None:
+            s.sendall(data)
+        s.shutdown(socket.SHUT_WR)  # pump() sees the client's EOF next and closes the socket
+    except OSError:
+        close(cid)
 
 def serve(idx, ls):
     while True:
@@ -71,7 +89,9 @@ def serve(idx, ls):
         with lock:
             seq[0] += 1
             cid = seq[0]
-        conns[cid] = s
+        q = queue.Queue()
+        conns[cid] = (s, q)
+        threading.Thread(target=writer, args=(cid, s, q), daemon=True).start()
         send(b"O", cid, str(idx).encode())
         threading.Thread(target=pump, args=(cid, s), daemon=True).start()
 
@@ -86,30 +106,26 @@ for line in sys.stdin.buffer:
     parts = line.split()
     if len(parts) < 2 or not parts[1].isdigit():
         continue
-    op, cid = parts[0], int(parts[1])
-    s = conns.get(cid)
-    if s is None:
+    entry = conns.get(int(parts[1]))
+    if entry is None:
         continue
-    try:
-        if op == b"D":
-            s.sendall(base64.b64decode(parts[2]) if len(parts) > 2 else b"")
-        elif op == b"C":
-            conns.pop(cid, None)
-            s.shutdown(socket.SHUT_RDWR)
-    except OSError:
-        conns.pop(cid, None)
+    if parts[0] == b"D":
+        entry[1].put(base64.b64decode(parts[2]) if len(parts) > 2 else b"")
+    elif parts[0] == b"C":
+        conns.pop(int(parts[1]), None)
+        entry[1].put(None)
 '''
 
 
 class RelayHub:
     """Host side of the relay: one per sandbox. ``send_line`` writes one frame line to the agent's
     stdin; the transport calls ``feed_line`` for every line the agent prints. Each connection gets
-    an ordered inbox so data that arrives while iron-proxy is still being dialled is not lost."""
+    an ordered, bounded inbox so data that arrives while iron-proxy is still being dialled is kept."""
 
     def __init__(self, send_line: Callable[[str], None], targets: tuple[tuple[str, int], tuple[str, int]]):
         self._send_line, self._targets = send_line, targets
         self._send_lock = threading.Lock()
-        self._inboxes: dict[int, queue.SimpleQueue] = {}
+        self._inboxes: dict[int, queue.Queue] = {}
         self.ready = threading.Event()
 
     def _send(self, op: str, cid: int, data: bytes = b"") -> None:
@@ -125,43 +141,64 @@ class RelayHub:
         if op == "R":
             self.ready.set()
         elif op == "O":
-            self._inboxes[cid] = inbox = queue.SimpleQueue()
+            if len(self._inboxes) >= MAX_CONNECTIONS:
+                logger.warning("egress relay: %d connections open, refusing another", MAX_CONNECTIONS)
+                self._send_quietly("C", cid)
+                return
+            self._inboxes[cid] = inbox = queue.Queue(_INBOX_FRAMES)
             spawn_context_thread(self._serve, name="hermes-egress-relay-conn", args=(cid, payload, inbox)).start()
         elif (inbox := self._inboxes.get(cid)) is not None:
-            inbox.put(payload if op == "D" else None)
+            try:
+                inbox.put_nowait(payload if op == "D" else None)
+            except queue.Full:
+                logger.warning("egress relay: connection %d backlog over %d frames, dropping it", cid, _INBOX_FRAMES)
+                self._end(cid)
 
-    def _serve(self, cid: int, payload: bytes, inbox: queue.SimpleQueue) -> None:
+    def _send_quietly(self, op: str, cid: int) -> None:
+        with contextlib.suppress(Exception):  # health: allow BLE001 -- the stream may already be gone; cleanup must go on
+            self._send(op, cid)
+
+    def _end(self, cid: int) -> None:
+        """Forget a connection and wake its writer; tell the agent, best effort."""
+        if (inbox := self._inboxes.pop(cid, None)) is not None:
+            with contextlib.suppress(queue.Full):
+                inbox.put_nowait(None)
+            self._send_quietly("C", cid)
+
+    def _serve(self, cid: int, payload: bytes, inbox: queue.Queue) -> None:
         host, port = self._targets[1 if payload == b"1" else 0]
         try:
             sock = socket.create_connection((host, port), timeout=10)
         except OSError as exc:
             logger.warning("egress relay: could not reach iron-proxy at %s:%d: %s", host, port, exc)
-            self._inboxes.pop(cid, None)
-            self._send("C", cid)
+            self._end(cid)
             return
         sock.settimeout(None)
         spawn_context_thread(self._pump_out, name="hermes-egress-relay-out", args=(cid, sock)).start()
-        while (data := inbox.get()) is not None:
-            with contextlib.suppress(OSError):
+        try:
+            while (data := inbox.get()) is not None and cid in self._inboxes:
                 sock.sendall(data)
-        self._inboxes.pop(cid, None)
-        with contextlib.suppress(OSError):
-            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        finally:
+            self._end(cid)
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
 
     def _pump_out(self, cid: int, sock: socket.socket) -> None:
         try:
-            while data := sock.recv(_CHUNK):
+            while cid in self._inboxes and (data := sock.recv(_CHUNK)):
                 self._send("D", cid, data)
-        except OSError:
-            pass
-        if (inbox := self._inboxes.get(cid)) is not None:
-            self._send("C", cid)
-            inbox.put(None)
-        sock.close()
+        except Exception:  # health: allow BLE001 -- socket or stream (SDK) failure; either way the connection ends
+            logger.debug("egress relay: connection %d ended", cid, exc_info=True)
+        finally:
+            self._end(cid)
+            sock.close()
 
     def close(self) -> None:
-        for inbox in list(self._inboxes.values()):
-            inbox.put(None)
+        """End every connection (the stream is gone or the sandbox is closing)."""
+        for cid in list(self._inboxes):
+            self._end(cid)
 
     def wait_ready(self, backend: str) -> None:
         if not self.ready.wait(READY_TIMEOUT_S):

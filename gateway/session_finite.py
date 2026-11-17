@@ -6,6 +6,12 @@ from hermes_state_runtime import RuntimeStoreError
 
 _finite_turn = ContextVar('finite_turn', default=None)
 _unattended_turn = ContextVar('unattended_turn', default=False)
+_finite_approval = ContextVar('finite_approval', default=None)
+# ``on_approval`` a finite submission may commit (``hermes chat -q --on-approval``): ``deny`` / ``approve``
+# override ``approvals.single_query_mode`` for this turn; ``ask`` sends flagged actions to the viewer as
+# approval prompts (the ``wait`` / ``fail`` client then holds for another surface or stops the run).
+# ``approve`` is gated like ``unattended``: only the session's local creator may ask for it.
+FINITE_APPROVAL_MODES = frozenset({'deny', 'approve', 'ask'})
 
 
 def finite_turn_required():
@@ -30,13 +36,20 @@ def unattended_turn():
     return _unattended_turn.get()
 
 
+def finite_approval():
+    """This finite turn's committed ``on_approval`` (``deny`` / ``approve`` / ``ask``), or None for the config default."""
+    return _finite_approval.get()
+
+
 @contextmanager
-def finite_turn_scope(finite, unattended=False):
+def finite_turn_scope(finite, unattended=False, on_approval=None):
     token = _finite_turn.set(finite)
     unattended_token = _unattended_turn.set(bool(finite and unattended))
+    approval_token = _finite_approval.set(on_approval if finite else None)
     try:
         yield
     finally:
+        _finite_approval.reset(approval_token)
         _unattended_turn.reset(unattended_token)
         _finite_turn.reset(token)
 
@@ -49,11 +62,18 @@ def admit_finite(params, *, submitter=None):
         raise RuntimeStoreError('invalid_params')
     if params.get('unattended') and submitter is not None and not _may_run_unattended(*submitter):
         raise RuntimeStoreError('invalid_params')
+    on_approval = params.get('on_approval')
+    if on_approval is not None and (on_approval not in FINITE_APPROVAL_MODES or params.get('finite') is not True
+                                    or params.get('unattended')):
+        raise RuntimeStoreError('invalid_params')
+    if on_approval == 'approve' and submitter is not None and not _may_run_unattended(*submitter):
+        raise RuntimeStoreError('invalid_params')
     if 'finite' not in params:
         return {}
     if type(params['finite']) is not bool:
         raise RuntimeStoreError('invalid_params')
-    return {'finite': params['finite'], **({'unattended': True} if params.get('unattended') else {})}
+    return {'finite': params['finite'], **({'unattended': True} if params.get('unattended') else {}),
+            **({'on_approval': on_approval} if on_approval else {})}
 
 
 def _may_run_unattended(connection, ref):
@@ -73,7 +93,8 @@ async def execute_finite_admission(authority, ref, row):
     from gateway.session_display import display_turn_scope, submission_turn_scope
     from gateway.session_surface import surface_turn_scope
     from gateway.session_cli_turn import cli_turn_scope
-    with finite_turn_scope(row['payload'].get('finite', False), row['payload'].get('unattended') is True), \
+    payload = row['payload']
+    with finite_turn_scope(payload.get('finite', False), payload.get('unattended') is True, payload.get('on_approval')), \
             surface_turn_scope(row['payload'].get('surface_v1')), \
             display_turn_scope(row['admission_id'], row['payload'].get('display_v1')), \
             submission_turn_scope(row['admission_id'], row.get('request_id')), \

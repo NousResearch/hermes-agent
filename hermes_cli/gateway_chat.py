@@ -234,6 +234,8 @@ async def run_gateway_chat(args, emitter=None):
                                usage_file=getattr(args, "usage_file", None))
         view.launch_api_key = getattr(args, "api_key", None)  # /new keeps this launch's key
         view.unattended = isinstance(oneshot_prompt, str)
+        from hermes_cli.oneshot_contract import RunPolicy
+        view.policy = RunPolicy.from_args(args)
         view.resume_footer = oneshot and not quiet
         if (getattr(args, "resume", None) or title or latest) and not quiet:
             from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
@@ -337,12 +339,12 @@ def _register_terminal_process() -> None:
 
 def launch_from_args(args) -> int:
     from websockets.exceptions import WebSocketException
+    from hermes_cli.stream_json import EMITTERS
     emitter = None
-    if getattr(args, "output_format", "text") == "stream-json":
+    if getattr(args, "output_format", None) in EMITTERS:
         # Built before validation/connection so any failed start still closes the protocol
-        # (init + result) instead of exiting with an empty stdout.
-        from hermes_cli.stream_json import StreamJsonEmitter
-        emitter = StreamJsonEmitter(model=getattr(args, "model", None) or "")
+        # (init + result, or the lone result of --format json) instead of exiting with an empty stdout.
+        emitter = EMITTERS[args.output_format](model=getattr(args, "model", None) or "")
 
     def failed(message, code):
         print("Error: " + message, file=sys.stderr)

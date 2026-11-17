@@ -2,6 +2,36 @@
 
 Worker identity is supplied by the caller, not inferred from a daemon's environment.
 """
+from enum import IntEnum
+
+
+class ExitCode(IntEnum):
+    """Process exit codes of a finite run (``hermes -z`` / ``hermes chat -q``); documented in
+    website/docs/reference/cli-commands.md#exit-codes-for-one-shot-runs."""
+    OK = 0
+    FAILED = 1
+    USAGE_OR_PARTIAL = 2
+    INPUT_REQUIRED = 3
+    APPROVAL_PENDING = 5
+    KANBAN_RETRY = 75
+    KANBAN_TERMINAL = 78
+    TIMEOUT = 124
+    INTERRUPTED = 130
+
+
+# What each code means, per entry point. `chat -q` and `-z` keep their historical, different 1/2
+# meanings; 5 and 124 come only from the opt-in --on-approval fail / --timeout flags.
+EXIT_CODES = {
+    ExitCode.OK: "the turn completed",
+    ExitCode.FAILED: "chat -q: the turn failed, stopped partway or never ran; -z: it completed with no reply text",
+    ExitCode.USAGE_OR_PARTIAL: "usage error before the run started; -z: the turn failed or stopped partway",
+    ExitCode.INPUT_REQUIRED: "the session needs a person (a pending prompt or a lost turn); detached without cancelling",
+    ExitCode.APPROVAL_PENDING: "--on-approval fail: a flagged action needed approval; it was denied and the run stopped",
+    ExitCode.KANBAN_RETRY: "Kanban worker only: a retryable provider wall (rate limit, overload, 5xx, billing)",
+    ExitCode.KANBAN_TERMINAL: "Kanban worker only: a provider failure that needs an operator (auth, missing model)",
+    ExitCode.TIMEOUT: "--timeout: the run did not finish in time and was interrupted",
+    ExitCode.INTERRUPTED: "the turn was interrupted (Ctrl-C, /stop, gateway restart)",
+}
 
 # Provider walls do not spend a Kanban task's retry budget.
 TRANSIENT_PROVIDER_REASONS = frozenset({

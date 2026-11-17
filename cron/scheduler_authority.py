@@ -47,7 +47,8 @@ def _lift_pause(job_id, pause):
     if (job is not None and job.get('state') == 'paused'
             and (job.get('paused_at'), job.get('paused_reason')) == (pause['paused_at'], pause['reason'])):
         try:
-            resume_job(job_id)
+            # Not a repair: a job that keeps failing keeps its failure count through this pause.
+            resume_job(job_id, keep_failure_streak=True)
         except ValueError:  # a one-shot whose instant has passed stays paused for the operator
             pass
 

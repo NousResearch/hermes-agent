@@ -1293,6 +1293,36 @@ gateway in the middle of its drain. launchd caps its stop timeout at 60 s, so on
 is limited to what fits inside that.
 :::
 
+## Managed Worker Turns Across a Restart
+
+With `gateway.managed_workers: true`, a CLI session on a custom OpenAI-compatible provider
+(`--provider custom --base-url ...`) runs each turn in its own worker process instead of inside the
+gateway. Safe-mode, config-only and Kanban sessions always run this way. By default a worker dies
+with its gateway: a restart or crash in the middle of a turn ends the turn, and it is recorded as
+`unknown` (the session pauses until you Discard it).
+
+`gateway.detached_workers: true` lets those turns survive the restart:
+
+```yaml
+gateway:
+  managed_workers: true     # unset by default (turns run in the gateway process)
+  detached_workers: true    # unset by default (a worker dies with its gateway)
+```
+
+- The worker keeps running when its gateway goes away. It buffers its output and waits on a private
+  socket in the profile's `worker-outboxes/` directory (only your user can connect).
+- The next gateway re-adopts it at startup: same worker process, same turn. The rest of its output
+  reaches your session, and the turn settles normally (`gateway.log` logs `Re-adopted managed worker`).
+- A stopping or restarting gateway hands these turns over instead of interrupting them, and a
+  restart-when-idle does not wait for them.
+- A worker that no gateway re-adopts within 15 minutes ends itself and its process group. Its turn
+  is then `unknown`, as without the setting.
+- Under a systemd service, each worker runs in its own transient user scope, so the service's
+  restart does not kill it. That needs a user D-Bus session (`loginctl enable-linger`). Without one
+  the worker stays inside the service cgroup and dies with it.
+- POSIX only; ignored on Windows. The setting is read from the session's frozen config, so it
+  applies to sessions created after you turn it on.
+
 ## Session Stall Watchdog
 
 The gateway runs a notify-only stall watchdog (`agent.session_stall_timeout`, default `300` seconds, `0` = disabled). When a busy session has a **pending inbound follow-up** and the agent's shared activity clock has been idle for at least this long, the gateway logs a WARNING and sends the user a one-shot notification:

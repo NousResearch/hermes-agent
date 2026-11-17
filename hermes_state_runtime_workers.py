@@ -45,6 +45,9 @@ def discard_orphan_workers_on_reset(conn, session_ids):
 
 
 RETIRED_RECEIPT = {'retired': True}
+# A detachable managed worker's durable record (gateway/session_detached_workers.py), keyed by
+# execution id: it lives exactly as long as its execution is not terminal.
+DETACHED_RECORD_PREFIX = 'gateway.detached_worker.v1.'
 # A delegated child's execution id is its parent's plus this and a random suffix, so every
 # descendant of an execution is one prefix probe away (gateway/session_worker_child.py).
 CHILD_SEPARATOR = '/child:'
@@ -95,6 +98,7 @@ def compact_terminal_receipts(conn, execution_id):
     conflicts. Mutation acknowledgements (counts, row annotations, assignments) stay replayable."""
     retire_child_executions(conn, execution_id)
     _compact(conn, execution_id)
+    conn.execute('DELETE FROM state_meta WHERE key=?', (DETACHED_RECORD_PREFIX + execution_id,))
     if CHILD_SEPARATOR in execution_id:
         # A child that finished itself (an early close: failed constructor, refused sibling) never
         # reaches _retire_children, which only selects live children: its row ends here.

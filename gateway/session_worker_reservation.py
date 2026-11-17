@@ -60,7 +60,8 @@ def owner_worker_subject():
     return f'uid:{os.getuid()}'  # windows-footgun: ok — POSIX branch
 
 
-def reserve_admission_worker(authority, *, admission_id, process, principal_id, hello, worker_subject=None):
+def reserve_admission_worker(authority, *, admission_id, process, principal_id, hello, worker_subject=None,
+                             detach_socket=None):
     """Return a private bootstrap scope; never accept caller-selected kind/target.
 
     Only the owner process may reserve its live direct exec child. The admission
@@ -71,6 +72,9 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
     as (``owner_worker_subject``), when given. An automation admission's principal is a route
     (``automation:<session key>``), never a ticket subject, so a claim bound to it refused every
     adopt and each bot DM or completion wake on a managed session ended interrupted (#144139).
+
+    ``detach_socket`` (``gateway.detached_workers``) records the worker in the same transaction,
+    so a restarted owner can find and re-adopt it (gateway/session_detached_workers.py).
     """
     authority._require_admission_open()
     pid, birth = verify_worker_identity(process, hello)
@@ -105,6 +109,9 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
         conn.execute("INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest) "
                      "VALUES(?,?,'compute',?,?,'registered',?)",
                      (execution_id, sid, authority.epoch, generation, _secret_digest(claim)))
+        if detach_socket is not None:
+            from gateway.session_detached_workers import write_record
+            write_record(conn, scope, admission_id, detach_socket)
         return scope | {'epoch': authority.epoch}
 
     return authority.db._execute_write(write)

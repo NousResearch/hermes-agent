@@ -1331,7 +1331,6 @@ class SessionAuthority:
             return 'The admitted turn failed.', 'failed'
 
     async def _drain(self, ref):
-        from gateway.session_managed_worker import ManagedExecutionUnknown
         live = self.sessions[ref.session_id]
         while True:
             claimed = await self._claim_with_retry(ref, live)
@@ -1362,41 +1361,46 @@ class SessionAuthority:
                 from gateway.session_retirement import retire_at_idle
                 retire_at_idle(self, ref, live)
                 return
-            admission_id = row['admission_id']
-            from gateway.run_plugin_injection import admission_turn_scope
-            try:
-                with admission_turn_scope(self, ref, live, row):
-                    response, outcome = await self._execute_claimed(ref, live, row)
-                if outcome == 'settled_unknown':
-                    self.deferred_resets.pop(live.route, None)  # no settlement follows, as below
-                    continue
-            except BaseException as exc:
-                # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
-                # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
-                # never left to fire after a later settled turn with a stale entry.
-                self.deferred_resets.pop(live.route, None)
-                from gateway.session_ingress import fire_post_delivery
-                await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
-                if isinstance(exc, ManagedExecutionUnknown):
-                    return
-                raise
-            from gateway.session_runtime_workers import track_mutation
-            from gateway.session_settlement_recovery import settle_and_deliver
-            delivery = track_mutation(self, settle_and_deliver(self, live, ref, row, response, outcome))
-            try:
-                advance = await asyncio.shield(delivery)
-            except asyncio.CancelledError:
-                # Keep this FIFO's drain live until the committed reply has been handed off.
-                # Cleanup itself is separately tracked and must not delay the next turn.
-                try:
-                    await asyncio.shield(delivery)
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception(
-                        'Delivery of admission %s failed after its drain was cancelled', row['admission_id'])
-                raise
-            if not advance:
+            if not await self._run_claimed(ref, live, row):
                 return
+
+    async def _run_claimed(self, ref, live, row):
+        """Execute and settle one claimed admission; False when the drain must stop after it."""
+        from gateway.session_managed_worker import ManagedExecutionUnknown
+        admission_id = row['admission_id']
+        from gateway.run_plugin_injection import admission_turn_scope
+        try:
+            with admission_turn_scope(self, ref, live, row):
+                response, outcome = await self._execute_claimed(ref, live, row)
+            if outcome == 'settled_unknown':
+                self.deferred_resets.pop(live.route, None)  # no settlement follows, as below
+                return True
+        except BaseException as exc:
+            # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
+            # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
+            # never left to fire after a later settled turn with a stale entry.
+            self.deferred_resets.pop(live.route, None)
+            from gateway.session_ingress import fire_post_delivery
+            await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
+            if isinstance(exc, ManagedExecutionUnknown):
+                return False
+            raise
+        from gateway.session_runtime_workers import track_mutation
+        from gateway.session_settlement_recovery import settle_and_deliver
+        delivery = track_mutation(self, settle_and_deliver(self, live, ref, row, response, outcome))
+        try:
+            advance = await asyncio.shield(delivery)
+        except asyncio.CancelledError:
+            # Keep this FIFO's drain live until the committed reply has been handed off.
+            # Cleanup itself is separately tracked and must not delay the next turn.
+            try:
+                await asyncio.shield(delivery)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    'Delivery of admission %s failed after its drain was cancelled', row['admission_id'])
+            raise
+        return advance
 
     @staticmethod
     async def _run_deferred_reset(route, reset):
@@ -1477,6 +1481,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     from pathlib import Path
     db_key = await asyncio.to_thread(Path(db.db_path).resolve)
     epoch = await asyncio.to_thread(begin_runtime_epoch, db, instance_id=instance_id)
+    # A managed worker that outlived the previous owner (gateway.detached_workers) keeps its turn.
+    from gateway.session_detached_workers import resume_live_workers, spare_live_workers
+    spared = await asyncio.to_thread(spare_live_workers, db, epoch)
     # Hot-serve builds a profile while the loop serves the others: both writes stay off it.
     await asyncio.to_thread(recover_session_inputs, db, epoch=epoch)
     # A lost automation turn has nobody to resolve it: it settles interrupted before any FIFO runs.
@@ -1509,4 +1516,6 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     watch_routes(runner, store)
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
+    if spared:
+        await resume_live_workers(authority, spared)
     return authority

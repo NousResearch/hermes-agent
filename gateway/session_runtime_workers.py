@@ -12,11 +12,17 @@ def executing_sessions(authority):
             yield sid, live, execution['execution_generation']
 
 
+def _held(worker):
+    """A live managed worker a stop must wait for: a detachable one (``gateway.detached_workers``)
+    is handed to the next owner instead, like a restart-safe cron run."""
+    return not worker.closed.is_set() and not getattr(worker, 'detachable', False)
+
+
 def uncounted_runtime_work(runner):
     """Count claims absent from the ordinary agent map, including pre-bootstrap managed turns."""
     running = getattr(runner, '_running_agents', {})
     authorities = all_authorities(runner)
-    managed = sum(not worker.closed.is_set() for authority in authorities
+    managed = sum(_held(worker) for authority in authorities
                   for worker in getattr(authority, '_managed_workers', {}).values())
     return (managed + sum(live.route not in running and sid not in getattr(authority, '_managed_workers', {})
                 for authority in authorities for sid, live, _ in executing_sessions(authority))
@@ -26,7 +32,7 @@ def uncounted_runtime_work(runner):
 def managed_worker_units(authority):
     """One ``active_work`` entry per live managed worker of *authority*: its session and its own process."""
     return [{'kind': 'managed', 'session': sid, 'pid': (worker.worker or (worker.process.pid,))[0]}
-            for sid, worker in list(getattr(authority, '_managed_workers', {}).items()) if not worker.closed.is_set()]
+            for sid, worker in list(getattr(authority, '_managed_workers', {}).items()) if _held(worker)]
 
 
 def wedged_managed_turn_count(runner, timeout):
@@ -36,7 +42,7 @@ def wedged_managed_turn_count(runner, timeout):
     now = time.monotonic()
     return sum(1 for authority in all_authorities(runner)
                for sid, worker in list(getattr(authority, '_managed_workers', {}).items())
-               if not worker.closed.is_set() and now - getattr(worker, 'last_frame_at', now) >= timeout
+               if _held(worker) and now - getattr(worker, 'last_frame_at', now) >= timeout
                and not _open_prompts(authority, sid))
 
 

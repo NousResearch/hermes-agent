@@ -330,6 +330,12 @@ def stop_authority_turns(authority, *, in_process=False, reason=None):
     for worker in list(workers.values()):
         if worker.closed.is_set() or (getattr(worker, 'stop', None) is not None and worker.stop.is_set()):
             continue
+        if getattr(worker, 'detachable', False):
+            # gateway.detached_workers: the turn keeps running and the next owner re-adopts it.
+            if not worker.handed_off:
+                worker.hand_off()
+            signalled += 1
+            continue
         worker.stop_cause = reason
         try:
             worker.control({'type': 'stop'})

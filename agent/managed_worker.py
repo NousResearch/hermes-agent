@@ -109,7 +109,7 @@ def encode_frame(frame):
 
 
 def validate_bootstrap(frame):
-    if set(frame) - {'attachments_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
+    if set(frame) - {'attachments_v1', 'detach_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
         raise ValueError('invalid_managed_worker_bootstrap')
     scope = frame['scope']
     fields = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret', 'epoch'}
@@ -228,7 +228,7 @@ def _drain_background_delegations(budget):
         time.sleep(0.2)
 
 
-def _die_with_owner():
+def _die_with_owner(delay=ORPHAN_GRACE_SECONDS):
     """Then end this worker and, on POSIX, every descendant still in its process group: the owner
     spawns it as a group leader (``start_new_session``). Tools that open their own session (the
     terminal tool, background processes meant to outlive the turn) are not in it. Never a group
@@ -238,7 +238,9 @@ def _die_with_owner():
             import signal
             os.killpg(os.getpid(), signal.SIGKILL)  # windows-footgun: ok — POSIX only
         os._exit(1)
-    threading.Timer(ORPHAN_GRACE_SECONDS, kill).start()
+    timer = threading.Timer(delay, kill)  # non-daemon: an exiting main thread still lets it fire
+    timer.start()
+    return timer
 
 
 class WorkerControls:
@@ -263,39 +265,53 @@ class WorkerControls:
                 state['event'].set()
 
     def read(self):
+        stream = sys.stdin.buffer
+        while True:
+            try:
+                self._read_controls(stream)
+                return
+            except ValueError:
+                self.stop()
+                self.finish.set()
+                return
+            except (EOFError, OSError):
+                # A detachable channel (gateway.detached_workers) outlives its owner: the turn keeps
+                # running and the controls continue on the next owner's socket (managed_worker_detach).
+                await_owner = getattr(self.channel, 'await_owner', None)
+                stream = await_owner() if await_owner is not None else None
+                if stream is None:
+                    break
+        self.stop()
+        # The owner is gone (EOF/OSError) — before the hard-exit SIGKILLs this process group, give
+        # in-flight background subagents a bounded chance to finish + persist a real result.
+        _drain_background_delegations(DELEGATION_DRAIN_SECONDS)
+        self.finish.set()
+        _die_with_owner()
+
+    def _read_controls(self, stream):
         from tools.approval import resolve_gateway_approval
-        try:
-            while True:
-                frame = read_frame(sys.stdin.buffer)
-                if frame == {'type': 'stop'}:
-                    self.stop()
-                    continue
-                if frame == {'type': 'finish'}:
-                    self.finish.set()
-                    return
-                if (set(frame) != {'type', 'prompt_id', 'value'} or frame['type'] not in {'approval', 'clarify'}
-                        or not isinstance(frame['prompt_id'], str) or not isinstance(frame['value'], str)
-                        or len(frame['value']) > 16384):
+        while True:
+            frame = read_frame(stream)
+            if frame == {'type': 'stop'}:
+                self.stop()
+                continue
+            if frame == {'type': 'finish'}:
+                self.finish.set()
+                return
+            if (set(frame) != {'type', 'prompt_id', 'value'} or frame['type'] not in {'approval', 'clarify'}
+                    or not isinstance(frame['prompt_id'], str) or not isinstance(frame['value'], str)
+                    or len(frame['value']) > 16384):
+                raise ValueError('invalid_managed_control')
+            if frame['type'] == 'approval':
+                if frame['value'] not in {'once', 'deny', 'session', 'always'}:
                     raise ValueError('invalid_managed_control')
-                if frame['type'] == 'approval':
-                    if frame['value'] not in {'once', 'deny', 'session', 'always'}:
-                        raise ValueError('invalid_managed_control')
-                    resolve_gateway_approval(self.route, frame['value'], request_id=frame['prompt_id'])
-                else:
-                    with self.lock:
-                        state = self.clarifications.get(frame['prompt_id'])
-                        if state is not None:
-                            state['answer'] = frame['value']
-                            state['event'].set()
-        except (EOFError, OSError, ValueError) as exc:
-            self.stop()
-            # The owner is gone (EOF/OSError) — before the hard-exit SIGKILLs this process group, give
-            # in-flight background subagents a bounded chance to finish + persist a real result.
-            if not isinstance(exc, ValueError):
-                _drain_background_delegations(DELEGATION_DRAIN_SECONDS)
-            self.finish.set()
-            if not isinstance(exc, ValueError):
-                _die_with_owner()
+                resolve_gateway_approval(self.route, frame['value'], request_id=frame['prompt_id'])
+            else:
+                with self.lock:
+                    state = self.clarifications.get(frame['prompt_id'])
+                    if state is not None:
+                        state['answer'] = frame['value']
+                        state['event'].set()
 
     def approval(self, data):
         from tools.approval import ack_gateway_approval
@@ -410,6 +426,9 @@ def execute(frame, channel):
     push_state(scope=Scope(LOCAL_TENANT, frame['home'], LOCAL_OWNER).for_turn(
         scope['session_id'], scope['execution_id'], Fence(scope['epoch'], scope['generation'])))
     rpc = WorkerRPC(frame['home'])
+    if 'detach_v1' in frame:
+        from agent.managed_worker_detach import DetachedRPC
+        rpc = DetachedRPC(rpc, channel)
     adopted = rpc('worker.adopt', **{k: v for k, v in scope.items() if k != 'epoch'})
     if adopted['owner_epoch'] != scope['epoch']:
         raise RuntimeError('stale_epoch')
@@ -495,7 +514,7 @@ def execute(frame, channel):
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):
                 result['final_response'] = ''
             channel.send('result', result=result_frame(result))
-            if not controls.finish.wait(30):
+            if not _await_finish(controls, channel):
                 raise ValueError('managed_finish_timeout')
             store.finish()
             channel.send('finished')
@@ -509,6 +528,15 @@ def execute(frame, channel):
         finally:
             with contextlib.suppress(Exception):  # a failing socket close never replaces the turn's outcome
                 rpc.close()
+
+
+def _await_finish(controls, channel):
+    """The owner's ``finish`` for the sent result. A detachable channel whose owner went away
+    meanwhile waits for the next owner, which is handed the result again on reattach."""
+    resend = getattr(channel, 'hold_result', None)
+    if resend is not None:
+        return resend(controls.finish)
+    return controls.finish.wait(30)
 
 
 def _construct_agent(frame, factory, policy, **kwargs):
@@ -545,6 +573,9 @@ def main():
     try:
         channel.send('hello', **hello())
         frame = validate_bootstrap(read_frame(sys.stdin.buffer))
+        if 'detach_v1' in frame:
+            from agent.managed_worker_detach import DetachableChannel, detach_spec, identity
+            channel = DetachableChannel(channel.stream, detach_spec(frame), identity(frame['scope']))
         execute(frame, channel)
     except Exception:
         # Runtime exceptions can contain credentials; the owner gets no raw traceback.
@@ -552,6 +583,9 @@ def main():
         channel.send('error', reason='managed_worker_failed')
         return 1
     finally:
+        drain = getattr(channel, 'drain_before_exit', None)
+        if drain is not None:
+            drain()
         channel.stream.close()
     return 0
 

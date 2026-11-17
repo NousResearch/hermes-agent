@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Collection, Dict, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -719,7 +719,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         return rewritten
 
     def replace_messages(self, session_id: str, messages: list[dict[str, Any]], active_only: bool = False,
-        archive_dropped: bool = False, reject_active_turn_lease: bool = False) -> None:
+        archive_dropped: bool = False, reject_active_turn_lease: bool = False,
+        held_row_ids: Optional[Collection[int]] = None) -> None:
         """Atomically replace a session's messages (/retry, /undo, /compress). DESTRUCTIVE by default (rows
         DELETEd, leave FTS). ``active_only`` spares soft-archived rows (needed with in-place compaction).
         ``archive_dropped`` SOFT-archives live rows rewind-style: what rewind/edit/regenerate must use, since
@@ -737,17 +738,21 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         of *messages* is inserted (#82956: archiving and re-inserting the kept prefix grew the archive by
         the whole transcript on every rewind). The live view is identical either way; only the durability
         of the dropped turns differs.
+
+        ``held_row_ids`` (with ``archive_dropped``): rows the caller's view held; any other live row is a
+        concurrent writer's and is never archived (#122699, ``_archive_dropped_held_rows``).
         """
         def _do(conn):
             self.replace_messages_in_transaction(
                 conn, session_id, messages, active_only=active_only, archive_dropped=archive_dropped,
-                reject_active_turn_lease=reject_active_turn_lease)
+                reject_active_turn_lease=reject_active_turn_lease, held_row_ids=held_row_ids)
         self._execute_transcript_write(_do, messages)
 
     def replace_messages_in_transaction(self, conn, session_id: str, messages: list[dict[str, Any]], *,
                                         active_only: bool = False, archive_dropped: bool = False,
                                         reject_active_turn_lease: bool = False,
-                                        expected_active_ids: Optional[list[int]] = None) -> None:
+                                        expected_active_ids: Optional[list[int]] = None,
+                                        held_row_ids: Optional[Collection[int]] = None) -> None:
         """:meth:`replace_messages` inside the caller's write transaction (the gateway ``/retry``
         rewrite commits in its re-send's own admission). ``expected_active_ids`` pins the active set
         the replacement was computed from: a row committed since refuses (``RuntimeError``)."""
@@ -761,7 +766,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                 int(row[0]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,))] != expected_active_ids:
             raise RuntimeError("active transcript changed before the rewrite could be persisted")
         kept = kept_tool_calls = 0
-        if archive_dropped:
+        live_rows = None  # rows left live beside the kept prefix (held-row mode keeps foreign rows)
+        requeue: list[int] = []
+        if archive_dropped and held_row_ids is not None:
+            kept, live_rows, kept_tool_calls, requeue = self._archive_dropped_held_rows(
+                conn, session_id, messages, held_row_ids)
+        elif archive_dropped:
             # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
             # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
             live = conn.execute(_LIVE_IDENTITY_SQL, (session_id, len(messages) + 1)).fetchall()
@@ -774,8 +784,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         else:
             conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
         inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
+        if requeue:
+            requeued, requeued_tool_calls = self._requeue_foreign_rows(conn, requeue)
+            inserted, inserted_tool_calls = inserted + requeued, inserted_tool_calls + requeued_tool_calls
         conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
-                     (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
+                     ((kept if live_rows is None else live_rows) + inserted,
+                      kept_tool_calls + inserted_tool_calls, session_id))
 
     @classmethod
     def _row_identity(cls, role: str, content: Any, tool_call_id: Any, tool_calls: Any) -> tuple:
@@ -790,13 +804,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         matched message gets its existing ``_row_id`` (and ``message_uid``) stamped, as a fresh insert would set them."""
         kept = 0
         for row, msg in zip(live, messages):
-            role = msg.get("role", "unknown")
-            # Cheap scalars first; the content compare pays decode/sanitize/encode on both sides.
-            if row[1] != role or row[3] != msg.get("tool_call_id"):
-                break
-            identity = self._row_identity(role, msg.get("content"), msg.get("tool_call_id"),
-                                          _parse_tool_calls(msg.get("tool_calls")))
-            if identity != self._row_identity(row[1], self._decode_content(row[2]), row[3], _parse_tool_calls(row[4])):
+            if not self._matches_live_row(msg, row):
                 break
             msg["_row_id"] = row[0]
             if row[5]:

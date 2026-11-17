@@ -638,3 +638,23 @@ __all__ = [
     "_trajectory_normalize_msg",
     "make_tool_result_message",
 ]
+
+
+def emit_blocked_progress(callback, tool_name: str, args: Any, message: str) -> None:
+    """A blocked call never starts, but the tool line (CLI/TUI) and a subagent's live transcript
+    must still show it: one started/completed pair whose ``user_summary`` renders as the reason."""
+    if not callback:
+        return
+    from agent.display import build_tool_preview, redact_tool_args_for_display
+    display_args = redact_tool_args_for_display(tool_name, args) or args
+    try:
+        preview = build_tool_preview(tool_name, display_args)
+    except Exception:  # health: allow BLE001 -- display only; the block itself stands
+        preview = None
+    summary = (message.splitlines() or ["BLOCKED"])[0]
+    try:
+        callback("tool.started", tool_name, preview, display_args)
+        callback("tool.completed", tool_name, None, None, duration=0.0, is_error=True,
+                 result=json.dumps({"error": message, "user_summary": summary}, ensure_ascii=False))
+    except Exception as callback_error:  # health: allow BLE001 -- a UI callback failure is never fatal
+        logger.debug("Tool progress callback error: %s", callback_error)

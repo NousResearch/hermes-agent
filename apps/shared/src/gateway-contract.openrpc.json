@@ -22259,6 +22259,183 @@
         "title": "InterruptStatus",
         "type": "string"
       },
+      "KanbanCancelAllParams": {
+        "additionalProperties": false,
+        "properties": {
+          "origin_session_id": {
+            "title": "Origin Session Id",
+            "type": "string"
+          },
+          "board": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Board"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "cancelled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cancelled By"
+          }
+        },
+        "required": [
+          "origin_session_id"
+        ],
+        "title": "KanbanCancelAllParams",
+        "type": "object"
+      },
+      "KanbanCancelAllResult": {
+        "additionalProperties": false,
+        "properties": {
+          "origin_session_id": {
+            "title": "Origin Session Id",
+            "type": "string"
+          },
+          "cancelled_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cancelled Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "origin_session_id",
+          "cancelled_ids"
+        ],
+        "title": "KanbanCancelAllResult",
+        "type": "object"
+      },
+      "KanbanCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "board": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Board"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "cancelled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cancelled By"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "KanbanCancelParams",
+        "type": "object"
+      },
+      "KanbanCancelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "boolean"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "cancelled_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cancelled Ids",
+            "type": "array"
+          },
+          "workers_terminated": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Workers Terminated",
+            "type": "array"
+          },
+          "workers_survived": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Workers Survived",
+            "type": "array"
+          }
+        },
+        "required": [
+          "task_id",
+          "cancelled",
+          "status",
+          "cancelled_ids",
+          "workers_terminated",
+          "workers_survived"
+        ],
+        "title": "KanbanCancelResult",
+        "type": "object"
+      },
       "KanbanRunParams": {
         "additionalProperties": false,
         "properties": {
@@ -50677,6 +50854,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalAttachedImageResult"
+        }
+      }
+    },
+    {
+      "name": "kanban.cancel",
+      "summary": "Cancel one kanban task and its non-terminal descendants; a running worker is signalled first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/KanbanCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/KanbanCancelResult"
+        }
+      }
+    },
+    {
+      "name": "kanban.cancel_all",
+      "summary": "Cancel every non-terminal kanban task created by one session (stop-all).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/KanbanCancelAllParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/KanbanCancelAllResult"
         }
       }
     },

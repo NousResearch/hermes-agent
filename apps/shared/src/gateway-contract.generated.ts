@@ -5087,6 +5087,30 @@ export interface KanbanRunResult {
   session_id: string
   receipt: AdmissionStatus
 }
+export interface KanbanCancelParams {
+  task_id: string
+  board?: string | null
+  reason?: string | null
+  cancelled_by?: string | null
+}
+export interface KanbanCancelResult {
+  task_id: string
+  cancelled: boolean
+  status: string | null
+  cancelled_ids: string[]
+  workers_terminated: string[]
+  workers_survived: string[]
+}
+export interface KanbanCancelAllParams {
+  origin_session_id: string
+  board?: string | null
+  reason?: string | null
+  cancelled_by?: string | null
+}
+export interface KanbanCancelAllResult {
+  origin_session_id: string
+  cancelled_ids: string[]
+}
 export interface A2aForwardParams {
   agent: string
   tenant: string
@@ -7180,6 +7204,10 @@ export interface CanonicalRpcMethods {
   'groups.peer.revoke': { params: CanonicalGroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
   'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
+  /** Cancel one kanban task and its non-terminal descendants; a running worker is signalled first. */
+  'kanban.cancel': { params: KanbanCancelParams; result: KanbanCancelResult }
+  /** Cancel every non-terminal kanban task created by one session (stop-all). */
+  'kanban.cancel_all': { params: KanbanCancelAllParams; result: KanbanCancelAllResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
   'kanban.run': { params: KanbanRunParams; result: KanbanRunResult }
   'profiles.list': { params: CanonicalProfilesParams; result: CanonicalProfilesResult }
@@ -7258,6 +7286,8 @@ export const CANONICAL_RPC_METHODS = [
   'groups.peer.revoke',
   'groups.retry',
   'image.attach_bytes',
+  'kanban.cancel',
+  'kanban.cancel_all',
   'kanban.run',
   'profiles.list',
   'prompt.cancel',

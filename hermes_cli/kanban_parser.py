@@ -359,6 +359,16 @@ _SPECS = [
         _arg("--rm", dest="purge_ids", nargs="+",
              help="Permanently delete already-archived task ids from the board"),
     ], help="Archive one or more tasks"),
+    _cmd("cancel", [
+        _arg("task_ids", nargs="*", help="Task ids to cancel (default mode)"),
+        _arg("--session", dest="session_id",
+             help="Cancel every non-terminal card created by this session instead "
+                  "(stop-all for the session; cards with no session are untouched)"),
+        _reason("Reason recorded on the cancellation event"),
+        _arg("--by", dest="cancelled_by",
+             help="Who cancelled, recorded for audit (default: $HERMES_PROFILE or 'user')"),
+        _json_flag(help="Emit JSON output"),
+    ], help="Cancel one or more tasks (terminal; a running worker is signalled first)"),
     _cmd("tail", [_TASK_ID, _arg("--interval", type=float, default=1.0)], help="Follow a task's event stream"),
     _cmd("dispatch", [
         _arg("--dry-run", action="store_true", help="Don't actually spawn processes; just print what would happen"),

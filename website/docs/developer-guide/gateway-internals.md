@@ -66,6 +66,63 @@ the owner's process-local registry cannot truthfully describe another interprete
 Control mutations (`session.control`), process mutations and subagent steering are
 not enabled by these read projections.
 
+## Kanban cancellation (`kanban.cancel` / `kanban.cancel_all`, B3)
+
+Cancelling is a terminal operator action, not a failure and not a pause: the
+card's work is abandoned on purpose, never retried, and the card never
+re-opens. `kanban.cancel` cancels one card and its non-terminal descendants
+(recursion over `task_links`); `kanban.cancel_all` cancels every non-terminal
+card whose `tasks.session_id` is the given origin session (stop-all for that
+session). Both verbs require `session:control` and the actor's profile
+matching this authority's; a foreign profile answers `profile_mismatch` with
+no data. Neither verb is a `RESTART_WAIT_WS_METHODS` read — a mutation is
+refused during the restart drain, like any other control write.
+
+Semantics (`hermes_cli/kanban_db.py::cancel_task`):
+
+- `cancelled` is a real terminal status: `tasks.status` holds it,
+  `_TERMINAL_STATUSES_SQL` already counts it, and `list_tasks(status="cancelled")`
+  (hence `state.read`'s `list_kanban_tasks`) lists cancelled cards. No board
+  column is added — cancelled cards are history, like archived ones.
+- The transition is a CAS from a non-terminal status only. A card already
+  terminal is an idempotent no-op (no event, no error); the caller learns the
+  current status from the result. A worker whose result lands after the cancel
+  finds `complete_task` refusing it, so the card never re-opens.
+- A live worker is signalled before the card is marked, reusing the reclaim
+  machinery (`SIGTERM`, short grace, `SIGKILL`, pid + spawn fingerprint must
+  agree — a recycled PID is never signalled, an unverified fingerprint is
+  never signalled while live). The flip happens first inside the write
+  transaction and the kill runs after commit, the `archive_task` order: the
+  kill can block for seconds and must not hold the write lock, and the
+  terminal status makes the post-release kill safe. The kill is contingent on
+  winning the CAS (pid + claim are snapshotted inside the transaction), and
+  every write the worker attempts meanwhile (heartbeat, completion) is refused
+  by its own status guard. A worker that survives (unverified fingerprint) is
+  reported in `workers_survived` and reaped by the terminal-worker sweeper
+  once its run closes; its result is still discarded.
+- Cancellation is not a failure: `consecutive_failures` is untouched, so it
+  never trips the circuit breaker. The workspace is kept (partial work stays
+  inspectable) and nothing already persisted is rewritten — a detached result
+  recorded before the cancel stays history; only future work stops.
+- The actor is recorded in `tasks.cancelled_by` (CLI `--by`, RPC
+  `cancelled_by`; default `$HERMES_PROFILE` / `user`), and each transition
+  appends a `cancelled` event with the reason, the actor and the prior status.
+  A cancelled parent does not release its children for promotion (only
+  `done`/`archived` do) — the children are cancelled with it, not promoted.
+- No new hook is fired: cancellation is observed through
+  `list_kanban_tasks(status="cancelled")`. Stopping the live reply
+  (`/stop`, `agent_loop_stopped`) is not cancelling the work — the card and
+  its worker keep running until cancelled here.
+
+The `session_id` the stop-all keys on is the column the board already carries:
+it is stamped at creation from the originating `HERMES_SESSION_ID` (verified
+before stamping) and indexed (`idx_tasks_session_id`). Cards with no session
+(`NULL` — CLI/dashboard creations, legacy rows) are never touched by a
+stop-all, only by id. `hermes kanban cancel <id>... [--reason ...] [--by ...]`
+is the CLI twin of `kanban.cancel`; `hermes kanban cancel --session <id>` is
+the twin of `kanban.cancel_all`. A delegated child cannot cancel: `cancel` is
+in `_DELEGATED_CHILD_DENIED_ACTIONS`, like `archive`.
+
 ## Shared authority pending-input snapshots
 
 `session.resume` returns each pending admission with its original `input_id` and

@@ -201,6 +201,14 @@ export {
 export { type UpdateDebt, updateDebt, type UpdateDebtReceipt, type UpdateDebtStep } from './update-debt'
 export { mergeUsage, usageFromTick, type UsageTickPayload } from './usage-tick'
 export {
+  shellQuote,
+  WEBHOOK_SECRET_PLACEHOLDER,
+  WEBHOOK_TEST_BODY,
+  webhookTestCurl,
+  type WebhookTestCurlInput,
+  type WebhookTestSignature
+} from './webhook-test-curl'
+export {
   BROWSER_NATIVE_DIAL,
   buildHermesWebSocketUrl,
   type GatewayAuthMode,

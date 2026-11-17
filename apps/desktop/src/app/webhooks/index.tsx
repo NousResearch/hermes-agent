@@ -54,11 +54,14 @@ import {
 } from '../overlays/panel'
 import { ListRow } from '../settings/primitives'
 
+import { WebhookTestCommand, WebhookTestPanel } from './webhook-test'
+
 const DELIVER_OPTIONS: readonly string[] = ['log', 'telegram', 'discord', 'slack', 'email', 'github_comment']
 const SIGNATURE_OPTIONS: readonly WebhookSignature[] = ['generic', 'github', 'gitlab', 'linear']
 
 interface CreatedWebhook {
   secret: string
+  signature: null | WebhookSignature
   url: string
 }
 
@@ -298,7 +301,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
       }
 
       notify({ kind: 'success', message: w.created })
-      setCreated({ secret: res.secret, url: res.url })
+      setCreated({ secret: res.secret, signature: res.signature, url: res.url })
       resetForm()
       void reload(true)
     } catch (err) {
@@ -491,7 +494,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
               />
             </PanelList>
 
-            {selectedSub ? <WebhookDetail sub={selectedSub} /> : <PanelEmpty description={w.empty} icon="search" />}
+            {selectedSub ? <WebhookDetail profile={backendProfile} sub={selectedSub} /> : <PanelEmpty description={w.empty} icon="search" />}
           </PanelBody>
         </>
       )}
@@ -508,6 +511,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
             <div className="grid gap-2">
               <ListRow action={<CopyValueRow copyLabel={w.copy} value={created.url} />} title={w.webhookUrl} wide />
               <ListRow action={<CopyValueRow copyLabel={w.copy} value={created.secret} />} title={w.secretOnce} wide />
+              <WebhookTestCommand secret={created.secret} sub={created} />
               <DialogFooter>
                 <Button onClick={closeCreate} size="sm">
                   {w.done}
@@ -642,7 +646,7 @@ function ProfileOwnedWebhooksView({ backendProfile, onClose }: ProfileOwnedWebho
   )
 }
 
-function WebhookDetail({ sub }: { sub: WebhookRoute }) {
+function WebhookDetail({ profile, sub }: { profile: string; sub: WebhookRoute }) {
   const { t } = useI18n()
   const w = t.webhooks
 
@@ -703,6 +707,8 @@ function WebhookDetail({ sub }: { sub: WebhookRoute }) {
           <PanelBlock>{sub.prompt}</PanelBlock>
         </div>
       ) : null}
+
+      <WebhookTestPanel profile={profile} sub={sub} />
     </PanelDetail>
   )
 }

@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 349
+   "undecided": 350
   },
   "rpc": {
    "authority": 112,
@@ -335,6 +335,7 @@
   {"current_path": "hermes_cli.web_routers.webapp:issue_window_ticket", "decision": "undecided", "handler": "POST /api/webapp/window-ticket", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:create_webhook", "decision": "undecided", "handler": "POST /api/webhooks", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:enable_webhooks", "decision": "undecided", "handler": "POST /api/webhooks/enable", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.ops:send_webhook_test", "decision": "undecided", "handler": "POST /api/webhooks/{name}/test", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:auth_logout", "decision": "undecided", "handler": "POST /auth/logout", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:auth_native_refresh", "decision": "undecided", "handler": "POST /auth/native/refresh", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.dashboard_auth.routes:auth_native_token", "decision": "undecided", "handler": "POST /auth/native/token", "kind": "http", "ref": ""},

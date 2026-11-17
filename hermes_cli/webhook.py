@@ -8,8 +8,11 @@ import secrets
 import shlex
 import threading
 import time
+import urllib.error
 import urllib.request
+import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -406,6 +409,36 @@ def _cmd_remove(args):
     print(f"  Removed webhook subscription: {name}")
 
 
+_TEST_PAYLOAD = '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
+
+
+@dataclass(frozen=True)
+class WebhookTestResult:
+    """What the receiver answered to one signed test POST."""
+
+    url: str
+    delivery_id: str
+    status: int
+    body: str
+
+
+def send_test_delivery(name: str, route: dict, payload: str = "") -> WebhookTestResult:
+    """POST a test event signed the way *route*'s pin expects, with a fresh ``X-Request-ID`` the
+    receiver records as the delivery id (``_header_delivery_id``), so each test is its own delivery.
+    An HTTP error status is an answer, not a failure; an unreachable receiver raises ``OSError``."""
+    body = (payload or _TEST_PAYLOAD).encode()
+    delivery_id = f"hermes-test-{uuid.uuid4().hex}"
+    headers = {"Content-Type": "application/json", "X-Request-ID": delivery_id,
+               **_test_signature_headers(route.get("signature"), route.get("secret", ""), body)}
+    req = urllib.request.Request(_route_url(name, route), data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status, raw = resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read()
+    return WebhookTestResult(req.full_url, delivery_id, status, raw.decode("utf-8", "replace"))
+
+
 def _cmd_test(args):
     """Send a test POST to a webhook route."""
     name = args.name.strip().lower()
@@ -413,20 +446,14 @@ def _cmd_test(args):
     if name not in subs:
         print(f"  No subscription named '{name}'.")
         return
-    secret = subs[name].get("secret", "")
-    url = _route_url(name, subs[name])
-    payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
-    headers = {"Content-Type": "application/json",
-               **_test_signature_headers(subs[name].get("signature"), secret, payload.encode())}
-    print(f"  Sending test POST to {url}")
+    print(f"  Sending test POST to {_route_url(name, subs[name])}")
     try:
-        req = urllib.request.Request(url, data=payload.encode(), headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode()
-            print(f"  Response ({resp.status}): {body}")
-    except Exception as e:
+        result = send_test_delivery(name, subs[name], args.payload or "")
+    except OSError as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")
+        return
+    print(f"  Response ({result.status}): {result.body}")
 
 
 def _test_signature_headers(scheme, secret: str, body: bytes) -> dict[str, str]:

@@ -53,3 +53,12 @@ export interface WebhookEnableResponse {
   restart_pid?: null | number
   restart_started?: boolean
 }
+
+// POST /api/webhooks/{name}/test: the backend signs and sends one test event; `ok` is a 2xx answer.
+export interface WebhookTestResponse {
+  delivery_id: string
+  ok: boolean
+  response: string
+  status: number
+  url: string
+}

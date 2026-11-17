@@ -25,6 +25,7 @@ import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
+import { ruWebhookTest } from './ru_webhook_test'
 
 export const ruOverrides = {
   gatewayGroupOpen: {
@@ -2045,6 +2046,7 @@ export const ruOverrides = {
     platformIntro: {}
   },
   webhooks: {
+    test: ruWebhookTest,
     search: 'Поиск вебхуков...',
     loading: 'Загрузка вебхуков...',
     loadFailed: 'Не удалось загрузить вебхуки',

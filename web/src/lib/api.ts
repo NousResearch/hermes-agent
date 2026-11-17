@@ -27,18 +27,14 @@ export type {
   WhatsAppOnboardingStartResponse,
   WhatsAppOnboardingStatusResponse,
 } from "./api-whatsapp";
-import type {
-  WebhookCreate,
-  WebhookEnableResponse,
-  WebhookRoute,
-  WebhooksResponse,
-} from "./api-webhooks";
+import { webhookApi } from "./api-webhooks";
 export type {
   WebhookCreate,
   WebhookEnableResponse,
   WebhookRoute,
   WebhookSignature,
   WebhooksResponse,
+  WebhookTestResponse,
 } from "./api-webhooks";
 import type {
   MessagingPlatform,
@@ -1244,28 +1240,7 @@ export const api = {
     }),
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
-  getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
-  enableWebhooks: () =>
-    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
-  createWebhook: (body: WebhookCreate) =>
-    fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  deleteWebhook: (name: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/webhooks/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-    }),
-  setWebhookEnabled: (name: string, enabled: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
-      `/api/webhooks/${encodeURIComponent(name)}/enabled`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      },
-    ),
+  ...webhookApi(fetchJSON),
 
   // ── Admin: Credential pool ──────────────────────────────────────────
   getCredentialPool: () =>

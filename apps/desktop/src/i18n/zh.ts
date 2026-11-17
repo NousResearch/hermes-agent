@@ -26,6 +26,7 @@ import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
+import { zhWebhookTest } from './zh_webhook_test'
 
 export const zhOverrides = {
   gatewayGroupOpen: {
@@ -2668,6 +2669,7 @@ export const zhOverrides = {
   },
 
   webhooks: {
+    test: zhWebhookTest,
     search: '搜索 Webhook…',
     loading: '正在加载 Webhook…',
     loadFailed: 'Webhook 加载失败',

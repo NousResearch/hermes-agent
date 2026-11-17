@@ -26,6 +26,7 @@ import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
+import { frWebhookTest } from './fr_webhook_test'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
@@ -3195,6 +3196,7 @@ export const frOverrides = {
     platformIntro: {}
   },
   webhooks: {
+    test: frWebhookTest,
     search: 'Rechercher des webhooks...',
     loading: 'Chargement des webhooks...',
     loadFailed: 'Échec du chargement des webhooks',

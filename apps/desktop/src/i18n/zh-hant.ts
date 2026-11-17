@@ -12,6 +12,7 @@ import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
+import { zhHantWebhookTest } from './zh-hant_webhook_test'
 
 export const zhHantOverrides = {
   gatewayGroupOpen: {
@@ -218,7 +219,8 @@ export const zhHantOverrides = {
       signIn: '登入',
       notNow: '暫不'
     }
-  }
+  },
+  webhooks: { test: zhHantWebhookTest }
 } satisfies TranslationOverrides
 
 export const zhHant = defineLocale(zhHantOverrides)

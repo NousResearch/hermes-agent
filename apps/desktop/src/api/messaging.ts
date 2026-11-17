@@ -15,7 +15,8 @@ import type {
   WebhookCreatePayload,
   WebhookCreateResponse,
   WebhookEnableResponse,
-  WebhooksResponse
+  WebhooksResponse,
+  WebhookTestResponse
 } from '@/types/webhooks'
 
 import { hermesApi, profileScoped } from './client'
@@ -224,6 +225,15 @@ export function deleteWebhook(name: string, profile?: null | string): Promise<{ 
     ...profileScoped(profile),
     path: `/api/webhooks/${encodeURIComponent(name)}`,
     method: 'DELETE'
+  })
+}
+
+/** The backend signs with the stored secret, so it never reaches the renderer. */
+export function sendWebhookTest(name: string, profile?: null | string): Promise<WebhookTestResponse> {
+  return hermesApi<WebhookTestResponse>({
+    ...profileScoped(profile),
+    path: `/api/webhooks/${encodeURIComponent(name)}/test`,
+    method: 'POST'
   })
 }
 

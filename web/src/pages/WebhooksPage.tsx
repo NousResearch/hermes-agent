@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { webhookTestCurl } from "@hermes/shared";
 import {
   AlertTriangle,
   Check,
   Copy,
   Plus,
   RotateCw,
+  Send,
   Trash2,
   Webhook,
   X,
@@ -32,6 +34,7 @@ import { errorMessage } from "@/lib/api-error";
 interface CreatedWebhook {
   url: string;
   secret: string;
+  signature: WebhookSignature | null;
 }
 
 function CopyButton({ value }: { value: string }) {
@@ -54,6 +57,36 @@ function CopyButton({ value }: { value: string }) {
     >
       {copied ? <Check /> : <Copy />}
     </Button>
+  );
+}
+
+// A copy-paste signed curl. Without the secret (shown once, at creation) it carries a placeholder.
+function TestCommand({
+  url,
+  signature,
+  secret,
+}: {
+  url: string;
+  signature: WebhookSignature | null;
+  secret?: string;
+}) {
+  const command = webhookTestCurl({ url, signature, secret });
+  return (
+    <div className="grid gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground">Test command</span>
+        <CopyButton value={command} />
+      </div>
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all border border-border bg-background/40 px-3 py-2 font-mono text-[0.7rem] leading-relaxed">
+        {command}
+      </pre>
+      <p className="text-xs text-muted-foreground">
+        Paste into a terminal to send one signed event; each run gets its own delivery id.
+        {secret
+          ? null
+          : " Replace the placeholder with the secret shown at creation, or use Send test."}
+      </p>
+    </div>
   );
 }
 
@@ -98,6 +131,182 @@ function SignatureField({
       </p>
     </div>
   );
+}
+
+interface SubscriptionCardProps {
+  sub: WebhookRoute;
+  testing: boolean;
+  toggling: boolean;
+  onSendTest: () => void;
+  onToggle: () => void;
+  onDelete: () => void;
+}
+
+function SubscriptionCard({
+  sub,
+  testing,
+  toggling,
+  onSendTest,
+  onToggle,
+  onDelete,
+}: SubscriptionCardProps) {
+  return (
+    <Card>
+      <CardContent className="flex items-start gap-4 py-4">
+        <div className={cn("flex-1 min-w-0", !sub.enabled && "opacity-60")}>
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="font-medium text-sm truncate">
+              {sub.name}
+            </span>
+            <Badge tone="outline">{sub.deliver}</Badge>
+            {sub.deliver_only && (
+              <Badge tone="secondary">deliver only</Badge>
+            )}
+            {!sub.enabled && <Badge tone="warning">disabled</Badge>}
+          </div>
+
+          {sub.description && (
+            <p className="text-xs text-muted-foreground mb-2">
+              {sub.description}
+            </p>
+          )}
+
+          <div className="flex items-center gap-1 flex-wrap mb-2">
+            {sub.events.length === 0 ? (
+              <Badge tone="secondary">(all)</Badge>
+            ) : (
+              sub.events.map((evt) => (
+                <Badge key={evt} tone="secondary">
+                  {evt}
+                </Badge>
+              ))
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="flex-1 min-w-0 truncate font-mono">
+              {sub.url}
+            </span>
+            <CopyButton value={sub.url} />
+          </div>
+
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+              Test this webhook
+            </summary>
+            <div className="mt-2">
+              <TestCommand url={sub.url} signature={sub.signature} />
+            </div>
+          </details>
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <Button
+            ghost
+            size="sm"
+            className="uppercase"
+            disabled={!sub.enabled || testing}
+            prefix={testing ? <Spinner /> : <Send className="h-4 w-4" />}
+            onClick={onSendTest}
+          >
+            {testing ? "Sending…" : "Send test"}
+          </Button>
+          <Button
+            ghost
+            size="sm"
+            className="uppercase"
+            disabled={toggling}
+            onClick={onToggle}
+          >
+            {sub.enabled ? "Disable" : "Enable"}
+          </Button>
+          <Button
+            ghost
+            destructive
+            size="icon"
+            title="Delete"
+            aria-label="Delete"
+            onClick={onDelete}
+          >
+            <Trash2 />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// The create result: URL, one-time secret and a test curl that already carries that secret.
+function CreatedResult({ created, onDone }: { created: CreatedWebhook; onDone: () => void }) {
+  return (
+    <div className="p-5 grid gap-4">
+      <p className="text-sm text-muted-foreground">
+        Subscription created. Copy the secret now — it is only shown
+        once.
+      </p>
+
+      <div className="grid gap-2">
+        <Label>Webhook URL</Label>
+        <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
+          <span className="flex-1 min-w-0 truncate font-mono text-xs">
+            {created.url}
+          </span>
+          <CopyButton value={created.url} />
+        </div>
+      </div>
+
+      <div className="grid gap-2">
+        <Label>Secret (shown once)</Label>
+        <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
+          <span className="flex-1 min-w-0 truncate font-mono text-xs">
+            {created.secret}
+          </span>
+          <CopyButton value={created.secret} />
+        </div>
+      </div>
+
+      <TestCommand
+        url={created.url}
+        signature={created.signature}
+        secret={created.secret}
+      />
+
+      <div className="flex justify-end">
+        <Button
+          className="uppercase"
+          size="sm"
+          onClick={onDone}
+        >
+          Done
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Send test: the backend signs with the stored secret and reports the receiver's answer.
+function useSendTest(showToast: (message: string, kind: "success" | "error") => void) {
+  const [testingName, setTestingName] = useState<string | null>(null);
+  const sendTest = useCallback(
+    async (subName: string) => {
+      setTestingName(subName);
+      try {
+        const result = await api.sendWebhookTest(subName);
+        showToast(
+          result.ok
+            ? `Test delivered (${result.status}) · ${result.delivery_id}`
+            : `Receiver answered ${result.status}: ${result.response}`,
+          result.ok ? "success" : "error",
+        );
+      } catch (e) {
+        showToast(`Test could not be sent: ${errorMessage(e)}`, "error");
+      } finally {
+        setTestingName(null);
+      }
+    },
+    [showToast],
+  );
+  return { testingName, sendTest };
 }
 
 export default function WebhooksPage() {
@@ -250,7 +459,7 @@ export default function WebhooksPage() {
         prompt: prompt.trim() || undefined,
       });
       showToast("Created ✓", "success");
-      setCreated({ url: res.url, secret: res.secret });
+      setCreated({ url: res.url, secret: res.secret, signature: res.signature });
       resetForm();
       loadWebhooks();
     } catch (e) {
@@ -261,6 +470,7 @@ export default function WebhooksPage() {
   };
 
   const [togglingName, setTogglingName] = useState<string | null>(null);
+  const { testingName, sendTest: handleSendTest } = useSendTest(showToast);
 
   const handleToggleEnabled = useCallback(
     async (subName: string, nextEnabled: boolean) => {
@@ -376,42 +586,7 @@ export default function WebhooksPage() {
             </header>
 
             {created ? (
-              <div className="p-5 grid gap-4">
-                <p className="text-sm text-muted-foreground">
-                  Subscription created. Copy the secret now — it is only shown
-                  once.
-                </p>
-
-                <div className="grid gap-2">
-                  <Label>Webhook URL</Label>
-                  <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
-                      {created.url}
-                    </span>
-                    <CopyButton value={created.url} />
-                  </div>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label>Secret (shown once)</Label>
-                  <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
-                      {created.secret}
-                    </span>
-                    <CopyButton value={created.secret} />
-                  </div>
-                </div>
-
-                <div className="flex justify-end">
-                  <Button
-                    className="uppercase"
-                    size="sm"
-                    onClick={closeCreateModal}
-                  >
-                    Done
-                  </Button>
-                </div>
-              </div>
+              <CreatedResult created={created} onDone={closeCreateModal} />
             ) : (
               <div className="p-5 grid gap-4">
                 <div className="grid gap-2">
@@ -586,69 +761,15 @@ export default function WebhooksPage() {
         )}
 
         {subscriptions.map((sub: WebhookRoute) => (
-          <Card key={sub.name}>
-            <CardContent className="flex items-start gap-4 py-4">
-              <div className={cn("flex-1 min-w-0", !sub.enabled && "opacity-60")}>
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <span className="font-medium text-sm truncate">
-                    {sub.name}
-                  </span>
-                  <Badge tone="outline">{sub.deliver}</Badge>
-                  {sub.deliver_only && (
-                    <Badge tone="secondary">deliver only</Badge>
-                  )}
-                  {!sub.enabled && <Badge tone="warning">disabled</Badge>}
-                </div>
-
-                {sub.description && (
-                  <p className="text-xs text-muted-foreground mb-2">
-                    {sub.description}
-                  </p>
-                )}
-
-                <div className="flex items-center gap-1 flex-wrap mb-2">
-                  {sub.events.length === 0 ? (
-                    <Badge tone="secondary">(all)</Badge>
-                  ) : (
-                    sub.events.map((evt) => (
-                      <Badge key={evt} tone="secondary">
-                        {evt}
-                      </Badge>
-                    ))
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex-1 min-w-0 truncate font-mono">
-                    {sub.url}
-                  </span>
-                  <CopyButton value={sub.url} />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1 shrink-0">
-                <Button
-                  ghost
-                  size="sm"
-                  className="uppercase"
-                  disabled={togglingName === sub.name}
-                  onClick={() => handleToggleEnabled(sub.name, !sub.enabled)}
-                >
-                  {sub.enabled ? "Disable" : "Enable"}
-                </Button>
-                <Button
-                  ghost
-                  destructive
-                  size="icon"
-                  title="Delete"
-                  aria-label="Delete"
-                  onClick={() => webhookDelete.requestDelete(sub.name)}
-                >
-                  <Trash2 />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+          <SubscriptionCard
+            key={sub.name}
+            sub={sub}
+            testing={testingName === sub.name}
+            toggling={togglingName === sub.name}
+            onSendTest={() => void handleSendTest(sub.name)}
+            onToggle={() => handleToggleEnabled(sub.name, !sub.enabled)}
+            onDelete={() => webhookDelete.requestDelete(sub.name)}
+          />
         ))}
       </div>
     </div>

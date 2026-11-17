@@ -51,6 +51,9 @@ WIRING = [
     ("github_pr_write", "tools/github_pr_tool.py", "default, err = await _default_branch(repo, token)", "live default-branch guard before every write"),
     ("github_pr", "tools/github_pr_tool.py", "_authorize(repo, op, WRITE_OPS)", "per-repo action allowlist gates writes"),
     ("github_pr", "tools/github_pr_tool.py", "get_secret(_TOKEN_ENV)", "token only via profile-scoped get_secret"),
+    ("github_pr", "tools/github_pr_tool.py", "if writes and not prefix:", "branch_prefix required for write repos"),
+    ("github_pr", "tools/github_pr_tool.py", "allow_redirects=False", "redirects never followed"),
+    ("github_pr_write", "tools/github_pr_tool.py", "if not base_tree:", "no base-tree-less commit (would delete the branch)"),
     ("allow_bots_channels", "plugins/platforms/slack/adapter.py", "def _slack_allow_bots_channels", "per-channel app admission"),
     ("allow_bots_channels", "gateway/authz_mixin.py", "_slack_allow_bots_channels(source)", "gate admits listed channels; RBAC outranks bypass"),
     # ── Cost attribution ──────────────────────────────────────────────────

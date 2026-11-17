@@ -21,6 +21,7 @@ BASE_CFG = {
             SKILLS: {
                 "actions": ["read_pr", "read_commits", "create_branch",
                             "commit_files", "open_pr"],
+                "branch_prefix": "educator/",
             },
             MONO: {"actions": ["read_pr", "read_commits"]},
         }
@@ -44,12 +45,17 @@ class FakeGitHub:
         self.routes = routes or {}
 
     async def __call__(self, method, path, token, *, params=None,
-                       json_body=None, accept=None):
+                       json_body=None, accept=None, max_bytes=None):
         self.calls.append({"method": method, "path": path, "token": token,
-                           "params": params, "json": json_body, "accept": accept})
-        status, body = self.routes.get((method, path), (200, {}))
+                           "params": params, "json": json_body, "accept": accept,
+                           "max_bytes": max_bytes})
+        route = self.routes.get((method, path), (200, {}))
+        if callable(route):
+            route = route(params or {})
+        status, body = route[0], route[1]
+        truncated = route[2] if len(route) > 2 else False
         text = body if isinstance(body, str) else json.dumps(body)
-        return {"status": status, "text": text}
+        return {"status": status, "text": text, "truncated": truncated}
 
 
 @pytest.fixture
@@ -331,7 +337,8 @@ def test_check_fn_read(monkeypatch):
     assert gh._check_github_pr_read() is False
     _token(monkeypatch, "tok")
     assert gh._check_github_pr_read() is True
-    _cfg(monkeypatch, {"github_pr": {"repos": {SKILLS: {"actions": ["open_pr"]}}}})
+    _cfg(monkeypatch, {"github_pr": {"repos": {SKILLS: {
+        "actions": ["open_pr"], "branch_prefix": "educator/"}}}})
     assert gh._check_github_pr_read() is False
     _cfg(monkeypatch, BASE_CFG)
 
@@ -377,9 +384,9 @@ def test_merge_op_message_says_not_available(configured, fake):
     assert "merg" in out["error"].lower() and "human" in out["error"].lower()
 
 
-@pytest.mark.parametrize("branch", ["main", "Main", "MAIN"])
+@pytest.mark.parametrize("branch", ["educator/main", "educator/Main", "educator/MAIN"])
 def test_commit_to_default_branch_refused(configured, fake, branch):
-    _repo_route(fake)
+    _repo_route(fake, default="educator/main")
     out = _write({"op": "commit_files", "repo": SKILLS, "branch": branch,
                   "message": "m", "files": [{"path": "a.md", "content": "x"}]})
     assert "default branch" in out["error"]
@@ -387,15 +394,15 @@ def test_commit_to_default_branch_refused(configured, fake, branch):
 
 
 def test_create_default_branch_refused(configured, fake):
-    _repo_route(fake, default="trunk")
-    out = _write({"op": "create_branch", "repo": SKILLS, "branch": "trunk"})
+    _repo_route(fake, default="educator/trunk")
+    out = _write({"op": "create_branch", "repo": SKILLS, "branch": "educator/trunk"})
     assert "default branch" in out["error"]
     assert all(c["method"] == "GET" for c in fake.calls)
 
 
 def test_open_pr_from_default_branch_refused(configured, fake):
-    _repo_route(fake)
-    out = _write({"op": "open_pr", "repo": SKILLS, "head": "main", "title": "t"})
+    _repo_route(fake, default="educator/main")
+    out = _write({"op": "open_pr", "repo": SKILLS, "head": "educator/main", "title": "t"})
     assert "default branch" in out["error"]
     assert all(c["method"] == "GET" for c in fake.calls)
 
@@ -457,6 +464,10 @@ def test_commit_files_flow(configured, fake):
         200, {"object": {"sha": "head1"}})
     fake.routes[("GET", f"repos/{SKILLS}/git/commits/head1")] = (
         200, {"tree": {"sha": "tree1"}})
+    fake.routes[("GET", f"repos/{SKILLS}/git/trees/tree1")] = (200, {
+        "truncated": False,
+        "tree": [{"path": "skills/a/SKILL.md", "mode": "100644", "type": "blob"},
+                 {"path": "skills/old.md", "mode": "100644", "type": "blob"}]})
     fake.routes[("POST", f"repos/{SKILLS}/git/trees")] = (201, {"sha": "tree2"})
     fake.routes[("POST", f"repos/{SKILLS}/git/commits")] = (
         201, {"sha": "commit2", "html_url": "https://github.com/c/commit2"})
@@ -472,19 +483,21 @@ def test_commit_files_flow(configured, fake):
         ("GET", f"repos/{SKILLS}"),
         ("GET", f"repos/{SKILLS}/git/ref/heads/educator/x"),
         ("GET", f"repos/{SKILLS}/git/commits/head1"),
+        ("GET", f"repos/{SKILLS}/git/trees/tree1"),
         ("POST", f"repos/{SKILLS}/git/trees"),
         ("POST", f"repos/{SKILLS}/git/commits"),
         ("PATCH", f"repos/{SKILLS}/git/refs/heads/educator/x"),
     ]
-    tree = fake.calls[3]["json"]
+    assert fake.calls[3]["params"] == {"recursive": "1"}
+    tree = fake.calls[4]["json"]
     assert tree["base_tree"] == "tree1"
     assert {"path": "skills/a/SKILL.md", "mode": "100644", "type": "blob",
             "content": "new"} in tree["tree"]
     assert {"path": "skills/old.md", "mode": "100644", "type": "blob",
             "sha": None} in tree["tree"]
-    assert fake.calls[4]["json"] == {"message": "docs: tighten voice",
+    assert fake.calls[5]["json"] == {"message": "docs: tighten voice",
                                      "tree": "tree2", "parents": ["head1"]}
-    assert fake.calls[5]["json"] == {"sha": "commit2", "force": False}
+    assert fake.calls[6]["json"] == {"sha": "commit2", "force": False}
 
 
 @pytest.mark.parametrize("files", [
@@ -580,3 +593,263 @@ def test_module_never_reads_os_environ_directly():
     from pathlib import Path
     src = Path(gh.__file__).read_text(encoding="utf-8")
     assert "os.getenv" not in src and "os.environ" not in src
+
+
+# ── PR #6 review: prefix, base, commit integrity, transport ──────────────
+
+@pytest.mark.parametrize("action", ["create_branch", "commit_files", "open_pr"])
+def test_write_repo_without_prefix_is_config_error(monkeypatch, fake, action):
+    _cfg(monkeypatch, {"github_pr": {"repos": {
+        SKILLS: {"actions": ["read_pr", action]},
+        MONO: {"actions": ["read_pr"]}}}})
+    _token(monkeypatch)
+    # The whole block is poisoned: even reads on the other repo are refused.
+    for repo in (SKILLS, MONO):
+        policy, err = gh._authorize(repo, "get_pr", gh.READ_OPS)
+        assert policy is None and "branch_prefix" in err
+    out = _write({"op": action, "repo": SKILLS, "branch": "x", "head": "x",
+                  "title": "t", "message": "m",
+                  "files": [{"path": "a.md", "content": "x"}]})
+    assert "branch_prefix" in out["error"] and fake.calls == []
+
+
+def test_read_only_repo_needs_no_prefix(monkeypatch):
+    _cfg(monkeypatch, {"github_pr": {"repos": {MONO: {"actions": ["read_pr"]}}}})
+    policy, err = gh._authorize(MONO, "get_pr", gh.READ_OPS)
+    assert err is None
+
+
+@pytest.mark.parametrize("prefix", ["educator", "../x/", "/", "a//", "-x/", " "])
+def test_bad_prefix_is_config_error(monkeypatch, prefix):
+    _cfg(monkeypatch, {"github_pr": {"repos": {SKILLS: {
+        "actions": ["open_pr"], "branch_prefix": prefix}}}})
+    policy, err = gh._authorize(SKILLS, "open_pr", gh.WRITE_OPS)
+    assert policy is None and "branch_prefix" in err
+
+
+@pytest.mark.parametrize("op,field", [("create_branch", "branch"),
+                                      ("commit_files", "branch"),
+                                      ("open_pr", "head")])
+def test_branch_outside_prefix_refused(configured, fake, op, field):
+    args = {"op": op, "repo": SKILLS, "title": "t", "message": "m",
+            "files": [{"path": "a.md", "content": "x"}]}
+    args[field] = "feature/someone-elses"
+    out = _write(args)
+    assert "educator/" in out["error"] and fake.calls == []
+
+
+def test_open_pr_non_default_base_refused(configured, fake):
+    _repo_route(fake)
+    out = _write({"op": "open_pr", "repo": SKILLS, "head": "educator/x",
+                  "title": "t", "base": "release/1.0"})
+    assert "default branch" in out["error"]
+    assert all(c["method"] == "GET" for c in fake.calls)
+
+
+def test_open_pr_base_equal_to_default_is_fine(configured, fake):
+    _repo_route(fake)
+    fake.routes[("POST", f"repos/{SKILLS}/pulls")] = (201, {"number": 1})
+    out = _write({"op": "open_pr", "repo": SKILLS, "head": "educator/x",
+                  "title": "t", "base": "Main"})
+    assert out["ok"] is True
+    assert fake.calls[-1]["json"]["base"] == "main"
+
+
+def test_write_schema_has_no_base():
+    assert "base" not in gh.GITHUB_PR_WRITE_SCHEMA["parameters"]["properties"]
+
+
+def test_heads_main_lands_under_refs_heads(monkeypatch, fake):
+    _cfg(monkeypatch, {"github_pr": {"repos": {SKILLS: {
+        "actions": ["create_branch"], "branch_prefix": "heads/"}}}})
+    _token(monkeypatch)
+    _repo_route(fake)
+    fake.routes[("GET", f"repos/{SKILLS}/git/ref/heads/main")] = (
+        200, {"object": {"sha": "s"}})
+    out = _write({"op": "create_branch", "repo": SKILLS, "branch": "heads/main"})
+    assert out["ok"] is True
+    assert fake.calls[-1]["json"]["ref"] == "refs/heads/heads/main"
+
+
+def _commit_routes(fake, *, tree_sha="tree1", new_tree="tree2", new_sha="commit2",
+                   tree_entries=None, tree_truncated=False):
+    _repo_route(fake)
+    fake.routes[("GET", f"repos/{SKILLS}/git/ref/heads/educator/x")] = (
+        200, {"object": {"sha": "head1"}})
+    fake.routes[("GET", f"repos/{SKILLS}/git/commits/head1")] = (
+        200, {"tree": {"sha": tree_sha}} if tree_sha else {})
+    fake.routes[("GET", f"repos/{SKILLS}/git/trees/{tree_sha}")] = (
+        200, {"truncated": tree_truncated, "tree": tree_entries or []})
+    fake.routes[("POST", f"repos/{SKILLS}/git/trees")] = (
+        201, {"sha": new_tree} if new_tree else {})
+    fake.routes[("POST", f"repos/{SKILLS}/git/commits")] = (
+        201, {"sha": new_sha} if new_sha else {})
+
+
+_COMMIT = {"op": "commit_files", "repo": SKILLS, "branch": "educator/x",
+           "message": "m", "files": [{"path": "a.md", "content": "x"}]}
+
+
+def test_missing_base_tree_refused(configured, fake):
+    _commit_routes(fake, tree_sha=None)
+    out = _write(dict(_COMMIT))
+    assert "error" in out
+    assert all(c["method"] == "GET" for c in fake.calls)
+    assert fake.calls[-1]["path"] == f"repos/{SKILLS}/git/commits/head1"
+
+
+def test_missing_new_tree_sha_refused(configured, fake):
+    _commit_routes(fake, new_tree=None)
+    out = _write(dict(_COMMIT))
+    assert "error" in out
+    assert fake.calls[-1]["path"] == f"repos/{SKILLS}/git/trees"
+    assert not any(c["path"].endswith("/git/commits") and c["method"] == "POST"
+                   for c in fake.calls)
+
+
+def test_missing_commit_sha_refused(configured, fake):
+    _commit_routes(fake, new_sha=None)
+    out = _write(dict(_COMMIT))
+    assert "error" in out
+    assert (fake.calls[-1]["method"], fake.calls[-1]["path"]) == (
+        "POST", f"repos/{SKILLS}/git/commits")
+    assert not any(c["method"] == "PATCH" for c in fake.calls)
+
+
+@pytest.mark.parametrize("mode", ["100755", "120000", "160000", "040000"])
+def test_non_regular_existing_entry_refused(configured, fake, mode):
+    _commit_routes(fake, tree_entries=[{"path": "a.md", "mode": mode}])
+    out = _write(dict(_COMMIT))
+    assert mode in out["error"]
+    assert not any(c["method"] in ("POST", "PATCH") for c in fake.calls)
+
+
+def test_delete_of_non_regular_entry_refused(configured, fake):
+    _commit_routes(fake, tree_entries=[{"path": "bin/run", "mode": "100755"}])
+    args = dict(_COMMIT, files=[{"path": "bin/run", "delete": True}])
+    out = _write(args)
+    assert "error" in out
+    assert not any(c["method"] in ("POST", "PATCH") for c in fake.calls)
+
+
+def test_truncated_tree_refused(configured, fake):
+    _commit_routes(fake, tree_truncated=True)
+    out = _write(dict(_COMMIT))
+    assert "error" in out
+    assert not any(c["method"] in ("POST", "PATCH") for c in fake.calls)
+
+
+def test_new_file_allowed_when_absent_from_tree(configured, fake):
+    _commit_routes(fake, tree_entries=[{"path": "other.md", "mode": "100755"}])
+    out = _write(dict(_COMMIT))
+    assert out["ok"] is True
+
+
+def test_redirect_is_an_error_and_stops_the_write(configured, fake):
+    fake.routes[("GET", f"repos/{SKILLS}")] = (307, "")
+    out = _write({"op": "create_branch", "repo": SKILLS, "branch": "educator/x"})
+    assert "redirect" in out["error"]
+    assert len(fake.calls) == 1
+
+
+def test_truncated_json_response_refused(configured, fake):
+    fake.routes[("GET", f"repos/{MONO}/pulls/7")] = (200, '{"number": 7', True)
+    out = _read({"op": "get_pr", "repo": MONO, "number": 7})
+    assert "exceeded" in out["error"]
+
+
+def test_pr_diff_asks_for_bounded_read(configured, fake):
+    fake.routes[("GET", f"repos/{MONO}/pulls/7")] = (200, "d" * 10, True)
+    out = _read({"op": "pr_diff", "repo": MONO, "number": 7})
+    assert fake.calls[0]["max_bytes"] == gh._MAX_DIFF_BYTES
+    assert out["truncated"] is True
+
+
+def _paged(total):
+    def route(params):
+        page = params.get("page", 1)
+        start = (page - 1) * 100
+        n = max(0, min(100, total - start))
+        return (200, [{"user": {"login": "u"}, "body": f"c{start + i}"}
+                      for i in range(n)])
+    return route
+
+
+def test_pr_comments_pages_through(configured, fake):
+    fake.routes[("GET", f"repos/{SKILLS}/issues/3/comments")] = _paged(130)
+    fake.routes[("GET", f"repos/{SKILLS}/pulls/3/comments")] = (200, [])
+    fake.routes[("GET", f"repos/{SKILLS}/pulls/3/reviews")] = (200, [])
+    out = _read({"op": "pr_comments", "repo": SKILLS, "number": 3})
+    assert len(out["data"]["comments"]) == 130
+    assert out["truncated"]["comments"] is False
+
+
+def test_pr_comments_caps_and_flags_truncation(configured, fake):
+    fake.routes[("GET", f"repos/{SKILLS}/issues/3/comments")] = _paged(10_000)
+    fake.routes[("GET", f"repos/{SKILLS}/pulls/3/comments")] = (200, [])
+    fake.routes[("GET", f"repos/{SKILLS}/pulls/3/reviews")] = (200, [])
+    out = _read({"op": "pr_comments", "repo": SKILLS, "number": 3})
+    assert len(out["data"]["comments"]) == gh._MAX_PAGED_ITEMS
+    assert out["truncated"]["comments"] is True
+
+
+# The real transport: redirects off, body read is bounded.
+
+class _FakeStream:
+    def __init__(self, data):
+        self.data, self.pos = data, 0
+
+    async def read(self, n=-1):
+        chunk = self.data[self.pos:self.pos + min(n, 7)]  # small chunks
+        self.pos += len(chunk)
+        return chunk
+
+
+class _FakeResp:
+    def __init__(self, status, data):
+        self.status, self.content = status, _FakeStream(data)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _fake_session(seen, status, data):
+    class _Session:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def request(self, method, url, **kw):
+            seen.update(kw, method=method, url=url)
+            return _FakeResp(status, data)
+
+    return _Session
+
+
+def test_transport_never_follows_redirects_and_bounds_reads(monkeypatch):
+    from model_tools import _run_async
+    seen = {}
+    monkeypatch.setattr("aiohttp.ClientSession", _fake_session(seen, 200, b"x" * 50))
+    resp = _run_async(gh._github_request("GET", "repos/a/b", "tok", max_bytes=20))
+    assert seen["allow_redirects"] is False
+    assert seen["url"] == "https://api.github.com/repos/a/b"
+    assert seen["headers"]["Authorization"] == "Bearer tok"
+    assert resp["truncated"] is True and resp["text"] == "x" * 20
+
+
+def test_transport_small_body_not_truncated(monkeypatch):
+    from model_tools import _run_async
+    seen = {}
+    monkeypatch.setattr("aiohttp.ClientSession", _fake_session(seen, 307, b"moved"))
+    resp = _run_async(gh._github_request("POST", "repos/a/b/pulls", "tok",
+                                         json_body={"x": 1}, max_bytes=20))
+    assert resp == {"status": 307, "text": "moved", "truncated": False}
+    assert seen["allow_redirects"] is False

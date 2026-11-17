@@ -260,28 +260,53 @@ cron/delegation runs that never loaded it (the same pattern), so they work headl
   **not** depend on any MCP. Reads: `list_prs`, `get_pr`, `pr_files`,
   `pr_diff` (truncated at 60k chars), `pr_comments` (conversation + inline
   review comments + reviews), `pr_status` (combined status + check runs),
-  `commits`. Writes: `create_branch`, `commit_files` (one commit of full-file
+  `commits` (`pr_comments` pages up to 500 per kind and flags `truncated`).
+  Writes: `create_branch`, `commit_files` (one commit of full-file
   contents onto an existing branch via the git-data API, `force: false`),
-  `open_pr`. **There is no merge op, no settings/admin endpoint, and the
+  `open_pr` (always targets the default branch; there is no `base`
+  parameter, and a passed `base` other than the default is refused).
+  **There is no merge op, no settings/admin endpoint, and the
   default branch is never written** — it is looked up live
   (`GET repos/<repo>`) before every write and a failed lookup refuses.
-  Paths under `.github/` (a workflow on any branch runs with repo secrets)
-  and `.git` are refused, as are traversal/ref-syntax branch names. **The
-  boundary is the profile's per-repo action allowlist**, read per call
-  (mtime-cached) from `config.yaml`:
+  `commit_files` refuses when the branch's tree, the new tree, or the new
+  commit SHA is missing (a missing `base_tree` would build a tree of only
+  the listed files and delete the rest of the branch), and refuses to touch
+  an existing entry that is not a regular file (`100644`) rather than
+  silently turning an executable/symlink/submodule into one — it reads the
+  branch tree recursively and refuses if GitHub truncates it. Paths under
+  `.github/` and `.git` are refused, as are traversal/ref-syntax branch
+  names. Requests never follow redirects (a 307 from a renamed repo would
+  replay a write past the allowlist — a 3xx is an error naming the fix),
+  and response bodies are read bounded (5 MB JSON — a truncated JSON body is
+  refused — and 120 KB for `pr_diff`). **The boundary is the profile's
+  per-repo action allowlist**, read per call (mtime-cached) from
+  `config.yaml`:
   ```yaml
   github_pr:
     repos:
       everafterai/product-skills:
         actions: [read_pr, read_commits, create_branch, commit_files, open_pr]
-        branch_prefix: educator/   # optional: writes only touch these branches
+        branch_prefix: educator/   # REQUIRED when any write action is granted
       everafterai/ea-monorepo:
         actions: [read_pr, read_commits]
   ```
-  An unlisted repo or ungranted action is refused before any request. An
-  unknown action name — any `merge*` especially — or
-  `autonomy.actions.merge_skill_pr` above `off` poisons the whole block
-  (every call refused, naming the problem): merging is not built in v1.
+  An unlisted repo or ungranted action is refused before any request.
+  `branch_prefix` (ending in `/`) is **required** for any repo granting a
+  write action, and `create_branch`'s branch, `commit_files`' branch and
+  `open_pr`'s head must all be under it — without it a prompt-injected agent
+  could commit onto a human's open feature branch (whose merge then carries
+  the commit into the default branch unreviewed) or create `release/*` /
+  `gh-pages`. A missing or malformed prefix, an unknown action name — any
+  `merge*` especially — or `autonomy.actions.merge_skill_pr` above `off`
+  poisons the whole block (every call refused, naming the problem): merging
+  is not built in v1. **Residual CI risk:** blocking `.github/` stops the
+  agent adding or editing *workflows*, but not push- or PR-triggered CI that
+  already exists from running repo code the agent committed (package
+  scripts, tests, a Makefile) or deploy configs read from the repo root
+  (`vercel.json`, `netlify.toml`, a Netlify/Vercel/Cloudflare preview
+  integration). Grant write actions only on a repo with no such CI or
+  deploy integration, or accept that risk explicitly per repo
+  (`product-skills` is a skills/markdown repo; check it stays that way).
   Token **only** via `get_secret("GITHUB_PR_TOKEN")` (no `os.getenv`, no
   dotenv self-heal — under multiplex `os.environ` is another profile's);
   `UnscopedSecretError` reads as "not configured". Use a fine-grained token

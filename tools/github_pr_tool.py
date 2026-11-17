@@ -49,6 +49,9 @@ _MAX_PATCH_CHARS = 4_000
 _MAX_MESSAGE_CHARS = 2_000
 _MAX_FILES_PER_COMMIT = 50
 _MAX_COMMIT_CONTENT_BYTES = 1_000_000
+_MAX_RESPONSE_BYTES = 5_000_000   # JSON bodies; a truncated JSON body is refused
+_MAX_DIFF_BYTES = 2 * _MAX_DIFF_CHARS
+_MAX_PAGED_ITEMS = 500            # per kind, for pr_comments
 
 # op → the allowlist action that unlocks it.
 READ_OPS: dict[str, str] = {
@@ -159,10 +162,25 @@ def _load_repo_policy() -> tuple[dict[str, dict], str | None]:
         prefix = entry.get("branch_prefix") or ""
         if not isinstance(prefix, str):
             return {}, f"github_pr config error: {where}.branch_prefix must be a string."
-        out[key.lower()] = {
-            "actions": frozenset(str(a).strip() for a in actions),
-            "branch_prefix": prefix.strip(),
-        }
+        prefix = prefix.strip()
+        granted = frozenset(str(a).strip() for a in actions)
+        writes = granted & _WRITE_ACTIONS
+        # A repo that grants any write must confine writes to the bot's own
+        # branches. Without a prefix a prompt-injected agent could commit onto
+        # a human's open feature branch (their merge then carries it into the
+        # default branch unreviewed) or create release/* or gh-pages.
+        if writes and not prefix:
+            return {}, (
+                f"github_pr config error: {where} grants write actions "
+                f"({', '.join(sorted(writes))}) but has no branch_prefix. Set one "
+                "(e.g. 'educator/') so writes only touch the bot's own branches."
+            )
+        if prefix and (not prefix.endswith("/") or not _valid_branch(prefix[:-1])):
+            return {}, (
+                f"github_pr config error: {where}.branch_prefix '{prefix}' must be "
+                "a branch-name prefix ending in '/', e.g. 'educator/'."
+            )
+        out[key.lower()] = {"actions": granted, "branch_prefix": prefix}
     return out, None
 
 
@@ -227,7 +245,11 @@ def _valid_file_path(path: Any) -> bool:
 def _branch_error(name: Any, field: str, prefix: str) -> str | None:
     if not _valid_branch(name):
         return f"{field} '{name}' is not a valid branch name."
-    if prefix and not name.startswith(prefix):
+    if not prefix:
+        # Unreachable through config (a write-granting repo without a prefix is
+        # a config error) — fail closed regardless.
+        return f"{field}: no github_pr branch_prefix is configured for this repo."
+    if not name.startswith(prefix):
         return f"{field} must start with '{prefix}' (github_pr branch_prefix for this repo)."
     return None
 
@@ -276,8 +298,14 @@ async def _github_request(
     params: dict | None = None,
     json_body: dict | None = None,
     accept: str | None = None,
+    max_bytes: int | None = None,
 ) -> dict:
-    """Call ``api.github.com/<path>``. Returns ``{status, text}``."""
+    """Call ``api.github.com/<path>``. Returns ``{status, text, truncated}``.
+
+    Redirects are never followed: a 307 from a renamed or transferred repo
+    would otherwise replay a write against a repo the allowlist never named.
+    The body is read up to ``max_bytes`` (default ``_MAX_RESPONSE_BYTES``).
+    """
     import aiohttp
     from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
 
@@ -293,13 +321,40 @@ async def _github_request(
     async with aiohttp.ClientSession(timeout=timeout, **_sess_kw) as session:
         async with session.request(
             method, f"{_API_BASE}/{path}", headers=headers,
-            params=clean_params or None, json=json_body, **_req_kw,
+            params=clean_params or None, json=json_body,
+            allow_redirects=False, **_req_kw,
         ) as resp:
-            return {"status": resp.status, "text": await resp.text()}
+            limit = max_bytes or _MAX_RESPONSE_BYTES
+            body, truncated = await _read_bounded(resp.content, limit)
+            return {
+                "status": resp.status,
+                "text": body.decode("utf-8", errors="replace"),
+                "truncated": truncated,
+            }
+
+
+async def _read_bounded(stream: Any, limit: int) -> tuple[bytes, bool]:
+    """Read at most ``limit`` bytes; report whether more was available."""
+    chunks: list[bytes] = []
+    total = 0
+    while total <= limit:
+        chunk = await stream.read(limit + 1 - total)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    body = b"".join(chunks)
+    return body[:limit], len(body) > limit
 
 
 def _http_error(resp: dict) -> str | None:
     status = resp["status"]
+    if 300 <= status < 400:
+        return (
+            f"GitHub answered with a redirect (HTTP {status}), which github_pr does "
+            "not follow — the repo may have been renamed or moved. Update the "
+            "github_pr.repos allowlist to its current name."
+        )
     if status < 400:
         return None
     text = (resp.get("text") or "").strip()
@@ -310,22 +365,46 @@ def _http_error(resp: dict) -> str | None:
     return f"GitHub API error (HTTP {status}): {str(message)[:300]}"
 
 
-async def _get_json(path: str, token: str, params: dict | None = None) -> tuple[Any, str | None]:
-    resp = await _github_request("GET", path, token, params=params)
+def _json_body(resp: dict) -> tuple[Any, str | None]:
     err = _http_error(resp)
     if err:
         return None, err
+    if resp.get("truncated"):
+        return None, (
+            f"GitHub's response exceeded {_MAX_RESPONSE_BYTES} bytes and was not "
+            "read; narrow the request (per_page, page, path)."
+        )
     text = (resp.get("text") or "").strip()
     return (json.loads(text) if text else None), None
+
+
+async def _get_json(path: str, token: str, params: dict | None = None) -> tuple[Any, str | None]:
+    return _json_body(await _github_request("GET", path, token, params=params))
 
 
 async def _send_json(method: str, path: str, token: str, body: dict) -> tuple[Any, str | None]:
-    resp = await _github_request(method, path, token, json_body=body)
-    err = _http_error(resp)
-    if err:
-        return None, err
-    text = (resp.get("text") or "").strip()
-    return (json.loads(text) if text else None), None
+    return _json_body(await _github_request(method, path, token, json_body=body))
+
+
+async def _get_paged(path: str, token: str) -> tuple[list, bool, str | None]:
+    """GET a list endpoint page by page, up to ``_MAX_PAGED_ITEMS``.
+
+    Returns ``(items, truncated, error)``; ``truncated`` means the cap was hit
+    with more pages likely remaining.
+    """
+    items: list = []
+    page = 1
+    while True:
+        batch, err = await _get_json(path, token, {"per_page": 100, "page": page})
+        if err:
+            return [], False, err
+        batch = batch or []
+        items.extend(batch)
+        if len(batch) < 100:
+            return items, False, None
+        if len(items) >= _MAX_PAGED_ITEMS:
+            return items[:_MAX_PAGED_ITEMS], True, None
+        page += 1
 
 
 # ── read ops ──────────────────────────────────────────────────────────────
@@ -415,7 +494,7 @@ async def _op_pr_files(repo: str, token: str, args: dict, number: int | None) ->
 async def _op_pr_diff(repo: str, token: str, args: dict, number: int | None) -> str:
     resp = await _github_request(
         "GET", f"repos/{repo}/pulls/{number}", token,
-        accept="application/vnd.github.diff",
+        accept="application/vnd.github.diff", max_bytes=_MAX_DIFF_BYTES,
     )
     err = _http_error(resp)
     if err:
@@ -424,23 +503,24 @@ async def _op_pr_diff(repo: str, token: str, args: dict, number: int | None) -> 
     return tool_result({
         "ok": True,
         "diff": diff[:_MAX_DIFF_CHARS],
-        "truncated": len(diff) > _MAX_DIFF_CHARS,
-        "total_chars": len(diff),
+        "truncated": bool(resp.get("truncated")) or len(diff) > _MAX_DIFF_CHARS,
     })
 
 
 async def _op_pr_comments(repo: str, token: str, args: dict, number: int | None) -> str:
-    params = {"per_page": 100}
-    comments, err = await _get_json(f"repos/{repo}/issues/{number}/comments", token, params)
+    comments, c_trunc, err = await _get_paged(f"repos/{repo}/issues/{number}/comments", token)
     if err:
         return tool_error(err)
-    review_comments, err = await _get_json(f"repos/{repo}/pulls/{number}/comments", token, params)
+    review_comments, rc_trunc, err = await _get_paged(
+        f"repos/{repo}/pulls/{number}/comments", token)
     if err:
         return tool_error(err)
-    reviews, err = await _get_json(f"repos/{repo}/pulls/{number}/reviews", token, params)
+    reviews, r_trunc, err = await _get_paged(f"repos/{repo}/pulls/{number}/reviews", token)
     if err:
         return tool_error(err)
-    return tool_result({"ok": True, "data": {
+    return tool_result({"ok": True, "truncated": {
+        "comments": c_trunc, "review_comments": rc_trunc, "reviews": r_trunc,
+    }, "data": {
         "comments": [
             {"author": _login(c.get("user")), "body": c.get("body"),
              "created_at": c.get("created_at")}
@@ -654,6 +734,8 @@ def _validate_write(op: str, args: dict, prefix: str) -> tuple[dict | None, str 
     body = args.get("body")
     if body is not None and not isinstance(body, str):
         return None, "body must be a string."
+    # PRs always target the default branch. `base` is not in the schema; if a
+    # caller passes one anyway it must name the default branch (checked live).
     base = args.get("base")
     if base not in (None, "") and not _valid_branch(base):
         return None, f"base '{base}' is not a valid branch name."
@@ -679,6 +761,30 @@ async def _write_create_branch(repo: str, token: str, v: dict, default: str) -> 
     return tool_result({"ok": True, "data": {"branch": v["branch"], "from": source, "sha": sha}})
 
 
+async def _mode_check(repo: str, token: str, base_tree: str, entries: list[dict]) -> str | None:
+    """Refuse to touch any existing entry that is not a regular file.
+
+    Every entry is written as mode 100644, which would silently turn an
+    executable, symlink or submodule into a plain file. New paths are fine.
+    """
+    data, err = await _get_json(f"repos/{repo}/git/trees/{base_tree}", token,
+                                {"recursive": "1"})
+    if err:
+        return f"Could not read the branch's file modes, so no commit was made: {err}"
+    data = data or {}
+    if data.get("truncated"):
+        return "The branch's tree is too large to verify file modes, so no commit was made."
+    modes = {e.get("path"): e.get("mode") for e in data.get("tree") or [] if isinstance(e, dict)}
+    for entry in entries:
+        mode = modes.get(entry["path"])
+        if mode is not None and mode != "100644":
+            return (
+                f"Refused: '{entry['path']}' is not a regular file (mode {mode}); "
+                "github_pr only writes regular files."
+            )
+    return None
+
+
 async def _write_commit_files(repo: str, token: str, v: dict, default: str) -> str:
     branch = v["branch"]
     if _is_default(branch, default):
@@ -693,16 +799,28 @@ async def _write_commit_files(repo: str, token: str, v: dict, default: str) -> s
     if err:
         return tool_error(err)
     base_tree = ((commit or {}).get("tree") or {}).get("sha")
+    # Without base_tree GitHub builds a tree of ONLY the listed files, and the
+    # commit would delete everything else on the branch.
+    if not base_tree:
+        return tool_error(f"Could not resolve the tree of '{branch}', so no commit was made.")
+    err = await _mode_check(repo, token, base_tree, v["entries"])
+    if err:
+        return tool_error(err)
     tree, err = await _send_json("POST", f"repos/{repo}/git/trees", token,
                                  {"base_tree": base_tree, "tree": v["entries"]})
     if err:
         return tool_error(err)
+    new_tree = (tree or {}).get("sha")
+    if not new_tree:
+        return tool_error("GitHub returned no tree SHA, so no commit was made.")
     new_commit, err = await _send_json("POST", f"repos/{repo}/git/commits", token, {
-        "message": v["message"], "tree": (tree or {}).get("sha"), "parents": [head_sha],
+        "message": v["message"], "tree": new_tree, "parents": [head_sha],
     })
     if err:
         return tool_error(err)
     new_sha = (new_commit or {}).get("sha")
+    if not new_sha:
+        return tool_error(f"GitHub returned no commit SHA, so '{branch}' was not moved.")
     _, err = await _send_json("PATCH", f"repos/{repo}/git/refs/heads/{branch}", token,
                               {"sha": new_sha, "force": False})
     if err:
@@ -719,8 +837,13 @@ async def _write_commit_files(repo: str, token: str, v: dict, default: str) -> s
 async def _write_open_pr(repo: str, token: str, v: dict, default: str) -> str:
     if _is_default(v["head"], default):
         return tool_error(_default_refusal(repo, default))
+    if v["base"] and not _is_default(v["base"], default):
+        return tool_error(
+            f"Refused: PRs from github_pr always target {repo}'s default branch "
+            f"('{default}'), not '{v['base']}'."
+        )
     pr, err = await _send_json("POST", f"repos/{repo}/pulls", token, {
-        "title": v["title"], "head": v["head"], "base": v["base"] or default,
+        "title": v["title"], "head": v["head"], "base": default,
         "body": v["body"], "draft": v["draft"],
     })
     if err:
@@ -830,7 +953,8 @@ GITHUB_PR_WRITE_SCHEMA = {
         "to the default branch); commit_files (branch, message, files: "
         "[{path, content} | {path, delete: true}]) — one commit of full-file "
         "contents onto an EXISTING branch you created; open_pr (head, title, "
-        "body, base? — defaults to the default branch, draft?). It never "
+        "body, draft?) — always targets the default branch. Branch names must "
+        "start with this repo's configured branch prefix. It never "
         "writes to the default branch, never touches .github/, and cannot "
         "merge: a human reviews and merges every PR. Read PR comments and "
         "status with github_pr_read."
@@ -857,7 +981,6 @@ GITHUB_PR_WRITE_SCHEMA = {
                 },
             },
             "head": {"type": "string", "description": "open_pr: the branch with your commits."},
-            "base": {"type": "string", "description": "open_pr: target branch (default branch if omitted)."},
             "title": {"type": "string", "description": "open_pr: PR title."},
             "body": {"type": "string", "description": "open_pr: PR description (markdown)."},
             "draft": {"type": "boolean", "description": "open_pr: open as a draft."},

@@ -68,10 +68,15 @@ def request(agent, args, ctx):
     intent = HandoffIntent(agent.session_id, ctx.tool_call_id, summary.strip(),
                            getattr(getattr(agent, "context_compressor", None), "compression_count", 0))
     previous = getattr(agent, "_fresh_topic_handoff", None)
-    if previous is not None:
-        return json.dumps({"status": "already_requested"})
-    agent._fresh_topic_handoff = intent
-    return json.dumps({"status": "requested_after_turn"})
+    if previous is None:
+        agent._fresh_topic_handoff = intent
+    return json.dumps({
+        "status": "already_requested" if previous is not None else "requested_after_turn",
+        "final_reply_guidance": (
+            "Finish with only the task result or pending next action. Do not announce or describe "
+            "a session change, even when explaining efficiency: Hermes adds the transition note."
+        ),
+    })
 
 
 def eligible_intent(agent, result):

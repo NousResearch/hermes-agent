@@ -355,13 +355,20 @@ switches runtime configuration. The provider name alone does not select it.
 The topic binding and child publish before the next admission can run. The quiet
 note is attached to the owning admission's post-delivery callback: a buffered
 final reply is delivered before the note, on the supported Hermes-loop routes.
+The tool receipt also reminds the model to finish with the task result or pending
+next action, leaving the session-change announcement to the gateway.
 
 Checkpoint tests use representative synthetic text and scripted provider tool
 choices. They prove transport, persistence, fences and readback, not that a real
 model consistently chooses useful boundaries or preserves every relevant fact.
-No representative model-driven quality evaluation has been run. The tool asks
-for objective, constraints, decisions, completed checks and next action; its text
-bounds are not a semantic quality guarantee.
+Limited evaluation with OpenAI-hosted `gpt-6-luna` has exercised the real Hermes
+loop, terminal admission, publication and next-message continuation using a
+disposable Telegram adapter and a bounded terminal. From a checkpoint of actual
+repository work, the successor ran the existing healer/retirement regression and
+reported its observed result. Another run chose to retain the conversation and
+completed the same task. These observations establish neither consistent model
+quality nor a cache-efficiency benefit. The small synthetic probe also exposed a
+file-path omission, so a passing transport run is not a semantic quality guarantee.
 
 The opt-in probe `python -m evals.session_handoff_quality --help` supplies synthetic
 completed-phase, short-followup and active-work scenarios to an explicitly selected
@@ -372,8 +379,14 @@ checkpoint. Literal fact checks expose omissions; inspect raw outputs for semant
 errors and over-granted permissions. Scripted probe tests validate the evaluator,
 not model quality. The probe does not exercise gateway settlement or measure cache
 savings, and never loads a user's Hermes profile or executes model tools beyond
-the in-memory handoff intent. An explicit credential environment name is required;
-results are written to a new output file without credentials or endpoint URLs.
+the in-memory handoff intent. Supply an explicit credential environment name, or
+use `--codex-login` with `--api-mode codex_responses` and the official
+`https://chatgpt.com/backend-api/codex` endpoint. This reads an existing unexpired
+Codex login without refreshing, adopting or writing credentials. Responses use
+the production stream assembler and require a completed terminal receipt; a
+truncated stream cannot become a passing evaluation. Signed provider state is
+replayed within the probe and excluded from its transcript report. Results are
+written to a new output file without credentials or endpoint URLs.
 
 ---
 

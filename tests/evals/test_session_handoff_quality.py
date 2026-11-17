@@ -5,11 +5,9 @@ import sys
 import httpx
 import openai
 import pytest
-from openai.types.responses.response_create_params import ResponseCreateParamsNonStreaming
-from pydantic import TypeAdapter
 
 from evals import session_handoff_quality as probe
-from tests.fakes.providers.openai_responses import FunctionCall, Message, Turn, turn_events
+from tests.fakes.providers.openai_responses import FunctionCall, Message, Turn, turn_events, validate_request
 
 
 def scripted(checkpoint=None, readback=None):
@@ -63,6 +61,7 @@ def test_unnecessary_handoff_is_not_a_passing_decision():
 @pytest.mark.parametrize("api_mode,status", [
     ("chat_completions", "completed"), ("codex_responses", "completed"),
     ("codex_responses", "incomplete"), ("codex_responses", "cancelled"),
+    ("codex_responses", "stream_lost"),
 ])
 def test_explicit_cli_probe_uses_only_synthetic_transport(tmp_path, monkeypatch, api_mode, status):
     case = probe.CASES[0]
@@ -80,12 +79,18 @@ def test_explicit_cli_probe_uses_only_synthetic_transport(tmp_path, monkeypatch,
     def respond(request):
         body = json.loads(request.content)
         captured.append(body)
-        assert body["stream"] is False
         if api_mode == "codex_responses":
-            TypeAdapter(ResponseCreateParamsNonStreaming).validate_python(body)
-            payload = turn_events(next(turns))[-1]["response"]
-            payload["status"] = status
+            assert body["stream"] is True
+            assert validate_request(body) is None
+            events = turn_events(next(turns))
+            if status == "stream_lost":
+                events.pop()
+            else:
+                events[-1]["response"]["status"] = status
+            content = ''.join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events)
+            return httpx.Response(200, text=content, headers={"Content-Type": "text/event-stream"})
         else:
+            assert body["stream"] is False
             payload = {"id": "synthetic", "object": "chat.completion", "created": 1, "model": body["model"],
                 "choices": [{"index": 0, "message": chat([], None), "finish_reason": "stop"}]}
         return httpx.Response(200, json=payload)
@@ -93,7 +98,7 @@ def test_explicit_cli_probe_uses_only_synthetic_transport(tmp_path, monkeypatch,
     sdk = openai.OpenAI
     monkeypatch.setattr(openai, "OpenAI", lambda **kw: sdk(**kw,
         http_client=httpx.Client(transport=httpx.MockTransport(respond))))
-    monkeypatch.setattr(sys, "argv", ["probe", "--base-url", "https://synthetic.invalid/v1", "--model", "gpt-5.4",
+    monkeypatch.setattr(sys, "argv", ["probe", "--base-url", "https://synthetic.invalid/v1", "--model", "gpt-6-luna",
         "--api-key-env", "SYNTHETIC_EVAL_KEY", "--api-mode", api_mode,
         "--output", str(output), "--repetitions", "1"])
     if status != "completed":

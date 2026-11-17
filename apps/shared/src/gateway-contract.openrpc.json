@@ -40010,6 +40010,39 @@
         "title": "SessionOwner",
         "type": "object"
       },
+      "SessionOwnerBackfillParams": {
+        "additionalProperties": false,
+        "description": "No fields: the owner stamps its own store with its own profile name.",
+        "properties": {},
+        "title": "SessionOwnerBackfillParams",
+        "type": "object"
+      },
+      "SessionOwnerBackfillResult": {
+        "additionalProperties": false,
+        "properties": {
+          "stamped": {
+            "title": "Stamped",
+            "type": "integer"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "stamped"
+        ],
+        "title": "SessionOwnerBackfillResult",
+        "type": "object"
+      },
       "SessionParams": {
         "additionalProperties": false,
         "description": "Any method addressed at one live session.",
@@ -51037,6 +51070,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionMutateResult"
+        }
+      }
+    },
+    {
+      "name": "session.owner_backfill",
+      "summary": "Local operator only: the owner stamps its own store's legacy NULL-profile rows with its own profile, the boot stamp a dashboard cannot take the reservation for.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionOwnerBackfillParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionOwnerBackfillResult"
         }
       }
     },

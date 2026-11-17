@@ -889,6 +889,11 @@ class SessionSessionsMixin:
         )
         return matches[0]["id"] if len(matches) == 1 else None
 
+    def count_null_session_profiles(self) -> int:
+        """Rows :meth:`backfill_null_session_profiles` would stamp — the exact ``WHERE`` it uses."""
+        return int(self._read_one(
+            "SELECT COUNT(*) FROM sessions WHERE profile_name IS NULL OR TRIM(profile_name) = ''")[0])
+
     def backfill_null_session_profiles(self, profile_name: str) -> int:
         """Stamp this store's own profile onto legacy ``profile_name IS NULL`` rows, which the fail-closed
         owner ladder cannot route. Never overwrites a non-NULL owner. Returns rows stamped.

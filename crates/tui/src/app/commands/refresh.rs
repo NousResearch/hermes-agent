@@ -346,11 +346,16 @@ pub(crate) async fn interrupt_subagent_ids(
     client: &Arc<GatewayClient>,
     ids: Vec<String>,
 ) {
+    let sid = state.lock().await.session_id.clone();
+    let Some(sid) = sid else {
+        state.lock().await.set_toast("no session");
+        return;
+    };
     let n = ids.len();
     state.lock().await.set_toast(format!("stopping {n}…"));
     let mut stopped = 0usize;
     for id in &ids {
-        if let Ok(v) = client.interrupt_subagent(id).await {
+        if let Ok(v) = client.interrupt_subagent(&sid, id).await {
             if v.get("found").and_then(|x| x.as_bool()).unwrap_or(true) {
                 stopped += 1;
                 if let Some(row) = state
@@ -473,8 +478,13 @@ pub(crate) async fn stop_background_processes(
     state: &Mutex<AppState>,
     client: &Arc<GatewayClient>,
 ) {
+    let sid = state.lock().await.session_id.clone();
+    let Some(sid) = sid else {
+        state.lock().await.set_toast("no session");
+        return;
+    };
     state.lock().await.set_toast("stopping processes…");
-    match client.process_stop().await {
+    match client.process_stop(&sid).await {
         Ok(v) => {
             let n = v.get("killed").and_then(|x| x.as_u64()).unwrap_or(0);
             let noun = if n == 1 { "process" } else { "processes" };
@@ -500,8 +510,13 @@ pub(crate) async fn interrupt_selected_subagent(
     client: &Arc<GatewayClient>,
     id: &str,
 ) {
+    let sid = state.lock().await.session_id.clone();
+    let Some(sid) = sid else {
+        state.lock().await.set_toast("no session");
+        return;
+    };
     state.lock().await.set_toast(format!("stopping {id}…"));
-    match client.interrupt_subagent(id).await {
+    match client.interrupt_subagent(&sid, id).await {
         Ok(v) => {
             let found = v.get("found").and_then(|x| x.as_bool()).unwrap_or(true);
             let mut s = state.lock().await;

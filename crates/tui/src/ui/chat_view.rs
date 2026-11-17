@@ -81,6 +81,11 @@ impl StreamCache {
     }
 }
 
+/// Width-1 stand-ins. Cached lines keep these characters; the visible clone
+/// swaps them each frame so a 50ms tick does not re-markdown.
+const SPIN_MARK: &str = "\u{E000}";
+const TOOL_MARK: &str = "\u{E001}";
+
 pub struct ChatScrollback;
 
 impl ChatScrollback {
@@ -97,8 +102,6 @@ impl ChatScrollback {
             .borders(Borders::NONE)
             .style(Style::default().bg(Theme::bg_base()));
 
-        let spin = super::motion::think_spinner(frame_count);
-        let dots = super::rhythm::ellipsis(frame_count);
         let view_h = area.height as usize;
         let empty = state.messages.is_empty();
         state.stream_area = Some(area);
@@ -118,20 +121,12 @@ impl ChatScrollback {
                 state.expand_epoch,
             );
             let messages = state.visible_messages();
-            rebuild_cache(
-                cache,
-                messages,
-                state,
-                highlighter,
-                col_width,
-                spin,
-                dots,
-                frame_count,
-            );
+            rebuild_cache(cache, messages, state, highlighter, col_width);
             let total: usize = cache.blocks.iter().map(|b| b.lines.len()).sum();
             let y = scroll_y(total, view_h, state.scroll_from_bottom) as usize;
             state.hit_tools = tool_hits(&cache.blocks, y, view_h, area);
             let mut visible = take_visible(&cache.blocks, y, view_h);
+            paint_motion(&mut visible, frame_count);
             super::wash::apply(&mut visible, col_width, view_h, frame_count);
             if let crate::state::HoverKind::Tool(id) = &state.hover {
                 for (hit, hid) in &state.hit_tools {
@@ -192,6 +187,23 @@ fn tool_hits(
     out
 }
 
+fn paint_motion(lines: &mut [Line<'static>], frame_count: u64) {
+    let think = super::motion::think_spinner(frame_count);
+    let tool = super::motion::tool_spinner(frame_count, 0);
+    for line in lines {
+        for span in &mut line.spans {
+            if !span.content.contains(SPIN_MARK) && !span.content.contains(TOOL_MARK) {
+                continue;
+            }
+            let text = span
+                .content
+                .replace(SPIN_MARK, think)
+                .replace(TOOL_MARK, tool);
+            span.content = text.into();
+        }
+    }
+}
+
 fn take_visible(blocks: &[CachedBlock], mut skip: usize, take: usize) -> Vec<Line<'static>> {
     let mut out = Vec::with_capacity(take);
     let mut left = take;
@@ -213,16 +225,12 @@ fn take_visible(blocks: &[CachedBlock], mut skip: usize, take: usize) -> Vec<Lin
     out
 }
 
-#[allow(clippy::too_many_arguments)]
 fn rebuild_cache(
     cache: &mut StreamCache,
     messages: &[ChatMessage],
     state: &AppState,
     highlighter: &CodeHighlighter,
     col_width: usize,
-    spin: &'static str,
-    dots: &'static str,
-    frame_count: u64,
 ) {
     let mut plan: Vec<(usize, usize, u64, bool)> = Vec::new();
     let mut i = 0;
@@ -251,9 +259,8 @@ fn rebuild_cache(
                 state,
                 highlighter,
                 col_width,
-                spin,
-                dots,
-                frame_count,
+                SPIN_MARK,
+                "",
             );
             next.push(CachedBlock {
                 hash,
@@ -276,25 +283,13 @@ fn next_span(messages: &[ChatMessage], i: usize) -> (usize, u64, bool) {
             (end, hash_range(messages, i, end), false)
         }
         MessageRole::Assistant | MessageRole::Reasoning => {
-            let unstable = messages[i].is_streaming;
-            let hash = if unstable {
-                0
-            } else {
-                hash_range(messages, i, i + 1)
-            };
-            (i + 1, hash, unstable)
+            (i + 1, hash_range(messages, i, i + 1), false)
         }
-        MessageRole::Tool { status, .. } => {
+        MessageRole::Tool { .. } => {
             if let Some((end, _, _)) = next_tool_cluster(messages, i) {
                 (end, hash_range(messages, i, end), false)
             } else {
-                let unstable = is_running(status);
-                let hash = if unstable {
-                    0
-                } else {
-                    hash_range(messages, i, i + 1)
-                };
-                (i + 1, hash, unstable)
+                (i + 1, hash_range(messages, i, i + 1), false)
             }
         }
         _ => (i + 1, hash_range(messages, i, i + 1), false),
@@ -331,7 +326,6 @@ fn emit_span(
     col_width: usize,
     spin: &'static str,
     dots: &'static str,
-    frame_count: u64,
 ) -> Option<String> {
     let mut click_id = None;
     match &messages[start].role {
@@ -367,6 +361,7 @@ fn emit_span(
             click_id = Some(messages[start].id.clone());
         }
         MessageRole::Tool { name, status, .. } => {
+            let spin = TOOL_MARK;
             if let Some((end, reads, searches)) = next_tool_cluster(messages, start) {
                 lines.push(tool_row(
                     "●",
@@ -411,10 +406,7 @@ fn emit_span(
             let headline = tool_headline(name, &messages[start].content, status);
             let expanded = kind == ToolKind::Run
                 && (running || failed || state.expanded_tools.contains(&messages[start].id));
-            let tool_spin = super::motion::tool_spinner(
-                frame_count,
-                super::motion::salt_id(&messages[start].id),
-            );
+            let tool_spin = if running { spin } else { "" };
             let glyph = if running {
                 tool_spin
             } else if kind == ToolKind::Run {
@@ -973,10 +965,10 @@ mod tests {
             },
         ];
         let state = AppState::new();
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80);
         assert_eq!(cache.blocks.len(), 2);
         let ptr = cache.blocks[1].lines.as_ptr();
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80);
         assert_eq!(cache.blocks[1].lines.as_ptr(), ptr);
     }
 
@@ -995,7 +987,7 @@ mod tests {
             is_streaming: false,
         }];
         let state = AppState::new();
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80);
         let nonempty: Vec<_> = cache.blocks[0]
             .lines
             .iter()
@@ -1015,7 +1007,7 @@ mod tests {
         let mut state = AppState::new();
         state.toggle_tool_expand("r");
         cache.reset_if_stale(80, "gold", false, false, 0, state.expand_epoch);
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80);
         let blob: String = cache.blocks[0]
             .lines
             .iter()
@@ -1047,7 +1039,7 @@ mod tests {
             is_streaming: false,
         }];
         let mut state = AppState::new();
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80);
         let blob: String = cache.blocks[0]
             .lines
             .iter()
@@ -1062,7 +1054,7 @@ mod tests {
         }
         live[0].output = "◆ Python\n  ✓ 3.12".into();
         cache.reset_if_stale(80, "gold", false, false, 1, 0);
-        rebuild_cache(&mut cache, &live, &state, &hl, 80, " ", "", 0);
+        rebuild_cache(&mut cache, &live, &state, &hl, 80);
         let blob: String = cache.blocks[0]
             .lines
             .iter()
@@ -1072,7 +1064,7 @@ mod tests {
         assert!(blob.contains("3.12"));
         state.toggle_tool_expand("term");
         cache.reset_if_stale(80, "gold", false, false, 0, state.expand_epoch);
-        rebuild_cache(&mut cache, &messages, &state, &hl, 80, " ", "", 0);
+        rebuild_cache(&mut cache, &messages, &state, &hl, 80);
         let blob: String = cache.blocks[0]
             .lines
             .iter()
@@ -1095,6 +1087,16 @@ mod tests {
             Some(crate::ui::rhythm::GUTTER_STR)
         );
         assert!(line.spans.iter().any(|s| s.content.as_ref() == "9:41 AM"));
+    }
+
+    #[test]
+    fn paint_motion_swaps_the_spinner_sentinel() {
+        let mut lines = vec![Line::from(Span::raw(format!("go {SPIN_MARK}{TOOL_MARK}")))];
+        paint_motion(&mut lines, 0);
+        let painted = lines[0].spans[0].content.clone();
+        assert!(!painted.contains(SPIN_MARK), "{painted}");
+        assert!(!painted.contains(TOOL_MARK), "{painted}");
+        assert!(painted.starts_with("go "), "{painted}");
     }
 
     #[test]

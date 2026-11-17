@@ -6,8 +6,9 @@ use std::time::Duration;
 
 /// Native TUI client for Hermes Agent.
 ///
-/// Spawns `python -m tui_gateway.entry` the same way the official Ink TUI
-/// (`ui-tui`) does, then speaks newline-delimited JSON-RPC over stdio.
+/// Attaches to the profile gateway the way Ink does: `gateway_bootstrap.py`
+/// prints a one-shot ticket, then this client speaks JSON-RPC with
+/// `tui_gateway` over `hermes-gateway-v1`.
 #[derive(Parser, Debug)]
 #[command(
     name = "hermes-tui-native",

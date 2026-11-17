@@ -1,34 +1,132 @@
 use anyhow::{Context, Result};
-use futures_util::StreamExt;
-use serde_json::{json, Value};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(test)]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(test)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::process::Child;
+#[cfg(test)]
+use tokio::process::{ChildStdin, Command};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::time::timeout;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::Message;
+#[cfg(test)]
 use tokio_util::codec::{FramedRead, LinesCodec};
 
-use super::types::{JsonRpcEvent, JsonRpcRequest, JsonRpcResponse};
+use super::attach::attach_gateway;
+use super::canonical;
+use super::types::{EventParams, JsonRpcEvent, JsonRpcRequest, JsonRpcResponse};
+use super::wire;
 use crate::config::LaunchConfig;
 
+#[cfg(test)]
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+
+struct ServerAsk {
+    id: Value,
+    method: String,
+    question_count: usize,
+    answers: Map<String, Value>,
+}
+
+enum ClarifyStep {
+    Hold,
+    Reply(Value, Value),
+    Legacy,
+}
+
+enum Outbound {
+    #[cfg(test)]
+    Child(ChildStdin),
+    Socket(mpsc::Sender<String>),
+    Closed,
+}
 
 pub struct GatewayClient {
     next_id: AtomicU64,
-    stdin: Arc<Mutex<ChildStdin>>,
+    outbound: Arc<Mutex<Outbound>>,
     pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    server_requests: Arc<Mutex<HashMap<String, ServerAsk>>>,
     event_tx: broadcast::Sender<JsonRpcEvent>,
-    child: Arc<Mutex<Child>>,
+    child: Arc<Mutex<Option<Child>>>,
+    subscriptions: Arc<Mutex<HashMap<String, String>>>,
     rpc_timeout: Duration,
 }
 
 impl GatewayClient {
+    /// Attach to the profile's shared gateway (`hermes-gateway-v1`).
     pub async fn spawn(cfg: &LaunchConfig) -> Result<Self> {
+        let attached = attach_gateway(cfg).await?;
+        let mut request = attached
+            .url
+            .into_client_request()
+            .context("gateway websocket url")?;
+        let joined = attached.protocols.join(", ");
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            HeaderValue::from_str(&joined).context("gateway subprotocol header")?,
+        );
+        let (ws, response) = timeout(
+            cfg.startup_timeout.max(Duration::from_secs(20)),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        .context("timed out dialing the profile gateway")?
+        .context("profile gateway websocket failed")?;
+        let selected = response
+            .headers()
+            .get("sec-websocket-protocol")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !selected.split(',').any(|p| p.trim() == "hermes-gateway-v1") {
+            anyhow::bail!("gateway selected protocol {selected:?}, expected hermes-gateway-v1");
+        }
+
+        let (event_tx, mut ready_rx) = broadcast::channel(4096);
+        let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let server_requests = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = mpsc::channel(64);
+        let pending_clone = pending_requests.clone();
+        let server_clone = server_requests.clone();
+        let exit_tx = event_tx.clone();
+        tokio::spawn(async move {
+            pump_socket(ws, rx, pending_clone, server_clone, exit_tx).await;
+        });
+
+        let client = Self {
+            next_id: AtomicU64::new(1),
+            outbound: Arc::new(Mutex::new(Outbound::Socket(tx))),
+            pending_requests,
+            server_requests,
+            event_tx,
+            child: Arc::new(Mutex::new(None)),
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            rpc_timeout: cfg.rpc_timeout,
+        };
+        wait_until_gateway_ready(&mut ready_rx, cfg.startup_timeout)
+            .await
+            .context("waiting for gateway.ready on the profile gateway")?;
+        if let Err(err) = client
+            .call("client.capabilities", json!({ "server_requests": true }))
+            .await
+        {
+            tracing::debug!("client.capabilities: {err}");
+        }
+        Ok(client)
+    }
+
+    /// Stdio child used by unit tests. Production `spawn` attaches instead.
+    #[cfg(test)]
+    pub async fn spawn_stdio(cfg: &LaunchConfig) -> Result<Self> {
         let mut cmd = Command::new(&cfg.python);
         cmd.args(["-m", "tui_gateway.entry"])
             .current_dir(&cfg.src_root)
@@ -59,11 +157,13 @@ impl GatewayClient {
         let stdin = child.stdin.take().context("Failed to open child stdin")?;
         let stdout = child.stdout.take().context("Failed to open child stdout")?;
         let stderr = child.stderr.take().context("Failed to open child stderr")?;
+        let outbound = Arc::new(Mutex::new(Outbound::Child(stdin)));
 
         let (event_tx, _) = broadcast::channel(4096);
         let mut ready_rx = event_tx.subscribe();
         let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let server_requests = Arc::new(Mutex::new(HashMap::new()));
 
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
@@ -73,7 +173,9 @@ impl GatewayClient {
         });
 
         let pending_clone = pending_requests.clone();
+        let server_clone = server_requests.clone();
         let event_tx_clone = event_tx.clone();
+        let outbound_reader = outbound.clone();
 
         tokio::spawn(async move {
             let codec = LinesCodec::new_with_max_length(MAX_LINE_BYTES);
@@ -90,7 +192,14 @@ impl GatewayClient {
                     continue;
                 }
                 match serde_json::from_str::<Value>(&line) {
-                    Ok(val) => dispatch_frame(val, &pending_clone, &event_tx_clone).await,
+                    Ok(val) => {
+                        if let Some(reply) =
+                            dispatch_frame(val, &pending_clone, &server_clone, &event_tx_clone)
+                                .await
+                        {
+                            write_child(&outbound_reader, &reply).await;
+                        }
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "Failed to parse gateway line: {e} (line: {})",
@@ -101,13 +210,16 @@ impl GatewayClient {
             }
         });
 
-        let child = Arc::new(Mutex::new(child));
+        let child = Arc::new(Mutex::new(Some(child)));
         let watch = child.clone();
         let exit_tx = event_tx.clone();
         tokio::spawn(async move {
             loop {
                 let dead = {
-                    let mut ch = watch.lock().await;
+                    let mut slot = watch.lock().await;
+                    let Some(ch) = slot.as_mut() else {
+                        return;
+                    };
                     match ch.try_wait() {
                         Ok(Some(st)) => Some(st.code()),
                         Ok(None) => None,
@@ -137,10 +249,12 @@ impl GatewayClient {
 
         Ok(Self {
             next_id: AtomicU64::new(1),
-            stdin: Arc::new(Mutex::new(stdin)),
+            outbound,
             pending_requests,
+            server_requests,
             event_tx,
             child,
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
             rpc_timeout: cfg.rpc_timeout,
         })
     }
@@ -156,7 +270,7 @@ impl GatewayClient {
     pub async fn call_timeout(&self, method: &str, params: Value, dur: Duration) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let req = JsonRpcRequest::new(id, method, params);
-        let req_str = serde_json::to_string(&req)? + "\n";
+        let req_str = serde_json::to_string(&req)?;
 
         let (tx, rx) = oneshot::channel();
         {
@@ -164,13 +278,7 @@ impl GatewayClient {
             map.insert(id, tx);
         }
 
-        let write_res = {
-            let mut stdin = self.stdin.lock().await;
-            stdin
-                .write_all(req_str.as_bytes())
-                .await
-                .and(stdin.flush().await)
-        };
+        let write_res = self.write_frame(&req_str).await;
         if let Err(e) = write_res {
             self.pending_requests.lock().await.remove(&id);
             return Err(e).context("writing JSON-RPC request to gateway");
@@ -194,13 +302,109 @@ impl GatewayClient {
         }
     }
 
+    async fn write_frame(&self, body: &str) -> Result<()> {
+        let mut outbound = self.outbound.lock().await;
+        match &mut *outbound {
+            #[cfg(test)]
+            Outbound::Child(stdin) => {
+                stdin
+                    .write_all(body.as_bytes())
+                    .await
+                    .context("gateway stdin")?;
+                stdin.write_all(b"\n").await.context("gateway stdin")?;
+                stdin.flush().await.context("gateway stdin")?;
+            }
+            Outbound::Socket(tx) => {
+                tx.send(body.to_string())
+                    .await
+                    .context("gateway socket closed")?;
+            }
+            Outbound::Closed => anyhow::bail!("gateway connection is closed"),
+        }
+        Ok(())
+    }
+
+    async fn respond_server(&self, id: &Value, result: Value) -> Result<Value> {
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        });
+        let text = serde_json::to_string(&frame)?;
+        self.write_frame(&text).await?;
+        frame.get("result").cloned().context("server response")
+    }
+
+    async fn remember_snapshot(&self, snapshot: &Value) {
+        if let Some((sid, sub)) = canonical::remember_fields(snapshot) {
+            self.subscriptions.lock().await.insert(sid, sub);
+        }
+    }
+
+    async fn resume_for_cas(&self, session_id: &str) -> Result<Value> {
+        let snap = self
+            .call(
+                "session.resume",
+                json!({
+                    "session_id": session_id,
+                    "display_projection": true,
+                }),
+            )
+            .await?;
+        self.remember_snapshot(&snap).await;
+        Ok(snap)
+    }
+
+    async fn mutate(
+        &self,
+        session_id: &str,
+        snapshot: &Value,
+        operation: &str,
+        payload: Value,
+        with_generation: bool,
+        budget: Duration,
+    ) -> Result<Value> {
+        let params = canonical::mutate_params(
+            session_id,
+            &fresh_request_id(),
+            snapshot,
+            operation,
+            payload,
+            with_generation,
+        )
+        .with_context(|| format!("session {session_id} has no revision for {operation}"))?;
+        self.call_timeout("session.mutate", params, budget).await
+    }
+
+    async fn detach_subscription(&self, session_id: &str, end_reason: Option<&str>) -> Result<()> {
+        let subscription_id = self.subscriptions.lock().await.get(session_id).cloned();
+        let Some(subscription_id) = subscription_id else {
+            return Ok(());
+        };
+        let mut params = json!({
+            "session_id": session_id,
+            "subscription_id": subscription_id,
+        });
+        if let Some(reason) = end_reason {
+            params["end_reason"] = json!(reason);
+        }
+        self.call("session.detach", params).await?;
+        self.subscriptions.lock().await.remove(session_id);
+        Ok(())
+    }
+
     pub async fn create_session(&self, title: &str, cwd: &Path) -> Result<String> {
         let params = json!({
             "title": title,
             "cwd": cwd.display().to_string(),
             "source": "tui",
+            "client": {
+                "name": "hermes-tui-native",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
         });
         let res = self.call("session.create", params).await?;
+        self.remember_snapshot(&res).await;
         res.get("session_id")
             .and_then(|s| s.as_str())
             .map(|s| s.to_string())
@@ -208,7 +412,11 @@ impl GatewayClient {
     }
 
     pub async fn submit_prompt(&self, session_id: &str, text: &str) -> Result<()> {
-        let params = json!({ "session_id": session_id, "text": text });
+        let params = json!({
+            "session_id": session_id,
+            "text": text,
+            "submission_id": fresh_request_id(),
+        });
         let _ = self.call("prompt.submit", params).await?;
         Ok(())
     }
@@ -242,15 +450,26 @@ impl GatewayClient {
     }
 
     pub async fn close_session(&self, session_id: &str) -> Result<()> {
-        let params = json!({ "session_id": session_id });
-        let _ = self.call("session.close", params).await;
+        if !self.subscriptions.lock().await.contains_key(session_id) {
+            let _ = self.resume_for_cas(session_id).await;
+        }
+        let _ = self
+            .detach_subscription(session_id, Some("viewer_close"))
+            .await;
         Ok(())
     }
 
     pub async fn compress(&self, session_id: &str) -> Result<Value> {
-        let params = json!({ "session_id": session_id });
-        self.call_timeout("session.compress", params, Duration::from_secs(120))
-            .await
+        let snap = self.resume_for_cas(session_id).await?;
+        self.mutate(
+            session_id,
+            &snap,
+            "compress",
+            json!({}),
+            true,
+            Duration::from_secs(660),
+        )
+        .await
     }
 
     pub async fn context_breakdown(&self, session_id: &str) -> Result<Value> {
@@ -262,15 +481,53 @@ impl GatewayClient {
     }
 
     pub async fn set_config(&self, params: Value) -> Result<Value> {
+        let key = params.get("key").and_then(|v| v.as_str());
+        let session_id = params
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if key == Some("model") {
+            if let Some(session_id) = session_id {
+                let model = params
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let snap = self.resume_for_cas(&session_id).await?;
+                return self
+                    .mutate(
+                        &session_id,
+                        &snap,
+                        "model",
+                        json!({ "model": model }),
+                        true,
+                        self.rpc_timeout,
+                    )
+                    .await;
+            }
+        }
         self.call("config.set", params).await
     }
 
     pub async fn session_title(&self, session_id: &str, title: Option<&str>) -> Result<Value> {
-        let mut params = json!({ "session_id": session_id });
-        if let Some(t) = title {
-            params["title"] = json!(t);
-        }
-        self.call("session.title", params).await
+        let Some(title) = title else {
+            let info = self
+                .call("session.info", json!({ "session_id": session_id }))
+                .await?;
+            return Ok(canonical::title_view(&info, ""));
+        };
+        let snap = self.resume_for_cas(session_id).await?;
+        let result = self
+            .mutate(
+                session_id,
+                &snap,
+                "rename",
+                json!({ "title": title }),
+                false,
+                self.rpc_timeout,
+            )
+            .await?;
+        Ok(canonical::title_view(&result, title))
     }
 
     pub async fn session_status(&self, session_id: &str) -> Result<Value> {
@@ -287,9 +544,14 @@ impl GatewayClient {
     }
 
     pub async fn set_cwd(&self, session_id: &str, cwd: &str) -> Result<Value> {
-        self.call(
-            "session.cwd.set",
-            json!({ "session_id": session_id, "cwd": cwd }),
+        let snap = self.resume_for_cas(session_id).await?;
+        self.mutate(
+            session_id,
+            &snap,
+            "workspace",
+            json!({ "cwd": cwd }),
+            true,
+            self.rpc_timeout,
         )
         .await
     }
@@ -336,12 +598,43 @@ impl GatewayClient {
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<Value>> {
-        let res = self.call("session.list", json!({ "limit": 50 })).await?;
-        Ok(res
-            .get("sessions")
-            .and_then(|s| s.as_array())
-            .cloned()
-            .unwrap_or_default())
+        let mut params = json!({ "scope": "stored", "limit": 50, "picker": true });
+        let mut out = Vec::new();
+        let mut fell_back = false;
+        loop {
+            let res = match self.call("session.list", params.clone()).await {
+                Ok(v) => v,
+                Err(err) if !fell_back && out.is_empty() && list_params_rejected(&err) => {
+                    fell_back = true;
+                    params = json!({ "limit": 50 });
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            if let Some(rows) = res.get("sessions").and_then(|s| s.as_array()) {
+                out.extend(rows.iter().cloned());
+            }
+            let cursor = res
+                .get("next_cursor")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            match cursor {
+                Some(cursor) if !fell_back => {
+                    params = json!({
+                        "scope": "stored",
+                        "limit": 50,
+                        "picker": true,
+                        "cursor": cursor,
+                    });
+                }
+                _ => break,
+            }
+            if out.len() > 5_000 {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     pub async fn list_skills(&self) -> Result<Value> {
@@ -412,7 +705,7 @@ impl GatewayClient {
     }
 
     pub async fn list_agents(&self) -> Result<Value> {
-        self.call("agents.list", json!({})).await
+        Ok(json!({ "processes": [] }))
     }
 
     pub async fn process_list(&self, session_id: &str) -> Result<Value> {
@@ -428,8 +721,9 @@ impl GatewayClient {
         .await
     }
 
-    pub async fn process_stop(&self) -> Result<Value> {
-        self.call("process.stop", json!({})).await
+    pub async fn process_stop(&self, session_id: &str) -> Result<Value> {
+        self.call("process.stop", json!({ "session_id": session_id }))
+            .await
     }
 
     pub async fn delegation_status(&self) -> Result<Value> {
@@ -441,9 +735,12 @@ impl GatewayClient {
             .await
     }
 
-    pub async fn interrupt_subagent(&self, subagent_id: &str) -> Result<Value> {
-        self.call("subagent.interrupt", json!({ "subagent_id": subagent_id }))
-            .await
+    pub async fn interrupt_subagent(&self, session_id: &str, subagent_id: &str) -> Result<Value> {
+        self.call(
+            "subagent.interrupt",
+            json!({ "session_id": session_id, "subagent_id": subagent_id }),
+        )
+        .await
     }
 
     pub async fn steer_subagent(
@@ -575,8 +872,7 @@ impl GatewayClient {
     }
 
     pub async fn resume_session(&self, session_id: &str) -> Result<Value> {
-        self.call("session.resume", json!({ "session_id": session_id }))
-            .await
+        self.resume_for_cas(session_id).await
     }
 
     pub async fn clarify_respond(
@@ -586,15 +882,49 @@ impl GatewayClient {
         answer: &str,
         question_id: Option<&str>,
     ) -> Result<Value> {
-        let mut params = json!({
-            "session_id": session_id,
-            "request_id": request_id,
-            "answer": answer,
-        });
-        if let Some(qid) = question_id {
-            params["question_id"] = json!(qid);
+        let step = {
+            let mut map = self.server_requests.lock().await;
+            match map.get_mut(request_id) {
+                Some(ask) if ask.method == "clarify" => {
+                    if answer.is_empty() {
+                        let id = ask.id.clone();
+                        map.remove(request_id);
+                        ClarifyStep::Reply(id, json!({ "outcome": "cancelled" }))
+                    } else {
+                        let qid = question_id.unwrap_or("answer").to_string();
+                        ask.answers.insert(qid, Value::String(answer.to_string()));
+                        let done = question_id.is_none() || ask.answers.len() >= ask.question_count;
+                        if done {
+                            let id = ask.id.clone();
+                            let answers = Value::Object(ask.answers.clone());
+                            map.remove(request_id);
+                            ClarifyStep::Reply(
+                                id,
+                                json!({ "answers": answers, "outcome": "submitted" }),
+                            )
+                        } else {
+                            ClarifyStep::Hold
+                        }
+                    }
+                }
+                _ => ClarifyStep::Legacy,
+            }
+        };
+        match step {
+            ClarifyStep::Hold => Ok(json!({ "remaining": ["pending"] })),
+            ClarifyStep::Reply(id, result) => self.respond_server(&id, result).await,
+            ClarifyStep::Legacy => {
+                let mut params = json!({
+                    "session_id": session_id,
+                    "request_id": request_id,
+                    "answer": answer,
+                });
+                if let Some(qid) = question_id {
+                    params["question_id"] = json!(qid);
+                }
+                self.call("clarify.respond", params).await
+            }
         }
-        self.call("clarify.respond", params).await
     }
 
     pub async fn secret_respond(
@@ -605,6 +935,25 @@ impl GatewayClient {
         key: &str,
         value: &str,
     ) -> Result<Value> {
+        let want = match method {
+            "sudo.respond" => "sudo",
+            "secret.respond" => "secret",
+            other => other,
+        };
+        let rpc_id = {
+            let mut map = self.server_requests.lock().await;
+            match map.get(request_id) {
+                Some(ask) if ask.method == want => {
+                    let id = ask.id.clone();
+                    map.remove(request_id);
+                    Some(id)
+                }
+                _ => None,
+            }
+        };
+        if let Some(id) = rpc_id {
+            return self.respond_server(&id, json!({ "value": value })).await;
+        }
         let mut params = json!({
             "session_id": session_id,
             "request_id": request_id,
@@ -619,6 +968,22 @@ impl GatewayClient {
         choice: &str,
         request_id: Option<&str>,
     ) -> Result<Value> {
+        if let Some(rid) = request_id {
+            let rpc_id = {
+                let mut map = self.server_requests.lock().await;
+                match map.get(rid) {
+                    Some(ask) if ask.method == "approval" => {
+                        let id = ask.id.clone();
+                        map.remove(rid);
+                        Some(id)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(id) = rpc_id {
+                return self.respond_server(&id, json!({ "choice": choice })).await;
+            }
+        }
         let mut params = json!({
             "session_id": session_id,
             "choice": choice,
@@ -706,16 +1071,41 @@ impl GatewayClient {
     }
 
     pub async fn session_branch(&self, session_id: &str, name: &str) -> Result<Value> {
-        let mut params = json!({ "session_id": session_id });
-        if !name.is_empty() {
-            params["name"] = json!(name);
-        }
-        self.call("session.branch", params).await
+        let snap = self.resume_for_cas(session_id).await?;
+        let payload = if name.is_empty() {
+            json!({})
+        } else {
+            json!({ "title": name })
+        };
+        let result = self
+            .mutate(session_id, &snap, "branch", payload, true, self.rpc_timeout)
+            .await?;
+        let branched = result
+            .get("branched_session_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .context("session.mutate branch omitted branched_session_id")?
+            .to_string();
+        let child = self.resume_for_cas(&branched).await.ok();
+        Ok(canonical::branch_view(name, &branched, child.as_ref()))
     }
 
     pub async fn session_undo(&self, session_id: &str) -> Result<Value> {
-        self.call("session.undo", json!({ "session_id": session_id }))
-            .await
+        let snap = self.resume_for_cas(session_id).await?;
+        let Some(row) = canonical::last_user_row_id(&snap) else {
+            return Ok(json!({ "removed": 0, "rewound_count": 0 }));
+        };
+        let result = self
+            .mutate(
+                session_id,
+                &snap,
+                "rewind",
+                json!({ "target_message_id": row }),
+                true,
+                self.rpc_timeout,
+            )
+            .await?;
+        Ok(canonical::undo_view(&result))
     }
 
     pub async fn session_save(&self, session_id: &str) -> Result<Value> {
@@ -753,8 +1143,9 @@ impl GatewayClient {
             .await
     }
 
-    pub async fn reload_env(&self) -> Result<Value> {
-        self.call("reload.env", json!({})).await
+    pub async fn reload_env(&self, session_id: &str) -> Result<Value> {
+        self.call("reload.env", json!({ "session_id": session_id }))
+            .await
     }
 
     pub async fn skills_reload(&self) -> Result<Value> {
@@ -830,8 +1221,19 @@ impl GatewayClient {
     }
 
     pub async fn session_delete(&self, session_id: &str) -> Result<Value> {
-        self.call("session.delete", json!({ "session_id": session_id }))
-            .await
+        let snap = self.resume_for_cas(session_id).await?;
+        let result = self
+            .mutate(
+                session_id,
+                &snap,
+                "delete",
+                json!({}),
+                true,
+                self.rpc_timeout,
+            )
+            .await?;
+        let _ = self.detach_subscription(session_id, None).await;
+        Ok(result)
     }
 
     pub async fn spawn_tree_load(&self, path: &str) -> Result<Value> {
@@ -926,11 +1328,7 @@ impl GatewayClient {
     }
 
     pub async fn session_workspace_move(&self, session_key: &str, cwd: &str) -> Result<Value> {
-        self.call(
-            "session.workspace.move",
-            json!({ "session_key": session_key, "cwd": cwd }),
-        )
-        .await
+        self.set_cwd(session_key, cwd).await
     }
 
     pub async fn learning_edit(&self, id: &str, content: &str) -> Result<Value> {
@@ -997,8 +1395,19 @@ impl GatewayClient {
     }
 
     pub async fn session_usage(&self, session_id: &str) -> Result<Value> {
-        self.call("session.usage", json!({ "session_id": session_id }))
-            .await
+        let params = json!({ "session_id": session_id });
+        let mut last = None;
+        for method in ["session.account_usage", "session.stats", "session.usage"] {
+            match self.call(method, params.clone()).await {
+                Ok(v) => return Ok(canonical::present_usage(&v)),
+                Err(err) if canonical::method_missing(&err) => last = Some(err),
+                Err(err) => return Err(err),
+            }
+        }
+        match last {
+            Some(err) => Err(err),
+            None => anyhow::bail!("session usage is not available"),
+        }
     }
 
     pub async fn usage_bars(&self) -> Result<Value> {
@@ -1015,9 +1424,14 @@ impl GatewayClient {
     }
 
     pub async fn shutdown(&self) {
-        let mut child = self.child.lock().await;
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+        {
+            let mut outbound = self.outbound.lock().await;
+            let _ = std::mem::replace(&mut *outbound, Outbound::Closed);
+        }
+        if let Some(mut child) = self.child.lock().await.take() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
     }
 }
 
@@ -1058,9 +1472,11 @@ pub async fn wait_until_gateway_ready(
     }
 }
 
+#[cfg(test)]
 const STDERR_LINE_CHARS: usize = 240;
 
 /// Cap and mask secrets before gateway stderr hits the log file.
+#[cfg(test)]
 pub fn redact_gateway_line(raw: &str) -> String {
     let clipped: String = raw.chars().take(STDERR_LINE_CHARS).collect();
     const PREFIXES: &[&str] = &[
@@ -1103,6 +1519,7 @@ pub fn redact_gateway_line(raw: &str) -> String {
     out
 }
 
+#[cfg(test)]
 fn path_sep() -> &'static str {
     if cfg!(windows) {
         ";"
@@ -1111,22 +1528,155 @@ fn path_sep() -> &'static str {
     }
 }
 
+fn fresh_request_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn list_params_rejected(err: &anyhow::Error) -> bool {
+    let text = err.to_string();
+    text.contains("(4001)") || text.contains("invalid_params")
+}
+
+#[cfg(test)]
+async fn write_child(outbound: &Mutex<Outbound>, body: &str) {
+    let mut slot = outbound.lock().await;
+    if let Outbound::Child(stdin) = &mut *slot {
+        if stdin.write_all(body.as_bytes()).await.is_ok() {
+            let _ = stdin.write_all(b"\n").await;
+            let _ = stdin.flush().await;
+        }
+    }
+}
+
+async fn pump_socket<S>(
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    mut outbound: mpsc::Receiver<String>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    server_requests: Arc<Mutex<HashMap<String, ServerAsk>>>,
+    event_tx: broadcast::Sender<JsonRpcEvent>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut sink, mut stream) = ws.split();
+    'pump: loop {
+        tokio::select! {
+            biased;
+            outgoing = outbound.recv() => {
+                let Some(text) = outgoing else { break; };
+                if sink.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
+            incoming = stream.next() => {
+                let Some(frame) = incoming else { break; };
+                let Ok(frame) = frame else { break; };
+                match frame {
+                    Message::Text(text) => {
+                        for line in text.lines() {
+                            let line = line.trim();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            let Ok(val) = serde_json::from_str::<Value>(line) else {
+                                continue;
+                            };
+                            if let Some(reply) = dispatch_frame(
+                                val,
+                                &pending,
+                                &server_requests,
+                                &event_tx,
+                            )
+                            .await
+                            {
+                                if sink.send(Message::Text(reply.into())).await.is_err() {
+                                    break 'pump;
+                                }
+                            }
+                        }
+                    }
+                    Message::Ping(payload) => {
+                        if sink.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let _ = event_tx.send(JsonRpcEvent::synthetic(
+        "gateway.exit",
+        json!({ "code": Value::Null }),
+    ));
+}
+
 async fn dispatch_frame(
     val: Value,
     pending: &Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>,
+    server_requests: &Mutex<HashMap<String, ServerAsk>>,
     event_tx: &broadcast::Sender<JsonRpcEvent>,
-) {
-    if val.get("method").and_then(|m| m.as_str()) == Some("event") {
-        if let Ok(evt) = serde_json::from_value::<JsonRpcEvent>(val.clone()) {
+) -> Option<String> {
+    match wire::classify(val) {
+        wire::Inbound::Event(evt) => {
             let _ = event_tx.send(evt);
-            return;
+            None
         }
-    }
-    if let Ok(resp) = serde_json::from_value::<JsonRpcResponse>(val) {
-        if let Some(id_num) = resp.id.as_u64() {
-            let mut map = pending.lock().await;
-            if let Some(sender) = map.remove(&id_num) {
-                let _ = sender.send(resp);
+        wire::Inbound::Response(resp) => {
+            if let Some(id_num) = resp.id.as_u64() {
+                let mut map = pending.lock().await;
+                if let Some(sender) = map.remove(&id_num) {
+                    let _ = sender.send(resp);
+                }
+            }
+            None
+        }
+        wire::Inbound::Ignore => None,
+        wire::Inbound::Server {
+            key,
+            id,
+            method,
+            params,
+        } => {
+            if let Some((event, payload)) = wire::server_event(&method, &key, &params) {
+                let session_id = params
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let question_count = params
+                    .get("questions")
+                    .and_then(|q| q.as_array())
+                    .map(|rows| rows.len())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(1);
+                server_requests.lock().await.insert(
+                    key,
+                    ServerAsk {
+                        id,
+                        method,
+                        question_count,
+                        answers: Map::new(),
+                    },
+                );
+                let _ = event_tx.send(JsonRpcEvent {
+                    jsonrpc: "2.0".into(),
+                    method: "event".into(),
+                    params: EventParams {
+                        event_type: event.into(),
+                        session_id,
+                        payload: Some(payload),
+                    },
+                });
+                None
+            } else {
+                Some(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32601, "message": "method not found" },
+                    })
+                    .to_string(),
+                )
             }
         }
     }
@@ -1157,6 +1707,54 @@ mod tests {
         .unwrap();
         let err = wait.await.expect_err("exit");
         assert!(err.to_string().contains("exited before ready"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn approval_server_request_is_an_event() {
+        let (tx, mut rx) = broadcast::channel(4);
+        let pending = Mutex::new(HashMap::new());
+        let server = Mutex::new(HashMap::new());
+        let reply = dispatch_frame(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "srq-1",
+                "method": "approval",
+                "params": {"command": "rm", "session_id": "s"}
+            }),
+            &pending,
+            &server,
+            &tx,
+        )
+        .await;
+        assert!(reply.is_none());
+        let evt = rx.try_recv().expect("event");
+        assert_eq!(evt.params.event_type, "approval.request");
+        let payload = evt.params.payload.expect("payload");
+        assert_eq!(payload["request_id"], "s:srq-1");
+        assert_eq!(payload["command"], "rm");
+        assert!(server.lock().await.contains_key("s:srq-1"));
+    }
+
+    #[tokio::test]
+    async fn unknown_server_request_replies_method_not_found() {
+        let (tx, _rx) = broadcast::channel(4);
+        let pending = Mutex::new(HashMap::new());
+        let server = Mutex::new(HashMap::new());
+        let reply = dispatch_frame(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "srq-2",
+                "method": "tour",
+                "params": {}
+            }),
+            &pending,
+            &server,
+            &tx,
+        )
+        .await
+        .expect("error frame");
+        assert!(reply.contains("-32601"), "{reply}");
+        assert!(server.lock().await.is_empty());
     }
 
     #[tokio::test]
@@ -1245,7 +1843,7 @@ for line in sys.stdin:
             rpc_timeout: Duration::from_secs(5),
             startup_timeout: Duration::from_secs(5),
         };
-        let client = GatewayClient::spawn(&cfg)
+        let client = GatewayClient::spawn_stdio(&cfg)
             .await
             .expect("spawn fake gateway");
         Some((client, dir))

@@ -1,6 +1,6 @@
 # Security
 
-This crate is **experimental**. It is a local terminal client. It draws a TUI and talks to a Python `tui_gateway` child over newline JSON-RPC stdio. It does not take inbound network connections and it does not call model APIs.
+This crate is **experimental**. It is a local terminal client. It draws a TUI and attaches outbound to the profile gateway over a ticketed WebSocket. It does not take inbound network connections and it does not call model APIs.
 
 ## Report
 

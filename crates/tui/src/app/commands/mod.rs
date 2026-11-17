@@ -215,21 +215,28 @@ pub(crate) async fn dispatch_slash(
         "/personality" => {
             set_personality(state, client, arg).await;
         }
-        "/reload" => match client.reload_env().await {
-            Ok(v) => {
-                let n = v.get("updated").and_then(|x| x.as_u64()).unwrap_or(0);
-                state
-                    .lock()
-                    .await
-                    .set_toast(format!("reloaded .env ({n} vars)"));
+        "/reload" => {
+            let sid = state.lock().await.session_id.clone();
+            let Some(sid) = sid else {
+                state.lock().await.set_toast("no session");
+                return Ok(LoopControl::Continue);
+            };
+            match client.reload_env(&sid).await {
+                Ok(v) => {
+                    let n = v.get("updated").and_then(|x| x.as_u64()).unwrap_or(0);
+                    state
+                        .lock()
+                        .await
+                        .set_toast(format!("reloaded .env ({n} vars)"));
+                }
+                Err(e) => {
+                    state
+                        .lock()
+                        .await
+                        .set_toast(format!("reload · {}", optimistic::brief_err(&e)));
+                }
             }
-            Err(e) => {
-                state
-                    .lock()
-                    .await
-                    .set_toast(format!("reload · {}", optimistic::brief_err(&e)));
-            }
-        },
+        }
         "/reload-skills" => match client.skills_reload().await {
             Ok(v) => {
                 let body = v

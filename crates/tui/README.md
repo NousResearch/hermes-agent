@@ -4,15 +4,15 @@ Native **Hermes TUI 2.0**: Rust owns the screen, Python still owns the agent.
 
 Binary: `hermes-tui-native` (avoids colliding with the npm package `hermes-tui` in `ui-tui/`).
 
-This crate is a second, opt-in screen client for the Ink TUI (`ui-tui/`). It is not a second agent and does not replace `hermes --tui`. Launch it with `hermes --tui --ratatui` or `HERMES_TUI_RATATUI=1`. `--native` is Ink's primary-buffer mode, not this client. It speaks newline-delimited JSON-RPC:
+This crate is a second, opt-in screen client for the Ink TUI (`ui-tui/`). It is not a second agent and does not replace `hermes --tui`. Launch it with `hermes --tui --ratatui` or `HERMES_TUI_RATATUI=1`. `--native` is Ink's primary-buffer mode, not this client. It attaches to the profile gateway over the ticketed `hermes-gateway-v1` WebSocket:
 
 ```text
-hermes-tui
-  └─ python -m tui_gateway.entry
-        └─ AIAgent + tools + sessions + memory + skills
+hermes --tui --ratatui
+  └─ hermes-tui-native  ──WebSocket /api/ws──  the profile's gateway owner
+        (ticket: ui-tui/scripts/gateway_bootstrap.py)
 ```
 
-Do not call model APIs from this crate. Turns, tools, slash fallthrough, YOLO, compress, and session lifecycle go through `tui_gateway`.
+Do not call model APIs from this crate. Turns, tools, slash fallthrough, YOLO, compress, and session lifecycle stay on the gateway. Session edits use `session.mutate`.
 
 ## 2.0 contract
 
@@ -69,18 +69,18 @@ Ink stays `hermes --tui`. This client is opt-in (`HERMES_TUI_RATATUI=1` / `--rat
 | YOLO / plan / ask | `config.set` `yolo` · Shift+Tab cycles plan → ask → yolo; plan auto-denies approvals |
 | MCP | `mcp.servers.list` / `mcp.catalog` / `reload.mcp` — `/mcp` |
 | `!` shell | `shell.exec` — output shown and attached to the next send |
-| Session fork | `session.branch` — `/fork` `/branch` |
-| Undo last turn | `session.undo` — `/undo` |
+| Session fork | `session.mutate` `branch` — `/fork` `/branch` |
+| Undo last turn | `session.mutate` `rewind` — `/undo` |
 | Save transcript | `session.save` — `/save` |
 | Tools / plugins | `tools.list` / `plugins.list` |
 | Terminal backend | `session.info.terminal_backend` — footer chip when not local; `/sandbox` |
-| Model / branch | `model.options`, `session.cwd.set` |
+| Model / workspace | `model.options`, `session.mutate` `model` / `workspace` |
 | Slash intellisense | `commands.catalog` + local commands |
 | Skills | `skills.manage` list + local `SKILL.md` preview |
 | Sessions | `session.list` / `session.resume` |
-| Profiles / agents / memory | `profiles.list`, `agents.list`, `delegation.*` / `subagent.*`, `learning.frames` |
-| Context map | `session.context_breakdown` + `session.compress` |
-| Approvals / clarify / sudo / secret | matching `*.respond` |
+| Profiles / agents / memory | `profiles.list`, `process.list`, `delegation.*` / `subagent.*`, `learning.frames` |
+| Context map | `session.context_breakdown` + `session.mutate` `compress` |
+| Approvals / clarify / sudo / secret | server request, answered on that request id |
 | Files + per-file diff | local tree + `git` (Ctrl+E) |
 | `@file` / `@diff` / `@folder` | `complete.path` — Tab fills, gateway expands on send |
 | Image attach | `image.attach` + half-block preview; paste a `.png` path |

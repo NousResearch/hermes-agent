@@ -21,18 +21,18 @@ hermes --tui
        └─ renders transcript, composer, prompts, activity
 
 hermes --tui --ratatui
-  └─ hermes-tui-native  ──stdio JSON-RPC──  python -m tui_gateway.entry
+  └─ hermes-tui-native  ──WebSocket /api/ws, hermes-gateway-v1──  the profile's gateway owner
 ```
 
-Ink attaches to the profile's shared gateway owner (`hermes gateway run`, started on demand with
-its idle exit), never to a private child. `ui-tui/scripts/gateway_bootstrap.py` is a thin wrapper
-over `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the attach `hermes gateway attach
---json` gives any other local client. Only `HERMES_TUI_GATEWAY_URL` (the dashboard's `/chat`)
-dials another URL, and then negotiates the wire from that listener's ready frame.
+Ink and the ratatui client both attach to the profile's shared gateway owner (`hermes gateway run`,
+started on demand with its idle exit), never to a private child. `ui-tui/scripts/gateway_bootstrap.py`
+is a thin wrapper over `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the attach
+`hermes gateway attach --json` gives any other local client. Only `HERMES_TUI_GATEWAY_URL` (the
+dashboard's `/chat`) dials another URL, and then negotiates the wire from that listener's ready frame.
+`python -m tui_gateway.entry` remains the stdio server for tests; no product surface launches it.
 
-The ratatui client still spawns `python -m tui_gateway.entry` over stdio. It is not the Ink
-attach path. The screen client owns drawing. Python owns sessions, tools, model calls, and
-slash-command logic. Never move agent behaviour into the renderer.
+The screen client owns drawing. Python owns sessions, tools, model calls, and slash-command logic.
+Never move agent behaviour into the renderer.
 
 ## Transport
 

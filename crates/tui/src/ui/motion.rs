@@ -175,14 +175,6 @@ pub fn tool_spinner(frame: u64, salt: u64) -> &'static str {
     family(TOOL, salt, TOOL_MS, frame)
 }
 
-pub fn salt_id(id: &str) -> u64 {
-    let mut h = 0u64;
-    for b in id.as_bytes() {
-        h = h.wrapping_mul(16777619) ^ u64::from(*b);
-    }
-    h
-}
-
 pub fn ellipsis_at(frame: u64, reduced: bool) -> &'static str {
     if reduced {
         "…"

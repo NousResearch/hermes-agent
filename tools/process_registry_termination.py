@@ -199,7 +199,8 @@ class ProcessTerminationMixin:
         # the supervisor keeps the session running, and killable again.
         session.group_liveness = True
         result = session.env_ref.execute(
-            env_group_kill_command(session.pid, grace), timeout=grace + _ENV_KILL_TRANSPORT_SECONDS)
+            # Whole seconds: Modal and Daytona validate the exec timeout as an integer.
+            env_group_kill_command(session.pid, grace), timeout=math.ceil(grace + _ENV_KILL_TRANSPORT_SECONDS))
         survivors = parse_env_group_kill(result, session.pid)
         if survivors == []:
             return None

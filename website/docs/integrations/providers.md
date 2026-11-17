@@ -312,7 +312,15 @@ When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoin
 ### OpenAI GPT-6.2 Astra and Sol
 
 Select `gpt-6.2-astra` or `gpt-6.2-sol` with `hermes model` under **OpenAI API**
-(API key) or **OpenAI Codex** (ChatGPT subscription). Existing model defaults are unchanged.
+(API key) or **OpenAI Codex** (ChatGPT subscription). Explicit model selections are unchanged.
+When no model is configured, the OpenAI API and Codex catalogs default to GPT-6.2 Sol.
+
+If you opted into the [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md),
+model availability also depends on the Codex CLI binary that Hermes launches. If an older binary
+rejects GPT-6.2 on a ChatGPT account, update that binary (including any explicit `model.codex_bin`
+path) to a release that lists both models, such as [0.169.1](https://github.com/openai/codex/releases/tag/rust-v0.169.1).
+Alternatively, use `/codex-runtime auto` and start a fresh session to use Hermes' native route.
+
 Both models use Responses for tool calling, accept text and images, and support reasoning
 efforts `low`, `medium`, `high`, `xhigh`, and `max`. An explicit `none` or `minimal` effort
 is clamped to `low`; disabling reasoning omits the unsupported disable field.

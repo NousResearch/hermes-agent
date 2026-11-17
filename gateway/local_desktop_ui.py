@@ -22,6 +22,11 @@ execution stream, and the process sinks route by the process's ``session_key`` t
 session's event stream (a background process outlives the turn that started it). The callbacks
 are installed per turn on the cached agent and restored with the other turn sinks.
 
+``desktop_project`` create/switch (``tools/project_tools.py``) moves the chat like the user's Move to
+project: the tool thread re-points this turn's terminal cwd record at once (the next ``pwd`` runs
+there), and the session's ``workspace`` mutation (policy cwd, state.db row, terminal drop, ``session.info``)
+is committed at the turn boundary, where a policy mutation is allowed (``apply_pending_workspace``).
+
 Card for ``manage_connections``: ``connection_callback`` publishes ``connection.request`` on the turn, and each later change of an operation is published as ``connection.update`` on the session that owns it (looked up by its session key, the route); the card answers through ``connection.respond`` (``gateway/session_connections.py``).
 """
 from __future__ import annotations
@@ -75,6 +80,8 @@ _preview_bridge: dict[str, dict] = {}
 _tour_bridge: dict[str, str] = {}
 # process ``session_key`` -> (authority, canonical session id) of the session that last ran a turn with it
 _process_routes: dict[str, tuple] = {}
+# turn key (the turn's task id, ``ctx.session_id``) -> (authority, canonical session id, route session key, publish)
+_workspace_routes: dict[str, tuple] = {}
 _emitter_installed = False
 _process_sinks_installed = False
 
@@ -152,6 +159,47 @@ def _install_connection_hook() -> None:
 
     on_change._local_desktop_ui = True
     ConnectionOperation.on_change = staticmethod(on_change)
+
+
+def _move_workspace(task_id, path):
+    """``desktop_project``'s move for a turn of ours: None when *task_id* is not one (another host's
+    session), else whether it moved."""
+    import os
+    with _lock:
+        route = _workspace_routes.get(str(task_id or ""))
+    if route is None:
+        return None
+    authority, session_id, session_key, _publish = route
+    live = authority.sessions.get(session_id)
+    resolved = os.path.abspath(os.path.expanduser(str(path)))
+    if live is None or not os.path.isdir(resolved):
+        return False
+    from tools.terminal_tool import record_session_cwd
+    # The terminal reads the cwd record by the turn's approval session key (its route); a delegated
+    # child by its task id. The boundary commit drops both along with the environment.
+    for key in dict.fromkeys(k for k in (session_key, str(task_id)) if k):
+        record_session_cwd(key, resolved)
+    live.pending_workspace = resolved
+    return True
+
+
+def _install_workspace_hook() -> None:
+    """``set_project_workspace_callback`` for our turns; any other task goes to the callback this one
+    wraps (the TUI sidecar's, for its own sessions). Re-wraps whenever another wiring replaced it (the
+    sidecar installs its own per session), so install order does not matter."""
+    from tools.project_tools import get_project_workspace_callback, set_project_workspace_callback
+    previous = get_project_workspace_callback()
+    if getattr(previous, "_local_desktop_ui", False):
+        return
+
+    def move(task_id, path, name=""):
+        moved = _move_workspace(task_id, path)
+        if moved is None:
+            return previous(task_id, path, name) if previous is not None else False
+        return moved
+
+    move._local_desktop_ui = True
+    set_project_workspace_callback(move)
 
 
 def _ask_result(turn, agent, method, params, timeout):
@@ -258,6 +306,7 @@ def wire(turn, agent):
         _install_emitter()
         _install_process_sinks()
         _install_connection_hook()
+        _install_workspace_hook()
     except Exception:  # health: allow BLE001 -- the window bridges are optional; the turn must run
         logger.warning("Desktop UI sink install failed", exc_info=True)
     key = str(getattr(turn._ctx, "session_id", "") or owner[1])
@@ -265,6 +314,7 @@ def wire(turn, agent):
     process_key = str(getattr(turn._ctx, "session_key", "") or "")
     with _lock:
         _turns[key] = publish
+        _workspace_routes[key] = (owner[0], owner[1], process_key, publish)
         if process_key:
             _process_routes[process_key] = (owner[0], owner[1])
     agent.read_terminal_callback = _read_block(turn, agent, "terminal.read", _TERMINAL_READ_TIMEOUT_S)
@@ -287,3 +337,5 @@ def release(token) -> None:
     with _lock:
         if _turns.get(key) is publish:
             _turns.pop(key, None)
+        if (_workspace_routes.get(key) or (None,) * 4)[3] is publish:
+            _workspace_routes.pop(key, None)

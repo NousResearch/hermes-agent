@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from hermes_cli.goals import CONTINUATION_MARKER
 
 # ──────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -101,7 +102,7 @@ class TestHealthyTurnStillRuns:
         # Continuation prompt must be queued.
         assert not cli._pending_input.empty()
         queued = cli._pending_input.get_nowait()
-        assert "Continuing toward your standing goal" in queued
+        assert queued.startswith(CONTINUATION_MARKER)
         assert mgr.state.status == "active"
 
     def test_clean_response_marks_done_when_judge_says_done(self, hermes_home):

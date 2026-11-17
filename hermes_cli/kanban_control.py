@@ -205,6 +205,24 @@ def read_control(conn: sqlite3.Connection) -> ControlState:
     )
 
 
+def dispatch_hold(conn: sqlite3.Connection) -> Optional[ControlState]:
+    """Return the non-running control state that must hold a dispatch tick."""
+    state = read_control(conn)
+    return None if state.state == "running" else state
+
+
+def claim_refusal_state(
+    conn: sqlite3.Connection, reason: Optional[str],
+) -> tuple[str, Optional[str]]:
+    """Map a typed claim refusal to dispatcher control fields."""
+    if reason == "kanban_paused":
+        return "paused", None
+    if reason == "kanban_control_unknown":
+        state = read_control(conn)
+        return "unknown", state.error_code
+    return "running", None
+
+
 def _normalize_actor(changed_by: str) -> str:
     actor = str(changed_by).strip()
     if not actor:

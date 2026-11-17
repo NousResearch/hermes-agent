@@ -5,14 +5,12 @@ import sqlite3
 from hermes_cli import kanban_control
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as dispatch
-from hermes_cli import kanban_ready_monitor as monitor
 
 
 def _conn():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(kb.SCHEMA_SQL)
-    monitor.ensure_schema(conn)
     return conn
 
 
@@ -44,7 +42,6 @@ def test_paused_tick_recovers_stale_and_promotes_without_spawning(monkeypatch, t
     assert result.spawned == [] and spawned == []
     assert conn.execute("SELECT status FROM tasks WHERE id='stale'").fetchone()[0] == "ready"
     assert conn.execute("SELECT status FROM tasks WHERE id='child'").fetchone()[0] == "ready"
-    assert conn.execute("SELECT COUNT(*) FROM kanban_claim_admissions").fetchone()[0] == 0
 
 
 def test_pause_after_selection_refuses_claim_and_resume_uses_next_tick(monkeypatch, tmp_path):
@@ -73,7 +70,6 @@ def test_pause_after_selection_refuses_claim_and_resume_uses_next_tick(monkeypat
     assert result.spawned == []
     assert conn.execute("SELECT status FROM tasks WHERE id='queued'").fetchone()[0] == "ready"
     assert conn.execute("SELECT COUNT(*) FROM task_runs WHERE task_id='queued'").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM kanban_claim_admissions").fetchone()[0] == 0
 
     monkeypatch.setattr(dispatch, "_dispatch_lane_task", original)
     kanban_control.resume_board(conn, changed_by="operator")

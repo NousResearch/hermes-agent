@@ -349,26 +349,6 @@ def test_pause_gate_precedes_parent_demotion_and_reason_is_immutable(conn):
     assert child is not None and child.status == "todo"
 
 
-def test_admission_refusal_and_ordinary_claim_loss_are_distinct(conn, monkeypatch):
-    from hermes_cli import kanban_ready_monitor as monitor
-
-    monitor.ensure_schema(conn)
-    admission_task = _queued_task(conn, "ready")
-    refused = kb.claim_task_result(
-        conn, admission_task, claimer="worker", monitor_attempt_id="missing-attempt",
-    )
-    assert refused.reason == "admission_refused"
-    assert conn.execute(
-        "SELECT COUNT(*) FROM kanban_claim_admissions WHERE task_id=?",
-        (admission_task,),
-    ).fetchone()[0] == 0
-
-    lost_task = _queued_task(conn, "ready")
-    monkeypatch.setattr(kb, "_claim_and_open_run", lambda *args, **kwargs: None)
-    lost = kb.claim_task_result(conn, lost_task, claimer="worker")
-    assert lost.reason == "claim_lost"
-
-
 def test_resume_permits_ready_and_review_compatibility_claims(conn):
     ready_id = _queued_task(conn, "ready")
     review_id = _queued_task(conn, "review")

@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 349
+   "undecided": 352
   },
   "rpc": {
    "authority": 112,
@@ -146,6 +146,7 @@
   {"current_path": "hermes_cli.web_routers.ops:list_checkpoints", "decision": "undecided", "handler": "GET /api/ops/checkpoints", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:list_hooks", "decision": "undecided", "handler": "GET /api/ops/hooks", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:list_pairing", "decision": "undecided", "handler": "GET /api/pairing", "kind": "http", "ref": ""},
+  {"current_path": "plugins.kanban.dashboard.control_api:get_control", "decision": "undecided", "handler": "GET /api/plugins/kanban/control", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_portal_status", "decision": "undecided", "handler": "GET /api/portal", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:list_profiles_endpoint", "decision": "undecided", "handler": "GET /api/profiles", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:get_active_profile_endpoint", "decision": "undecided", "handler": "GET /api/profiles/active", "kind": "http", "ref": ""},
@@ -305,6 +306,8 @@
   {"current_path": "hermes_cli.web_routers.ops:approve_pairing", "decision": "undecided", "handler": "POST /api/pairing/approve", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:clear_pending_pairing", "decision": "undecided", "handler": "POST /api/pairing/clear-pending", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:revoke_pairing", "decision": "undecided", "handler": "POST /api/pairing/revoke", "kind": "http", "ref": ""},
+  {"current_path": "plugins.kanban.dashboard.control_api:pause_control", "decision": "undecided", "handler": "POST /api/plugins/kanban/control/pause", "kind": "http", "ref": ""},
+  {"current_path": "plugins.kanban.dashboard.control_api:resume_control", "decision": "undecided", "handler": "POST /api/plugins/kanban/control/resume", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:create_profile_endpoint", "decision": "keep-host-wide", "handler": "POST /api/profiles", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:set_active_profile_endpoint", "decision": "undecided", "handler": "POST /api/profiles/active", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:import_profile_endpoint", "decision": "undecided", "handler": "POST /api/profiles/import", "kind": "http", "ref": ""},

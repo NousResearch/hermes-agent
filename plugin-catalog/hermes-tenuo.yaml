@@ -4,20 +4,7 @@ version: "0.4.2"
 category: tools
 repo: https://github.com/tenuo-ai/hermes-tenuo
 sha: "d26e21968d47122c1fe6ab9faef616b2df5b2827"
-description: >-
-  Signed, expiring tool permissions and local workspaces for Hermes Agent.
-  Warrants constrain tool calls and delegated agents; without a warrant or access
-  policy, enforcement is audit-only unless fail-closed mode is enabled. Hands is off
-  by default. When paired, it stores a local key and lets a Hermes session run shell
-  and file operations in the shared folder; commands and results go to Hermes and
-  its model. Sandboxing and no network are the defaults, with broader access
-  requiring explicit device flags.
-  Local audit logs include tool names and arguments. The optional Tenuo control plane
-  sends authorization events and the optional MCP wrapper connects to user-configured
-  servers. Delegation between Hermes agents is a preview and off until configured:
-  tenuo_delegate sends a task and a signed grant over HTTP to a peer agent you pair,
-  the A2A receiver drops messages without a valid delegation, and calls to MCP servers
-  named in mcp_proofs carry a signed proof.
+description: "Signed, expiring tool permissions and local workspaces for Hermes Agent. Warrants constrain tool calls and delegated agents; without a warrant or access policy, enforcement is audit-only unless fail-closed mode is enabled. Hands is off by default. When paired, it stores a local key and lets a Hermes session run shell and file operations in the shared folder; commands and results go to Hermes and its model. Sandboxing and no network are the defaults, with broader access requiring explicit device flags. Local audit logs include tool names and arguments. The optional Tenuo control plane sends authorization events and the optional MCP wrapper connects to user-configured servers. Delegation between Hermes agents is a preview and off until configured: tenuo_delegate sends a task and a signed grant over HTTP to a peer agent you pair, the A2A receiver drops messages without a valid delegation, and calls to MCP servers named in mcp_proofs carry a signed proof. Disclosure — ordinary calls pass through until a warrant or access policy is configured; set require_warrant: true to block calls without one, and a configured but unloadable warrant blocks calls. Tool names and arguments are appended to $HERMES_HOME/tenuo/audit.jsonl (disable with audit_log: false). When TENUO_CONNECT_TOKEN or TENUO_CONTROL_PLANE_URL is set, the bundled tenuo SDK (compiled Rust core) sends those authorization events, including arguments, to that control plane. Hands is off until configured; when paired it stores a local device key, opens an HTTP listener for device connections (127.0.0.1 unless hands.listen or hands.url says otherwise), and lets a Hermes session run shell and file operations in the shared folder, whose commands and results go to Hermes and its model; the laptop runs `uvx hermes-tenuo==<version>` from PyPI, sandboxed with no network by default, and unsandboxed or broader-read modes need explicit device flags. Delegation between Hermes agents is a preview and off until configured: tenuo_delegate sends a task and a signed grant over HTTP to a peer agent you pair, the A2A receiver drops inbound gateway messages without a valid delegation, and calls to MCP servers named in mcp_proofs carry a signed proof."
 maintainer: tenuo-ai
 tier: community
 requires_hermes: ">=0.20"

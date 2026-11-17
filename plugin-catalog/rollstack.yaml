@@ -1,0 +1,34 @@
+name: rollstack
+title: Rollstack
+repo: https://github.com/Rollstack/skills
+sha: 5fe651b467e7cc6500d1288ea0845fa6012fdd86
+description: >-
+  Build slide decks from your company's data in Rollstack, then refresh, schedule, export and email
+  them, through Rollstack's hosted MCP server (Streamable HTTP, OAuth 2.1 with dynamic client
+  registration and PKCE), with eleven workflow skills bundled. Portable Agent Plugins v1 package
+  (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector: Hermes runs no code from
+  the package, and the repository's pi/ and dsh/ folders are loaders for other agents that Hermes
+  does not load. Every tool call goes to Rollstack's MCP server at api.rollstack.com, signed in as
+  the user with their Rollstack account, which they must already have. Report names, slide content,
+  the data behind slides, schedules, and the names and email addresses of workspace members and
+  report recipients are pulled into the session context, and so reach the user's model provider.
+  Tools create and change reports, slides, schedules and sharing, and can send report emails; sending
+  an email and deleting a report also wait for the user to confirm them in Rollstack. The tool list
+  comes from Rollstack's server at run time, so the pinned commit doesn't cover it. Hermes stores and
+  refreshes the OAuth tokens. OAuth must be enabled with
+  `hermes mcp add rollstack --url https://api.rollstack.com/public/v1/mcp --auth oauth --connect-timeout 300`;
+  the bundled mcp.json alone lists the tools but every call is refused until then.
+maintainer: Rollstack
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Rollstack/skills/blob/5fe651b467e7cc6500d1288ea0845fa6012fdd86/README.md
+version: "1.3.0"
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add rollstack --url https://api.rollstack.com/public/v1/mcp --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -124,7 +124,7 @@ delegate_task(tasks=[{
 }])
 ```
 
-The current lines of each range are read at dispatch and appended to the child's first message after `CONTEXT`, under `FILES (already read for you, current as of dispatch):`, each fenced and labelled with its path and range. Each file is capped at 400 lines and the whole block at 60 KB; a cut file ends with `[truncated: N more lines, read_file to see the rest]`. A path outside the workspace, a missing file or a binary file fails the call before any child starts. The ranges count as already read in the child's `read_file` dedup state, so a `read_file` of the same range returns the "unchanged" notice instead of the same bytes.
+The current lines of each range are read at dispatch and appended to the child's first message after `CONTEXT`, under `FILES (already read for you, current as of dispatch):`, each fenced and labelled with its path and range. Each file is capped at 400 lines and the whole block at 60 KB; a cut file ends with `[truncated: N more lines, read_file to see the rest]`. A path outside the workspace, a missing file or a binary file fails the call before any child starts, and so does `files` with `delegation.worktree_isolation` on (the child would edit a fresh worktree, not the bytes read at dispatch). The 60 KB counts labels and fences too; entries past it are listed by name instead. The ranges count as already read in the child's `read_file` dedup state, so a `read_file` of the same range returns the "unchanged" notice instead of the same bytes.
 
 ### Forwarding Images to a Subagent
 

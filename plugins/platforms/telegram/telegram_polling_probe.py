@@ -8,7 +8,9 @@ logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
 
 class TelegramPendingProbeMixin:
-    """Stuck-consumer probe for ``TelegramAdapter``'s polling heartbeat."""
+    """Stuck-consumer probe for ``TelegramAdapter``'s polling heartbeat, plus the conflict quiet window."""
+
+    _polling_conflict_quiet_banked = 0.0  # healthy polling seconds proven in earlier generations since the last 409
 
     async def _probe_pending_updates(self, bot, probe_timeout: float) -> bool:
         """Detect a wedged or stopped getUpdates consumer via pending_update_count.
@@ -83,6 +85,29 @@ class TelegramPendingProbeMixin:
                 "getUpdates consumer wedged: pending updates not draining")
             return False
         return True
+
+    def _bank_conflict_quiet_window(self) -> None:
+        """A new polling generation pauses the conflict quiet window: the healthy polling proven so far stays banked and
+        the recovery downtime before the next progress is not counted. Only a 409 empties the bank, so network recoveries
+        closer together than the window can no longer keep an episode open for hours (#151829)."""
+        since, last = self._polling_conflict_quiet_since, getattr(self, "_polling_last_progress_monotonic", None)
+        if since is not None and last is not None:
+            self._polling_conflict_quiet_banked += last - since
+        self._polling_conflict_quiet_since = None
+
+    def _note_conflict_quiet_progress(self, now: float) -> None:
+        """End a conflict episode after a quiet period of getUpdates progress (#82303): getUpdates also succeeds
+        between the 409s of a live storm, so any-progress resets pinned the ladder at (1/5). The window reopens at
+        each generation's first progress, so stop/backoff/drain downtime never counts as healthy polling."""
+        from plugins.platforms.telegram.adapter import _POLLING_CONFLICT_QUIET_PERIOD
+        if not self._polling_conflict_count:
+            return
+        since = self._polling_conflict_quiet_since
+        if since is None:
+            self._polling_conflict_quiet_since = now
+        elif self._polling_conflict_quiet_banked + now - since >= _POLLING_CONFLICT_QUIET_PERIOD:
+            self._polling_conflict_count = 0
+            self._polling_conflict_quiet_since, self._polling_conflict_quiet_banked = None, 0.0
 
     def _escalate_stuck_consumer(self, log_message: str, reason: str) -> None:
         """Second consecutive stuck probe: restart polling via the network-error ladder (unless tearing down)."""

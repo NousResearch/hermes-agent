@@ -154,6 +154,16 @@ _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
 def _notif_release_turn(session: dict) -> None:
     with session["history_lock"]:
         session["running"] = False
+        session.pop("_notif_turn_claim", None)
+
+
+def _notif_release_claim(session: dict, claim) -> None:
+    """Release ``running`` only while it is still ``claim``'s: admission that refused (or a turn that ended) already
+    released it, and a user prompt may own ``running`` since — clearing it would run two turns on one agent."""
+    with session["history_lock"]:
+        if claim is not None and session.get("_notif_turn_claim") is claim:
+            session["running"] = False
+            session.pop("_notif_turn_claim", None)
 
 
 def _notif_claim_turn(session: dict) -> bool:
@@ -164,6 +174,7 @@ def _notif_claim_turn(session: dict) -> bool:
         if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
             return False
         session["running"] = True
+        session["_notif_turn_claim"] = object()  # this claim's identity; every release of it pops the token
         return True
 
 
@@ -215,19 +226,21 @@ def _notif_refusal_backoff(session: dict) -> None:
 
 
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> bool:
-    """Only the execution gate can acknowledge a claimed notification turn."""
+    """Only the execution gate can acknowledge a claimed notification turn. Every caller claimed ``running`` just
+    before, so the token read here is its own; nothing else can claim while ``running`` stays True."""
+    claim = session.get("_notif_turn_claim")
     try:
         accepted = _run_prompt_submit(rid, sid, session, text, **kwargs)
         if accepted:
             session.pop("_notif_refusal_delay", None)
         else:
-            # Admission can refuse even after the local running flag was claimed. A caller that
-            # requeues the notice backs off first (_notif_refusal_backoff); the rest return at once.
-            _notif_release_turn(session)
+            # A refusing admission already released ``running``, and a user prompt may own it since. A caller
+            # that requeues the notice backs off first (_notif_refusal_backoff); the rest return at once.
+            _notif_release_claim(session, claim)
         return accepted
     except Exception as exc:
         _notif_log_failure(what, exc)
-        _notif_release_turn(session)
+        _notif_release_claim(session, claim)
         raise
 
 
@@ -305,6 +318,7 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
         return  # not due, or the gateway poller owns the routed conversation — stays due there
     if not _notif_claim_turn(session):
         return  # busy — the tick coalesces to the next idle poll
+    claim = session.get("_notif_turn_claim")
     if not (prompt := mgr.due_prompt()):
         _notif_release_turn(session)
         return
@@ -315,8 +329,8 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
     if not started:
-        # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
-        _notif_release_turn(session)
+        # A refusing admission already released ``running`` (a user prompt may own it since): release only our claim.
+        _notif_release_claim(session, claim)
         with contextlib.suppress(Exception):
             mgr.abandon_fire()
 
@@ -387,6 +401,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         return  # not due, or the gateway's wakeup scanner owns the routed chat — stays due there
     if not _notif_claim_turn(session):
         return  # busy — stays due, next poll retries
+    claim = session.get("_notif_turn_claim")
     if not (wakeup := mgr.fire_tick()):
         _notif_release_turn(session)
         return
@@ -398,13 +413,21 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
             _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
         else:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
+            if not _run_prompt_submit(rid, sid, session, wakeup):
+                # Refused at admission (another surface owns the chat): no turn will settle this tick. Admission
+                # already released ``running``; only the loop state rolls back here.
+                _notif_abandon_loop_tick(sid, session, mgr)
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
-        _notif_release_turn(session)
-        with contextlib.suppress(Exception):
-            mgr.abandon_tick()
-        _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
+        _notif_release_claim(session, claim)  # still ours unless admission released it before raising
+        _notif_abandon_loop_tick(sid, session, mgr)
+
+
+def _notif_abandon_loop_tick(sid: str, session: dict, mgr) -> None:
+    """Roll the fired tick back to the countdown. Never touches ``running``: it may be another turn's by now."""
+    with contextlib.suppress(Exception):
+        mgr.abandon_tick()
+    _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
 
 
 def _kb_first_line(value: Any, limit: int) -> str:
@@ -625,6 +648,7 @@ def _background_notifications_off(session: dict) -> bool:
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    turn_claim = session.get("_notif_turn_claim")
     try:
         claim = claim_event_delivery(evt, "tui-poller")
     except Exception as exc:  # shared ledger busy/unreadable: the durable row stays pending and replays
@@ -634,7 +658,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # Another consumer holds the durable row — a gateway sharing this home claims before it verifies
         # the target. No turn will run, and nothing else clears ``running``: a busy session is exempt
         # from the reaper, keeps its lease, and never reaches its bot mailbox again.
-        _notif_release_turn(session)
+        _notif_release_claim(session, turn_claim)
         return
     evt_type = evt.get("type")
     kwargs: dict = {}
@@ -670,7 +694,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     ``_session_owns_notification_event`` (the post-turn safety net), so lineage resolves once."""
     queue = registry.completion_queue
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
-    if not owned and _notification_event_belongs_elsewhere(sid, session, evt):
+    from tools.environments.sandbox_scope import event_visible
+    if not event_visible(evt) or not owned and _notification_event_belongs_elsewhere(sid, session, evt):
         if deferred is not None:
             deferred.append(evt)
         else:  # otherwise a process started in session A surfaces in whichever poller wakes first

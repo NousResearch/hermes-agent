@@ -24,9 +24,9 @@ def _leftovers(directory: Path, keep: str) -> list[str]:
 
 @pytest.fixture
 def broken_replace(monkeypatch):
-    import utils
+    import utils.files
 
-    monkeypatch.setattr(utils, "atomic_replace", _failing_replace)
+    monkeypatch.setattr(utils.files, "atomic_replace", _failing_replace)
 
 
 def test_sessions_json_failed_replace_keeps_old_bytes_and_no_temp(tmp_path, monkeypatch, broken_replace):

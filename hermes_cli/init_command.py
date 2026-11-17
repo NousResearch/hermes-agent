@@ -125,8 +125,16 @@ def build_init_prompt_for_cwd(cwd: str | None = None, extra: str = "",
     agents_path = os.path.join(resolved, "AGENTS.md")
     try:
         if os.path.isfile(agents_path):
-            with open(agents_path, encoding="utf-8-sig", errors="replace") as fh:
-                existing = fh.read()
+            # Same containment as startup context files: an AGENTS.md that resolves outside the project (or
+            # to a deny-listed file) is not read into the prompt; read the vetted target, not the link.
+            from pathlib import Path
+
+            from agent.prompt_builder import _project_root
+            from agent.subdirectory_hints import _resolved_hint_target
+            target = _resolved_hint_target(Path(agents_path), _project_root(Path(resolved)))
+            if target is not None:
+                with open(target, encoding="utf-8-sig", errors="replace") as fh:
+                    existing = fh.read()
     except OSError:
         existing = None
     return build_init_prompt(resolved, existing_file=existing, extra=extra)

@@ -1,8 +1,9 @@
 """Windows gateway service backend (Scheduled Task + Startup-folder fallback).
 
-Mirrors the ``launchd_*`` / ``systemd_*`` contract. ``schtasks /Create ... /RL LIMITED`` runs at the
-CURRENT USER's next logon without elevation. Manual starts and ``install --start-now`` use the direct
-hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior is consistent.
+Mirrors the ``launchd_*`` / ``systemd_*`` contract. ``schtasks /Create /XML`` (an InteractiveToken +
+LeastPrivilege principal) runs at the CURRENT USER's next logon without elevation. Manual starts and
+``install --start-now`` use the direct hidden-console launcher instead of ``schtasks /Run`` so
+start/restart behavior is consistent.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from hermes_cli._subprocess_compat import (
     windows_detach_flags_without_breakaway,
     windows_hide_flags,
 )
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,20 @@ _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
+
+# Gateway exits the logon-task launcher reports as 0, so RestartOnFailure does not relaunch them every
+# minute. 78 = fatal config (EX_CONFIG; systemd parks it with RestartPreventExitStatus). 1 is also an
+# uncaught crash, so it counts as a stop only while ``gateway.pid`` is still there: another gateway owns
+# the profile ("already running" never touches its record), or a CLI stop force-killed this one after
+# its drain window. A gateway that fails on its own removes its own record first (atexit/exit backstop).
+_LAUNCHER_FATAL_CONFIG_EXIT = "If code = 78 Then code = 0"
+
+
+def _launcher_owned_exit_line(hermes_home: str) -> str:
+    from hermes_cli.gateway_runtime_service_identity import launcher_pid_file
+    return (f'If code = 1 And CreateObject("Scripting.FileSystemObject").FileExists('
+            f'{_quote_vbs_string(launcher_pid_file(hermes_home))}) Then code = 0')
+
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
@@ -125,7 +141,7 @@ def _hermes_home() -> Path:
 def hermes_service_roots() -> tuple[str, ...]:
     """Directories a Hermes-owned SCM service binary lives under: the checkout (its ``venv`` included),
     the running interpreter's ``Scripts`` dir (``hermes.exe`` shim) and the ``gateway-service`` launcher dir."""
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(project_root_str())
     return (str(project_root), str(Path(sys.executable).parent), str(_hermes_home() / "gateway-service"))
 
 
@@ -250,7 +266,7 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
     _assert_windows()
     args = ["-m", "hermes_cli.main", *_current_profile_cli_args(), "gateway", command, *(extra_args or [])]
     params = subprocess.list2cmdline(args)
-    cwd = str(Path(__file__).resolve().parent.parent)
+    cwd = project_root_str()
     try:
         result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, cwd, 0)  # 0 = SW_HIDE
     except Exception as exc:
@@ -337,13 +353,13 @@ def _startup_staging_path() -> Path:
     return get_startup_entry_path().with_suffix(".tmp")
 
 
-def _stable_gateway_working_dir(project_root: Path) -> str:
-    """Stable cwd for detached/startup runs: anchor at HERMES_HOME when it exists (mirrors the POSIX
-    service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
+def _stable_gateway_working_dir(project_root: Path, home: Path | None = None) -> str:
+    """Stable cwd for detached/startup runs: anchor at ``home`` (default HERMES_HOME) when it exists (mirrors
+    the POSIX service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
     from hermes_cli.config import get_hermes_home
 
     try:
-        home = get_hermes_home()
+        home = home if home is not None else get_hermes_home()
         if home and Path(home).is_dir():
             return str(Path(home))
     except Exception:
@@ -370,7 +386,7 @@ def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
     hermes_home = str(home if home is not None else _hermes_home())
     return (
         _preserve_hermes_home_path(get_python_path()),
-        _stable_gateway_working_dir(PROJECT_ROOT),
+        _stable_gateway_working_dir(PROJECT_ROOT, home),
         hermes_home,
         _profile_arg(hermes_home),
     )
@@ -378,7 +394,7 @@ def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
 
 def _launcher_pythonpath_entries(extra_pythonpath: list[str]) -> list[str]:
     return [
-        _preserve_hermes_home_path(Path(__file__).resolve().parent.parent),
+        _preserve_hermes_home_path(Path(project_root_str())),
         *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath],
     ]
 
@@ -429,7 +445,7 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, code",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
@@ -443,8 +459,13 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        # Window style 0 = hidden; bWaitOnReturn True: wscript lives as long as the gateway and exits
+        # with its code, so the task's RestartOnFailure sees a gateway that died (#146976). A launcher
+        # that returned at once ended the task "successfully" before the gateway could ever fail.
+        f"code = sh.Run({q(command_line)}, 0, True)",
+        _LAUNCHER_FATAL_CONFIG_EXIT,
+        _launcher_owned_exit_line(hermes_home),
+        "WScript.Quit code",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -473,20 +494,64 @@ def _launcher_scripts() -> list[tuple[Path, str, str]]:
     The .vbs is what the Scheduled Task and the Startup-folder fallback run through wscript.exe
     (issue #45599 fix A); the .cmd stays as a generated helper/compatibility artifact.
     """
-    settings = _launcher_settings()
-    script_path = get_task_script_path()
+    return _render_launchers(_launcher_settings(), get_task_script_path())
+
+
+def _render_launchers(settings: tuple[str, str, str, str], script_path: Path) -> list[tuple[Path, str, str]]:
     return [(script_path, _build_gateway_cmd_script(*settings), "utf-8"),
             (script_path.with_suffix(".vbs"), _build_gateway_vbs_script(*settings), "utf-16")]
+
+
+def _write_launcher_scripts(scripts: list[tuple[Path, str, str]]) -> None:
+    for path, content, encoding in scripts:
+        tmp = path.with_suffix(".tmp") if encoding == "utf-8" else path.with_name(path.name + ".tmp")
+        _atomic_write(path, content, tmp, encoding=encoding)
 
 
 def _write_task_script() -> Path:
     """Generate the launcher scripts (``_launcher_scripts``); return the .cmd path."""
     _assert_windows()
     scripts = _launcher_scripts()
-    for path, content, encoding in scripts:
-        tmp = path.with_suffix(".tmp") if encoding == "utf-8" else path.with_name(path.name + ".tmp")
-        _atomic_write(path, content, tmp, encoding=encoding)
+    _write_launcher_scripts(scripts)
     return scripts[0][0]
+
+
+def refresh_dead_launcher(home: Path, task_name: str) -> bool:
+    """Re-render ``home``'s launcher when the interpreter it runs no longer exists; True if rewritten.
+
+    A Store update replaces the versioned payload folder that interpreter lived in, and a Store
+    install has no ``hermes update`` to re-render it, so the task and the Startup entry kept running a
+    dead launcher (#150448). Only a launcher this installer wrote for ``home`` is touched, and only
+    its files: the task and the Startup entry already point at them.
+    """
+    from hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text, read_definition
+
+    vbs = home / "gateway-service" / f"{_sanitize_filename(task_name)}.vbs"
+    try:
+        configured, argv = _vbs_identity(launcher_text(read_definition(vbs)))
+    except (OSError, ValueError):
+        return False
+    interpreter = Path(argv[0]) if argv else None
+    try:
+        if (interpreter is None or not interpreter.is_absolute() or interpreter.exists()
+                or os.path.normcase(str(Path(configured).resolve())) != os.path.normcase(str(home.resolve()))):
+            return False
+    except OSError:  # Path.exists() raises on access denied before Python 3.13: not provably dead
+        return False
+    rewritten = False
+    # One file at a time: the task and the Startup entry run the .vbs, so a broken .cmd helper must not
+    # hold its repair back, and no failure here may stop discovery from querying the task.
+    # The installed spelling, which the gate proved is ``home``: ensure passes a resolved, normcased home.
+    for path, content, encoding in _render_launchers(_launcher_settings(Path(configured)), vbs.with_suffix(".cmd")):
+        try:
+            if not path.exists() or path.read_bytes() != content.encode(encoding):
+                _write_launcher_scripts([(path, content, encoding)])
+                rewritten = True
+        except OSError:
+            logger.warning("Could not re-render the gateway launcher %s", path, exc_info=True)
+    if rewritten:
+        logger.info("Re-rendered the gateway launcher %s: its interpreter %s no longer exists", vbs, interpreter)
+    return rewritten
 
 
 def launcher_script_drift() -> list[str]:
@@ -609,15 +674,13 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
     # Immediate manual starts use _spawn_detached(). See #45599.
-    base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
-    variants = [[*base, "/RU", user, "/NP", "/IT"], base] if user else [base]
-    last_code, last_err = 1, ""
+    # The XML alone carries the principal: adding /RU /NP on top of /XML makes schtasks register an
+    # S4U logon that an elevated install runs at High integrity in session 0 (#152218).
     try:
-        for argv in variants:
-            code, out, err = _exec_schtasks(argv)
-            if code == 0:
-                return (True, f"Created Scheduled Task {task_name!r}")
-            last_code, last_err = code, (err or out or "")
+        code, out, err = _exec_schtasks(["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)])
+        if code == 0:
+            return (True, f"Created Scheduled Task {task_name!r}")
+        last_code, last_err = code, (err or out or "")
     finally:
         try:
             xml_path.unlink(missing_ok=True)
@@ -1473,6 +1536,9 @@ _TASK_DRIFT_LEAVES = {
     "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
     "Task/Actions/Exec/Arguments": "launcher arguments",
 }
+# Compared only when the export carries it, so an export that omits the element cannot loop the
+# repair. Pre-#152218 elevated installs registered S4U, which runs High integrity in session 0.
+_TASK_LOGON_TYPE_LEAF = "Task/Principals/Principal/LogonType"
 
 
 def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list[str]:
@@ -1489,6 +1555,9 @@ def compare_scheduled_task_drift(registered_xml: str, template_xml: str) -> list
     if missing:
         drift.append(f"missing: {', '.join(missing)}")
     drift.extend(f"{label} differs" for label in differs)
+    live_logon = live.get(_TASK_LOGON_TYPE_LEAF)
+    if live_logon and live_logon != want.get(_TASK_LOGON_TYPE_LEAF):
+        drift.append(f"LogonType {live_logon}")
     if live["Task@version"] != want["Task@version"]:
         drift.append(f"version {live['Task@version']} vs {want['Task@version']}")
     return drift

@@ -1129,6 +1129,7 @@ export interface ConnectionOperationTarget {
   missing_env?: string[] | null
   server_errors?: CatalogServerError[] | null
   already_installed?: boolean | null
+  upstream_repo?: string | null
 }
 export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
@@ -1655,10 +1656,12 @@ export interface GroupsStateParams {
   room_id: string
   include_disbanded?: boolean | null
 }
+/** ``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is only a backstop (absent on older backends: keep polling at the old rate). */
 export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
   context?: RoomContext | null
+  change_events?: boolean | null
 }
 /** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``) or the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled room preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken). ``member_activity`` lists live tasks in admission order (absent from older gateways). ``last_error`` is this room's last preparation failure, null once one succeeds. */
 export interface RoomDriverStatus {
@@ -2139,7 +2142,7 @@ export interface ProfileCanonicalSession {
   message_count?: number
   live_message_count?: number | null
 }
-/** ``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on so a headless bot has a provider. */
+/** ``clone_from`` omitted = fresh profile + bundled skills (with ``clone_all``: a full copy of the active profile, no bundled skills); ``mirror_credentials`` and ``share_auth`` default on (the bot page's defaults) so a headless bot has a provider. */
 export interface ProfilesCreateParams {
   profile?: string | null
   name: string
@@ -2154,6 +2157,9 @@ export interface ProfilesCreateParams {
   provider?: string | null
   share_auth?: boolean | string | null
   mirror_credentials?: boolean | string | null
+  clone_config?: boolean | string | null
+  sync_imports?: boolean | string | null
+  report?: boolean | string | null
 }
 export interface ProfilesCreateResult {
   ok?: boolean
@@ -2162,13 +2168,33 @@ export interface ProfilesCreateResult {
   soul_written?: boolean
   model_set?: boolean
   mirrored: ProfileMirrored
+  warnings?: string[]
+  receipt?: ProfileCreateReceipt | null
 }
-/** What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``. */
+/** What was copied from the launch profile; ``auth`` is ``"shared"`` when the new profile has no auth.json of its own and reads the default root's. */
 export interface ProfileMirrored {
   env?: boolean
   auth?: boolean | 'shared'
   model_inherited?: boolean
   voice?: boolean
+}
+/** What ``hermes profile create`` prints about a new profile, read on the machine (and in the profile scope) that made it: built after a local create, or sent by the gateway that made it (``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a local create never loads pydantic. A client treats a receipt missing a field, or with a wrong type, as an unknown outcome. */
+export interface ProfileCreateReceipt {
+  path: string
+  display_path: string
+  launch_label: string
+  source_label: string
+  skills_synced: number | null
+  skills_opted_out: boolean
+  alias_path: string | null
+  alias_collision: string | null
+  mirrored: Record<string, boolean | 'shared'>
+  warnings: string[]
+  cloned_plugins: string[]
+  memory_provider: string | null
+  channels_left_behind: string[]
+  shared_channels: string[]
+  served_now: boolean | null
 }
 export interface ProfileNameParams {
   profile?: string | null
@@ -3604,6 +3630,7 @@ export interface SessionUsageResult {
   plan_gauge?: PlanGauge | null
   credits_lines?: string[] | null
   credits_usage_window?: boolean | null
+  nous_route?: boolean | null
   [key: string]: unknown
 }
 export interface SessionContextBreakdownParams {
@@ -3621,6 +3648,7 @@ export interface SessionContextBreakdownResult {
   context_source: string
   model: string
   context_files?: ContextFileSource[]
+  prompt_cache?: PromptCacheWindow | null
 }
 export interface ContextCategory {
   color: string
@@ -3636,6 +3664,16 @@ export interface ContextFileSource {
   est_tokens: number
   loaded: boolean
   status: string
+}
+/** ``agent.prompt_cache_clock.cache_window``: until when the session's cached prompt prefix is warm. ``guaranteed_until``: the whole prefix is warm before it (a documented minimum or a proven tier); ``estimated_until``: certainly gone after it; between the two it may still be warm. ``coverage`` maps each cached tier to its deadline. ``confidence`` is ``proven`` | ``declared`` | ``assumed`` | ``unknown``; times are epoch seconds. */
+export interface PromptCacheWindow {
+  guaranteed_until: number | null
+  estimated_until: number | null
+  tier: string | null
+  confidence: string
+  reason: string
+  refreshed_at?: number | null
+  coverage?: Record<string, number>
 }
 export interface SessionCompressParams {
   session_id: string
@@ -4064,7 +4102,7 @@ export interface CronManageResult {
   removed_job?: CronRemovedJob | null
   [key: string]: unknown
 }
-/** ``tools/cronjob_job_args.py::_format_job``. */
+/** ``cron/job_args.py::_format_job``. */
 export interface CronJobRow {
   job_id: string
   name?: string
@@ -4598,7 +4636,7 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a running process cannot import (installed after it booted, or never); ``missing_in`` names which processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them. */
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a running process cannot import (installed after it booted, or never); ``missing_in`` names which processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them. ``activated_now.provider``: a model-provider plugin whose current tree serves new sessions. ``load_error``: a model-provider plugin's updated tree failed to import (the previous version keeps serving). */
 export interface PluginActivation {
   name: string
   key: string
@@ -4607,6 +4645,7 @@ export interface PluginActivation {
   deferred?: Record<string, string[]>
   missing_dependencies?: string[]
   missing_in?: PluginRestartTarget[]
+  load_error?: string | null
 }
 export interface PluginLiveNow {
   mcp_servers?: PluginLiveServer[]
@@ -4895,6 +4934,36 @@ export interface SessionStats {
   provider: string
   fallback_model?: string | null
   plan_gauge?: PlanGauge | null
+}
+export interface SessionAccountUsageParams {
+  session_id: string
+}
+/** ``gateway/session_usage.py::account_usage``: the account blocks of ``/usage``. ``lines``: the route's provider plan limits. ``nous_lines``: the Nous balance whenever Nous is signed in on the profile, after them (headed as a separate account off a Nous route). ``nous_route``: the route is Nous inference, so the ``/topup`` CTA applies. ``nous_usage``: on a Nous route, the same account read's dollar model, so the CLI draws its two bars without reading the account again. */
+export interface SessionAccountUsage {
+  lines: string[]
+  nous_lines?: string[]
+  nous_route: boolean
+  nous_usage?: NousUsageDollars | null
+}
+/** ``agent.billing_usage.UsageModel`` in numbers: the classic CLI's two-bar Nous balance block. */
+export interface NousUsageDollars {
+  available: boolean
+  status?: string
+  plan_name?: string | null
+  renews_at?: string | null
+  renews_display?: string | null
+  subscription_remaining_usd?: number | null
+  topup_remaining_usd?: number | null
+  total_spendable_usd?: number | null
+  plan_bar?: NousUsageBar | null
+  topup_bar?: NousUsageBar | null
+}
+/** ``agent.billing_usage.UsageBar``: one dollar bar (``topup`` has no cap, so total == remaining). */
+export interface NousUsageBar {
+  kind: 'plan' | 'topup'
+  remaining_usd: number
+  total_usd: number
+  spent_usd?: number
 }
 export interface RollbackSessionDiffParams {
   session_id: string
@@ -5253,10 +5322,13 @@ export interface CanonicalListParams {
   include_hidden?: boolean
   workspace?: string | null
   picker?: boolean
+  query?: string | null
+  cursor?: string | null
 }
 export interface CanonicalListResult {
   sessions: CanonicalSessionListRow[]
   scope: 'stored' | 'live'
+  next_cursor?: string | null
 }
 export interface CanonicalSessionListRow {
   session_id: string
@@ -6190,7 +6262,7 @@ export interface PreviewOpenPayload {
   url: string
   label?: string
 }
-/** ``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab. */
+/** ``tools/preview_tool.py``; ``url`` '' closes every tab. */
 export interface PreviewClosePayload {
   url?: string
 }
@@ -6267,6 +6339,12 @@ export interface PetHatchProgressPayload {
 }
 /** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
 export type ChangeSignalPayload = Record<string, unknown>
+/** ``change_watcher._groups_changed_payload``: the rooms whose log, tasks or live status moved; absent when something process-wide moved (every open room re-reads). ``broadcast_id`` names one broadcast: the same frame reaches a window once per open socket, and a copy needs no second read. */
+export interface GroupsChangedPayload {
+  room_ids?: string[] | null
+  broadcast_id?: string | null
+  [key: string]: unknown
+}
 export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY' | 'ALIAS_TAKEN'
 
 // ── Client→server methods ──
@@ -7120,6 +7198,8 @@ export interface CanonicalRpcMethods {
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  /** The /usage account blocks for this session's route: provider plan limits, then the Nous balance. */
+  'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsage }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
@@ -7188,6 +7268,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.submit',
   'rollback.session_diff',
   'runtime.describe',
+  'session.account_usage',
   'session.automation',
   'session.create',
   'session.detach',
@@ -7309,6 +7390,8 @@ export interface BackendGatewayEventMap {
   'free_tier.challenge': FreeTierChallengePayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
   'gateway.ready': GatewayReadyPayload
+  /** A Group Chat log, task or live status moved; an open room re-reads its log delta and groups.state. */
+  'groups.changed': GroupsChangedPayload
   /** The turn ended: final text, usage and outcome. */
   'message.complete': MessageCompletePayload
   /** One streamed chunk of the assistant reply (null text: segment boundary). */
@@ -7450,6 +7533,7 @@ export const GATEWAY_EVENT_TYPES = [
   'error',
   'free_tier.challenge',
   'gateway.ready',
+  'groups.changed',
   'message.complete',
   'message.delta',
   'message.interim',

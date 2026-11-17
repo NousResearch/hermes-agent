@@ -1,5 +1,6 @@
 """Late-receipt indexing upgrades derived caches, never accepted inputs or history."""
 
+import json
 import sqlite3
 import time
 from types import SimpleNamespace
@@ -72,6 +73,80 @@ def test_old_cache_rebuilds_late_receipts_and_context_without_changing_history(t
     assert planned.identity.task_id != old_plan.identity.task_id
     assert log(db) == history
     assert HostedRoomPolicyCheckpoint(db).snapshot(room_id="upgrade-room", latest_seq=history[-1]["seq"]) == updated
+
+
+def bounded_historical_settlement(db, *, with_other_thread_source=False):
+    room = rooms.create_room(db, room_id="upgrade-room", name="Upgrade", authority_gateway_id="home",
+        members=[{"member_id": profile, "profile": profile, "handle": profile} for profile in PROFILES])
+    if with_other_thread_source:
+        append(db, "other-source", "message.user", {"text": "@reviewer Separate work.", "thread_id": "other"})
+        append(db, "complete-other", "room.activity", {"status": "settled", "reason_code": "silent_round",
+            "thread_id": "other", "discussion_event_id": "other-source"}, "gateway")
+    append(db, "source", "message.user", {"text": "@writer Prepare the plan.", "thread_id": "thread"})
+    initial = discussion.plan_next_task(room, log(db), local_profiles=PROFILES, freeze_input_context=True).task
+    assert initial is not None
+    publication = discussion.plan_publication(room, log(db), initial, status="settled",
+        result={"text": "The committed plan is ready."}, local_profiles=PROFILES)
+    for event in publication.events:
+        rooms.append_event(db, **event.append_kwargs("upgrade-room"))
+    append(db, "complete-source", "room.activity", {"status": "settled", "reason_code": "silent_round",
+        "thread_id": "thread", "discussion_event_id": "source"}, "gateway")
+    for index in range(23):
+        append(db, f"later-{index}", "message.user", {"text": "@reviewer Continue.", "thread_id": "thread"})
+    return room
+
+
+def test_snapshot_does_not_import_settlement_source_from_other_thread(tmp_path):
+    """A malformed historical settlement cannot borrow another thread's durable user."""
+    db = tmp_path / "state.db"
+    room = bounded_historical_settlement(db, with_other_thread_source=True)
+
+    # Keep the legitimate member reply and terminal, but corrupt their source link
+    # to name a real user event in another thread of the same room.
+    with sqlite3.connect(db) as conn:
+        for kind in ("message.member", "turn.settled"):
+            seq, encoded = conn.execute(
+                "SELECT seq, payload_json FROM hosted_room_events "
+                "WHERE room_id='upgrade-room' AND kind=? ORDER BY seq LIMIT 1", (kind,)
+            ).fetchone()
+            payload = json.loads(encoded)
+            payload["discussion_event_id"] = "other-source"
+            conn.execute(
+                "UPDATE hosted_room_events SET payload_json=? WHERE room_id='upgrade-room' AND seq=?",
+                (json.dumps(payload), seq))
+
+    checkpoint = HostedRoomPolicyCheckpoint(db)
+    snapshot = checkpoint.snapshot(room_id="upgrade-room", latest_seq=log(db)[-1]["seq"])
+    assert "other-source" not in {event["event_id"] for event in snapshot.events}
+    with pytest.raises(discussion.DiscussionValidationError, match="no matching user discussion"):
+        discussion.plan_next_task(
+            room, snapshot.events, local_profiles=PROFILES, initial_watermarks=snapshot.watermarks)
+
+
+def test_snapshot_keeps_source_user_for_retained_non_pass_settlement(tmp_path):
+    db = tmp_path / "state.db"
+    room = bounded_historical_settlement(db)
+
+    checkpoint = HostedRoomPolicyCheckpoint(db)
+    snapshot = checkpoint.snapshot(room_id="upgrade-room", latest_seq=log(db)[-1]["seq"])
+
+    assert any(event["event_id"] == "source" for event in snapshot.events)
+    assert discussion.plan_next_task(room, snapshot.events, local_profiles=PROFILES,
+                                     initial_watermarks=snapshot.watermarks).status == "task"
+
+
+def test_snapshot_leaves_missing_settlement_source_invalid(tmp_path):
+    db = tmp_path / "state.db"
+    room = bounded_historical_settlement(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM hosted_room_events WHERE room_id='upgrade-room' AND event_id='source'")
+
+    checkpoint = HostedRoomPolicyCheckpoint(db)
+    snapshot = checkpoint.snapshot(room_id="upgrade-room", latest_seq=log(db)[-1]["seq"])
+
+    with pytest.raises(discussion.DiscussionValidationError, match="no matching user discussion"):
+        discussion.plan_next_task(room, snapshot.events, local_profiles=PROFILES,
+                                  initial_watermarks=snapshot.watermarks)
 
 
 @pytest.mark.parametrize("status", ["queued", "running", "indeterminate"])

@@ -1,0 +1,20 @@
+name: genflick
+repo: https://github.com/buildngrowsv/genflick-hermes
+sha: 96ff116f0fcad08caa75940c46dd741bf16ee6ea
+version: "0.1.1"
+title: Genflick
+maintainer: buildngrowsv
+tier: community
+category: tools
+description: "Connect Hermes to Genflick creative and business workspaces for films, series, music videos, ads and marketing, with email-link sign-in and host-owned OAuth. Disclosure — tool calls send your prompts, project inputs and media requests to Genflick's hosted MCP server at genflick.com (which may pass work to its own downstream providers), its tools can spend from your Genflick account and publish ads, social posts and outreach; the package sets `trust: full`, so Hermes does not prompt per tool and Genflick enforces its own approvals (credit confirmation above the account's threshold, exact-post approval before publishing, Stop), sign-in needs a hand-added `mcp_servers.genflick` OAuth entry in config.yaml, and the bundled skill may read the Genflick sign-in email through your connected mailbox tools and open its link."
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/buildngrowsv/genflick-hermes/blob/96ff116f0fcad08caa75940c46dd741bf16ee6ea/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Hermes v0.23.1 requires the native mcp_servers OAuth entry in config.example.yaml alongside the portable plugin; the package alone does not complete sign-in."
+  - "Connection, discovery and saved-profile/project reads were verified in Hermes. Creative/business execution, cancellation/recovery and monetization are separate workflow qualification; no talent hiring, payments, payouts or earnings operation is promised."

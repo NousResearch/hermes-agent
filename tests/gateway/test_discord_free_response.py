@@ -1058,3 +1058,18 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+@pytest.mark.asyncio
+async def test_flagless_webhook_post_reaches_gateway_as_bot(adapter, monkeypatch):
+    """A webhook post without ``author.bot`` must arrive as a bot, or the gateway's bot loop
+    guard never counts it (#143370)."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321), content=f"<@{bot_user.id}> deploy failed", mentions=[bot_user])
+    message.webhook_id = 555
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].source.is_bot is True

@@ -1,0 +1,24 @@
+name: visor
+repo: https://github.com/samundra0/visor
+sha: 5c89350e5bd51599c160e5add5926cdac23d86e4
+subdir: hermes/plugin
+version: "1.9.0"
+title: Visor
+description: "Live holographic canvas for AI agents: the visor_push tool pushes visual blocks — sections, markdown findings, clickable todos, tables, KPI stats, charts, code, images, audio and video — to an infinite-canvas webpage that updates in place over SSE (the page is never rewritten), so agents SHOW work instead of dumping it in chat. Turnkey: the plugin ships its own server, no separate install. Disclosure — on first use, if nothing is listening on localhost:8900, the plugin auto-starts its bundled server as a long-running background process (bare-python subprocess by default, state in ~/.local/share/visor or VISOR_DATA; `docker compose up -d` when VISOR_DOCKER=1), restarted if unreachable, and the child gets only a minimal environment (PATH/HOME/LANG/TZ, VISOR_* values, plus DOCKER_* and proxy vars for compose); it listens on 127.0.0.1:8900 by default, and VISOR_HOST opts in to a non-loopback bind that is refused unless VISOR_TOKEN is set; /api/* and /media/ are always gated by a per-install token (0600, <state>/visor-token), which the page receives automatically only on a loopback bind (otherwise open the page with ?token=...); the page refuses framing and foreign Host headers; the bundled live module polls user-pushed http(s) URLs every 2s (10s timeout, 1MB cap, no redirects) and refuses loopback, private, link-local and metadata addresses unless they are listed in VISOR_LIVE_LOCAL_HOSTS; the chat module forwards card sends to a configured Hermes webhook (VISOR_CHAT_URL + VISOR_CHAT_SECRET) and does nothing until those are set; raw-html cards render in a sandboxed iframe whose postMessage bridge can only read board state and edit blocks on the current board; visor_push copies local image/audio/video files the model names (no dotfile paths) into its media dir; no credentials beyond its own VISOR_* settings, no telemetry."
+maintainer: samundra0
+tier: community
+category: tools
+docs_url: https://github.com/samundra0/visor
+requires_hermes: ">=0.21.5"
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/samundra0/visor/17a8ba5f24030e8a04f6676168f7f594f46db53c/docs/screenshots/visor-demo-board.png
+screenshots:
+  - https://raw.githubusercontent.com/samundra0/visor/17a8ba5f24030e8a04f6676168f7f594f46db53c/docs/screenshots/visor-demo-board.png
+  - https://raw.githubusercontent.com/samundra0/visor/17a8ba5f24030e8a04f6676168f7f594f46db53c/docs/screenshots/visor-canvas-ui.png
+capabilities:
+  provides_tools:
+    - visor_push
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

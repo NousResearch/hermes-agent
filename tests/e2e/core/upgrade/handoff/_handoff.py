@@ -4,7 +4,7 @@ from it, and the real ``hermes update`` to the next commit, all in one shared PI
 Two columns, both git-mode installs over a local bare ``origin`` (the official URL rewritten to it,
 so the updater takes the normal non-fork path and never touches the network):
 
-* ``n1``: ``main`` parked at release N-1 (``git describe --tags --abbrev=0 HEAD~1``, overridable with
+* ``n1``: ``main`` parked at release N-1 (``_install_helpers.upgrade_base``, overridable with
   ``HERMES_E2E_UPGRADE_BASE``), its venv built from N-1's own ``uv.lock`` (the installer's tier 0),
   then ``main`` moves to HEAD;
 * ``head``: HEAD's ``scripts/install.sh`` into an empty HOME, then ``main`` gets NEXT, a synthetic
@@ -17,7 +17,6 @@ Every process (gateway, dashboard, cron ticker, kanban dispatcher, the updater) 
 from __future__ import annotations
 
 import contextlib
-import datetime as dt
 import functools
 import json
 import os
@@ -42,9 +41,10 @@ from tests.e2e.core.upgrade.handoff._nshost import NamespaceHost
 
 TRACEBACK = I.TRACEBACK
 UPDATE_TIMEOUT = 1500
-# ``agent.restart_after_turn_timeout`` in every cell: a gateway that will not drain is forced to stop
-# after this instead of holding the update for the 30-minute default.
-RESTART_WAIT_CAP_S = 120
+# ``agent.restart_after_turn_timeout`` in every cell. Since #155532 it never stops live work: the gateway
+# warns at each interval and keeps waiting, and ``hermes update`` waits about this long before it leaves
+# a busy gateway running with its restart pending (instead of the 30-minute default).
+RESTART_AFTER_TURN_S = 120
 API_KEY = "e2e-handoff-api-server-key"
 NEXT_MARKER = "docs/e2e-handoff-next-marker.txt"
 # NEXT moves a module the gateway imports at boot and rewrites its importer, as a layout change does;
@@ -253,7 +253,7 @@ def write_config(home: Path, provider_url: str, *, port: int | None = None, extr
     home.mkdir(parents=True, exist_ok=True)
     cfg: dict = {
         "model": {"provider": "custom", "base_url": provider_url, "default": "fake-model", "context_length": 128000},
-        "agent": {"api_max_retries": 1, "restart_after_turn_timeout": RESTART_WAIT_CAP_S},
+        "agent": {"api_max_retries": 1, "restart_after_turn_timeout": RESTART_AFTER_TURN_S},
         "compression": {"enabled": False},
     }
     if port is not None:
@@ -426,41 +426,46 @@ def receipt(inst: Install) -> dict:
     return read_json(inst.hermes_home / "logs" / "update_receipts" / "latest.json") or {}
 
 
-_LOG_TIME = r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) "
-_WAIT_OPENED = re.compile(_LOG_TIME + r".*Restart requested with \d+ active work unit\(s\); deferring stop\(\)", re.MULTILINE)
-_WAIT_CLOSED = re.compile(_LOG_TIME + r".*(Restart deferred wait complete|Restart after-turn wait timed out"
-                          r"|Restart deferred wait: \d+ excluded work unit)", re.MULTILINE)
-_WAIT_HOLDERS = re.compile(r"Restart deferred: waiting on .*?: (\[.*\])$", re.MULTILINE)
+# ``hermes update`` on a gateway still doing live work when its wait runs out (#155532): the gateway is
+# left running with its restart pending, and the update says so and names each unit it waits on
+# (``update_cmd_drain_report.report_restart_left_pending``), then lists it in the fleet check.
+_LEFT_RUNNING = re.compile(r"↻ (?P<label>[^:\n]+): still running live work(?: \((?P<what>[^\n]*?)\))? — left running")
+_FLEET_PENDING = re.compile(r"↻ \S+ \(pid (?P<pid>\d+)\) @ \S+ — restart pending")
 
 
-def _log_time(stamp: str) -> dt.datetime:
-    return dt.datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S,%f")
+def restarts_when_idle(column: str) -> bool:
+    """Whether the gateway the column starts on restarts only once idle (#155532, ``gateway/restart_when_idle.py``)
+    rather than stopping its live work at ``agent.restart_after_turn_timeout``."""
+    ref = refs().head if column == "head" else refs().base
+    return subprocess.run(["git", "cat-file", "-e", f"{ref}:gateway/restart_when_idle.py"], cwd=str(H.WORKTREE),
+                          capture_output=True, check=False).returncode == 0
 
 
-def restart_wait_verdict(inst: Install, slack_s: float = 15.0) -> str:
-    """'' when every restart wait the gateway logged closed within ``RESTART_WAIT_CAP_S``; otherwise
-    how long the first failing wait held and the work units the gateway last named while it held."""
-    log = inst.hermes_home / "logs" / "gateway.log"
-    text = log.read_text(errors="replace") if log.exists() else ""
-    starts = [m.start() for m in _WAIT_OPENED.finditer(text)]
-    for begin, end in zip(starts, [*starts[1:], len(text)]):
-        wait = text[begin:end]  # one wait, up to the next one's opening
-        opened = _log_time(_WAIT_OPENED.match(wait).group(1))
-        close = _WAIT_CLOSED.search(wait)
-        held = ((_log_time(close.group(1)) if close else dt.datetime.now()) - opened).total_seconds()
-        if close is None or held > RESTART_WAIT_CAP_S + slack_s:
-            holders = _WAIT_HOLDERS.findall(wait[:close.start()] if close else wait)
-            return (f"the gateway's restart wait held {held:.0f}s against its {RESTART_WAIT_CAP_S}s cap "
-                    f"({'never closed' if close is None else 'closed late'}); last named holders: "
-                    f"{holders[-1] if holders else 'none'}")
+def restart_pending_verdict(out: str, old_pid: int, session: str) -> str:
+    """'' when the update's output says gateway ``old_pid`` was left running with its restart pending
+    and names the managed worker ``session`` as what it waits on; otherwise what is missing."""
+    named = [m.group("what") or "" for m in _LEFT_RUNNING.finditer(out)]
+    if not named:
+        return ("the update left the busy gateway running but never reported its restart as pending on live work "
+                "(no '↻ …: still running live work (…) — left running' line)")
+    if not any(re.search(rf"\bmanaged run {re.escape(session)} pid \d+", w) for w in named):
+        return f"the update's pending-restart report names {named} but not the held kanban worker's session {session}"
+    pending = [int(m.group("pid")) for m in _FLEET_PENDING.finditer(out)]
+    if old_pid not in pending:
+        return f"the fleet check does not list gateway PID {old_pid} as restart pending (restart-pending PIDs: {pending})"
     return ""
 
 
 def settle_gateway(inst: Install, old_pid: int, *, timeout: float = 180) -> dict | None:
-    """Wait for a gateway serving ``inst.target`` under a new PID; None if none shows up."""
+    """Wait for a gateway serving ``inst.target`` under a new PID; None if none shows up.
+
+    Serving means what ``start_gateway`` waits for: the control socket answers ``identify``
+    (it does from early boot, ``state: starting``) AND the API server answers ``/health``."""
     def serving():
         ident = identify(inst.hermes_home)
-        return ident if ident and ident.get("pid") != old_pid and ident.get("code_sha") == inst.target else None
+        if not (ident and ident.get("pid") != old_pid and ident.get("code_sha") == inst.target):
+            return None
+        return ident if health(inst.port) else None
     try:
         return wait_for(serving, timeout=timeout, what="a relaunched gateway", interval=1.0)
     except AssertionError:

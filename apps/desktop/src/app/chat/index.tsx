@@ -381,11 +381,12 @@ export function ChatRuntimeBoundary({
           // checking the live atoms (not captured props) discards a page that
           // resolves after the user moved on — same pattern as isCurrentResume.
           isCurrent: () => view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId,
+          heldMessages: () => view.$messages.get(),
           applyOlderPage: olderPage => {
             const current = view.$messages.get()
 
             if (mergeOlderTranscriptPage(current, olderPage) === current) {
-              return
+              return false
             }
 
             beforePrepend?.()

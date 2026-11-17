@@ -11,7 +11,7 @@ from contextlib import redirect_stderr
 
 import pytest
 
-from hermes_cli._parser import build_top_level_parser
+from hermes_cli._parser import build_top_level_parser, scan_profile_flag
 
 def _parse_error(argv: list[str]) -> str:
     parser, subparsers, _chat = build_top_level_parser()
@@ -49,29 +49,21 @@ def test_invalid_profile_flag_value_explains_rule_and_exits(monkeypatch):
     assert exc.value.code == 2
 
 def test_pytest_style_dash_p_is_still_ignored(monkeypatch):
-    from hermes_cli import main as _main
-
     monkeypatch.setattr(sys, "argv", ["pytest", "-p", "no:xdist", "tests/"])
-    assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
+    assert scan_profile_flag(sys.argv[1:]) == (None, 0, None)
 
 def test_option_looking_dash_p_value_is_a_silent_skip_even_under_hermes(monkeypatch):
-    from hermes_cli import main as _main
-
     # `-p no:xdist` reaching us through a differently named runner (tox, nox, python -m) must not exit.
     monkeypatch.setattr(sys, "argv", ["hermes", "-p", "no:xdist", "tests/"])
-    assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
+    assert scan_profile_flag(sys.argv[1:]) == (None, 0, None)
     monkeypatch.setattr(sys, "argv", ["hermes", "-p", "--flag"])
-    assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
+    assert scan_profile_flag(sys.argv[1:]) == (None, 0, None)
 
 def test_title_cased_profile_label_is_normalised_not_rejected(monkeypatch):
-    from hermes_cli import main as _main
-
-    assert _main._scan_profile_flag(["-p", " Work ", "status"]) == ("work", 2, 0)
-    assert _main._scan_profile_flag(["--profile=Work", "status"]) == ("work", 1, 0)
+    assert scan_profile_flag(["-p", " Work ", "status"]) == ("work", 2, 0)
+    assert scan_profile_flag(["--profile=Work", "status"]) == ("work", 1, 0)
 
 def test_invalid_dash_p_after_a_subcommand_is_left_to_that_subcommand(monkeypatch):
-    from hermes_cli import main as _main
-
     # A plugin/subcommand flag such as `hermes kanban serve -p "Work Bot"` is not our profile selector.
     monkeypatch.setattr(sys, "argv", ["hermes", "kanban", "serve", "-p", "Work Bot"])
-    assert _main._scan_profile_flag(sys.argv[1:]) == (None, 0, None)
+    assert scan_profile_flag(sys.argv[1:]) == (None, 0, None)

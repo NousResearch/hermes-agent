@@ -13,6 +13,8 @@ import pytest
 
 from agent.context_compressor import SUMMARY_PREFIX
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 SUMMARY = SUMMARY_PREFIX + '\nearlier turns summarized'
 
 

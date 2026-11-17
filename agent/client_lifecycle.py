@@ -76,9 +76,10 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        from agent.anthropic_credentials import native_anthropic_fallback_token, anthropic_route_is_oauth
         is_anthropic = fb_provider == "anthropic"
-        effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
+        effective_key = credential or (native_anthropic_fallback_token(fb_base_url, model=getattr(agent, "model", None))
+                                       if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
@@ -955,6 +956,11 @@ class ClientLifecycleMixin:
         if not route_can_serve_model(getattr(self, "provider", None), stripped_base, getattr(self, "model", None)):
             logger.info("Credential %s skipped: its route cannot serve model %s", getattr(entry, "id", "?"), self.model)
             return False
+        if getattr(self, "provider", None) == "anthropic" and base_url_host_matches(str(stripped_base or ""), "azure.com"):
+            from hermes_cli.runtime_provider import anthropic_foundry_entry_ok
+            if not anthropic_foundry_entry_ok(entry, stripped_base):  # an OAuth/unbound row never reaches Foundry (#154242)
+                logger.info("Credential %s skipped: not a key bound to this Foundry endpoint", getattr(entry, "id", "?"))
+                return False
         if actual_route:
             self.api_mode = "chat_completions"
             if hasattr(self, "_transport_cache"):

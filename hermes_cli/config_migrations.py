@@ -760,6 +760,30 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
 _TEMPLATE_CACHE_TTL_LINE = re.compile(
     r"""^[ \t]+cache_ttl:[ \t]*(["']?)5m\1[ \t]*#[ \t]*use "1h" for long sessions with pauses between turns[ \t]*$""",
     re.MULTILINE)
+_TOP_LEVEL_KEY = re.compile(r"^(?:[\"']?)([A-Za-z_][\w-]*)(?:[\"']?)[ \t]*:")
+
+
+def _prompt_caching_child_lines(text: str) -> list[str]:
+    """The direct-child lines of the top-level ``prompt_caching:`` block mapping (empty when there is none):
+    the template's proof is only good on that node's own ``cache_ttl`` line, never on a matching line under
+    another section."""
+    lines, block, indent = text.splitlines(), [], None
+    for i, line in enumerate(lines):
+        match = _TOP_LEVEL_KEY.match(line)
+        if not match or match.group(1) != "prompt_caching":
+            continue
+        for child in lines[i + 1:]:
+            stripped = child.lstrip(" \t")
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped is child:  # back at column 0: the block ended
+                break
+            width = len(child) - len(stripped)
+            indent = width if indent is None else indent
+            if width == indent:
+                block.append(child)
+        break
+    return block
 
 
 def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
@@ -775,8 +799,8 @@ def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
     path = _cfg().get_config_path()
     # The proof is the template's comment bytes, which only an installer-seeded LOCAL file carries; a
     # non-file backend was never seeded from the template, so its "5m" is kept like any other pin.
-    seeded = supports_file_tooling() and _TEMPLATE_CACHE_TTL_LINE.search(
-        path.read_text(encoding="utf-8-sig"))  # config-reader: ok — comment bytes are the provenance; parsed docs drop them
+    seeded = supports_file_tooling() and any(_TEMPLATE_CACHE_TTL_LINE.fullmatch(line) for line in _prompt_caching_child_lines(
+        path.read_text(encoding="utf-8-sig")))  # config-reader: ok — comment bytes are the provenance; parsed docs drop them
     if not seeded:
         if not quiet:
             print('  ℹ prompt_caching.cache_ttl: "5m" pins every session to the 5m cache tier; the '

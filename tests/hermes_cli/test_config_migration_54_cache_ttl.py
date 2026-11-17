@@ -56,3 +56,22 @@ def test_bare_5m_is_a_user_pin_and_survives(tmp_path):
 def test_other_values_survive(tmp_path, ttl):
     text = yaml.safe_dump({"_config_version": 53, "prompt_caching": {"cache_ttl": ttl}})
     assert _ttl_section(_run(tmp_path / "pinned", text))["cache_ttl"] == ttl
+
+
+def test_the_template_comment_under_another_section_is_no_proof_for_a_user_pin(tmp_path):
+    """The comment line elsewhere in the file (a pasted note) says nothing about the prompt_caching node."""
+    text = ('_config_version: 53\n'
+            'notes:\n  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns\n'
+            'prompt_caching:\n  cache_ttl: 5m\n')
+    out = _run(tmp_path / "noted", text)
+    assert _ttl_section(out)["cache_ttl"] == "5m"
+    assert yaml.safe_load(out)["notes"]["cache_ttl"] == "5m"
+
+
+def test_the_template_line_on_the_prompt_caching_node_is_dropped_past_other_sections(tmp_path):
+    text = ('_config_version: 53\nnotes:\n  cache_ttl: 5m\n'
+            'prompt_caching:\n  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns\n'
+            'model:\n  default: m\n')
+    out = _run(tmp_path / "seeded-late", text)
+    assert "cache_ttl" not in _ttl_section(out)
+    assert yaml.safe_load(out)["notes"]["cache_ttl"] == "5m"

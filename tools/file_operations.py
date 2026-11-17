@@ -1512,7 +1512,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         error. ``verified`` is None when the hash could not be taken."""
         try:
             disk_sha = _native_io.sha256_of(self._native_path(path)) if self._native_read_enabled() else None
-            hash_result = None if disk_sha else self._exec(f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null")
+            # Hash stdin, not a file name: GNU marks the digest with a leading "\" when the name
+            # holds a backslash or newline, and a name starting with "-" is read as an option.
+            hash_result = None if disk_sha else self._exec(f"sha256sum 2>/dev/null < {self._escape_shell_arg(path)}")
             if hash_result is not None and hash_result.exit_code == 0 and hash_result.stdout.strip():
                 disk_sha = hash_result.stdout.strip().split()[0]
             if disk_sha:

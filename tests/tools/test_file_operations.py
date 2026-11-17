@@ -452,6 +452,20 @@ class TestSearchFilesIncludesDirectories:
         assert str(visible_dir) in result.files
         assert str(hidden_dir) not in result.files
 
+    def test_directory_probe_without_a_match_does_not_list_pruned_hidden_dirs(self, tmp_path):
+        """No directory matches, so the probe retries without ``-printf``; that
+        retry must print only the matches, not the hidden directories it prunes
+        (GNU find prints the whole expression when it has no action)."""
+        root = tmp_path / "repo"
+        (root / ".git" / "objects").mkdir(parents=True)
+        (root / "pkg" / ".cache").mkdir(parents=True)
+        (root / "pkg" / "nodes.yaml").write_text("x")
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        dirs, _ = ops._search_directories_with_find("nodes.yaml", str(root), 50)
+
+        assert dirs == []
+
     def test_find_lane_never_returns_the_search_root_itself(self, tmp_path, monkeypatch):
         """The root is excluded by path identity — not by ``-mindepth 1``, which
         would also exclude the depth-0 operand match a symlinked root depends on

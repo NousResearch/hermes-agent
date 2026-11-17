@@ -77,7 +77,8 @@ _CAPABILITY_ENDPOINTS = (
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
-    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")))
+    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
+    ("session_events", ("GET", "/api/sessions/{session_id}/events", "session_event_log")))
 
 
 def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
@@ -112,7 +113,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
-from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_runs as _api_runs, api_server_session_events as _session_events
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
@@ -1583,8 +1584,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
-        routes.extend(_room_grants._http_routes(self))
-        routes.extend(_api_runs._http_routes(self))
+        routes.extend([*_room_grants._http_routes(self), *_api_runs._http_routes(self), *_session_events.http_routes(self)])
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -2357,7 +2357,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
             **_STATIC_FEATURE_FLAGS,
             "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
-            "cors": bool(self._cors_origins)}
+            "session_event_log": _session_events._log(self) is not None, "cors": bool(self._cors_origins)}
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
@@ -3939,7 +3939,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from gateway.platforms.api_server_config_guard import config_unavailable_middleware
             mws = [mw for mw in (  # the config guard outermost: entering a profile scope reads config
                 config_unavailable_middleware, self._make_profile_prefix_middleware(), cors_middleware,
-                body_limit_middleware, security_headers_middleware) if mw is not None]
+                body_limit_middleware, security_headers_middleware, _session_events.event_seq_middleware(self)) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and

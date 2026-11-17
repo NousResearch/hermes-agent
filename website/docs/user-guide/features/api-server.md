@@ -726,7 +726,57 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session. `include_compacted=true` also returns the turns a context compaction archived (default: live transcript only). `inline_images=false` renders image attachments as `[image]` placeholders instead of inline data URIs — the transcript travels in kilobytes, for clients reading over a network |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
+| `GET` | `/api/sessions/{id}/events` | Durable, numbered event log long-poll (opt-in, see [Session event log](#session-event-log-long-poll)) |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, `tool.failed` (a tool that finished with an error), then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
+
+### Session event log (long-poll) {#session-event-log-long-poll}
+
+Clients that cannot keep a WebSocket or SSE stream open (an Apple Watch app, a Shortcut, a
+widget, a proxy that only passes request/response HTTP) can follow a session with plain polls.
+Turn it on per profile:
+
+```yaml
+sessions:
+  event_log: true   # default false
+```
+
+The gateway then appends each session's events (turn start/complete, tool start/complete,
+approval and clarify requests, `session.info`, ...) to `<profile>/session_events.db` with a
+per-session `seq` that is gapless, never reused, and survives a gateway restart. Token deltas
+(`message.delta`, `reasoning.delta`, ...) are not stored: the completion event that ends them
+carries the full text.
+
+`GET /api/sessions/{id}/events` query parameters:
+
+| Parameter | Meaning |
+|-----------|---------|
+| `after` | Return events with `seq > after` (default `0`) |
+| `limit` | Max events per response (default `100`, max `500`) |
+| `types` | Comma-separated globs, e.g. `turn.*,tool.*,message.complete` |
+| `turn_id` | Only events of one turn (the run's `admission_id`) |
+| `wait_ms` | Long-poll: when nothing newer matches, wait up to this long (max `30000`) |
+
+```json
+{"object": "hermes.session.events", "session_id": "...",
+ "events": [{"seq": 5, "type": "message.complete", "turn_id": "...", "created_at": 1794935640.1,
+             "payload": {"text": "pong", ...}}],
+ "next_after": 5, "last_seq": 6, "first_seq": 1, "truncated": false}
+```
+
+Poll again with `after=next_after`. `truncated: true` means older events were trimmed (the log
+keeps the newest 20,000 per session) and the client should re-read the transcript. With the log
+off the endpoint answers `409 event_log_disabled`; `/v1/capabilities` reports
+`features.session_event_log`.
+
+Read-your-write: `POST /v1/runs` and `POST /api/sessions/{id}/chat` responses carry `seq` (also
+the `X-Hermes-Event-Seq` header), the session's log head after the request's own events. Any
+`GET /api/sessions/{id}...` read accepts `min_seq=<seq>` and waits up to 2 s for the log to
+reach it.
+
+`GET /v1/runs/{run_id}` also takes `wait_ms` (max `30000`) and an optional `status=` list
+(default: any terminal state) so a client can wait for a run to finish in one request:
+`GET /v1/runs/$RID?wait_ms=30000` returns as soon as the run is `completed`/`failed`/`cancelled`,
+or the current status when the wait runs out.
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 

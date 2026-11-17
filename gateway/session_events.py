@@ -33,6 +33,9 @@ class SessionEvents:
         # The running execution's open tool calls and its last frame time; a hosted room's info
         # poll reports them so the room shows which tool a member is in (``progress_for``).
         self._progress = None
+        # ``(EventLog, canonical session id)`` when the profile keeps a durable event log
+        # (gateway/session_event_log.py); bound by the authority's ``LiveSessions`` map.
+        self.log = None
 
     def note_progress(self, generation, event_type, payload):
         """Record one execution frame (the caller holds ``lock`` and passed the generation fence)."""
@@ -89,6 +92,8 @@ class SessionEvents:
             frame['params']['session_id'] = session_id
             self._public_id = session_id
             self.sequence = frame['params']['seq']
+            if self.log is not None:
+                self.log[0].append(self.log[1], event_type, payload, frame['params'])
 
             def overflow(transport):
                 # The peer's socket is healthy; only its event subscription ended. Same

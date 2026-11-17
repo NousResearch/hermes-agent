@@ -423,6 +423,9 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
     from gateway.session_policy import release_launch_secrets, release_session_workspaces
     release_launch_secrets(authority, session_ids)
     release_session_workspaces(authority, session_ids)
+    log = getattr(authority.sessions, 'log', None)
+    for sid in session_ids if log is not None else ():
+        log.forget(sid)
     from tools.async_delegation import allow_for_session
     from gateway.session_vault_prompt import release_unlocks
     for sid in session_ids:

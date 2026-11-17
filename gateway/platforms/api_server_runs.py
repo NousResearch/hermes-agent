@@ -1248,8 +1248,9 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
 
 async def _handle_get_run(self, request: web.Request, *, _api_server) -> web.Response:
     """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
-    _, status, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="status", active_fallback=True)
+    from gateway.platforms.api_server_session_events import wait_for_run
+    status, err = await wait_for_run(self, request, lambda: _load_owned_run(
+        self, request, _api_server=_api_server, permission="status", active_fallback=True)[1::3])
     return err or web.json_response(status)
 
 

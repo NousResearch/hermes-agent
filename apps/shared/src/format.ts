@@ -25,3 +25,6 @@ export function compactNumber(value: null | number | undefined): string {
 
   return `${Math.round(num)}`
 }
+
+/** 成本金额货币符号：所有端点按人民币计价；Nous Portal 的美元余额不走这里。 */
+export const CURRENCY_SYMBOL = '$'

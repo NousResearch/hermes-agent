@@ -571,9 +571,7 @@
   margin: 0;
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   color: var(--ifm-font-color-base);
 }
 

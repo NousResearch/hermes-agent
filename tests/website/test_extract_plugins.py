@@ -94,6 +94,20 @@ def test_valid_entry_is_extracted_with_install_command(mod, tmp_path):
     assert e["installCommand"] == "hermes plugins install example-plugin"
 
 
+@pytest.mark.parametrize("title", ["Google Search & Video Data", "", None])
+def test_human_title_does_not_replace_install_identity(mod, tmp_path, title):
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "search-plugin", title=title)
+
+    assert mod.main(catalog_dir=catalog, output_dir=tmp_path / "api") == 0
+
+    entries = json.loads((tmp_path / "api" / "plugins.json").read_text(encoding="utf-8"))
+    assert entries[0]["title"] == (title or "")
+    assert entries[0]["name"] == "search-plugin"
+    assert entries[0]["installCommand"] == "hermes plugins install search-plugin"
+
+
 def test_entries_missing_required_fields_are_skipped(mod, tmp_path, capsys):
     catalog = tmp_path / "plugin-catalog"
     catalog.mkdir()

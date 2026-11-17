@@ -24,6 +24,7 @@ import {
   formatStars,
   pinUrl,
   pluginPagePath,
+  pluginTitle,
   repoUrl,
   tierOf,
 } from "../../components/PluginCatalog/catalog";
@@ -83,6 +84,7 @@ function PluginCard({
   style?: React.CSSProperties;
 }) {
   const tier = tierOf(plugin);
+  const title = pluginTitle(plugin);
   const category = categoryOf(plugin);
   const caps = plugin.capabilities || {};
   const toolCount = caps.providesTools?.length || 0;
@@ -146,9 +148,9 @@ function PluginCard({
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle} title={plugin.name}>
+            <h3 className={styles.cardTitle} title={title}>
               <RouteLink className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
-                {highlightMatch(plugin.name, query)}
+                {highlightMatch(title, query)}
               </RouteLink>
             </h3>
             {typeof plugin.stars === "number" && (
@@ -353,6 +355,7 @@ function PluginCard({
 function buildSearchHaystack(p: CatalogPlugin): string {
   return [
     p.name,
+    p.title,
     p.description,
     p.maintainer,
     p.tier,

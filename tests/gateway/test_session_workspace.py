@@ -183,8 +183,8 @@ def test_a_thread_whose_tree_the_sweep_archived_gets_its_work_back(tmp_path, mon
     assert removed and kept is None and ref  # the branch is gone; only the archive holds the work
 
     assert _turn(runner, entry, config) == root
-    assert Path(root, "work.txt").read_text(encoding="utf-8") == "committed"
-    assert Path(root, "README.md").read_text(encoding="utf-8") == "uncommitted"
+    assert Path(root, "work.txt").read_text(encoding="utf-8-sig") == "committed"
+    assert Path(root, "README.md").read_text(encoding="utf-8-sig") == "uncommitted"
     assert _git(root, "branch", "--show-current") == branch
 
 

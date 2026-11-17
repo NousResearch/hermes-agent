@@ -284,7 +284,9 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
     if args.consumer not in _READER_CONSUMERS:
         return _reader_error(args.operation_id, "CHILD_START_FAILED", args.board,
                              message="unsupported reader consumer")
-    command = list(args.command or [])
+    command = list(
+        getattr(args, "reader_command", None) or getattr(args, "command", None) or []
+    )
     if command and command[0] == "--":
         command.pop(0)
     if not command:

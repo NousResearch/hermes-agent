@@ -41,9 +41,7 @@ def _active_blob_generation(tmp_path):
     referenced = generation / "blobs" / "sha256" / "aa" / ("a" * 64)
     orphan = generation / "blobs" / "sha256" / "bb" / ("b" * 64)
     referenced.parent.mkdir(parents=True)
-    orphan.parent.mkdir(parents=True)
     referenced.write_bytes(b"referenced")
-    orphan.write_bytes(b"orphan")
     digest = sha256_file(referenced)
     canonical = generation / "blobs" / "sha256" / digest[:2] / digest
     canonical.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +66,8 @@ def _active_blob_generation(tmp_path):
     )
     activate_first_write(generation, fence_epoch=fence["epoch"])
     release_fence(board, token=fence["token"])
+    orphan.parent.mkdir(parents=True)
+    orphan.write_bytes(b"orphan")
     old = time.time() - 3600
     os.utime(orphan, (old, old))
     return board, generation, canonical, orphan

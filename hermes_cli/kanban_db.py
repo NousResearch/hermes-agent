@@ -1908,6 +1908,11 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         att = get_attachment(conn, attachment_id)
         if att is None:
             return None
+        if generated_path:
+            conn.execute(
+                "DELETE FROM recovery_attachment_resolution WHERE attachment_id = ?",
+                (attachment_id,),
+            )
         conn.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
         has_remaining_blob_reference = conn.execute(
             "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1",

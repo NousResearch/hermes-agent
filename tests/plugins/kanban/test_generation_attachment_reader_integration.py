@@ -137,3 +137,49 @@ def test_imported_attachment_public_readers_use_production_selection_and_fail_cl
             with kbc.connect_closing(board="default") as conn:
                 build_worker_context(conn, "imported")
         assert not bad_source.exists()
+
+
+def test_deleted_dynamic_attachment_blob_is_collected_after_last_reference_and_lease(tmp_path):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.kanban_generation import (
+        acquire_reader_lease, gc_generations, release_reader_lease,
+    )
+
+    _home, generation, _attachment_id, baseline_blob, _source = (
+        _published_attachment_board(tmp_path / "delete-gc")
+    )
+    board = generation.parents[1]
+    with kbc.connect_closing(db_path=generation / "kanban.db") as conn:
+        first = kb.store_attachment_bytes(
+            conn, "imported", "dynamic-a.txt", b"shared dynamic"
+        )
+        second = kb.store_attachment_bytes(
+            conn, "imported", "dynamic-b.txt", b"shared dynamic"
+        )
+        dynamic_relpath = conn.execute(
+            "SELECT custody_relpath FROM recovery_attachment_resolution "
+            "WHERE attachment_id = ?", (first,)
+        ).fetchone()[0]
+        dynamic_blob = generation / dynamic_relpath
+        kb.delete_attachment(conn, first)
+        assert dynamic_blob.is_file()
+        gc_generations(board, grace_seconds=0)
+        assert dynamic_blob.is_file()
+        lease = acquire_reader_lease(
+            board, consumer="test-reader", operation_id="old-snapshot"
+        )
+        kb.delete_attachment(conn, second)
+    old = 1
+    os.utime(dynamic_blob, (old, old))
+    gc_generations(board, grace_seconds=0)
+    assert dynamic_blob.is_file()
+    release_reader_lease(generation, lease["lease_id"])
+    gc_generations(board, grace_seconds=0)
+    assert not dynamic_blob.exists()
+    assert baseline_blob.is_file()
+    with sqlite3.connect(generation / "kanban.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM recovery_attachment_resolution "
+            "WHERE attachment_id IN (?, ?)", (first, second)
+        ).fetchone()[0] == 0

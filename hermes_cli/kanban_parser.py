@@ -108,7 +108,7 @@ _BOARD_SPECS = [
          help="Rollback before first activation"),
     _cmd("gc-generations", [_arg("--dry-run", action="store_true"), _json_flag()], help="Collect unreachable generations"),
     _cmd("reader-session", [_arg("--board", required=True), _arg("--protocol-version", type=int, required=True), _arg("--consumer", required=True), _arg("--operation-id", required=True), _arg("--json-lines", action="store_true")], help="Lease one board generation for a local reader"),
-    _cmd("with-reader-lease", [_arg("--board", required=True), _arg("--protocol-version", type=int, required=True), _arg("--consumer", required=True), _arg("--operation-id", required=True), _arg("--json-status-dir", required=True), _arg("command", nargs=argparse.REMAINDER)], help="Run one bounded reader under a generation lease"),
+    _cmd("with-reader-lease", [_arg("--board", required=True), _arg("--protocol-version", type=int, required=True), _arg("--consumer", required=True), _arg("--operation-id", required=True), _arg("--json-status-dir", required=True), _arg("reader_command", nargs=argparse.REMAINDER)], help="Run one bounded reader under a generation lease"),
     _cmd("list", [
         _json_flag(),
         _arg("--all", action="store_true", help="Include archived boards too"),

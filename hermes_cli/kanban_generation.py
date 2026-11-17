@@ -411,10 +411,76 @@ def initialize_generation_db(db: Path, *, gid: str, nonce: str, control_root: Pa
         conn.execute("INSERT INTO kanban_generation_meta VALUES (1, ?, ?, ?)", (gid, nonce, os.path.relpath(control_root, db.parent)))
 
 
+def _validate_blob_record(path: Path, record: dict[str, Any]) -> None:
+    try:
+        digest = str(record["blob_sha256"])
+        size = int(record["size"])
+        relative = Path(str(record["custody_relpath"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GenerationError("BLOB_MANIFEST_INVALID") from exc
+    expected = Path("blobs") / "sha256" / digest[:2] / digest
+    root = path.resolve()
+    resolved = (root / relative).resolve()
+    if (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or relative != expected
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or resolved != root / relative
+        or resolved.is_symlink()
+        or not resolved.is_file()
+        or resolved.stat().st_size != size
+        or sha256_file(resolved) != digest
+    ):
+        raise GenerationError("BLOB_MANIFEST_INVALID")
+
+
+def _current_blob_manifest(
+    path: Path, conn: sqlite3.Connection, *, exact_physical: bool
+) -> list[dict[str, Any]]:
+    try:
+        rows = conn.execute(
+            "SELECT attachment_id, blob_sha256, size, custody_relpath "
+            "FROM recovery_attachment_resolution ORDER BY attachment_id"
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise GenerationError("BLOB_MANIFEST_INVALID") from exc
+        rows = []
+    records = [
+        {
+            "attachment_id": int(row[0]),
+            "blob_sha256": str(row[1]),
+            "size": int(row[2]),
+            "custody_relpath": str(row[3]),
+        }
+        for row in rows
+    ]
+    for record in records:
+        _validate_blob_record(path, record)
+    if exact_physical:
+        blob_root = path / "blobs" / "sha256"
+        physical: set[str] = set()
+        if blob_root.exists():
+            if blob_root.is_symlink() or not blob_root.is_dir():
+                raise GenerationError("BLOB_MANIFEST_INVALID")
+            for candidate in blob_root.rglob("*"):
+                if candidate.is_symlink():
+                    raise GenerationError("BLOB_MANIFEST_INVALID")
+                if candidate.is_file():
+                    physical.add(str(candidate.relative_to(path)))
+        expected = {record["custody_relpath"] for record in records}
+        if physical != expected:
+            raise GenerationError("BLOB_MANIFEST_INVALID")
+    return records
+
+
 def build_ready(path: Path, *, gid: str, nonce: str) -> dict[str, Any]:
     with sqlite3.connect(path / "kanban.db") as conn:
         manifest = row_manifest(conn)
-    ready = {"format_version": 1, "generation_id": gid, "generation_nonce": nonce, "database_sha256": sha256_file(path / "kanban.db"), "manifest": manifest, "manifest_digest": manifest_digest(manifest)}
+        blob_manifest = _current_blob_manifest(path, conn, exact_physical=True)
+    ready = {"format_version": 1, "generation_id": gid, "generation_nonce": nonce, "database_sha256": sha256_file(path / "kanban.db"), "manifest": manifest, "manifest_digest": manifest_digest(manifest), "blob_manifest": blob_manifest}
     _atomic_json(path / "READY.json", ready)
     return ready
 
@@ -425,7 +491,7 @@ def validate_generation(path: Path, *, activated: bool = False) -> dict[str, Any
         ready = json.loads((path / "READY.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise GenerationError("READY_INVALID") from exc
-    required = {"format_version", "generation_id", "generation_nonce", "database_sha256", "manifest", "manifest_digest"}
+    required = {"format_version", "generation_id", "generation_nonce", "database_sha256", "manifest", "manifest_digest", "blob_manifest"}
     if not isinstance(ready, dict) or set(ready) != required or ready.get("format_version") != 1:
         raise GenerationError("READY_INVALID")
     db = path / "kanban.db"
@@ -449,9 +515,20 @@ def validate_generation(path: Path, *, activated: bool = False) -> dict[str, Any
                 raise GenerationError("GENERATION_META_INVALID")
         try:
             manifest = row_manifest(conn)
+            current_blobs = _current_blob_manifest(
+                path, conn, exact_physical=not activated
+            )
         except sqlite3.Error as exc:
             raise GenerationError("GENERATION_META_INVALID") from exc
         if not activated and (manifest_digest(manifest) != ready["manifest_digest"] or manifest != ready["manifest"]):
+            raise GenerationError("READY_INVALID")
+        if not isinstance(ready["blob_manifest"], list):
+            raise GenerationError("READY_INVALID")
+        for blob in ready["blob_manifest"]:
+            if not isinstance(blob, dict):
+                raise GenerationError("READY_INVALID")
+            _validate_blob_record(path, blob)
+        if not activated and current_blobs != ready["blob_manifest"]:
             raise GenerationError("READY_INVALID")
     if activated:
         try:

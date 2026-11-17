@@ -162,6 +162,21 @@ def test_long_backtick_fences_stay_inside_the_cap(tmp_path, monkeypatch):
     assert err is None and len(files[0].block.encode()) <= 2000
 
 
+def test_fence_refit_drops_a_row_per_pass(tmp_path, monkeypatch):
+    """A fence-widening row followed by a row too long to fit leaves slack; each re-render still drops a row."""
+    monkeypatch.setattr(dtf, "MAX_TOTAL_BYTES", 8000)
+    ws = _workspace(tmp_path)
+    reads = []
+    real = dtf._read_lines
+    monkeypatch.setattr(dtf, "_read_lines", lambda *a: reads.append(1) or real(*a))
+    for k in range(2500, 2800):  # some k lands the one-row render a few bytes over the cap
+        (ws / "t.md").write_text("`" * k + "\n" + "x" * 20000 + "\n", encoding="utf-8")
+        reads.clear()
+        _ws, files, err, _msg = _brief(tmp_path, ["t.md"])
+        assert err is None and len(files[0].block.encode()) <= 8000
+        assert len(reads) <= 3, (k, len(reads))
+
+
 def test_cut_files_stay_unmarked_and_denied_or_binary_files_fail_the_call(tmp_path):
     from tools.file_tools import read_file_tool
 

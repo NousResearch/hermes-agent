@@ -142,15 +142,16 @@ def _read_lines(resolved: Path, start: int, end: Optional[int], budget: int) -> 
 
 def _render_one(spec: FileSpec, resolved: Path, budget: int) -> tuple[str, InlinedFile]:
     body_budget = budget - len(spec.path) - 128
-    text, span = _render_within(spec, resolved, body_budget)
-    # A long backtick run in the body widens both fences past the reserve; each pass drops at least one row.
+    text, span, used = _render_within(spec, resolved, body_budget)
+    # A long backtick run in the body widens both fences past the reserve. Budgeting below the rows actually shown
+    # drops at least one row per pass, even when the next row was already too long to fit.
     while (over := len(text.encode("utf-8")) - budget) > 0 and body_budget > 0:
-        body_budget -= over
-        text, span = _render_within(spec, resolved, body_budget)
+        body_budget = min(body_budget, used) - over
+        text, span, used = _render_within(spec, resolved, body_budget)
     return text, span
 
 
-def _render_within(spec: FileSpec, resolved: Path, body_budget: int) -> tuple[str, InlinedFile]:
+def _render_within(spec: FileSpec, resolved: Path, body_budget: int) -> tuple[str, InlinedFile, int]:
     from agent.redact import _is_secret_file_arg, redact_sensitive_text
     from tools.file_tools_read_tracking import _file_metadata
 
@@ -170,7 +171,7 @@ def _render_within(spec: FileSpec, resolved: Path, body_budget: int) -> tuple[st
     version = (*before, digest) if stable else None
     span = InlinedFile(str(resolved), start, max(start + len(rows) - 1, start), spec.start is None,
                        not missing and body == raw, version)
-    return f"{label}\n{fence}\n{body}{fence}\n", span
+    return f"{label}\n{fence}\n{body}{fence}\n", span, len(raw.encode("utf-8"))
 
 
 def _files_are_local() -> bool:

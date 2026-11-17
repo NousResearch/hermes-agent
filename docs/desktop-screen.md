@@ -52,9 +52,10 @@ platform messages (already screened by Phase 2). `prompt.steer_queued`
 carries no text by contract (the transfer re-delivers the queued
 row's already-screened text). Attachments and `voice_context` are
 not screened this cycle (media triage is use case A6, later in the
-queue). NOTE: the visible client artefact of a hold is the terse
-refusal reason (`desktop_screen_hold`) - the full hold notice lives
-in the screen log. Round-6 review NOTEs, documented as out of
+queue). NOTE: the visible client artefact of a hold is the RPC error
+frame `4001 desktop_screen_hold` whose `error.message` carries the
+full hold notice (reason list) - the same notice is in the screen
+log. Round-6 review NOTEs, documented as out of
 scope: `display_v1.title_preview` feeds only the display titler
 (an auxiliary call that writes a chat title, never the session
 prompt) and `cli_turn_v1.turn_author.name` reaches memory
@@ -63,20 +64,26 @@ this cycle (same A6 deferral as attachments/voice_context).
 
 Judge philosophy unchanged: the judge advises, it never replaces
 owner gates. Texts are split into 32k-char chunks with a 1 KB seam
-overlap (a payload up to about 1 KB cannot hide in a chunk boundary;
-longer payloads are judged as fragments, every character still
-judged), all chunks judged within one 6s screening budget shared by
-the whole submit. Whitespace-only chunks are skipped (no payload,
-and the engine rejects blank text); every other model-visible
-character is judged or the submit is held ("screening_incomplete_budget";
-text over 4M chars is held as "oversized_unscreened"; a deterministic
-engine 4xx rejection holds as "engine_rejected_chunk"). The fail-open
-class (Phase 2) covers: engine unreachable, engine 5xx or malformed
-200 response, and TRANSIENT client codes 408/429 (proxy timeout,
-rate limit - a busy engine must not lock the owner out; logged as
-"engine_rate_limited_or_timeout"). A call clipped by the budget is
-coverage exhaustion and holds. Known cosmetic: chunks judged allow
-before a later chunk holds have already reported "accepted" outcomes
+overlap: a payload of up to 1024 chars is GUARANTEED to sit whole
+inside some chunk wherever it falls; longer payloads are often still
+held (position-dependent) and anything longer than one chunk
+(32k) reaches the engine as fragments - every character judged in
+all cases. All chunks are judged within one 6s screening budget
+shared by the whole submit. Whitespace-only chunks are skipped (no
+payload, and the engine rejects blank text); every other
+model-visible character is judged or the submit is held
+("screening_incomplete_budget"; text over 4M chars is held as
+"oversized_unscreened"; a deterministic engine 4xx rejection holds
+as "engine_rejected_chunk"). The fail-open class (Phase 2) covers:
+engine unreachable, engine 5xx or malformed 200 response, and
+TRANSIENT client codes 408/429 (proxy timeout, rate limit - a busy
+engine must not lock the owner out; logged as
+"engine_rate_limited_or_timeout"). Fail-open abandons screening of
+the REMAINING chunks of that submit (same width as the Phase 2
+gateway fail-open; the whole submission is then admitted unscreened
+and the event is logged). A call clipped by the budget is coverage
+exhaustion and holds. Known cosmetic: chunks judged allow before a
+later chunk holds have already reported "accepted" outcomes
 (analytics only, no screening effect).
 
 ## Enablement (per deployment)

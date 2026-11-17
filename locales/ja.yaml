@@ -1016,6 +1016,7 @@ platform:
       ended: "このリクエストは終了しました。何も保存されていません。"
       not_author: "このリクエストを開始した人だけが値を入力できます。"
       submitted_footer: "✓ .env に保存しました"
+      not_saved: "⚠️ 保存されませんでした。キーはまだありません。.env に手動で追加するか、もう一度依頼してください。"
     response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"

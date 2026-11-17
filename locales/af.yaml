@@ -1016,6 +1016,7 @@ platform:
       ended: "Hierdie versoek het geëindig; niks is gestoor nie."
       not_author: "Slegs die persoon wat hierdie versoek begin het, kan die waarde invoer."
       submitted_footer: "✓ In .env gestoor"
+      not_saved: "⚠️ Nie gestoor nie: die sleutel ontbreek steeds. Voeg dit self by .env of vra weer."
     response_as_file: "📎 Lang antwoord: die volledige teks is aangeheg."
     truncated_suffix: "\n...(afgekap)"
     unknown: "onbekend"

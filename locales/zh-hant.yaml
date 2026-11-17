@@ -1016,6 +1016,7 @@ platform:
       ended: "此請求已結束；未儲存任何內容。"
       not_author: "只有發起此請求的人才能輸入該值。"
       submitted_footer: "✓ 已儲存到 .env"
+      not_saved: "⚠️ 未儲存：密鑰仍然缺少。請手動加入 .env 或重新請求。"
     response_as_file: "📎 回覆較長：完整內容已附為檔案。"
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"

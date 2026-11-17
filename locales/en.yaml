@@ -1061,6 +1061,7 @@ platform:
       ended: "This request has ended; nothing was saved."
       not_author: "Only the person who started this request can enter the value."
       submitted_footer: "✓ Saved to .env"
+      not_saved: "⚠️ Not saved: the key is still missing. Add it to .env by hand or ask again."
     response_as_file: "📎 Long reply: the full text is attached."
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"

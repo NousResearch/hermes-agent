@@ -1204,6 +1204,7 @@ platform:
       ended: "Cette demande est terminée ; rien n'a été enregistré."
       not_author: "Seule la personne qui a lancé cette demande peut saisir la valeur."
       submitted_footer: "✓ Enregistré dans .env"
+      not_saved: "⚠️ Non enregistré : la clé manque toujours. Ajoutez-la à la main dans .env ou redemandez."
     response_as_file: "📎 Réponse longue : le texte complet est en pièce jointe."
     truncated_suffix: |2-
 

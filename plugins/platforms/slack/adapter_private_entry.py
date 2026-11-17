@@ -12,6 +12,7 @@ owning profile's ``.env``. The capability is opt-in (``platforms.slack.extra.sec
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import secrets
 import time
@@ -25,6 +26,7 @@ logger = logging.getLogger("plugins.platforms.slack.adapter")
 _HINT_LIMIT = 300
 _MODAL_TITLE_LIMIT = 24  # Slack caps modal title / submit text at 24 characters
 _REQUESTS_MAX = 200
+_OUTCOME_WAIT_S = 30  # the gateway's .env write after a submit: a stuck one reports "not saved"
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,8 @@ class _EntryCard:
     message_ts: str = ""
     text: str = ""
     expires_at: float = 0.0
+    # Resolved by the gateway once it acted on the value (secret: saved or not); None = done on submit.
+    outcome: Optional[concurrent.futures.Future] = None
 
 
 def t(key: str, **kwargs: Any) -> str:
@@ -110,8 +114,10 @@ class SlackPrivateEntryMixin:
 
     async def send_secret_prompt(self, chat_id: str, env_var: str, prompt: str, *, user_id: str,
                                  submit: Callable[[str], bool], timeout_s: float,
+                                 outcome: concurrent.futures.Future,
                                  metadata: Optional[dict] = None) -> SendResult:
-        """Ask the turn's author for ``env_var``; ``metadata`` may carry ``skill_name``/``help``."""
+        """Ask the turn's author for ``env_var``; ``metadata`` may carry ``skill_name``/``help``. The card's
+        footer reports ``outcome`` (True: saved), not just the handoff."""
         details = metadata or {}
         name = mrkdwn_escape(env_var)
         body = t("platform.shared.secret_entry.body", name=name)
@@ -122,15 +128,16 @@ class SlackPrivateEntryMixin:
         title = t("platform.shared.secret_entry.title", name=env_var)
         return await self._post_entry_card(
             SECRET, chat_id, details, title=title, body=body, user_id=user_id, submit=submit,
-            timeout_s=timeout_s, modal_label=str(prompt or env_var)[:2000])
+            timeout_s=timeout_s, modal_label=str(prompt or env_var)[:2000], outcome=outcome)
 
     async def _post_entry_card(self, kind: EntryKind, chat_id: str, metadata: Optional[dict], *, title: str,
                                body: str, user_id: str, submit: Callable[[str], bool], timeout_s: float,
-                               modal_label: str) -> SendResult:
+                               modal_label: str,
+                               outcome: Optional[concurrent.futures.Future] = None) -> SendResult:
         token = secrets.token_urlsafe(18)
         card = _EntryCard(kind=kind, submit=submit, user_id=str(user_id),
                           team_id=str(self._metadata_team_id(metadata) or ""), modal_label=modal_label,
-                          expires_at=time.monotonic() + timeout_s)
+                          expires_at=time.monotonic() + timeout_s, outcome=outcome)
         card.text = f"*{mrkdwn_escape(title)}*\n{body}"[:3000]
 
         def _build() -> tuple[str, list]:
@@ -150,7 +157,7 @@ class SlackPrivateEntryMixin:
             self._trim_oldest_dict_entries(cards, _REQUESTS_MAX)
             # The card retires itself when the request can no longer be answered.
             asyncio.get_running_loop().call_later(
-                timeout_s, lambda: asyncio.ensure_future(self._retire_entry_card(kind, token, ended=True)))
+                timeout_s, lambda: asyncio.ensure_future(self._retire_entry_card(kind, token, "ended")))
         return result
 
     def _live_entry_card(self, kind: EntryKind, token: str) -> Optional[_EntryCard]:
@@ -159,11 +166,11 @@ class SlackPrivateEntryMixin:
             return None
         return card
 
-    async def _retire_entry_card(self, kind: EntryKind, token: str, *, ended: bool) -> None:
+    async def _retire_entry_card(self, kind: EntryKind, token: str, notice_key: str) -> None:
         card = self._entry_cards(kind).pop(token, None)
         if card is None:
             return
-        notice = t(f"{kind.i18n}.ended" if ended else f"{kind.i18n}.submitted_footer")
+        notice = t(f"{kind.i18n}.{notice_key}")
         await self._finalize_interactive_message(card.channel_id, card.message_ts, card.text, notice,
                                                  kind.label, kind.label, card.team_id or None, sanitize=False)
 
@@ -220,7 +227,18 @@ class SlackPrivateEntryMixin:
         value = ""
         if not accepted:
             await ack(response_action="errors", errors={kind.block_id: t(f"{kind.i18n}.ended")})
-            await self._retire_entry_card(kind, token, ended=True)
+            await self._retire_entry_card(kind, token, "ended")
             return
         await ack()
-        await self._retire_entry_card(kind, token, ended=False)
+        await self._retire_entry_card(kind, token, await self._submit_outcome(card))
+
+    @staticmethod
+    async def _submit_outcome(card: _EntryCard) -> str:
+        """The footer for an accepted submit: what the gateway reports it did with the value."""
+        if card.outcome is None:
+            return "submitted_footer"
+        try:
+            done = await asyncio.wait_for(asyncio.wrap_future(card.outcome), _OUTCOME_WAIT_S)
+        except TimeoutError:
+            done = False
+        return "submitted_footer" if done else "not_saved"

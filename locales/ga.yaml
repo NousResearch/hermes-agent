@@ -1016,6 +1016,7 @@ platform:
       ended: "Tá an t-iarratas seo thart; níor sábháladh aon rud."
       not_author: "Ní féidir ach leis an duine a thosaigh an t-iarratas seo an luach a chur isteach."
       submitted_footer: "✓ Sábháilte i .env"
+      not_saved: "⚠️ Níor sábháladh: tá an eochair fós in easnamh. Cuir le .env de láimh í nó iarr arís."
     response_as_file: "📎 Freagra fada: tá an téacs iomlán ceangailte."
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"

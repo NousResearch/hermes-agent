@@ -1030,6 +1030,7 @@ platform:
       ended: "Ez a kérés véget ért; semmi sem lett mentve."
       not_author: "Csak a kérést indító személy adhatja meg az értéket."
       submitted_footer: "✓ Mentve a .env fájlba"
+      not_saved: "⚠️ Nincs mentve: a kulcs továbbra is hiányzik. Add hozzá kézzel a .env fájlhoz, vagy kérd újra."
     response_as_file: "📎 Hosszú válasz: a teljes szöveg csatolva."
     truncated_suffix: "\n...(csonkolva)"
     unknown: "ismeretlen"

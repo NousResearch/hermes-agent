@@ -1016,6 +1016,7 @@ platform:
       ended: "Diese Anfrage ist beendet; es wurde nichts gespeichert."
       not_author: "Nur die Person, die diese Anfrage gestartet hat, kann den Wert eingeben."
       submitted_footer: "✓ In .env gespeichert"
+      not_saved: "⚠️ Nicht gespeichert: Der Schlüssel fehlt weiterhin. Trage ihn selbst in die .env ein oder frage erneut."
     response_as_file: "📎 Lange Antwort: Der vollständige Text ist angehängt."
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"

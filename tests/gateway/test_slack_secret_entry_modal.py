@@ -7,6 +7,7 @@ profile's ``.env``; it is never posted, echoed, logged or returned to the model.
 legacy hint stays.
 """
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -136,7 +137,8 @@ def test_author_saves_the_secret_to_the_owning_profiles_env_through_the_modal(lo
     # The launch profile never sees profile b's key: not in its .env, not in the shared process env.
     assert not (default_home / ".env").exists() and "FOO_KEY" not in os.environ
     wait_until(lambda: client.chat_update.await_count, what="card retired")
-    assert all(block["type"] != "actions" for block in client.chat_update.call_args.kwargs["blocks"])
+    retired = client.chat_update.call_args.kwargs["blocks"]
+    assert all(block["type"] != "actions" for block in retired) and "Saved" in retired[-1]["elements"][0]["text"]
     assert VALUE not in repr(client.mock_calls) and VALUE not in repr(out) and VALUE not in caplog.text
 
 
@@ -149,3 +151,37 @@ def test_flag_off_keeps_the_messaging_refusal_hint(loop, tmp_path, monkeypatch):
     assert "not supported over messaging" in out["gateway_setup_hint"]
     client.chat_postMessage.assert_not_awaited()
     assert not (prof_b / ".env").exists()
+
+
+def test_a_refused_save_says_not_saved_and_keeps_the_key_missing(loop, tmp_path, monkeypatch):
+    from hermes_cli import config
+
+    def refuse(key, _value):
+        raise ValueError(f"Refusing to save {key}: locked")
+    monkeypatch.setattr(config, "save_env_value_secure", refuse)
+    _default_home, prof_b = _profiles(tmp_path, monkeypatch)
+    adapter, client = _adapter(True)
+    out = {}
+    worker = _skill_needs_foo_key(loop, adapter, prof_b, out)
+    wait_until(lambda: client.chat_postMessage.await_count, what="secret card")
+    token = client.chat_postMessage.call_args.kwargs["blocks"][1]["elements"][0]["value"]
+    _run(loop, adapter._handle_entry_open(AsyncMock(), *_click(AUTHOR, token)))
+    view = client.views_open.call_args.kwargs["view"]
+    _run(loop, adapter._handle_entry_submit(AsyncMock(), *_submission(AUTHOR, view, VALUE)))
+    worker.join(10)
+    assert out["missing_names"] == ["FOO_KEY"]
+    wait_until(lambda: client.chat_update.await_count, what="card retired")
+    assert "Not saved" in client.chat_update.call_args.kwargs["blocks"][-1]["elements"][0]["text"]
+    assert VALUE not in repr(client.mock_calls)
+
+
+def test_socket_mode_debug_frames_of_a_secret_submit_are_dropped(caplog):
+    """slack_sdk logs every received Socket Mode frame at DEBUG before Bolt dispatches it."""
+    sdk_logger = logging.getLogger("slack_bolt.AsyncApp")
+    sdk_logger.setLevel(logging.DEBUG)
+    caplog.set_level(logging.DEBUG)
+    sdk_logger.debug("Received message (data: %s)", json.dumps(
+        {"payload": {"type": "view_submission", "view": {"callback_id": SECRET.view_callback,
+                                                          "state": {"values": {"v": VALUE}}}}}))
+    sdk_logger.debug("Received message (data: %s)", json.dumps({"type": "hello"}))
+    assert VALUE not in caplog.text and "hello" in caplog.text

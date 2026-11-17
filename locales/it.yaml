@@ -1016,6 +1016,7 @@ platform:
       ended: "Questa richiesta è terminata; non è stato salvato nulla."
       not_author: "Solo chi ha avviato questa richiesta può inserire il valore."
       submitted_footer: "✓ Salvato in .env"
+      not_saved: "⚠️ Non salvato: la chiave manca ancora. Aggiungila a mano nel .env o richiedila."
     response_as_file: "📎 Risposta lunga: il testo completo è in allegato."
     truncated_suffix: "\n...(troncato)"
     unknown: "sconosciuto"

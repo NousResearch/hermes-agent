@@ -1016,6 +1016,7 @@ platform:
       ended: "此请求已结束；未保存任何内容。"
       not_author: "只有发起此请求的人才能输入该值。"
       submitted_footer: "✓ 已保存到 .env"
+      not_saved: "⚠️ 未保存：密钥仍然缺失。请手动添加到 .env 或重新请求。"
     response_as_file: "📎 回复较长：完整内容已作为文件附上。"
     truncated_suffix: "\n...（已截断）"
     unknown: "未知"

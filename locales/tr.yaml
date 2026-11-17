@@ -1016,6 +1016,7 @@ platform:
       ended: "Bu istek sona erdi; hiçbir şey kaydedilmedi."
       not_author: "Değeri yalnızca bu isteği başlatan kişi girebilir."
       submitted_footer: "✓ .env dosyasına kaydedildi"
+      not_saved: "⚠️ Kaydedilmedi: anahtar hâlâ eksik. .env dosyasına elle ekleyin veya yeniden isteyin."
     response_as_file: "📎 Uzun yanıt: metnin tamamı ekte."
     truncated_suffix: "\n...(kısaltıldı)"
     unknown: "bilinmiyor"

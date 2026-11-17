@@ -15,16 +15,20 @@ The agent thread runs inside the turn's profile scope, so ``get_env_path()`` is 
 The adapter methods are optional and detected on the class::
 
     def secret_prompt_enabled(self) -> bool
-    async def send_secret_prompt(self, chat_id, env_var, prompt, *, user_id, submit, timeout_s,
+    async def send_secret_prompt(self, chat_id, env_var, prompt, *, user_id, submit, timeout_s, outcome,
                                  metadata=None) -> SendResult
+
+``submit(value)`` hands the value to the waiting thread (False: the request already ended). ``outcome`` is a
+``concurrent.futures.Future`` resolved to True once the value is saved, False when it was not, so the card
+reports what actually happened.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import logging
-import threading
 
-from gateway.session_vault_code_card import _CodeRequest
+from gateway.session_vault_code_card import CardAsker
 
 logger = logging.getLogger(__name__)
 
@@ -54,54 +58,38 @@ def secret_card_scope(turn, agent):
         # No author to bind the card to: answering it would be open to anyone the adapter admits.
         yield
         return
-    from gateway.run import _approval_send_outcome
-    from gateway.run_turn_runner_clarify_delivery import SEND_ACK_WINDOW
-    from tools.approval_human_wait import activity_heartbeat, human_wait_window
     from tools.skills_tool import bind_turn_secret_capture
-    open_requests: list[_CodeRequest] = []
-    scope_lock = threading.Lock()
-    scope_open = [True]
-
-    def ask(var_name, prompt, metadata):
-        # Re-read the adapter: a reconnect replaces the instance the turn started with.
-        live_adapter = _secret_card_adapter(turn)
-        request = _CodeRequest()
-        with scope_lock:
-            if not scope_open[0] or live_adapter is None:
-                # A tool worker that outlived its turn keeps this callback: it may not ask again.
-                return ""
-            open_requests.append(request)
-        fut = turn._schedule(
-            live_adapter.send_secret_prompt(
-                ctx._status_chat_id, var_name, prompt, user_id=user_id, submit=request.submit,
-                timeout_s=SECRET_CARD_TIMEOUT_S, metadata={**(ctx._status_thread_metadata or {}), **metadata}),
-            "Secret entry card failed to schedule")
-        if _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW) not in ("sent", "ambiguous"):
-            request.close()
-            return ""
-        with human_wait_window(ctx.session_key or None):
-            return request.wait(SECRET_CARD_TIMEOUT_S, lambda: bool(getattr(agent, "_interrupt_requested", False)),
-                                activity_heartbeat(f"waiting for {var_name}"))
+    asker = CardAsker(turn, agent)
 
     def callback(var_name, prompt, metadata=None):
-        value = ask(var_name, prompt, dict(metadata or {}))
-        if not value:
-            return _skipped(var_name)
-        from hermes_cli.config import save_env_value_secure
-        try:
-            saved = save_env_value_secure(var_name, value)
-        except ValueError as exc:  # a locked key or a redacted mask: refused, message names the key only
-            return {"success": False, "stored_as": var_name, "validated": False, "skipped": True,
-                    "message": str(exc)}
-        return {**saved, "skipped": False,
-                "message": "Secret stored securely. The secret value was not exposed to the model."}
+        # Resolved after the save is attempted; the card's footer says saved or not saved from it.
+        outcome: concurrent.futures.Future = concurrent.futures.Future()
+
+        def send(request):
+            # Re-read the adapter: a reconnect replaces the instance the turn started with.
+            live_adapter = _secret_card_adapter(turn)
+            return None if live_adapter is None else live_adapter.send_secret_prompt(
+                ctx._status_chat_id, var_name, prompt, user_id=user_id, submit=request.submit,
+                timeout_s=SECRET_CARD_TIMEOUT_S, outcome=outcome,
+                metadata={**(ctx._status_thread_metadata or {}), **dict(metadata or {})})
+        value = asker.ask(send, SECRET_CARD_TIMEOUT_S, f"waiting for {var_name}", "Secret entry")
+        result = _save(var_name, value) if value else _skipped(var_name)
+        outcome.set_result(not result.get("skipped"))
+        return result
 
     try:
         with bind_turn_secret_capture(callback):
             yield
     finally:
-        with scope_lock:
-            scope_open[0] = False
-            pending = list(open_requests)
-        for request in pending:
-            request.cancel()
+        asker.close()
+
+
+def _save(var_name, value):
+    from hermes_cli.config import save_env_value_secure
+    try:
+        saved = save_env_value_secure(var_name, value)
+    except (OSError, ValueError) as exc:  # locked key, redacted mask, unwritable .env: the message names the key only
+        logger.warning("Saving %s from the secret card failed: %s", var_name, type(exc).__name__)
+        return {"success": False, "stored_as": var_name, "validated": False, "skipped": True, "message": str(exc)}
+    return {**saved, "skipped": False,
+            "message": "Secret stored securely. The secret value was not exposed to the model."}

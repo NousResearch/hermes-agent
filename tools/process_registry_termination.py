@@ -10,6 +10,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from tools.process_registry_env_log import group_liveness_shell
 
 if TYPE_CHECKING:
     from tools.process_registry import ProcessSession
@@ -24,34 +25,25 @@ _ENV_KILL_TRANSPORT_SECONDS = 10.0
 
 
 def env_group_kill_command(pgid: int, grace: float) -> str:
-    """Shell command that stops sandbox process group *pgid* and proves it is gone.
+    """POSIX shell command that stops sandbox process group *pgid* and proves it is gone.
 
     SIGTERM, then after *grace* seconds SIGKILL (no SIGKILL when *grace* is 0,
     matching ``terminal.daemon_term_grace_seconds``). Prints ``ENV_GONE_MARKER`` once
-    ``kill -0`` fails with ESRCH; any other failure (EPERM: the member belongs to
-    another user) still counts as alive. When the group outlives every signal,
-    prints ``ENV_SURVIVORS_MARKER`` and the member PIDs, read from ``/proc`` or else
-    ``ps`` (none when the sandbox has neither)."""
+    ``group_liveness_shell`` finds no live member (zombies do not count). When the
+    group outlives every signal, prints ``ENV_SURVIVORS_MARKER`` and its live member
+    PIDs (``?`` when the sandbox cannot list them)."""
     if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 1:
         # kill -- -1 signals every process the sandbox user can reach.
         raise ValueError(f"not a sandbox process group id: {pgid!r}")
     term_ticks = max(1, math.ceil(grace / _ENV_TICK)) if grace else round(1 / _ENV_TICK)
     gone_exit = f"{{ echo {ENV_GONE_MARKER}; exit 0; }}"
-    escalate = f'kill -KILL -- "-$g" 2>/dev/null; wait_gone 20 && {gone_exit}; ' if grace else ""
+    escalate = f'kill -KILL "-$_hg" 2>/dev/null; _hw 20 && {gone_exit}; ' if grace else ""
     return (
-        f"g={pgid}; "
-        'gone() { local e; e=$(LC_ALL=C kill -0 -- "-$g" 2>&1) && return 1; [[ $e == *"No such process"* ]]; }; '
-        f'wait_gone() {{ local i; for ((i = 0; i < $1; i++)); do gone && return 0; sleep {_ENV_TICK}; done; gone; }}; '
-        f'kill -TERM -- "-$g" 2>/dev/null; wait_gone {term_ticks} && {gone_exit}; '
+        group_liveness_shell(str(pgid))
+        + f'_hw() {{ _i=0; while [ "$_i" -lt "$1" ]; do _hl || return 0; sleep {_ENV_TICK}; _i=$((_i + 1)); done; ! _hl; }}; '
+        f'kill -TERM "-$_hg" 2>/dev/null; _hw {term_ticks} && {gone_exit}; '
         f"{escalate}"
-        # Field 5 of /proc/<pid>/stat is the pgid; split after the last ") " so a comm with
-        # spaces cannot shift it. No /proc (macOS over SSH): ask ps. The scan's stderr is
-        # dropped: a process that exits mid-scan fails its read, and that message must not
-        # land inside the PID line.
-        'm=""; { if [ -r /proc/self/stat ]; then for s in /proc/[0-9]*/stat; do read -r l < "$s" || continue; '
-        'set -f; set -- ${l##*) }; set +f; [ "$3" = "$g" ] && m+=" ${s//[!0-9]/}"; done; '
-        'else while read -r p q; do [ "$q" = "$g" ] && m+=" $p"; done < <(ps -A -o pid= -o pgid=); fi; } 2>/dev/null; '
-        f'echo "{ENV_SURVIVORS_MARKER}$m"; exit 1'
+        f'echo {ENV_SURVIVORS_MARKER} $(_hm); exit 1'
     )
 
 

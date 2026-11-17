@@ -211,18 +211,6 @@ def test_a_natural_exit_keeps_its_output_and_code(tmp_path, code):
             _join_poller(session)
 
 
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("diagnostic,gone", [("No such process", True), ("Operation not permitted", False)])
-def test_only_esrch_proves_the_group_gone(diagnostic, gone):
-    # A shell function stands in for the kill builtin, so no real process is signalled.
-    script = (
-        "kill() { printf '%s\\n' " + shlex.quote("bash: kill: (-4321) - " + diagnostic)
-        + " >&2; return 1; }; " + env_group_kill_command(4321, 0.1))
-    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10, check=False)
-    assert (result.returncode == 0) is gone
-    assert ("__HERMES_PROCESS_TERMINATED__" in result.stdout.splitlines()) is gone
-
-
 @pytest.mark.parametrize("pgid", [0, 1, -1, True])
 def test_kill_command_refuses_group_ids_that_reach_other_processes(pgid):
     with pytest.raises(ValueError):
@@ -238,7 +226,7 @@ def test_a_supervisor_probe_that_raced_a_kill_is_repeated_on_the_group(monkeypat
 
     class Env:
         def execute(self, command, **_kwargs):
-            group_probes.append('kill -0 "-$_hp"' in command)
+            group_probes.append("_hl;" in command)
             if len(group_probes) == 1:
                 session.group_liveness = True  # a kill begins while this supervisor probe runs
                 return {"output": "0 0 exit:\n"}  # ...and has already stopped the supervisor
@@ -255,24 +243,63 @@ def test_a_supervisor_probe_that_raced_a_kill_is_repeated_on_the_group(monkeypat
     assert session.exit_code == 143
 
 
+# Hides /proc and ps from the liveness shell, as in a sandbox that has neither.
+_NO_MEMBER_LIST = ("ps() { return 1; }; ", "/proc/self/stat", "/nonexistent/stat")
+
+
+def _poll_status(tmp_path, shell, pgid_text, prefix=""):
+    from tools.process_registry_env_log import log_delta_command, parse_log_delta_reply
+
+    for name, text in (("pid", pgid_text + "\n"), ("exit", "143\n"), ("log", "")):
+        (tmp_path / f"bg.{name}").write_text(text, encoding="utf-8")
+    quoted = {name: shlex.quote(str(tmp_path / f"bg.{name}")) for name in ("log", "pid", "exit")}
+    command = log_delta_command(quoted["log"], 0, quoted["pid"], quoted["exit"], group=True)
+    if prefix:
+        command = prefix + command.replace(_NO_MEMBER_LIST[1], _NO_MEMBER_LIST[2])
+    result = subprocess.run([shell, "-c", command], capture_output=True, text=True, timeout=10, check=False)
+    reply = parse_log_delta_reply(result.stdout)
+    assert reply is not None, result
+    return "run" if reply.exit_code is None else "exit"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("shell", ["bash", "sh"])
+def test_the_group_poll_counts_live_members_only(tmp_path, shell):
+    live = subprocess.Popen(["sleep", "30"], process_group=0)
+    zombie = subprocess.Popen(["sleep", "0"], process_group=0)
+    try:
+        wait_until(lambda: psutil.Process(zombie.pid).status() == psutil.STATUS_ZOMBIE, what="zombie")
+        assert _poll_status(tmp_path, shell, str(live.pid)) == "run"
+        # A container whose PID 1 never reaps keeps a killed job's zombies: they are not the job.
+        assert _poll_status(tmp_path, shell, str(zombie.pid)) == "exit"
+        assert _poll_status(tmp_path, shell, "999999999") == "exit"
+        assert _poll_status(tmp_path, shell, "not-a-pid") == "exit"
+        # PID 1's group belongs to another user here (EPERM to signal): still a live member.
+        assert _poll_status(tmp_path, shell, "1") == "run"
+    finally:
+        live.kill()
+        live.wait()
+        zombie.wait()
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("shell", ["bash", "sh"])
 @pytest.mark.parametrize("diagnostic,status", [
-    ("No such process", "exit:143"), ("Operation not permitted", "run"), (None, "run")])
-def test_the_group_poll_reads_only_esrch_as_gone(tmp_path, shell, diagnostic, status):
-    from tools.process_registry_env_log import log_delta_command, parse_log_delta_reply
-
-    (tmp_path / "bg.pid").write_text("4321\n", encoding="utf-8")
-    (tmp_path / "bg.exit").write_text("143\n", encoding="utf-8")
-    (tmp_path / "bg.log").write_text("", encoding="utf-8")
+    ("No such process", "exit"), ("Operation not permitted", "run"), (None, "run")])
+def test_without_a_member_list_only_esrch_reads_as_gone(tmp_path, shell, diagnostic, status):
     # A shell function stands in for the kill builtin, so no real process is signalled.
     fake_kill = ("kill() { return 0; }; " if diagnostic is None else
                  "kill() { echo " + shlex.quote("kill: (-4321) - " + diagnostic) + " >&2; return 1; }; ")
-    quoted = {name: shlex.quote(str(tmp_path / f"bg.{name}")) for name in ("log", "pid", "exit")}
-    command = fake_kill + log_delta_command(quoted["log"], 0, quoted["pid"], quoted["exit"], group=True)
+    assert _poll_status(tmp_path, shell, "4321", prefix=_NO_MEMBER_LIST[0] + fake_kill) == status
 
-    result = subprocess.run([shell, "-c", command], capture_output=True, text=True, timeout=10, check=False)
 
-    reply = parse_log_delta_reply(result.stdout)
-    assert reply is not None, result
-    assert reply.exit_code == (None if status == "run" else 143)
+@pytest.mark.platforms("posix")
+def test_the_kill_treats_a_zombie_only_group_as_gone():
+    zombie = subprocess.Popen(["sleep", "0"], process_group=0)
+    try:
+        wait_until(lambda: psutil.Process(zombie.pid).status() == psutil.STATUS_ZOMBIE, what="zombie")
+        result = subprocess.run(["bash", "-c", env_group_kill_command(zombie.pid, 0.1)],
+                                capture_output=True, text=True, timeout=10, check=False)
+        assert result.returncode == 0 and "__HERMES_PROCESS_TERMINATED__" in result.stdout.splitlines(), result
+    finally:
+        zombie.wait()

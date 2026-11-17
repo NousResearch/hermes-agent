@@ -51,17 +51,42 @@ class LogDelta(NamedTuple):
     delta: str
 
 
-def _alive_probe(quoted_pid_path: str, group: bool) -> str:
-    """``kill -0`` on the job's supervisor, or on its whole process group (``-<pgid>``) once
-    a kill has begun, so a member that outlives the supervisor keeps the job running.
+def group_liveness_shell(pgid_expr: str) -> str:
+    """POSIX shell (bash, dash, busybox ash) defining ``_hm`` and ``_hl`` for the process
+    group whose id *pgid_expr* expands to; the sandbox kill and the poller share it.
 
-    The group form, like the kill's own check, reads only ESRCH as gone: a member the
-    sandbox user may not signal (EPERM) is still running. ``--`` is left out because
-    dash's kill rejects it; bash and dash both read ``-N`` after the signal as a group."""
+    ``_hm`` prints the group's live members: zombies are left out (a container whose
+    PID 1 never reaps keeps a killed job's zombies forever), and a group id that is not a
+    number has none. Members come from ``/proc`` (field 5 of ``stat`` is the pgid, split
+    after the last ``") "`` so a comm with spaces cannot shift it), else from ``ps``;
+    with neither it prints ``?``. Its stderr is dropped, so a process exiting mid-scan
+    cannot leak a read error into the output.
+
+    ``_hl`` succeeds while the group is alive. It trusts the member list when there is
+    one; without it, only ``kill -0`` failing with ESRCH means gone, since EPERM (a
+    member owned by another user) is a live member."""
+    return (
+        f'_hg={pgid_expr}; '
+        '_hm() { case "$_hg" in ""|*[!0-9]*) return 0;; esac; '
+        'if [ -r /proc/self/stat ]; then for _s in /proc/[0-9]*/stat; do read -r _l < "$_s" || continue; '
+        '_r=${_l##*) }; set -f; set -- $_r; set +f; '
+        '[ "$3" = "$_hg" ] && [ "$1" != Z ] && { _p=${_s#/proc/}; echo "${_p%/stat}"; }; done; '
+        'elif _o=$(ps -A -o pid= -o pgid= -o stat=); then printf \'%s\\n\' "$_o" | '
+        'while read -r _p _q _t; do [ "$_q" = "$_hg" ] && case "$_t" in Z*) ;; *) echo "$_p";; esac; done; '
+        'else echo "?"; fi; } 2>/dev/null; '
+        '_hl() { _m=$(_hm); case "$_m" in "") return 1;; "?") ;; *) return 0;; esac; '
+        '_he=$(LC_ALL=C kill -0 "-$_hg" 2>&1) && return 0; '
+        'case "$_he" in *"No such process"*) return 1;; esac; return 0; }; '
+    )
+
+
+def _alive_probe(quoted_pid_path: str, group: bool) -> str:
+    """``kill -0`` on the job's supervisor, or once a kill has begun, the liveness of its
+    whole process group (``group_liveness_shell``), so a member that outlives the
+    supervisor keeps the job running."""
     if not group:
         return f'kill -0 "$(cat {quoted_pid_path} 2>/dev/null)" 2>/dev/null'
-    return (f'{{ _hp=$(cat {quoted_pid_path} 2>/dev/null); [ -n "$_hp" ] && '
-            f'{{ _he=$(LC_ALL=C kill -0 "-$_hp" 2>&1) || case "$_he" in *"No such process"*) false;; esac; }}; }}')
+    return f'{{ {group_liveness_shell(f"$(cat {quoted_pid_path} 2>/dev/null)")}_hl; }}'
 
 
 def log_delta_command(quoted_log_path: str, offset: int, quoted_pid_path: str, quoted_exit_path: str,

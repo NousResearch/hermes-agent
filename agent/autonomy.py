@@ -369,6 +369,13 @@ def ledger_put(action: str, key: str, value: dict) -> None:
     _atomic_write(_ledger_path(action, key), value)
 
 
+def ledger_delete(action: str, key: str) -> None:
+    try:
+        os.unlink(_ledger_path(action, key))
+    except FileNotFoundError:
+        pass
+
+
 # locks
 
 @contextmanager

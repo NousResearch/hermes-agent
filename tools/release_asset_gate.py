@@ -33,6 +33,11 @@ class GateError(RuntimeError):
     """A human signal could not be read or did not check out — fail closed."""
 
 
+class SlackRejected(GateError):
+    """Slack answered ``ok: false`` — the call definitely did nothing (unlike
+    a timeout or connection error, after which a post may have landed)."""
+
+
 class RowStopped(GateError):
     """The row is Published or on hold. For an action waiting out its veto
     window this IS the veto; for a fresh call it is a plain refusal."""
@@ -229,7 +234,7 @@ async def _slack(method: str, api: str, **kw) -> dict:
     except Exception as e:
         raise GateError(f"Slack {api} failed: {e}") from e
     if not data.get("ok"):
-        raise GateError(f"Slack {api} error: {data.get('error', 'unknown')}")
+        raise SlackRejected(f"Slack {api} error: {data.get('error', 'unknown')}")
     return data
 
 

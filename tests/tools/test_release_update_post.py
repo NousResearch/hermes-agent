@@ -20,6 +20,8 @@ DS = "11111111222233334444555555555555"
 ROW = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 ROW_KEY = ROW.replace("-", "")
 RELEASE = "c" * 32
+PRD = "d" * 32
+PRD_DS = "e" * 32
 CHOME, CREL, COTHER = "CHOME0001", "CREL00001", "COTHER001"
 NOW = datetime(2026, 11, 18, 10, 0, tzinfo=timezone.utc)  # a Wednesday
 
@@ -28,7 +30,21 @@ def rt(text, **ann):
     return {"type": "text", "plain_text": text, "href": None, "annotations": ann}
 
 
-def _row(status="Approved", asset_type="Slack update", jira="BA-1", relation=(RELEASE,), has_more=False,
+def _prd(keys=("BA-1", "BA-2"), state="In progress", parent=PRD_DS):
+    return {"id": PRD, "url": "https://www.notion.so/prd-dddd",
+            "parent": {"type": "data_source_id", "data_source_id": parent},
+            "properties": {
+                "Name": {"type": "title", "title": [rt("Points PRD")]},
+                "JIRA": {"type": "multi_select", "multi_select": [{"name": k} for k in keys]},
+                "Release Comms Status": {"type": "select", "select": {"name": state}}}}
+
+
+def _release(prds=(PRD,), has_more=False):
+    return {"id": RELEASE, "properties": {
+        "PRD": {"type": "relation", "relation": [{"id": p} for p in prds], "has_more": has_more}}}
+
+
+def _row(status="Approved", asset_type="Slack update", jira="BA-9", relation=(RELEASE,), has_more=False,
          status_type="select", parent=DS, **extra):
     page = {"id": ROW, "url": "https://www.notion.so/row-aaaa",
             "parent": {"type": "data_source_id", "data_source_id": parent},
@@ -51,13 +67,13 @@ class World:
         self.allowed = [CHOME, CREL]
         self.gated = [CREL]
         self.row = _row()
-        self.pages = {RELEASE: {"id": RELEASE, "properties": {
-            "JIRA": {"type": "multi_select", "multi_select": [{"name": "BA-2"}]}}}}
+        self.pages = {RELEASE: _release(), PRD: _prd()}
         self.blocks = [{"type": "paragraph", "paragraph": {"rich_text": [rt("Points are "), rt("live", bold=True)]}}]
-        self.jira = {"BA-1": "Done", "BA-2": "Done"}
+        self.jira = {"BA-1": "Done", "BA-2": "Done", "BA-9": "To Do"}
         self.posts, self.writebacks, self.audits = [], [], []
         self.vetoers = []
         self.writeback_error = None
+        self.post_error = None
         self.now = NOW
         self.free_posts = []
         monkeypatch.setattr(rup, "_config", self.config)
@@ -86,8 +102,7 @@ class World:
                             "veto_expiry_hours": 72, "actions": {"post_release_update": self.level}},
                "slack": {"post_allowed_channels": self.allowed, "post_gated_channels": self.gated},
                "release_updates": {"release_assets_data_source_id": DS,
-                                   "jira_key_properties": ["JIRA"],
-                                   "jira_relation_properties": ["Release"]}}
+                                   "prd_data_sources": [PRD_DS]}}
         if self.allowed is None:
             del cfg["slack"]["post_allowed_channels"]
         if self.guard:
@@ -105,6 +120,12 @@ class World:
         return self.blocks
 
     async def post(self, channel, text, thread_ts=""):
+        if channel == CREL and self.post_error:
+            err, self.post_error = self.post_error, None
+            if isinstance(err, gate.SlackRejected):
+                raise err
+            self.posts.append((channel, text, thread_ts))  # it landed, then the call failed
+            raise err
         self.posts.append((channel, text, thread_ts))
         return f"{len(self.posts)}00.0001"
 
@@ -262,20 +283,46 @@ def test_jira_not_done_refused(w):
     assert "BA-2" in out["error"] and "In Staging" in out["error"] and w.posts == []
 
 
+def test_row_jira_keys_never_decide(w):
+    # The row (agent-drafted) names BA-9, not Done; only the PRD's keys gate.
+    out = _call(_gated())
+    assert out["ok"] is True and out["jira"] == {"BA-1": "Done", "BA-2": "Done"}
+    assert out["prds"][0]["id"] == PRD
+
+
 def test_no_jira_keys_refused(w):
-    w.row = _row(jira="", relation=[])
+    w.pages[PRD] = _prd(keys=())
     assert "Jira" in _call(_gated())["error"] and w.posts == []
 
 
+def test_no_prd_linked_refused(w):
+    w.pages[RELEASE] = _release(prds=())
+    assert "No PRD" in _call(_gated())["error"]
+    w.row = _row(relation=())
+    assert "No PRD" in _call(_gated())["error"]
+    assert w.posts == []
+
+
+def test_prd_outside_prd_database_refused(w):
+    w.pages[PRD] = _prd(parent="9" * 32)
+    assert "PRD database" in _call(_gated())["error"] and w.posts == []
+
+
 def test_relation_has_more_refused(w):
-    w.row = _row(relation=[RELEASE], has_more=True)
-    assert "error" in _call(_gated()) and w.posts == []
+    w.row = _row(has_more=True)
+    assert "error" in _call(_gated())
+    w.row = _row()
+    w.pages[RELEASE] = _release(has_more=True)
+    assert "error" in _call(_gated())
+    assert w.posts == []
 
 
-def test_jira_keys_from_relations(w):
-    w.row = _row(jira="", relation=[RELEASE])
-    out = _call(_gated())
-    assert out["jira"] == {"BA-2": "Done"}
+def test_prd_sources_fall_back_to_write_guard(w, monkeypatch):
+    cfg = w.config()
+    del cfg["release_updates"]["prd_data_sources"]
+    cfg["notion"]["write_guard"]["prds"] = {"data_sources": [PRD_DS]}
+    monkeypatch.setattr(rup, "_config", lambda: cfg)
+    assert _call(_gated())["ok"] is True
 
 
 def test_unsupported_content_and_images(w):
@@ -332,6 +379,9 @@ def test_veto_announces_then_posts_after_window(w):
     assert w.release_posts == []
     announce = [p for p in w.posts if p[0] == CHOME]
     assert len(announce) == 1 and pid in announce[0][1] and "Points &lt;launch&gt;" in announce[0][1]
+    text = announce[0][1]
+    assert "Points PRD" in text and "BA-1, BA-2" in text
+    assert text.endswith("> Points are *live*")  # the full text, not a preview
     w.now = NOW + timedelta(hours=3)
     assert "veto window" in _call({"pending_id": pid})["error"]
     w.now = NOW + timedelta(hours=5)
@@ -478,3 +528,44 @@ def test_vetoed_row_not_requeued(w):
 def test_channel_name_refused(w):
     assert "channel id" in _call({"chat_id": "#product-education", "message": "hi"})["error"]
     assert w.free_posts == []
+
+
+
+# ── PRD state, in-flight posts ───────────────────────────────────────────
+
+@pytest.mark.parametrize("level", ["veto", "auto"])
+def test_without_signoff_prd_must_be_in_progress(w, level):
+    w.level = level
+    w.row = _row(status="In review")
+    w.pages[PRD] = _prd(state="Not started")
+    assert "In progress" in _call(_gated())["error"] and w.posts == []
+
+
+def test_signoff_does_not_need_prd_in_progress(w):
+    w.pages[PRD] = _prd(state="Done")
+    assert _call(_gated())["ok"] is True
+
+
+def test_veto_prd_ticket_set_change_is_stale(w):
+    pid = _queue(w)
+    w.pages[PRD] = _prd(keys=("BA-1",))
+    w.now = NOW + timedelta(hours=5)
+    assert _call({"pending_id": pid})["status"] == "stale"
+    assert w.release_posts == []
+
+
+def test_timeout_after_post_never_reposts(w):
+    w.post_error = gate.GateError("Slack chat.postMessage failed: timeout")
+    assert "timeout" in _call(_gated())["error"]
+    assert len(w.release_posts) == 1          # it landed
+    out = _call(_gated())
+    assert "outcome is unknown" in out["error"] and "ledger" in out["error"]
+    assert len(w.release_posts) == 1 and w.writebacks == []
+    assert au.ledger_get(rup.ACTION, ROW_KEY)["state"] == "in_flight"
+
+
+def test_slack_rejection_clears_and_can_retry(w):
+    w.post_error = gate.SlackRejected("Slack chat.postMessage error: not_in_channel")
+    assert "not_in_channel" in _call(_gated())["error"]
+    assert au.ledger_get(rup.ACTION, ROW_KEY) is None
+    assert _call(_gated())["ok"] is True and len(w.release_posts) == 1

@@ -7,11 +7,13 @@ caller passes a Release Assets ``release_asset_row_id`` and this module
 1. fetches the row fresh and requires its parent to be the Release Assets data
    source, ``Asset type = Slack update`` and (per the ``post_release_update``
    autonomy level) ``Status = Approved``; ``Published`` / a hold status stop it;
-2. collects every Jira key linked from the row (and the pages its configured
-   relation properties point at, two hops — e.g. row → Release → PRD) and
-   requires each to be ``Done``, read with the teammate's Jira credentials
-   via ``get_secret`` only; no key found, or a relation list Notion truncates,
-   refuses;
+2. follows ``prd_relation_path`` (row → Release → PRD) to the PRD(s), which
+   must live in the PRD data source the agent cannot write, and requires
+   every Jira key in the PRD's ``JIRA`` property to be ``Done`` (read with
+   the teammate's Jira credentials via ``get_secret`` only). Keys on the row
+   itself never decide — the agent drafts the row. No PRD, no key, or a
+   relation Notion truncates refuses; without sign-off (veto / auto) the PRD's
+   ``Release Comms Status`` must be ``In progress``;
 3. posts the row's own body, rendered to escaped Slack mrkdwn
    (``tools/notion_blocks_html.render_blocks_mrkdwn``);
 4. writes back ``Published URL`` + ``Status=Published`` with a FIXED body
@@ -43,8 +45,11 @@ Config (all optional except the data source)::
       hold_statuses: [Hold]
       published_status: Published
       published_url_property: Published URL
-      jira_key_properties: [JIRA]
-      jira_relation_properties: []        # e.g. [Release, PRD]
+      prd_relation_path: [Release, PRD]   # row → Release row → PRD (relation names)
+      prd_data_sources: [<id>]            # else notion.write_guard.prds.data_sources
+      prd_jira_property: JIRA             # the ONLY source of the gating Jira keys
+      prd_status_property: Release Comms Status
+      prd_active_status: In progress      # required for veto / auto
       jira_done_statuses: [Done]
 
 Driver for due veto actions: ``slack_post_thread(run_due=true)`` or a cron
@@ -107,8 +112,11 @@ class Settings:
     hold: frozenset
     published: str
     url_prop: str
-    jira_props: tuple
-    relation_props: tuple
+    prd_path: tuple
+    prd_data_sources: frozenset
+    prd_jira_prop: str
+    prd_status_prop: str
+    prd_active: str
     done: frozenset
 
 
@@ -140,10 +148,32 @@ def settings(cfg: dict) -> Settings:
         hold=frozenset(names("hold_statuses", ["Hold"])),
         published=published,
         url_prop=name("published_url_property", "Published URL"),
-        jira_props=names("jira_key_properties", ["JIRA"]),
-        relation_props=names("jira_relation_properties", []),
+        prd_path=names("prd_relation_path", ["Release", "PRD"]),
+        prd_data_sources=_prd_sources(cfg, r),
+        prd_jira_prop=name("prd_jira_property", "JIRA"),
+        prd_status_prop=name("prd_status_property", "Release Comms Status"),
+        prd_active=name("prd_active_status", "In progress"),
         done=frozenset(names("jira_done_statuses", ["Done"])),
     )
+
+
+def _hex(value) -> str:
+    h = str(value or "").replace("-", "").strip().lower()
+    return h if re.fullmatch(r"[0-9a-f]{32}", h) else ""
+
+
+def _prd_sources(cfg: dict, r: dict) -> frozenset:
+    """The PRD data sources: ``release_updates.prd_data_sources``, else the
+    write guard's ``prds.data_sources`` (the collection the agent can't edit)."""
+    raw = r.get("prd_data_sources")
+    if raw is None:
+        notion = cfg.get("notion") if isinstance(cfg.get("notion"), dict) else {}
+        guard = notion.get("write_guard") if isinstance(notion.get("write_guard"), dict) else {}
+        prds = guard.get("prds") if isinstance(guard.get("prds"), dict) else {}
+        raw = prds.get("data_sources")
+    if isinstance(raw, str):
+        raw = [raw]
+    return frozenset(h for h in (_hex(x) for x in raw or []) if h)
 
 
 def _row_key(row_id) -> str:
@@ -175,44 +205,68 @@ def _keys_in(prop) -> list[str]:
     return _JIRA_KEY.findall(" ".join(texts))
 
 
-async def collect_jira_keys(page: dict, s: Settings) -> list[str]:
-    """Jira keys on the row and on pages reached through ``relation_props``
-    (two hops). Raises GateError on a truncated relation or too many pages."""
+def _select(prop) -> str:
+    if not isinstance(prop, dict):
+        return ""
+    val = prop.get(prop.get("type") or "select")
+    return str(val.get("name") or "").strip() if isinstance(val, dict) else ""
+
+
+def _page_title(page: dict) -> str:
+    for prop in (page.get("properties") or {}).values():
+        if isinstance(prop, dict) and prop.get("type") == "title":
+            return "".join(str(t.get("plain_text") or "") for t in prop.get("title") or []
+                           if isinstance(t, dict)).strip()
+    return ""
+
+
+async def resolve_prds(page: dict, s: Settings) -> list[dict]:
+    """The PRD page(s) the row belongs to, following ``prd_relation_path``
+    (default Release Assets → Release → PRD). The Jira keys that gate a post
+    come ONLY from these PRDs — a collection the agent cannot write (5a) —
+    never from the row, which the agent drafts. Raises GateError."""
     from tools import release_asset_gate as gate
-    keys: list[str] = []
-    seen_pages: set[str] = set()
+    if not s.prd_data_sources:
+        raise gate.GateError("No PRD data source is configured (release_updates.prd_data_sources or "
+                             "notion.write_guard.prds.data_sources) — cannot find the release's tickets.")
     frontier = [page]
-    for hop in range(3):
-        nxt: list[dict] = []
+    fetched = 0
+    for hop, name in enumerate(s.prd_path):
+        nxt: dict[str, dict] = {}
         for p in frontier:
-            props = p.get("properties") if isinstance(p.get("properties"), dict) else {}
-            for name in s.jira_props:
-                for k in _keys_in(props.get(name)):
-                    if k not in keys:
-                        keys.append(k)
-            if hop == 2:
-                continue
-            for name in s.relation_props:
-                rel = props.get(name)
-                if not isinstance(rel, dict) or rel.get("type") != "relation":
-                    continue
-                if rel.get("has_more"):
-                    raise gate.GateError(
-                        f"The row's {name!r} relation has more entries than Notion returned; "
-                        "cannot confirm every linked Jira ticket is Done.")
-                for item in rel.get("relation") or []:
-                    pid = str((item or {}).get("id") or "").replace("-", "").lower()
-                    if not pid or pid in seen_pages:
-                        continue
-                    seen_pages.add(pid)
-                    if len(seen_pages) > _MAX_RELATED:
-                        raise gate.GateError("The row links too many related pages to check.")
-                    nxt.append(await gate.fetch_notion_page(pid))
-        frontier = nxt
+            rel = (p.get("properties") or {}).get(name)
+            if not isinstance(rel, dict) or rel.get("type") != "relation":
+                raise gate.GateError(f"{'The row' if hop == 0 else 'A linked page'} has no {name!r} relation.")
+            if rel.get("has_more"):
+                raise gate.GateError(f"The {name!r} relation has more entries than Notion returned; "
+                                     "cannot confirm every linked ticket is Done.")
+            for item in rel.get("relation") or []:
+                pid = _hex((item or {}).get("id"))
+                if pid and pid not in nxt:
+                    fetched += 1
+                    if fetched > _MAX_RELATED:
+                        raise gate.GateError("The row links too many pages to check.")
+                    nxt[pid] = await gate.fetch_notion_page(pid)
+        frontier = list(nxt.values())
         if not frontier:
-            break
+            raise gate.GateError(f"No PRD is linked (nothing under {' → '.join(s.prd_path[:hop + 1])}); a "
+                                 "release update posts only for a PRD whose tickets are Done.")
+    prds = []
+    for prd in frontier:
+        parent = prd.get("parent") if isinstance(prd.get("parent"), dict) else {}
+        if not ({_hex(parent.get("data_source_id")), _hex(parent.get("database_id"))} & s.prd_data_sources):
+            raise gate.GateError("A page linked as the PRD is not in the PRD database.")
+        if prd.get("in_trash") or prd.get("archived") or prd.get("is_archived"):
+            raise gate.GateError("The linked PRD is in the trash.")
+        prds.append(prd)
+    return prds
+
+
+def jira_keys_of(prds: list[dict], s: Settings) -> list[str]:
+    keys = sorted({k for prd in prds for k in _keys_in((prd.get("properties") or {}).get(s.prd_jira_prop))})
     if len(keys) > _MAX_KEYS:
-        raise gate.GateError(f"The row links more than {_MAX_KEYS} Jira tickets.")
+        from tools import release_asset_gate as gate
+        raise gate.GateError(f"The PRD links more than {_MAX_KEYS} Jira tickets.")
     return keys
 
 
@@ -251,10 +305,8 @@ async def check_jira_done(keys: list[str], s: Settings) -> dict:
     from tools import release_asset_gate as gate
     if not keys:
         raise gate.GateError(
-            "No linked Jira ticket found on the row"
-            + (f" (properties {', '.join(s.jira_props)}"
-               + (f", via {', '.join(s.relation_props)}" if s.relation_props else "") + ")")
-            + " — a release update posts only once its tickets are Done.")
+            f"The linked PRD has no Jira ticket in {s.prd_jira_prop!r} — a release update posts "
+            "only once its tickets are Done.")
     statuses = {k: await _jira_status(k) for k in keys}
     open_ = {k: v for k, v in statuses.items() if v not in s.done}
     if open_:
@@ -308,14 +360,29 @@ async def materialize(spec: dict, cfg: dict, *, require_approved: bool) -> dict:
         raise gate.GateError("The row has no body to post.")
     if len(text) > _MAX_CHARS:
         raise gate.GateError(f"The row's body is longer than {_MAX_CHARS} characters.")
-    jira = await check_jira_done(await collect_jira_keys(page, s), s)
+    prds = await resolve_prds(page, s)
+    if not require_approved:
+        for prd in prds:
+            state = _select((prd.get("properties") or {}).get(s.prd_status_prop))
+            if state != s.prd_active:
+                raise gate.GateError(
+                    f"The PRD's {s.prd_status_prop} is {state or 'empty'!r}, not {s.prd_active!r}; "
+                    "without sign-off, a release update posts only for an active release.")
+    jira = await check_jira_done(jira_keys_of(prds, s), s)
+    prd_info = [{"id": _hex(p.get("id")), "url": str(p.get("url") or ""), "title": _page_title(p)}
+                for p in prds]
     props = page.get("properties") if isinstance(page.get("properties"), dict) else {}
     status_type = (props.get(s.status_prop) or {}).get("type") or "select"
     if status_type not in ("select", "status"):
         raise gate.GateError(f"The row's {s.status_prop} property is a {status_type}, not a select/status.")
-    sha = hashlib.sha256(f"{spec['channel']}\0{text}".encode("utf-8")).hexdigest()
+    # The veto announcement shows the text, the PRD(s) and the ticket set;
+    # execution re-derives all three and refuses (stale) if any changed.
+    prd_ids = ",".join(sorted(p["id"] for p in prd_info))
+    sha = hashlib.sha256("\0".join([spec["channel"], text, prd_ids, ",".join(sorted(jira))])
+                         .encode("utf-8")).hexdigest()
     return {"row": row, "title": row.title or "release update", "text": text, "sha": sha,
-            "jira": jira, "status_type": status_type, "images_omitted": list(rendered.images)}
+            "jira": jira, "prds": prd_info, "status_type": status_type,
+            "images_omitted": list(rendered.images)}
 
 
 def _writeback_props(s: Settings, status_type: str, url: str) -> dict:
@@ -354,6 +421,12 @@ async def post_once(spec: dict, cfg: dict, level: str, *, require_approved: bool
     key = spec["row_id"]
     with autonomy.exclusive(ACTION, key):
         existing = autonomy.ledger_get(ACTION, key)
+        if existing and existing.get("state") == "in_flight":
+            raise gate.GateError(
+                f"A post of this row to {existing.get('channel')} started at {existing.get('started_at')} "
+                "and its outcome is unknown (the call failed mid-way). Check the channel in Slack: an "
+                "operator then removes autonomy/ledger/post_release_update/"
+                f"{key}.json (if nothing was posted) — the tool never posts it a second time on its own.")
         if existing:
             if not existing.get("published_written"):
                 await _writeback(key, existing, cfg)
@@ -367,12 +440,22 @@ async def post_once(spec: dict, cfg: dict, level: str, *, require_approved: bool
             raise _ContentChanged("The row's content changed after the veto announcement.")
         if pending_id:
             autonomy.update_pending(ACTION, pending_id, status="executing")
-        ts = await gate.post_announcement(spec["channel"], m["text"])
+        # In flight BEFORE the call: if anything fails after it starts (a
+        # timeout after Slack accepted the post, a crash), the row stays
+        # blocked until an operator checks Slack — never posted twice.
+        autonomy.ledger_put(ACTION, key, {"state": "in_flight", "channel": spec["channel"],
+                                          "started_at": _now().isoformat(), "level": level,
+                                          "pending_id": pending_id or None})
+        try:
+            ts = await gate.post_announcement(spec["channel"], m["text"])
+        except gate.SlackRejected:
+            autonomy.ledger_delete(ACTION, key)  # Slack refused it: nothing was posted
+            raise
         # Record FIRST: the post exists now, whatever happens next.
-        entry = {"channel": spec["channel"], "message_ts": ts,
+        entry = {"state": "posted", "channel": spec["channel"], "message_ts": ts,
                  "permalink": await gate.permalink(spec["channel"], ts),
                  "title": m["title"], "posted_at": _now().isoformat(), "level": level,
-                 "pending_id": pending_id or None, "jira": m["jira"],
+                 "pending_id": pending_id or None, "jira": m["jira"], "prds": m["prds"],
                  "status_type": m["status_type"], "images_omitted": m["images_omitted"],
                  "published_written": False}
         autonomy.ledger_put(ACTION, key, entry)
@@ -404,9 +487,10 @@ def _chan(channel: str) -> str:
     return f"<#{channel}>" if _CHANNEL.match(channel or "") else _esc(channel)
 
 
-def _preview(text: str) -> str:
-    cut = text if len(text) <= 600 else text[:600] + "…"
-    return "\n".join("> " + ln for ln in cut.split("\n"))
+def _quoted(text: str) -> str:
+    """The FULL text that will be posted, quoted — never a truncated preview
+    of it (the veto is a decision on exactly this text)."""
+    return "\n".join("> " + ln for ln in text.split("\n"))
 
 
 async def _say(channel: str, text: str, thread_ts: str = "") -> str:
@@ -429,11 +513,12 @@ async def queue_veto(spec: dict, cfg: dict, m: dict) -> dict:
         return {"error": str(e)}
     pending_id = autonomy.new_pending_id()
     text = (f":hourglass_flowing_sand: I plan to post *{_esc(m['title'])}* to {_chan(spec['channel'])} "
-            f"from {_link(m['row'].url, 'this Release Assets row')} "
-            f"(Jira {', '.join(_esc(k) for k in m['jira'])} Done). It goes ahead after "
+            f"from {_link(m['row'].url, 'this Release Assets row')}, for PRD "
+            f"{', '.join(_link(p['url'], p['title'] or p['id']) for p in m['prds'])} "
+            f"(Jira {', '.join(_esc(k) for k in sorted(m['jira']))} all Done). It goes ahead after "
             f"{plan.not_before.astimezone(ZoneInfo(plan.timezone)):%a %d %b %H:%M} ({_esc(plan.timezone)}) "
             f"unless someone reacts :x: here or sets the row to Hold. "
-            f"(autonomy: veto · ref {pending_id})\n{_preview(m['text'])}")
+            f"(autonomy: veto · ref {pending_id}). It will post exactly:\n{_quoted(m['text'])}")
     try:
         ts = await gate.post_announcement(plan.channel, text)
     except gate.GateError as e:

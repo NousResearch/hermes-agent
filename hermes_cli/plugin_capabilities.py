@@ -47,6 +47,9 @@ _CAPABILITY_ROWS = (
     ("llm.side_question", (),
      "Ask your agent a short question after each turn. It sees the "
      "whole session, including memory, and spends your main model's tokens."),
+    ("llm.session_fork", (),
+     "Run a background copy of your agent after a turn. It sees the whole session, including "
+     "memory, can use the plugin's own tools, and spends your main model's tokens."),
     ("conversation.cards", (),
      "Post cards into your conversations (no immediate model call; the text "
      "is visible to your next model turn and may render as a card in Desktop)."),

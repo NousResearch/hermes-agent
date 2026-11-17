@@ -9,7 +9,7 @@
  * shared word must surface that profile's marker and never the other one's,
  * across default → ssprobe-b → default.
  *
- * Prerequisite: `npm run build` (dist/) and the repo's `.venv`.
+ * Prerequisite: `pnpm run build` (dist/) and the repo's `.venv`.
  */
 
 import { spawnSync } from 'node:child_process'

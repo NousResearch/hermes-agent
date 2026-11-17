@@ -50,9 +50,9 @@ import {
   type DuplicateFinalCollapse,
   identicalInterimSiblingIndex
 } from './collapse-duplicate-final'
+import { terminalCompletionState } from './completion-terminal-state'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
@@ -79,6 +79,8 @@ interface MessageStreamOptions {
 
 interface QueuedStreamDelta {
   occurredAt: number
+  /** Segment offset of `text`'s first code unit, when the frame was stamped. */
+  offset?: number
   text: string
   type: 'assistant' | 'reasoning'
 }
@@ -332,7 +334,9 @@ export function useMessageStream({
           queued.reduce(
             (next, delta) =>
               delta.type === 'assistant'
-                ? dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(next, delta.text, delta.occurredAt))
+                ? dedupeGeneratedImageEchoesInParts(
+                    appendAssistantTextPart(next, delta.text, delta.occurredAt, delta.offset)
+                  )
                 : appendReasoningPart(next, delta.text, delta.occurredAt),
             parts
           )
@@ -448,18 +452,26 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
-    (sessionId: string, key: 'assistant' | 'reasoning', delta: string, occurredAt = Date.now() / 1000) => {
+    (
+      sessionId: string,
+      key: 'assistant' | 'reasoning',
+      delta: string,
+      occurredAt = Date.now() / 1000,
+      offset?: number
+    ) => {
       if (!delta) {
         return
       }
 
       const queued = queuedDeltasRef.current.get(sessionId) ?? []
       const tail = queued.at(-1)
+      // Only a contiguous chunk joins the queued one, so each entry keeps one offset.
+      const contiguous = tail?.offset === undefined ? offset === undefined : offset === tail.offset + tail.text.length
 
-      if (tail?.type === key) {
+      if (tail?.type === key && contiguous) {
         tail.text += delta
       } else {
-        queued.push({ occurredAt, text: delta, type: key })
+        queued.push({ occurredAt, offset, text: delta, type: key })
       }
 
       queuedDeltasRef.current.set(sessionId, queued)
@@ -524,13 +536,17 @@ export function useMessageStream({
         return
       }
 
+      let offset: number | undefined
+
       if (stamp) {
         const admitted = admitSegmentDelta(segmentCursorsRef.current.get(sessionId), stamp, delta)
         segmentCursorsRef.current.set(sessionId, admitted.cursor)
+        // Admission trims only an already-applied head, so the rest starts that much later.
+        offset = stamp.offset === undefined ? undefined : stamp.offset + delta.length - admitted.text.length
         delta = admitted.text
       }
 
-      queueDelta(sessionId, 'assistant', delta, occurredAt)
+      queueDelta(sessionId, 'assistant', delta, occurredAt, offset)
     },
     [queueDelta]
   )
@@ -777,31 +793,26 @@ export function useMessageStream({
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
       status?: string,
-      responseReused?: boolean
+      responseReused?: boolean,
+      failureReason?: string
     ) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
-        // Late completion from an already-cancelled turn: cancelRun has
-        // already finalized the bubble (kept the partial text, dropped it if
-        // empty). Re-running the dedupe below would replace the partial with
-        // the just-cancelled full text, so we settle and bail instead — only
-        // extending the bubble to the partial the agent persisted (#121594).
-        if (state.interrupted) {
-          return {
-            ...state,
-            messages: bindStoppedTurnReceipt(
-              status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
-              persistedTurn
-            ),
-            awaitingResponse: false,
-            busy: false,
-            needsInput: false,
-            pendingBranchGroup: null,
-            streamId: null,
-            turnStartedAt: null,
-            turnLive: false
-          }
+        // A cancelled turn or a provider safety-filter refusal collapses the
+        // turn into a fully-formed terminal state instead of the dedupe/merge
+        // below (see terminalCompletionState for the two cases and the WHY).
+        const terminalState = terminalCompletionState(state, {
+          text,
+          occurredAt,
+          persistedTurn,
+          failure,
+          status,
+          failureReason
+        })
+
+        if (terminalState) {
+          return terminalState
         }
 
         const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null

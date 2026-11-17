@@ -314,6 +314,8 @@ def restore_native(payload, runner=None):
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
+    from gateway.session_moa_turn import restore_moa_turn
+    restore_moa_turn(envelope, event)
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):

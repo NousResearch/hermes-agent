@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 @pytest.mark.asyncio
 async def test_last_viewer_or_shutdown_ends_only_idle_acp_sessions(tmp_path, monkeypatch):

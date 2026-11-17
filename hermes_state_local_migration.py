@@ -110,7 +110,7 @@ def bind_legacy_target(db, conn, receipt):
     validate_legacy_row(db, dict(row), subject=receipt['principal_id'])
     from hermes_state_mutation_binding import BINDING_PREFIX, binding_names
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
-    if imported and not binding_names(imported[0], receipt['profile_id'], receipt['principal_id']):
+    if imported and not binding_names(imported[0], receipt['principal_id']):
         raise RuntimeStoreError('permission_denied')
     from hermes_state_compression import _CHAIN_STEP_SQL
     if conn.execute(_CHAIN_STEP_SQL, (target,)).fetchone() is not None:

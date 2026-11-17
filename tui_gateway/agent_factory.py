@@ -138,11 +138,11 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
-    model = str(row.get("model") or model_config.get("model") or "").strip()
-    # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
-    # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
+    # Canonical model + route readers shared with CLI --resume: the pick, not a fallback that rewrote the
+    # billing column; then nested ``gateway_runtime`` before the TUI's top-level keys, then a routable
+    # ``billing_provider`` (#125942).
     from hermes_state import SessionDB
-    route = SessionDB.session_gateway_runtime(row)
+    model, route = SessionDB.session_resume_route(row)
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
@@ -188,13 +188,24 @@ def _scoped_session_provider(agent, session: dict) -> str:
         return _runtime_model_config(agent).get("provider") or "custom"
 
 
+def _session_route_view(agent):
+    """The agent as the SESSION's own route: a voice turn's route and a turn-scoped provider fallback both
+    leave the live fields on another model until the next turn restores the primary, so a settings save in
+    between must persist the primary snapshot, never the route standing in for it."""
+    from agent.voice_turn_route import _SessionRuntimeView, session_runtime_view
+    view = session_runtime_view(agent)
+    primary = getattr(agent, "_primary_runtime", None)
+    if getattr(agent, "_provider_fallback_active", False) is True and isinstance(primary, dict) and primary.get("model"):
+        view = _SessionRuntimeView(view, {"snapshot": primary, "reasoning_config": getattr(view, "reasoning_config", None)})
+    return view
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     """Merge the agent's CURRENT runtime identity onto the row's persisted ``model_config``. Falsy agent
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
-    from agent.voice_turn_route import session_runtime_view
-    agent = session_runtime_view(agent)
+    agent = _session_route_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, base_url = attr("model"), attr("base_url")
     from hermes_cli.runtime_provider_custom import session_provider_identity
@@ -211,6 +222,11 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             config[key] = value
         else:
             config.pop(key, None)
+    if isinstance(nested := config.get("gateway_runtime"), dict) and nested.get("provider"):
+        # Resume reads the nested route first, and its model before the top-level pick: an older CLI or
+        # gateway route left in place would undo this pick on reopen, so it takes the live pair too.
+        config["gateway_runtime"] = {k: v for k, v in (
+            ("provider", provider), ("base_url", base_url), ("api_mode", attr("api_mode")), ("model", model)) if v}
     return config
 
 
@@ -521,12 +537,8 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-                fb_kwargs: dict = {"requested": fb_provider, "target_model": fb_model,
-                                   **({"explicit_base_url": entry["base_url"]} if entry.get("base_url") else {})}
-                if fb_api_key := resolve_entry_api_key(entry):
-                    fb_kwargs["explicit_api_key"] = fb_api_key
-                runtime = resolve_runtime_provider(**fb_kwargs)
+                from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
@@ -550,15 +562,23 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         requested_provider = model_override.get("provider") or provider_override or None
         override_base_url = model_override.get("base_url")
         resolve_kwargs = {}
-        if str(requested_provider or "").strip().lower() == "custom":
+        provider_norm = str(requested_provider or "").strip().lower()
+        # An empty provider names no route either; once the main slot targets another model it 404s (#132648).
+        if provider_norm == "custom":
             from hermes_cli.runtime_provider import canonical_custom_identity
             if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):
                 requested_provider = recovered
-            if override_base_url:
-                # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
-                resolve_kwargs["explicit_base_url"] = override_base_url
+        elif not provider_norm and _config_model_target()[0] != model:
+            from hermes_cli.runtime_provider_custom import empty_provider_identity
+            requested_provider = empty_provider_identity(override_base_url, model) or requested_provider
+        if provider_norm == "custom" and override_base_url:
+            # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
+            resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs.update(requested=requested_provider, target_model=model or None)
         overrides = {k: model_override.get(k) for k in ("base_url", "api_key", "api_mode")}
+        if not provider_norm and requested_provider:
+            # The healed entry supplies its own endpoint and wire; the row's may be stamps from misrouted turns.
+            overrides["base_url"] = overrides["api_mode"] = None
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -656,7 +676,7 @@ def _make_agent(
     with _sessions_lock:
         session = _sessions.get(sid)
     agent = AIAgent(
-        model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+        model=model, max_iterations=_cfg_max_turns(cfg), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
@@ -687,7 +707,7 @@ def _make_agent(
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
     if fallback_notice:
-        # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
+        # Emitted once at the start of the next turn via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
     return agent
 

@@ -69,7 +69,7 @@ async def test_each_session_runs_its_own_clients_ephemeral_prompt(tmp_path, monk
         from gateway.run_config_loaders import GatewayConfigLoadersMixin
         from gateway.session_worker_construct import _ephemeral_prompt
         owner.runner._get_system_prompt_for_channel = (
-            lambda platform, chat_id: GatewayConfigLoadersMixin._load_ephemeral_system_prompt())
+            lambda platform, chat_id, **_k: GatewayConfigLoadersMixin._load_ephemeral_system_prompt())
         assert _ephemeral_prompt(owner, second, 'chat') == 'SECOND'
         assert _ephemeral_prompt(owner, bare, 'chat') is None
         # Messaging/cron (no local policy) and a session whose client sent nothing (Desktop, or one

@@ -10,6 +10,8 @@ from hermes_state_runtime import list_session_admissions
 from tests.acp_adapter import test_retained_identity_retirement as base
 from tests.acp_adapter.test_retained_identity_retirement import _acp, _model, _settled
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 owner = base.owner  # the shared real-authority fixture
 
 

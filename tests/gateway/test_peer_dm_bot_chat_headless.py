@@ -16,6 +16,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
 

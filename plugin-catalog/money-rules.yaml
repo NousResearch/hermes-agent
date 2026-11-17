@@ -1,0 +1,26 @@
+name: money-rules
+repo: https://github.com/seedless-labs/hermes-money-rules
+sha: 0862459bcfac37157513dee61c29dbac55df8441
+description: "Money rules for Hermes: pay, split, sweep and alert on USDC from your own Solana wallet, under rules you set in chat. You sign one capped USDC allowance (SPL approve) to a local helper key; USDC stays in your wallet until a rule pays, and every new rule waits for /money approve. Every payment started from chat goes through the Hermes approval prompt, and the relay fee is capped on the client (max_fee_usd, default 0.05). Rules fire on a schedule, when USDC comes in, or when a balance crosses a line. Gasless: a relay pays the Solana fee for a small USDC fee in the same transaction and only co-signs connect, revoke and pay. Disclosure — Crypto: moves USDC from your own Solana wallet through a local helper keypair (stored in plain JSON, mode 600, under the profile's plugin-data/money-rules) that you allow, with one SPL approve you sign on hermes-money-rules.vercel.app, to spend up to a cap you choose; every payment the agent starts asks in the Hermes approval prompt, and new rules and held payments wait for your /money approve, but approved rules (scheduled pay, incoming splits, sweeps of everything over a kept amount) then run unattended from a background thread that polls every 30 seconds while Hermes runs, up to a local daily limit (default $100/day, relay fees included); every payment is co-signed by the author's relay at hermes-money-rules.vercel.app, which takes a USDC fee in the same transaction, capped by your max_fee_usd setting (default $0.05, plus up to $0.60 for each recipient that has no USDC account yet); wallet reads go through that relay's RPC proxy unless you set rpc_url; /money revoke zeroes the allowance on-chain; no telemetry."
+maintainer: seedless-labs
+tier: community
+category: tools
+docs_url: https://github.com/seedless-labs/hermes-money-rules#readme
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - money_status
+    - money_connect
+    - money_pay
+    - money_rule_add
+    - money_rule_list
+    - money_request
+    - money_history
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"
+

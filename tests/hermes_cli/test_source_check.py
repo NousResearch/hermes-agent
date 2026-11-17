@@ -473,20 +473,19 @@ def test_embedded_revision_keeps_https_ref_advertisement_recovery(installation, 
     monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: home)
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda root: "nix")
     responses[MAIN_CHANNEL] = (200, source_channel("main", "NousResearch/hermes-agent"))
-    original = subprocess.run
     probes = []
 
     def advertise(args, **kwargs):
-        if "ls-remote" in args:
-            probes.append((args, kwargs))
-            return subprocess.CompletedProcess(args, 0, head + "\trefs/heads/main\n", "")
-        return original(args, **kwargs)
+        probes.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, head + "\trefs/heads/main\n", "")
 
-    monkeypatch.setattr(subprocess, "run", advertise)
+    # The remote probe runs owned and bounded (stdin is always DEVNULL there).
+    monkeypatch.setattr("hermes_cli._subprocess_compat.bounded_probe_run", advertise)
     assert check_for_updates(home=home)["behind"] == 0
     assert len(probes) == 1
+    assert "ls-remote" in probes[0][0]
     assert "https://github.com/NousResearch/hermes-agent.git" in probes[0][0]
-    assert probes[0][1]["stdin"] == subprocess.DEVNULL
+    assert probes[0][1]["owned"] is True
     assert probes[0][1]["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
 
@@ -758,6 +757,31 @@ def test_runtime_lookup_has_one_deadline_with_bounded_parallel_reads(installatio
     finally:
         release.set()
         checker.join(5)
+
+
+@pytest.mark.parametrize("runtime", [True, False])
+def test_a_release_with_the_state_store_inside_the_package_is_judged_by_its_package_modules(
+        installation, runtime):
+    """After the state store moves under ``hermes_agent/`` a root compat shell stays behind. The
+    verdict must come from the package's modules, which a top-level tree listing does not show."""
+    from hermes_cli import source_check
+    from hermes_state_common import SCHEMA_SQL
+
+    _root, _linked, home, _base, sha, responses, requests, _git = installation
+    shell, store = "hermes_state.py", "hermes_agent/hermes_state/common.py"
+    trees = "/repos/fixture/fork/git/trees"
+    # A tree listing is one directory, as GitHub answers without ``recursive``; a release's full
+    # recursive listing is several MiB, beyond what the reader takes in one response.
+    responses[f"{trees}/{sha}"] = (200, {"truncated": False, "tree": [
+        {"path": shell, "type": "blob"}, {"path": "hermes_agent", "type": "tree", "sha": "t-pkg"},
+        {"path": "pad", "type": "blob", "size": 3 * 1024 * 1024}]})
+    responses[f"{trees}/t-pkg"] = (200, {"tree": [{"path": "hermes_state", "type": "tree", "sha": "t-state"}]})
+    responses[f"{trees}/t-state"] = (200, {"tree": [{"path": "common.py", "type": "blob"}]})
+    responses[f"/fixture/fork/{sha}/{shell}"] = (200, "from hermes_agent.compat import finder\n")
+    responses[f"/fixture/fork/{sha}/{store}"] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
+
+    assert source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json") is (not runtime)
+    assert not any("recursive" in path for path in requests)
 
 
 @pytest.mark.parametrize("failure", ["tree", "module"])

@@ -1,7 +1,10 @@
+import type { SessionInfo } from '@hermes/shared/gateway-types'
+
+import { storedClarifyRows } from '../app/clarifyTranscript.js'
 import { LONG_MSG } from '../config/limits.js'
 import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
-import type { Msg, SessionInfo } from '../types.js'
+import type { Msg } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
@@ -49,6 +52,25 @@ const TIMELINE_EVENTS: Record<string, TimelineEventText> = {
   process_complete: backgroundFinished
 }
 
+/** A resumed user row's durable message row (backtrack browsing finds its prompt by it). */
+const storedRowId = (role: string, rowId: unknown): Pick<Msg, 'rowId'> =>
+  role === 'user' && Number.isSafeInteger(rowId) && (rowId as number) > 0 ? { rowId: rowId as number } : {}
+
+/** A resumed tool row joins the next reply's trail; a clarify row shows what the live turn wrote after its trail
+ * (the answers bubble, or the abandoned form's system line). Returns the trail lines still pending. */
+const pushToolRow = (out: Msg[], pending: string[], { content, context, name }: TranscriptRow): string[] => {
+  const clarify = name === 'clarify' && content ? storedClarifyRows(content) : null
+
+  if (!clarify) {
+    return [...pending, buildToolTrailLine(name ?? 'tool', context ?? '')]
+  }
+
+  out.push({ kind: 'trail', role: 'system', text: '', tools: [...pending, clarify.trail] })
+  out.push({ role: clarify.abandoned ? 'system' : 'user', text: clarify.text })
+
+  return []
+}
+
 export const toTranscriptMessages = (rows: unknown): Msg[] => {
   if (!Array.isArray(rows)) {
     return []
@@ -62,13 +84,13 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { context, display_kind, name, role, text, timestamp } = row as TranscriptRow
+    const { content, context, display_kind, name, role, row_id, text, timestamp } = row as TranscriptRow
 
     const createdAt =
       typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : undefined
 
     if (role === 'tool') {
-      pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
+      pending = pushToolRow(out, pending, { content, context, name })
 
       continue
     }
@@ -97,7 +119,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
-      out.push({ role, text, ...(createdAt !== undefined && { createdAt }) })
+      out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...storedRowId(role, row_id) })
       pending = []
     }
   }
@@ -115,11 +137,13 @@ export const fmtDuration = (ms: number) => {
 }
 
 interface TranscriptRow {
+  content?: string
   context?: string
   display_kind?: string
   display_metadata?: { task_count?: number; [key: string]: unknown }
   name?: string
   role?: string
+  row_id?: number
   text?: string
   timestamp?: number
 }

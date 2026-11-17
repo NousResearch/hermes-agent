@@ -158,6 +158,7 @@ def main():
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
+    p.add_argument("--base-url", default="")
     # Passed only by a gateway started before the owned-child update (see the legacy watchdog).
     p.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
     args = p.parse_args()
@@ -176,6 +177,8 @@ def main():
         # MoA preset NAME to the configured real provider (#57283).
         cli = HermesCLI(model=args.model or None, provider=args.provider or None,
                         compact=True, resume=args.session_key, verbose=False)
+    if args.base_url:  # a seed, not launch policy: HermesCLI seeds the default provider's model.base_url (#141953)
+        cli.base_url = args.base_url
     cli._slash_metrics_surface = None  # the TUI/Desktop client already counted the typed command
     cli.is_slash_worker = True
     # Spurious stdin-EOF recovery (same shared-file-description O_NONBLOCK issue as the gateway entry

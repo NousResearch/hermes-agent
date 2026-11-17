@@ -105,7 +105,7 @@ async def session_config_options(client, session_id, models, info, mode_id):
     from hermes_cli.gateway_client import GatewayRPCError
     from hermes_cli.models import model_supports_fast_mode
     options = config_options(models, info, mode_id)
-    if not model_supports_fast_mode(info.get('model')):
+    if not model_supports_fast_mode(info.get('model'), provider=info.get('provider'), base_url=info.get('base_url')):
         return options
     try:
         speed = await client.rpc('config.get', session_id=session_id, key='service_tier')

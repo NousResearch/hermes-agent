@@ -75,7 +75,7 @@ class TestRunBackgroundTask:
         runner.adapters[Platform.TELEGRAM] = adapter
         parent = SimpleNamespace(_delegate_depth=0, _subagent_id=None)
         monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: SimpleNamespace(_subagent_id="child"))
-        monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **kw: {
+        monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **kw: {
             "model": "test", "provider": None, "base_url": None, "api_key": None,
             "api_mode": None, "command": None, "args": None,
         })
@@ -154,6 +154,25 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("surface, switch", [(True, True), (True, False), (False, False)])
+    async def test_task_takes_its_chats_daybreak_verdicts(self, surface, switch):
+        """A /bg agent is built outside the turn wiring; it carries its own chat's owner verdict and switch."""
+        runner = _make_runner()
+        adapter = AsyncMock()
+        adapter.extract_media = lambda text: ([], text)
+        adapter.extract_images = lambda text: ([], text)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        runner._daybreak_surface = lambda source: surface
+        runner._load_daybreak = lambda source: switch
+        agent = MagicMock()
+        agent.run_conversation.return_value = {"final_response": "done", "messages": []}
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("run_agent.AIAgent", return_value=agent):
+            await runner._run_background_task("say hello", _make_event().source, "bg_test")
+        assert (agent.daybreak_surface, agent.daybreak) == (surface, switch)
 
 # ---------------------------------------------------------------------------
 # /bg in help and known_commands

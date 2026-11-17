@@ -514,7 +514,9 @@ Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as t
 
 Use the NVIDIA NIM provider to access Nemotron and other open-source models through NVIDIA’s hosted service or a local NIM endpoint. Model identifiers for hosted endpoints and instructions for local deployment are available at [build.nvidia.com/models](https://build.nvidia.com/models).
 
-:::note The examples below use Nemotron 3.5 Super VL, which supports text and image inputs, reasoning, and tool calls.
+:::note Nemotron 3.5 Super VL
+The examples below use Nemotron 3.5 Super VL, which supports text and image inputs, reasoning, and tool calls.
+:::
 
 #### Cloud (build.nvidia.com)
 
@@ -530,7 +532,9 @@ Then start a chat:
 hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
 ```
 
-:::note Hermes automatically includes the NIM billing-origin header in requests to `build.nvidia.com`, ensuring consumption is attributed to the correct origin in NVIDIA’s billing dashboard. No additional configuration is required.
+:::info BILLING
+Hermes automatically includes the NIM billing-origin header in requests to `build.nvidia.com`, ensuring consumption is attributed to the correct origin in NVIDIA’s billing dashboard. No additional configuration is required.
+:::
 
 #### Local NIM
 
@@ -541,7 +545,7 @@ NVIDIA_API_KEY=local-no-auth
 NVIDIA_BASE_URL=http://localhost:8000/v1
 ```
 
-:::note Use `local-no-auth` as a placeholder if your endpoint does not require authentication. Otherwise, provide its API key.
+Use `local-no-auth` as a placeholder if your endpoint does not require authentication. Otherwise, provide its API key.
 
 Then start a chat using the model served by your endpoint:
 
@@ -550,6 +554,10 @@ hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
 ```
 
 Local NIM endpoints expose the same OpenAI-compatible chat completions API as NVIDIA’s hosted service. To switch endpoints, update `NVIDIA_BASE_URL` and adjust the API key and model name as needed.
+
+:::info VISION
+If your local NIM model isn't in models.dev catalog and supports vision, set `model.supports_vision: true` for native image support — see [Native vision for custom-provider models](#named-custom-providers).
+:::
 
 #### Set the default model
 
@@ -560,6 +568,10 @@ model:
   provider: "nvidia"
   default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
+
+:::info CONTACT
+For issues with the Nemotron models themselves, see the [NVIDIA Nemotron developer forum](https://forums.developer.nvidia.com/c/ai-data-science/nvidia-nemotron/669).
+:::
 
 ### GMI Cloud
 
@@ -1324,6 +1336,12 @@ providers:
 ```
 
 Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
+
+An entry keyed like a built-in provider (`openrouter:`, `Anthropic:`, `deepseek:`, in any case) that sets its own `api`/`base_url` **is** what that name means: `--provider openrouter`, `/model`, `hermes model` and the dashboard save it as `custom:openrouter` and every turn goes to your endpoint. When the entry declares a key (`api_key`, `key_env` or `key_cmd`), that key is used and the built-in's own key is never sent. An entry with no key gets the built-in's env and pooled keys only while its address is on the built-in's own host (scheme, host and port); anywhere else (a proxy, a mirror, another region's host such as Kimi's `.cn` endpoint) it sends no key, because a built-in's key is never sent to a host other than its own unless you say so. To use the built-in's key on your endpoint, name it: `key_env: DEEPSEEK_API_KEY` (the built-in's variable), or add the endpoint's key with `hermes auth add deepseek` while the entry is configured, which records the entry's address. A same-named block without an endpoint (for example `providers.openrouter: {request_timeout_seconds: 300}`) only tunes the built-in. `hermes doctor` warns when `model.provider` names a built-in that such an entry takes over.
+
+:::note Migration: built-in keys and same-named entries
+Earlier releases sent the built-in's env key (for example `DEEPSEEK_API_KEY`) to a key-less `providers.deepseek` entry on any address. Now that key stays on the built-in's own host. If such an entry now gets `401`, add `key_env: DEEPSEEK_API_KEY` (use your provider's variable) to the entry. Hermes logs one warning per entry naming the remedy when this happens. Pooled keys added before addresses were recorded (`hermes auth add`, the dashboard) for a built-in's pool belong to the built-in's own address. To use one on the entry's host, re-add it with `hermes auth add <name>` while the entry is configured.
+:::
 
 #### Command-minted credentials (`key_cmd`)
 

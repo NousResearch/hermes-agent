@@ -135,6 +135,13 @@ def adoptable_compression(conn, receipt):
     return (children, routed) if routed is not None else None
 
 
+def with_adopted_compression(receipt, children):
+    """*receipt* as ``adopt_untracked_compression`` commits it: *children* appended to its lineage
+    and its entry moved to the last one. Pure; the caller validates the copy."""
+    return dict(receipt, entry=dict(receipt['entry'], session_id=children[-1]),
+                lineage=[*receipt.get('lineage', [receipt['session_id']]), *children])
+
+
 def adopt_untracked_compression(db, *, epoch, session_id, expected):
     """Record, once, compression steps a receipt-unaware build published past the receipt's tip.
 
@@ -157,8 +164,7 @@ def adopt_untracked_compression(db, *, epoch, session_id, expected):
         if adoptable is None:
             return
         children, routed = adoptable
-        receipt['entry'] = dict(receipt['entry'], session_id=children[-1])
-        receipt['lineage'] = [*receipt.get('lineage', [session_id]), *children]
+        receipt = with_adopted_compression(receipt, children)
         validate_local_lineage(conn, receipt)
         _commit_local_target(conn, receipt, dict(routed, session_id=children[-1]))
     db._execute_write(write)

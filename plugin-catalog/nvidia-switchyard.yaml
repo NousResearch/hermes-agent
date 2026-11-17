@@ -1,0 +1,44 @@
+# Catalog entry — nvidia-switchyard (verified: NVIDIA-owned repository)
+#
+# Owner-submitted: NVIDIA owns and maintains the repository below.
+# Exact-SHA pin (40-hex). No self-updating code: nemo-switchyard comes from PyPI as a declared
+# python_dependency, installed by Hermes at plugin install time.
+name: nvidia-switchyard
+repo: https://github.com/NVIDIA/switchyard-local-first-routing
+sha: "114c3e12c1931d86cf75affc6c6ec5754865d107"
+subdir: switchyard
+title: Switchyard Local-first Routing (Beta)
+description: >-
+  Routes Hermes between a local and a cloud model with Verification-Gated Routing (VGR): each turn is tried
+  on the local model, checked, and escalated to the cloud model only when the check fails. Either tier can be
+  any URL or a third-party model provider set up in Hermes; each provider's terms and conditions apply.
+  Presets are selectable as
+  switchyard/<preset> models, with a Desktop page and dashboard tab showing each decision live. Disclosure —
+  installs nemo-switchyard from PyPI; runs a loopback sidecar on 127.0.0.1:4110 that keeps running after Hermes
+  quits (`hermes switchyard stop`), and Open in browser starts Hermes's web dashboard; reads every model request
+  and response to route it; for a provider tier it takes that provider's credential (sign-in tokens included)
+  from Hermes on each call and sends it only to that provider; stores a generated sidecar token and any tier API
+  keys in Hermes's .env through Hermes's config API; setup makes switchyard/<preset> the default model and sends
+  titles and smart approvals to the local model; copies its provider profile to
+  <HERMES_HOME>/plugins/model-providers/switchyard/ on load; logs and routing records stay in
+  <HERMES_HOME>/switchyard/; after removal it restores the replaced models, stops its sidecar and deletes its
+  provider copy; it never rewrites saved conversations. No telemetry.
+maintainer: NVIDIA
+tier: verified
+category: models
+version: "0.1.0"
+platforms: [linux, macos, windows]
+screenshots:
+  - https://raw.githubusercontent.com/NVIDIA/switchyard-local-first-routing/114c3e12c1931d86cf75affc6c6ec5754865d107/docs/screenshots/desktop-page.jpg
+  - https://raw.githubusercontent.com/NVIDIA/switchyard-local-first-routing/114c3e12c1931d86cf75affc6c6ec5754865d107/docs/screenshots/monitor-dashboard.jpg
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - pre_llm_call
+    - transform_llm_output
+    - transform_api_error_classification
+  provides_middleware:
+    - llm_request
+  requires_env: []

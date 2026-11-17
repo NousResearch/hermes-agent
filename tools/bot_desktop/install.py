@@ -31,10 +31,9 @@ from tools.bot_desktop import runtime
 logger = logging.getLogger(__name__)
 
 _install_lock = threading.Lock()
-_running: set[str] = set()
 # Installs are host-global but the gateway (Install card) and the CLI (`screen install`) are separate
-# processes: the in-process set alone let both drive dpkg for one profile at once. The slot is also a
-# non-blocking flock on a file in the profile's state dir, held for the life of the install.
+# processes, so the slot is a non-blocking flock on a file in the profile's state dir, held for the life
+# of the install.
 _slot_files: dict[str, object] = {}
 
 
@@ -58,36 +57,24 @@ def _try_flock(path: Path):
     return fh
 
 
-def assert_not_running() -> None:
-    with _install_lock:
-        if hermes_home_key() in _running:
-            raise InstallBusy("an install is already running for this profile")
-    fh = _try_flock(runtime.state_dir() / "install.lock")
-    if fh is None:
-        raise InstallBusy("an install is already running for this profile (another process)")
-    fh.close()
-
-
 def claim() -> str:
     """Atomically take this profile's install slot; raises :class:`InstallBusy` when taken. A caller that
     claims before handing off to a worker passes ``claimed=True`` to :func:`install_packages`, which then
-    owns releasing it — a check-then-spawn pair (``assert_not_running`` + later claim on the worker) lets
+    owns releasing it — a check-then-spawn pair (a read-only check + later claim on the worker) lets
     two Install clicks both pass the check."""
     key = hermes_home_key()
     with _install_lock:
-        if key in _running:
+        if key in _slot_files:
             raise InstallBusy("an install is already running for this profile")
         fh = _try_flock(runtime.state_dir() / "install.lock")
         if fh is None:
             raise InstallBusy("an install is already running for this profile (another process)")
-        _running.add(key)
         _slot_files[key] = fh
     return key
 
 
 def release(key: str) -> None:
     with _install_lock:
-        _running.discard(key)
         fh = _slot_files.pop(key, None)
     if fh is not None:
         fh.close()  # closing drops the flock

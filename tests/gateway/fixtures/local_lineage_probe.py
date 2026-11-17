@@ -39,7 +39,7 @@ def probe(tmp_path):
                                what=f'{request_id} to settle')
     async def first(desc, proc):
         async with websocket(home, desc) as ws:
-            for name in ('safe', 'reset', 'unknown', 'foreign'):
+            for name in ('safe', 'reset', 'unknown', 'tampered'):
                 cwd = home / name
                 cwd.mkdir()
                 params[name] = dict(request_id=name, source='gui', cwd=str(cwd), model='frozen-' + name, toolsets=[])
@@ -53,7 +53,7 @@ def probe(tmp_path):
             assert await asyncio.to_thread(peer.blocked.wait, 20)
             await rpc(ws, 'prompt.submit', session_id=sessions['unknown'], input_id='follower', text='NEVER_REPLAY')
             await rpc(ws, 'prompt.submit', session_id=sessions['reset'], input_id='reset', text='RECOVER_RESET')
-            await rpc(ws, 'prompt.submit', session_id=sessions['foreign'], input_id='foreign', text='FOREIGN_QUEUE')
+            await rpc(ws, 'prompt.submit', session_id=sessions['tampered'], input_id='tampered', text='TAMPERED_QUEUE')
             await ws.send(json.dumps({'id': 'crash', 'method': 'prompt.submit', 'params': {
                 'session_id': sessions['safe'], 'input_id': 'safe', 'text': 'RECOVER_SAFE'}}))
             # Wait for the actual publication, not just admission before the fixture ran.
@@ -91,7 +91,8 @@ def probe(tmp_path):
                 assert retry['result']['status'] == 'terminal', retry
             unknown = await rpc(ws, 'session.resume', session_id=sessions['unknown'])
             assert [p['status'] for p in unknown['result']['pending']] == ['unknown', 'queued'], unknown
-            for name, reason in [('foreign', 'profile_mismatch'), ('fork', 'storage_unavailable')]:
+            # A rewritten profile_id no longer hashes to the session id: refused as corrupt.
+            for name, reason in [('tampered', 'storage_unavailable'), ('fork', 'storage_unavailable')]:
                 refusal = await rpc(ws, 'session.resume', session_id=sessions[name])
                 assert refusal['error']['message'] == reason, refusal
     try:
@@ -104,7 +105,7 @@ def probe(tmp_path):
                 receipt = json.loads(db.execute('SELECT value FROM state_meta WHERE key=?',
                                     ('gateway.local_policy.v1:' + sid,)).fetchone()[0])
                 targets[name] = receipt['entry']['session_id']
-                if name != 'foreign':
+                if name != 'tampered':
                     route = json.loads(db.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
                                                   (receipt['route'],)).fetchone()[0])
                     route_targets[name] = route['session_id']
@@ -137,7 +138,7 @@ def probe(tmp_path):
                 pids.append(proc.pid); epochs.append(desc['authority_epoch'])
                 asyncio.run(recovered(desc))
                 assert db_rows() == {'warm-safe': 'terminal', 'warm-reset': 'terminal', 'started': 'unknown',
-                                     'follower': 'queued', 'reset': 'terminal', 'foreign': 'queued', 'fork': 'queued', 'safe': 'terminal'}
+                                     'follower': 'queued', 'reset': 'terminal', 'tampered': 'queued', 'fork': 'queued', 'safe': 'terminal'}
         assert all(route_targets[name] == targets[name] for name in ('safe', 'reset', 'unknown')), route_targets
         assert all(targets[name] != sessions[name] for name in ('safe', 'reset', 'unknown')), targets
         raw_texts = [next((m.get('content') for m in reversed(r['messages']) if m['role'] == 'user'), '') for r in peer.requests]
@@ -150,7 +151,7 @@ def probe(tmp_path):
             assert params[name]['cwd'] in json.dumps(request['messages']), request['messages']
         return {'pids': pids, 'epochs': epochs, 'logical_ids': sessions, 'physical_targets': targets,
                 'inference_texts': texts, 'raw_inference_texts': raw_texts, 'stable_receipts': True, 'policy_cwd_history_retained': True,
-                'unknown_not_replayed': True, 'foreign_and_fork_refused': True}
+                'unknown_not_replayed': True, 'tampered_and_fork_refused': True}
     finally:
         peer.release.set()
         peer.shutdown()

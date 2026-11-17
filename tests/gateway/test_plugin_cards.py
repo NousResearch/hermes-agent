@@ -231,7 +231,7 @@ async def test_refusals(tmp_path, monkeypatch):
         manager = PluginManager()
         manager.home_path = other_home
         foreign = PluginContext(PluginManifest(name='cwplug', source='user', key='cwplug'), manager)
-        monkeypatch.setattr(type(foreign), '_capability_granted', lambda self, capability: True)
+        monkeypatch.setattr(type(foreign), '_granted_in_own_home', lambda self, capability: True)
         assert (await _post(foreign, _CARD, session_key=route))['error'] == 'no_conversation'
 
         await authority._drain(ref)

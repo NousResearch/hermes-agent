@@ -1,11 +1,12 @@
 /**
- * Invariants tying ``allowScripts`` to the lockfile it gates.
+ * Invariants tying the dependency build allowlists to the lockfiles they gate:
+ * pnpm's ``allowBuilds`` (root ``pnpm-workspace.yaml``) and npm's
+ * ``allowScripts`` (``website/``, still an npm project).
  *
- * npm's ``allowScripts`` allowlist is keyed by exact ``name@version``, so an
- * entry silently stops matching the moment that dependency is bumped. Nothing
- * else in the build notices: npm downgrades the blocked script to a warning
- * buried in install output, and the failure only surfaces much later as a
- * missing native artifact.
+ * Both allowlists are keyed by exact ``name@version``, so an entry silently
+ * stops matching the moment that dependency is bumped. npm downgrades the
+ * blocked script to a warning buried in install output, and the failure only
+ * surfaces much later as a missing native artifact.
  *
  * That has now bitten twice on Windows. ``get-windows`` was added to
  * ``apps/desktop`` without an allow entry, so its node-pre-gyp install script
@@ -14,13 +15,18 @@
  * 40.10.6 and left the ``electron@40.10.2`` pin behind, blocking Electron's
  * own postinstall on any clean install.
  *
- * Two contracts keep the allowlist honest:
+ * Two contracts keep an allowlist honest:
  *
  * - Every versioned pin names a version the lockfile actually resolves, so a
  *   dependency bump that orphans its pin fails here instead of in a user's
  *   build.
- * - Every package the lockfile marks as having an install script is covered
- *   by a decision — allowed at its exact version, or denied by name.
+ * - Every package with an install script is covered by a decision — allowed
+ *   at its exact version, or denied by name. npm's lockfile marks those
+ *   packages, so it is checked here; pnpm's does not, and pnpm enforces it
+ *   itself when ``strictDepBuilds`` fails the install on an unlisted build.
+ *   That check only sees packages the installing host builds: a macOS- or
+ *   Windows-only dependency (``fsevents``) is caught by those OS's install
+ *   lanes, never by a Linux install.
  *
  * A bare-name key (no ``@version``) is a deliberate standing decision that
  * survives version bumps, which is how ``unicode-animations: false`` stays a
@@ -31,17 +37,17 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { load } from 'js-yaml'
 import { describe, test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..')
 
 const MANIFESTS = [
-  { name: 'root', dir: '.' },
   { name: 'website', dir: 'website' }
 ]
 
 function manifestLabel(dir: string): string {
-  return path.join(dir === '.' ? '' : dir, 'package.json')
+  return path.join(dir, 'package.json')
 }
 
 interface LockPackage {
@@ -85,6 +91,58 @@ function splitPin(key: string): { name: string; version: string } | null {
 
   return match ? { name: match[1], version: match[2] } : null
 }
+
+describe('root allowBuilds', () => {
+  // SAFETY: pnpm writes both files; a missing section fails the assertions below.
+  const workspace = load(fs.readFileSync(path.join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf-8')) as {
+    allowBuilds?: Record<string, boolean>
+    strictDepBuilds?: boolean
+  }
+
+  test('an unlisted dependency build fails the install', () => {
+    assert.equal(workspace.strictDepBuilds, true, 'pnpm-workspace.yaml must set strictDepBuilds: true')
+  })
+
+  test('every versioned pin matches a version in the lockfile', () => {
+    const lock = load(fs.readFileSync(path.join(REPO_ROOT, 'pnpm-lock.yaml'), 'utf-8')) as { packages?: Record<string, unknown> }
+    const versions = new Map<string, Set<string>>()
+
+    for (const key of Object.keys(lock.packages ?? {})) {
+      const pin = splitPin(key)
+
+      assert.ok(pin, `unreadable pnpm-lock.yaml package key ${key}`)
+      versions.set(pin.name, (versions.get(pin.name) ?? new Set<string>()).add(pin.version))
+    }
+
+    const allow = workspace.allowBuilds ?? {}
+    const stale: string[] = []
+
+    assert.ok(Object.keys(allow).length > 0, 'pnpm-workspace.yaml has no allowBuilds decisions')
+
+    for (const key of Object.keys(allow)) {
+      const pin = splitPin(key)
+
+      if (!pin) {
+        continue
+      }
+
+      const installed = versions.get(pin.name)
+
+      if (!installed?.has(pin.version)) {
+        stale.push(`  "${key}" — lockfile resolves ${pin.name} to ${installed ? [...installed].join(', ') : '<nothing>'}`)
+      }
+    }
+
+    assert.deepEqual(
+      stale,
+      [],
+      `Stale allowBuilds entries in pnpm-workspace.yaml:\n${stale.join('\n')}\n` +
+        "pnpm matches these by exact version, so each package's build fails the install " +
+        'under strictDepBuilds. Update the pin to the installed version, or drop the ' +
+        'entry if the dependency is gone.'
+    )
+  })
+})
 
 describe.each(MANIFESTS)('$name allowScripts', ({ dir }) => {
   const manifestPath = path.join(REPO_ROOT, dir, 'package.json')

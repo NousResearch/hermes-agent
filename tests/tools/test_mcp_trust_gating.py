@@ -183,6 +183,7 @@ class TestTrustGateAtCallTime:
 
     def test_unconfigured_server_defaults_to_full_trust(self, fake_session):
         """Backward compat: servers with no trust key behave as before."""
+        _mcp_registration._record_tool_trust_metadata("srv", {"command": "x"}, [])
         handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
             "tools.approval_prompt.request_elicitation_consent"

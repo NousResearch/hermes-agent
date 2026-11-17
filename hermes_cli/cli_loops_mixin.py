@@ -144,13 +144,15 @@ class CLILoopsMixin:
         from cli import _cprint
         from hermes_state import format_session_db_unavailable
         parts = cmd_original.split(maxsplit=1)
+        # The title lives on the conversation's live segment (its compression tip).
+        title_id = self._title_session_id()
         if len(parts) == 1:
             # No argument: show current title and session ID.
             if not self._session_db:
                 _cprint(f"  {format_session_db_unavailable(details=True)}")
                 return
             _cprint(f"  {t('cli.title.session_id', session_id=self.session_id)}")
-            session = self._session_db.get_session(self.session_id)
+            session = self._session_db.get_session(title_id)
             if session and session.get("title"):
                 _cprint(f"  {t('cli.title.current', title=session['title'])}")
             elif self._pending_title:
@@ -176,9 +178,9 @@ class CLILoopsMixin:
             return True
         if not new_title:
             _cprint(f"  {t('cli.title.empty_after_cleanup')}")
-        elif self._session_db.get_session(self.session_id):
+        elif self._session_db.get_session(title_id):
             try:
-                if self._session_db.set_session_title(self.session_id, new_title):
+                if self._session_db.set_session_title(title_id, new_title):
                     self._status_bar_title_checked_at = 0.0
                     _cprint(f"  {t('cli.title.set', title=new_title)}")
                 else:
@@ -243,9 +245,12 @@ class CLILoopsMixin:
             else t("cli.undo.removes_last_turns", count=_undo_n))
         if self._confirm_destructive_slash("undo", _undo_desc, cmd_original=cmd_original) is None:
             return True  # confirmation cancelled — command handled, keep REPL alive
+        before = list(self.conversation_history)
         turns_undone = self.undo_last(_undo_n)
         if turns_undone:  # None when nothing was rewound
             self._record_model_friction("undo", turns_undone)
+            from hermes_cli.cli_undo_hint import print_undo_rollback_hint
+            print_undo_rollback_hint(self, before, turns_undone)
 
     def _cmd_skills(self, cmd_original: str):
         with self._busy_command(self._slow_command_status(cmd_original)):

@@ -53,7 +53,7 @@ async def _post(ctx: Any, card: Any, session_key: str, origin) -> dict[str, Any]
 
 
 def _prepare(ctx: Any, session_key, origin):
-    if not ctx._capability_granted(CAPABILITY):
+    if not ctx._granted_in_own_home(CAPABILITY):
         return None, None, _err("consent_required", f"grant the {CAPABILITY} capability to this plugin")
     return _target(session_key, origin)
 

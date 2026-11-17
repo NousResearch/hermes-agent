@@ -13,6 +13,8 @@ import pytest
 
 from tests.gateway.test_session_follow_profile_config import _create, _owner, _route
 
+pytestmark = pytest.mark.usefixtures('authority_cwd_in_tmp')  # symbolic profile_id: a relative home
+
 MODELS = ('original', 'current', 'picked')
 
 
@@ -204,6 +206,38 @@ async def test_a_route_that_cannot_authenticate_does_not_block_switching_away(ho
         from hermes_cli.auth_constants import AuthError
         with pytest.raises(AuthError):
             _route(runner, live)
+
+        response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'loopback'})
+
+        assert 'result' in response, response
+        model, base_url, key = _route(runner, live)
+        assert (model, base_url, key) == ('picked', url, 'key-loopback')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_local_runtime_does_not_block_switching_away(home, endpoints, monkeypatch):
+    """#146253: a session whose route is a managed local model with the server off raised ValueError
+    out of ``session.mutate`` — only AuthError was caught — so the client got ``internal error`` and
+    could never leave the dead local route, not even by picking a remote provider."""
+    # A llama-server the developer runs on its default port would be detected and resolve this route.
+    monkeypatch.setattr('hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint',
+                        lambda *args, **kwargs: None)
+    (_, url), _ = endpoints
+    (home / 'config.yaml').write_text(json.dumps({
+        'model': {'provider': 'llamacpp', 'default': 'original'},
+        'providers': {'loopback': {'name': 'loopback', 'base_url': url, 'api_key': 'key-loopback'}},
+    }), encoding='utf-8')
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    try:
+        live = await _create(owner, authority, home, 'bare')
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+        with pytest.raises(ValueError, match='local model server'):
+            runner._resolve_session_agent_runtime(source=live.source, session_key=live.route,
+                                                  fallback=False)
 
         response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'loopback'})
 

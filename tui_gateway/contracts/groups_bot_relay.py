@@ -155,11 +155,20 @@ class GroupsCapabilitiesParams(ProfileParams):
 
 class GroupsCapabilitiesResult(Result):
     protocol_version: int
+    #: On the canonical gateway (hermes gateway run, also via forwarding hermes serve),
+    #: owning a group chat with peer members requires a running driver on the home.
     driver: bool
+    #: The canonical home must be persistent to drive the group chat with Desktop closed.
+    #: Standalone hermes serve derives this from its lending catalog; clients should not
+    #: treat it as a home for gateway-owned group chats.
     persistent_process: bool
     authority_gateway_id: str
+    #: On the canonical gateway, lending requires room_link.enabled with its catalog and
+    #: endpoint; the home need not enable its own. Standalone hermes serve skips its
+    #: API-server and endpoint checks.
     room_link: RoomLinkStatus
     features: list[str]
+    #: On the canonical gateway, owning requires groups.peer.register; lending requires groups.peer.invite.
     methods: list[str]
     max_log_limit: int
     #: Local profiles THIS caller may seat in a new group (``gateway/session_hosted_members``): served
@@ -267,9 +276,12 @@ class RoomContext(Result):
 
 
 class GroupsStateResult(Result):
+    """``change_events``: this backend broadcasts ``groups.changed`` when the room moves, so a client's poll is
+    only a backstop (absent on older backends: keep polling at the old rate)."""
     room: Room
     driver_status: RoomDriverStatus | None = None
     context: RoomContext | None = None
+    change_events: bool | None = None
 
 
 method("groups.state", params=GroupsStateParams, result=GroupsStateResult,
@@ -526,6 +538,7 @@ class GroupsPeerInviteParams(ProfileParams):
     member_id: str | None = None
     grant_id: str | None = None
     ttl_seconds: float | None = None
+    status_ttl_seconds: float | None = None
 
 
 class GroupsPeerInviteResult(Result):

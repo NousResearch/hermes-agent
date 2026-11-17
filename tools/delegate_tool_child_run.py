@@ -898,6 +898,9 @@ class _ChildRun:
             with child_profile_scope(self.child):
                 record_session_cwd(self.child_task_id, resumed["cwd"] if resumed else parent_cwd)
             register_container_alias(self.child_task_id, self.parent_task_id)
+        with _quiet("Marking inlined files as read failed: %s"):
+            from tools.delegate_tool_files import mark_files_read
+            mark_files_read(self.child_task_id, getattr(self.child, "_delegate_files", None))
 
         if resumed is not None:
             self.worktree_info = resumed.get("worktree")

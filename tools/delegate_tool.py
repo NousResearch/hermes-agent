@@ -51,6 +51,7 @@ from tools.delegate_tool_registry import (
 from tools.delegate_tool_tasks import (
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
 )
+from tools.delegate_tool_files import coerce_task_files, resolve_task_files, with_files
 from tools.delegate_tool_tuning import pin_child_service_tier
 from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
@@ -507,7 +508,7 @@ def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], routes: list[Any], *,
     top_role: str, max_iterations: int, parent_agent,
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
-    rebuild: Optional[list[dict[str, Any]]] = None,
+    rebuild: Optional[list[dict[str, Any]]] = None, task_files: Optional[list[Any]] = None,
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe), each on its task's route;
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure. ``rebuild`` (action='continue')
@@ -520,7 +521,8 @@ def _build_children(
         if route.error:
             continue  # refused by its backend: no child; its result entry is the refusal
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
-        _child_context = t.get("context")
+        _t_files = task_files[i] if task_files and i < len(task_files) else None
+        _child_context = with_files(t.get("context"), _t_files)
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
         try:
@@ -548,6 +550,7 @@ def _build_children(
         if _t_images:
             with _quiet("Could not attach images to child %d", i):
                 child._delegate_images = _t_images
+        child._delegate_files = _t_files  # marked as read in the child's tracker once its task id exists
         # Tee progress events into the live transcript (wrapper keeps the
         # _flush contract and swallows writer failures).
         _writer = live_writers[i] if i < len(live_writers) else None
@@ -615,7 +618,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[dict[str, Any]] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, files: Optional[list[str]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -673,6 +676,10 @@ def delegate_task(
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
     if not err:
+        task_file_specs, err = coerce_task_files(task_list, files)
+    if not err:
+        task_files, err = resolve_task_files(task_file_specs, _resolve_workspace_hint(parent_agent))
+    if not err:
         # One route per task from the active delegation provider (delegation.backend), or from credentials_cfg
         # (internal callers only, e.g. /review → auxiliary.review: a per-call routing owner shaped like the
         # delegation section, kept together with its fallback policy through child construction). Explicit-pin
@@ -722,7 +729,7 @@ def delegate_task(
 
     children, err = _build_children(
         task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images, task_files=task_files,
     )
     if err:
         return tool_error(err)
@@ -880,19 +887,24 @@ DELEGATE_TASK_SCHEMA = {
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
                         ),
+                        "files": _p(
+                            "array",
+                            "'path' or 'path:start-end' entries whose current lines are inlined into the child's first turn.",
+                            items={"type": "string"},
+                        ),
                         "output_schema": _p(
                             "object",
                             "JSON Schema this child's final answer must validate against (told to the "
-                            "child up front; parent validates with one bounded correction retry; result gains "
-                            "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
-                            "as summary, never discarded). Keep it forgiving — require only fields you will read.",
+                            "child up front; one bounded correction retry; result gains schema_valid, plus "
+                            "schema_errors on failure — the raw text still returns as summary). Keep it forgiving — "
+                            "require only fields you will read.",
                         ),
                         "images": _p(
                             "array",
                             "Images this child must SEE (max 8): local file paths or http(s) URLs — e.g. a "
                             "screenshot the user sent, a design mock, a chart. Vision-capable children receive the "
                             "pixels on their first turn; non-vision children get path hints for vision_analyze. Text "
-                            "files do NOT belong here — put paths in 'context' instead.",
+                            "files go in 'files'.",
                             items={"type": "string"},
                         ),
                         "group": _p(
@@ -1004,12 +1016,12 @@ registry.register(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
-        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        images=args.get("images"), files=args.get("files"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
     # The single-task top-level shape, kept for old transcripts.
-    compat_args=("goal", "context", "images", "max_iterations", "output_schema", "role"),
+    compat_args=("goal", "context", "files", "images", "max_iterations", "output_schema", "role"),
 )

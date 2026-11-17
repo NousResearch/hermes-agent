@@ -20,7 +20,7 @@ import logging
 import threading
 
 from gateway.session_busy_controls import authorize
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +58,9 @@ class _Pool:
         call = Future()
         with self.lock:
             if self.closed:
-                raise RuntimeStoreError('runtime_draining')
+                raise AuthorityRefusal('runtime_draining')
             if len(self.calls) >= _ADMITTED:
-                raise RuntimeStoreError('oneshot_busy', detail=f'{_ADMITTED} one-shot generations already in flight')
+                raise AuthorityRefusal('oneshot_busy', detail=f'{_ADMITTED} one-shot generations already in flight')
             self.calls.add(call)
             self.queue[call] = work
             spawn = self.threads < _WORKERS
@@ -197,12 +197,12 @@ def _validate(params):
             or any(key in params and params[key] is not None
                    and (isinstance(params[key], bool) or not isinstance(params[key], (int, float)))
                    for key in ('temperature', 'max_tokens'))):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     template = (params.get('template') or '').strip()
     if template and template not in PROMPT_TEMPLATES:
-        raise RuntimeStoreError('invalid_params', field='template', detail='unknown one-shot template')
+        raise AuthorityRefusal('invalid_params', field='template', detail='unknown one-shot template')
     if not template and not (params.get('instructions') or '').strip() and not (params.get('input') or '').strip():
-        raise RuntimeStoreError('invalid_params', field='input', detail='needs a template or instructions/input')
+        raise AuthorityRefusal('invalid_params', field='input', detail='needs a template or instructions/input')
 
 
 def _session_runtime(authority, ref):
@@ -240,12 +240,12 @@ async def oneshot(connection, ref, params):
         from gateway.session_authorities import require_serving
         require_serving(authority)
         if 'session:read' not in connection.actor.capabilities:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         if params.get('profile'):
             from pathlib import Path
             from hermes_cli.profiles import profile_matches_home
             if not profile_matches_home(params['profile'], Path(authority.profile_id)):
-                raise RuntimeStoreError('profile_mismatch')
+                raise AuthorityRefusal('profile_mismatch')
         runtime = lambda: None  # the task backend
 
     def work():

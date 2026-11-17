@@ -793,8 +793,13 @@ def handle_content_policy_refusal(
     # dropped.
     _db = getattr(agent, "_session_db", None)
     if _db is not None:
+        from agent.agent_init_session import agent_interface
+        _store = agent_interface(agent)
         with suppress(Exception):
-            _db.flush_token_counts()
+            if _store is not None:
+                _store.usage.flush_usage()
+            else:
+                _db.flush_token_counts()
     # Hand back the CLEAN pre-refusal history, not the loop's ``conversation_history``: an in-place
     # compaction this turn rewrote that baseline into ``list(messages)`` — the whole poisoned working
     # set including the refused request + tool rounds — so returning it would re-poison CLI/ACP memory

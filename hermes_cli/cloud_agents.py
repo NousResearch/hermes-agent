@@ -17,6 +17,13 @@ import httpx
 _TIMEOUT_S = 15.0
 
 
+# "Not signed in to Nous Portal" is a state of this install, not of the caller's dashboard session:
+# 409, never 401. Every dashboard client reads a 401 (and the Webapp's AuthWidget a 403) as its own
+# session being refused, so a 401 here would send a no-auth Webapp user to the Webapp sign-in page
+# instead of telling them to sign in to Nous Portal.
+PORTAL_SIGNIN_STATUS = 409
+
+
 class CloudAgentsError(RuntimeError):
     def __init__(self, message: str, status: int, code: str):
         super().__init__(message)
@@ -47,7 +54,8 @@ def discover(org: Optional[str] = None) -> dict[str, Any]:
     try:
         token = resolve_nous_access_token()
     except AuthError as exc:
-        raise CloudAgentsError(f"Sign in to Nous Portal first ({exc}).", 401, "portal_signin_required") from None
+        raise CloudAgentsError(f"Sign in to Nous Portal first ({exc}).",
+                                PORTAL_SIGNIN_STATUS, "portal_signin_required") from None
     portal = _nous_portal_base_url(get_provider_auth_state("nous") or {})
     try:
         with httpx.Client(timeout=_TIMEOUT_S) as client:
@@ -62,7 +70,8 @@ def discover(org: Optional[str] = None) -> dict[str, Any]:
     if response.status_code == 409 and isinstance(body, dict) and body.get("error") == "org_selection_required":
         return {"needsOrgSelection": True, "orgs": [o for o in map(_org, body.get("orgs") or []) if o]}
     if response.status_code == 401:
-        raise CloudAgentsError("Your Nous Portal sign-in has expired. Sign in again.", 401, "portal_signin_required")
+        raise CloudAgentsError("Your Nous Portal sign-in has expired. Sign in again.",
+                                PORTAL_SIGNIN_STATUS, "portal_signin_required")
     if response.status_code >= 400 or not isinstance(body, dict):
         raise CloudAgentsError(f"Nous Portal answered {response.status_code}.", 502, "portal_error")
     agents = [a for a in body.get("agents") or [] if isinstance(a, dict) and isinstance(a.get("id"), str)]

@@ -4,6 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
 
 def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
     from cron import jobs
@@ -11,18 +14,17 @@ def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
     from gateway.session import SessionStore
     from gateway.session_authority import SessionAuthority
     from gateway.session_contract import SessionActor
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch, RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(jobs, 'get_job', lambda jid: {'id': jid, 'prompt': 'original', 'model': 'per-job-model'})
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
-    db = SessionDB(tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     from gateway.config import GatewayConfig
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(_draining=False, session_store=store, adapters={})
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', persistence=storage_handle(tmp_path),
+                                 epoch=db.runtime.begin_epoch(instance_id='test'))
     runner.session_authority = authority
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create', 'session:submit', 'session:control'}), 'viewer')
@@ -32,7 +34,7 @@ def test_cron_admission_uses_job_model_and_exact_retry(tmp_path, monkeypatch):
         receipt = await session_cron.operation(authority, 'submit', params, actor)
         assert await session_cron.operation(authority, 'submit', params, actor) == receipt
         assert await session_cron.operation(authority, 'submit', params) == receipt
-        with pytest.raises(RuntimeStoreError):
+        with pytest.raises(AuthorityRefusal):
             await session_cron.operation(authority, 'submit', dict(params, extra_prompt='changed'), actor)
         policy = runner.adapters[next(iter(runner.adapters))].policies[receipt['session_id']]
         assert policy.model == 'per-job-model'
@@ -51,16 +53,14 @@ async def test_cron_cancel_between_claim_and_execution_registration_stops_the_jo
     import json
     from cron import scheduler
     from gateway import run, session_cron
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionActor, SessionRef
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    db = SessionDB(tmp_path / 'state.db')
-    db.create_session('s', source='cron')
-    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'cron')
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='test',
+                                 epoch=db.runtime.begin_epoch(instance_id='test'), persistence=storage_handle(tmp_path))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='cron-owner'), 'route')
     actor = SessionActor('cron-owner', 'p', frozenset({'session:create', 'session:submit', 'session:control'}), 'ticker')
     ref = SessionRef('p', 's')
@@ -73,9 +73,9 @@ async def test_cron_cancel_between_claim_and_execution_registration_stops_the_jo
     monkeypatch.setattr(scheduler, 'run_job', run_job)
 
     with db:
-        admit_session_input(db, epoch=authority.epoch, principal_id='cron-owner', session_id='s',
+        db.admissions.admit(epoch=authority.epoch, principal_id='cron-owner', session_id='s',
                             request_id='cron:job:fire', payload={'text': ''})
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         # The claim is committed and visible as `started`; execute() has not run yet.
         params = {'session_id': 's', 'admission_id': row['admission_id']}
         assert await session_cron.operation(authority, 'cancel', params, actor) == {'ok': True}
@@ -98,18 +98,16 @@ async def test_owner_execution_binds_the_scheduler_cron_identity_inside_run_job(
     from cron.execution_identity import current_cron_execution
     from cron.executions import create_execution, mark_execution_running
     from gateway import run, session_cron
-    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_authority import LiveSession, SessionAuthority, admission_row
     from gateway.session_contract import SessionRef
-    from hermes_state import SessionDB
-    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     execution = create_execution('job', source='builtin', scheduled_instant='2026-10-08T09:00:00')
     record = mark_execution_running(execution['id'])
-    db = SessionDB(tmp_path / 'state.db')
-    db.create_session('s', source='cron')
-    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'cron')
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='test',
+                                 epoch=db.runtime.begin_epoch(instance_id='test'), persistence=storage_handle(tmp_path))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='cron-owner'), 'route')
     monkeypatch.setattr(run, '_profile_runtime_scope', lambda home: nullcontext())
     seen = {}
@@ -121,9 +119,9 @@ async def test_owner_execution_binds_the_scheduler_cron_identity_inside_run_job(
     monkeypatch.setattr(scheduler, 'run_job', run_job)
     request_id = 'cron:job:' + execution['id']
     with db:
-        admit_session_input(db, epoch=authority.epoch, principal_id='cron-owner', session_id='s',
+        db.admissions.admit(epoch=authority.epoch, principal_id='cron-owner', session_id='s',
                             request_id=request_id, payload={'text': ''})
-        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id='s'))
         policy = SimpleNamespace(request_json=json.dumps({
             'extra_prompt': None, 'request_id': request_id, 'cron_job': {'id': 'job', 'name': 'Job'}}))
         assert await session_cron.execute(authority, SessionRef('p', 's'), row, policy) == 'answer'
@@ -145,19 +143,17 @@ def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tm
     from gateway import run, session_cron
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
-    from gateway.session_authority import SessionAuthority
-    from hermes_state import SessionDB
-    from hermes_state_runtime import (RuntimeStoreError, begin_runtime_epoch, claim_session_input,
-                                      settle_session_input)
+    from gateway.session_authority import SessionAuthority, admission_row
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(jobs, 'get_job', lambda jid: {'id': jid, 'prompt': 'p', 'model': 'm'})
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
-    db = SessionDB(tmp_path / 'state.db')
+    db = storage_handle(tmp_path)
     runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()),
                              adapters={})
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', persistence=storage_handle(tmp_path),
+                                 epoch=db.runtime.begin_epoch(instance_id='test'))
     runner.session_authority = authority
     admitted = threading.Event()
     monkeypatch.setattr(authority, '_schedule', lambda ref: admitted.set())
@@ -179,16 +175,16 @@ def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tm
             assert await asyncio.to_thread(admitted.wait, 10), firer
             runner._draining = True  # shutdown begins while the admitted run executes
             sid = next(iter(authority.sessions))
-            row = claim_session_input(db, epoch=authority.epoch, session_id=sid)
+            row = admission_row(db.admissions.claim(epoch=authority.epoch, session_id=sid))
             assert await session_cron.operation(
                 authority, 'cancel', {'session_id': sid, 'admission_id': row['admission_id']}) == {'ok': True}
             # the firer polls status at least once during the drain, and is answered
             assert await asyncio.to_thread(polled_while_draining.wait, 10), 'firer never polled status during the drain'
-            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
+            db.admissions.settle(epoch=authority.epoch, admission_id=row['admission_id'],
                                  generation=row['generation'], outcome='completed',
                                  result={'result': {'cron_result': [True, 'doc', 'answer', None]}, 'usage': {}})
             assert await asyncio.wait_for(firer, 10) == (True, 'doc', 'answer', None)
-            with pytest.raises(RuntimeStoreError, match='runtime_draining'):
+            with pytest.raises(AuthorityRefusal, match='runtime_draining'):
                 await session_cron.operation(authority, 'submit',
                                              {'job_id': 'job', 'request_id': 'next', 'extra_prompt': None})
         finally:

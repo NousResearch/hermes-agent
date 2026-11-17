@@ -422,7 +422,6 @@
     "plugins/platforms/feishu/feishu_comment.py gateway.run._resolve_runtime_agent_kwargs": 1,
     "plugins/platforms/feishu/feishu_comment.py hermes_cli.models.get_default_model_for_provider": 1,
     "plugins/platforms/feishu/feishu_comment.py run_agent.AIAgent": 1,
-    "plugins/platforms/feishu/feishu_comment.py tools.feishu_lark.current_client": 1,
     "plugins/platforms/feishu/feishu_comment.py tui_gateway.launch_profile_policy.async_launch_profile_scope_if_multiplexed": 1,
     "plugins/platforms/feishu/feishu_comment_rules.py utils.file_cache_version": 1,
     "plugins/platforms/feishu/gateway_env.py gateway.platform_env.EnvCred": 1,

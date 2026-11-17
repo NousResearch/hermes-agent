@@ -10,6 +10,14 @@ description: >
   voice, documents, threads, DM pairing, group @mention gating, drive
   comment events, and meeting invites.
 author: NousResearch
+# The comment agent's model tools. Declaring them asks discovery to import `tools.py` in every
+# process, so the tools exist while the adapter stays deferred.
+provides_tools:
+  - feishu_doc_read
+  - feishu_drive_list_comments
+  - feishu_drive_list_comment_replies
+  - feishu_drive_reply_comment
+  - feishu_drive_add_comment
 requires_env:
   - name: FEISHU_APP_ID
     description: "Feishu/Lark app ID"

@@ -335,6 +335,10 @@ class SQLiteStore:
         """Open the store now, so an unopenable store raises its typed error here instead of on the first verb."""
         self.holder()
 
+    def serves_same_store(self, other: object) -> bool:
+        """Whether ``other`` reads and writes through this handle's holder: the same file and generation."""
+        return isinstance(other, SQLiteStore) and self.holder() is other.holder()
+
     def require_open(self) -> None:
         """Raise ``RuntimeError`` once the backend has closed, as a verb through ``holder`` does; touches no file."""
         self._backend._require_open()

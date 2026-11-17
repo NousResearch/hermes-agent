@@ -81,6 +81,10 @@ class Persistence:
                 self._store = self._bind()
             return self._store
 
+    def serves_same_store(self, other: Persistence) -> bool:
+        """``PersistenceStore.serves_same_store`` between the stores the two handles are bound to."""
+        return self._bound_store().serves_same_store(other._bound_store())
+
     def close(self) -> None:
         with self._lock:
             release, self._release = self._release, None

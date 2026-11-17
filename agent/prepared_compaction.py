@@ -334,9 +334,9 @@ class PreparedCompaction:
         Meanwhile the pass's streamed progress and local prompt reading feed this thread's hooks, so the
         host's idle watchdog and deadline extension see a live summary exactly as they would inline; the
         deadline is re-read on every poll because prompt reading pushes it back."""
+        from agent.auxiliary_call_outcome import _captured_aux_cancel_requested
         from agent.auxiliary_client import (
-            _aux_progress, _capture_aux_cancel_check, _captured_aux_cancel_requested, _current_aux_stream_deadline,
-            _effective_aux_timeout,
+            _aux_progress, _capture_aux_cancel_check, _current_aux_stream_deadline, _effective_aux_timeout,
         )
         from agent.local_prompt_progress import current_prompt_reading_hook
 

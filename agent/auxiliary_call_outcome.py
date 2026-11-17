@@ -4,13 +4,16 @@ The scope's ``outcome`` + ``error_class`` become the shared-metrics ``model_rout
 auxiliary call, under the same contract as a primary call: a failure carries the classifier's
 ``FailoverReason`` for the error that ended it, a Hermes-side abort (``/stop``, Ctrl+C, an
 interrupt, shutdown) is ``cancelled`` rather than ``failed``, and a success keeps the last
-attempt error it recovered from (a retried timeout, a fallback past a 429).
+attempt error it recovered from (a retried timeout, a fallback past a 429). Per attempt,
+:class:`_AuxiliaryCancellationDecision` settles whether an explicit cancel or the provider timeout
+ended it.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+import threading
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -58,3 +61,35 @@ def error_class(error: BaseException, *, provider: str = "", model: str = "") ->
     except Exception:
         logger.debug("Auxiliary error classification failed", exc_info=True)
         return "unknown"
+
+
+def _captured_aux_cancel_requested(cancel_check: Callable[[], Any]) -> bool:
+    """Read a request-thread cancellation source without leaking its failures."""
+    try:
+        return bool(cancel_check())
+    except Exception:
+        logging.getLogger("agent.auxiliary_client").debug("captured aux cancel check failed", exc_info=True)
+        return False
+
+
+class _AuxiliaryCancellationDecision:
+    """Atomically choose explicit cancellation or provider timeout per attempt."""
+
+    def __init__(self, source_cancel_check: Callable[[], Any]) -> None:
+        self._source_cancel_check = source_cancel_check
+        self._lock = threading.Lock()
+        self._outcome = "active"
+
+    def __call__(self) -> bool:
+        with self._lock:
+            if self._outcome == "active" and _captured_aux_cancel_requested(self._source_cancel_check):
+                self._outcome = "cancelled"
+            return self._outcome == "cancelled"
+
+    def begin_timeout_cleanup(self) -> bool:
+        """Return whether timeout won and destructive cleanup is permitted."""
+        with self._lock:
+            if self._outcome == "active":
+                cancelled = _captured_aux_cancel_requested(self._source_cancel_check)
+                self._outcome = "cancelled" if cancelled else "timed_out"
+            return self._outcome == "timed_out"

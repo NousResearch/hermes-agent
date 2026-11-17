@@ -94,6 +94,15 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
     ]
 
 
+def _drop_max_iterations_summary_scaffolding(messages) -> None:
+    """Remove the iteration-budget summary nudge; only the flagged synthetic row is dropped."""
+    messages[:] = [
+        m
+        for m in messages
+        if not (isinstance(m, dict) and m.get("_max_iterations_summary_synthetic"))
+    ]
+
+
 def _clone_background_review_messages(messages):
     """Copy the review input without aliasing the live transcript."""
     # Lazy: conversation_loop imports this module (cycle).
@@ -221,6 +230,7 @@ def _drop_transcript_scaffolding(agent, messages) -> None:
     the synthetic verification nudges go; the assistant candidate persists (#65919)."""
     agent._drop_trailing_empty_response_scaffolding(messages)
     _drop_verification_continuation_scaffolding(messages)
+    _drop_max_iterations_summary_scaffolding(messages)
 
 
 def _recover_final_from_stream(agent, final_response, interrupted, failed) -> tuple[Any, bool]:

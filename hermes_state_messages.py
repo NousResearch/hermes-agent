@@ -465,6 +465,17 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             ),
             decode_row_fn=self._decoded_repair_row,
         )
+        from agent.transcript_repair import suppress_duplicate_tool_call_writes
+
+        inserted_rows = suppress_duplicate_tool_call_writes(
+            conn,
+            session_id,
+            inserted_rows,
+            encode_content_fn=self._encode_content,
+            serialize_message_fn=lambda msg, timestamp: self._serialized_message_row(
+                session_id, msg, timestamp
+            ),
+        )
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
         self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
         return inserted
@@ -1583,7 +1594,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         mutable payload while the digest still fences a concurrent winner. ``_row_id`` is opt-in (gateway
         reactions); reasoning restored on assistant rows only; ``api_content`` VERBATIM (no sanitize/strip)
         so replay keeps the provider prompt cache byte-stable."""
-        from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
+        from hermes_state import (
+            _strip_background_review_harness,
+            _strip_iteration_limit_summary_nudges,
+            _strip_stale_tool_call_markers,
+        )
         # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
         from agent.transcript_repair import transcript_row_snapshot
         # Only the unaddressed live replay gets the digest: row-addressed loaders (include_row_ids) keep the
@@ -1659,7 +1674,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
             messages.append(msg)
         # Defense-in-depth: strip a background-review harness turn (older builds shared the parent's
         # session_id) plus its curator reply, and bare tool-call marker content ("[memory]") persisted as an answer.
-        messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+        messages = _strip_iteration_limit_summary_nudges(
+            _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+        )
         if repair_alternation and messages:
             from agent.agent_runtime_helpers import repair_message_sequence
             repaired = repair_message_sequence(None, messages)

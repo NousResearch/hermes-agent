@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import (
-    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
-    _sql_session_last_active)
+    _DELIBERATELY_ARCHIVED_EXCLUSION_SQL, _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL,
+    _RESET_END_REASONS_SQL, _sql_json_extract, _sql_session_last_active)
 from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
@@ -81,6 +81,7 @@ _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                  AND s.session_key = 
                   {_DELEGATE_CHILD_EXCLUSION_SQL}
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})
+                  {_DELIBERATELY_ARCHIVED_EXCLUSION_SQL}
                   AND NOT EXISTS (
                       SELECT 1 FROM sessions b
                       WHERE b.session_key = s.session_key
@@ -103,6 +104,7 @@ _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                  AND s.source = ?
                   AND (? IS NULL OR COALESCE(s.profile_name, ?) = ?)
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})
+                  {_DELIBERATELY_ARCHIVED_EXCLUSION_SQL}
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
                   ))
@@ -577,7 +579,11 @@ class SessionGatewayMixin:
     ) -> Optional[dict[str, Any]]:
         """Find the latest recoverable gateway session for a routing peer. The durable ``session_key`` on the row rebuilds a missing/pruned ``sessions.json`` mapping. Rows
         ended only by the old ``agent_close`` bug or a mistaken TUI ``ws_orphan_reap`` are recoverable;
-        explicit boundaries (/new, /resume switches, compression splits) are not. Ranked by
+        explicit boundaries (/new, /resume switches, compression splits) are not. Deliberately
+        archived rows are not recoverable either (#154410): a user hid that conversation, so the
+        next turn must mint a fresh session instead of replying into it. Rows archived by the idle
+        sweep (``auto_archived``) or ended only by a recoverable reaper stamp stay recoverable.
+        Ranked by
         ``last_activity_at`` (fallback ``started_at`` — alone it resurrected days-old zombies); rows with
         messages win, but an empty keyed row still beats ``None`` (which mints a new id while the transcript
         may live under a compression child). Reset fence: a candidate is rejected when a peer boundary row

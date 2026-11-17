@@ -97,8 +97,9 @@ def request(method: str, home: Path, profile: str, *, etag: Optional[str] = None
 
 def encode_body(body: dict[str, Any]) -> bytes:
     """The exact request bytes :func:`send` puts on the wire for *body* (callers check a plane's
-    body limit against them). Raises UnicodeEncodeError for a lone surrogate."""
-    return json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    body limit against them). Raises ValueError for NaN / Infinity (not JSON: a plane cannot parse
+    it), UnicodeEncodeError for a lone surrogate."""
+    return json.dumps(body, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 def send(method: str, url: str, *, token: str, etag: Optional[str] = None, body: Optional[dict[str, Any]] = None,

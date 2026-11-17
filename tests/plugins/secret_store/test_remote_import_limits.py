@@ -155,8 +155,7 @@ def test_a_value_that_cannot_be_sent_fails_closed(plane, monkeypatch):
     (9007199254740993, "9007199254740992"), (1e300, "1e+300"), (-0.0, "0"), (100, "100"), (1.25, "1.25"),
     (123456789012345680000, "123456789012345680000"), (1731000000.123, "1731000000.123"),
     (-2.5e-10, "-2.5e-10"), (5e-324, "5e-324"), (1.7976931348623157e308, "1.7976931348623157e+308"),
-    (0.1, "0.1"), (1e20, "100000000000000000000"), (12345678901234567890123, "1.2345678901234568e+22"),
-    (math.inf, "null"), (10 ** 400, "null")])
+    (0.1, "0.1"), (1e20, "100000000000000000000"), (12345678901234567890123, "1.2345678901234568e+22")])
 def test_numbers_measure_as_javascript_writes_them(number, js):
     """Expected strings are node's ``JSON.stringify`` of the same literals."""
     assert limits._js_json(number) == js
@@ -165,6 +164,66 @@ def test_numbers_measure_as_javascript_writes_them(number, js):
 def test_strings_and_nesting_measure_as_javascript_writes_them():
     record = {"a": ["\u2028\n\"\\\x01", True, None, {"b": 2.0}], "\u00e9": ""}
     assert limits._js_json(record) == '{"a":["\u2028\\n\\"\\\\\\u0001",true,null,{"b":2}],"\u00e9":""}'
+
+
+def _staging(plane, payload):
+    path = plane.home / ".secrets-import.json"
+    path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
+    return path
+
+
+# --- numbers the plane cannot hold as written ------------------------------------------------------
+# Valid JSON in auth.json, but a JavaScript number cannot hold it: Python loads it (inf / nan / an
+# exact int) and either writes bare Infinity/NaN (not JSON: the plane refuses the request after the
+# staging is written, and every later boot resends it) or digits the plane turns into null.
+
+NONFINITE = {"overflow": "1e400", "negative_overflow": "-1e400", "nan_literal": "NaN",
+             "infinity_literal": "-Infinity", "int_beyond_double": "1" + "0" * 400}
+
+
+@pytest.mark.parametrize("number", NONFINITE.values(), ids=NONFINITE)
+def test_a_number_the_plane_cannot_hold_fails_closed_before_staging(plane, monkeypatch, number):
+    _write(plane.home, "RV_A=plain\n")
+    (plane.home / "auth.json").write_text('{"providers":{"openai-codex":{"t":"q","n":' + number + "}}}",
+                                          encoding="utf-8")
+    shown = _refused(plane, monkeypatch, shows=["'openai-codex'", "auth.json", "Infinity"])
+    assert ".secrets-import.json" not in shown
+    assert not (plane.home / ".secrets-import.json").exists()
+
+
+@pytest.mark.parametrize("number", ["1e400", "Infinity", "NaN"])
+def test_a_leftover_staging_with_a_number_the_plane_cannot_hold_fails_closed_naming_it(plane, monkeypatch, number):
+    staging = _staging(plane, '{"env":{},"auth":{"openai-codex":{"n":' + number + "}}}")
+    _write(plane.home, "RV_A=plain\n")
+    _refused(plane, monkeypatch, shows=[str(staging), "'openai-codex'", "delete"])
+
+
+@pytest.mark.parametrize("value", [math.inf, -math.inf, math.nan])
+def test_the_transport_never_writes_a_number_json_cannot_carry(value):
+    from plugins.config_backends.remote.client import encode_body
+    with pytest.raises(ValueError):
+        encode_body({"auth": {"openai-codex": {"record": {"n": value}}}})
+
+
+# --- reserved names: the plane's secret_name_reserved, from whichever source ------------------------
+
+@pytest.mark.parametrize("payload", [
+    {"env": {"PATH": "stale-path"}, "auth": {}}, {"env": {"hermes_home": "/x"}, "auth": {}},
+    {"env": {"GATEWAY_RELAY_IDP_EXTRA": "x"}, "auth": {}}, {"env": {"HERMES_SECRET_STORE": "x"}, "auth": {}},
+    {"env": {"TERMINAL_CWD": "x"}, "auth": {}}, {"env": {}, "auth": {"nous": {"access_token": "stale-tok"}}},
+], ids=["PATH", "any_case_launch_only", "idp_prefix", "secret_store", "global_prefix", "auth_nous"])
+def test_a_leftover_staging_with_a_reserved_name_fails_closed_naming_it(plane, monkeypatch, payload):
+    """An earlier version staged a name the plane never stores: every boot stops naming the staging
+    file and the name (a reserved name is a known constant), before any request or write."""
+    staging = _staging(plane, payload)
+    _write(plane.home, "RV_A=plain\n")
+    name = next(iter({**payload["env"], **payload["auth"]}))
+    _refused(plane, monkeypatch, shows=[str(staging), repr(name), "never stores", "delete"],
+             hides=["stale-tok", "stale-path"])
+    staging.unlink()
+    _start(monkeypatch)
+    _boot(plane.home)
+    assert _stored(plane) == {"RV_A": "plain"}
 
 
 def test_the_body_measured_is_the_body_sent(plane, monkeypatch):

@@ -13,9 +13,9 @@ memory only:
   already has the profile (409) it wins and the local entries move to ``.env.unimported`` /
   ``auth.unimported.json`` (``importer.py``), all under one per-profile import lock. A kept-local
   ``.env`` line must be literal: one holding a ``${...}`` reference fails that profile's boot
-  closed before anything is staged or sent, as does a name or size the plane cannot store (in the
-  files or a leftover staging; ``limits.py``). Every rewrite of ``.env`` / ``auth.json`` by the
-  import first appends the exact bytes it replaces to ``.env.pre-import`` /
+  closed before anything is staged or sent, as does an import request the plane would refuse (one
+  check of the exact request, whichever file its entries came from; ``limits.py``). Every rewrite
+  of ``.env`` / ``auth.json`` by the import first appends the exact bytes it replaces to ``.env.pre-import`` /
   ``auth.pre-import.json`` (0600, append-only, never removed; ``pre_import.py``);
 - **change detection**: a per-process poller asks for every booted view with ``If-None-Match`` every
   :data:`POLL_SECONDS`, holding the version the process booted with or last wrote itself. Nothing is
@@ -55,7 +55,7 @@ from hermes_secret_port import (
 from plugins.config_backends.remote import client as config_client
 from plugins.config_backends.remote.credentials import IDP_ENV_PREFIX, PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError
 
-from . import client, limits
+from . import client
 
 logger = logging.getLogger(__name__)
 
@@ -322,7 +322,7 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
                 prepared = importer.prepare(home, self, profile)
                 token = self._bearer(home)  # resolved holding no lock of this store
                 with self._serialized(home):
-                    st, imported = self._first_fetch(home, profile, token, (prepared.env, prepared.auth))
+                    st, imported = self._first_fetch(home, profile, token, prepared.body)
                 importer.finish(home, profile, st.view, self, prepared, imported)
             with self._lock:
                 self._states[key] = st
@@ -349,13 +349,12 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
                 f"{client.shown_url()}: {detail}. Hermes does not start without its secrets "
                 "(HERMES_SECRET_STORE=remote has no local fallback).")
 
-    def _first_fetch(self, home: Path, profile: str, token: str, entries) -> tuple[_HomeState, bool]:
-        """Only network I/O and in-memory work under the home's plane-call lock."""
+    def _first_fetch(self, home: Path, profile: str, token: str, body) -> tuple[_HomeState, bool]:
+        """Only network I/O and in-memory work under the home's plane-call lock. *body* is the
+        import request ``importer.prepare`` checked (None: nothing to import), sent as it is."""
         view = self._get(home, profile, token=token)
-        env, records = entries
         imported = False
-        if (env or records) and view.profile_version == 0:
-            body = limits.import_body(env, records)   # checked against the plane's limits before staging
+        if body is not None and view.profile_version == 0:
             try:
                 resp = client.request("PATCH", home, profile, body=body, token=token)
             except client.TransportError:

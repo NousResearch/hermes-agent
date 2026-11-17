@@ -1,0 +1,547 @@
+{
+ "source": {
+  "repo": "NousResearch/gateway-gateway",
+  "commit": "78bafdfa03860e2baf95034fefedebd3868cdd80",
+  "files": [
+   "src/secretsPlane/patch.ts",
+   "src/secretsPlane/reservedNames.ts",
+   "src/secretsPlane/types.ts",
+   "src/secretsPlane/router.ts (order of checks)"
+  ],
+  "generator": "python -m tests.plugins.secret_store.plane_patch_cases <checkout>"
+ },
+ "cases": {
+  "ok": {
+   "sha256": "ce5b368edd8a66ae8a7ad4d9142c0cfe0cdd75f3c34072ed408bbfe2522081b2",
+   "plane": "ok"
+  },
+  "ok_auth_only_no_version": {
+   "sha256": "4e02f670139906ebce1924585491de453af213e2d89cc601c3fae295342ac946",
+   "plane": "ok"
+  },
+  "env_invalid_'1A'": {
+   "sha256": "238cd66b80f54d14784c6eaefbbd4f451805ff39630f068888ad969f3051371d",
+   "plane": "secret_name_invalid"
+  },
+  "env_invalid_'A B'": {
+   "sha256": "8a5277b6cc8923de073202ef7b056b9f831cd73252586e133cb32b5bd32b33a5",
+   "plane": "secret_name_invalid"
+  },
+  "env_invalid_'AAAAAAAAAAAA'": {
+   "sha256": "7978c3ba7cd3e3405d30d585f8c37f7ea89cf0c8530a18941b1e3f797aca9339",
+   "plane": "secret_name_invalid"
+  },
+  "env_invalid_'A-B'": {
+   "sha256": "5b64216cb430f2ac990af2a1cbe1479f7f14cd615e4ba746ce2e255d76dfe9bd",
+   "plane": "secret_name_invalid"
+  },
+  "env_invalid_'\u00c9'": {
+   "sha256": "ed0423c100da733d3f34daefece78eb43cb89663d5fdb6eec376f4ff83df14f7",
+   "plane": "secret_name_invalid"
+  },
+  "env_invalid_''": {
+   "sha256": "bfd6f19643456c7ef7c24c1c80d38363f3d15659e283994c45a1fcd744ed9724",
+   "plane": "secret_name_invalid"
+  },
+  "env_name_128": {
+   "sha256": "3bacc387d0a600be54f0378fd4099c42bb698f83110dfbffae2ec6ce23edf0f9",
+   "plane": "ok"
+  },
+  "auth_invalid_'My'": {
+   "sha256": "de06c0e91ac49f543adb456f6a337f0fc0588f88e2072d6d3f50a506196295d6",
+   "plane": "secret_name_invalid"
+  },
+  "auth_invalid_'-x'": {
+   "sha256": "a7093f7c6095698b5cb5ab26e829e17742b9bee7844c557680b4c296a17bad61",
+   "plane": "secret_name_invalid"
+  },
+  "auth_invalid_'aaaaaaaaaaaa'": {
+   "sha256": "a48becafbaddf4d5080ee7a9c82f506ca5996b2fd391b38f1a6a259392ee7f69",
+   "plane": "secret_name_invalid"
+  },
+  "auth_invalid_'a b'": {
+   "sha256": "085a7cd5db09bd13970ad32e258c9aa5438788fa3cd041578b516928ae480390",
+   "plane": "secret_name_invalid"
+  },
+  "auth_invalid_'_a'": {
+   "sha256": "90904cd1e5e6d2a2789731349b34e2e2151aa914142529df9dbca2beef0bc512",
+   "plane": "secret_name_invalid"
+  },
+  "auth_id_64": {
+   "sha256": "c5233a769e6a222b4d07b5cd8a4752554da6271c22079fa6ec5843cca5c17123",
+   "plane": "ok"
+  },
+  "reserved_API_SERVER_CORS_ORIGINS": {
+   "sha256": "64cfaf8fb935d97351c8df41bbbdf4f7df684937dff2ae3820762c788afb4ffe",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_API_SERVER_ENABLED": {
+   "sha256": "25cd4c659cb418f5856e2218dcc9d16fae0122dad8fb852f666685a53d7ed1a8",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_API_SERVER_HOST": {
+   "sha256": "7c45c04cd6aebf3ea124e3000cd75cdc570ef02c0f5dc23a6740a2a1e70696d9",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_API_SERVER_PORT": {
+   "sha256": "81d39080046a13c92e02ba559be8a02c2923cdede0f58b728511c7f7f8c21e7b",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS": {
+   "sha256": "4a53122b48ab859f6ad77dde8f6fdf8f94ddf681f119edf4015e12e3c0b453d3",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_BOT_IDS": {
+   "sha256": "dd4985d97a0a09654d059aa3c68d6d38bc7fd41fc5350e86d562931486afb5f5",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_DISPLAY_NAME": {
+   "sha256": "bf4a37a0490fdee195f43380663974c603e2f2db8944b08d35a74d68b9224885",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_ENDPOINT": {
+   "sha256": "37ad4ee07c7fdafea125bc38bb416de586ce7e868404464cf66e5204ce0a52d4",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_INSTANCE_ID": {
+   "sha256": "bf5fc4d3244faed20924d5d1d45c1ed81664ada051c5e9ca0a3950283a2cd33c",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_PLATFORMS": {
+   "sha256": "adee9e1474727c9a1bc82e5d48cbf94a445875e768d81244da3cdca3da8379fb",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_ROUTE_KEYS": {
+   "sha256": "709296bfeeb4baa902b271cac3d081c5a6c82ea2d73e6f9e66c1908a2e5d0c70",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_URL": {
+   "sha256": "24f9a3a0a6f43b51848234b5ca9e078bebd9a48241b84f56a447501049b4c8fc",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_WAKE_URL": {
+   "sha256": "1b1045b79c2f5c385632adeeb03cd190e7eab7af5b3c679a3a3e5d393c628a4c",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_API_TIMEOUT": {
+   "sha256": "f9861b28119b8ff8369a683b5fc06c83bb4be071f069161d6b3318922f1faedd",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_GATEWAY_LOCK_DIR": {
+   "sha256": "09e0a13f27fd521ef12f3e602c85efe0cdf5455ed6b22f5664653130e0b9ffe8",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_HOME": {
+   "sha256": "80e3382665ea6d3c1c6dc0064bac66edbb6e5b8607968e64b1bdecf6e4ec4203",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_KANBAN_BOARD": {
+   "sha256": "5308fecf0f1c0ef9244858d3d190299a71c6b8856f936d65386e2eb921b1875b",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_KANBAN_DB": {
+   "sha256": "485f9ec30b65700683a50cd332d7522c6d6764441b125a5f4e37c3b535de5e5f",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_KANBAN_WORKSPACES_ROOT": {
+   "sha256": "b28ab71968840aaac688a43b19ccc54d4a669f654e5164f4cd37b4223f5349da",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_MANAGED_DIR": {
+   "sha256": "c34e8f5194a1701ae07dbbdb9e1b73e17e1ee6ed7d8ba786cd87bf99c4f22099",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_MAX_ITERATIONS": {
+   "sha256": "23d6c6f08f325cbedaa92b4acf316933fbf865b8efb9814700abf7c11fa06fb8",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_NOUS_TIMEOUT_SECONDS": {
+   "sha256": "af9900205860092e8e95819e75d5d4eb9085670d241ba973aa9d8dc143275a7f",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_PROFILE": {
+   "sha256": "ab2f63d0c1d3cf211e48276b609cf80a9f95463ab6772d41d8a4255d1c7e0f43",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_REDACT_SECRETS": {
+   "sha256": "5f1746b48bc3bcdbadc385b86389f5b2ba44ae0aaacef95cc02a7d65e0b1fca8",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HOME": {
+   "sha256": "5c54c7683c35339392437d8a762d8219d3116915fc242fd95741650f4c6878d6",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_LANG": {
+   "sha256": "d91934942d7b04abfe1a05cb89394f8b358887354dd36c62d5d7952e9f98fd68",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_LC_ALL": {
+   "sha256": "a9348b7fe7e13febdf29b1c935d9bde9abdb6d37355b4a5781423f2ce2f35352",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_PATH": {
+   "sha256": "8198a72040df489beced554b05809eab3d905e8df5cc46236e17b9fcd5947da7",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_PWD": {
+   "sha256": "690af2fe616b16dcdf27e29de146774a3a45d329d862a83e98935aa4da801f5a",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_PYTHONPATH": {
+   "sha256": "17741dbb0fe3698eb97f622f5757b3f6ca962eb8e5ce979a23fcfd32d495db22",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_SHELL": {
+   "sha256": "0b220aeea53bb1e3bf5894830de89669cdcee39e9c8f29e33a93c8ea417ed472",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_SSL_CERT_FILE": {
+   "sha256": "247da886925aee33536ca1fbbce023aa175dfcfd2bb2af34b982ff05c1989e3c",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_TMPDIR": {
+   "sha256": "7cab3e02cd86e6ca34de02771a637e28ad8fcbfe5e9bd983c57ebd14170f9ef7",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_TZ": {
+   "sha256": "a1c83ad8af32d02d8feec1d040aab3c3f31ef5e23cba9829b755bd944fa53956",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_USER": {
+   "sha256": "a48d09331b3fc92b07502f1befcd9a8ab3535a08342d6226a42674f61029dae6",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_VIRTUAL_ENV": {
+   "sha256": "ccf4b1ccaebc01dc44dfbb5f8bade32f135b54354730db3484bf89d66745fa9f",
+   "plane": "secret_name_reserved"
+  },
+  "reserved__HERMES_GATEWAY": {
+   "sha256": "0d53bec1da4261c350149d2837bce34654be6cb292198ae2d5549889bb755d46",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_IDP_CLIENT_ID": {
+   "sha256": "20c9bf98797e077e5f8cd5405e6fbb0731ce831ab4652a29bfbc92612cc06e27",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_IDP_CLIENT_SECRET": {
+   "sha256": "563507dcdc6541c3d84c16cd87c325552db61ef0a341832ae5b226518599339e",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_IDP_SCOPE": {
+   "sha256": "dcae3a379c831cdacdb3fe29dcd39a907ea8916fb1aa2acdc4a042359d50ce23",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_GATEWAY_RELAY_IDP_TOKEN_URL": {
+   "sha256": "a4c73e891e56bdd89f66188d12d9df2aaf4595fd5af892cc7fc4d929000fee20",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_CONFIG_BACKEND": {
+   "sha256": "04bf7a16739fbbc0fb08fd0fbfb71fffe2f35bd3319fc8d41863708d87125625",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_CONFIG_INSTANCE_ID": {
+   "sha256": "02bc46ab4f3e6f5fd03754349ac4dd144262c62e101fefae6eb75b3ba906872d",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_CONFIG_REMOTE_URL": {
+   "sha256": "c4b7872a71dd0917a2192c21f0868fbc59f0dd353ac3ce9ba8a6b487bb0b5115",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_PORTAL_BASE_URL": {
+   "sha256": "f93e424dcfc94957325877abf4b2b7e2bbd2b85a930c9b7cef2af455ec48a353",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_SHARED_AUTH_DIR": {
+   "sha256": "c906eb13d750146d18987dde74604fc5829eff966b390a4935e0b001b92a8e1c",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_NOUS_PORTAL_BASE_URL": {
+   "sha256": "5017ca3e669be1d2e4f564cad3eac39274340aca9e1dacf28db5a08b872e9e6d",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_SECRET_STORE": {
+   "sha256": "2054223261abe12e0d54638842eb10c7204108bc70ede866412ced60ea0cc166",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_HERMES_SECRETS_REMOTE_URL": {
+   "sha256": "26ffe5f77803bdbe4cefd9d5e612f4fed9e7e9e433293adacd2769fdab5d48ef",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_prefix_HERMES_KANBAN_": {
+   "sha256": "46162b4244450d013fa86d96297cdf8b0e316b1f21aa4ec774e3d56ec93e8799",
+   "plane": "secret_name_reserved"
+  },
+  "near_prefix_HERMES_KANBAN_": {
+   "sha256": "b687c11c6a67e432c9a82d2f197cba9895f7dfefa16d99769d7aee31c800a740",
+   "plane": "ok"
+  },
+  "reserved_prefix_HERMES_TELEGRAM_": {
+   "sha256": "501b93e2846a41a25fa500b31c5a27755e9f0421e719164da28ff6b7437482bd",
+   "plane": "secret_name_reserved"
+  },
+  "near_prefix_HERMES_TELEGRAM_": {
+   "sha256": "ecd8ed114efd819ef48949689acd34ed1f52b4df7ef2bbef49c381b83aa020a8",
+   "plane": "ok"
+  },
+  "reserved_prefix_TERMINAL_": {
+   "sha256": "d3cdb41828df678f8d60568184817e626ea2a325efd0085c952fe1f3c4b933b5",
+   "plane": "secret_name_reserved"
+  },
+  "near_prefix_TERMINAL_": {
+   "sha256": "6cb67d84e59289df0b9673625e312ef5434b028bad8db7e3e02efa7f2707b8b9",
+   "plane": "ok"
+  },
+  "reserved_prefix_GATEWAY_RELAY_IDP_": {
+   "sha256": "c8775020ca6780de1ad7f86a2a250ff374e9d20372bfb101755de4c3672816ca",
+   "plane": "secret_name_reserved"
+  },
+  "near_prefix_GATEWAY_RELAY_IDP_": {
+   "sha256": "c2f27e463dfb38d0bbf3582fd43371c131eedc7be3b049f0e38662a08035ee9a",
+   "plane": "ok"
+  },
+  "reserved_any_case_HERMES_HOME": {
+   "sha256": "4f40e54c43949bb9659add31517838a4fdb2a9e9eac1830743b488d8898e30e8",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_mixed_case_HERMES_HOME": {
+   "sha256": "6c8aeec743e1dde7470ad1b21f87a8bdcfe95e093dfa092cdebaa9c2fc4574d5",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_any_case_HERMES_MANAGED_DIR": {
+   "sha256": "3f83903587f33655a2523f6d0db634a52a4dd3cab030a37c28a1b73efa777da1",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_mixed_case_HERMES_MANAGED_DIR": {
+   "sha256": "bb7fe039b9d4cea12e43af512e3eb621b4e8c4359dfaec66bcdd984960071681",
+   "plane": "secret_name_reserved"
+  },
+  "reserved_auth_nous": {
+   "sha256": "8887a1dda60c4396e8bb772dfab6a88061de92cdefd333805c542da86fbe1142",
+   "plane": "secret_name_reserved"
+  },
+  "near_reserved_path": {
+   "sha256": "71e3f8cf6599d2e2dfb70e7b0cc84f838a54407ff26ceb4d79c492671c9e988c",
+   "plane": "ok"
+  },
+  "near_reserved_PATHX": {
+   "sha256": "d630b89cdbdfcddd54df126335bdb4c8902b5c16646b367e8b444f6e0f51fb26",
+   "plane": "ok"
+  },
+  "near_reserved_PATH_": {
+   "sha256": "d385c41df5de3ae9875dd0104928ea86f21628b444db62d4e8f3fc81e2827bd5",
+   "plane": "ok"
+  },
+  "near_reserved_hermes_profile": {
+   "sha256": "264ca280e662ae54705cb18db94913c81805eb3e04b94fca5ac4d1103444d006",
+   "plane": "ok"
+  },
+  "near_reserved_Home": {
+   "sha256": "f6c3ca399fba8b9f8757d092646637f786211c45a7577a4b3ac65e30e1d34568",
+   "plane": "ok"
+  },
+  "near_reserved_HERMES_HOMES": {
+   "sha256": "5192f000c558fab8960c63d838412bd2869add6f9e11ac2138dfe042732508e1",
+   "plane": "ok"
+  },
+  "reserved_in_unset": {
+   "sha256": "56d334ec296287a71096b2ebed8b196f0f77e50b393f4c61f5a7b305427a7b8e",
+   "plane": "secret_name_reserved"
+  },
+  "env_ascii_65535": {
+   "sha256": "e823dd4adee38cafd0f241c38f17da5fc8613e8b3379ff0dc74c6a9b846c23f9",
+   "plane": "ok"
+  },
+  "auth_record_65535": {
+   "sha256": "d2c591337fb1a15f35b914c2548541c0ba637146ceb92950ed284d8b7b1915f5",
+   "plane": "ok"
+  },
+  "env_ascii_65536": {
+   "sha256": "7581c92224117ea78255457296815181288baaba4015e460ab7af4ba50a0a373",
+   "plane": "ok"
+  },
+  "auth_record_65536": {
+   "sha256": "4f503ab16be1a41928785540ec131266c00c9f09bd331dbc45f621eb9315a31b",
+   "plane": "ok"
+  },
+  "env_ascii_65537": {
+   "sha256": "b92e6053e24207ac0f5c6caa58114e8e27040560d737c28bd59418021cfde308",
+   "plane": "secret_value_invalid"
+  },
+  "auth_record_65537": {
+   "sha256": "6591a24ca82e79a4ca81db825a7916647c4fd342352635eea9aad6b57de04c12",
+   "plane": "secret_value_invalid"
+  },
+  "env_two_byte_64k": {
+   "sha256": "e1cd34e6d3e58a6d28c6aa793a473e6a689b3ff46bcb0f8fcbce3a008b94362f",
+   "plane": "ok"
+  },
+  "env_two_byte_over": {
+   "sha256": "4ad89f8e4c267cb2b114f8ffc99eb618424f0f174fc033818b757d036bfc0942",
+   "plane": "secret_value_invalid"
+  },
+  "auth_record_numbers_at_limit": {
+   "sha256": "946b8a34f0e0a8acb4b1dfa63a3ea35a33a158edd81530317993131bc12ad1a1",
+   "plane": "ok"
+  },
+  "auth_record_numbers_over": {
+   "sha256": "5db35be21e16cb9877b37e787d87118a3a86a4e7c403c9e4c6518b776841457e",
+   "plane": "secret_value_invalid"
+  },
+  "number_overflow": {
+   "sha256": "ab8eb8dbcf064667b4966a21180e1a153b2582856ccb4ada6b06c410565deab8",
+   "plane": "ok"
+  },
+  "number_negative_overflow": {
+   "sha256": "50d504fb04a6ae51306ba3bec688af15f4092fbebbcfc3a22c85562fa4cae810",
+   "plane": "ok"
+  },
+  "number_int_beyond_double": {
+   "sha256": "bfdcd14efd34246a7a2082441fcd0b9ab1b7c04b23432fe4a2ad192ad651fe39",
+   "plane": "ok"
+  },
+  "number_nan": {
+   "sha256": "822bb178827bcacd4cc9bd8c082f6fb3f2aec02a7651988d4ef6a0463de25020",
+   "plane": "secret_request_invalid"
+  },
+  "number_infinity": {
+   "sha256": "af316374b2ee658e6fb5570230cd18ad741d5bb5a78330c5f290f2367de9ac84",
+   "plane": "secret_request_invalid"
+  },
+  "number_neg_infinity": {
+   "sha256": "cbc869bc31a3b20c4a5350d6dff751bd83911873f415ca74530cfea35c1d5a03",
+   "plane": "secret_request_invalid"
+  },
+  "number_max_double": {
+   "sha256": "d17a949c0b96b8734a6744cbbef19b90b9154cfb7edc904c003c7b0a95291a8e",
+   "plane": "ok"
+  },
+  "number_int_2_53_plus_1": {
+   "sha256": "fb7d39647039aaf485a6796fa519a724e173285ed95a906d7c6e68e9b7ebf539",
+   "plane": "ok"
+  },
+  "number_tiny": {
+   "sha256": "124fabf6d267c16649629b26e7216269ef6f585dbd59d979b9a7a89bf3dc4a98",
+   "plane": "ok"
+  },
+  "number_underflow": {
+   "sha256": "ed1219a64a2be3a53a3dfad322105f0fd8b20c7d1a41b8b205cb5137b68dd5c4",
+   "plane": "ok"
+  },
+  "value_not_utf8": {
+   "sha256": "5173bba53a5bb89abd22ce49d208250de8b9898e789bf5b8c32bbe89a9431a11",
+   "plane": "ok"
+  },
+  "value_lone_surrogate_escape": {
+   "sha256": "1bfa70ee26ea458c99d8f001f528b1782dde24eb46db1499fe8d4ddb20362bdb",
+   "plane": "ok"
+  },
+  "record_lone_surrogate_escape": {
+   "sha256": "15aa0263f2639ca793a1c3dee59c3730fc8ee537976b56bebbf7aef18270291c",
+   "plane": "ok"
+  },
+  "value_not_string": {
+   "sha256": "e61a1ebc7c9ede2b9a118075f5f9ded17db2ff2bbfd14d0d82eea62773d53b62",
+   "plane": "secret_value_invalid"
+  },
+  "record_list": {
+   "sha256": "e09d2aea1cd974f7b2f824e93f7fc134cf2e076ae40a12ba0b2e3c1c28c05846",
+   "plane": "secret_value_invalid"
+  },
+  "record_string": {
+   "sha256": "37424cc4241c67f11a29b75520e7ae76ec4c093b8c958a7f125012987f5e54a8",
+   "plane": "secret_value_invalid"
+  },
+  "record_null": {
+   "sha256": "d5c4c2799b14d05cef336063a9eb1a4f366c9681aa81c89ad4c57e8dbc59dfda",
+   "plane": "ok"
+  },
+  "change_shape": {
+   "sha256": "e26c05317920226c2fc22bec5d3632560950c2e43c16da90aedad6b6a952aac1",
+   "plane": "secret_request_invalid"
+  },
+  "change_version_negative": {
+   "sha256": "441c8b9f8e408508cfa70f538a28c055fa63ca172c853771914eaaf2ccdfa026",
+   "plane": "secret_request_invalid"
+  },
+  "change_version_float": {
+   "sha256": "9c085e18a76f6e477e74e9b167be9b9f79086bc311638ae3402f3a721f23a62a",
+   "plane": "secret_request_invalid"
+  },
+  "change_extra_key": {
+   "sha256": "a03d76e003543d7c7d32930ceb95c501c37a6d0961404662d40d00c4f7ac260f",
+   "plane": "secret_request_invalid"
+  },
+  "set_without_version": {
+   "sha256": "1e1d1a78347c1189ec01b9869daa23a52ba1df778ccd98584d1b423815f309b3",
+   "plane": "secret_request_invalid"
+  },
+  "version_too_big": {
+   "sha256": "0d5ae3f18fddf995a04b86fdf98e480e2f90bee59b8c6195ce0d76379c1dd7b2",
+   "plane": "secret_request_invalid"
+  },
+  "version_max": {
+   "sha256": "f6e6533514d558a5d669628f22d33336b17cbc83a06789b299165fdb38b68029",
+   "plane": "ok"
+  },
+  "unknown_key": {
+   "sha256": "c1ca2b1e57e975ca24b5b2ef08616b12506817e32b6d92765ce832365fa0e083",
+   "plane": "secret_request_invalid"
+  },
+  "set_list": {
+   "sha256": "af3ee3908f2ed31909eeddce7259f1306c1f313026c47c3b6b1b86ed585b4c28",
+   "plane": "secret_request_invalid"
+  },
+  "nothing_to_write": {
+   "sha256": "7ed579e6d438ff9c6eb79a78751724c000d1dc8910f957705e045f26aaa302d9",
+   "plane": "secret_request_invalid"
+  },
+  "set_and_unset": {
+   "sha256": "f3f49119c2400c18aadc6f5f731eeaf899743fa5d862900cadf4e49faccc6c18",
+   "plane": "secret_request_invalid"
+  },
+  "not_object": {
+   "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+   "plane": "secret_request_invalid"
+  },
+  "not_json": {
+   "sha256": "021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96",
+   "plane": "secret_request_invalid"
+  },
+  "count_env_999": {
+   "sha256": "0e0bf2c980a31c45d2e00093a18cec94d9ccd8db08d0142560b26a4e13c65901",
+   "plane": "ok"
+  },
+  "count_env_1000": {
+   "sha256": "55ce8e55a52bc10e47b4b8975afafbd9c39452ad2acf2db7e9c2f6ba3edbd27e",
+   "plane": "ok"
+  },
+  "count_env_1001": {
+   "sha256": "0259ee903ef3c2a7b566633d6eb82572f66757df6c0e571da73c7c3676a8f5c2",
+   "plane": "secret_level_too_large"
+  },
+  "count_mixed_1001": {
+   "sha256": "5783edf32db934a001d5a699623a7be286941d1fb0dadf032c25d92a71cb5696",
+   "plane": "secret_level_too_large"
+  },
+  "count_null_records": {
+   "sha256": "4782df72907b3294ca1f4fa5a6c08c8003f9523437a647864a53d06f78ab72a4",
+   "plane": "ok"
+  },
+  "body_under_1mib": {
+   "sha256": "a0cdf32aa95d2cd4e2f8019c10cd532a4bc3fe69a62011cf3b2df77e1ff997a3",
+   "plane": "ok"
+  },
+  "body_over_1mib": {
+   "sha256": "315235caff4e67f1baa85abfae5dfe76837868aa93aea32c3fb116760f697a10",
+   "plane": "secret_body_too_large"
+  },
+  "body_exactly_1mib": {
+   "sha256": "f013a5ba3128a6b44afeb4b4524372f90d6adf8d0ff2c5d661e44ff825db8e27",
+   "plane": "ok"
+  },
+  "body_1mib_plus_1": {
+   "sha256": "d1c2d16a8f9fcd94f7612f59005de27b0be41eaf2173d1b0e941479a905466ac",
+   "plane": "secret_body_too_large"
+  }
+ }
+}

@@ -7,17 +7,19 @@ the resulting COVERAGE: one deadline per tier the cached prefix holds. Every con
 today; keep-alive, cold-cache pruning and idle compaction later) reads :func:`cache_window` (or
 :func:`stored_cache_window` with no live agent) instead of re-deriving a TTL.
 
-Refresh rules, per route class:
+The cache spec follows the API spec the request was sent on, not the vendor (two specs, no
+per-vendor lifetime table):
 
-- Anthropic family (native, OpenRouter Claude, route ceilings, other Anthropic-wire gateways): the
-  tier is fixed at write and a read restarts it, so ``deadline = read + tier``.
-- OpenAI spec: every request with no ``cache_control`` marker on a cached route (OpenAI of any
-  generation, DeepSeek, Qwen, GLM, Kimi, Gemini, xAI, any OpenAI-compatible endpoint) is one automatic
-  prefix cache treated as 30 minutes, renewed by a read: ``deadline = max(existing, read + 30m)``.
-  A proven 12h write (Responses ``ttl_12h_tokens``) is fixed at ``write + 12h``: a read only extends
-  the 30-minute floor. Only two specs exist on purpose: no per-vendor lifetime table.
-- An Anthropic-wire gateway asked for 1h with no declared ceiling has no guarantee: no coverage, at
-  most an estimated end.
+- Anthropic spec: the request carries ``cache_control`` markers (Claude on any wire or gateway,
+  MiniMax / Kimi / z.ai Anthropic endpoints, Qwen's explicit cache). The 5m or 1h it asked for is
+  declared, clamped by the route's ceiling (``prompt_caching.route_ttl_ceilings``, else the provider's
+  ``prompt_cache_max_ttl``); a read restarts the tier, so ``deadline = read + tier``.
+- OpenAI spec: every request with no marker on a cached route (OpenAI of any generation, DeepSeek,
+  Qwen's implicit cache, GLM, Gemini, xAI, any OpenAI-compatible endpoint) is one automatic prefix
+  cache treated as 30 minutes, renewed by a read: ``deadline = max(existing, read + 30m)``. A proven
+  12h write (Responses ``ttl_12h_tokens``) is fixed at ``write + 12h``: a read only extends the
+  30-minute floor. On non-OpenAI vendors the 30 minutes is an assumption; the warmer stops for the
+  session at its first missed keep-alive.
 
 Two ends per window, because a documented minimum is not an expiry:
 
@@ -54,7 +56,6 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Optional
 
 from agent.prompt_caching import TTL_SECONDS, route_ttl_ceiling
-from utils import base_url_host_matches, base_url_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,10 @@ PROVEN, DECLARED, ASSUMED, UNKNOWN = "proven", "declared", "assumed", "unknown"
 STORAGE_UNAVAILABLE = -1  # a generation read that failed: never equal to a real (>= 0) generation
 _CONFIDENCE_RANK = {UNKNOWN: 0, ASSUMED: 1, DECLARED: 2, PROVEN: 3}
 _OPENAI_READ_FLOOR = "30m"
-_PRE_TWO_SPEC_CLASSES = frozenset({"openai_ttl", "openai_retention", "implicit"})
+#: Route classes saved by earlier builds, read as the API spec they were sent on.
+_LEGACY_CLASSES = {"openai_ttl": "openai_spec", "openai_retention": "openai_spec", "implicit": "openai_spec",
+                   "route_ceiling": "anthropic_spec", "anthropic_native": "anthropic_spec",
+                   "openrouter_claude": "anthropic_spec", "anthropic_gateway": "anthropic_spec"}
 
 
 @dataclass(frozen=True)
@@ -112,8 +116,6 @@ class _Verdict:
     tiers: tuple[str, ...]  # tiers this response guarantees for what it wrote (or read, with no prior state)
     confidence: str
     reason: str
-    tier: Optional[str] = None  # display tier when ``tiers`` is empty
-    estimate_seconds: Optional[int] = None  # longest the entry can live past the touch, beyond its tiers
 
 
 # ── Request side ────────────────────────────────────────────────────────────
@@ -174,60 +176,41 @@ def record_attempt_sent(agent: Any, api_kwargs: Any) -> None:
 
 def classify_route(*, provider: str, base_url: str, api_mode: str, model: str,
                    has_markers: bool, retention: Optional[str]) -> str:
-    """Which rule set governs the cache this request reached (ordered: first match wins)."""
-    host = base_url_hostname(base_url)
-    checks: tuple[tuple[bool, str], ...] = (
-        (has_markers and route_ttl_ceiling(provider, base_url) is not None, "route_ceiling"),
-        (has_markers and api_mode == "anthropic_messages" and (provider == "anthropic" or host == "api.anthropic.com"),
-         "anthropic_native"),
-        (has_markers and base_url_host_matches(base_url, "openrouter.ai") and "claude" in model.lower(), "openrouter_claude"),
-        (has_markers, "anthropic_gateway"),
-    )
-    return next((name for matched, name in checks if matched), "openai_spec")
+    """Which cache spec governs the request: the API spec it was sent on, not the vendor. A request
+    with ``cache_control`` markers is Anthropic spec on any wire or gateway (Claude anywhere, MiniMax /
+    Kimi / z.ai Anthropic endpoints, Qwen's explicit cache); every other cached request is OpenAI spec."""
+    return "anthropic_spec" if has_markers else "openai_spec"
 
 
 def _written_tiers(tiers: dict[str, int]) -> tuple[str, ...]:
     return tuple(sorted((t for t, n in tiers.items() if n > 0 and t in TTL_SECONDS), key=TTL_SECONDS.__getitem__))
 
 
-def _rule_anthropic_native(ctx: _Ctx) -> _Verdict:
-    if proven := _written_tiers(ctx.write_tiers):
-        return _Verdict(proven, PROVEN, "anthropic_usage_split")
-    return _Verdict((ctx.requested_ttl or "5m",), DECLARED, "anthropic_requested")
-
-
-def _rule_openrouter_claude(ctx: _Ctx) -> _Verdict:
-    # Live probe: OpenRouter's Anthropic/Bedrock/Vertex Claude routes honour ttl 1h (write billed 2x).
-    return _Verdict((ctx.requested_ttl or "5m",), DECLARED, "openrouter_honours_ttl")
-
-
-def _rule_route_ceiling(ctx: _Ctx) -> _Verdict:
-    requested, ceiling = ctx.requested_ttl or "5m", ctx.ceiling or "5m"
-    tier = min((requested, ceiling), key=lambda ttl: TTL_SECONDS.get(ttl, 0))
-    return _Verdict((tier,), DECLARED, f"route_ceiling_{ceiling}")
-
-
-def _rule_anthropic_gateway(ctx: _Ctx) -> _Verdict:
-    if (ctx.requested_ttl or "5m") == "5m":
-        return _Verdict(("5m",), DECLARED, "gateway_requested_5m")
-    # A gateway that may keep only 5m: nothing is guaranteed; gone after the tier asked for.
-    return _Verdict((), ASSUMED, "gateway_1h_untrusted", tier=ctx.requested_ttl,
-                    estimate_seconds=TTL_SECONDS.get(ctx.requested_ttl or "", 300))
+def _rule_anthropic_spec(ctx: _Ctx) -> _Verdict:
+    """Claude rules: the tier the request asked for is declared (a response that names its tiers proves
+    them), clamped by the route's ceiling when one is declared or configured: a route that keeps less
+    than it reports is believed at its ceiling."""
+    proven = _written_tiers(ctx.write_tiers)
+    tiers, confidence, reason = (proven, PROVEN, "anthropic_usage_split") if proven else (
+        (ctx.requested_ttl or "5m",), DECLARED, "anthropic_requested")
+    if ctx.ceiling is None or all(TTL_SECONDS.get(t, 0) <= TTL_SECONDS[ctx.ceiling] for t in tiers):
+        return _Verdict(tiers, confidence, reason if ctx.ceiling is None or proven else f"route_ceiling_{ctx.ceiling}")
+    clamped = tuple(sorted({min((t, ctx.ceiling), key=lambda ttl: TTL_SECONDS.get(ttl, 0)) for t in tiers},
+                           key=TTL_SECONDS.__getitem__))
+    return _Verdict(clamped, DECLARED, f"route_ceiling_{ctx.ceiling}")
 
 
 def _rule_openai_spec(ctx: _Ctx) -> _Verdict:
     """One automatic prefix cache, 30 minutes renewed by a read (OpenAI's documented GPT-5.6 minimum,
-    https://developers.openai.com/api/docs/guides/prompt-caching , applied to every OpenAI-spec route)."""
+    https://developers.openai.com/api/docs/guides/prompt-caching , applied to every OpenAI-spec route).
+    An assumption on non-OpenAI vendors: the first keep-alive that misses stops warming for the session."""
     if proven := _written_tiers(ctx.write_tiers):
         return _Verdict(proven, PROVEN, "openai_write_tier")
     return _Verdict((_OPENAI_READ_FLOOR,), DECLARED, "openai_spec_30m")
 
 
 _RULES: dict[str, Callable[[_Ctx], _Verdict]] = {
-    "route_ceiling": _rule_route_ceiling,
-    "anthropic_native": _rule_anthropic_native,
-    "openrouter_claude": _rule_openrouter_claude,
-    "anthropic_gateway": _rule_anthropic_gateway,
+    "anthropic_spec": _rule_anthropic_spec,
     "openai_spec": _rule_openai_spec,
 }
 
@@ -242,8 +225,7 @@ def _refresh_openai(deadline: float, tier: str, at: float) -> float:
 
 # How a read moves a covered tier's deadline; route classes absent here never hold coverage.
 _REFRESH: dict[str, Callable[[float, str, float], float]] = {
-    "route_ceiling": _refresh_restart, "anthropic_native": _refresh_restart, "openrouter_claude": _refresh_restart,
-    "anthropic_gateway": _refresh_restart, "openai_spec": _refresh_openai,
+    "anthropic_spec": _refresh_restart, "openai_spec": _refresh_openai,
 }
 
 
@@ -267,12 +249,8 @@ def _fold_coverage(previous: Optional[CacheEvent], verdict: _Verdict, route_clas
     return coverage, carried
 
 
-def _ends(coverage: dict[str, float], verdict: _Verdict, at: float) -> tuple[Optional[float], Optional[float]]:
-    guaranteed = min(coverage.values()) if coverage else None
-    latest = max(coverage.values()) if coverage else None
-    if verdict.estimate_seconds is None:
-        return guaranteed, latest
-    return guaranteed, max(latest or 0.0, at + verdict.estimate_seconds)
+def _ends(coverage: dict[str, float]) -> tuple[Optional[float], Optional[float]]:
+    return (min(coverage.values()), max(coverage.values())) if coverage else (None, None)
 
 
 def _confidence(verdict: _Verdict, previous: Optional[CacheEvent], carried: bool, write: int) -> tuple[str, str]:
@@ -448,12 +426,12 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
         previous = None
     at = float(attempt.get("sent_at") or time.time())
     coverage, carried = _fold_coverage(previous, verdict, ctx.route_class, at, read, write)
-    guaranteed, estimated = _ends(coverage, verdict, at)
+    guaranteed, estimated = _ends(coverage)
     confidence, reason = _confidence(verdict, previous, carried, write)
     event = CacheEvent(
         route=route, destination=destination, route_class=ctx.route_class,
         requested_ttl=ctx.requested_ttl, sent_at=at, read_tokens=read, write_tokens=write,
-        tier=min(coverage, key=coverage.__getitem__) if coverage else verdict.tier,
+        tier=min(coverage, key=coverage.__getitem__) if coverage else None,
         confidence=confidence if estimated is not None else UNKNOWN, reason=reason, coverage=coverage,
         guaranteed_until=guaranteed, estimated_until=estimated, session_id=session_id, generation=generation,
     )
@@ -519,9 +497,8 @@ def event_from_json(raw: Any) -> Optional[CacheEvent]:
         data: Any = json.loads(raw) if isinstance(raw, str) else None
         if not isinstance(data, dict):
             return None
-        # Saved before the two-spec clock: the old OpenAI/implicit classes are the OpenAI spec now.
-        if data.get("route_class") in _PRE_TWO_SPEC_CLASSES:
-            data["route_class"] = "openai_spec"
+        # Saved by an earlier build: its per-vendor classes are the API spec they were sent on.
+        data["route_class"] = _LEGACY_CLASSES.get(data.get("route_class"), data.get("route_class"))
         return CacheEvent(**{**data, "route": tuple(data["route"]), "destination": tuple(data["destination"])})
     except (TypeError, ValueError, KeyError):  # a column written by a different build: no clock
         return None
@@ -539,11 +516,11 @@ def _fallback_event(agent: Any, last_assistant_at: float, generation: Optional[i
     route_class = classify_route(provider=provider, base_url=base_url, api_mode=str(getattr(agent, "api_mode", "") or ""),
                                  model=model, has_markers=caching, retention=None)
     verdict = _RULES[route_class](_Ctx(route_class, requested, None, {}, 0, route_ttl_ceiling(provider, base_url)))
-    seconds = max(max((TTL_SECONDS[t] for t in verdict.tiers), default=0), verdict.estimate_seconds or 0)
+    seconds = max((TTL_SECONDS[t] for t in verdict.tiers), default=0)
     route = _display_route(agent)
     return CacheEvent(
         route=route, destination=route, route_class=route_class, requested_ttl=requested, sent_at=last_assistant_at,
-        read_tokens=0, write_tokens=0, tier=verdict.tiers[-1] if verdict.tiers else verdict.tier,
+        read_tokens=0, write_tokens=0, tier=verdict.tiers[-1] if verdict.tiers else None,
         confidence=ASSUMED if seconds else UNKNOWN, reason=f"restored_from_transcript:{verdict.reason}",
         estimated_until=last_assistant_at + seconds if seconds else None,
         session_id=str(getattr(agent, "session_id", "") or ""), generation=generation,
@@ -626,8 +603,12 @@ def stored_cache_window(raw_clock: Any, *, session_id: str, generation: Optional
 
 def cache_window_payload(agent: Any) -> Optional[dict[str, Any]]:
     """``cache_window`` as the JSON shape surfaces carry (``PromptCacheWindow`` contract)."""
+    from agent.prompt_cache_lifecycle import prompt_cache_warming_disabled
+
     window = cache_window(agent)
-    return asdict(window) if window is not None else None
+    if window is None:
+        return None
+    return {**asdict(window), "warming_off": prompt_cache_warming_disabled(agent)}
 
 
 def _field(window: Any, name: str) -> Any:
@@ -679,6 +660,13 @@ def render_prompt_cache_line(window: Optional[dict[str, Any]], *, now: Optional[
     if not isinstance(window, dict):
         return None
     estimated = window.get("estimated_until")
+    line = _cache_line(window, estimated, now)
+    return f"{line} {t('gateway.context.cache_warming_off')}" if window.get("warming_off") else line
+
+
+def _cache_line(window: dict[str, Any], estimated: Any, now: Optional[float]) -> str:
+    from agent.i18n import t
+
     if window.get("confidence") == UNKNOWN or estimated is None:
         line = _UNKNOWN_LINES.get(str(window.get("reason") or ""), "cache_unknown_route")
         return t(f"gateway.context.{line}")

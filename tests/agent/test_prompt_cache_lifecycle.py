@@ -145,7 +145,9 @@ def test_after_a_cache_edge_compaction_nothing_is_sent_until_the_next_user_messa
 
 
 def test_tool_rounds_inside_one_user_turn_share_one_budget():
-    """A budget restarts on a new user message only: a long tool run gets three keep-alives in total."""
+    """The idle budget restarts on a new user message only: keep-alives fired between the requests of one
+    turn while no tool is executing share three. (Changed by ruling 3: while a tool executes they are
+    uncounted, see ``test_prompt_cache_rulings.py``.)"""
     agent = _chat(_user_turn_count=1)
     warmer = pcl.get_prompt_cache_warmer(agent)
     for _round in range(5):  # five tool-round requests in the same turn, each long enough to warm once

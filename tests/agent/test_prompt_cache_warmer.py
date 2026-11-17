@@ -392,17 +392,14 @@ def _one_hour_request():
 
 
 def test_warming_follows_the_shared_clock_and_never_warms_without_a_guarantee(priced):
-    """The clock is the only lifetime source: no window (nothing folded, or the cache moved) and
-    a gateway asked for an untrusted 1h (no guarantee) arm nothing, whatever ``_cache_ttl`` says;
-    native Anthropic's 1h tier is refreshed shortly before ITS guaranteed end."""
+    """The clock is the only lifetime source: no window (nothing folded, or the cache moved) arms
+    nothing, whatever ``_cache_ttl`` says; native Anthropic's 1h tier is refreshed shortly before ITS
+    guaranteed end. (Changed by ruling 1: a gateway's marked 1h ask is Anthropic spec and trusted, see
+    ``test_prompt_cache_rulings.py``.)"""
     from agent.prompt_cache_clock import cache_window
 
     agent = _agent()
     assert pcw.get_prompt_cache_warmer(agent).start(_request(), _RESPONSE) == "cache window not guaranteed warm"
-    gateway = _agent(api_mode="chat_completions", provider="custom", base_url="https://gw.example/v1",
-                     _cache_ttl="1h", client=_Client())
-    assert _arm(gateway, _one_hour_request()) == "cache window not guaranteed warm"
-    assert gateway.client.calls == []
 
     native = _agent(_cache_ttl="1h")
     assert _arm(native, _one_hour_request()) is None

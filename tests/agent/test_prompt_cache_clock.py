@@ -181,7 +181,7 @@ def test_a_configured_ceiling_applies_on_the_measured_provider_path_too(tmp_path
 
 def test_moa_records_the_resolved_aggregator_route_and_payload(monkeypatch):
     """The MoA agent shows the virtual preset; the clock must use the aggregator's resolved route
-    (OpenRouter Claude: 1h declared) and the payload the MoA client really sent."""
+    (OpenRouter Claude: Anthropic spec, 1h declared) and the payload the MoA client really sent."""
     agent = _agent("moa", "moa://local", "closed")
     agent.client = SimpleNamespace(
         last_aggregator_route={"provider": "openrouter", "model": "anthropic/claude-opus-4.8",
@@ -192,7 +192,7 @@ def test_moa_records_the_resolved_aggregator_route_and_payload(monkeypatch):
                             provider="openrouter", api_mode="chat_completions")
     event = record_cache_response(agent, usage, model="closed", provider="moa", base_url="moa://local",
                                   api_mode="chat_completions")
-    assert (event.route_class, event.tier, event.confidence) == ("openrouter_claude", "1h", "declared")
+    assert (event.route_class, event.tier, event.confidence) == ("anthropic_spec", "1h", "declared")
     assert _ends(agent)[2] == 4_600.0
 
 

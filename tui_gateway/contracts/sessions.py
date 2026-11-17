@@ -553,6 +553,8 @@ class PromptCacheWindow(Result):
     reason: str
     refreshed_at: float | None = None
     coverage: dict[str, float] = {}
+    #: A keep-alive missed on this route: nothing is warmed again this session.
+    warming_off: bool = False
 
 
 class SessionContextBreakdownResult(Result):

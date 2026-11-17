@@ -33640,6 +33640,11 @@
             "default": {},
             "title": "Coverage",
             "type": "object"
+          },
+          "warming_off": {
+            "default": false,
+            "title": "Warming Off",
+            "type": "boolean"
           }
         },
         "required": [

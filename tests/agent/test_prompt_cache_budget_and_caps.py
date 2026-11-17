@@ -1,7 +1,8 @@
 """The keep-alive budget belongs to the USER turn, not to one armed run, and every replay is genuinely
 bounded on the client that sends it.
 
-- A tool run that spends its three keep-alives still reaches step 2 (compact) or step 3 (offload): the
+- A turn that spends its three idle keep-alives (no tool executing; ruling 3 leaves a running tool's
+  keep-alives uncounted) still reaches step 2 (compact) or step 3 (offload): the
   ended budget is carried to the prompt the turn ends on and to the owner's release.
 - A keep-alive on the wire when the next tool round replaces its run is still booked against that user
   turn: never more than three paid keep-alives per user message.
@@ -129,7 +130,7 @@ def test_a_tool_run_that_spent_its_keep_alives_still_compacts_at_the_end_of_the_
     agent = _chat()
     warmer = pcl.get_prompt_cache_warmer(agent)
     assert _respond(agent) is None
-    for _ in range(pcl.WARM_BUDGET):  # a four-hour tool call: three keep-alives, then the budget ends
+    for _ in range(pcl.WARM_BUDGET):  # three idle keep-alives (no tool executing), then the budget ends
         if warmer._run is not None:
             _fire(warmer)
     assert len(agent._anthropic_client.calls) == pcl.WARM_BUDGET

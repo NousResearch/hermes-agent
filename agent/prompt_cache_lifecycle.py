@@ -3,13 +3,13 @@
 When a chat's cache is about to expire the controller makes ONE decision, in this order:
 
 1. WARM: re-send the last request with a tiny output cap at 5/6 of the entry's TTL (port of
-   earendil-works/pi#9668): one cache READ keeps the whole prefix warm for another TTL. Up to
-   :data:`WARM_BUDGET` keep-alives per budget, while a tool runs and, for chats a person types into,
-   while the chat is idle. A budget belongs to one USER message: the tool-round requests inside its
-   turn do not restart it, so a four-hour tool run gets three keep-alives in total. Machine-paced
-   sessions (subagents, cron, one-shots, /bg, /btw, the API server) warm only while a tool runs. A
-   keep-alive that misses (comes back mostly written, not read) ends warming at once and the budget
-   counts as spent: step 2 or 3 is decided right then.
+   earendil-works/pi#9668): one cache READ keeps the whole prefix warm for another TTL. While a tool
+   call runs, keep-alives continue until it returns, uncounted, bounded only by money: one tool wait's
+   keep-alives together cost no more than the rewrite they prevent. While a chat a person types into
+   is idle, up to :data:`WARM_BUDGET` per USER message. Machine-paced sessions (subagents, cron,
+   one-shots, /bg, /btw, the API server) warm only while a tool runs. The first keep-alive that misses
+   (comes back mostly written, not read) ends warming for the rest of the session on that route, and
+   step 2 or 3 is decided right then.
 2. COMPACT: once the budget is spent, an idle human chat compacts IF its window is at least
    :data:`MIN_COMPACT_WINDOW_SECONDS` (a 1h or 30m tier, never a 5m one), its context is at least half
    of the compaction threshold, and it grew since its last compaction; at most one compaction per
@@ -54,8 +54,11 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-#: Keep-alives per budget; a new user message starts one (tool rounds inside its turn do not).
+#: Idle keep-alives per user message (sent while no tool runs); a new user message starts a budget.
+#: Keep-alives while a tool runs are not counted: one tool wait is bounded by the rewrite it prevents.
 WARM_BUDGET = 3
+#: Why a session warms no more after a keep-alive missed on its route.
+WARMING_DISABLED = "prompt cache warming disabled for session: keep-alive missed"
 #: No entry exists below this prefix: the smallest documented minimum (Anthropic 1,024 for Sonnet/Opus,
 #: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching ; OpenAI 1,024,
 #: https://developers.openai.com/api/docs/guides/prompt-caching ; Qwen 1,024,
@@ -279,18 +282,25 @@ class _Run:
     lock: threading.Lock = field(default_factory=threading.Lock)
     #: A chat a person types into keeps warming after its turn ends; a machine session does not.
     idle_ok: bool = False
+    #: Keep-alives sent (and their cost) while this run's tool calls execute: one tool wait, bounded
+    #: only by the rewrite it prevents, never by the idle budget.
+    tool_warms: int = 0
+    tool_spent_usd: float = 0.0
+    #: Whether the keep-alive in flight was reserved against the tool wait (else the idle budget).
+    inflight_tool: bool = False
 
     @property
     def warm_count(self) -> int:
-        return self.budget.used
+        return self.budget.used + self.tool_warms
 
 
 @dataclass
 class _Budget:
-    """One USER message's keep-alives. Every run its tool rounds arm draws on the same object, so a run
-    replaced mid-flight still books its keep-alive here: each is reserved (count and estimated cost) at
-    admission and reconciled with its billed cost when its reply lands, whichever run is current then.
-    Changed only under the warmer lock."""
+    """One USER message's idle keep-alives (sent while no tool runs). Every run of the turn draws on the
+    same object, so a run replaced mid-flight still books its keep-alive here: each is reserved (count
+    and estimated cost) at admission and reconciled with its billed cost when its reply lands, whichever
+    run is current then. Keep-alives sent while a tool runs are booked on their run instead. Changed only
+    under the warmer lock."""
 
     turn: Any
     used: int = 0
@@ -335,8 +345,19 @@ class PromptCacheWarmer:
         #: Whether the armed request carries ``cache_control`` markers (Anthropic spec: a miss is a priced
         #: write) or not (OpenAI spec: a miss re-reads the prefix at the input rate).
         self._marked = True
+        #: The route ``(provider, base_url, model)`` whose keep-alive missed: the cache does not live as
+        #: long as assumed there, so nothing is warmed again this session (new user messages and
+        #: compactions included). A model/provider switch is a different cache and clears it.
+        self._missed_route: Optional[tuple] = None
 
     # -- read side ------------------------------------------------------------------------------
+    @property
+    def warming_disabled(self) -> bool:
+        """Whether a keep-alive missed on the live route, so this session warms no more."""
+        from agent.prompt_cache_clock import _display_route
+
+        return self._missed_route is not None and self._missed_route == _display_route(self.agent)
+
     @property
     def status(self) -> dict[str, Any]:
         """``{"state": inactive|scheduled|refreshing, "reason"?, "next_warm_at"?, "decision"?}``."""
@@ -364,6 +385,13 @@ class PromptCacheWarmer:
             if budget is None or budget.turn != turn:
                 budget = self._budget = _Budget(turn)
                 self._spent, self._compacted, self._offloaded = None, False, False
+            if self._missed_route is not None and not self.warming_disabled:
+                self._missed_route = None  # a model/provider switch: a different cache, warmed afresh
+            if self.warming_disabled:
+                # Steps 2/3 still decide on this prompt at the moment a keep-alive would have gone out.
+                budget.ended = True
+                self._carry_ended_budget()
+                return self._stop(WARMING_DISABLED)
             if budget.ended or budget.used >= WARM_BUDGET:
                 self._carry_ended_budget()
                 return self._stop("warm budget spent this turn")
@@ -399,9 +427,9 @@ class PromptCacheWarmer:
             return self._stop("no provider client")
         if not replay_cap_honoured(client, api_kwargs, getattr(agent, "model", ""), api_mode):
             return self._stop("the client cannot bound the replay's output cap")
-        # Economics before the deep copy: an unpriced/cheap model never pays for the copy either.
-        decision = self._decide(cached_tokens, uncached_tokens, spent_usd=budget.spent_usd,
-                                observed_warm_usd=budget.last_warm_usd)
+        # Economics before the deep copy: an unpriced/cheap model never pays for the copy either. Nothing
+        # is spent yet on the tool wait this run may cover; admission checks the idle budget's spend.
+        decision = self._decide(cached_tokens, uncached_tokens, observed_warm_usd=budget.last_warm_usd)
         self._last_decision = decision
         if decision.action != "warm":
             return self._stop(decision.stop_reason)
@@ -506,7 +534,7 @@ class PromptCacheWarmer:
         # A timer can fire late after sleep or a blocked interpreter. Keep half of the planned
         # pre-expiry margin for that: a late refresh is a full-price write, not a warm.
         run.refresh_deadline_at = run.next_warm_at + margin / 2
-        if run.budget.ended or run.budget.used >= WARM_BUDGET:
+        if not self._tool_running() and (run.budget.ended or run.budget.used >= WARM_BUDGET):
             # Step 2 decides at the moment the next keep-alive would have gone out.
             self._end_budget(run, "warm budget spent", due_at=run.next_warm_at)
             return
@@ -547,11 +575,17 @@ class PromptCacheWarmer:
             return "conversation context changed"
         return None
 
+    def _tool_running(self) -> bool:
+        """A tool call is executing: the model is certain to send the next request when it returns."""
+        return getattr(self.agent, "_executing_tools", False) is True
+
     def _admit(self, run: _Run, decision: CacheWarmingDecision) -> Optional[float]:
-        """The one send admission: ownership, cancellation, currency, deadline and the user turn's
-        budget checked, the keep-alive reserved against that budget (count and estimated cost), and the
-        run marked in flight, in one step under the lock ``cancel`` takes. Returns the reserved cost,
-        ``None`` when refused. The network request itself runs outside the lock."""
+        """The one send admission: ownership, cancellation, currency, deadline and the spend it draws on
+        checked, the keep-alive reserved (count and estimated cost), and the run marked in flight, in one
+        step under the lock ``cancel`` takes. While a tool runs it draws on this tool wait (no count cap:
+        its keep-alives together may cost no more than the one rewrite they prevent); otherwise on the
+        user turn's idle budget (:data:`WARM_BUDGET`). Returns the reserved cost, ``None`` when refused.
+        The network request itself runs outside the lock."""
         with self._lock:
             if self._run is not run or run.cancelled:
                 return None
@@ -561,15 +595,26 @@ class PromptCacheWarmer:
             if reason is not None:
                 self._stop(reason)
                 return None
+            if self.warming_disabled:
+                self._stop(WARMING_DISABLED)
+                return None
             budget = run.budget
-            if budget.ended or budget.used >= WARM_BUDGET:
-                self._end_budget(run, "warm budget spent", due_at=run.next_warm_at)
-                return None
-            if budget.spent_usd + decision.warm_cost > decision.miss_cost:
-                self._stop("refreshes would cost more than the cache write they prevent")
-                return None
-            budget.used += 1
-            budget.spent_usd += decision.warm_cost
+            run.inflight_tool = self._tool_running()
+            if run.inflight_tool:
+                if run.tool_spent_usd + decision.warm_cost > decision.miss_cost:
+                    self._stop("tool-wait refreshes would cost more than the cache write they prevent")
+                    return None
+                run.tool_warms += 1
+                run.tool_spent_usd += decision.warm_cost
+            else:
+                if budget.ended or budget.used >= WARM_BUDGET:
+                    self._end_budget(run, "warm budget spent", due_at=run.next_warm_at)
+                    return None
+                if budget.spent_usd + decision.warm_cost > decision.miss_cost:
+                    self._stop("refreshes would cost more than the cache write they prevent")
+                    return None
+                budget.used += 1
+                budget.spent_usd += decision.warm_cost
             run.refreshing = True
             return decision.warm_cost
 
@@ -597,8 +642,10 @@ class PromptCacheWarmer:
         miss = self._record(run, message, decision, sent_at, reserved)
         if miss is not None:
             if miss.startswith("cache refresh missed"):
-                # The entry was gone and this send re-wrote it: no more keep-alives, but the budget is
-                # over, so step 2 (compact) or step 3 (expire + offload) is decided now.
+                # The entry was gone and this send re-wrote it: the cache does not live as long as the
+                # clock assumed on this route, so no keep-alive goes out again this session; the budget
+                # is over, so step 2 (compact) or step 3 (expire + offload) is decided now.
+                self._disable_warming(run)
                 window = guaranteed_window(self.agent)
                 if window is not None:
                     run.deadline_at, run.ttl_s = window
@@ -619,6 +666,15 @@ class PromptCacheWarmer:
                 return
             run.deadline_at, run.ttl_s = window
             self._schedule(run)
+
+    def _disable_warming(self, run: _Run) -> None:
+        from agent.prompt_cache_clock import _route_key
+
+        b = run.billing
+        with self._lock:
+            # The route the keep-alive was sent on: a switch since then leaves the new route warmable.
+            self._missed_route = _route_key(b["provider"], b["base_url"], b["model"])
+        logger.info("%sprompt cache warming disabled for session: keep-alive missed", self._prefix())
 
     def _send(self, run: _Run) -> Any:
         client = run.client
@@ -705,7 +761,10 @@ class PromptCacheWarmer:
             amount = float(cost.amount_usd) if cost.amount_usd is not None else None
             if amount is not None:
                 with self._lock:
-                    run.budget.spent_usd += amount - reserved
+                    if run.inflight_tool:
+                        run.tool_spent_usd += amount - reserved
+                    else:
+                        run.budget.spent_usd += amount - reserved
                     run.budget.last_warm_usd = amount
             # Compression keeps the running counters (a refresh still adds to them); only
             # ``reset_session_state`` zeroes them, and it advances the reset epoch with them under
@@ -782,8 +841,9 @@ class PromptCacheWarmer:
             agent.session_estimated_cost_usd += amount
 
     def _evaluate(self, run: _Run) -> CacheWarmingDecision:
+        spent = run.tool_spent_usd if self._tool_running() else run.budget.spent_usd
         return self._decide(run.cached_tokens, run.uncached_tokens,
-                            spent_usd=run.budget.spent_usd, observed_warm_usd=run.budget.last_warm_usd)
+                            spent_usd=spent, observed_warm_usd=run.budget.last_warm_usd)
 
     def _decide(self, cached_tokens: int, uncached_tokens: int, **spend: float) -> CacheWarmingDecision:
         """``evaluate_economics``, refused outright when the estimator that bills a refresh
@@ -1073,6 +1133,21 @@ def session_totals_lock(agent: Any) -> Any:
     there is no keep-alive in flight, so nothing to exclude."""
     warmer = getattr(agent, "_prompt_cache_warmer", None)
     return warmer._lock if warmer is not None else contextlib.nullcontext()
+
+
+def reset_prompt_cache_session(agent: Any) -> None:
+    """A fresh session (``/new``, a session switch): a keep-alive miss of the old one no longer stops
+    warming. Compaction keeps the session, and the miss with it."""
+    warmer = getattr(agent, "_prompt_cache_warmer", None)
+    if warmer is not None:
+        with warmer._lock:
+            warmer._missed_route = None
+
+
+def prompt_cache_warming_disabled(agent: Any) -> bool:
+    """Whether a keep-alive missed on the live route, so this session sends no more (``/context``)."""
+    warmer = getattr(agent, "_prompt_cache_warmer", None)
+    return warmer is not None and warmer.warming_disabled
 
 
 def start_prompt_cache_warming(agent: Any, api_kwargs: Any, response: Any) -> None:

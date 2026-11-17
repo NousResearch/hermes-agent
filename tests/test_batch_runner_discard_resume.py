@@ -11,7 +11,10 @@ trajectories.jsonl merge excludes.
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import batch_runner
+from agent.agent_runtime_helpers import convert_to_trajectory_format
 from batch_runner import (
     BatchRunner,
     _entry_prompt_text,
@@ -36,6 +39,55 @@ def _discarded_result():
     }
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Worker: a failed agent run stays retryable
+# ─────────────────────────────────────────────────────────────────────
+
+_REASONING_TOOL_TURN = [
+    {
+        "role": "assistant",
+        "content": "<REASONING_SCRATCHPAD>read it first</REASONING_SCRATCHPAD>",
+        "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}],
+    },
+    {"role": "tool", "tool_call_id": "c1", "content": '{"content": "x"}'},
+]
+
+
+@pytest.mark.parametrize("turns", [[], _REASONING_TOOL_TURN], ids=["before-any-answer", "after-a-tool-turn"])
+def test_failed_agent_run_is_retried_on_resume(tmp_path, monkeypatch, turns):
+    """run_conversation reports provider failures (credits exhausted, rate limit,
+    outage) as ``failed`` instead of raising. Such a run is neither a no-reasoning
+    discard (tombstoned, never retried) nor a finished sample (truncated trajectory)."""
+
+    class FailedRunAgent:
+        _convert_to_trajectory_format = convert_to_trajectory_format
+
+        def __init__(self, **kwargs):
+            pass
+
+        def _format_tools_for_system_message(self):
+            return "[]"
+
+        def run_conversation(self, prompt, task_id=None):
+            return {
+                "messages": [{"role": "user", "content": prompt}, *turns],
+                "completed": False, "failed": True, "api_calls": 1,
+                "error": "HTTP 402: credits exhausted",
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(batch_runner, "AIAgent", FailedRunAgent)
+    monkeypatch.setattr(batch_runner, "sample_toolsets_from_distribution", lambda name: [])
+    config = {"distribution": "default", "model": "m", "max_iterations": 2, "verbose": False}
+
+    result = batch_runner._process_batch_worker((0, [(0, {"prompt": "q"})], str(tmp_path), set(), config))
+
+    assert result["completed_prompts"] == []
+    assert _scan_runner(tmp_path)._scan_completed_prompts_by_content() == set()
 
 
 # ─────────────────────────────────────────────────────────────────────

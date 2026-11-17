@@ -210,3 +210,24 @@ def test_write_chokepoint_sends_allowed_draft(monkeypatch, zd_ok):
     resp = _run_async(zt._zendesk_write("POST", path, _draft_body()))
     assert resp["status"] == 201
     assert seen["method"] == "POST" and seen["body"]["article"]["draft"] is True
+
+
+@pytest.mark.parametrize("query", [
+    "page[size]=100", "page%5Bsize%5D=100&page%5Bafter%5D=abc", "per_page=30&page=2",
+    "query=points&locale=en-us&category=1&section=2&label_names=a,b",
+    "sort_by=updated_at&sort_order=desc", "page[before]=x",
+])
+def test_read_allows_pagination_and_search_keys(query):
+    assert zt._normalize_read_path(f"api/v2/help_center/articles.json?{query}", BASE)
+
+
+@pytest.mark.parametrize("query", [
+    "include=users", "include=users,sections", "page[size]=1&include=users",
+    "role=admin", "x", "&&", "query=a;include=users",
+])
+def test_read_refuses_include_and_unknown_query_keys(query, zd_ok, no_network):
+    path = f"api/v2/help_center/articles.json?{query}"
+    assert zt._normalize_read_path(path, BASE) is None
+    assert "error" in _read({"path": path})
+    # Same rule for a links.next URL.
+    assert zt._normalize_read_path(f"{BASE}/{path}", BASE) is None

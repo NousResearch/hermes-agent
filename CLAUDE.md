@@ -257,40 +257,66 @@ cron/delegation runs that never loaded it (the same pattern), so they work headl
   expose publish/delete, hence a narrow fork tool. **Reads:** GET-only behind
   `_READ_ALLOWLIST` — Help Center categories/sections/articles/translations/
   attachments/search, `user_segments`, `locales`, `guide/permission_groups`;
-  a `links.next` URL on the configured host passes, any other host, traversal
-  or **tickets/users** path is refused (ticket reads, if ever, get their own
-  `zendesk_tickets` toolset). **Write:** a *structured* tool — the model passes
-  section/title/HTML, never a method or path — and every write goes through
-  `_zendesk_write`, which re-checks `_WRITE_ALLOWLIST` (only `POST
-  …/sections/<id>/articles.json`) and refuses any body that isn't
-  `draft: true` + `notify_subscribers: false`. The shared service-account
-  token *can* publish, so that chokepoint is the boundary: never publish,
-  archive, delete, change permissions or touch tickets. **An edit to a
-  published article is always a separate draft** (`revision_of_article_id`
-  → `reconcile_required`): the classic API can't stage it, and Guide Team
+  query keys limited to `_READ_QUERY_KEYS` (pagination/search/filter — no
+  `include` side-loading, no `;`); a `links.next` URL on the configured host
+  passes, any other host, traversal or **tickets/users** path is refused
+  (ticket reads, if ever, get their own `zendesk_tickets` toolset).
+  **Write — content comes from the row, never the model.** The tool takes a
+  Release Assets row id plus placement (`section_id`, `locale`,
+  `revision_of_article_id`); the title is the row's title property and the
+  body is the row's own page content (Notion blocks →
+  [tools/notion_blocks_html.py](tools/notion_blocks_html.py), safe by
+  construction: escaped text, fixed tag set, `href` only for
+  https/http/mailto; unknown blocks refuse the draft). Images are refused
+  (Notion file URLs expire; attachment upload isn't built) unless
+  `omit_images=true`, which leaves them out and reports their captions for a
+  human. Visibility is not the model's choice either: permission group / user
+  segment are copied from the revised article, else
+  `zendesk.default_permission_group_id` (required) /
+  `default_user_segment_id` (unset = everyone). **One draft per row**: an
+  `O_EXCL` lock per row and a row→article ledger under
+  `$HERMES_HOME/autonomy/`; a repeat call returns the existing draft. A run
+  that dies mid-create leaves its lock behind on purpose — an operator checks
+  Zendesk, then removes `autonomy/locks/zendesk_create_draft/<row>.lock`.
+  Every write goes through `_zendesk_write`, which re-checks
+  `_WRITE_ALLOWLIST` (only `POST …/sections/<id>/articles.json`) and refuses
+  any body that isn't `draft: true` + `notify_subscribers: false` — the shared
+  service-account token *can* publish, so that chokepoint is the boundary.
+  **Decision: an edit to a published article is always a separate draft**
+  (`reconcile_required`): the classic API can't stage it, and Guide Team
   Publishing's work-in-progress state has no public API (checked 2026-11-16).
-  **Autonomy levels** ([agent/autonomy.py](agent/autonomy.py)): the profile's
+  **Autonomy levels** ([agent/autonomy.py](agent/autonomy.py)):
   `autonomy.actions.zendesk_create_draft` (`off` / `signoff` default / `veto`
-  / `auto`; `autonomy.paused: true` caps at `signoff`) is read per call from
-  the mtime-cached `config.yaml`, and a level outside `BUILT_LEVELS` (e.g.
-  `zendesk_publish: auto`) is refused with an error naming the built levels.
-  `signoff` re-reads the Notion Release Assets row
-  ([tools/release_asset_gate.py](tools/release_asset_gate.py)) and needs
+  / `auto`; `autonomy.paused: true` caps at `signoff`), read per call from the
+  mtime-cached `config.yaml`; a level outside `BUILT_LEVELS` (e.g.
+  `zendesk_publish: auto`) is refused naming the built levels. `signoff`
+  re-reads the row ([tools/release_asset_gate.py](tools/release_asset_gate.py)):
   `Status` in `zendesk.approved_statuses` (default `Approved`), `Asset type =
-  Help article`, `Destination = <subdomain>.zendesk.com`, and the page's
-  parent = `zendesk.release_assets_data_source_id` (**required** — unset
-  fails closed). `veto` posts to `autonomy.announce_channel`, stores the
-  request under `$HERMES_HOME/autonomy/pending/`, and runs it — from the
-  **stored** request, so the content can't be swapped — when called back with
-  the `pending_id` after `autonomy.veto_wait_working_hours` (default 4) of
-  `autonomy.working_hours` (default Mon–Fri 9–18 UTC), unless a ❌ reaction
-  (needs Slack `reactions:read`) or a `zendesk.hold_statuses` row status
-  (default `Hold`) vetoes it. `auto` acts and reports to the announce channel.
-  `Published` rows are always refused. veto/auto/signoff creates are written to
-  `data_access_audit`. Credentials (`ZENDESK_SUBDOMAIN`/`ZENDESK_EMAIL`/
-  `ZENDESK_API_TOKEN`, plus `NOTION_API_KEY` and `SLACK_BOT_TOKEN` for the
-  gate) come **only** from `agent.secret_scope.get_secret`;
-  `UnscopedSecretError` = not configured. No dotenv self-heal (unlike Jira).
+  Help article`, `Destination = <subdomain>.zendesk.com`, parent =
+  `zendesk.release_assets_data_source_id` (required), not archived/trashed,
+  never `Published`. `veto` announces in `autonomy.announce_channel` (every
+  interpolated value Slack-escaped; links only to the Zendesk/Notion hosts)
+  and stores an **HMAC-signed** pending record (host-local key
+  `autonomy/.hmac_key`, 0600); it runs after `veto_wait_working_hours`
+  (default 4) of `working_hours` (default Mon–Fri 9–18 UTC), re-fetching the
+  row and refusing (`stale`) if its content differs from what was announced.
+  **Any ❌ reaction by anyone but the bot vetoes** (`x`/`no_entry`/
+  `no_entry_sign`; needs Slack `reactions:read`), as does a
+  `zendesk.hold_statuses` row status (default `Hold`) or a trashed row. It
+  expires unrun `veto_expiry_hours` (default 72) after `not_before`. Driver:
+  `zendesk_create_draft(run_due=true)` (release-watch calls it) or a cron
+  pre-run script `python -m tools.zendesk_tool run-due` — execution never
+  depends on the model remembering a `pending_id`. `auto` acts and reports.
+  Creates are written to `data_access_audit`. `autonomy/` is a **protected
+  path** for the file tools (read and write, [agent/file_safety.py](agent/file_safety.py)).
+  **Deploy-order dependency:** every level but `off` is refused unless the
+  profile sets `notion.write_guard.enabled: true` — until the Notion write
+  guard (education spec, 5a) ships, `notion_api` passes `PATCH` unchecked and
+  the agent could set its own row to Approved. That later PR owns enforcement
+  behind the same key; do not set the key before it is deployed.
+  Credentials (`ZENDESK_SUBDOMAIN`/`ZENDESK_EMAIL`/`ZENDESK_API_TOKEN`, plus
+  `NOTION_API_KEY` and `SLACK_BOT_TOKEN` for the gate) come **only** from
+  `agent.secret_scope.get_secret`; `UnscopedSecretError` = not configured.
   **Not in any built-in role.** **Deployment:** both `zendesk` and
   `zendesk_write` must be listed in `platform_toolsets.slack` (an explicit
   list shadows defaults) or the tools are silently missing. Plan:

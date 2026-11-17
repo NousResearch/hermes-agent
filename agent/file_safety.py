@@ -264,6 +264,13 @@ _PROTECTED_DATA_MSG = (
 )
 
 
+_AUTONOMY_STATE_MSG = (
+    "Access denied: {path} is Hermes autonomy state (pending veto actions, the "
+    "draft ledger, locks, signing key) and cannot be read or written via the "
+    "file tools. (Defense-in-depth — not a security boundary.)"
+)
+
+
 def _hermes_anchor_dirs() -> list[Path]:
     """Resolved Hermes home, root, and any sibling profiles under <root>/profiles/*.
 
@@ -303,6 +310,7 @@ def is_protected_data_path(path) -> Optional[str]:
       * ``state.db``                    — session DB
       * ``memory_store.db``             — shared holographic memory store
       * ``memories/holographic/*.db``   — per-scope memory DBs
+      * ``autonomy/**``                 — pending actions, ledger, locks, HMAC key
       * ``sessions/session_*.json``,
         ``sessions/*.jsonl``,
         ``sessions/request_dump_*.json`` — plaintext session snapshots
@@ -339,6 +347,17 @@ def is_protected_data_path(path) -> Optional[str]:
                 pass
             except Exception:
                 pass
+
+        # Autonomy state under <anchor>/autonomy/ — pending veto actions, the
+        # one-draft-per-row ledger, locks and the HMAC key (agent/autonomy.py).
+        # The agent must not be able to forge, replay or unlock its own actions.
+        try:
+            resolved.relative_to((anchor / "autonomy").resolve())
+            return _AUTONOMY_STATE_MSG.format(path=path)
+        except ValueError:
+            pass
+        except Exception:
+            pass
 
         # Plaintext session snapshots under <anchor>/sessions/
         try:

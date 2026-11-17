@@ -113,3 +113,29 @@ Result: `{ok, article_id, html_url, draft: true, level, reconcile_required, reco
 
 - [ ] Run `scripts/run_tests.sh tests/test_fork_feature_inventory.py tests/tools/test_zendesk_tool.py tests/tools/test_zendesk_create_draft.py tests/tools/test_release_asset_gate.py tests/agent/test_autonomy.py` → PASS; then `tests/tools/` and diff failures against a clean tree.
 - [ ] Commit, push, PR.
+
+---
+
+## Review round 1 (2026-11-17) — decisions and changes
+
+Reviewer: the education-teammate session. All items addressed on the same branch.
+
+**Decisions recorded**
+- **Always a separate draft for edits to published articles.** Guide Team Publishing's work-in-progress state has no public API, and the classic API either goes live (PUT on a published translation) or unpublishes (`draft: true`). `revision_of_article_id` creates a new draft in that article's section with `reconcile_required: true`.
+- **Any ❌ (`x` / `no_entry` / `no_entry_sign`) reaction by anyone other than the bot vetoes** a pending action. We don't check the reactor's role; over-vetoing is the safe direction.
+- **Content comes from the row.** `zendesk_create_draft` takes no title or body. The title is the row's title property. The body is the row's Notion blocks, rendered by `tools/notion_blocks_html.py`. We chose the blocks API over `GET v1/pages/<id>/markdown` because rendering structured blocks is safe by construction (escaped text, fixed tag set, scheme-checked `href`). Notion's enhanced markdown carries XML-like tags that would need a post-hoc sanitizer.
+- **Images:** refused by default. Notion file URLs expire, and attachment upload isn't built. `omit_images=true` is an explicit opt-in: images are left out, and their captions are returned (`images_omitted`) and shown in the Slack announcement/report for a human to add in Zendesk. Attachment upload is a follow-up.
+- **Notion write-guard precondition:** every level except `off` is refused unless `notion.write_guard.enabled: true`. The Notion write guard (spec 5a) owns enforcement behind that key and must deploy first.
+- **Visibility:** the permission group and user segment come from the revised article, otherwise from `zendesk.default_permission_group_id` (required) and `default_user_segment_id`. Never from the model.
+
+**Changes**
+- `agent/autonomy.py`:
+  - pending records split into a `signed` part (HMAC-SHA256, host-local 0600 key `autonomy/.hmac_key`) and mutable state; tampered records are refused and audited;
+  - `exclusive()` O_EXCL lock per key (left behind on a crash so a possibly-completed write is never repeated);
+  - per-key `ledger_*` (one draft per row);
+  - `veto_expiry_hours` (default 72 after `not_before`).
+- Veto execution re-fetches the row and refuses as `stale` if the rendered content's sha256 differs from the announcement. `run_due_pending()` (tool flag `run_due=true`, or `python -m tools.zendesk_tool run-due`) executes due actions and expires old ones.
+- The gate refuses archived and trashed rows (`RowStopped`, which counts as a veto for pending actions).
+- Slack text: every interpolated value is escaped (`& < >`), and links are emitted only for https URLs on the Zendesk or Notion hosts. Zendesk links are constructed from integer ids.
+- Read query keys are allowlisted (`_READ_QUERY_KEYS`). `include`, unknown keys and `;` are refused.
+- `agent/file_safety.is_protected_data_path` covers `<home>/autonomy/**` for read, write, patch and search.

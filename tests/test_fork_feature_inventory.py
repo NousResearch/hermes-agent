@@ -51,6 +51,12 @@ WIRING = [
     ("zendesk_create_draft", "tools/zendesk_tool.py", 'article.get("draft") is not True', "forced unpublished draft"),
     ("zendesk_create_draft", "tools/zendesk_tool.py", "autonomy.resolve_level(_ACTION, cfg)", "autonomy level gates the write"),
     ("autonomy levels", "agent/autonomy.py", "BUILT_LEVELS", "levels only unlock built code paths"),
+    ("zendesk_create_draft", "tools/zendesk_tool.py", "if not _write_guard_enabled(cfg):", "Notion write-guard precondition"),
+    ("zendesk_create_draft", "tools/zendesk_tool.py", 'm = await _materialize(spec, cfg, require_approved=require_approved)', "content comes from the row"),
+    ("zendesk_create_draft", "tools/zendesk_tool.py", "autonomy.ledger_put(_ACTION, key, entry)", "one draft per row"),
+    ("zendesk_api", "tools/zendesk_tool.py", "if not keys <= _READ_QUERY_KEYS:", "read query-key allowlist"),
+    ("autonomy levels", "agent/autonomy.py", "def verify_pending", "signed pending records"),
+    ("autonomy state protected", "agent/file_safety.py", '(anchor / "autonomy").resolve()', "file tools can't touch autonomy state"),
     ("allow_bots_channels", "plugins/platforms/slack/adapter.py", "def _slack_allow_bots_channels", "per-channel app admission"),
     ("allow_bots_channels", "gateway/authz_mixin.py", "_slack_allow_bots_channels(source)", "gate admits listed channels; RBAC outranks bypass"),
     # ── Cost attribution ──────────────────────────────────────────────────

@@ -38,7 +38,8 @@ def test_manifest_covers_the_adapter_and_the_fork_tools():
     base = _build_full_manifest("x", "y", messaging_experience="agent")
     scopes = set(manifest["oauth_config"]["scopes"]["bot"])
     assert scopes >= set(base["oauth_config"]["scopes"]["bot"]) - {"commands"}
-    assert {"reactions:write", "reactions:read", "chat:write", "users:read.email"} <= scopes
+    assert {"reactions:write", "reactions:read", "chat:write"} <= scopes
+    assert "users:read.email" not in scopes  # only Drive uses it; not granted here
     assert "commands" not in scopes and "slash_commands" not in manifest["features"]
     events = set(manifest["settings"]["event_subscriptions"]["bot_events"])
     assert events >= set(base["settings"]["event_subscriptions"]["bot_events"])
@@ -138,6 +139,14 @@ def test_apply_creates_then_updates_the_jobs(educator_home, capsys):
     finally:
         sys.path.remove(str(home / "scripts"))
         sys.modules.pop("educator_wake", None)
+
+
+def test_apply_refuses_a_stale_shared_library(educator_home, capsys):
+    home, vfile = educator_home
+    apply = _load("apply_cron_jobs")
+    (home / "scripts" / "educator_wake.py").write_text("# tampered\n")
+    assert apply.main(["apply", str(vfile)]) == 1
+    assert "educator_wake.py differs" in capsys.readouterr().err
 
 
 def test_apply_refuses_a_stale_script_copy_or_the_wrong_home(educator_home, capsys):

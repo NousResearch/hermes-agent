@@ -5,11 +5,12 @@
 # Based on the repo's generator (`hermes slack manifest --agent-view`,
 # hermes_cli/slack_cli.py) with these deliberate differences:
 #   + reactions:write   slack_react (floor toolset `slack`)
-#   + users:read.email  per-user identity lookups (users.info email)
 #   - commands / slash_commands   none: the default bot already registers the
 #     Hermes slash commands in this workspace; a second app with the same
 #     names makes Slack ask users which app they meant. Talk to it by mention
 #     or DM. (Add later with `hermes slack manifest --slashes-only` if wanted.)
+# No users:read.email: the only consumer is the Drive per-user check, and
+# this profile has no Drive toolset.
 # slack_post_thread needs only chat:write (chat.postMessage, chat.getPermalink).
 # The veto ❌ check needs reactions:read. Socket Mode: no public URL; create an
 # app-level token with connections:write → SLACK_APP_TOKEN.
@@ -50,7 +51,6 @@ oauth_config:
       - reactions:read
       - reactions:write
       - users:read
-      - users:read.email
 settings:
   event_subscriptions:
     bot_events:

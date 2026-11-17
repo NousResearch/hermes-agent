@@ -40,8 +40,16 @@ Copy `values.example.yaml` to a private `values.yaml` (not in git) and fill:
       million tokens; `cache_write` too where the model bills it)
 - [ ] `DAILY_BUDGET_USD`, `MONTHLY_BUDGET_USD`, `PER_RUN_BUDGET_USD`,
       `BUDGET_ALERT_MENTION`
-- [ ] `WORKING_HOURS_TIMEZONE` (veto windows; also check the `days:` line and
-      the explore job's cron days match the team's week)
+- [ ] `WORKING_HOURS_TIMEZONE` (veto windows; also check the `days:` line
+      matches the team's week)
+- [ ] `EXPLORE_CRON` — explore runs 09:00, 12:00 and 15:00 Sun–Thu **in the
+      gateway's timezone**, which is not the educator's: cron uses
+      `HERMES_TIMEZONE`, else the DEFAULT profile's `timezone:`, else the
+      server clock. Check on the VM:
+      `grep -E '^timezone:' ~/.hermes/config.yaml; systemctl show hermes-gateway -p Environment | grep -o 'HERMES_TIMEZONE=[^ ]*'; timedatectl | grep 'Time zone'`.
+      Asia/Jerusalem → `"0 9,12,15 * * 0-4"`. UTC → `"0 7,10,13 * * 0-4"` in
+      winter (UTC+2) and `"0 6,9,12 * * 0-4"` in summer (UTC+3) — re-apply the
+      jobs at each clock change, or set the default profile's `timezone:`.
 - [ ] `EDUCATOR_HOME` — the absolute profile path on the VM
       (`/home/<user>/.hermes/profiles/educator`)
 - [ ] `NOTION_IDEAS_DATA_SOURCE_ID`, `NOTION_HOME_PAGE_ID` (step 2b),
@@ -149,7 +157,7 @@ mkdir -p $E/local && cp /path/to/values.yaml $E/local/values.yaml   # ids, no se
 .venv/bin/python deploy/educator/render_config.py $E/local/values.yaml > $E/config.yaml
 .venv/bin/python deploy/educator/render_config.py $E/local/values.yaml SOUL.md > $E/SOUL.md
 cp deploy/educator/.env.example $E/.env && chmod 600 $E/.env      # then fill it in
-mkdir -p $E/scripts $E/workspace/{drafts,metrics,research,checkouts}
+mkdir -p $E/scripts $E/workspace/{drafts,metrics,research,learning,checkouts}
 install -m 0644 deploy/educator/scripts/*.py $E/scripts/
 cp -n deploy/educator/workspace/notebook.md $E/workspace/notebook.md
 ```
@@ -239,7 +247,7 @@ HERMES_HOME=$E .venv/bin/python deploy/educator/apply_cron_jobs.py $E/local/valu
 The applier refuses unless the scripts in `$E/scripts/` are byte-identical
 to the repo's, the gateway's Python can import them, the config exists, and
 the scheduler's capability preflight passes. It creates `release-watch`
-(every 20 min, essential) and `explore` (09/12/15, Sun–Thu, discretionary)
+(every 20 min, essential) and `explore` (`EXPLORE_CRON`, discretionary)
 with explicit `enabled_toolsets`, and prints the job ids.
 
 - [ ] Put release-watch's id in `cost_budget.essential_jobs` (edit

@@ -135,6 +135,8 @@ class FakeHTTP:
         self.jira: dict = {}          # key -> status name (missing key = 404)
         self.jira_search_400 = False
         self.notion_down = False
+        self.markdown: dict = {}      # row id -> body; default "# body of <id>"
+        self.markdown_fail = False
         self.calls: list = []
 
     def __call__(self, method, url, headers, body=None, timeout=30):
@@ -144,6 +146,13 @@ class FakeHTTP:
             if self.notion_down:
                 return 503, {"message": "down"}
             assert headers["Authorization"] == "Bearer ntn_test"
+            if u.path.startswith("/v1/pages/") and u.path.endswith("/markdown"):
+                assert method == "GET"
+                if self.markdown_fail:
+                    return 404, {"message": "Could not find page"}
+                pid = u.path.split("/")[3]
+                return 200, {"object": "page_markdown", "truncated": False,
+                             "markdown": self.markdown.get(pid, f"# body of {pid}")}
             if u.path == "/v1/users/me":
                 return 200, {"object": "user", "id": BOT, "type": "bot"}
             if u.path == f"/v1/data_sources/{PRD_DS}" and method == "GET":
@@ -528,8 +537,39 @@ def test_failed_woken_run_carries_its_events_over(mods, http, monkeypatch):
         _exec(t2, "running"), _exec(t1 - timedelta(seconds=5), "failed")])
     p2 = watch.main(now=t2)
     [carried] = events_of(p2, "asset_approved")
-    assert carried["carried_over"] is True
+    assert carried["carried_over"] is True and carried["attempt"] == 2
     assert p2["previous_run_failed"] is True
+
+
+def test_carried_event_gives_up_after_three_attempts(mods, http, monkeypatch):
+    wake, watch, _ = mods
+    run_watch(mods, T0)
+    http.assets = [asset(ROW_1, "x", "Approved", edited="2026-11-17T09:10:00.000Z")]
+    t = T0 + timedelta(minutes=20)
+    watch.main(now=t)                                   # attempt 1
+    kinds = []
+    for n in range(1, 5):
+        prev, t = t, t + timedelta(minutes=20)
+        monkeypatch.setattr(wake, "list_executions", lambda job_id, prev=prev, t=t: [
+            _exec(t, "running"),
+            {**_exec(prev - timedelta(seconds=5), "failed"), "error": "RuntimeError: boom"}])
+        p = watch.main(now=t)
+        kinds.append([e["type"] for e in p.get("events", [])])
+    assert kinds[0] == ["asset_approved"] and kinds[1] == ["asset_approved"]   # attempts 2, 3
+    assert kinds[2] == ["gave_up"]
+    assert kinds[3] == []                               # gave_up is never carried
+
+
+def test_persisting_source_error_resurfaces_every_six_hours(mods, http):
+    http.prds = [prd(PRD_A, "A", "Not started", "https://x/browse/BA-1")]
+    http.jira = {"BA-1": "In Progress"}
+    run_watch(mods, T0)
+    http.notion_down = True
+    first = events_of(run_watch(mods, T0 + timedelta(minutes=20)), "source_error")[0]
+    assert "persisting_since" not in first
+    assert run_watch(mods, T0 + timedelta(hours=3)) == {"wakeAgent": False}
+    again = events_of(run_watch(mods, T0 + timedelta(hours=6, minutes=30)), "source_error")[0]
+    assert again["persisting_since"] == (T0 + timedelta(minutes=20)).isoformat()
 
 
 # ── explore ──────────────────────────────────────────────────────────────
@@ -612,63 +652,118 @@ def test_normalise_strips_the_snapshot_header_and_collapses_whitespace(mods):
     assert wake.normalise_markdown(text) == "# Title body text"
 
 
-def _approve_flow(mods, http, home, monkeypatch, *, draft=None, redraft=None, approved_md="# T approved body"):
-    wake, watch, _ = mods
-    drafts = home / "workspace" / "drafts"
-    drafts.mkdir(exist_ok=True)
-    if draft is not None:
-        (drafts / f"{ROW_1}.md").write_text(draft)
-    if redraft is not None:
-        (drafts / f"{ROW_1}.redraft.md").write_text(redraft)
-    real = http.__call__
+def _metrics(home):
+    return home / "workspace" / "metrics"
 
-    def with_markdown(method, url, headers, body=None, timeout=30):
-        if url.endswith(f"/v1/pages/{ROW_1}/markdown"):
-            http.calls.append((method, url, body))
-            return 200, {"object": "page_markdown", "markdown": approved_md, "truncated": False}
-        return real(method, url, headers, body, timeout)
 
-    monkeypatch.setattr(wake, "http_json", with_markdown)
+def _read_csv(home):
+    import csv
+    with (_metrics(home) / "edit-rate.csv").open(newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_script_owns_the_baseline_and_the_edit_rate_line(mods, http, home):
     run_watch(mods, T0)
-    http.assets = [asset(ROW_1, "Slack post: audio", "Approved", edited="2026-11-17T09:10:00.000Z")]
-    return events_of(run_watch(mods, T0 + timedelta(minutes=20)), "asset_approved")[0]
+    http.markdown[ROW_1] = "# T draft body"
+    http.assets = [asset(ROW_1, "Slack post: audio", "Draft", edited_by=BOT,
+                         edited="2026-11-17T09:10:00.000Z")]
+    run_watch(mods, T0 + timedelta(minutes=20))
+    base = (_metrics(home) / "baselines" / f"{ROW_1}.md").read_text()
+    assert base.startswith(f"<!-- baseline row={ROW_1} asset_type=Slack post status=Draft taken=")
+    # agent re-drafts while Draft: the baseline follows
+    http.markdown[ROW_1] = "# T second draft body"
+    http.assets = [asset(ROW_1, "Slack post: audio", "Draft", edited_by=BOT,
+                         edited="2026-11-17T09:30:00.000Z")]
+    run_watch(mods, T0 + timedelta(minutes=40))
+    # a human approves after editing
+    http.markdown[ROW_1] = "# T approved body"
+    http.assets = [asset(ROW_1, "Slack post: audio", "Approved", edited="2026-11-17T09:50:00.000Z")]
+    [ev] = events_of(run_watch(mods, T0 + timedelta(minutes=60)), "asset_approved")
+    assert ev["snapshot_missing"] is False and ev["measured_by"] == "script"
+    assert ev["draft_chars"] == len("# T second draft body")
+    assert ev["chars_changed"] == _naive_lev("# T second draft body", "# T approved body")
+    assert ev["edit_rate"] == round(ev["chars_changed"] / len("# T second draft body"), 4)
+    assert (_metrics(home) / "approved" / f"{ROW_1}.md").read_text().rstrip().endswith("# T approved body")
+    [line] = _read_csv(home)
+    assert line["row_id"] == ROW_1 and line["measured_by"] == "script"
+    assert line["chars_changed"] == str(ev["chars_changed"]) and line["baseline_status"] == "Draft"
+    assert list(line) == list(mods[0].EDIT_RATE_HEADER)
 
 
-def test_approved_row_is_measured_against_its_snapshot(mods, http, home, monkeypatch):
-    ev = _approve_flow(mods, http, home, monkeypatch,
-                       draft="<!-- snapshot row=r asset_type=Slack post taken=t -->\n# T draft body\n")
-    assert ev["snapshot_missing"] is False and ev["baseline"] == "draft"
-    assert ev["draft_chars"] == len("# T draft body")
-    assert ev["approved_chars"] == len("# T approved body")
-    assert ev["chars_changed"] == _naive_lev("# T draft body", "# T approved body")
-    assert ev["chars_changed_exact"] is True
-    saved = (home / "workspace" / "drafts" / f"{ROW_1}.approved.md").read_text()
-    assert saved.startswith(f"<!-- approved row={ROW_1} asset_type=Slack post taken=")
-    assert saved.rstrip().endswith("# T approved body")
+def test_edit_after_approval_replaces_the_rows_line(mods, http, home):
+    run_watch(mods, T0)
+    http.markdown[ROW_1] = "# draft"
+    http.assets = [asset(ROW_1, "x", "Draft", edited_by=BOT, edited="2026-11-17T09:10:00.000Z")]
+    run_watch(mods, T0 + timedelta(minutes=20))
+    http.markdown[ROW_1] = "# approved"
+    http.assets = [asset(ROW_1, "x", "Approved", edited="2026-11-17T09:30:00.000Z")]
+    run_watch(mods, T0 + timedelta(minutes=40))
+    http.markdown[ROW_1] = "# approved and then changed a lot"
+    http.assets = [asset(ROW_1, "x", "Approved", edited="2026-11-17T09:50:00.000Z")]
+    [ev] = events_of(run_watch(mods, T0 + timedelta(minutes=60)), "asset_edited_after_approval")
+    [line] = _read_csv(home)
+    assert line["chars_changed"] == str(ev["chars_changed"])
+    assert ev["chars_changed"] == _naive_lev("# draft", "# approved and then changed a lot")
 
 
-def test_redraft_splits_assumption_chars_from_writing_edits(mods, http, home, monkeypatch):
-    ev = _approve_flow(mods, http, home, monkeypatch, draft="# T old", redraft="# T approved body")
-    total = _naive_lev("# T old", "# T approved body")
-    assert ev["baseline"] == "draft" and ev["chars_changed"] == total
-    assert ev["assumption_chars"] == total  # the reviewer changed nothing after the re-draft
+def test_first_seen_in_review_gets_a_fallback_baseline(mods, http, home):
+    run_watch(mods, T0)
+    http.markdown[ROW_1] = "# as submitted"
+    http.assets = [asset(ROW_1, "x", "In review", edited="2026-11-17T09:10:00.000Z")]
+    run_watch(mods, T0 + timedelta(minutes=20))
+    assert "status=In review" in (_metrics(home) / "baselines" / f"{ROW_1}.md").read_text()
+    # a later In-review edit does not move it
+    http.markdown[ROW_1] = "# reviewer typing"
+    http.assets = [asset(ROW_1, "x", "In review", edited="2026-11-17T09:30:00.000Z")]
+    run_watch(mods, T0 + timedelta(minutes=40))
+    assert "# as submitted" in (_metrics(home) / "baselines" / f"{ROW_1}.md").read_text()
 
 
-def test_redraft_alone_is_the_baseline(mods, http, home, monkeypatch):
-    ev = _approve_flow(mods, http, home, monkeypatch, redraft="# T approved bodY")
-    assert ev["baseline"] == "redraft" and ev["chars_changed"] == 1 and "assumption_chars" not in ev
-
-
-def test_missing_snapshot_still_reports_the_approved_size(mods, http, home, monkeypatch):
-    ev = _approve_flow(mods, http, home, monkeypatch)
-    assert ev["snapshot_missing"] is True
-    assert ev["approved_chars"] == len("# T approved body")
-    assert "draft_chars" not in ev and "chars_changed" not in ev
+def test_approved_without_any_baseline_is_logged_unmeasured(mods, http, home):
+    run_watch(mods, T0)
+    http.assets = [asset(ROW_1, "x", "Approved", edited="2026-11-17T09:10:00.000Z")]
+    [ev] = events_of(run_watch(mods, T0 + timedelta(minutes=20)), "asset_approved")
+    assert ev["snapshot_missing"] is True and ev["measured_by"] == "none"
+    assert "chars_changed" not in ev
+    [line] = _read_csv(home)
+    assert line["measured_by"] == "none" and line["chars_changed"] == ""
 
 
 def test_markdown_fetch_failure_is_recorded_on_the_event_not_fatal(mods, http, home):
     run_watch(mods, T0)
+    http.markdown_fail = True
     http.assets = [asset(ROW_1, "x", "Approved", edited="2026-11-17T09:10:00.000Z")]
-    p = run_watch(mods, T0 + timedelta(minutes=20))   # FakeHTTP has no markdown route -> AssertionError
+    p = run_watch(mods, T0 + timedelta(minutes=20))
     [ev] = events_of(p, "asset_approved")
     assert "measure_error" in ev and "chars_changed" not in ev
+    assert not (_metrics(home) / "edit-rate.csv").exists()
+
+
+def test_the_agent_scratch_drafts_are_not_evidence(mods, http, home):
+    """A forged drafts/<row>.md cannot change the measured edit."""
+    run_watch(mods, T0)
+    http.markdown[ROW_1] = "# draft one"
+    http.assets = [asset(ROW_1, "x", "Draft", edited_by=BOT, edited="2026-11-17T09:10:00.000Z")]
+    run_watch(mods, T0 + timedelta(minutes=20))
+    (home / "workspace" / "drafts").mkdir()
+    (home / "workspace" / "drafts" / f"{ROW_1}.md").write_text("# totally different approved text")
+    http.markdown[ROW_1] = "# totally different approved text"
+    http.assets = [asset(ROW_1, "x", "Approved", edited="2026-11-17T09:30:00.000Z")]
+    [ev] = events_of(run_watch(mods, T0 + timedelta(minutes=40)), "asset_approved")
+    assert ev["chars_changed"] > 0
+
+
+def test_a_notion_query_that_hits_its_row_cap_is_reported(mods, http, monkeypatch):
+    real = http.__call__
+
+    def endless(method, url, headers, body=None, timeout=30):
+        status, data = real(method, url, headers, body, timeout)
+        if url.endswith(f"/v1/data_sources/{PRD_DS}/query"):
+            data = {**data, "has_more": True, "next_cursor": "c"}
+        return status, data
+
+    wake, watch, _ = mods
+    monkeypatch.setattr(wake, "http_json", endless)
+    p = watch.main(now=T0)
+    [ev] = [e for e in events_of(p, "source_error") if "row cap" in e["error"]]
+    assert PRD_DS in ev["error"]

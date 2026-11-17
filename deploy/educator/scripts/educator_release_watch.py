@@ -27,16 +27,21 @@ Events (``type``):
   ``approved_chars``, ``snapshot_missing``, and with a snapshot
   ``draft_chars``, ``chars_changed``, ``chars_changed_exact``, ``baseline``
   (``draft`` | ``redraft``), ``assumption_chars`` when a re-draft exists; or
-  ``measure_error``. The approved markdown is saved to
-  ``drafts/<row-id>.approved.md``.
+  ``measure_error``. The script also keeps the evidence itself (agent
+  read-only, ``workspace/metrics/``): the Draft-time baseline, the approved
+  copy and the row's line in ``edit-rate.csv``.
 - ``veto_due`` — a veto-level action waited out its window; the agent runs the
   named tool call (the script has no Slack token to do it).
 - ``notebook_not_updated`` — the last run that woke the agent did not rewrite
   ``workspace/notebook.md``.
-- ``checkout_error`` / ``source_error`` — reported once per distinct error.
+- ``checkout_error`` / ``source_error`` / ``config_error`` — reported once per
+  distinct error, again every 6 hours while it persists (``persisting_since``).
+- ``gave_up`` — an event that failed ``MAX_ATTEMPTS`` runs in a row: the agent
+  posts once that a human is needed (``event``, ``last_error``).
 
 When the previous woken run **failed**, its events are carried over
-(``carried_over: true``) so a crash never loses a trigger.
+(``carried_over: true``, ``attempt``) so a crash never loses a trigger, up
+to ``MAX_ATTEMPTS`` attempts.
 """
 from __future__ import annotations
 
@@ -59,7 +64,13 @@ DONE = frozenset({"done"})
 KIT_RETRY_AFTER = timedelta(hours=24)
 VETO_REMIND_AFTER = timedelta(hours=1)
 ASSET_OVERLAP = timedelta(minutes=5)
+ERROR_RESURFACE_AFTER = timedelta(hours=6)
+# Rows past Draft that never get a fallback baseline (not a reviewed draft).
+NO_BASELINE_STATUSES = frozenset({"Published", "Won't do", "Not started"})
 MAX_KIT_STARTS_PER_RUN = 3
+MAX_ATTEMPTS = 3  # a carried event is tried at most this many times in all
+NOT_CARRIED = frozenset({"checkout_error", "source_error", "config_error",
+                         "notebook_not_updated", "gave_up"})
 
 
 def _settings(cfg: dict) -> dict:
@@ -70,7 +81,9 @@ def _settings(cfg: dict) -> dict:
     approved = ru.get("approved_statuses") or ["Approved"]
     if isinstance(approved, str):
         approved = [approved]
+    kits = guard.get("release_kits") if isinstance(guard.get("release_kits"), dict) else {}
     return {
+        "draft_status": str(kits.get("draft_status") or "Draft"),
         "prd_sources": [str(x) for x in prds.get("data_sources") or []],
         "prd_status_prop": str(prds.get("property") or "Release Comms Status"),
         "prd_jira_prop": str(ru.get("prd_jira_property") or "JIRA"),
@@ -85,8 +98,13 @@ def _norm(status: Optional[str]) -> str:
     return (status or "").strip().lower()
 
 
-def _error_events(state: dict, source: str, key: str, message: Optional[str]) -> list[dict]:
-    """Report each distinct error once; clear it when the source recovers."""
+def _error_events(state: dict, source: str, key: str, message: Optional[str],
+                  now: datetime) -> list[dict]:
+    """Report a distinct error once, then again every ERROR_RESURFACE_AFTER
+    while it persists (``persisting_since``); clear it when the source
+    recovers. A lasting outage therefore keeps failing a run now and then,
+    so the scheduler's incident alert and owner DM fire, without waking the
+    agent every 20 minutes."""
     errors = state.setdefault("errors", {})
     prefix = f"{source}:{key}:"
     if message is None:
@@ -94,16 +112,25 @@ def _error_events(state: dict, source: str, key: str, message: Optional[str]) ->
             errors.pop(sig)
         return []
     sig = prefix + message[:200]
-    if sig in errors:
-        return []
-    for old in [s for s in errors if s.startswith(prefix)]:
+    rec = errors.get(sig)
+    if isinstance(rec, str):  # state written by an earlier version
+        rec = {"since": rec, "reported": rec}
+    for old in [s for s in errors if s.startswith(prefix) and s != sig]:
         errors.pop(old)
-    errors[sig] = w.iso(w.utcnow())
+    if rec and now - (w.parse_ts(rec.get("reported")) or now) < ERROR_RESURFACE_AFTER:
+        errors[sig] = rec
+        return []
+    since = (rec or {}).get("since") or w.iso(now)
+    errors[sig] = {"since": since, "reported": w.iso(now)}
     if source == "checkout":
-        return [{"type": "checkout_error", "repo": key, "error": message}]
-    if source == "config":
-        return [{"type": "config_error", "error": message}]
-    return [{"type": "source_error", "source": source, "error": message}]
+        ev = {"type": "checkout_error", "repo": key, "error": message}
+    elif source == "config":
+        ev = {"type": "config_error", "error": message}
+    else:
+        ev = {"type": "source_error", "source": source, "error": message}
+    if rec:
+        ev["persisting_since"] = since
+    return [ev]
 
 
 def _read_prds(s: dict) -> list[dict]:
@@ -218,14 +245,22 @@ def _asset_events(state: dict, s: dict, now: datetime) -> list[dict]:
         prev = assets.get(rid) or {}
         info = {"row_id": rid, "title": w.page_title(row), "url": row.get("url"), "status": status,
                 "asset_type": w.prop_text(props.get(s["type_prop"])),
-                "destination": w.prop_text(props.get("Destination"))}
+                "destination": w.prop_text(props.get("Destination")),
+                "product": ";".join(w.prop_names(props.get("Product")))}
+        try:
+            if status == s["draft_status"]:
+                w.take_baseline(rid, info["asset_type"], status, now)
+            elif (status not in s["approved"] and status not in NO_BASELINE_STATUSES
+                  and not w.has_baseline(rid)):
+                w.take_baseline(rid, info["asset_type"], status, now)
+        except (w.SourceError, ValueError) as e:
+            events += _error_events(state, "notion", "baseline", f"baseline snapshot failed: {e}", now)
         if status in s["approved"] and prev.get("status") not in s["approved"]:
-            events.append({"type": "asset_approved", **info,
-                           **w.measure_approval(rid, info["asset_type"], now)})
+            events.append({"type": "asset_approved", **info, **w.measure_approval(info, now)})
         elif (status in s["approved"] and prev.get("edited") and edited != prev.get("edited")
               and editor and editor != bot):
             events.append({"type": "asset_edited_after_approval", "edited_at": edited, **info,
-                           **w.measure_approval(rid, info["asset_type"], now)})
+                           **w.measure_approval(info, now)})
         assets[rid] = {"status": status, "edited": edited}
     state["assets_cursor"] = w.iso(now)
     return events
@@ -252,32 +287,53 @@ def _event_id(ev: dict) -> tuple:
     return (ev.get("type"), ev.get("prd_id"), ev.get("row_id"), ev.get("key"), ev.get("action"))
 
 
+def _carry_over(state: dict, previous: dict, have: set) -> list[dict]:
+    """Events of a failed woken run, carried into this one — each at most
+    MAX_ATTEMPTS times in all. Then ONE ``gave_up`` (with the scheduler's
+    last error) replaces it, so a broken step cannot loop every 20 minutes
+    forever on an essential, budget-exempt job. Errors, notebook checks and
+    gave_up itself are never carried: they are re-detected or best-effort."""
+    out = []
+    for ev in (state.get("last_wake") or {}).get("events") or []:
+        if ev.get("type") in NOT_CARRIED or _event_id(ev) in have:
+            continue
+        attempt = int(ev.get("attempt") or 1)
+        original = {k: v for k, v in ev.items() if k not in ("carried_over", "attempt")}
+        if attempt >= MAX_ATTEMPTS:
+            out.append({"type": "gave_up", "attempts": attempt, "event": original,
+                        "last_error": str(previous.get("error") or "")[:300]})
+        else:
+            out.append({**original, "carried_over": True, "attempt": attempt + 1})
+    return out
+
+
 def main(now: Optional[datetime] = None) -> dict:
     now = now or w.utcnow()
     state = w.load_state(JOB)
     baseline = state is None
     state = state or {"version": 1}
     s = _settings(w.load_profile_config())
+    w.TRUNCATED_QUERIES.clear()
     events: list[dict] = []
     extra: dict = {}
 
     for repo, err in w.refresh_checkouts().items():
-        events += _error_events(state, "checkout", repo, err)
+        events += _error_events(state, "checkout", repo, err, now)
 
     missing_cfg = [k for k, v in (("notion.write_guard.prds.data_sources", s["prd_sources"]),
                                   ("release_updates.release_assets_data_source_id", s["assets_source"]))
                    if not v]
     events += _error_events(state, "config", "sources",
                             ("config.yaml has no " + " / ".join(missing_cfg) + " — nothing is watched")
-                            if missing_cfg else None)
+                            if missing_cfg else None, now)
 
     try:
         prds = _read_prds(s)
-        events += _error_events(state, "notion", "read", None)
+        events += _error_events(state, "notion", "read", None, now)
         try:
             keys = sorted({k for p in prds for k in p["keys"]})
             statuses = w.jira_statuses(keys)
-            events += _error_events(state, "jira", "read", None)
+            events += _error_events(state, "jira", "read", None, now)
             prd_events, deferred = _prd_events(state, prds, statuses, now, baseline)
             events += prd_events
             if deferred:
@@ -286,11 +342,15 @@ def main(now: Optional[datetime] = None) -> dict:
             if missing:
                 extra["missing_jira_keys"] = missing
         except w.SourceError as e:
-            events += _error_events(state, e.source, "read", str(e))
+            events += _error_events(state, e.source, "read", str(e), now)
         events += _asset_events(state, s, now)
     except w.SourceError as e:
-        events += _error_events(state, e.source, "read", str(e))
+        events += _error_events(state, e.source, "read", str(e), now)
 
+    events += _error_events(
+        state, "notion", "truncated",
+        (f"a Notion query stopped at its row cap ({', '.join(sorted(set(w.TRUNCATED_QUERIES)))}); "
+         "results are incomplete") if w.TRUNCATED_QUERIES else None, now)
     events += _veto_events(state, now)
 
     job_id = w.find_job_id(SCRIPT_NAME)
@@ -301,10 +361,7 @@ def main(now: Optional[datetime] = None) -> dict:
                            "last_run_started": previous.get("started_at") or previous.get("claimed_at")})
         if previous.get("status") == "failed":
             extra["previous_run_failed"] = True
-            have = {_event_id(e) for e in events}
-            for ev in (state.get("last_wake") or {}).get("events") or []:
-                if _event_id(ev) not in have:
-                    events.append({**ev, "carried_over": True})
+            events += _carry_over(state, previous, {_event_id(e) for e in events})
 
     if not events:
         w.save_state(JOB, state)

@@ -31,6 +31,10 @@ readers; the scripts run under the real cron script runner.
 Both jobs have a pre-run script that runs without an LLM. It prints one JSON
 line: `{"wakeAgent": false}` (the run ends, $0) or the list of events the
 agent should handle. Script state lives in `<profile>/cron/educator-state/`,
-which the agent cannot write. Cron strips `SLACK_*` tokens from script
+which the agent cannot write. The script also keeps the approval evidence
+in `workspace/metrics/` (agent read-only): a baseline of each asset as last
+seen in Draft, the approved copy, and `edit-rate.csv`. The git checkouts are
+agent read-only too, and the script refuses to run git in one whose
+`.git/config` holds anything a plain clone would not. Cron strips `SLACK_*` tokens from script
 environments, so the scripts never post: due veto actions are detected by the
 script and executed by the agent's own `run_due` tool calls.

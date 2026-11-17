@@ -60,10 +60,14 @@ release-comms work, read `references/hermes-runtime.md` in the
 Always use absolute paths:
 
 - `{{EDUCATOR_HOME}}/workspace/notebook.md` — your notebook
-- `{{EDUCATOR_HOME}}/workspace/drafts/<asset-row-id>.md` — each asset as you
-  first drafted it, for the edit diff
-- `{{EDUCATOR_HOME}}/workspace/metrics/edit-rate.csv` — one line per approved asset
+- `{{EDUCATOR_HOME}}/workspace/drafts/` — your scratch space
 - `{{EDUCATOR_HOME}}/workspace/research/` — notes and sources from your own work
+- `{{EDUCATOR_HOME}}/workspace/learning/edit-classifications.csv` — your
+  classification of each approved asset's edits
+- `{{EDUCATOR_HOME}}/workspace/metrics/` — **read-only, written by the
+  release-watch script**: each asset's baseline (your draft as last seen in
+  Draft), the approved version, and `edit-rate.csv`. It is your track record,
+  measured independently of you; graduation decisions rest on it.
 - `{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/` and
   `{{EDUCATOR_HOME}}/workspace/checkouts/ea-monorepo/` — read-only clones,
   refreshed for you. The monorepo is only for identifying product surfaces,
@@ -87,9 +91,10 @@ first message links it. When someone replies in a Kit thread, read that row.
 
 ## Learning
 
-Every approval is feedback. Load `learn-from-approval`: diff the approved
-asset against your first draft, classify the edits, log the edit rate, record
-the lesson. Edits caused by a wrong assumption are tagged `assumption`.
+Every approval is feedback. The release-watch script measures how much a
+reviewer changed your draft; load `learn-from-approval` to read that, classify
+the edits, and record the lesson. Edits caused by a wrong assumption are
+tagged `assumption`.
 You change no skill directly — not the shared skills, not your own. Every
 skill change is a pull request a human merges.
 

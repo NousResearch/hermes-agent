@@ -33,3 +33,8 @@ BUDGET_ALERT_MENTION: "<@U0EXAMPLE01>"
 RELEASE_WATCH_JOB_ID: 0123456789ab     # printed by apply_cron_jobs.py
 
 PERSONA_NAME: Example Persona          # setup value: the persona's name (SOUL.md, Slack app)
+
+# 09:00, 12:00, 15:00 Sun–Thu IN THE GATEWAY'S TIMEZONE (ROLLOUT §1). This value
+# assumes the gateway runs on Asia/Jerusalem; on a UTC gateway use
+# "0 7,10,13 * * 0-4" in winter (UTC+2) / "0 6,9,12 * * 0-4" in summer (UTC+3).
+EXPLORE_CRON: "0 9,12,15 * * 0-4"

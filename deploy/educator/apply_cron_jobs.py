@@ -58,14 +58,14 @@ def preflight(home: Path, values: dict, jobs: list[dict]) -> list[str]:
     if home.name != "educator" or home.parent.name != "profiles":
         problems.append(f"HERMES_HOME ({home}) is not a profiles/educator directory")
     from cron.capability_preflight import script_import_problems
-    for job in jobs:
-        name = job["script"]
-        installed = home / "scripts" / name
-        source = HERE / "scripts" / name
+    for source in sorted((HERE / "scripts").glob("*.py")):  # the jobs' scripts + educator_wake.py
+        installed = home / "scripts" / source.name
         if not installed.is_file():
             problems.append(f"{installed} is missing — copy deploy/educator/scripts/*.py there")
         elif installed.read_bytes() != source.read_bytes():
             problems.append(f"{installed} differs from {source} — re-copy it")
+    for job in jobs:
+        name = job["script"]
         issue = script_import_problems(name)
         if issue:
             problems.append(issue)

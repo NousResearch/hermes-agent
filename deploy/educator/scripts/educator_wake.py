@@ -198,8 +198,15 @@ def notion_get(path: str) -> dict:
     return data
 
 
+# Data sources whose query hit the page cap this run (results incomplete);
+# the caller reports them. Reset by the caller.
+TRUNCATED_QUERIES: list[str] = []
+
+
 def notion_query(data_source_id: str, filter_: dict, limit_pages: int = 20) -> list[dict]:
-    """All rows of a data source matching ``filter_`` (paginated, bounded)."""
+    """All rows of a data source matching ``filter_`` (paginated, bounded at
+    ``limit_pages`` × 100 rows; hitting the bound is recorded in
+    ``TRUNCATED_QUERIES``, never silent)."""
     rows: list[dict] = []
     body: dict = {"filter": filter_, "page_size": 100}
     for _ in range(limit_pages):
@@ -209,8 +216,9 @@ def notion_query(data_source_id: str, filter_: dict, limit_pages: int = 20) -> l
             raise _notion_error(status, data)
         rows.extend(r for r in data.get("results") or [] if isinstance(r, dict))
         if not data.get("has_more") or not data.get("next_cursor"):
-            break
+            return rows
         body = {**body, "start_cursor": data["next_cursor"]}
+    TRUNCATED_QUERIES.append(data_source_id)
     return rows
 
 
@@ -253,11 +261,10 @@ def jira_keys(text: str) -> list[str]:
 
 # ── approval measurement (product-skills learn-from-approval contract) ───
 #
-# The agent has no code execution, so it cannot count an exact character
-# diff. The script does it: Notion's own markdown of the approved row vs the
-# agent's first-draft snapshot (drafts/<row-id>.md, or .redraft.md after a
-# corrected assumption), whitespace collapsed and the snapshot header line
-# dropped, Levenshtein distance in characters.
+# The agent has no code execution and must not be the author of its own
+# track record, so the script measures: Notion's markdown of the approved
+# row vs the script's own Draft-time baseline, whitespace collapsed and the
+# header line dropped, Levenshtein distance in characters.
 
 EDIT_DISTANCE_CELL_BUDGET = 40_000_000
 _HEADER = re.compile(r"\A\s*<!--.*?-->[^\S\n]*\n?", re.DOTALL)
@@ -337,40 +344,122 @@ def page_markdown(page_id: str) -> dict:
     return notion_get(f"pages/{page_id}/markdown")
 
 
-def measure_approval(row_id: str, asset_type: str, now: datetime) -> dict:
-    """Fields added to an ``asset_approved`` / ``asset_edited_after_approval``
-    event, and ``drafts/<row-id>.approved.md`` written for the agent."""
-    out: dict = {}
+# Script-owned evidence, under workspace/metrics/ (agent_write_guard
+# extra_paths — the agent reads it, never writes it):
+#   baselines/<row-id>.md   the row as the script last saw it in Draft (the
+#                           agent's final draft, re-drafts included); taken
+#                           on first sight past Draft if never seen in Draft
+#   approved/<row-id>.md    the row when approved (or edited after approval)
+#   edit-rate.csv           one line per approved row, replaced on re-edit
+# Graduation evidence reads edit-rate.csv. The agent's own classification of
+# the edits goes in workspace/learning/edit-classifications.csv.
+
+EDIT_RATE_HEADER = ("approved_at", "row_id", "asset_type", "destination", "product",
+                    "draft_chars", "approved_chars", "chars_changed", "edit_rate",
+                    "measured_by", "baseline_status", "baseline_taken_at")
+
+
+def metrics_dir() -> Path:
+    return workspace() / "metrics"
+
+
+def _row_file(kind: str, row_id: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f-]{32,36}", row_id or ""):
+        raise ValueError(f"not a Notion page id: {row_id!r}")
+    return metrics_dir() / kind / f"{row_id}.md"
+
+
+def _atomic_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-")
     try:
-        page = page_markdown(row_id)
-    except SourceError as e:
-        return {"measure_error": f"could not read the approved markdown: {e}"}
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _fetch_markdown(row_id: str) -> str:
+    page = page_markdown(row_id)
     if page.get("truncated"):
-        return {"measure_error": "Notion returned truncated markdown for this row"}
-    approved = str(page.get("markdown") or "")
-    drafts = workspace() / "drafts"
-    drafts.mkdir(parents=True, exist_ok=True)
-    (drafts / f"{row_id}.approved.md").write_text(
-        f"<!-- approved row={row_id} asset_type={asset_type} taken={iso(now)} -->\n{approved}\n",
-        encoding="utf-8")
+        raise SourceError("notion", f"Notion returned truncated markdown for {row_id}")
+    return str(page.get("markdown") or "")
+
+
+def take_baseline(row_id: str, asset_type: str, status: str, now: datetime) -> None:
+    """Snapshot the row body as the baseline. Raises SourceError."""
+    body = _fetch_markdown(row_id)
+    _atomic_text(_row_file("baselines", row_id),
+                 f"<!-- baseline row={row_id} asset_type={asset_type} status={status} "
+                 f"taken={iso(now)} -->\n{body}\n")
+
+
+def has_baseline(row_id: str) -> bool:
+    return _row_file("baselines", row_id).is_file()
+
+
+def _baseline_meta(text: str) -> dict:
+    m = re.match(r"<!-- baseline (.*?) -->", text)
+    return dict(kv.split("=", 1) for kv in (m.group(1).split() if m else []) if "=" in kv)
+
+
+def upsert_edit_rate(record: dict) -> None:
+    import csv
+    import io
+    path = metrics_dir() / "edit-rate.csv"
+    rows = []
+    if path.is_file():
+        with path.open(encoding="utf-8", newline="") as fh:
+            rows = [r for r in csv.DictReader(fh) if r.get("row_id") != record["row_id"]]
+    rows.append(record)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=EDIT_RATE_HEADER, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    _atomic_text(path, buf.getvalue())
+
+
+def measure_approval(info: dict, now: datetime) -> dict:
+    """Measure an approved row against its baseline, save the approved copy,
+    write its edit-rate.csv line. Returns the fields added to the
+    ``asset_approved`` / ``asset_edited_after_approval`` event."""
+    row_id = info["row_id"]
+    try:
+        approved = _fetch_markdown(row_id)
+    except SourceError as e:
+        return {"measure_error": f"could not read the approved row: {e}"}
+    approved_path = _row_file("approved", row_id)
+    _atomic_text(approved_path, f"<!-- approved row={row_id} asset_type={info.get('asset_type')} "
+                                f"taken={iso(now)} -->\n{approved}\n")
     approved_n = normalise_markdown(approved)
-    out["approved_chars"] = len(approved_n)
-    draft_p, redraft_p = drafts / f"{row_id}.md", drafts / f"{row_id}.redraft.md"
-    base_p = draft_p if draft_p.is_file() else redraft_p if redraft_p.is_file() else None
-    if base_p is None:
-        out["snapshot_missing"] = True
-        return out
-    draft_n = normalise_markdown(base_p.read_text(encoding="utf-8"))
-    dist, exact = edit_distance(draft_n, approved_n)
-    out.update(snapshot_missing=False, baseline="draft" if base_p == draft_p else "redraft",
-               draft_chars=len(draft_n), chars_changed=dist, chars_changed_exact=exact)
-    if base_p == draft_p and redraft_p.is_file():
-        # A re-draft after a corrected assumption: what the reviewer still
-        # changed after it is writing; the rest of the change is assumption.
-        writing, w_exact = edit_distance(normalise_markdown(redraft_p.read_text(encoding="utf-8")),
-                                         approved_n)
-        out["assumption_chars"] = max(0, dist - writing)
-        out["chars_changed_exact"] = exact and w_exact
+    out: dict = {"approved_chars": len(approved_n), "approved_path": str(approved_path)}
+    record = {"approved_at": iso(now), "row_id": row_id, "asset_type": info.get("asset_type", ""),
+              "destination": info.get("destination", ""), "product": info.get("product", ""),
+              "approved_chars": len(approved_n)}
+    base_path = _row_file("baselines", row_id)
+    if not base_path.is_file():
+        out.update(snapshot_missing=True, measured_by="none")
+        record.update(measured_by="none")
+    else:
+        text = base_path.read_text(encoding="utf-8")
+        meta = _baseline_meta(text)
+        draft_n = normalise_markdown(text)
+        dist, exact = edit_distance(draft_n, approved_n)
+        rate = f"{dist / max(len(draft_n), 1):.4f}"
+        measured_by = "script" if exact else "estimate"
+        out.update(snapshot_missing=False, draft_chars=len(draft_n), chars_changed=dist,
+                   chars_changed_exact=exact, edit_rate=float(rate), measured_by=measured_by,
+                   baseline_path=str(base_path), baseline_status=meta.get("status", ""))
+        record.update(draft_chars=len(draft_n), chars_changed=dist, edit_rate=rate,
+                      measured_by=measured_by, baseline_status=meta.get("status", ""),
+                      baseline_taken_at=meta.get("taken", ""))
+    upsert_edit_rate(record)
+    out["edit_rate_csv"] = str(metrics_dir() / "edit-rate.csv")
     return out
 
 

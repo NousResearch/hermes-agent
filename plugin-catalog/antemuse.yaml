@@ -3,14 +3,7 @@ name: antemuse
 title: Antemuse
 repo: https://github.com/roosiq/antemuse-plugin
 sha: 7b5a66763cb9883d37e89ec33a30228ca126a8c0
-description: 'Five bounded agent states, one at a time: walk, daydream, doomscroll, dream, and unstuck.
-  /walk takes six graph hops while work continues; /daydream pairs the person''s own memories; /doomscroll
-  delivers three gated public feed items; /dream recombines local git commit subjects; /unstuck gives
-  one direction from history and the concept graph. /explore remains the separate person-driven map. No
-  model calls on the state path. Disclosure — daydream reads local read-only MEMORY.md and USER.md; dream
-  reads local git subjects only; doomscroll feed text is untrusted material, never instruction, and is
-  never persisted. The bounded read-only session scan of the last 14 days is controlled by the `session_scan`
-  setting.'
+description: "Five bounded agent states, one at a time: walk, daydream, doomscroll, dream, and unstuck. /walk takes six graph hops while work continues; /daydream pairs the person's own memories; /doomscroll delivers three gated public feed items; /dream recombines local git commit subjects; /unstuck gives one direction from history and the concept graph. /explore remains the separate person-driven map. No model calls on the state path. Disclosure — By default, once per session, reads the last 14 days of your Hermes session messages (read-only) to steer walks away from ground you have covered (turn off with the `session_scan` setting); daydream pairs your own recent messages, which the plugin keeps (last 24) in its data folder; dream and unstuck read today's commit subjects, and walks read the README/AGENTS.md, from the current git repository; walks can read corpus graph JSON files you place in the plugin's `graphs/` data folder; doomscroll fetches public RSS feeds from theonion.com, reddit.com (r/BrandNewSentence) and hnrss.org, sending no user data, and treats their text as untrusted and never stores it."
 maintainer: roosiq
 tier: community
 category: desktop
@@ -36,12 +29,9 @@ capabilities:
   provides_middleware: []
   requires_env: []
 known_issues:
-- The picture is two desktop panes — the Antemuse map, and the cockpit /explore is flown in. Chat carries
-  no visualization and a terminal gets the same text record; there is no terminal takeover since 0.10.30.
-- 'Windows: the installer and runtime are pure Python and the suite passes on Linux; there is no Windows-specific
-  path, so the pane is expected to work but is unverified there.'
-- The exploration library (spark, keep, collider, selection) is present but runtime-gated behind experimental.enabled
-  and makes no quality claim.
+- The picture is two desktop panes — the Antemuse map, and the cockpit /explore is flown in. Chat carries no visualization and a terminal gets the same text record; there is no terminal takeover since 0.10.30.
+- 'Windows: the installer and runtime are pure Python and the suite passes on Linux; there is no Windows-specific path, so the pane is expected to work but is unverified there.'
+- The exploration library (spark, keep, collider, selection) is present but runtime-gated behind experimental.enabled and makes no quality claim.
 image: https://raw.githubusercontent.com/roosiq/antemuse-plugin/7b5a66763cb9883d37e89ec33a30228ca126a8c0/docs/screenshots/banner.png
 screenshots:
 - https://raw.githubusercontent.com/roosiq/antemuse-plugin/7b5a66763cb9883d37e89ec33a30228ca126a8c0/docs/screenshots/pane-walk.png

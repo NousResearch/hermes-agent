@@ -39,7 +39,7 @@ import { readStoredWorkspace, writeStoredWorkspace } from "@/lib/chat-workspaces
 import { latchChatActivation } from "@/lib/chat-activation";
 import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-panel-collapsed";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { normalizeSessionTitle } from "@/lib/chat-title";
+import { activeChatSessionId, nextLiveSession, normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
@@ -89,7 +89,7 @@ import {
   PTY_START_FAILED_MESSAGE,
   PTY_TOKEN_MISSING_BANNER,
   ptyReconnectExhausted,
-  ptyRejectionBanner,
+  ptyRejectionBanner, ptyTokenMissing,
   type PtyBannerAction,
 } from "@/lib/pty-close-copy";
 import { ptyAttachToken } from "@/lib/pty-attach-token";
@@ -159,15 +159,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setHasActivated((prev) => latchChatActivation(prev, isActive));
   }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
-  // Lazy-init: the missing-token check happens at construction so the effect
-  // body doesn't have to setState (React 19's set-state-in-effect rule).
-  // In gated (OAuth) mode the server intentionally omits the session token —
-  // the dashboard API layer authenticates the WS via a single-use ticket,
-  // so a missing token there is expected, not an error.
-  const tokenMissing =
-    typeof window !== "undefined" &&
-    !window.__HERMES_SESSION_TOKEN__ &&
-    !window.__HERMES_AUTH_REQUIRED__;
+  const tokenMissing = ptyTokenMissing();
   const [banner, setBanner] = useState<string | null>(() =>
     tokenMissing ? PTY_TOKEN_MISSING_BANNER.text : null,
   );
@@ -214,6 +206,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // affordance; clicking it bumps `reconnectNonce`, which is a dependency of
   // the connect effect, so a fresh PTY spawns in place.
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  const [liveSessionState, setLiveSessionState] = useState<{ scope: string; id: string } | null>(null);
   useEffect(() => {
     ptyStateRef.current = ptyState;
   }, [ptyState]);
@@ -238,6 +231,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [clearReconnectTimer]);
   const startFreshPty = useCallback(() => {
     forceFreshPtyRef.current = true;
+    setLiveSessionState(null);
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
@@ -254,6 +248,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     next.delete("resume");
     forceFreshPtyRef.current = true;
+    setLiveSessionState(null);
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
@@ -364,6 +359,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
   );
+  // The session the embedded TUI runs (its session.info); the header title and SESSIONS highlight follow it (#94716).
+  const activeSessionId = activeChatSessionId(liveSessionState, channel, resumeParam);
+  const handleLiveSessionChange = useCallback((id: string) => setLiveSessionState((prev) => nextLiveSession(prev, channel, id)), [channel]);
 
   useLayoutEffect(() => {
     if (!isActive) {
@@ -376,12 +374,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [isActive, sessionTitle, setTitle]);
 
   useEffect(() => {
-    if (!resumeParam) return;
+    if (!activeSessionId) return;
 
     let cancelled = false;
 
     api
-      .getSessionDetail(resumeParam, scopedProfile)
+      .getSessionDetail(activeSessionId, scopedProfile)
       .then((session) => {
         if (cancelled) return;
         handleSessionTitleChange(normalizeSessionTitle(session.title));
@@ -393,7 +391,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, scopedProfile, handleSessionTitleChange]);
+  }, [activeSessionId, scopedProfile, handleSessionTitleChange]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -1850,10 +1848,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onLiveSessionChange={handleLiveSessionChange}
               />
             </div>
             <ChatSessionList
-              activeSessionId={resumeParam}
+              activeSessionId={activeSessionId}
               isActive={isActive}
               profile={scopedProfile}
               onPicked={closeMobilePanel}
@@ -2043,13 +2042,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onLiveSessionChange={handleLiveSessionChange}
               />
             </div>
 
             {/* Session switcher fills the remaining height below the model box. */}
             <div className="min-h-0 flex-1 overflow-hidden">
               <ChatSessionList
-                activeSessionId={resumeParam}
+                activeSessionId={activeSessionId}
                 isActive={isActive}
                 profile={scopedProfile}
                 onNewChat={startFreshDashboardChat}

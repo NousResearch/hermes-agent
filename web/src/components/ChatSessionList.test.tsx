@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatSessionList } from './ChatSessionList'
@@ -194,5 +194,51 @@ describe('ChatSessionList', () => {
 
     expect(getSessions).toHaveBeenCalledTimes(2)
     expect(container.textContent).toContain('Newly created session')
+  })
+})
+
+describe('ChatSessionList row pick', () => {
+  let container: HTMLDivElement
+  let root: Root
+  let search = ''
+
+  function LocationProbe() {
+    const location = useLocation()
+    useEffect(() => {
+      search = location.search
+    }, [location.search])
+    return null
+  }
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  it('re-points the URL at the highlighted session when the TUI moved away from ?resume= (#94716)', async () => {
+    getSessions.mockReset()
+    getSessions.mockResolvedValue({
+      sessions: [session('sess-A', 'Alpha'), session('sess-B', 'Beta')], total: 2, limit: 30, offset: 0
+    })
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    // The URL names sess-B; the PTY runs sess-A, so the rail highlights sess-A.
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={['/chat?resume=sess-B']}>
+          <LocationProbe />
+          <ChatSessionList activeSessionId="sess-A" />
+        </MemoryRouter>
+      )
+    })
+    const alpha = [...container.querySelectorAll('[aria-current="true"]')]
+    expect(alpha.map(el => el.textContent)).toEqual([expect.stringContaining('Alpha')])
+
+    await act(async () => {
+      alpha[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+
+    expect(new URLSearchParams(search).get('resume')).toBe('sess-A')
   })
 })

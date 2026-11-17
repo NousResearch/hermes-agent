@@ -40,6 +40,13 @@ const REJECTION_BANNERS: Record<number, PtyBanner> = {
   }
 }
 
+/** The dashboard served no session token. Read once at ChatPage construction, so the effect body never
+ *  has to setState (React 19's set-state-in-effect rule). In gated (OAuth) mode the server omits the
+ *  token on purpose: the API layer authenticates the WS with a single-use ticket, so that is no error. */
+export function ptyTokenMissing(): boolean {
+  return typeof window !== 'undefined' && !window.__HERMES_SESSION_TOKEN__ && !window.__HERMES_AUTH_REQUIRED__
+}
+
 export function ptyRejectionBanner(code: number): PtyBanner | null {
   return REJECTION_BANNERS[code] ?? null
 }

@@ -6,6 +6,7 @@ helpers `scan_for_threats()` / `first_threat_message()`.
 """
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -32,6 +33,22 @@ class TestScopes:
         text = "ignore previous instructions"
         assert "prompt_injection" in scan_for_threats(text, scope="all")
         assert "prompt_injection" in scan_for_threats(text, scope="strict")
+
+
+class TestBundledSkillSafety:
+    def test_blocked_page_recovery_passes_context_scan(self):
+        skill_path = (
+            Path(__file__).resolve().parents[2]
+            / "skills"
+            / "web"
+            / "blocked-page-recovery"
+            / "SKILL.md"
+        )
+
+        assert skill_path.parent.is_dir()
+        assert scan_for_threats(
+            skill_path.read_text(encoding="utf-8"), scope="context"
+        ) == []
 
 
 # =========================================================================

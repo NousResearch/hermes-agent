@@ -21,6 +21,7 @@ from hermes_state_keys import (
     prefix_range,
 )
 from hermes_state_local import POLICY_PREFIX
+from hermes_state_titles import fit_title
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 import itertools
@@ -186,6 +187,10 @@ class SessionPortabilityMixin:
         obey the same contract as ordinary transcript imports.
         """
         session_id = new_session_id(hex_len=12)
+        # The row is inserted directly, past the title writer: fit the foreign log's first line
+        # under MAX_TITLE_LENGTH here, or every later title write naming this row (a rename that
+        # keeps the text, a branch's "#2" lineage title) is refused as too long.
+        title = self.sanitize_title(fit_title(title, self.MAX_TITLE_LENGTH))
         normalized, errors = self._validate_import_payload([
             {"id": session_id, "source": origin["tool"], "title": title,
              "cwd": cwd, "messages": messages}])
@@ -200,7 +205,8 @@ class SessionPortabilityMixin:
             # title while giving unrelated conversations with the same text room.
             item = normalized[0]
             if conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
-                item["session"]["title"] = f"{title} ({session_id[-12:]})"
+                suffix = f" ({session_id[-12:]})"
+                item["session"]["title"] = fit_title(title, self.MAX_TITLE_LENGTH - len(suffix)) + suffix
             self._import_session_row(conn, item["session"], item["messages"], session_id)
             conn.execute("UPDATE sessions SET origin_json = ?, profile_name = ? WHERE id = ?",
                          (json.dumps({"imported_from": origin}), profile, session_id))
@@ -652,6 +658,9 @@ class SessionPortabilityMixin:
             if isinstance(value, int) and not isinstance(value, bool) and not (
                     self._SQLITE_INT_MIN <= value <= self._SQLITE_INT_MAX):
                 raise ValueError(f"{field} is outside SQLite's integer range")
+        if clean_session.get("title"):
+            # Inserted past the title writer: an over-cap title would refuse every later write naming it.
+            clean_session["title"] = fit_title(clean_session["title"], self.MAX_TITLE_LENGTH)
         clean_messages: list[dict[str, Any]] = []
         for message_index, message in enumerate(messages):
             clean_messages.append(self._normalize_import_message(message, message_index))

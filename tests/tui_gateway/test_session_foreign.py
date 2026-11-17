@@ -95,3 +95,32 @@ def test_foreign_pages_confine_handles_and_failed_import_rolls_back(tmp_path, mo
         assert db.session_count() == 0
     finally:
         db.close()
+
+
+def test_foreign_import_titles_fit_the_title_store(tmp_path, monkeypatch):
+    """A long first line becomes a title the store's own writer accepts, collision suffix included."""
+    from hermes_state import SessionDB
+    from tui_gateway import server
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    first_line = "Refactor the payment reconciliation module " * 4
+    for name in ("one", "two"):
+        folder = tmp_path / ".claude" / "projects" / name
+        folder.mkdir(parents=True)
+        (folder / "session.jsonl").write_text("\n".join(json.dumps(line) for line in [
+            {"type": "user", "sessionId": name, "message": {"role": "user", "content": first_line}},
+            {"type": "assistant", "sessionId": name, "message": {"role": "assistant", "content": "Done."}},
+        ]), encoding="utf-8")
+    db = SessionDB(tmp_path / ".hermes" / "state.db")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_profile_home", lambda profile: None)
+    try:
+        handles = [row["id"] for row in server._methods["session.foreign.list"](1, {})["result"]["sessions"]]
+        sids = [server._methods["session.foreign.import"](1, {"id": h})["result"]["session_id"] for h in handles]
+        titles = [db.get_session(sid)["title"] for sid in sids]
+        assert len(set(titles)) == 2
+        for sid, title in zip(sids, titles):
+            assert db.set_session_title(sid, title)  # raises "Title too long" past MAX_TITLE_LENGTH
+    finally:
+        db.close()

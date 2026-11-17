@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 import { useLocation } from 'react-router'
 
-import figmaRobot from '@/assets/figma-agent-robot.svg'
+import figmaRobot from '@/assets/figma-rail-robot.svg'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -221,7 +221,8 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
 
   const coreItem = ({ icon, ...item }: (typeof anchored)[number] | (typeof movable)[number]) => ({
     ...item,
-    // Figma's robot is the one glyph drawn larger than its column (906:19430).
+    // Figma's rail robot (906:19430) fills the glyph box on the other glyphs' pixel grid; the agent
+    // tile's robot is the same drawing at three quarters, so the rail keeps its own asset.
     icon: (props: { className?: string }) =>
       icon === 'robot' ? (
         <span

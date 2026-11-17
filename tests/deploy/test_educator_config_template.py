@@ -82,7 +82,7 @@ def test_strict_reader_parses_the_rendered_file(cfg):
     from agent.boundary_config import is_unreadable, read_boundary_config
     loaded = read_boundary_config()
     assert not is_unreadable(loaded)
-    assert loaded["agent_write_guard"] is True
+    assert loaded["agent_write_guard"]["enabled"] is True
 
 
 def test_notion_write_guard_is_enforcing_and_valid(cfg):
@@ -212,4 +212,23 @@ def test_skills_and_cron(cfg):
         f"{home}/workspace/checkouts/product-skills/plugins/product-education/skills",
     ]
     assert cfg["cron"]["allow_agent_shell"] is False
-    assert cfg["agent_write_guard"] is True
+
+
+def test_agent_write_guard_protects_checkouts_metrics_and_script_state(cfg, tmp_path):
+    """The script-owned paths are write-protected for the agent's file tools,
+    .git internals included; its scratch space stays writable."""
+    import os
+    from agent.profile_write_guard import write_guard_denial
+    home = Path(os.environ["HERMES_HOME"])
+    for rel in ("workspace/checkouts/product-skills/.git/config",
+                "workspace/checkouts/product-skills/.git/hooks/post-checkout",
+                "workspace/checkouts/ea-monorepo/README.md",
+                "workspace/metrics/edit-rate.csv",
+                "workspace/metrics/baselines/x.md",
+                "cron/educator-state/release-watch.json",
+                "scripts/educator_wake.py",
+                "config.yaml", "SOUL.md", ".env"):
+        assert write_guard_denial(home / rel), rel
+    for rel in ("workspace/notebook.md", "workspace/drafts/x.md", "workspace/research/n.md",
+                "workspace/learning/edit-classifications.csv"):
+        assert write_guard_denial(home / rel) is None, rel

@@ -418,20 +418,111 @@ def jira_statuses(keys: list[str]) -> dict[str, Optional[str]]:
     return out
 
 
-# ── git checkouts (fetch + reset only; replaced in tests) ────────────────
+# ── git checkouts (verified fetch + reset only; run_git replaced in tests) ──
+#
+# The checkouts feed skills.external_dirs, so whoever controls their content
+# controls the agent's skills, and whoever controls .git/config can make git
+# run a program (core.fsmonitor, hooks, credential helpers, filters …) as
+# the gateway user with this profile's secrets. The agent cannot write them
+# (agent_write_guard.extra_paths: workspace/checkouts); this code does not
+# trust them either:
+#
+# - .git must be a real directory and .git/config must contain only the keys
+#   a plain `git clone` writes (parsed here, never by git), with
+#   remote.origin.url equal to the expected repo — anything else refuses the
+#   refresh and is reported, so an admin re-clones;
+# - every git call runs with system/global config off and the dangerous keys
+#   forced off on the command line;
+# - fetch names the expected URL and an explicit refspec (never the
+#   configured remote), and reset targets refs/remotes/origin/<default branch>
+#   looked up from the remote (never @{upstream}, which local config decides).
+
+GIT_HARDENING = (
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "credential.helper=",
+    "-c", "protocol.file.allow=never",
+    "-c", "protocol.ext.allow=never",
+    "-c", "protocol.ssh.allow=never",
+    "-c", "core.askPass=",
+)
+_GIT_CONFIG_ALLOWED = {
+    "core": {"repositoryformatversion", "filemode", "bare", "logallrefupdates",
+             "ignorecase", "precomposeunicode", "symlinks"},
+    "extensions": {"objectformat"},
+    "remote.origin": {"url", "fetch"},
+}
+_BRANCH_KEYS = {"remote", "merge"}
+_SECTION = re.compile(r'^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\\n]|\\.)*)")?\s*\]\s*$')
+_KEYVAL = re.compile(r"^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*?))?\s*$")
+
+
+def expected_checkouts(cfg: Optional[dict] = None) -> dict[str, str]:
+    """``{dir name: https clone URL}`` from ``github_pr.repos`` (the repos
+    the profile's token is scoped to), falling back to the two designed."""
+    cfg = load_profile_config() if cfg is None else cfg
+    gh = cfg.get("github_pr") if isinstance(cfg.get("github_pr"), dict) else {}
+    repos = gh.get("repos") if isinstance(gh.get("repos"), dict) else {}
+    out = {}
+    for name in CHECKOUTS:
+        full = next((str(k) for k in repos if str(k).lower().endswith("/" + name)),
+                    f"everafterai/{name}")
+        out[name] = f"https://github.com/{full}.git"
+    return out
+
+
+def git_config_problem(repo_path: Path, expected_url: str) -> Optional[str]:
+    """Why this checkout's git metadata cannot be trusted, or None."""
+    git_dir = repo_path / ".git"
+    if git_dir.is_symlink() or not git_dir.is_dir():
+        return ".git is not a plain directory"
+    cfg_path = git_dir / "config"
+    if cfg_path.is_symlink() or not cfg_path.is_file():
+        return ".git/config is missing or a symlink"
+    for extra in ("config.worktree", "commondir"):
+        if (git_dir / extra).exists():
+            return f".git/{extra} exists"
+    section = None
+    url = None
+    for raw in cfg_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        m = _SECTION.match(line)
+        if m:
+            name, sub = m.group(1).lower(), m.group(2)
+            section = f"{name}.{sub}" if sub is not None else name
+            if name == "branch" and sub is not None:
+                continue
+            if section not in _GIT_CONFIG_ALLOWED:
+                return f"unexpected section [{section}] in .git/config"
+            continue
+        m = _KEYVAL.match(line)
+        if not m or section is None or line.endswith("\\"):
+            return f"unparseable line in .git/config: {line[:80]!r}"
+        key = m.group(1).lower()
+        allowed = _BRANCH_KEYS if section.startswith("branch.") else _GIT_CONFIG_ALLOWED[section]
+        if key not in allowed:
+            return f"unexpected key {section}.{key} in .git/config"
+        if section == "remote.origin" and key == "url":
+            url = (m.group(2) or "").strip().strip('"')
+    if url != expected_url:
+        return f"remote.origin.url is {url!r}, expected {expected_url!r}"
+    return None
+
 
 def run_git(args: list[str], cwd: str, env: dict) -> tuple[int, str]:
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True,
-                              text=True, timeout=GIT_TIMEOUT)
+        proc = subprocess.run(["git", *GIT_HARDENING, *args], cwd=cwd, env=env,
+                              capture_output=True, text=True, timeout=GIT_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
         return 1, f"{type(e).__name__}: {e}"
     return proc.returncode, (proc.stderr or proc.stdout or "").strip()
 
 
 def _git_env() -> dict:
-    e = dict(os.environ)
-    e["GIT_TERMINAL_PROMPT"] = "0"
+    e = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    e.update(GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
     token = env("GITHUB_PR_TOKEN")
     if token:
         # Passed through git's env-config, never argv, so it is not visible
@@ -444,27 +535,46 @@ def _git_env() -> dict:
     return e
 
 
-def refresh_checkouts(root: Optional[Path] = None) -> dict[str, Optional[str]]:
-    """Bring each read-only checkout to its upstream tip. Returns
-    ``{repo: error or None}``. ``reset --hard`` (not ``pull``) so a stray
-    local change can never wedge the update; nothing is ever pushed."""
+def _default_branch(url: str, path: Path, genv: dict) -> tuple[Optional[str], Optional[str]]:
+    rc, out = run_git(["ls-remote", "--symref", url, "HEAD"], str(path), genv)
+    if rc != 0:
+        return None, f"git ls-remote failed (exit {rc}): {out[:300]}"
+    m = re.search(r"^ref:\s*refs/heads/([A-Za-z0-9._/-]+)\s+HEAD$", out, re.MULTILINE)
+    if not m or ".." in m.group(1):
+        return None, "could not read the remote's default branch"
+    return m.group(1), None
+
+
+def refresh_checkouts(root: Optional[Path] = None,
+                      expected: Optional[dict[str, str]] = None) -> dict[str, Optional[str]]:
+    """Bring each read-only checkout to its remote's default-branch tip.
+    Returns ``{repo: error or None}``; a checkout whose metadata fails
+    ``git_config_problem`` is refused before any git command runs."""
     root = root or workspace() / "checkouts"
+    expected = expected or expected_checkouts()
     results: dict[str, Optional[str]] = {}
     genv = _git_env()
-    for repo in CHECKOUTS:
+    for repo, url in expected.items():
         path = root / repo
         if not path.is_dir():
-            results[repo] = f"checkout missing at {path} — clone it (ROLLOUT.md step 3)"
+            results[repo] = f"checkout missing at {path} — clone it (ROLLOUT.md step 4)"
             continue
-        fetch = ["fetch", "--quiet", "--prune", "origin"]
-        if (path / ".git" / "shallow").exists():
-            fetch.insert(2, "--depth=1")
-        err = None
-        for args in (fetch, ["reset", "--quiet", "--hard", "@{upstream}"]):
-            rc, out = run_git(args, str(path), genv)
-            if rc != 0:
-                err = f"git {args[0]} failed (exit {rc}): {out[:300]}"
-                break
+        problem = git_config_problem(path, url)
+        if problem:
+            results[repo] = (f"checkout refused, nothing run: {problem} — an admin must delete "
+                             f"{path} and re-clone it (ROLLOUT.md step 4)")
+            continue
+        branch, err = _default_branch(url, path, genv)
+        if err is None:
+            fetch = ["fetch", "--quiet", "--no-tags", url,
+                     f"+refs/heads/{branch}:refs/remotes/origin/{branch}"]
+            if (path / ".git" / "shallow").exists():
+                fetch.insert(2, "--depth=1")
+            for args in (fetch, ["reset", "--quiet", "--hard", f"refs/remotes/origin/{branch}"]):
+                rc, out = run_git(args, str(path), genv)
+                if rc != 0:
+                    err = f"git {args[0]} failed (exit {rc}): {out[:300]}"
+                    break
         results[repo] = err
     return results
 

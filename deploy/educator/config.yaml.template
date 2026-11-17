@@ -28,10 +28,20 @@ pricing:
       cache_write: "{{MODEL_CACHE_WRITE_USD_PER_M}}"
 
 # ── self-modification guard (multiplex fix 4e) ───────────────────────────
-# The agent's file tools cannot write this config, SOUL.md, cron/, scripts/,
-# .env*, workspace/checkouts/ or the external skill dirs. Required by
-# notion.write_guard, zendesk_create_draft and gated posting.
-agent_write_guard: true
+# The agent's file tools and skill_manage cannot write this config, SOUL.md,
+# cron/, scripts/, .env* or the external skill dirs — nor the extra_paths
+# below (relative to the profile home, whole subtree):
+#   workspace/checkouts — the release-watch script fetches and resets these
+#     git checkouts every 20 minutes; an agent-writable .git/config could
+#     repoint them at its own unreviewed branch or make git run a program.
+#   workspace/metrics — the script-owned approval evidence (baselines, the
+#     approved copies, edit-rate.csv) that graduation decisions rest on.
+# Required by notion.write_guard, zendesk_create_draft and gated posting.
+agent_write_guard:
+  enabled: true
+  extra_paths:
+    - workspace/checkouts
+    - workspace/metrics
 
 # ── tools ────────────────────────────────────────────────────────────────
 # Exactly the design's set ("The profile → Tools"). An explicit list shadows

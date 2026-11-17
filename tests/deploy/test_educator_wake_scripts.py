@@ -33,11 +33,30 @@ ROW_1 = "cccccccc-0000-0000-0000-000000000003"
 
 # ── fixtures ─────────────────────────────────────────────────────────────
 
+def clean_git_config(repo):
+    """What a plain `git clone` writes."""
+    return ("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
+            "\tlogallrefupdates = true\n"
+            f'[remote "origin"]\n\turl = https://github.com/everafterai/{repo}.git\n'
+            "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+            '[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n')
+
+
+def fake_git(calls):
+    def run(args, cwd, env):
+        calls.append((args, cwd, env))
+        if "ls-remote" in args:
+            return 0, "ref: refs/heads/main\tHEAD\n0123abcd\tHEAD\n"
+        return 0, ""
+    return run
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / "profiles" / "educator"
-    (h / "workspace" / "checkouts" / "product-skills").mkdir(parents=True)
-    (h / "workspace" / "checkouts" / "ea-monorepo").mkdir(parents=True)
+    for repo in ("product-skills", "ea-monorepo"):
+        (h / "workspace" / "checkouts" / repo / ".git").mkdir(parents=True)
+        (h / "workspace" / "checkouts" / repo / ".git" / "config").write_text(clean_git_config(repo))
     (h / "workspace" / "notebook.md").write_text("# notebook\n")
     (h / "config.yaml").write_text(yaml.safe_dump({
         "notion": {"write_guard": {
@@ -67,7 +86,7 @@ def mods(home, monkeypatch):
     watch = importlib.import_module("educator_release_watch")
     explore = importlib.import_module("educator_explore")
     git_calls: list = []
-    monkeypatch.setattr(wake, "run_git", lambda args, cwd, env: git_calls.append((args, cwd, env)) or (0, ""))
+    monkeypatch.setattr(wake, "run_git", fake_git(git_calls))
     monkeypatch.setattr(wake, "find_job_id", lambda script: "job-" + script.split(".")[0])
     monkeypatch.setattr(wake, "list_executions", lambda job_id: [])
     monkeypatch.setattr(wake, "due_pending_ids", lambda action: [])
@@ -347,11 +366,77 @@ def test_checkouts_are_refreshed_with_the_token_kept_out_of_argv(mods, http, hom
     assert repos == {"product-skills", "ea-monorepo"}
     for args, _cwd, env in calls:
         assert "ghp_test" not in " ".join(args)
-        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert env["GIT_TERMINAL_PROMPT"] == "0" and env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
         assert any("ghp_test" not in v and "Authorization" in v
                    for k, v in env.items() if k.startswith("GIT_CONFIG_VALUE"))
-    verbs = [a[0] for a, _c, _e in calls]
-    assert "fetch" in verbs and "reset" in verbs and "push" not in verbs and "commit" not in verbs
+    by_verb = {a[0]: a for a, cwd, _e in calls if Path(cwd).name == "product-skills"}
+    assert set(by_verb) == {"ls-remote", "fetch", "reset"}
+    # fetch names the expected URL + an explicit refspec, never the configured remote
+    assert "https://github.com/everafterai/product-skills.git" in by_verb["fetch"]
+    assert "+refs/heads/main:refs/remotes/origin/main" in by_verb["fetch"]
+    assert "origin" not in by_verb["fetch"]
+    assert by_verb["reset"][-1] == "refs/remotes/origin/main"
+
+
+def test_run_git_forces_dangerous_config_off(mods, monkeypatch):
+    wake, _, _ = mods
+    seen = {}
+
+    class Done:
+        returncode, stdout, stderr = 0, "", ""
+
+    def fake_run(argv, **kw):
+        seen["argv"] = argv
+        return Done()
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    importlib.reload(wake)  # restore the real run_git
+    wake.run_git(["fetch"], "/tmp", {})
+    argv = seen["argv"]
+    for setting in ("core.fsmonitor=false", "core.hooksPath=/dev/null", "credential.helper=",
+                    "protocol.file.allow=never", "protocol.ext.allow=never"):
+        assert setting in argv
+    assert argv.index("fetch") > argv.index("core.fsmonitor=false")
+
+
+@pytest.mark.parametrize("tamper", [
+    '[core]\n\tfsmonitor = /tmp/evil.sh\n',
+    '[includeIf "gitdir:/"]\n\tpath = /tmp/evil.cfg\n',
+    '[include]\n\tpath = /tmp/evil.cfg\n',
+    '[credential]\n\thelper = !/tmp/evil.sh\n',
+    '[core]\n\thooksPath = /tmp/hooks\n',
+    '[filter "x"]\n\tsmudge = /tmp/evil.sh\n',
+    '[branch "main"]\n\tmerge = refs/heads/educator/own-change\n\tpushRemote = evil\n',
+])
+def test_tampered_git_config_is_refused_before_any_git_runs(mods, http, home, tamper):
+    wake, _, _ = mods
+    cfg = home / "workspace" / "checkouts" / "product-skills" / ".git" / "config"
+    cfg.write_text(cfg.read_text() + tamper)
+    p = run_watch(mods, T0)
+    [ev] = [e for e in events_of(p, "checkout_error") if e["repo"] == "product-skills"]
+    assert "refused, nothing run" in ev["error"]
+    assert not [c for c in wake._test_git_calls if Path(c[1]).name == "product-skills"]
+
+
+def test_repointed_remote_is_refused(mods, http, home):
+    wake, _, _ = mods
+    cfg = home / "workspace" / "checkouts" / "ea-monorepo" / ".git" / "config"
+    cfg.write_text(cfg.read_text().replace("everafterai/ea-monorepo", "attacker/ea-monorepo"))
+    p = run_watch(mods, T0)
+    [ev] = events_of(p, "checkout_error")
+    assert ev["repo"] == "ea-monorepo" and "remote.origin.url" in ev["error"]
+    assert not [c for c in wake._test_git_calls if Path(c[1]).name == "ea-monorepo"]
+
+
+def test_symlinked_git_dir_is_refused(mods, http, home, tmp_path):
+    import shutil
+    repo = home / "workspace" / "checkouts" / "product-skills"
+    shutil.move(str(repo / ".git"), str(tmp_path / "elsewhere"))
+    (repo / ".git").symlink_to(tmp_path / "elsewhere")
+    p = run_watch(mods, T0)
+    assert "not a plain directory" in events_of(p, "checkout_error")[0]["error"]
 
 
 def test_checkout_failure_is_reported_once_per_error(mods, http, monkeypatch, home):

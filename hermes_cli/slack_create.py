@@ -193,5 +193,7 @@ def slack_create_command(args) -> int:
         print_error(f"Slack API call failed: {exc}")
         return 1
     _collect_install_tokens(app_id)
+    print_info("Next: run `hermes setup gateway` → Slack to allow your Slack member ID and set a "
+               "home channel, then `/invite` the bot to channels it should read.")
     print_info("Re-run `hermes slack create` after `hermes update` to sync new slash commands.")
     return 0

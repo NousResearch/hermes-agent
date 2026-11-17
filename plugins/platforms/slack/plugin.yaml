@@ -37,6 +37,13 @@ optional_env:
     description: "Display name for the Slack home channel"
     prompt: "Home channel display name"
     password: false
+  - name: SLACK_CONFIG_REFRESH_TOKEN
+    description: >-
+      Slack App Configuration refresh token (xoxe-...) that `hermes slack create`
+      rotates to create and re-sync the app manifest; replaced on every rotation
+    prompt: "Slack App Configuration refresh token (xoxe-...)"
+    url: "https://api.slack.com/apps"
+    password: true
   - name: SLACK_THREAD_REQUIRE_MENTION
     description: >-
       Require an explicit @mention for Slack thread replies while preserving

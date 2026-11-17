@@ -470,6 +470,17 @@ async def _screen_inner(subject: str, session_id: str, text: str,
             # (Phase 2: a dead engine must not lock the owner out).
             rejected = (isinstance(err, urllib.error.HTTPError)
                         and 400 <= int(getattr(err, "code", 0) or 0) < 500)
+            transient = (isinstance(err, urllib.error.HTTPError)
+                         and int(getattr(err, "code", 0) or 0) in (408, 429))
+            if transient:
+                # 408/429 are TRANSIENT (proxy timeout, rate limit): the
+                # engine is alive but busy. A rate-limited engine must
+                # not lock the owner out, so this joins the documented
+                # fail-open class (Phase 2), logged distinctly.
+                _log(dict(base, tier="engine_rate_limited_or_timeout",
+                          chunk=index, judged=judged, chunks=len(chunks),
+                          error=str(err)[:120]))
+                return False, []
             if rejected:
                 _log(dict(base, tier="engine_rejected_chunk",
                           chunk=index, judged=judged, chunks=len(chunks),

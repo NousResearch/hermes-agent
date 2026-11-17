@@ -70,9 +70,14 @@ the whole submit. Whitespace-only chunks are skipped (no payload,
 and the engine rejects blank text); every other model-visible
 character is judged or the submit is held ("screening_incomplete_budget";
 text over 4M chars is held as "oversized_unscreened"; a deterministic
-engine 4xx rejection holds as "engine_rejected_chunk"). A genuinely
-unreachable ENGINE still fails open per Phase 2; a call clipped by
-the budget is coverage exhaustion and holds.
+engine 4xx rejection holds as "engine_rejected_chunk"). The fail-open
+class (Phase 2) covers: engine unreachable, engine 5xx or malformed
+200 response, and TRANSIENT client codes 408/429 (proxy timeout,
+rate limit - a busy engine must not lock the owner out; logged as
+"engine_rate_limited_or_timeout"). A call clipped by the budget is
+coverage exhaustion and holds. Known cosmetic: chunks judged allow
+before a later chunk holds have already reported "accepted" outcomes
+(analytics only, no screening effect).
 
 ## Enablement (per deployment)
 

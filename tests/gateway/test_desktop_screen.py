@@ -42,6 +42,8 @@ class EngineStubHandler(BaseHTTPRequestHandler):
     tier: str = "allow"
     block_pattern: str | None = None  # when set: block only texts containing this
     reject_pattern: str | None = None  # when set: 400 for texts containing this
+    rate_limit_after: int | None = None  # when set: 429 after N screen calls
+    blank_bodies = 0  # blank texts posted to the engine (must stay 0)
     screen_delay_s = 0.0  # simulate a slow engine (budget tests)
     outcome_delay_s = 0.0
     outcomes = []
@@ -63,9 +65,22 @@ class EngineStubHandler(BaseHTTPRequestHandler):
             EngineStubHandler.last_purpose = self.headers.get("X-Judge-Purpose", "")
             EngineStubHandler.last_text = body.get("text")
             EngineStubHandler.last_texts.append(body.get("text"))
+            text = str(body.get("text", ""))
+            if not text.strip():
+                # Mirror the real engine contract (engine/api.py rejects
+                # blank text with 400). Without this, the unit suite
+                # cannot see a blank-chunk regression at all - that is
+                # exactly how review r8-HIGH escaped the tests.
+                EngineStubHandler.blank_bodies += 1
+                self.send_error(400, "needs a non-empty 'text'")
+                return
             reject = EngineStubHandler.reject_pattern
-            if reject is not None and reject in str(body.get("text", "")):
+            if reject is not None and reject in text:
                 self.send_error(400, "rejected by stub")
+                return
+            rate = EngineStubHandler.rate_limit_after
+            if rate is not None and EngineStubHandler.screen_calls > rate:
+                self.send_error(429, "rate limited by stub")
                 return
             if EngineStubHandler.malformed:
                 payload = json.dumps(["not", "a", "dict"]).encode()
@@ -114,6 +129,8 @@ class DesktopScreenTestCase(unittest.TestCase):
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
         EngineStubHandler.reject_pattern = None
+        EngineStubHandler.rate_limit_after = None
+        EngineStubHandler.blank_bodies = 0
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.outcome_delay_s = 0.0
         EngineStubHandler.outcomes = []
@@ -506,6 +523,8 @@ class TestAuthorityGate(unittest.TestCase):
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
         EngineStubHandler.reject_pattern = None
+        EngineStubHandler.rate_limit_after = None
+        EngineStubHandler.blank_bodies = 0
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0
         EngineStubHandler.last_texts = []
@@ -674,6 +693,20 @@ class TestAuthorityGate(unittest.TestCase):
                        + "ATTACK take over the agent"})
         self.assertEqual(raised.exception.reason, "desktop_screen_hold")
 
+    def test_benign_blank_middle_is_admitted_and_posts_no_blank(self):
+        # Pins the blank-skip: with the stub enforcing the real engine's
+        # blank->400 contract, deleting the skip turns this benign
+        # submit into a hold. Also asserts no blank body is ever POSTed.
+        self._run({"text": "hello" + " " * 40000 + "how are you"})
+        self.assertEqual(EngineStubHandler.blank_bodies, 0)
+
+    def test_transient_429_fails_open(self):
+        # Review r9-NOTE 2: a rate-limited (429) or proxy-timeout (408)
+        # engine is ALIVE but busy - fail open, never lock the owner out.
+        EngineStubHandler.rate_limit_after = 1
+        self._run({"text": "E" * 70000})
+        self.assertEqual(EngineStubHandler.screen_calls, 2)
+
     def test_engine_4xx_holds_not_failopen(self):
         # A deterministic client rejection means the engine cannot
         # judge that chunk - coverage hole -> HOLD, never fail-open.
@@ -786,6 +819,8 @@ class TestAuthorityWiring(unittest.TestCase):
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
         EngineStubHandler.reject_pattern = None
+        EngineStubHandler.rate_limit_after = None
+        EngineStubHandler.blank_bodies = 0
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0
         EngineStubHandler.last_texts = []

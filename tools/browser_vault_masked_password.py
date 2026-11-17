@@ -9,12 +9,17 @@ def fill_masked_password(task_id, backend, handle, origin):
     from tools import browser_vault_tool
 
     def refused(reason):
-        return json.dumps({
-            "success": False,
-            "error_type": reason,
-            "error": "JavaScript-masked password fill refused; do not retry or submit an uncertain fill.",
-        })
+        return json.dumps(
+            {
+                "success": False,
+                "error_type": reason,
+                "error": "JavaScript-masked password fill refused; do not retry or submit an uncertain fill.",
+            }
+        )
 
+    # A plugin/preview page is a separate target; never switch transports.
+    if browser_vault_tool._page_backend(task_id) is not None:
+        return refused("unsupported_password_widget")
     supervisor = browser_vault_tool._ensure_supervisor(task_id)
     if supervisor is None:
         return refused("supervisor_required")
@@ -46,14 +51,16 @@ def fill_masked_password(task_id, backend, handle, origin):
         delivered = result.get("result", {})
         if delivered.get("filled") != 1:
             return refused(delivered.get("refused", "widget_delivery_uncertain"))
-        return json.dumps({
-            "success": True,
-            "filled_fields": 1,
-            "backend": backend.name,
-            "kind": "login",
-            "origin": origin,
-            "next": "Submit normally only if the page still shows the intended sign-in.",
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "filled_fields": 1,
+                "backend": backend.name,
+                "kind": "login",
+                "origin": origin,
+                "next": "Submit normally only if the page still shows the intended sign-in.",
+            }
+        )
     except Exception:
         # Neither provider failures nor site exceptions may echo a value.
         return refused("widget_fill_failed")

@@ -5,6 +5,7 @@ CDP supervisor run; no credential provider or external website is contacted.
 """
 
 import json
+import shutil
 import time
 
 import pytest
@@ -75,10 +76,12 @@ def native_widget(tmp_path, monkeypatch):
             response = await original_cdp(method, params, **kwargs)
             if method == "Page.createIsolatedWorld":
                 context_id = response["result"]["executionContextId"]
-                supervisor._synthetic_contexts.append((
-                    context_id,
-                    kwargs["session_id"],
-                ))
+                supervisor._synthetic_contexts.append(
+                    (
+                        context_id,
+                        kwargs["session_id"],
+                    )
+                )
                 await original_cdp(
                     "Runtime.evaluate",
                     {
@@ -105,6 +108,7 @@ def native_widget(tmp_path, monkeypatch):
         finally:
             supervisor.stop()
             context.close()
+            shutil.rmtree(profile)
 
 
 def active_observers(supervisor):
@@ -296,7 +300,9 @@ def test_native_fill_requires_masking_before_secret_resolution(
 
         monkeypatch.setattr(supervisor, "_cdp", without_animation_frames)
     result = registry.dispatch(
-        "browser_vault_fill", {"handle": meta.id}, task_id="synthetic-widget"
+        "browser_vault",
+        {"action": "fill", "handle": meta.id},
+        task_id="synthetic-widget",
     )
     out = json.loads(result) if isinstance(result, str) else result
     for future in late_preparations:
@@ -460,7 +466,9 @@ def test_native_proof_is_context_bound_and_single_use(
     monkeypatch.setattr(supervisor, "check_masked_password", checked)
     monkeypatch.setattr(supervisor, "fill_masked_password", delivered)
     raw = registry.dispatch(
-        "browser_vault_fill", {"handle": meta.id}, task_id="synthetic-widget"
+        "browser_vault",
+        {"action": "fill", "handle": meta.id},
+        task_id="synthetic-widget",
     )
     out = json.loads(raw) if isinstance(raw, str) else raw
     assert SECRET not in json.dumps(out)
@@ -489,3 +497,31 @@ def test_native_proof_is_context_bound_and_single_use(
         )
     assert not supervisor._vault_widget_proofs
     assert all(count == 0 for count in active_observers(supervisor))
+
+
+def test_masked_page_backend_never_falls_through_to_another_browser(monkeypatch):
+    from tools.browser_vault_masked_password import fill_masked_password
+
+    monkeypatch.setattr(browser_vault_tool, "_page_backend", lambda task_id: object())
+
+    def unrelated_browser(*args, **kwargs):
+        pytest.fail("A page backend must never fall through to a CDP browser")
+
+    monkeypatch.setattr(browser_vault_tool, "_ensure_supervisor", unrelated_browser)
+    out = json.loads(fill_masked_password("synthetic-widget", None, "opaque", ORIGIN))
+    assert out["success"] is False
+    assert out["error_type"] == "unsupported_password_widget"
+
+
+def test_combined_masked_fill_is_explicitly_unsupported(native_widget):
+    page, meta, resolved, _ = native_widget
+    widget(page, "supported")
+    out = json.loads(
+        browser_vault_tool.browser_vault_fill(
+            meta.id, task_id="synthetic-widget", with_identifier=True
+        )
+    )
+    assert out["success"] is False
+    assert out["error_type"] == "unsupported_combined_masked_fill"
+    assert not resolved
+    assert page.locator("#password").input_value() == ""

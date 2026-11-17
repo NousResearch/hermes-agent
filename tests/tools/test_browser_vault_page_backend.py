@@ -81,3 +81,29 @@ def test_secret_failure_never_echoes_the_script(page):
     raw = browser_vault_tool.browser_vault_fill(meta.id)
     out = json.loads(raw)
     assert out["success"] is False and SECRET not in raw
+
+
+def test_identifier_only_step_does_not_resolve_password_or_use_cdp(page, monkeypatch):
+    from tools import browser_vault_tool
+    from agent.vault_backends import backend_for_handle
+
+    fake, meta = page
+    monkeypatch.setattr(__import__(__name__, fromlist=["CONTROLS"]), "CONTROLS", [CONTROLS[0]])
+    backend = backend_for_handle(meta.id)
+
+    def secret_forbidden(*args, **kwargs):
+        pytest.fail("An identifier-only step must not resolve a password")
+
+    monkeypatch.setattr(backend, "resolve_password", secret_forbidden)
+    original = fake.evaluate
+
+    def evaluate(task_id, expression, *, secret):
+        if "a@example.com" in expression:
+            fake.calls.append((expression, secret))
+            return json.dumps({"filled": 1})
+        return original(task_id, expression, secret=secret)
+
+    monkeypatch.setattr(fake, "evaluate", evaluate)
+    out = json.loads(browser_vault_tool.browser_vault_fill(meta.id, with_identifier=True))
+    assert out["success"] is True and out["filled_fields"] == 1
+    assert not any(SECRET in expression for expression, _ in fake.calls)

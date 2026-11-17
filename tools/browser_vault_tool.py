@@ -577,20 +577,29 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         # password. Prefer actual standard controls before considering a probe.
         classified = [c for c in classified
                       if c.token != "current-password" or c.control.type == "password"]
-    if meta.kind == "login" and not any(
-        c.token == "current-password" and c.control.type == "password" for c in classified
-    ):
-        from tools.browser_vault_masked_password import fill_masked_password
+    has_password = any(c.token == "current-password" for c in classified)
+    if meta.kind == "login" and not has_password:
+        if with_identifier:
+            # Keep upstream username-only steps. This extension fills passwords
+            # only; a combined widget request must not silently drop its identifier.
+            from agent.vault_masked_password import MASKED_PASSWORD_TAB_PROBE
 
-        return fill_masked_password(effective_task_id, backend, handle, page_origin)
+            probed = _eval_js(effective_task_id, MASKED_PASSWORD_TAB_PROBE)
+            if probed.get("success") and _parse_json_result(probed.get("result")) is True:
+                return json.dumps({"success": False, "error_type": "unsupported_combined_masked_fill",
+                                   "error": "Type the identifier normally, then request a password-only vault fill."})
+        else:
+            from tools.browser_vault_masked_password import fill_masked_password
+
+            return fill_masked_password(effective_task_id, backend, handle, page_origin)
     if not classified:
         return json.dumps({"success": False, "error": f"No {meta.kind} form fields were found on the current page."})
 
     # ── Resolve secret and fill (secret never enters any logged string) ─────
     try:
         if meta.kind == "login":
-            secret = {"password": backend.resolve_password(handle)}
-            fills = select_password_fill(classified, secret["password"])
+            secret = {"password": backend.resolve_password(handle)} if has_password else {}
+            fills = select_password_fill(classified, secret["password"]) if has_password else []
             if with_identifier:
                 fills += _identifier_fill(classified, fills, str(meta.identifier or ""))
         else:

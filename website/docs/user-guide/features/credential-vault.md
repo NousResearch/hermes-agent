@@ -52,11 +52,13 @@ the login form.
 ### JavaScript-masked password boxes
 
 Some sites render bullets in a text input instead of using a standard password
-input. Hermes can fill one unambiguous, initially empty current-password box
+input. In the managed CDP browser, Hermes can fill one unambiguous, initially empty current-password box
 after a nonsecret probe confirms masking and normal clearing. The supervisor
 retains a single-use target in an isolated browser context, rechecks the page,
 form and control before private delivery, and refuses unsupported or changed
-widgets. There is no separate selector configuration. The fill never submits a
+widgets. Type the identifier normally before requesting this password-only fill;
+combined identifier-and-password autofill is not supported for these widgets.
+There is no separate selector configuration. The fill never submits a
 form or automatically retries uncertain delivery; the site's own scripts still
 have access to a password supplied to that site.
 

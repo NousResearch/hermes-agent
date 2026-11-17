@@ -20,14 +20,21 @@ from pathlib import Path
 import pytest
 
 from gateway.config import GatewayConfig, PlatformConfig
-from plugins.platforms.yuanbao.adapter import (
-    DecodeMiddleware,
-    InboundContext,
-    RecallGuardMiddleware,
-    YuanbaoAdapter,
-)
 from gateway.session import SessionStore
 from gateway.shutdown_flush import recover_pending_to_db
+
+try:  # yuanbao left core for hermes-labs-plugins; the module exists only where that plugin is installed
+    from plugins.platforms.yuanbao.adapter import (
+        DecodeMiddleware,
+        InboundContext,
+        RecallGuardMiddleware,
+        YuanbaoAdapter,
+    )
+except ImportError:
+    pytest.skip(
+        "yuanbao adapter not installed (moved out of core into hermes-labs-plugins)",
+        allow_module_level=True,
+    )
 
 RECALLED_MSG_ID = "m-original"
 GROUP_CODE = "G"

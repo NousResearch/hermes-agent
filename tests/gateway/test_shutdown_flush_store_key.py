@@ -23,10 +23,19 @@ import pytest
 
 from gateway.config import GatewayConfig
 from gateway.platforms.event import MessageEvent, MessageType
-from plugins.platforms.yuanbao.adapter import RecallGuardMiddleware
 from gateway.session import SessionStore
 from gateway.shutdown_flush import flush_pending_to_file, recover_pending_to_db
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+try:  # yuanbao left core for hermes-labs-plugins; the producer exists only where that plugin is installed
+    from plugins.platforms.yuanbao.adapter import RecallGuardMiddleware
+except ImportError:
+    RecallGuardMiddleware = None
+
+requires_recall_producer = pytest.mark.skipif(
+    RecallGuardMiddleware is None,
+    reason="yuanbao adapter not installed (moved out of core into hermes-labs-plugins)",
+)
 
 # One platform overrides per-user thread isolation; the store keeps the gateway-wide default
 # (threads shared unless ``thread_sessions_per_user``). Same conversation, two keys.
@@ -134,7 +143,8 @@ async def test_runner_shutdown_flush_records_the_store_key(tmp_path, flush_dir):
     event = _queued_event()
     adapter_key = adapter._event_session_key(event)
     runner._pending_messages[adapter_key] = event
-    runner._queued_events = {adapter_key: [event]}
+    # The FIFO tail lives in the live session state since the queued-events rework on main.
+    runner._session_state(adapter_key).conversation.queued_events.append(event)
 
     with patch("gateway.status.remove_pid_file"), patch(
         "gateway.status.publish_runtime_status"
@@ -212,6 +222,7 @@ def _queue_recall_notice(adapter, recalled_id: str = "recalled-1") -> MessageEve
     return adapter._pending_messages[RECALL_SLOT_KEY]
 
 
+@requires_recall_producer
 @pytest.mark.asyncio
 async def test_a_recall_notice_with_a_partial_source_keeps_its_slot_key(tmp_path, flush_dir):
     """The notice keeps the key it was queued under, and recovery lands it in that session."""
@@ -285,6 +296,7 @@ async def test_a_resolvable_slot_key_naming_another_session_does_not_capture_the
     assert _spooled_files(flush_dir) == []
 
 
+@requires_recall_producer
 @pytest.mark.asyncio
 async def test_an_unavailable_lookup_does_not_move_the_notice_off_its_slot_key(
         tmp_path, flush_dir):
@@ -311,6 +323,7 @@ async def test_an_unavailable_lookup_does_not_move_the_notice_off_its_slot_key(
     assert _spooled_files(flush_dir) == []
 
 
+@requires_recall_producer
 @pytest.mark.asyncio
 async def test_the_runner_flush_keeps_a_routed_slot_key_too(tmp_path, flush_dir):
     """``runner.stop()`` keys its queue head the same way: routed slot key, not a re-derivation."""

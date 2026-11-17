@@ -49,11 +49,13 @@ def _client_config(cfg):
     from hermes_cli.config import redact_config_value
     result = redact_config_value({key: cfg[key] for key in (
         'display', 'approvals', 'paste_collapse_threshold', 'paste_collapse_char_threshold') if key in cfg})
-    if 'display' in result:
-        # Its readers are local surfaces (Ink, Desktop): the local key a local /reasoning show|hide or
-        # /footer saved wins over the global one (T7).
-        from gateway.display_config import local_display_config
-        result['display'] = local_display_config(result['display'])
+    # Its readers are local surfaces (Ink, Desktop): the local key a local /reasoning show|hide or
+    # /footer saved wins over the global one (T7).
+    from gateway.display_config import local_display_config
+    result['display'] = local_display_config(result.get('display'))
+    # An unset show_reasoning streams on a local launch (launch_shows_reasoning); Ink reads an absent
+    # key as off and would drop that stream, so the projection names the turn's default (#154628).
+    result['display'].setdefault('show_reasoning', True)
     # Allowlisted after redaction: ``record_key`` is a keybinding, not a credential, but the
     # structural masker treats every ``*_key`` leaf as one. The voice section's real secrets
     # (``api_key``) never enter the projection.

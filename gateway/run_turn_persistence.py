@@ -562,6 +562,10 @@ class GatewayTurnPersistenceMixin:
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
 
+    def _event_thread_metadata(self, event, source):
+        """Thread metadata for a send that replies to ``event`` on ``source``."""
+        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+
     async def _hmwa_persist_turn_transcript(
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
         prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,

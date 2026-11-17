@@ -4333,7 +4333,6 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
-
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
             if result is not None:
@@ -4410,9 +4409,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+            processing_ok = event._hermes_reply_delivered = delivery_succeeded if delivery_attempted else not bool(response)
+            getattr(event, '_hermes_reply_delivery_done', asyncio.Event()).set()
             await self._release_turn_marker(event)
-            processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
-            # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
@@ -4447,6 +4446,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
                 raise
         finally:
+            getattr(event, '_hermes_reply_delivery_done', asyncio.Event()).set()
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.

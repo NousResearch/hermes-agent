@@ -265,7 +265,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                 # Same reclaim rule as acquisition; deleting also fences a stale late flush after the mutation.
                 conn.execute("DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
                     (conversation_id, lease["holder"]))
-        if _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()) and not allow_closed_compression_parent:
+        ended = conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()
+        if ended is not None and ended["ended_at"] is not None and ended["end_reason"] == "session_handoff":
+            raise SessionTurnLeaseLostError(f"Session retired by fresh-session handoff: {session_id}")
+        if _ended_by_compression(ended) and not allow_closed_compression_parent:
             raise CompressionSessionClosedError(session_id)
 
     def _message_row_params(self, session_id: str, role: str, msg: dict[str, Any], tool_calls: Any,
@@ -751,12 +754,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         """:meth:`replace_messages` inside the caller's write transaction (the gateway ``/retry``
         rewrite commits in its re-send's own admission). ``expected_active_ids`` pins the active set
         the replacement was computed from: a row committed since refuses (``RuntimeError``)."""
-        from hermes_state_errors import CompressionSessionClosedError
         if reject_active_turn_lease:
             self._check_transcript_write_guards(
                 conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
-        elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
-            raise CompressionSessionClosedError(session_id)
+        else:
+            self._check_transcript_write_guards(conn, session_id, None)
         if expected_active_ids is not None and [
                 int(row[0]) for row in conn.execute(_ACTIVE_IDS_SQL, (session_id,))] != expected_active_ids:
             raise RuntimeError("active transcript changed before the rewrite could be persisted")
@@ -962,6 +964,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
         and the worker/canonical-mutation verbs share this one body so they cannot drift."""
         from hermes_state import SessionCompressionInProgressError
+        self._check_transcript_write_guards(conn, session_id, None, allow_closed_compression_parent=True)
         if lock_holder is not None:
             lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
             if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():

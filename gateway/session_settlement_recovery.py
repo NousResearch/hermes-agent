@@ -323,8 +323,8 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
         await authority._run_deferred_reset(live.route, reset)
         from gateway.session_ingress import deliver_settled, fire_post_delivery
         await deliver_settled(authority, admission_id)
-        await fire_post_delivery(authority, admission_id)
         await authority._resolve_settled_waiter(admission_id, response)
+        await fire_post_delivery(authority, admission_id)
         return True
     finally:
         # A resolution that raced this drain handed its collection here (``_resolved_unknown``):

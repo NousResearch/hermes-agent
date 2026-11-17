@@ -303,6 +303,66 @@ Explicit suspension still creates a boundary on the next inbound turn. Recovery
 respects explicit and historical finalized boundaries rather than reopening them.
 Resource-only eviction and WebSocket orphan reaping leave conversations resumable.
 
+### Model-chosen fresh sessions in Telegram group topics
+
+For models driven by the Hermes tool loop, the gateway exposes `fresh_session` in
+a group topic's session tool surface. It is
+not a core tool and cannot be implemented safely by writing a file or invoking
+`/new` from a terminal: publication must wait for the owning turn to finish.
+Calling it without `handoff` returns available context, usage and cache counters
+(unknown counters are null). Supplying `handoff` asks to retire the conversation
+at a task boundary chosen by the model. There is no automatic rollover threshold.
+Existing compression and overflow limits remain independent safety mechanisms.
+
+The checkpoint contains the objective, constraints, decisions, files and working
+directory, completed checks, failures and next action. It becomes an assistant
+message in the successor, with a predecessor reference and a bounded excerpt of
+the final reply. It grants no new authority. The runtime copies model configuration,
+tool pins, prompt, profile, transport identity and workspace from durable state;
+the model cannot choose these fields. The full original transcript remains searchable.
+
+Only a completed turn can settle. Steering, subsequent tools, a mixed tool batch,
+compression after the checkpoint, failed or interrupted output, queued input,
+live processes, approvals/delegations, unresolved durable admissions, and active
+or paused goal/heartbeat/loop state prevent settlement. A declined request expires
+with the turn; a later turn must make a new decision. Automation commands serialize
+with settlement before resolving their session, so a command arriving during
+publication targets the successor. Cached children, background reviews and pending
+approval prompts also block settlement. Emergency hygiene stays in
+place and retains its existing commit fence and deferred adoption path.
+
+The existing store route lock, cross-process turn lease and SQLite transaction
+guard publication. Parent closure (`session_handoff`), one child with an explicit
+reset-lineage marker, its checkpoint and the existing Telegram topic binding
+commit together. The child is a separate conversation, not a compression segment.
+The JSON routing index then adopts it with a compare-and-swap. If the process dies
+between commit and index publication, the next message follows the durable topic
+binding. `/new` wins over stale settlement. Group bindings are followed only when
+their session key matches, preserving configured per-user isolation; a conflicting
+topic binding declines handoff. A successful transition emits one short note.
+
+Upstream overlap: issue [#114126](https://github.com/NousResearch/hermes-agent/issues/114126)
+requests authorized self-handoff; open PR
+[#140855](https://github.com/NousResearch/hermes-agent/pull/140855) proposes
+context-pressure rollover. This path uses an explicit model decision rather than
+a pressure threshold or compression-exhaustion policy.
+
+This feature uses Hermes' own tool loop, including the `openai-codex` provider's
+normal Responses route. `codex_app_server` is a separate opt-in runtime and is
+unsupported; its schema is withheld. This feature neither starts that server nor
+switches runtime configuration. The provider name alone does not select it.
+
+The topic binding and child publish before the next admission can run. The quiet
+note is attached to the owning admission's post-delivery callback: a buffered
+final reply is delivered before the note, on the supported Hermes-loop routes.
+
+Checkpoint tests use representative synthetic text and scripted provider tool
+choices. They prove transport, persistence, fences and readback, not that a real
+model consistently chooses useful boundaries or preserves every relevant fact.
+No representative model-driven quality evaluation has been run. The tool asks
+for objective, constraints, decisions, completed checks and next action; its text
+bounds are not a semantic quality guarantee.
+
 ---
 
 ## 7. Restart Recovery Flow

@@ -15,6 +15,7 @@ from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from agent.prompt_cache_scope import conversation_id
+from agent.session_handoff.intent import request as request_fresh_session
 from tools.arg_coercion import coerce_tool_args
 from tools.arg_validation import call_with_arg_checks
 from tools.registry import registry
@@ -298,6 +299,7 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
 _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
+    "fresh_session": request_fresh_session,
     "todo_list": _tool(
         "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
         store=lambda agent, ctx: agent._todo_store,

@@ -112,7 +112,7 @@ def _make_runner(session_db=None):
     # Default switch_session impl: returns a SessionEntry carrying the target
     # session_id. Mirrors SessionStore.switch_session semantics for tests that
     # exercise Telegram topic binding rebinds without a real store.
-    def _switch_session(session_key, target_session_id, *, expected_session_id=None, preserve_prompt_pin=True):
+    def _switch_session(session_key, target_session_id, *, expected_session_id=None, preserve_prompt_pin=True, require_live_target=False):
         return SessionEntry(
             session_key=session_key,
             session_id=target_session_id,
@@ -539,7 +539,7 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     # requested; capture the requested id for assertion.
     switched_to: dict = {}
 
-    def fake_switch(_key, new_session_id, *, expected_session_id=None):
+    def fake_switch(_key, new_session_id, *, expected_session_id=None, require_live_target=False):
         switched_to["id"] = new_session_id
         return SessionEntry(
             session_key=topic_key,
@@ -602,7 +602,7 @@ async def test_topic_binding_heal_switches_with_cas_on_snapshot_session(tmp_path
     await runner._hmwa_heal_telegram_topic_binding(topic_source, snapshot, topic_key)
 
     runner.session_store.switch_session.assert_called_once_with(
-        topic_key, "bound-session", expected_session_id=snapshot.session_id,
+        topic_key, "bound-session", expected_session_id=snapshot.session_id, require_live_target=True,
     )
 
 

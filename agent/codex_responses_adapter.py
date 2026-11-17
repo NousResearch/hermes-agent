@@ -477,6 +477,11 @@ def _role_message_item(role: str, content: Any, phase: Any = None) -> dict[str, 
     parser rejects a typeless assistant item ("Cannot determine type of 'item'"). Assistant ``phase``
     is forwarded only for values the API accepts on input messages; others would 400."""
     item = {"type": "message", "role": role, "content": content}
+    # Synthetic assistant checkpoints have no provider replay metadata. Typed output
+    # content uses the output-message contract, which requires a terminal status.
+    if role == "assistant" and isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "output_text" for part in content):
+        item["status"] = "completed"
     if role == "assistant" and (cleaned := _lower_or_none(phase)) in _ROLE_MESSAGE_PHASES:
         item["phase"] = cleaned
     return item

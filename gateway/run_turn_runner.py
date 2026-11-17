@@ -525,6 +525,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         ctx = self._ctx
         runner = self._runner
         agent._notification_config = ctx.user_config
+        from agent.session_handoff.intent import inject
+        from gateway.fresh_session.settlement import is_group_topic
+        agent._fresh_topic_handoff = None
+        agent._fresh_topic_handoff_allowed = is_group_topic(ctx.source)
+        if agent._fresh_topic_handoff_allowed:
+            inject(agent)
         agent._notification_platform = ctx.source.platform
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
@@ -1520,7 +1526,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # persistence). compression_deferred (soft lock-contention defer) is distinct from
         # compression_exhausted so the gateway never auto-resets a session a concurrent compressor is
         # about to shrink.
+        from agent.session_handoff.intent import eligible_intent
         common = {
+            "fresh_topic_handoff": eligible_intent(agent, result),
             "messages": result.get("messages", []), "api_calls": result.get("api_calls", 0),
             "failed": result.get("failed", False), "failure_reason": result.get("failure_reason"),
             # Usage-window limit (agent/plan_limits.py): the gateway offers the plan's model as a button.

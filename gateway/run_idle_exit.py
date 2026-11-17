@@ -112,10 +112,12 @@ def _kanban_busy() -> str | None:
     from hermes_cli import kanban_db
     marks = ",".join("?" * len(_KANBAN_DUE_STATUSES))
     for meta in kanban_db.list_boards(include_archived=False):
-        path = kanban_db.kanban_db_path(board=meta.get("slug"))
-        if not path.exists():
+        slug = meta.get("slug")
+        path = kanban_db.kanban_db_path(board=slug)
+        if not path.exists() and not (kanban_db.board_dir(slug) / "generation.current").exists():
             continue
-        with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)) as conn:
+        from hermes_cli import kanban_db_connect as kbc
+        with kbc.connect_closing(board=slug) as conn:
             if conn.execute(f"SELECT 1 FROM tasks WHERE status IN ({marks}) LIMIT 1",
                             _KANBAN_DUE_STATUSES).fetchone():
                 return f"kanban work on board {meta.get('slug')}"

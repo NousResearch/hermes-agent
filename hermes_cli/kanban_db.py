@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- native generation custody wiring is intentionally kept at the existing attachment/context facades so all legacy readers share one resolver
 """SQLite-backed Kanban board shared across profiles (the cross-profile coordination primitive).
 
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
@@ -15,6 +16,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -469,17 +471,29 @@ def set_current_board(slug: str) -> Path:
     check the board exists — callers do (so ``boards switch <typo>`` errors)."""
     _assert_not_delegated_child_mutation()
     normed = _require_slug(slug)
+    from hermes_cli.kanban_generation import board_write_guard
     path = current_board_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(normed + "\n", encoding="utf-8")
+    with board_write_guard(
+        board_dir(normed),
+        owner="current-board",
+        token=__import__("hermes_cli.kanban_generation", fromlist=["current_fence_token"]).current_fence_token(),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(normed + "\n", encoding="utf-8")
     return path
 
 
 def clear_current_board() -> None:
     """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
     _assert_not_delegated_child_mutation()
-    with contextlib.suppress(FileNotFoundError):
-        current_board_path().unlink()
+    from hermes_cli.kanban_generation import board_write_guard
+    with board_write_guard(
+        board_dir(get_current_board()),
+        owner="current-board",
+        token=__import__("hermes_cli.kanban_generation", fromlist=["current_fence_token"]).current_fence_token(),
+    ):
+        with contextlib.suppress(FileNotFoundError):
+            current_board_path().unlink()
 
 
 def board_dir(board: Optional[str] = None) -> Path:
@@ -1757,10 +1771,71 @@ def store_attachment_bytes(
     if len(data) > max_bytes:
         raise AttachmentTooLarge(f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit")
     safe_name = _safe_attachment_name(filename)
+    from hermes_cli import kanban_db_connect as _kbc
+    db_file = _kbc._main_db_file(conn)
+    generated = Path(db_file).parent if db_file and (Path(db_file).parent / "READY.json").is_file() else None
+    if generated is not None:
+        digest = hashlib.sha256(data).hexdigest()
+        relative = Path("blobs") / "sha256" / digest[:2] / digest
+        destination = generated / relative
+        created_blob = False
+        try:
+            # The writer guard covers CAS creation, its fsync, and both row
+            # writes.  Otherwise a competing fence/GC can observe an orphan
+            # blob or delete it between the file and metadata commits.
+            with write_txn(conn):
+                if destination.is_symlink():
+                    raise ValueError("content-addressed attachment path is a symlink")
+                if destination.exists():
+                    if destination.read_bytes() != data:
+                        raise ValueError("content-addressed attachment conflict")
+                else:
+                    from hermes_cli.kanban_generation import install_content_addressed_blob_owned
+                    _relative, created_blob = install_content_addressed_blob_owned(generated, data, digest)
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS recovery_attachment_resolution "
+                    "(generation_id TEXT NOT NULL, attachment_id INTEGER PRIMARY KEY, "
+                    "original_stored_path TEXT NOT NULL, source_row_sha256 TEXT NOT NULL, "
+                    "blob_sha256 TEXT NOT NULL, size INTEGER NOT NULL, custody_relpath TEXT NOT NULL, "
+                    "disposition TEXT NOT NULL)"
+                )
+                _require_task(conn, task_id)
+                cur = conn.execute(
+                    "INSERT INTO task_attachments "
+                    "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (task_id, safe_name, str(relative), content_type, len(data), uploaded_by, int(time.time())),
+                )
+                attachment_id = int(cur.lastrowid or 0)
+                _append_event(conn, task_id, "attached", {"filename": safe_name, "size": len(data), "by": uploaded_by})
+                row = conn.execute("SELECT * FROM task_attachments WHERE id = ?", (attachment_id,)).fetchone()
+                conn.execute(
+                    "INSERT INTO recovery_attachment_resolution "
+                    "(generation_id, attachment_id, original_stored_path, source_row_sha256, blob_sha256, size, custody_relpath, disposition) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (json.loads((generated / "READY.json").read_text(encoding="utf-8-sig"))["generation_id"],
+                     attachment_id, str(relative),
+                     __import__("hermes_cli.kanban_generation", fromlist=["manifest_digest"]).manifest_digest({key: row[key] for key in row.keys()}),
+                     digest, len(data), str(relative), "native-upload"),
+                )
+                return attachment_id
+        except Exception:
+            if created_blob:
+                from hermes_cli.kanban_generation import discard_created_blobs
+                discard_created_blobs(conn, [destination])
+            raise
     dest_dir = task_attachments_dir(task_id, board=board)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
-    dest_path.write_bytes(data)
+    while True:
+        try:
+            with dest_path.open("xb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            break
+        except FileExistsError:
+            dest_path = _collision_free_path(dest_dir, safe_name)
     try:
         return add_attachment(
             conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
@@ -1783,6 +1858,9 @@ def add_attachment(
         raise ValueError("attachment filename is required")
     if not stored_path or not stored_path.strip():
         raise ValueError("attachment stored_path is required")
+    db_file = __import__("hermes_cli.kanban_db_connect", fromlist=["_main_db_file"])._main_db_file(conn)
+    if db_file and (Path(db_file).parent / "READY.json").is_file():
+        raise ValueError("generated boards require store_attachment_bytes for attachment custody")
     now = int(time.time())
     with write_txn(conn):
         _require_task(conn, task_id)
@@ -1810,6 +1888,8 @@ def get_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Att
 
 def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[Attachment]:
     """Delete the row (source of truth) and best-effort its blob; None when no row matched."""
+    from hermes_cli.kanban_generation import attachment_delete_is_custodied
+    generated_path = attachment_delete_is_custodied(conn, attachment_id)
     with write_txn(conn):
         att = get_attachment(conn, attachment_id)
         if att is None:
@@ -1820,6 +1900,8 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
             (att.stored_path,),
         ).fetchone() is not None
         _append_event(conn, att.task_id, "attachment_removed", {"filename": att.filename})
+    if generated_path:
+        return att
     if not has_remaining_blob_reference:
         with contextlib.suppress(OSError):
             p = Path(att.stored_path)
@@ -2674,7 +2756,9 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
-    with write_txn(conn):
+    created_blobs: list[Path] = []
+    try:
+      with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
@@ -2711,7 +2795,7 @@ def complete_task(
         if conn.execute(sql, params).rowcount != 1:
             return False
         if isinstance(metadata, dict):
-            _stage_completion_artifacts(conn, task_id, metadata, now)
+            _stage_completion_artifacts(conn, task_id, metadata, now, created_blobs=created_blobs)
         run_id = _end_run(
             conn, task_id, outcome="completed", status="done", summary=handoff_summary,
             metadata=metadata,
@@ -2733,6 +2817,10 @@ def complete_task(
             _completed_event_payload(result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
+    except Exception:
+        from hermes_cli.kanban_generation import discard_created_blobs
+        discard_created_blobs(conn, created_blobs)
+        raise
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -2810,18 +2898,23 @@ def _gate_empty_completion(
 
 def _stage_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
-    uploaded_by: str = "kanban_complete",
+    uploaded_by: str = "kanban_complete", created_blobs: Optional[list[Path]] = None,
 ) -> list[Path]:
     """Copy scratch artifacts to the attachments dir and record each as an
     attachment row; returns the copies so the caller can discard them if its
     transaction rolls back."""
     _persist_scratch_completion_artifacts(conn, task_id, metadata)
     staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
-    for path in staged:
-        _insert_completion_attachment(
-            conn, task_id, filename=path.name, stored_path=str(path),
-            size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
-        )
+    try:
+        for path in staged:
+            _insert_completion_attachment(
+                conn, task_id, filename=path.name, stored_path=str(path),
+                size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
+                created_blobs=created_blobs,
+            )
+    except Exception:
+        _discard_staged_copies(staged, staged[0].parent if staged else Path("."))
+        raise
     return staged
 
 
@@ -3008,28 +3101,55 @@ def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None
 
 def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
     """Chunked copy that aborts if the file grows past the attachment cap mid-copy."""
-    with src.open("rb") as source_file, dest.open("xb") as destination_file:
-        copied = 0
-        while chunk := source_file.read(1024 * 1024):
-            copied += len(chunk)
-            if copied > KANBAN_ATTACHMENT_MAX_BYTES:
-                raise ArtifactPreservationError(
-                    f"declared scratch artifact grew beyond the size limit: {artifact}"
-                )
-            destination_file.write(chunk)
+    from hermes_cli.kanban_generation import capture_regular_file
+    try:
+        data, _digest = capture_regular_file(src, max_bytes=KANBAN_ATTACHMENT_MAX_BYTES)
+    except Exception as exc:
+        raise ArtifactPreservationError(
+            f"could not capture declared scratch artifact {artifact}: {exc}"
+        ) from exc
+    with dest.open("xb") as destination_file:
+        destination_file.write(data)
+        destination_file.flush()
+        os.fsync(destination_file.fileno())
+    fd = os.open(dest.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _insert_completion_attachment(
     conn: sqlite3.Connection, task_id: str, *, filename: str, stored_path: str, size: int,
-    created_at: int, uploaded_by: str = "kanban_complete",
+    created_at: int, uploaded_by: str = "kanban_complete", created_blobs: Optional[list[Path]] = None,
 ) -> None:
-    """Record a worker-produced artifact in the existing attachment table."""
+    """Record a worker artifact, sealing generated-board custody in this txn."""
+    db_file = __import__("hermes_cli.kanban_db_connect", fromlist=["_main_db_file"])._main_db_file(conn)
+    generated = Path(db_file).parent if db_file and (Path(db_file).parent / "READY.json").is_file() else None
+    if generated is not None:
+        from hermes_cli.kanban_generation import capture_regular_file, install_content_addressed_blob_owned
+        data, digest = capture_regular_file(Path(stored_path), max_bytes=KANBAN_ATTACHMENT_MAX_BYTES)
+        relative, created = install_content_addressed_blob_owned(generated, data, digest)
+        if created and created_blobs is not None:
+            created_blobs.append(generated / relative)
+        stored_path = str(relative)
+        size = len(data)
     conn.execute(
         "INSERT INTO task_attachments "
         "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
         "VALUES (?, ?, ?, NULL, ?, ?, ?)",
         (task_id, filename, stored_path, size, uploaded_by, created_at),
     )
+    if generated is not None:
+        row = conn.execute("SELECT * FROM task_attachments WHERE id = last_insert_rowid()").fetchone()
+        generation_id = json.loads((generated / "READY.json").read_text(encoding="utf-8-sig"))["generation_id"]
+        from hermes_cli.kanban_generation import manifest_digest
+        conn.execute(
+            "INSERT INTO recovery_attachment_resolution "
+            "(generation_id, attachment_id, original_stored_path, source_row_sha256, blob_sha256, size, custody_relpath, disposition) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (generation_id, row["id"], stored_path, manifest_digest({key: row[key] for key in row.keys()}), digest, len(data), stored_path, "completion"),
+        )
     _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": uploaded_by})
 
 
@@ -3292,6 +3412,7 @@ def request_review(
     # Staged copies live outside the txn: a rollback after staging must not
     # leave orphans that make the retry stage ``name_1.ext`` beside them.
     staged_copies: list[Path] = []
+    created_blobs: list[Path] = []
     try:
         with write_txn(conn):
             if not _parents_satisfied(conn, task_id):
@@ -3363,6 +3484,7 @@ def request_review(
             if isinstance(metadata, dict):
                 staged_copies = _stage_completion_artifacts(
                     conn, task_id, metadata, now, uploaded_by="kanban_request_review",
+                    created_blobs=created_blobs,
                 )
             run_id = _end_or_synthesize_run(
                 conn, task_id, outcome="review_requested", status="review",
@@ -3381,6 +3503,8 @@ def request_review(
     except Exception:
         if staged_copies:
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
+        from hermes_cli.kanban_generation import discard_created_blobs
+        discard_created_blobs(conn, created_blobs)
         raise
     return _ret(True)
 
@@ -3909,7 +4033,9 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     now = int(time.time())
     lines: list[str] = []
     _ctx_header(lines, task)
-    _ctx_attachments(lines, list_attachments(conn, task_id))
+    from hermes_cli.kanban_db_context import resolved_context_attachments
+    attachments = resolved_context_attachments(conn, list_attachments(conn, task_id))
+    _ctx_attachments(lines, attachments)
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)
     _ctx_role_history(lines, conn, task, now)

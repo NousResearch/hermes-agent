@@ -10,10 +10,12 @@ dispatcher's write txns); it carries its credential in the query string (browser
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 import logging
 import re
+import secrets
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -102,7 +104,7 @@ def _conn(board: Optional[str] = None):
 def _board_conn(board: Optional[str]) -> Iterator[tuple[Optional[str], sqlite3.Connection]]:
     """Resolve the ``board`` query param, open a connection, close it on exit."""
     board = _resolve_board(board)
-    with closing(_conn(board=board)) as conn:
+    with kbc.connect_closing(board=board) as conn:
         yield board, conn
 
 
@@ -194,11 +196,13 @@ def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
     return d
 
 
-def _attachment_dict(a: kanban_db.Attachment) -> dict[str, Any]:
+def _attachment_dict(a: kanban_db.Attachment, *, stored_path: str | None = None) -> dict[str, Any]:
     """``stored_path`` is the absolute on-disk path workers read; UI downloads by ``id``."""
     return {
         "id": a.id, "task_id": a.task_id, "filename": a.filename, "content_type": a.content_type,
-        "size": a.size, "uploaded_by": a.uploaded_by, "stored_path": a.stored_path, "created_at": a.created_at}
+        "size": a.size, "uploaded_by": a.uploaded_by,
+        "stored_path": stored_path if stored_path is not None else a.stored_path,
+        "created_at": a.created_at}
 
 
 def _placeholders(ids: list) -> str:
@@ -400,7 +404,10 @@ def get_task(
             "task": task_d,
             "comments": [asdict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [asdict(e) for e in kanban_db.list_events(conn, task_id)],
-            "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
+            "attachments": [
+                _attachment_dict(a, stored_path=str(__import__("hermes_cli.kanban_generation", fromlist=["resolve_attachment_blob"]).resolve_attachment_blob(conn, a, board=board)))
+                for a in kanban_db.list_attachments(conn, task_id)
+            ],
             "links": links,
             "link_tasks": _link_tasks(conn, links),
             "child_results": [
@@ -465,7 +472,16 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
-        return {"attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)]}
+        records = []
+        for attachment in kanban_db.list_attachments(conn, task_id):
+            record = _attachment_dict(attachment)
+            try:
+                from hermes_cli.kanban_generation import resolve_attachment_blob
+                record["stored_path"] = str(resolve_attachment_blob(conn, attachment, board=board))
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                raise HTTPException(status_code=404, detail="attachment file unavailable") from exc
+            records.append(record)
+        return {"attachments": records}
 
 
 @router.post("/tasks/{task_id}/attachments")
@@ -479,27 +495,25 @@ async def upload_task_attachment(
     with _board_conn(board) as (board, conn), _value_error_400():
         _require_task(conn, task_id)
         safe_name = _safe_attachment_name(file.filename or "")
-        dest_dir = kanban_db.task_attachments_dir(task_id, board=board)
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = _collision_free_path(dest_dir, safe_name)  # foo.pdf → foo (1).pdf …
-        total = 0  # stream in chunks with a hard size cap so one upload can't fill the disk
+        chunks = []
+        total = 0
         try:
-            with open(dest_path, "wb") as out:  # noqa: ASYNC230 -- chunked local write of the upload stream; open() is non-blocking in practice
-                while chunk := await file.read(1024 * 1024):
-                    total += len(chunk)
-                    if total > KANBAN_ATTACHMENT_MAX_BYTES:
-                        out.close()
-                        dest_path.unlink(missing_ok=True)
-                        raise HTTPException(
-                            status_code=413, detail=f"attachment exceeds {KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit")
-                    out.write(chunk)
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > KANBAN_ATTACHMENT_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail=f"attachment exceeds {KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit")
+                chunks.append(chunk)
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
-        att_id = kanban_db.add_attachment(
-            conn, task_id, filename=dest_path.name, stored_path=str(dest_path.resolve()),
-            content_type=file.content_type, size=total, uploaded_by=(uploaded_by or "dashboard"))
+            raise HTTPException(status_code=500, detail=f"failed to read attachment: {exc}")
+        att_id = kanban_db.store_attachment_bytes(
+            conn, task_id, safe_name, b"".join(chunks), content_type=file.content_type,
+            uploaded_by=(uploaded_by or "dashboard"), board=board)
         att = kanban_db.get_attachment(conn, att_id)
-        return {"attachment": _attachment_dict(att) if att else None}
+        stored = None
+        if att is not None:
+            from hermes_cli.kanban_generation import resolve_attachment_blob
+            stored = str(resolve_attachment_blob(conn, att, board=board))
+        return {"attachment": _attachment_dict(att, stored_path=stored) if att else None}
 
 
 @router.get("/attachments/{attachment_id}")
@@ -508,12 +522,10 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
         att = kanban_db.get_attachment(conn, attachment_id)
         if att is None:
             raise HTTPException(status_code=404, detail="attachment not found")
-        # Defense in depth against a tampered DB row: the blob must still live under the board's attachments root.
-        root = kanban_db.attachments_root(board=board).resolve()
         try:
-            stored = Path(att.stored_path).resolve()
-            stored.relative_to(root)
-        except (ValueError, OSError):
+            from hermes_cli.kanban_generation import resolve_attachment_blob
+            stored = resolve_attachment_blob(conn, att, board=board)
+        except (OSError, ValueError, sqlite3.Error):
             raise HTTPException(status_code=404, detail="attachment file unavailable")
         if not stored.is_file():
             raise HTTPException(status_code=404, detail="attachment file missing on disk")
@@ -1746,11 +1758,20 @@ class _EventTail:
         self._board = board
         self._conn: Optional[sqlite3.Connection] = None
         self._executor: Optional[ThreadPoolExecutor] = None
+        self._lease: Optional[dict[str, Any]] = None
 
     def _latest(self) -> int:
         """The board's current tail: the cursor a client without one starts from."""
         if self._conn is None:
             self._conn = kbc.connect(board=self._board)
+            from hermes_cli import kanban_generation as generation
+            db_file = kbc._main_db_file(self._conn)
+            if db_file and (Path(db_file).parent / "ACTIVATED.json").is_file():
+                generation_dir = Path(db_file).parent
+                self._lease = generation.acquire_reader_lease(
+                    generation_dir.parents[1], consumer="dashboard-event-stream",
+                    operation_id=secrets.token_hex(12),
+                )
         rows = self._conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS m FROM task_events", ()
         ).fetchall()
@@ -1776,6 +1797,11 @@ class _EventTail:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+        if self._lease is not None:
+            with contextlib.suppress(Exception):
+                from hermes_cli import kanban_generation as generation
+                generation.release_reader_lease(Path(self._lease["database_path"]).parent, self._lease["lease_id"])
+            self._lease = None
 
     def _run(self, fn, *args):
         if self._executor is None:

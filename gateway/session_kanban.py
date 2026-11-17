@@ -27,7 +27,8 @@ def build_kanban_policy(connection, params, config):
     try:
         board = kb._require_slug(params['board'])
         path = Path(params['db']).resolve(strict=True) if 'db' in params else kb.kanban_db_path(board=board).resolve()
-        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
+        from hermes_cli import kanban_db_connect as kbc
+        with kbc.connect_closing(board=board) as conn:
             conn.row_factory = sqlite3.Row
             task = kb.get_task(conn, params['task_id'])
             run = conn.execute('SELECT * FROM task_runs WHERE id=?', (params['run_id'],)).fetchone()
@@ -214,7 +215,8 @@ def _watch_submitter(db, run_id):
     from hermes_cli.kanban_db_dispatch import _worker_alive
 
     def watch():
-        with closing(sqlite3.connect(db.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+        from hermes_cli import kanban_db_connect as kbc
+        with kbc.connect_closing(db_path=Path(db)) as conn:
             while not _TURNS_DONE.wait(1.0):
                 try:
                     row = conn.execute('SELECT worker_pid, worker_started_at FROM task_runs WHERE id=?', (run_id,)).fetchone()
@@ -303,7 +305,7 @@ def _record_worker_result(context, code, last_output):
     import os
     from hermes_cli.kanban_db_connect import connect_closing
     from hermes_cli import kanban_db as kb
-    with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
+    with connect_closing(board=context['board']) as conn, kb.write_txn(conn):
         if _bound_worker_matches(conn, context):
             # Closing a run clears its claim/PID and replaces metadata; keep the
             # result in the immutable attempt event stream instead.
@@ -356,7 +358,8 @@ def _bound_claim_is_live(context):
                                 claim_lock=context['claim_lock'], verify_pid=False):
         return False
     try:
-        with closing(sqlite3.connect(Path(context['db']).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+        from hermes_cli import kanban_db_connect as kbc
+        with closing(kbc.connect(db_path=Path(context['db']).resolve())) as conn:
             return _bound_worker_matches(conn, context)
     except sqlite3.Error:
         return False
@@ -364,7 +367,8 @@ def _bound_claim_is_live(context):
 
 def worker_result(path, params):
     """Read only the dispatcher's exact attempt; never infer success from admission settlement."""
-    with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+    from hermes_cli import kanban_db_connect as kbc
+    with kbc.connect_closing(Path(path).resolve()) as conn:
         row = conn.execute("SELECT payload FROM task_events WHERE run_id=? AND task_id=? AND kind='worker_result' ORDER BY id DESC LIMIT 1",
             (params['run_id'], params['task_id'])).fetchone()
         result = json.loads(row[0]) if row else {}

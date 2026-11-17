@@ -95,6 +95,20 @@ _STEP_HANDOFF = (
 )
 
 _BOARD_SPECS = [
+    _cmd("reconcile", [
+        _arg("--source-db", required=True), _arg("--target-db", required=True),
+        _arg("--seed-file", required=True), _arg("--output-generation", required=True),
+        _arg("--apply", action="store_true"), _json_flag(),
+    ], help="Prepare an offline reconciled board generation (dry-run by default)"),
+    _cmd("verify-prepared-generation", [_arg("path"), _json_flag()], help="Verify a sealed prepared generation"),
+    _cmd("publish-prepared-generation", [_arg("path"), _arg("--expected-target-manifest", required=True),
+                                          _arg("--fence-token", required=True), _json_flag()],
+         help="Publish a verified generation pointer"),
+    _cmd("rollback-generation", [_arg("--expected-active-manifest", required=True), _arg("--fence-token", required=True), _json_flag()],
+         help="Rollback before first activation"),
+    _cmd("gc-generations", [_arg("--dry-run", action="store_true"), _json_flag()], help="Collect unreachable generations"),
+    _cmd("reader-session", [_arg("--board", required=True), _arg("--protocol-version", type=int, required=True), _arg("--consumer", required=True), _arg("--operation-id", required=True), _arg("--json-lines", action="store_true")], help="Lease one board generation for a local reader"),
+    _cmd("with-reader-lease", [_arg("--board", required=True), _arg("--protocol-version", type=int, required=True), _arg("--consumer", required=True), _arg("--operation-id", required=True), _arg("--json-status-dir", required=True), _arg("command", nargs=argparse.REMAINDER)], help="Run one bounded reader under a generation lease"),
     _cmd("list", [
         _json_flag(),
         _arg("--all", action="store_true", help="Include archived boards too"),
@@ -290,7 +304,8 @@ _SPECS = [
         _arg("--name", help="Stored filename (default: the source file's basename)"),
         _arg("--author", help="uploaded_by label (default: $HERMES_PROFILE or 'user')"),
     ], help="Attach a local file to a task"),
-    _cmd("attachments", [_TASK_ID, _json_flag()], help="List a task's attachments"),
+    _cmd("attachments", [_TASK_ID, _arg("--with-provenance", action="store_true"), _json_flag()], help="List a task's attachments"),
+    _cmd("provenance", [_TASK_ID, _arg("--source-snapshot"), _arg("--table", choices=("task_comments", "task_events", "task_runs", "task_attachments")), _arg("--source-id", type=int), _json_flag()], help="Read source-qualified recovery provenance"),
     _cmd("attach-rm", [_arg("attachment_id", type=int)], help="Delete an attachment by id"),
     _cmd("complete", [
         _arg("task_ids", nargs="+", help="One or more task ids (only --result applies to all of them)"),

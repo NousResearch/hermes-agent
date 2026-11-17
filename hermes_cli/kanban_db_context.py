@@ -12,12 +12,25 @@ import json
 import os
 import sqlite3
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
 import hermes_cli.kanban_db as _kb
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Attachment, Comment, Task
+
+
+def resolved_context_attachments(conn: sqlite3.Connection, attachments: list[Attachment]) -> list[Attachment]:
+    try:
+        from hermes_cli.kanban_generation import resolve_attachment_blob
+        return [replace(att, stored_path=str(resolve_attachment_blob(conn, att, board=None))) for att in attachments]
+    except (ImportError, ValueError, OSError, sqlite3.Error):
+        from hermes_cli import kanban_db_connect as _kbc
+        db_file = _kbc._main_db_file(conn)
+        if db_file and (os.path.isfile(os.path.join(os.path.dirname(db_file), "READY.json"))):
+            raise
+        return attachments
 
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
 _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full

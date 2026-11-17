@@ -301,7 +301,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
 def _require_orchestrator_tool(tool_name: str) -> None:
     """The check_fn already hides orchestrator tools from workers; this catches
     a stale registration or test harness routing a worker here anyway."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if _is_delegated_child_context() or os.environ.get("HERMES_KANBAN_TASK"):
         raise _Reject(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
             "kanban_complete, kanban_request_review, kanban_request_changes, kanban_block, "
@@ -1067,10 +1067,17 @@ def _handle_attachments(args: dict, **kw) -> str:
     tid = _require_task_id(args)
     with _board(args.get("board")) as (kb, conn):
         _existing_task(kb, conn, tid)
+        attachments = kb.list_attachments(conn, tid)
+        try:
+            from dataclasses import replace
+            from hermes_cli.kanban_generation import resolve_attachment_blob
+            attachments = [replace(a, stored_path=str(resolve_attachment_blob(conn, a, board=None))) for a in attachments]
+        except (ValueError, OSError, RuntimeError) as exc:
+            return tool_error(f"kanban_attachments: attachment custody validation failed: {exc}")
         return json.dumps({
             "ok": True, "task_id": tid,
             "attachments": [
-                _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
+                _fields(a, _ATTACHMENT_FIELDS) for a in attachments]})
 
 
 def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:

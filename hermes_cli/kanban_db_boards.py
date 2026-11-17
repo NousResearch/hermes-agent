@@ -91,11 +91,17 @@ def write_board_metadata(
             meta[key] = str(value) if value else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
+    from hermes_cli.kanban_generation import board_write_guard
     path = board_metadata_path(slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
-    )
+    with board_write_guard(
+        _kb.board_dir(slug),
+        owner="board-metadata",
+        token=__import__("hermes_cli.kanban_generation", fromlist=["current_fence_token"]).current_fence_token(),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+        )
     meta["db_path"] = str(_kb.kanban_db_path(slug))
     return meta
 

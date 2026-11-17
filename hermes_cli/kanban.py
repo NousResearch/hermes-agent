@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -212,6 +213,8 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
+    "reconcile", "verify-prepared-generation", "publish-prepared-generation",
+    "rollback-generation", "gc-generations", "reader-session", "with-reader-lease",
 })
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
@@ -486,6 +489,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
         runs = kb.list_runs(conn, args.task_id, **rsk)
+        from hermes_cli.kanban_provenance import task_summary
+        provenance_summary = task_summary(conn, args.task_id)
         # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
         latest_summary = kb.latest_summary(conn, args.task_id)
         if not want_json:
@@ -497,6 +502,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
+            **({"provenance_summary": {"count": len(provenance_summary), "source_qualified_command": f"hermes kanban provenance {args.task_id} --json"}} if provenance_summary else {}),
         })
         return 0
 
@@ -771,7 +777,11 @@ def _cmd_attach(args: argparse.Namespace) -> int:
     src = Path(args.path).expanduser()
     if not src.is_file():
         return _err(f"kanban: no such file: {src}")
-    data = src.read_bytes()
+    from hermes_cli.kanban_generation import capture_regular_file
+    try:
+        data, _digest = capture_regular_file(src, max_bytes=kb.KANBAN_ATTACHMENT_MAX_BYTES)
+    except (OSError, ValueError):
+        return _err(f"kanban: no such file: {src}")
     name = args.name or src.name
     content_type = args.content_type or mimetypes.guess_type(name)[0]
     uploaded_by = args.author or _profile_author()
@@ -790,16 +800,85 @@ def _cmd_attachments(args: argparse.Namespace) -> int:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
         atts = kb.list_attachments(conn, args.task_id)
-    if _json_out(args, [_obj_dict(a, _ATTACHMENT_FIELDS) for a in atts], ascii=True):
+        if getattr(args, "with_provenance", False):
+            records = []
+            for att in atts:
+                record = _obj_dict(att, _ATTACHMENT_FIELDS)
+                try:
+                    p = conn.execute("SELECT import_id, source_pk, disposition, source_row_sha256, blob_sha256, size, custody_relpath FROM recovery_row_provenance p LEFT JOIN recovery_attachment_resolution r ON r.attachment_id = p.target_pk WHERE p.table_name = 'task_attachments' AND p.target_pk = ?", (str(att.id),)).fetchone()
+                except sqlite3.Error:
+                    p = None
+                if p:
+                    record["provenance"] = dict(p)
+                records.append(record)
+        else:
+            records = [_obj_dict(a, _ATTACHMENT_FIELDS) for a in atts]
+        # A generated board never exposes or follows the preserved absolute path.  The
+        # custody resolver is the sole filesystem authority for those rows.
+        try:
+            from hermes_cli.kanban_generation import resolve_attachment_blob
+            for record, attachment in zip(records, atts):
+                record["stored_path"] = str(resolve_attachment_blob(conn, attachment, board=None))
+        except (OSError, ValueError, sqlite3.Error):
+            db_path = Path(kbc._main_db_file(conn) or "")
+            if (db_path.parent / "READY.json").exists():
+                return _err("attachment custody validation failed")
+    if _json_out(args, records, ascii=True):
         return 0
     if not atts:
         print(f"No attachments on {args.task_id}")
         return 0
     print(f"Attachments on {args.task_id}:")
-    for a in atts:
+    for a, record in zip(atts, records):
         ct = a.content_type or "-"
         print(f"  [{a.id}] {a.filename}  ({a.size} bytes, {ct}, by {a.uploaded_by or '-'})")
-        print(f"        {a.stored_path}")
+        print(f"        {record['stored_path']}")
+    return 0
+
+
+def _cmd_provenance(args: argparse.Namespace) -> int:
+    rows = []
+    with kbc.connect_closing() as conn:
+        if kb.get_task(conn, args.task_id) is None:
+            return _err(f"no such task: {args.task_id}")
+        try:
+            qualified = args.table and args.source_snapshot and args.source_id is not None
+            if qualified:
+                allowed_tables = {"tasks", "task_comments", "task_events", "task_runs", "task_attachments"}
+                if args.table not in allowed_tables:
+                    return _err("provenance lookup has an unsupported table")
+                rows = conn.execute(
+                    "SELECT p.*, i.source_snapshot_sha256 FROM recovery_row_provenance p "
+                    "JOIN recovery_imports i ON i.import_id = p.import_id "
+                    "WHERE p.table_name=? AND p.source_pk=? AND i.source_snapshot_sha256=?",
+                    (args.table, str(args.source_id), args.source_snapshot),
+                ).fetchall()
+                if len(rows) == 1:
+                    row = rows[0]
+                    target_pk = str(row["target_pk"] or "")
+                    target = None if not target_pk else conn.execute(
+                        f"SELECT * FROM {args.table} WHERE id = ?", (target_pk,)).fetchone()
+                    target_owner = target["task_id"] if target is not None and "task_id" in target.keys() else (target["id"] if target is not None else None)
+                    if target is not None and target_owner == args.task_id:
+                        enriched = dict(row)
+                        enriched["target_row"] = dict(zip(target.keys(), target))
+                        rows = [enriched]
+            elif not args.table and args.source_snapshot is None and args.source_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM recovery_row_provenance WHERE target_pk IN "
+                    "(SELECT id FROM task_comments WHERE task_id=? UNION SELECT id FROM task_events WHERE task_id=? UNION SELECT id FROM task_runs WHERE task_id=? UNION SELECT id FROM task_attachments WHERE task_id=?)",
+                    (args.task_id,) * 4,
+                ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+    result = [dict(row) for row in rows]
+    if (args.table or args.source_snapshot is not None or args.source_id is not None) and not qualified:
+        return _err("provenance lookup requires --source-snapshot, --table and --source-id")
+    if qualified and len(result) != 1:
+        return _err("provenance lookup is not uniquely source-qualified")
+    if _json_out(args, result, ascii=True):
+        return 0
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 
@@ -1345,6 +1424,7 @@ _HANDLERS = {
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
+    "provenance": _cmd_provenance,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,

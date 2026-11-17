@@ -34,6 +34,21 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
+
+class _LeasedConnection(sqlite3.Connection):
+    """A tracked SQLite handle whose close releases its generation lease."""
+
+    _lease_release = None
+
+    def close(self) -> None:
+        release = self._lease_release
+        self._lease_release = None
+        try:
+            super().close()
+        finally:
+            if release is not None:
+                release()
+
 # Cap on ``<db>.corrupt.<hash>.bak`` quarantines per board: content-addressing
 # dedupes identical bytes, but mutating corruption mints a new fingerprint each
 # time (one user hit 124). Oldest-by-mtime beyond the cap are pruned after each
@@ -55,16 +70,18 @@ def _resolve_busy_timeout_ms() -> int:
     return _kb._env_int("HERMES_KANBAN_BUSY_TIMEOUT_MS", DEFAULT_BUSY_TIMEOUT_MS, minimum=1)
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
+def _sqlite_connect(path: Path, *, lease_release=None) -> sqlite3.Connection:
     """Open a Kanban SQLite connection via ``connect_tracked``: while registered,
     byte-level probes of the file are refused because an ``open()``/``close()``
     would cancel this process's POSIX advisory locks (see ``sqlite_safe_read``)."""
     from hermes_cli.sqlite_safe_read import connect_tracked
 
     busy_timeout_ms = _resolve_busy_timeout_ms()
+    factory = _LeasedConnection if lease_release is not None else sqlite3.Connection
     conn = connect_tracked(
         path,
         connect_fn=sqlite3.connect,
+        factory=factory,
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
     )
@@ -79,6 +96,8 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
         with contextlib.suppress(Exception):
             conn.close()
         raise
+    if lease_release is not None:
+        conn._lease_release = lease_release
     return conn
 
 
@@ -720,6 +739,44 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    # A published generation is the canonical named-board database.  Resolve it
+    # once before any initialization/migration path can touch the prepared file;
+    # malformed pointers fail closed in the generation layer.
+    generated_path = False
+    from hermes_cli import kanban_generation as _generation
+    control = None
+    if db_path is None:
+        control = _kb.board_dir(board)
+        if _generation.pointer_path(control).exists():
+            generated_path = True
+    elif (Path(db_path).parent / "READY.json").is_file():
+        generated_path = True
+        control = Path(db_path).parent.parents[1]
+    if generated_path:
+        # Selection, validation, lease, and open are one custody operation. A
+        # public connection must never outlive the lease for the generation it
+        # selected (or silently fall back to the legacy database).
+        # Selection may yield a published prepared generation.  Public reads
+        # can inspect it, and the first guarded write owns activation.
+        _generation.open_generation(control, require_activation=False)
+        lease = _generation.acquire_reader_lease(
+            control, consumer="kanban-reader", operation_id=secrets.token_hex(12),
+            # A published prepared generation must be writable through this
+            # public connection so write_txn can perform the one-time
+            # activation at the write admission boundary.  Reads remain
+            # read-only in behavior because no activation happens here.
+            require_activation=False,
+        )
+        path = Path(lease["database_path"])
+        try:
+            conn = _sqlite_connect(path, lease_release=lambda: _generation.release_reader_lease(path.parent, lease["lease_id"]))
+            conn.row_factory = sqlite3.Row
+            conn.text_factory = _kb._lossy_text
+            return conn
+        except BaseException:
+            with contextlib.suppress(Exception):
+                _generation.release_reader_lease(path.parent, lease["lease_id"])
+            raise
     from agent.delegation_context import kanban_path_is_fenced
     if kanban_path_is_fenced(path):
         # Reads must not enter schema/backfill write transactions. Never create a
@@ -780,6 +837,15 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
                 _INITIALIZED_PATHS.add(resolved)
 
         conn, _ = _open_configured(path, _init_if_needed)
+    return conn
+
+
+def connect_readonly(db_path: Path) -> sqlite3.Connection:
+    """Open an already-selected database without initialization or migration."""
+    path = Path(db_path).expanduser().resolve()
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.text_factory = _kb._lossy_text
     return conn
 
 
@@ -1237,7 +1303,7 @@ def _main_db_file(conn: sqlite3.Connection) -> Optional[str]:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
+def _write_txn_unfenced(conn: sqlite3.Connection, *, allow_nested: bool = False):
     """IMMEDIATE write transaction; a claim CAS inside is atomic — at most one
     concurrent writer succeeds.
 
@@ -1289,6 +1355,29 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
             raise
         # Post-commit torn-extend check — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
+
+
+@contextlib.contextmanager
+def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
+    """Run every Kanban database mutation through the generation writer guard."""
+    from hermes_cli.kanban_generation import board_write_guard
+
+    db_file = _main_db_file(conn)
+    guard = contextlib.nullcontext()
+    if db_file:
+        db_path = Path(db_file)
+        if (db_path.parent / "READY.json").is_file():
+            if not (db_path.parent / "ACTIVATED.json").exists():
+                from hermes_cli.kanban_generation import activate_first_write
+                activate_first_write(db_path.parent, fence_epoch=0)
+            guard = board_write_guard(
+                db_path.parents[2],
+                owner="sqlite",
+                token=__import__("hermes_cli.kanban_generation", fromlist=["current_fence_token"]).current_fence_token(),
+            )
+    with guard:
+        with _write_txn_unfenced(conn, allow_nested=allow_nested):
+            yield conn
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

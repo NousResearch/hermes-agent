@@ -1482,3 +1482,30 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 ## Out of scope
 
 Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
+
+## Offline prepared generations
+
+Native recovery is an offline, disposable-copy workflow. Preparation is a dry run unless
+`--apply` is explicitly supplied, and `--apply` only creates an inactive generation; it never
+changes the active board, dispatches work, releases triage tasks, or switches a pointer.
+
+```text
+hermes kanban boards reconcile --source-db SOURCE --target-db TARGET \
+  --seed-file SEEDS.json --output-generation GENERATION [--apply]
+hermes kanban boards verify-prepared-generation GENERATION
+```
+
+Prepared generations are sealed by a nonce-bound `READY.json`. Publication and every database or
+attachment effect require the shared writer fence; first-write activation and garbage collection
+also use catalog/activation barriers. Once a generation exists, a malformed or inconsistent
+pointer fails closed; Hermes does not silently fall back to the legacy database. A durable
+activation marker closes rollback and retains the prior generation for forward repair; use GC
+dry-run before cleanup.
+
+Generated-board attachment rows retain preserved legacy metadata, including absolute path bytes,
+but readers and deletion paths never use those paths. Content-addressed custody records and the
+native resolver are required; imported rows use generation-relative paths. Garbage collection
+retains active, retained, journaled, and leased generations and every blob in a leased generation.
+Portable export/import remains intentionally scrubbing: it is a transport feature, not a recovery
+or custody mechanism. Live recovery, service coordination, and production activation require
+separate operator authorization and are not generally enabled by these commands.

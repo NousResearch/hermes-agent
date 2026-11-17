@@ -281,3 +281,21 @@ run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
 This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.
+
+### Native Kanban generation custody
+
+The native reconciliation layer constructs sealed generations in disposable directories. Its
+`READY.json` manifest is nonce-bound to the candidate metadata and the database digest; a pointer
+is published only under the writer/catalog fence. Generated-board readers resolve attachments
+through content-addressed custody records, and a malformed generation pointer fails closed rather
+than selecting the legacy database. Preparation is offline-only and operates on disposable source
+and target copies; it does not dispatch, release triage, mutate the active pointer, or coordinate
+services. The shared writer fence covers database and attachment effects. A durable `ACTIVATED.json`
+marker closes pointer rollback before the first guarded write; pre-activation rollback restores the
+previous pointer only after independently validating its manifest, while post-activation rollback
+refuses and retains the old generation for forward repair. Generation GC marks active, retained,
+journaled, and leased generations (including their custody blobs) before sweeping unreachable old
+data. Preserved target attachment rows keep their original absolute path bytes as metadata but are
+read only through hash-bound custody; imported rows use generation-relative paths. Portable board
+transfer remains a separate, intentionally scrubbing path and is not equivalent to native recovery.
+Live-board activation and service/operator actions remain separately authorized.

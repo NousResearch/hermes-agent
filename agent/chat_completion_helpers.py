@@ -465,6 +465,23 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     return None
 
 
+def _configured_zdr() -> bool:
+    """``provider_routing.zdr`` from config.yaml — pin OpenRouter to zero-retention endpoints.
+
+    Upstream Hermes has no client-side key for this (checked on the 2026-11-17 build: no ``zdr``
+    reference in the core), so the key our harness carries was inert. Read here, in the single function
+    every request path uses to build the OpenRouter ``provider`` object, instead of plumbing a new
+    agent kwarg through every surface.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        pr = load_config_readonly().get("provider_routing")
+        return bool((pr or {}).get("zdr")) if isinstance(pr, dict) else False
+    except Exception:
+        return False
+
+
 def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     """Build the validated provider-routing object shared by request paths.
 
@@ -473,7 +490,7 @@ def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     model each get their own pins without any surface re-plumbing the kwargs)."""
     flat = {"only": agent.providers_allowed, "ignore": agent.providers_ignored, "order": agent.providers_order,
         "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters,
-        "data_collection": agent.provider_data_collection}
+        "data_collection": agent.provider_data_collection, "zdr": _configured_zdr()}
     per_model = {}
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly

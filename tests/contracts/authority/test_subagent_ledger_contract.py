@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from persistence import DelegationId, SessionId
+from persistence import DelegationId, SessionId, StorageProbe
 from persistence.authority.coordination import DelegationRecovery, DeliveryState, OwnerStamp
 from persistence.authority.subagents import (
     AUTO_RESUME_CANCELLED,
@@ -127,9 +127,11 @@ def test_owed_reads(coord):
     assert {r.subagent_id for r in coord.list_waiting_subagents(now=T0 + 20)} == {"owed"}
 
 
-def test_has_owed_is_false_on_an_empty_store(coord):
-    assert coord.has_owed_subagents() is False
-    assert coord.list_pinned_subagents(max_resumable=5) == ()
+def test_has_owed_is_false_on_an_empty_store(store):
+    assert store.coordination.has_owed_subagents() is False
+    assert store.coordination.list_pinned_subagents(max_resumable=5) == ()
+    # CONTRACT: both are reads only: a missing store answers and is not created.
+    assert store.health.probe() == StorageProbe(status="ok", detail="not initialized")
 
 
 def test_parent_supersession_follows_the_compression_tip(store):

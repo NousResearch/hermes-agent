@@ -78,6 +78,12 @@ class SubagentRecords:
     def _subagents(self) -> dict[str, dict[str, Any]]:
         return self._table(_TABLE)
 
+    def _peek_subagents(self) -> Mapping[str, dict[str, Any]]:
+        """The table for a read only: a missing store answers empty and is not created."""
+        if not self._backend.scope_exists(self._backend.scope):
+            return {}
+        return self._backend.scope_store(self._backend.scope).get(_TABLE, {})
+
     def _row(self, subagent_id: str) -> Optional[dict[str, Any]]:
         return self._subagents().get(subagent_id)
 
@@ -104,7 +110,8 @@ class SubagentRecords:
 
     def list_pinned_subagents(self, *, max_resumable: int, now: Optional[float] = None) -> tuple[SubagentRecord, ...]:
         at = time.time() if now is None else now
-        rows = self._listed(lambda row: row["pinned"] and row["state"] in _PINNED_LIVE and (row["expires_at"] is None or row["expires_at"] > at), reverse=True)
+        rows = sorted((row for row in self._peek_subagents().values() if row["pinned"] and row["state"] in _PINNED_LIVE
+                       and (row["expires_at"] is None or row["expires_at"] > at)), key=lambda row: row["updated_at"], reverse=True)
         return tuple(_record(row) for row in rows[:max(max_resumable, 0)])
 
     def list_auto_resume_candidates(self, *, owed_only: bool = False) -> tuple[SubagentRecord, ...]:
@@ -114,7 +121,7 @@ class SubagentRecords:
         return tuple(_record(row) for row in self._listed(keep))
 
     def has_owed_subagents(self) -> bool:
-        return any(row["state"] in (S.RESUMABLE, S.EXPIRED) and _owed(row) for row in self._subagents().values())
+        return any(row["state"] in (S.RESUMABLE, S.EXPIRED) and _owed(row) for row in self._peek_subagents().values())
 
     def list_waiting_subagents(self, *, now: Optional[float] = None) -> tuple[SubagentRecord, ...]:
         at = time.time() if now is None else now

@@ -416,6 +416,47 @@ class TestSpillover:
         assert spill_file.read_text(encoding="utf-8") == content
         assert str(spill_file) in result
 
+    @pytest.mark.parametrize("backend", ["docker", "ssh"])
+    def test_env_none_under_remote_backend_never_names_a_host_path(self, monkeypatch, backend):
+        """#121024: with no sandbox (never started, failed to start, or reaped), a docker/ssh
+        reader cannot open the host spillover path, so the result is truncated inline instead."""
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        result = maybe_persist_tool_result(
+            content="r" * 60_000, tool_name="mcp_search", tool_use_id="tc_cold_1",
+            env=None, threshold=30_000,
+        )
+        spill_file = get_spillover_dir() / "tc_cold_1.txt"
+        assert spill_file.exists()  # the host copy is still the canonical archive
+        assert str(spill_file) not in result
+        assert PERSISTED_OUTPUT_TAG not in result
+        assert "could not be saved" in result
+        assert "do not look for it in other files" in result
+        assert "narrower request" in result
+
+    def test_env_none_with_unreadable_terminal_policy_fails_closed(self, monkeypatch):
+        from tools.terminal_scope import TerminalPolicyUnavailable
+
+        def refuse():
+            raise TerminalPolicyUnavailable("policy unavailable")
+
+        monkeypatch.setattr("tools.credential_files._terminal_backend", refuse)
+        result = maybe_persist_tool_result(
+            content="p" * 60_000, tool_name="mcp_search", tool_use_id="tc_policy_1",
+            env=None, threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG not in result
+        assert "could not be saved" in result
+
+    def test_env_none_under_backend_that_keeps_host_paths_persists_host_side(self, monkeypatch):
+        """A plugin backend without ``cache_path_base`` reads host paths as written."""
+        monkeypatch.setenv("TERMINAL_ENV", "example-host-path-plugin")
+        result = maybe_persist_tool_result(
+            content="h" * 60_000, tool_name="mcp_search", tool_use_id="tc_plugin_1",
+            env=None, threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert str(get_spillover_dir() / "tc_plugin_1.txt") in result
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment

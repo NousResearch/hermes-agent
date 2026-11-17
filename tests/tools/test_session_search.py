@@ -320,6 +320,30 @@ class TestDiscoveryShape:
         assert sids & {"s_oldest", "s_newest"}, result
 
 
+    def test_deferred_action_is_history_not_search_echo(self, db):
+        # tool_call is the ordinary bridge for deferred work, not just searches.
+        # An earlier file write can hold the only searchable record of the work.
+        query = "neoforge spawning pipeline decision"
+        now = int(time.time())
+        db.create_session("s_action", source="cli")
+        db.append_message("s_action", role="assistant", content="", timestamp=now - 60,
+                          tool_calls=[{"id": "action", "type": "function", "function": {
+                              "name": "tool_call", "arguments": json.dumps({"calls": [{
+                                  "name": "write_file", "arguments": {
+                                      "path": "notes/pipeline.md", "content": query}}]})}}])
+        db.end_session("s_action", "user_exit")
+        db.create_session("s_echo", source="cli")
+        db.append_message("s_echo", role="assistant", content="", timestamp=now,
+                          tool_calls=[{"id": "lookup", "type": "function", "function": {
+                              "name": "tool_call", "arguments": json.dumps({"calls": [{
+                                  "name": "session_search", "arguments": {"query": query}}]})}}])
+        db.end_session("s_echo", "user_exit")
+
+        result = json.loads(session_search(query=query, sort="newest", db=db))
+        assert result["success"] is True
+        assert [hit["session_id"] for hit in result["results"]] == ["s_action"], result
+
+
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):
         _seed_modpack_sessions(db)

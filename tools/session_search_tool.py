@@ -223,7 +223,7 @@ def _get_message_storage_state(db, message_id) -> Optional[dict[str, Any]]:
     return dict(row) if row else None
 
 
-_RECALL_TOOL_NAMES = frozenset({"session_search", "tool_search", "tool_call"})
+_RECALL_TOOL_NAMES = frozenset({"session_search", "tool_search"})
 
 
 def _is_search_echo(db, message_id) -> bool:
@@ -240,8 +240,31 @@ def _is_search_echo(db, message_id) -> bool:
         calls = json.loads(row["tool_calls"])
     except (TypeError, ValueError):
         return False
-    names = {((c or {}).get("function") or {}).get("name") for c in calls} if isinstance(calls, list) else set()
-    return bool(names) and names <= _RECALL_TOOL_NAMES
+    if not isinstance(calls, list) or not calls:
+        return False
+    for call in calls:
+        fn = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(fn, dict):
+            return False
+        name = fn.get("name")
+        if name in _RECALL_TOOL_NAMES:
+            continue
+        if name != "tool_call":
+            return False
+        # The bridge runs arbitrary deferred tools: only nested lookup calls are echoes.
+        try:
+            args = fn.get("arguments")
+            args = json.loads(args) if isinstance(args, str) else args
+            nested = args.get("calls") if isinstance(args, dict) else None
+            nested = json.loads(nested) if isinstance(nested, str) else nested
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(nested, list) or not nested or any(
+            not isinstance(inner, dict) or inner.get("name") not in _RECALL_TOOL_NAMES
+            for inner in nested
+        ):
+            return False
+    return True
 
 
 def _is_compacted_state(state: Optional[dict[str, Any]]) -> bool:

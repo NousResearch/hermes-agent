@@ -8,6 +8,7 @@ import pytest
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import GatewayConnection
 from hermes_cli.gateway_session_store import GatewaySessionStore
+from hermes_cli import main
 
 INFO = {"model": "fake-model", "cwd": "/w", "context_length": 128000, "enabled_toolsets": ["file"],
         "tools": {"file": ["read_file", "write_file"]}, "skills": {"devops": ["sdlc-review"]},
@@ -446,6 +447,28 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     assert gss.create_titled_session("Fresh Named") == "local-new"
     _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
     assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]
+
+
+@pytest.mark.parametrize("use_tui", [False, True])
+def test_create_if_missing_preserves_explicit_launch_policy(store, monkeypatch, use_tui):
+    db, client = store
+    from hermes_cli import gateway_session_store as gss
+
+    monkeypatch.setattr(main, "_resolve_session_by_name_or_id", lambda _name: None)
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    args = types.SimpleNamespace(
+        continue_last="Fresh Named", resume=None, create_if_missing=True,
+        model="gpt-6-luna", provider="openai-codex", reasoning="high", max_turns=100,
+    )
+
+    main._resolve_continue_arg(args, use_tui=use_tui)
+
+    assert args.resume == "local-new"
+    params = [p for method, p in client.calls if method == "session.create"][-1]
+    assert (params["model"], params["provider"], params["reasoning"], params["max_turns"]) == (
+        "gpt-6-luna", "openai-codex", "high", 100,
+    )
+    assert params["title"] == "Fresh Named" and params["source"] == "cli" and params["cwd"]
 
 
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):

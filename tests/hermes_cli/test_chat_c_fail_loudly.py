@@ -17,6 +17,8 @@ Two behaviors are fixed here:
 
 import pytest
 
+from hermes_cli import main
+
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
@@ -27,7 +29,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     from hermes_cli import gateway_session_store
 
-    def create_titled(title):
+    def create_titled(title, launch=None):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
@@ -156,7 +158,7 @@ class TestChatCFailLoudlyOnStderr:
 
         created = []
         monkeypatch.setattr(store_mod, "create_titled_session",
-                            lambda title: created.append(title) or "local-" + "a" * 64, raising=False)
+                            lambda title, launch=None: created.append(title) or "local-" + "a" * 64, raising=False)
         args = type(
             "Args",
             (),

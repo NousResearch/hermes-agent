@@ -355,8 +355,8 @@ class SessionCompressionMixin:
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, pinned, started_at,
-                   archived, auto_archived
-                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   archived, auto_archived, hidden
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, created_source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
@@ -369,7 +369,11 @@ class SessionCompressionMixin:
                 # Inherit the lineage's archive state so a manually archived chat stays uniformly
                 # archived (a mixed lineage let the sweep re-stamp its fresh tip as auto-archived).
                 (parent["archived"] or 0) if continuation else 0,
-                (parent["auto_archived"] or 0) if continuation else 0),
+                (parent["auto_archived"] or 0) if continuation else 0,
+                # hidden is lineage-wide too (set_session_hidden): the canonical Bot Chat's title
+                # moves onto this row, and its rename guard and auto-archive exemption key on
+                # title AND hidden of the row holding it.
+                (parent["hidden"] or 0) if continuation else 0),
         )
 
     def publish_compression_child(
@@ -427,7 +431,7 @@ class SessionCompressionMixin:
             """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                       user_id, session_key, chat_id, chat_type,
                       thread_id, display_name, origin_json, profile_name, tool_names,
-                      archived, auto_archived, pinned, model_config, created_source
+                      archived, auto_archived, pinned, model_config, created_source, hidden
                FROM sessions WHERE id = ?""",
             (parent_session_id,),
         ).fetchone()

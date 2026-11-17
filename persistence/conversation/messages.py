@@ -958,11 +958,11 @@ class SegmentPage:
 class MessageRepository(Protocol):
     """Transcript operations; scope first, each verb the store's transaction for the operation it names."""
 
-    def append(self, session_id: SessionId, message: NewMessage, *, compression_lock_holder: Optional[str] = None, turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> MessageId:
-        """Append one row and bump the session counters in one transaction; returns its id. With ``turn_lease_holder`` the turn lease on the session's conversation must still name that holder (an expired row that still names it is renewed for ``turn_lease_ttl_seconds``), else ``TurnLeaseLost``; ``None`` or an empty holder appends unfenced. ``compression_lock_holder`` fences nothing: a live compression lock never blocks an append. A session ended by compression raises ``CompressionClosed`` and a missing session row ``SessionRowMissing``."""
+    def append(self, session_id: SessionId, message: NewMessage, *, turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> MessageId:
+        """Append one row and bump the session counters in one transaction; returns its id. With ``turn_lease_holder`` the turn lease on the session's conversation must still name that holder (an expired row that still names it is renewed for ``turn_lease_ttl_seconds``), else ``TurnLeaseLost``; ``None`` or an empty holder appends unfenced. A live compression lock never blocks an append. A session ended by compression raises ``CompressionClosed`` and a missing session row ``SessionRowMissing``."""
         ...
 
-    def append_batch(self, session_id: SessionId, messages: Sequence[NewMessage], *, compression_lock_holder: Optional[str] = None, turn_lease_holder: Optional[str] = None, chunk_rows: Optional[int] = None, turn_lease_ttl_seconds: float = 300.0) -> BatchAppendResult:
+    def append_batch(self, session_id: SessionId, messages: Sequence[NewMessage], *, turn_lease_holder: Optional[str] = None, chunk_rows: Optional[int] = None, turn_lease_ttl_seconds: float = 300.0) -> BatchAppendResult:
         """Append the batch in one transaction (one per ``chunk_rows`` rows when given) with the same guards as ``append``, resolving each row that names a stored row to a repair or adoption instead of a duplicate insert. Returns one ``RowOutcome`` per row; an empty batch writes nothing. A chunked batch stamps its tool-call uids over the whole batch first, so a result pairs with its call across a chunk boundary.
 
         On a failure the error raised carries a :class:`BatchAppendProgress` (:func:`batch_progress`): the outcomes of the chunks that committed before it and every row's uids, so a caller stamps the committed rows and a retry of the batch repairs them instead of appending them again."""

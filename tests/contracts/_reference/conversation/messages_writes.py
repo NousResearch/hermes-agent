@@ -145,7 +145,7 @@ def _prestamped(messages: Sequence[NewMessage]) -> list[NewMessage]:
 class MessageWritesMixin(MessageBase):
     """Appends, detached results, replace, row edits, reactions and the cooldown."""
 
-    def append(self, session_id: SessionId, message: NewMessage, *, compression_lock_holder: Optional[str] = None,
+    def append(self, session_id: SessionId, message: NewMessage, *,
                turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> MessageId:
         scope = self._backend.scope
         # Only the fields ``append_message`` takes are stored: given tool-call uids, absorbed uids and ``data_use`` are dropped.
@@ -154,7 +154,7 @@ class MessageWritesMixin(MessageBase):
             self._write_guards(scope, session_id, turn_lease_holder=turn_lease_holder, ttl=turn_lease_ttl_seconds)
             return MessageId(insert_rows(self._ns(scope), self._created(scope, session_id), [message], keep_reasoning=True)[0].id)
 
-    def append_batch(self, session_id: SessionId, messages: Sequence[NewMessage], *, compression_lock_holder: Optional[str] = None,
+    def append_batch(self, session_id: SessionId, messages: Sequence[NewMessage], *,
                      turn_lease_holder: Optional[str] = None, chunk_rows: Optional[int] = None,
                      turn_lease_ttl_seconds: float = 300.0) -> BatchAppendResult:
         scope = self._backend.scope

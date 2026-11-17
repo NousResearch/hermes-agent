@@ -53,6 +53,17 @@ def visibility(backend, scope, sid: SessionId = S) -> list[tuple[MessageId, RowV
     return [(r.id, r.visibility) for r in store.messages.read_transcript(sid, TranscriptRead(view=TranscriptView.ALL))]
 
 
+def test_an_append_takes_no_compression_lock_holder(backend, scope_a):
+    store = backend.open(scope_a)
+    store.sessions.create(NewSession(session_id=S, source="cli"))
+    # CONTRACT: a live compression lock never fences an ordinary append, so the append verbs take no lock holder (an argument that fenced nothing).
+    with pytest.raises(TypeError):
+        store.messages.append(S, msg("u"), compression_lock_holder="compressor")
+    with pytest.raises(TypeError):
+        store.messages.append_batch(S, [msg("u")], compression_lock_holder="compressor")
+    assert store.messages.read_transcript(S) == ()
+
+
 def test_active_message_ids_are_the_live_rows_in_order(backend, scope_a):
     ids = dialogue(backend, scope_a)
     repo = backend.open(scope_a).messages

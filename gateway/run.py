@@ -14137,6 +14137,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # profile's home + credential scope and stamp their inbound events with
         # the profile so the agent turn resolves correctly. No-op when off.
         try:
+            from agent.boundary_config import log_boundary_config_errors
+            from hermes_cli.profiles import get_active_profile_name
+            log_boundary_config_errors(get_active_profile_name() or "default")
+        except Exception as _bc_err:
+            logger.debug("boundary config validation skipped: %s", _bc_err)
+        try:
             _secondary_connected = await self._start_secondary_profile_adapters()
             connected_count += _secondary_connected
         except MultiplexConfigError as e:
@@ -16728,6 +16734,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             discover_plugins()
             profile_cfg = load_gateway_config()
             violation = _own_policy_open_startup_violation(profile_cfg)
+            # Fork (education design 5): make a broken notion.write_guard /
+            # autonomy / posting block loud at startup (the guards also fail
+            # closed per call).
+            from agent.boundary_config import log_boundary_config_errors
+            log_boundary_config_errors(profile_name)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(

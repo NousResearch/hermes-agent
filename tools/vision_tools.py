@@ -594,10 +594,12 @@ def _should_use_native_vision_fast_path() -> bool:
 
 def _build_native_vision_tool_result(
     image_url: str, question: str, image_data_url: str, image_size_bytes: int,
-    scale_note: Optional[str] = None,
+    scale_note: Optional[str] = None, replay_hint: Optional[str] = None,
 ) -> dict[str, Any]:
     """Multimodal tool-result envelope. The text part is intentionally minimal (the model already
-    has the question); ``text_summary`` is the fallback for providers without multimodal tool results."""
+    has the question); ``text_summary`` is the fallback for providers without multimodal tool results.
+    ``replay_hint`` names the retained copy (``agent.image_replay.retain_tool_image``) so a turn rebuilt
+    from the session DB sends the same image again."""
     text_part = (
         "Image loaded into your context — you can see it natively now. "
         "Use your built-in vision to answer the user.")
@@ -605,6 +607,8 @@ def _build_native_vision_tool_result(
         text_part += f"\n\nQuestion: {question.strip()}"
     if scale_note:
         text_part += f"\n\nNote: {scale_note}"
+    if replay_hint:
+        text_part += f"\n\n{replay_hint}"
     return {
         "_multimodal": True,
         "content": [
@@ -740,13 +744,17 @@ async def _vision_analyze_native(
             # Reject rather than embed a session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
+        # The embed rides every later request; turns rebuilt from the session DB re-attach this copy.
+        from agent.image_replay import retain_tool_image
+        image_data_url, replay_hint = await asyncio.to_thread(retain_tool_image, image_data_url)
         embedded = True
         if not reserved:
             _record_embed(image_url)
         return _build_native_vision_tool_result(
             image_url=image_url, question=question, image_data_url=image_data_url,
             image_size_bytes=prepared.size_bytes,
-            scale_note=_build_scale_note(_scale_info or None, prepared.crop_offset or None))
+            scale_note=_build_scale_note(_scale_info or None, prepared.crop_offset or None),
+            replay_hint=replay_hint)
     except Exception as exc:
         logger.warning("Native vision fast path failed: %s", exc)
         return tool_error(f"Native vision failed: {exc}", success=False)

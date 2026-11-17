@@ -298,6 +298,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
     from agent.history_commentary import project_history_commentary
+    from agent.memory_context import fence_recalled_context
     from agent.message_metadata import withheld_prompt_text
 
     messages = []
@@ -320,6 +321,10 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         content_text = _user_image_display_text(m.get("content")) if role == "user" else None
         if content_text is None:
             content_text = _coerce_message_text(m.get("content"), image_urls=image_urls)
+        if role == "assistant":
+            # An unterminated memory fence is stored verbatim (replay parity) but was never painted live;
+            # rehydrating it raw is the leak. Assistant rows only: user text stays as its author wrote it.
+            content_text = fence_recalled_context(content_text)
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":

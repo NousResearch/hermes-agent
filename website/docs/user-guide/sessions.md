@@ -872,7 +872,10 @@ a named profile's store. The latter are either the history of a gateway that
 used to run standalone for that profile (`--legacy-main rekey` gives them the
 profile's namespace) or default-profile chats that leaked in under a scoped
 write (`--legacy-main move` sends them to the default store) — the rows
-themselves cannot tell the two apart.
+themselves cannot tell the two apart. A LOCAL session (Desktop, TUI, cron,
+Kanban) whose creation receipt sits in that store is the profile's own and is
+only reported, in every mode: the gateway re-keys its receipt, rows and route
+together the next time it serves the profile.
 
 `--apply` refuses while a gateway owns any of the stores (it holds the routing
 index in memory and would write it back), and is safe to re-run: a second run

@@ -16,6 +16,7 @@ empty (no rows, no messages, no payload) without opening anything.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, Literal, Mapping, Optional
 
 from persistence.sqlite._state.common import _id_chunks, _placeholders as _session_ids_placeholders
@@ -27,6 +28,7 @@ from session_rules.route_entries import _session_key_namespace
 
 from .._holder import StoreHolder
 from ..conversation._store.core import _delete_unreferenced_system_prompts
+from ..conversation._store.local import POLICY_PREFIX
 from ._base import AdminFile
 
 __all__ = ["SQLiteProfileRepairAdmin"]
@@ -67,6 +69,24 @@ def _ledgered_session_ids(holder: StoreHolder) -> set[str]:
     return holder._read_retrying_ioerr(_read)
 
 
+def _local_receipt_session_ids(holder: StoreHolder) -> set[str]:
+    """Physical segments a LOCAL creation receipt in this store owns (its lineage and current target).
+    Their key is the receipt's route: the gateway re-keys the receipt, its rows and its routing row
+    together when the home's gateway mode changed (``SessionBindingRepository.respell_route``); moving,
+    re-keying or relabelling the rows alone would leave the receipt refusing them."""
+    def _read(conn):
+        ids: set[str] = set()
+        for (raw,) in conn.execute("SELECT value FROM state_meta WHERE key GLOB ?", (POLICY_PREFIX + "*",)):
+            try:
+                receipt = json.loads(raw)
+                ids.update(receipt.get("lineage") or [receipt["session_id"]])
+                ids.add(receipt["entry"]["session_id"])
+            except (TypeError, ValueError, KeyError, AttributeError):
+                continue  # a malformed receipt is refused by its own reads; it owns nothing here
+        return ids
+    return holder._read_retrying_ioerr(_read)
+
+
 def _insert_row(conn, table: str, values: dict[str, Any], *, skip: frozenset) -> None:
     columns = [c for c in _table_columns(conn, table) if c in values and c not in skip]
     conn.execute(
@@ -103,6 +123,7 @@ class SQLiteProfileRepairAdmin(AdminFile):
                 "FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_session_id "
                 "WHERE s.session_key LIKE 'agent:%' ORDER BY s.started_at, s.id")
             ledgered = _ledgered_session_ids(holder)
+            receipted = _local_receipt_session_ids(holder)
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
             if key_profile is None:
@@ -111,12 +132,13 @@ class SQLiteProfileRepairAdmin(AdminFile):
             if label is not None and label != key_profile:
                 found["mislabelled"].append({
                     "id": row["id"], "session_key": row["session_key"],
-                    "profile_name": label, "key_profile": key_profile})
+                    "profile_name": label, "key_profile": key_profile, "receipt": row["id"] in receipted})
             if key_profile != owner:
                 found["foreign"].append({
                     "id": row["id"], "session_key": row["session_key"], "key_profile": key_profile,
                     "message_count": int(row["message_count"] or 0),
-                    "parent_session_id": row["parent_session_id"], "ledgered": row["id"] in ledgered})
+                    "parent_session_id": row["parent_session_id"], "ledgered": row["id"] in ledgered,
+                    "receipt": row["id"] in receipted})
             parent_profile = session_key_profile(row["parent_session_key"])
             if parent_profile is not None and parent_profile != key_profile:
                 found["crossed_parents"].append({

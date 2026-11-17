@@ -5,16 +5,19 @@ A local session's receipt names its current target and the lineage of its physic
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
+import pytest
 
-from persistence import SessionId
+from persistence import FenceStale, SessionId
 from persistence.authority.bindings import local_session_id
-from persistence.conversation.messages import NewMessage
+from persistence.conversation.messages import ConversationPeer, NewMessage
 from persistence.conversation.sessions import NewSession
 from tests.contracts._reference._authority import authority_state
 from tests.contracts.authority.test_bindings_contract import assert_refusal, begin, make_binding
 from tests.contracts.conftest import require_failpoints
+from tests.contracts.housekeeping.test_profile_identity_contract import record_reply, recovered
 
 PRINCIPAL = "user-1"
 
@@ -214,3 +217,87 @@ def test_release_handed_off_receipts_hands_the_conversation_to_the_lane(backend,
     owner_row = store_a.sessions.get(sid)
     assert (owner_row.session_key, owner_row.source, owner_row.chat_id) == ("agent:main:telegram:dm:1", "telegram", "1")
     assert store_a.sessions.get(SessionId("seg-2")).title == "Named chat"
+
+
+def _standalone_local(store):
+    """A local session its profile's own gateway (multiplexing off) reserved: keyed ``agent:main:local:dm:<id>``, its origin without a profile; returns ``(epoch, session_id, binding, served route)``."""
+    epoch = begin(store)
+    sid = local_session_id("default", PRINCIPAL, "req-S")
+    binding = make_binding(sid, route=f"agent:main:local:dm:{sid}", request_id="req-S")
+    store.bindings.reserve(epoch=epoch, binding=binding, owner=None)
+    return epoch, SessionId(sid), binding, f"agent:alpha:local:dm:{sid}"
+
+
+def test_respell_route_moves_every_copy_to_the_served_route(backend, scope_a):
+    # CONTRACT: ``respell_route``: the receipt's route and entry key, every session row of its lineage, its routing entry and the route's per-key counters (conversation generation, hygiene streak, delivery obligations) move to the served route; every origin carries the profile, and ``profile=None`` drops it again.
+    store_a = backend.open(scope_a)
+    epoch, sid, binding, served = _standalone_local(store_a)
+    old = binding.route
+    _reset(store_a, epoch, sid, "seg-2", binding)  # the lineage shares the key; the reset advanced the peer's generation
+    store_a.coordination.increment_hygiene_failure_streak(session_key=old)
+    record_reply(store_a, "reply", old, None)
+    store_a.coordination.mark_obligation_failed(obligation_id="reply", error="send failed")
+    generation = store_a.messages.latest_conversation_boundary(ConversationPeer(old, "cli"))
+    expected = store_a.bindings.receipt(sid)
+
+    respelled = store_a.bindings.respell_route(epoch=epoch, expected=expected, route=served, profile="alpha")
+
+    assert respelled == store_a.bindings.receipt(sid)
+    assert (respelled.route, respelled.entry["session_key"], respelled.entry["origin"]["profile"]) == (served, served, "alpha")
+    assert (respelled.lineage, respelled.current_target, respelled.policy) == (expected.lineage, "seg-2", expected.policy)
+    for row_id in (sid, "seg-2"):
+        row = store_a.sessions.get(SessionId(row_id))
+        assert (row.session_key, row.origin["profile"]) == (served, "alpha"), row_id
+    routes = store_a.routing.load_routing_entries()
+    assert old not in routes
+    assert (json.loads(routes[served])["session_id"], json.loads(routes[served])["origin"]["profile"]) == ("seg-2", "alpha")
+    assert generation is not None
+    assert store_a.messages.latest_conversation_boundary(ConversationPeer(served, "cli")) == generation
+    assert store_a.messages.latest_conversation_boundary(ConversationPeer(old, "cli")) is None
+    assert store_a.coordination.increment_hygiene_failure_streak(session_key=served) == 2
+    assert {obligation: key for obligation, (key, _profile) in recovered(store_a).items()} == {"reply": served}
+    assert store_a.bindings.validate_lineage(respelled) == "seg-2"
+
+    back = store_a.bindings.respell_route(epoch=epoch, expected=respelled, route=old, profile=None)
+    assert back is not None and back.route == old and "profile" not in back.entry["origin"]
+    assert "profile" not in store_a.sessions.get(sid).origin
+
+
+def test_respell_route_rewrites_rows_another_repair_already_rekeyed(backend, scope_a):
+    # CONTRACT: a target row that already carries the served route (its rows re-keyed alone) still lets the receipt and its routing entry follow.
+    store_a = backend.open(scope_a)
+    epoch, sid, _binding, served = _standalone_local(store_a)
+    store_a.routing.record_session_peer(sid, source="cli", user_id=PRINCIPAL, session_key=served, chat_id=sid, chat_type="dm")
+    respelled = store_a.bindings.respell_route(epoch=epoch, expected=store_a.bindings.receipt(sid), route=served, profile="alpha")
+    assert respelled is not None and respelled.route == served
+    assert set(store_a.routing.load_routing_entries()) == {served}
+
+
+def test_respell_route_changes_nothing_unless_its_guards_hold(backend, scope_a):
+    # CONTRACT: a stale epoch is ``stale_epoch``; a stored receipt that is no longer ``expected``, or a served route that a routing entry, another session's row or a per-key counter already holds, returns None and changes nothing.
+    store_a = backend.open(scope_a)
+    epoch, sid, binding, served = _standalone_local(store_a)
+    old, expected = binding.route, store_a.bindings.receipt(sid)
+
+    def unchanged():
+        assert store_a.bindings.receipt(sid) == expected
+        assert store_a.sessions.get(sid).session_key == old
+        assert old in store_a.routing.load_routing_entries()
+
+    stale = dataclasses.replace(expected, policy={**expected.policy, "model": "model-b"})
+    assert store_a.bindings.respell_route(epoch=epoch, expected=stale, route=served, profile="alpha") is None
+    unchanged()
+    store_a.coordination.increment_hygiene_failure_streak(session_key=served)
+    assert store_a.bindings.respell_route(epoch=epoch, expected=expected, route=served, profile="alpha") is None
+    unchanged()
+    store_a.coordination.reset_hygiene_failure_streak(session_key=served)
+    store_a.sessions.create(NewSession(session_id=SessionId("someone-else"), source="cli", session_key=served, chat_id="x"))
+    assert store_a.bindings.respell_route(epoch=epoch, expected=expected, route=served, profile="alpha") is None
+    unchanged()
+    store_a.routing.upsert_routing_entry(served, json.dumps({"session_key": served, "session_id": "someone-else"}))
+    assert store_a.bindings.respell_route(epoch=epoch, expected=expected, route=served, profile="alpha") is None
+    unchanged()
+    begin(store_a, "instance-b")
+    with pytest.raises(FenceStale):
+        store_a.bindings.respell_route(epoch=epoch, expected=expected, route=served, profile="alpha")
+    unchanged()

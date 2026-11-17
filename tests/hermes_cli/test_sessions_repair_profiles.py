@@ -417,3 +417,35 @@ def test_ledger_rows_that_appear_after_the_scan_still_block_the_copy(homes, monk
     finally:
         root.close()
         acme.close()
+
+
+@pytest.mark.parametrize("legacy_main", ["report", "rekey", "move"])
+def test_a_local_receipts_legacy_rows_are_left_to_the_gateway(homes, monkeypatch, legacy_main):
+    """A LOCAL session created by the profile's own gateway (multiplex off) is keyed ``agent:main:`` in
+    the profile's store, and its creation receipt there binds it to this home: no leaked default chat.
+    Relabelling (``--apply``), re-keying or moving the rows alone leaves the receipt refusing them on every
+    resume, so the command reports them and the gateway re-keys receipt, rows and route together."""
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    from tests.fixtures.storage_holder import policy_key
+    sid, key = "local-abc", "agent:main:local:dm:local-abc"
+    acme = _store(homes["acme"])
+    try:
+        _session(acme, sid, key, profile="acme", chat_id=sid, source="tui")
+        receipt = {"session_id": sid, "route": key, "entry": {"session_id": sid, "session_key": key}}
+        acme.state_meta.set(policy_key(sid), json.dumps(receipt))
+    finally:
+        acme.close()
+
+    assert _run(apply=True, legacy_main=legacy_main) == 0
+
+    acme = _store(homes["acme"])
+    root = _store(homes["default"])
+    try:
+        row = session_row(acme, sid)
+        assert row is not None and session_row(root, sid) is None
+        assert (row["session_key"], row["profile_name"]) == (key, "acme")
+    finally:
+        acme.close()
+        root.close()
+    [finding] = [f for f in _report()["findings"] if f["subject"] == sid]
+    assert finding["kind"] == "legacy_main" and finding["action"] is None and "receipt" in finding["reason"]

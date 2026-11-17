@@ -1,6 +1,6 @@
 """Local creation receipts on the store: the reservation, the receipt reads, the hand-off of receipts a messaging lane
-took over, the physical-target resolution, the untracked-compression adoption, the local ``/new`` reset and the idle
-end.
+took over, the physical-target resolution, the untracked-compression adoption, the re-key of a route the home's other
+gateway mode spelled, the local ``/new`` reset and the idle end.
 
 These functions raise ``AuthorityRefusal`` with main's reason codes. The conversation family's lineage bodies
 (``validate_local_lineage``, ``advance_local_target``, ``local_lineage_owner``), its row helpers and the ``state_meta``
@@ -338,6 +338,95 @@ def adopt_untracked_compression(holder, *, epoch, session_id, expected):
         validate_local_lineage(conn, receipt)
         _commit_local_target(conn, receipt, dict(routed, session_id=children[-1]))
     holder._execute_write(write)
+
+
+# The route's per-key counters (a reset's conversation generation, the hygiene streak, delivery obligations). A
+# profile store creates ``delivery_obligations`` lazily, so only the tables the store holds are moved.
+_ROUTE_KEYED_TABLES = ('conversation_generations', 'gateway_hygiene_state', 'delivery_obligations')
+
+
+def _respelled_origin(origin, profile):
+    """*origin* carrying *profile* (``None`` drops it)."""
+    origin = dict(origin)
+    if profile is None:
+        origin.pop('profile', None)
+    else:
+        origin['profile'] = profile
+    return origin
+
+
+def _respelled_origin_json(text, profile):
+    """A stored ``origin_json`` cell respelled, or unchanged when it does not hold an object."""
+    try:
+        origin = json.loads(text) if text else None
+    except (TypeError, ValueError):
+        return text
+    return _json(_respelled_origin(origin, profile)) if isinstance(origin, dict) else text
+
+
+def respell_local_route(holder, *, epoch, expected, route, profile):
+    """Re-key *expected*'s creation copies from its stored route to *route* (origins carry *profile*).
+
+    The gateway mode spells a home's LOCAL routes: a named profile's own gateway (multiplexing off)
+    keys them ``agent:main:…``; the multiplex host serving that home keys them ``agent:<profile>:…``.
+    The receipt, its ``sessions`` rows (the whole lineage shares the key), its routing row and the
+    route's per-key counters move together, and only while the stored receipt is still *expected* (a
+    ``SessionBinding``), its target row carries the old key (or already the new one: ``hermes sessions
+    repair-profiles --legacy-main rekey`` moved the rows alone) and nothing but this receipt's own
+    lineage holds the new one; otherwise nothing changes and None is returned (the restore then refuses
+    the receipt and logs the check). Returns the rewritten receipt.
+    """
+    from ..conversation._store.local import POLICY_PREFIX
+    key, old, target_id = POLICY_PREFIX + expected.session_id, expected.route, expected.current_target
+    own = {*expected.lineage, target_id}
+
+    def held_elsewhere(conn, tables):
+        """Whether anything outside the receipt's lineage holds *route*."""
+        return bool(conn.execute("SELECT 1 FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone()
+                    or any(row[0] not in own for row in conn.execute('SELECT id FROM sessions WHERE session_key=?', (route,)))
+                    or any(conn.execute(f'SELECT 1 FROM {table} WHERE session_key=? LIMIT 1', (route,)).fetchone()
+                           for table in tables))
+
+    def write(conn):
+        _epoch(conn, epoch)
+        present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = [table for table in _ROUTE_KEYED_TABLES if table in present]
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+        try:
+            receipt = json.loads(saved[0]) if saved is not None else None
+            if receipt is None or binding_record(receipt) != expected:
+                return None
+        except (TypeError, ValueError):  # an undecodable receipt, or one missing an identity field
+            return None
+        target = conn.execute('SELECT session_key FROM sessions WHERE id=?', (target_id,)).fetchone()
+        origin = receipt['entry'].get('origin') if isinstance(receipt['entry'], dict) else None
+        if (not isinstance(origin, dict) or target is None or target[0] not in (old, route)
+                or held_elsewhere(conn, tables)):
+            return None
+        routed = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?", (old,)).fetchone()
+        if routed is not None:
+            try:
+                entry = json.loads(routed[0])
+            except (TypeError, ValueError):
+                return None
+            if not isinstance(entry, dict):
+                return None
+            entry['session_key'] = route  # only the key and origin change: the route's /yolo toggle stays
+            if isinstance(entry.get('origin'), dict):
+                entry['origin'] = _respelled_origin(entry['origin'], profile)
+            conn.execute("UPDATE gateway_routing SET session_key=?, entry_json=? WHERE scope='' AND session_key=?",
+                         (route, _json(entry), old))
+        for row_id, origin_json in conn.execute('SELECT id, origin_json FROM sessions WHERE session_key IN (?, ?)',
+                                                (old, route)).fetchall():
+            conn.execute('UPDATE sessions SET session_key=?, origin_json=? WHERE id=?',
+                         (route, _respelled_origin_json(origin_json, profile), row_id))
+        for table in tables:
+            conn.execute(f'UPDATE {table} SET session_key=? WHERE session_key=?', (route, old))
+        receipt['route'] = route
+        receipt['entry'] = {**receipt['entry'], 'session_key': route, 'origin': _respelled_origin(origin, profile)}
+        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), key))
+        return receipt
+    return holder._execute_write(write)
 
 
 def reset_local_target(holder, *, epoch, parent_session_id, entry):

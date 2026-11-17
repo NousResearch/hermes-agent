@@ -1,11 +1,12 @@
-"""The lineage writes of the reference bindings repository: compression adoption, the local ``/new`` reset and the boot hand-off of moved receipts."""
+"""The lineage writes of the reference bindings repository: compression adoption, the local ``/new`` reset, the boot hand-off of moved receipts and the re-key of a route the home's other gateway mode spelled."""
 
 from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
 
 from persistence import AuthorityRefusal, PermanentStoreError, SessionId
 from persistence.authority.bindings import SessionBinding
@@ -22,6 +23,7 @@ from .bindings_lineage import (
     advance_local_target,
     commit_local_target,
     decode,
+    store_route,
     validate_local_lineage,
     with_adopted_compression,
 )
@@ -30,6 +32,39 @@ __all__ = ["LineageWriteVerbs", "hand_off_conversations", "moved_receipts"]
 
 _LANE_IDENTITY = ("session_key", "source", "user_id", "chat_id", "chat_type", "thread_id", "display_name", "origin", "transport_profile")
 _TITLE_RANK = {"derived": 0, "llm": 1, "user": 2}
+
+
+def _respelled(origin: Any, profile: Optional[str]) -> Any:
+    """``origin`` carrying ``profile`` (``None`` drops it); anything but a mapping is returned as is."""
+    if not isinstance(origin, Mapping):
+        return origin
+    origin = dict(origin)
+    if profile is None:
+        origin.pop("profile", None)
+    else:
+        origin["profile"] = profile
+    return origin
+
+
+def _route_counters_hold(tables: dict[str, Any], route: str) -> bool:
+    """Whether a per-key counter of ``route`` exists: a conversation generation, a hygiene streak or a delivery obligation."""
+    generations = tables.get("messages", {}).get("generations", {})
+    obligations = tables.get("delivery_obligations") or {}
+    return (any(key[1] == route for key in generations) or route in tables.get("hygiene_streaks", {})
+            or any(row.get("session_key") == route for row in obligations.values()))
+
+
+def _move_route_counters(tables: dict[str, Any], old: str, route: str) -> None:
+    """Every per-key counter of ``old`` moved to ``route`` (the caller checked ``route`` holds none)."""
+    generations = tables.get("messages", {}).get("generations", {})
+    for key in [key for key in generations if key[1] == old]:
+        generations[(key[0], route)] = generations.pop(key)
+    streaks = tables.get("hygiene_streaks", {})
+    if old in streaks:
+        streaks[route] = streaks.pop(old)
+    for row in (tables.get("delivery_obligations") or {}).values():
+        if row.get("session_key") == old:
+            row["session_key"] = route
 
 
 def _title_rank(source: Any) -> int:
@@ -125,7 +160,7 @@ def hand_off_conversations(meta: dict[str, Any], sessions: dict[str, Any], moved
 
 
 class LineageWriteVerbs:
-    """``adopt_untracked_compression``, ``reset_target`` and ``release_handed_off_receipts``; the host class provides ``_backend`` and ``_state``."""
+    """``adopt_untracked_compression``, ``reset_target``, ``respell_route`` and ``release_handed_off_receipts``; the host class provides ``_backend`` and ``_state``."""
 
     _backend: Any
 
@@ -180,6 +215,50 @@ class LineageWriteVerbs:
             advance_conversation_generation(_StagedView(handle, scope, staged.scope), scope, str(parent_session_id), "session_reset")
             advance_local_target(handle, scope, authority, staged.scope, str(parent_session_id), child_id, entry=json.loads(json.dumps(dict(entry))))
             session_runtime(authority, SessionId(logical_id))["generation"] += 1
+
+    def respell_route(self, *, epoch: int, expected: SessionBinding, route: str, profile: Optional[str]) -> Optional[SessionBinding]:
+        from .bindings import _to_binding
+
+        state = self._state()
+        with state.transaction() as staged:
+            state.require_epoch(staged.authority, epoch)
+            meta, tables = staged.authority["meta"], staged.scope
+            key, old = RECEIPT_PREFIX + str(expected.session_id), expected.route
+            saved = meta.get(key)
+            try:
+                if saved is None or _to_binding(saved) != expected:
+                    return None
+            except AuthorityRefusal:
+                return None
+            receipt = copy.deepcopy(decode(saved))
+            sessions, routes = tables.setdefault("sessions", {}), tables.setdefault("routing", {}).setdefault("", {})
+            own = {*expected.lineage, expected.current_target}
+            target = sessions.get(str(expected.current_target))
+            origin = receipt["entry"].get("origin") if isinstance(receipt["entry"], dict) else None
+            if (not isinstance(origin, Mapping) or target is None or target.get("session_key") not in (old, route) or route in routes
+                    or any(row.get("session_key") == route and sid not in own for sid, row in sessions.items())
+                    or _route_counters_hold(tables, route)):
+                return None
+            if (stored := routes.get(old)) is not None:
+                try:
+                    entry = json.loads(stored.text(old))
+                except ValueError:
+                    return None
+                if not isinstance(entry, dict):
+                    return None
+                entry["session_key"] = route  # only the key and origin change
+                if "origin" in entry:
+                    entry["origin"] = _respelled(entry["origin"], profile)
+                del routes[old]
+                store_route(tables, route, entry)
+            for row in sessions.values():
+                if row.get("session_key") in (old, route):
+                    row.update(session_key=route, origin=_respelled(row.get("origin"), profile))
+            _move_route_counters(tables, old, route)
+            receipt["route"] = route
+            receipt["entry"] = {**receipt["entry"], "session_key": route, "origin": _respelled(origin, profile)}
+            meta[key] = receipt
+            return _to_binding(receipt)
 
     def release_handed_off_receipts(self, *, epoch: int, lanes: frozenset[str]) -> dict[str, tuple[str, str]]:
         state = self._state()

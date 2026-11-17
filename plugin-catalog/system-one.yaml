@@ -1,0 +1,28 @@
+name: system-one
+repo: https://github.com/salismt/hermes-system-one
+sha: b1918e97c5ee78857dece4ea41425e6d24ab27fb
+title: System One decision models
+description: >-
+  Provider-neutral client for System One decision models: TypeSafe Jev, Liquid AI d1.2 /
+  d1.2-ultra, or any endpoint that implements the System One contract. One system_one tool asks
+  typed questions (noul, choice, score, plus the extraction types a model supports) and returns
+  calibrated probabilities; provider and model switch in settings. Each model's supported question
+  types and limits are checked before sending, and total, daily and per-call spend caps are checked
+  against a local ledger before every request. Bundles a skill on writing questions, adapted from
+  TypeSafe's MIT typesafe-ai skill. Standard library only; no dependencies. Disclosure — the state
+  and questions you send go to the selected provider (api.typesafe.ai, api.liquid.ai or your own
+  https endpoint) and are billed to your account there; API keys are secret settings read through
+  get_secret and sent only to their own provider's host; the spend ledger and an opt-in payload log
+  (off by default, mode 0600) are written under plugin-data/system-one.
+maintainer: salismt
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/salismt/hermes-system-one#readme
+version: "0.3.2"
+platforms: []
+capabilities:
+  provides_tools: [system_one]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -566,7 +566,6 @@ class ProcessSession:
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     group_liveness: bool = False                # sandbox kill begun: the poller probes the job's whole group
-    env_pid_path: str = ""                      # sandbox pid file: a kill signals only the group it still names
     wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
                                                 # launcher; Linux-side workers outlive it (#120546)
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
@@ -1303,7 +1302,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                                     persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = env_job_paths(temp_dir, session.id)
-        session.env_pid_path = pid_path
         bg_command = env_launch_command(temp_dir, command, log_path, pid_path, exit_path)
         result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False)
         output = result.get("output", "").strip()

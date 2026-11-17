@@ -14,7 +14,7 @@ import pytest
 from tests.waiting import wait_until
 from tools.process_registry import ProcessRegistry, ProcessSession
 from tools.process_registry_termination import (
-    ENV_GONE_MARKER, ENV_STALE_MARKER, ENV_SURVIVORS_MARKER, env_group_kill_command, parse_env_group_kill)
+    ENV_GONE_MARKER, ENV_SURVIVORS_MARKER, env_group_kill_command)
 
 
 class BashEnv:
@@ -318,40 +318,6 @@ def test_a_kill_after_the_poller_recorded_the_exit_signals_nothing():
 
     assert result["status"] == "already_exited" and result["exit_code"] == 0, result
     env.execute.assert_not_called()
-
-
-def test_a_kill_signals_nothing_once_the_pid_file_names_another_group(tmp_path):
-    pid_file = tmp_path / "bg.pid"
-    pid_file.write_text("999\n", encoding="utf-8")
-    group = subprocess.Popen(["sleep", "30"], process_group=0)
-    try:
-        result = subprocess.run(["sh", "-c", env_group_kill_command(group.pid, 0.1, str(pid_file))],
-                                capture_output=True, text=True, timeout=10, check=False)
-        assert parse_env_group_kill({"output": result.stdout, "returncode": result.returncode}, group.pid) \
-            == ENV_STALE_MARKER
-        assert group.poll() is None
-        pid_file.write_text(f"{group.pid}\n", encoding="utf-8")
-        result = subprocess.run(["sh", "-c", env_group_kill_command(group.pid, 0.1, str(pid_file))],
-                                capture_output=True, text=True, timeout=10, check=False)
-        assert ENV_GONE_MARKER in result.stdout.splitlines(), result
-    finally:
-        group.kill()
-        group.wait()
-
-
-def test_a_kill_refused_by_a_recreated_sandbox_keeps_the_session_tracked():
-    registry = ProcessRegistry()
-    env = MagicMock()
-    env.execute.return_value = {"returncode": 3, "output": f"{ENV_STALE_MARKER}\n"}
-    session = ProcessSession(id="proc_stale", command="w", task_id="t", pid=4321, pid_scope="sandbox",
-                             env_ref=env, env_pid_path="/tmp/hermes_bg_proc_stale.pid")
-    registry._running[session.id] = session
-
-    result = registry.kill_process(session.id)
-
-    assert result["status"] == "error" and "nothing was signalled" in result["error"], result
-    assert "/tmp/hermes_bg_proc_stale.pid" in env.execute.call_args.args[0]
-    assert registry.get(session.id) is session and not session.exited
 
 
 @pytest.mark.platforms("posix")

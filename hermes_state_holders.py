@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
 _HERMES_EXECUTABLES = frozenset({"hermes", "hermes-agent", "hermes-acp"})
-_HERMES_PYTHON_MODULES = frozenset({"acp_adapter", "hermes_cli.main"})
+# Module spellings the product itself writes: pyproject ``[project.scripts]`` (``hermes_cli.main``,
+# ``acp_adapter.entry``), the ``acp_adapter`` package's own ``__main__``, the stdio backend the Ink
+# TUI and the Desktop drive, the gateway's ``python -m gateway.run`` and ``python -m run_agent``.
+_HERMES_PYTHON_MODULES = frozenset(
+    {"acp_adapter", "gateway.run", "hermes_cli.main", "run_agent", "tui_gateway.entry"}
+)
 _HERMES_PYTHON_SCRIPTS = frozenset({"hermes_cli/main.py", "run_agent.py"})
 _PYTHON_SHORT_OPTIONS_WITH_OPERANDS = frozenset({"Q", "W", "X"})
 _PYTHON_LONG_OPTIONS_WITH_OPERANDS = frozenset(
@@ -119,6 +124,15 @@ def _python_execution_target(argv: Sequence[str]) -> Optional[tuple[str, str]]:
     return None
 
 
+def _is_hermes_module(normalized: str) -> bool:
+    """Boundary-aware module match: ``acp_adapter.entry`` is the ACP entry module, ``acp_adapterx``
+    is a different project's module that only shares a name prefix."""
+    return any(
+        normalized == module or normalized.startswith(f"{module}.")
+        for module in _HERMES_PYTHON_MODULES
+    )
+
+
 def _looks_like_hermes(argv: Sequence[str]) -> bool:
     """Return whether argv identifies a supported Hermes execution target."""
     if not argv:
@@ -134,7 +148,7 @@ def _looks_like_hermes(argv: Sequence[str]) -> bool:
     kind, value = target
     normalized = value.lower().replace("\\", "/")
     if kind == "module":
-        return normalized in _HERMES_PYTHON_MODULES
+        return _is_hermes_module(normalized)
     return any(
         normalized == script or normalized.endswith(f"/{script}")
         for script in _HERMES_PYTHON_SCRIPTS

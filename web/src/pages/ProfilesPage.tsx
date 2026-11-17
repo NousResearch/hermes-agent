@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import {
   AlignLeft,
@@ -255,20 +255,56 @@ function ProfileActionsMenu({
   );
 }
 
-function creationReceiptFor(title: string, warnings: string[] = [], modelFailed = false): CreationReceipt | null {
+function creationReceiptFor(
+  title: string,
+  warnings: string[] = [],
+  modelFailed = false,
+  modelError?: string,
+): CreationReceipt | null {
   const messages = [
     ...(modelFailed
-      ? ["Profile created, but the model could not be saved — set it from the profile editor."]
+      ? [`Profile created, but the model could not be saved — ${modelError || "set it from the profile editor."}`]
       : []),
     ...warnings,
   ];
   return messages.length ? { title, messages } : null;
 }
 
-function useCreationFeedback() {
+function useCreationFeedback(loading: boolean) {
   const { toast, showToast } = useToast();
+  useHandedToast(!loading, showToast);
   const [creationReceipt, setCreationReceipt] = useState<CreationReceipt | null>(null);
   return { toast, showToast, creationReceipt, setCreationReceipt };
+}
+
+/** A toast ProfileBuilderPage hands over on navigate (it unmounts, and its toast with it), shown once
+ *  the list is ready. */
+function useHandedToast(ready: boolean, showToast: (message: string, type: "success" | "error") => void) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  // Read at mount: ProfileProvider's ?profile= re-assert replaces the history
+  // entry, state and all, before the list has loaded.
+  const [handedToast] = useState(
+    () =>
+      (
+        location.state as {
+          toast?: { message: string; type: "success" | "error" };
+        } | null
+      )?.toast,
+  );
+
+  useEffect(() => {
+    if (ready && handedToast) {
+      showToast(handedToast.message, handedToast.type);
+    }
+  }, [ready, handedToast, showToast]);
+
+  // Back/forward onto this entry must not replay the handed-over toast.
+  useEffect(() => {
+    if (location.state) {
+      navigate(location.pathname + location.search, { replace: true });
+    }
+  }, [location, navigate]);
 }
 
 export default function ProfilesPage() {
@@ -276,7 +312,7 @@ export default function ProfilesPage() {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
   const [loading, setLoading] = useState(true);
-  const { toast, showToast, creationReceipt, setCreationReceipt } = useCreationFeedback();
+  const { toast, showToast, creationReceipt, setCreationReceipt } = useCreationFeedback(loading);
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
   const { setProfile } = useProfileScope();
@@ -466,7 +502,7 @@ export default function ProfilesPage() {
         model: picked?.model,
       });
       const title = `${t.profiles.created}: ${name}`;
-      const receipt = creationReceiptFor(title, res.warnings, Boolean(picked) && res.model_set === false);
+      const receipt = creationReceiptFor(title, res.warnings, Boolean(picked) && res.model_set === false, res.model_error);
       // Replaced only by a successful create: a failed retry keeps the last receipt.
       setCreationReceipt(receipt);
       if (!receipt) showToast(title, "success");

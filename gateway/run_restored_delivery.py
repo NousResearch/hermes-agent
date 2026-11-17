@@ -12,6 +12,10 @@ def resume_pending_candidates(runner: Any, platform: Optional[Platform] = None) 
     relay = runner._primary_adapters().get(Platform.RELAY) if platform == Platform.RELAY else None
     fronts = getattr(relay, "fronts_platform", None)
     try:
+        from gateway.delivery_ledger import ledger_enabled, pending_resume_sessions
+        # A saved reply still owed for a session means its turn was answered: recovery delivers
+        # that reply, and a resume here would generate a second one.
+        owed = pending_resume_sessions() if ledger_enabled() else set()
         with runner.session_store._lock:
             runner.session_store._ensure_loaded_locked()
             candidates = [
@@ -22,6 +26,7 @@ def resume_pending_candidates(runner: Any, platform: Optional[Platform] = None) 
                 and entry.resume_reason in runner._AUTO_RESUME_REASONS
                 and (platform is None or entry.origin.platform == platform
                      or (callable(fronts) and fronts(entry.origin.platform)))
+                and entry.session_key not in owed
             ]
     except Exception as exc:
         logger.warning("Failed to enumerate resume-pending sessions: %s", exc, exc_info=True)

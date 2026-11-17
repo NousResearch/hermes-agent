@@ -4,6 +4,14 @@ Create dynamic webhook subscriptions so external services (GitHub, GitLab, Strip
 
 ## Setup (Required First)
 
+The status check below is read-only. Obtain explicit approval before enabling a
+listener, changing its bind address or credentials, creating a subscription, or
+starting/restarting the gateway. Confirm the exact profile, service and exposure
+scope; preserve existing work and other sessions. Treat the secrets in these
+examples as placeholders, keep real values in approved secret storage, and do not
+publish them in configuration, commands or diagnostic output. An enablement request
+is not authorization for public exposure or a restart.
+
 The webhook platform must be enabled before subscriptions can be created. Check with:
 ```bash
 hermes webhook list

@@ -7,6 +7,32 @@ import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { $profiles, $profilesByConnection } from '@/store/profile'
 
+// One probe session is owned by a second connection; every other test passes no
+// sessionId, so the real (ambient) owner resolution is untouched for them.
+vi.mock('@/store/session-states', async () => {
+  const actual = (await vi.importActual('@/store/session-states')) as Record<string, unknown>
+  return {
+    ...actual,
+    knownOwnerForSession: (sid: string) =>
+      sid === 'session-on-conn-b' ? { connectionId: 'conn-b', mode: 'remote', profile: 'b' } : undefined
+  }
+})
+
+// Keep the owner-scoped RPC path under test but let the probe's gateway answer
+// it directly; a real routed connection is not registered in this unit harness.
+vi.mock('@/store/session-request-router', async () => {
+  const actual = (await vi.importActual('@/store/session-request-router')) as Record<string, unknown>
+  return {
+    ...actual,
+    requestForSessionProfile: <T,>(
+      _owner: unknown,
+      ambientRequest: (method: string, params?: Record<string, unknown>) => Promise<T>,
+      method: string,
+      params: Record<string, unknown>
+    ) => ambientRequest(method, params)
+  }
+})
+
 import { isSkillItem } from '../composer-utils'
 
 import { useSlashCompletions } from './use-slash-completions'
@@ -42,7 +68,7 @@ const RANKED_CATALOG = {
 const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
   items.map(item => (item.metadata as { command?: string })?.command)
 
-function harness(gateway: HermesGateway, options: { profile?: string } = {}) {
+function harness(gateway: HermesGateway, options: { profile?: string; sessionId?: string } = {}) {
   const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
 
   function Probe() {
@@ -229,5 +255,25 @@ describe('useSlashCompletions', () => {
 
     expect(commandsOf(await completions(api, 'profile c'))).toEqual(['/profile coder'])
     expect(request).toHaveBeenCalledWith('complete.slash', { text: '/profile c' })
+  })
+
+  it('never uses the ambient roster for a session owned by another connection', async () => {
+    // $profiles mirrors the ACTIVE backend. When the draft's own connection has
+    // no roster loaded yet, the owner-scoped RPC must answer: ambient names
+    // belong to a different backend and would point the next chat somewhere the
+    // profile does not exist.
+    $profiles.set(ROSTER)
+    $profilesByConnection.set(new Map([['conn-b', []]]))
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : { items: [{ text: 'coder', display: 'coder', kind: 'command' }], replace_from: 9 }
+      )
+    )
+    const api = harness({ request } as unknown as HermesGateway, { sessionId: 'session-on-conn-b' })
+
+    expect(commandsOf(await completions(api, 'profile '))).toEqual(['/profile coder'])
+    expect(request).toHaveBeenCalledWith('complete.slash', expect.anything())
   })
 })

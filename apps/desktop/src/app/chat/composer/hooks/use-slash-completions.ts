@@ -71,10 +71,12 @@ type ProfileRow = ReturnType<typeof $profiles.get>[number]
 function profilesForCompletion(owner: SessionOwnerScope): readonly ProfileRow[] {
   if (isSessionOwnerRoute(owner)) {
     const byConnection = $profilesByConnection.get().get(owner.connectionId)
-
-    if (byConnection?.length) {
-      return byConnection
-    }
+    // $profiles mirrors the ACTIVE backend; a draft can belong to a session owned
+    // by a different connection. Returning the ambient roster here would offer
+    // names from the wrong backend and point the next chat at a profile that is
+    // not there. An empty/unloaded entry must fall through to the owner-scoped
+    // complete.slash RPC below, which asks the backend that actually owns it.
+    return byConnection ?? []
   }
 
   return $profiles.get()

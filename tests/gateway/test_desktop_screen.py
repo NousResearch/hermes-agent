@@ -684,11 +684,16 @@ class TestAuthorityGate(unittest.TestCase):
         self.assertEqual(raised.exception.reason, "desktop_screen_hold")
 
     def test_seam_sentinel_longer_than_old_overlap_is_held(self):
-        # Review r8-LOW: a 400-char sentinel straddling the old 256-char
-        # overlap ('B'*31700 + 400-char marker) was never fully inside
-        # one chunk. The 1024-char overlap covers it.
-        EngineStubHandler.block_pattern = "SENTINELX"
-        marker = "SENTINELX" * 45  # 405 chars
+        # Review r8-LOW repro: an INDIVISIBLE 400-char sentinel
+        # straddling the old 256-char overlap was never fully inside
+        # one chunk (max ~360 chars per chunk) and was admitted on r8.
+        # The 1 KB overlap contains it whole. The marker is
+        # non-repetitive on purpose: a periodic marker would match on a
+        # fragment and make this test pass on the old code too.
+        marker = ("GHIJK" + "".join(chr(97 + (i * 7) % 26) for i in range(390))
+                  + "ZYXWV")
+        self.assertEqual(len(marker), 400)
+        EngineStubHandler.block_pattern = marker
         from hermes_state_runtime import RuntimeStoreError
         with self.assertRaises(RuntimeStoreError) as raised:
             self._run({"text": "B" * 31700 + marker + "B" * 2000})

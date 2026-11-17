@@ -167,6 +167,14 @@ _RESUME_EVENT_KEYS = {
     "process_complete": "cli.resume.event_process_finished",
     "auto_continue": "cli.resume.event_resumed_interrupted"}
 
+def _model_switch_label(metadata: dict) -> str:
+    """``model changed: <model> (<provider>) · <effort>`` from a switch marker's display metadata,
+    the same detail the TUI and Desktop timelines show."""
+    provider, effort = (str(metadata.get(k) or "").strip() for k in ("provider", "effort"))
+    return (f"{t('cli.resume.event_model_changed')}: {str(metadata['model']).strip()}"
+            f"{f' ({provider})' if provider else ''}{f' · {effort}' if effort else ''}")
+
+
 def _collect_resume_entries(display_history, disp: dict, clean_assistant):
     """Displayable ``(role, text)`` recap entries from stored history, truncated per the
     ``display.resume_*`` config; system and tool-result rows are skipped. Returns
@@ -195,6 +203,8 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
         if display_kind in _RESUME_EVENT_KEYS:
             metadata = msg.get("display_metadata") or {}
             label = metadata.get("display_text") if display_kind in ("async_delegation_complete", "process_complete") else None
+            if display_kind == "model_switch" and str(metadata.get("model") or "").strip():
+                label = _model_switch_label(metadata)
             entries.append(("event", _sanitize_display_text(label or t(_RESUME_EVENT_KEYS[display_kind]))))
             continue
         if role == "user":

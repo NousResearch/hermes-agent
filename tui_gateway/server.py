@@ -1159,7 +1159,7 @@ def _is_pivot_marker(entry: Any) -> bool:
     return _is_model_switch_marker(entry) or (isinstance(entry, dict) and entry.get("display_kind") == "personality_switch")
 
 
-def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
+def _append_model_switch_marker(session: dict | None, *, model: str, provider: str, effort: str = "") -> None:
     """Record a real system-history pivot after a live model switch. Only the newest marker is kept (each
     switch strips prior ones, so N switches leave one marker, not N re-sent every API call; self-healing
     across resumes because the next switch collapses whatever a reload brought back).
@@ -1175,7 +1175,16 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         "metadata when answering questions about what model/provider is active.]")
     # A user message, not system: strict OpenAI-compatible providers (vLLM, Qwen) reject non-leading system messages.
     # See #48338.
-    entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}
+    # Display-only facts for the timeline notice (#139125): the marker text is model-facing, so the UI renders
+    # its "model changed" card from these instead of discarding which model/provider actually took over.
+    display_metadata: dict[str, Any] = {"model": model, "provider": provider}
+    if not effort:
+        from agent.reasoning_effort import requested_effort
+        effort = requested_effort(getattr(session.get("agent"), "reasoning_config", None)) or ""
+    if effort:
+        display_metadata["effort"] = effort
+    entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch",
+                             "display_metadata": display_metadata}
     with session.get("history_lock") or contextlib.nullcontext():
         history = session.setdefault("history", [])
         history[:] = [h for h in history if not _is_model_switch_marker(h)]
@@ -1199,6 +1208,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
                 from agent.message_metadata import stamp_message_uid
                 entry["_row_id"] = db.append_message(
                     session_id=target, role="user", content=marker, display_kind="model_switch",
+                    display_metadata=display_metadata,
                     message_uid=stamp_message_uid(entry))
                 entry[_DB_PERSISTED_MARKER] = True
     except Exception:

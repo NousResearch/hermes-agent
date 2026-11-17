@@ -93,6 +93,24 @@ class TestModelSwitchMarkerDedup:
         assert session["history_version"] == 2  # one increment per switch
 
 
+class TestModelSwitchMarkerDisplayMetadata:
+    """#139125: the pivot row carries the switched-to model/provider/effort as display-only facts so
+    every timeline can say what took over instead of a bare "model changed"."""
+
+    def test_metadata_follows_the_replacing_marker(self) -> None:
+        session: dict = {"session_key": "s", "history": []}
+        _append_model_switch_marker(session, model="model-a", provider="prov-a")
+        _append_model_switch_marker(session, model="model-b", provider="prov-b", effort="xhigh")
+        assert [h["display_metadata"] for h in session["history"]] == [
+            {"model": "model-b", "provider": "prov-b", "effort": "xhigh"}]
+
+    def test_effort_falls_back_to_the_live_agents_reasoning(self) -> None:
+        agent = type("A", (), {"reasoning_config": {"enabled": True, "effort": "high"}, "_session_db": None})()
+        session: dict = {"session_key": "s", "history": [], "agent": agent}
+        _append_model_switch_marker(session, model="model-a", provider="")
+        assert session["history"][0]["display_metadata"] == {"model": "model-a", "provider": "", "effort": "high"}
+
+
 def _make_marker_entry(model: str) -> dict:
     from tui_gateway.server import _MODEL_SWITCH_MARKER_PREFIX
 

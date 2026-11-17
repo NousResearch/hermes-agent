@@ -101,6 +101,13 @@ hermes webhook enable <name>
 
 Disabling pauses incoming events without deleting the dynamic subscription. It remains visible in `hermes webhook list` and can be re-enabled without restarting the gateway. Static routes from `config.yaml` must be changed in that file.
 
+### Rotate a subscription's secret
+```bash
+hermes webhook rotate-secret <name>
+```
+
+Prints the new secret once with the route URL; the old secret is rejected from the next request on.
+
 ### Remove a subscription
 ```bash
 hermes webhook remove <name>
@@ -213,7 +220,7 @@ Each event runs in its own session, so by default the agent in the target chat h
 
 ## How It Works
 
-1. `hermes webhook subscribe`, `disable`, and `enable` update `~/.hermes/webhook_subscriptions.json`
+1. `hermes webhook subscribe`, `disable`, `enable`, and `rotate-secret` update `~/.hermes/webhook_subscriptions.json`
 2. The webhook adapter hot-reloads this file on each incoming request (mtime-gated, negligible overhead)
 3. When a POST arrives matching a route, the adapter formats the prompt and triggers an agent run
 4. The agent's response is delivered to the configured target (Telegram, Discord, GitHub comment, etc.)

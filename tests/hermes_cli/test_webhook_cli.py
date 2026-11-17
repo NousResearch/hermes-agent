@@ -266,6 +266,22 @@ class TestEnableDisable:
         assert _load_subscriptions() == {}
         assert "No subscription named 'missing'" in capsys.readouterr().out
 
+    def test_rotate_secret_replaces_secret_and_keeps_route(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="rekey", secret="old-operator-secret"))
+        webhook_command(_make_args(webhook_action="disable", name="rekey"))
+        before = _load_subscriptions()["rekey"]
+        capsys.readouterr()
+
+        webhook_command(_make_args(webhook_action="rotate-secret", name="rekey"))
+
+        after = _load_subscriptions()["rekey"]
+        out = capsys.readouterr().out
+        assert after["secret"] != "old-operator-secret" and len(after["secret"]) > 20
+        assert {k: v for k, v in after.items() if k != "secret"} == {k: v for k, v in before.items() if k != "secret"}
+        assert after["secret"] in out and "/webhooks/rekey" in out
+        assert webhook_command(_make_args(webhook_action="rotate-secret", name="absent")) == 1
+        assert "absent" not in _load_subscriptions()
+
 class TestPersistence:
 
     def test_corrupted_file(self):

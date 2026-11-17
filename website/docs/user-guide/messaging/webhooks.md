@@ -533,6 +533,14 @@ hermes webhook enable github-issues
 
 Disabling a dynamic subscription pauses incoming events without deleting its configuration. It remains visible in `hermes webhook list` and can be re-enabled without restarting the gateway. Static routes from `config.yaml` must be enabled or disabled by editing that file.
 
+### Rotate a subscription's secret
+
+```bash
+hermes webhook rotate-secret github-issues
+```
+
+Generates a new HMAC secret, saves it, and prints it once in full together with the route URL. The gateway picks up the change on the next request, so the previous secret is rejected immediately; update the sending service with the new value. Static route secrets live in `config.yaml` and are changed there.
+
 ### Remove a subscription
 
 ```bash

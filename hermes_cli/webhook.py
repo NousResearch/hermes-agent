@@ -165,7 +165,7 @@ def webhook_command(args):
     """Entry point for 'hermes webhook' subcommand."""
     sub = getattr(args, "webhook_action", None)
     if not sub:
-        print("Usage: hermes webhook {subscribe|list|disable|enable|remove|test}")
+        print("Usage: hermes webhook {subscribe|list|disable|enable|rotate-secret|remove|test}")
         print("Run 'hermes webhook --help' for details.")
         return
     if not _is_webhook_enabled():
@@ -427,6 +427,30 @@ def _cmd_set_enabled(args, *, enabled: bool):
     print(f"  {'Enabled' if enabled else 'Disabled'} webhook subscription: {name}")
 
 
+def _cmd_rotate_secret(args):
+    """Replace a route's HMAC secret; the gateway hot-reloads the store, so the old one stops verifying."""
+    name = _normalize_subscription_name(args.name)
+    secret = secrets.token_urlsafe(32)
+
+    def rotate(subscriptions: dict[str, dict]) -> dict:
+        if name not in subscriptions:
+            raise KeyError(name)
+        subscriptions[name]["secret"] = secret
+        return subscriptions[name]
+
+    try:
+        route = _mutate_subscriptions(rotate)
+    except KeyError:
+        print(f"  No subscription named '{name}'.")
+        print("  Note: Static route secrets from config.yaml must be edited in config.yaml.")
+        return 1
+    print(f"\n  Rotated HMAC secret for webhook subscription: {name}")
+    print(f"  URL:    {_route_url(name, route)}")
+    # Shown once, in full: the sending service needs it now, and it is not printed again.
+    print(f"  Secret: {secret}")
+    print("\n  The previous secret no longer verifies. Update the sending service with the new one.\n")
+
+
 def _cmd_test(args):
     """Send a test POST to a webhook route."""
     name = _normalize_subscription_name(args.name)
@@ -469,5 +493,6 @@ _ACTIONS = {
     "list": _cmd_list, "ls": _cmd_list,
     "disable": lambda args: _cmd_set_enabled(args, enabled=False),
     "enable": lambda args: _cmd_set_enabled(args, enabled=True),
+    "rotate-secret": _cmd_rotate_secret,
     "remove": _cmd_remove, "rm": _cmd_remove,
     "test": _cmd_test}

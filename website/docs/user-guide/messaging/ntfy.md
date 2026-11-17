@@ -44,7 +44,7 @@ NTFY_HOME_CHANNEL=hermes-myname-2026
 | `NTFY_ALLOWED_USERS` | Recommended | Comma-separated topic names allowed (treated as user IDs; see below) |
 | `NTFY_ALLOW_ALL_USERS` | Optional | Set `true` to allow every publisher — only safe for private topics with read tokens |
 | `NTFY_HOME_CHANNEL` | Optional | Default topic for cron / notification delivery |
-| `NTFY_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
+| `NTFY_HOME_CHANNEL_NAME` | Optional | Human label for the home channel; also sent as the notification title (`X-Title`) on a publish with no `metadata` or `extra` title. Plain ASCII only: accents are folded (`Café` sends `Cafe`), and a name with a non-ASCII character that does not fold to ASCII (`Łukasz`, `Alfred 中`) sends no title. Without a name, no `X-Title` is sent |
 
 ## Identity model — read this before deploying
 

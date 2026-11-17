@@ -54,3 +54,105 @@ def test_resume_prefers_gateway_runtime_over_stale_top_level_keys():
         {"provider": "anthropic", **NOUS_ROUTE, "gateway_runtime": {"provider": "openai-codex", "api_mode": "codex_responses"}})}
     desktop = _stored_session_runtime_overrides(row)["model_override"]
     assert (desktop["provider"], desktop["base_url"], desktop["api_mode"]) == ("openai-codex", None, "codex_responses")
+
+
+def test_resume_after_fallback_served_first_call_keeps_the_picked_pair(tmp_path):
+    """The first accounted call records the serving (fallback) route in the billing columns; the chat's
+    picked model+provider must still resume together, not as the fallback model on the picked provider."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="desktop", model="claude-opus-4")
+    db.update_session_meta("s1", json.dumps({"model": "claude-opus-4", "provider": "anthropic"}), "claude-opus-4")
+    db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="deepseek/deepseek-v4-flash",
+                           billing_provider="openrouter", api_call_count=1)
+    row = db.get_session("s1")
+    # The billing record keeps the serving route.
+    assert (row["model"], row["billing_provider"]) == ("deepseek/deepseek-v4-flash", "openrouter")
+
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-opus-4", "anthropic")
+    # CLI --resume reads the same row through the same seam.
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
+        "claude-opus-4", "anthropic")
+
+
+def test_resume_after_model_switch_then_fallback_first_call_keeps_the_switched_pair(tmp_path):
+    """``/model`` before the first reply writes the nested route; a fallback serving that first call then
+    rewrites only the model column. Resume must keep the switched pair, not the fallback model on it."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="gpt-6-sol")
+    db.update_session_model("s1", "claude-opus-4", provider="anthropic")
+    db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="deepseek/deepseek-v4-flash",
+                           billing_provider="openrouter", api_call_count=1)
+    row = db.get_session("s1")
+    assert row["model"] == "deepseek/deepseek-v4-flash"
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-opus-4", "anthropic")
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
+        "claude-opus-4", "anthropic")
+
+    # A later Desktop/TUI pick on the same provider persists through the live writer; reopening must keep it,
+    # not the older nested route the CLI switch left.
+    from types import SimpleNamespace
+    from hermes_state_sessions import _parse_model_config
+    from tui_gateway.agent_factory import _runtime_model_config
+    agent = SimpleNamespace(model="claude-sonnet-5", provider="anthropic", base_url="", api_mode="",
+                            reasoning_config=None, service_tier=None)
+    config = _runtime_model_config(agent, _parse_model_config(row["model_config"]))
+    db.update_session_meta("s1", json.dumps(config), "claude-sonnet-5")
+    row = db.get_session("s1")
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-sonnet-5", "anthropic")
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
+        "claude-sonnet-5", "anthropic")
+
+    # A fallback then serves a turn, and a settings save (reasoning level) lands before the next turn
+    # restores the primary: the save must keep the pick, not record the fallback pair standing in for it.
+    agent.model, agent.provider = "deepseek/deepseek-v4-flash", "openrouter"
+    agent._provider_fallback_active = True
+    agent._primary_runtime = {"model": "claude-sonnet-5", "provider": "anthropic", "base_url": "", "api_mode": ""}
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    config = _runtime_model_config(agent, _parse_model_config(row["model_config"]))
+    db.update_session_meta("s1", json.dumps(config), config.get("model"))
+    row = db.get_session("s1")
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-sonnet-5", "anthropic")
+    assert config["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
+        "claude-sonnet-5", "anthropic")
+
+
+@pytest.mark.parametrize("picked", [
+    {"model": "claude-opus-4", "provider": "anthropic"},
+    {"model": "claude-opus-4"},
+], ids=["picked-pair", "picked-model-only"])
+def test_resume_never_pairs_billing_model_with_picked_provider(picked):
+    """A chat whose first call was served by a fallback has the fallback route in the billing columns
+    (``first_accounted_route``) and the user's pick in ``model_config``. Resume must restore the pick as a
+    pair, never the fallback model on the picked provider (or the picked model on the fallback provider)."""
+    ov = _stored_session_runtime_overrides({
+        "model": "deepseek/deepseek-v4-flash", "billing_provider": "openrouter", "model_config": picked,
+    })
+    restored = ov["model_override"]
+    assert restored["model"] == picked["model"]
+    assert restored["provider"] == picked.get("provider")
+    assert ov.get("provider_override") == picked.get("provider")
+
+def test_resume_after_gateway_turn_keeps_the_gateway_pair_over_an_older_desktop_pick():
+    """A gateway turn after a Desktop pick writes the model column with ``gateway_runtime`` but leaves the
+    Desktop's top-level pick; resume takes the gateway's pair, never the old pick on the gateway's provider."""
+    row = {"model": "gpt-6-sol", "billing_provider": "anthropic", "model_config": json.dumps({
+        "model": "claude-opus-4", "provider": "anthropic",
+        "gateway_runtime": {"provider": "openai-codex", "api_mode": "codex_responses"}})}
+    desktop = _stored_session_runtime_overrides(row)["model_override"]
+    assert (desktop["model"], desktop["provider"]) == ("gpt-6-sol", "openai-codex")
+
+
+def test_resume_keeps_a_confirmed_browser_model_lock_over_an_older_desktop_pick(tmp_path):
+    """A confirmed Browser/API lock writes the model column but not the Desktop pick; resume keeps the
+    locked model rather than silently reverting the chat to the pick the lock replaced."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="desktop", model="claude-opus-4")
+    db.update_session_meta("s1", json.dumps({"model": "claude-opus-4", "provider": "anthropic"}), "claude-opus-4")
+    db.update_session_runtime_lock("s1", model="claude-sonnet-5", provider="anthropic", confirmed=True)
+    restored = _stored_session_runtime_overrides(db.get_session("s1"))["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-sonnet-5", "anthropic")

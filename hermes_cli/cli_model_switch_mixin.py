@@ -55,11 +55,10 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     canonical row reader is ``SessionDB.session_gateway_runtime`` (``model_config.gateway_runtime``,
     else the TUI's top-level keys). Bare ``custom`` is healed because the CLI resolve path
     hard-fails on it (the TUI gateway keeps it when a base_url exists)."""
-    stored_model = str((session_meta or {}).get("model") or "").strip()
+    from hermes_state import SessionDB as _SessionDB
+    stored_model, runtime = _SessionDB.session_resume_route(session_meta)
     if not stored_model:
         return None
-    from hermes_state import SessionDB as _SessionDB
-    runtime = _SessionDB.session_gateway_runtime(session_meta)
     base_url = runtime.get("base_url") or None
     api_mode = runtime.get("api_mode") or None
     stored_provider = runtime.get("provider") or None
@@ -560,7 +559,7 @@ class CLIModelSwitchMixin:
             "api_mode": result.api_mode or None}
         try:
             db.update_session_model(sid, result.new_model)
-            db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
+            db.patch_session_model_config(sid, {"gateway_runtime": {**route, "model": result.new_model or None}, **route})
         except Exception:
             logger.debug("Failed to persist model switch to session DB", exc_info=True)
 

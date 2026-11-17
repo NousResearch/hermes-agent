@@ -366,6 +366,7 @@ class GatewayTurnPrepareMixin:
                                                   getattr(agent, "base_url", None), model),
             "base_url": getattr(agent, "base_url", None),
             "api_mode": getattr(agent, "api_mode", None),
+            "model": model,
         }
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}

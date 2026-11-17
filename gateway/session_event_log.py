@@ -14,6 +14,7 @@ it is append-only, written by one background thread off the event loop, never jo
 transcript's writer lock or migrations, and deleting the file loses nothing the transcript needs.
 """
 import atexit
+import contextlib
 import json
 import logging
 import queue
@@ -120,6 +121,13 @@ class EventLog:
     def _commit(self, conn, batch):
         """Commit *batch* in order, retrying a failed write: dropping it would leave a hole the
         numbering hides (the next event takes the lost one's ``seq``)."""
+        if self.failed:
+            # Recording stopped, but a deleted session's events must still go: try its deletes.
+            batch = [item for item in batch if item[1] is None]
+            with contextlib.suppress(sqlite3.Error):
+                if batch:
+                    self._write(conn, batch)
+            return
         delay, deadline = 0.05, time.monotonic() + FAIL_AFTER_S
         while batch and not self.failed:
             try:

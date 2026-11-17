@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-105 registry commands: 29 control, 19 read, 57 refused.
+106 registry commands: 29 control, 19 read, 58 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -133,5 +133,6 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/voice` | control | HermesCLI._handle_voice_command | config.get, slash.exec; sidecar: voice.toggle; `tts` refused | unavailable: composer-voice | slash.exec | per-session setting (gateway handler) |
 | `/wake` | refused | HermesCLI._handle_wake_command | local | action: wake | slash.exec: refused | client-local (cli_only) |
 | `/whoami` | read | HermesCLI._handle_whoami_command | slash.exec | slash.exec | slash.exec |  |
+| `/workspace` (/cwd) | refused | messaging-only: unknown command | slash.exec: refused | unavailable: terminal | slash.exec: refused | messaging-only |
 | `/worktree` | refused | HermesCLI._handle_worktree_command | slash.exec: refused | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/yolo` | control | HermesCLI._toggle_yolo | config.set | action: yolo | slash.exec | per-session setting (gateway handler) |

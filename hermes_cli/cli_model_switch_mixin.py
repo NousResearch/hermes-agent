@@ -211,14 +211,15 @@ def _switch_model_from(
         custom_providers=custom_providers)
 
 
-def _run_confirm_and_apply(cli, target, *args) -> None:
+def _run_confirm_and_apply(cli, target, *args, wait: bool = False) -> None:
     """Run a confirm+apply sequence off the UI thread when the TUI is live.
 
     The expensive-model modal blocks its thread on a response queue (_prompt_text_input_modal);
     on the prompt_toolkit main thread that freezes rendering, so the modal never appears and the
-    switch silently cancels after the 120s timeout.
+    switch silently cancels after the 120s timeout. ``wait``: the caller is already off the UI
+    thread and needs the switch settled before it returns (a ``+<alias>`` message's turn).
     """
-    if getattr(cli, "_app", None):
+    if getattr(cli, "_app", None) and not wait:
         threading.Thread(target=target, args=args, daemon=True).start()
     else:
         target(*args)
@@ -978,7 +979,7 @@ class CLIModelSwitchMixin:
             self, self._confirm_and_apply_model_switch_result,
             result, persist_global, _picker_custom_provs, *extra)
 
-    def _handle_model_switch(self, cmd_original: str):
+    def _handle_model_switch(self, cmd_original: str, *, wait: bool = False):
         """Handle /model command — switch model.
 
         Supports:
@@ -993,6 +994,7 @@ class CLIModelSwitchMixin:
           /model reset                        — back to config.yaml's model (keeps history)
 
         Switches are session-scoped unless ``model.persist_switch_by_default`` or ``--global``.
+        ``wait``: settle the switch before returning (see ``_run_confirm_and_apply``).
         """
         from cli import _cprint
         from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
@@ -1054,7 +1056,7 @@ class CLIModelSwitchMixin:
         extra = (request.reasoning_effort,) if request.reasoning_effort else ()
         _run_confirm_and_apply(
             self, self._confirm_and_apply_cli_model_switch,
-            result, persist_global, one_turn, custom_provs, *extra)
+            result, persist_global, one_turn, custom_provs, *extra, wait=wait)
 
     def _confirm_and_apply_cli_model_switch(
         self, result, persist_global: bool, one_turn: bool, custom_provs=None, reasoning_effort: str = "") -> None:
@@ -1116,6 +1118,27 @@ class CLIModelSwitchMixin:
             return bool(cmd and cmd.name == "model")
         except Exception:
             return False
+
+    def _alias_prefix_for(self, text):
+        """The ``+<alias>`` prefix of a typed message (``display.model_alias_prefix``), else None."""
+        from hermes_cli.model_alias_prefix import split_alias_prefix
+        return split_alias_prefix(text, lambda: self.config if isinstance(self.config, dict) else {})
+
+    def _take_alias_prefix(self, text: str):
+        """``+<alias> rest``: run ``/model <alias> --once``, then return ``rest`` as this turn's prompt.
+
+        Ordinary text comes back unchanged. None when the switch did not commit (unknown route,
+        cancelled cost confirmation): the message is not sent on a model the user did not pick.
+        """
+        from cli import _cprint
+        prefix = self._alias_prefix_for(text)
+        if prefix is None:
+            return text
+        _cprint(f"\n⚙️  {_escape(prefix.model_command)}")
+        before = getattr(self, "_pending_one_turn_model_restore", None)
+        self._handle_model_switch(prefix.model_command, wait=True)
+        restore = getattr(self, "_pending_one_turn_model_restore", None)
+        return prefix.rest if restore is not None and restore is not before else None
 
     def _cmd_moa(self, cmd_original: str):
         """/moa one-shot: run one prompt through the default MoA preset, then restore the prior

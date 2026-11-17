@@ -36,6 +36,7 @@ from gateway.run_inbound_unauthorized import (
     unauthorized_owner_hint,
 )
 from gateway.session import SessionSource, build_session_context, label_shared_sender
+from gateway.session_alias_prefix import alias_prefix_for, apply_alias_prefix
 from gateway.turn_lease import TurnLeaseTimeoutError
 from hermes_cli.observability.shared_metrics_busy import (
     note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
@@ -1246,6 +1247,8 @@ class GatewayInboundMixin(
             _handled = _result is not None
         if not _handled and command:  # rewritten into a turn: the authority's FIFO, like text
             _handled, _result = await self._admit_command_turn(event, source, _quick_key, stop_epoch)
+        elif not _handled:  # `+<alias> rest` (display.model_alias_prefix): `/model <alias> --once` + rest
+            _handled, _result = await apply_alias_prefix(self, event, source, _quick_key)
         return _handled, _result
 
     def _hm_rescue_orphaned_fifo(
@@ -1322,8 +1325,10 @@ class GatewayInboundMixin(
         # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
         # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
         # A turn a slash command produced (``/queue yes``) is never live typing.
-        if busy and (await self._route_plaintext_approval_while_busy(event, _quick_key)
-                     or await self._hm_busy_preempt(event, source, _quick_key)):
+        # A `+<alias>` follow-up is its own turn on its own model: never steered into the running one.
+        if busy and await alias_prefix_for(self, event, source) is None and (
+                await self._route_plaintext_approval_while_busy(event, _quick_key)
+                or await self._hm_busy_preempt(event, source, _quick_key)):
             return True, None
         _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
         if _consumed:

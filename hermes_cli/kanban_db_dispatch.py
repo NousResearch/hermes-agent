@@ -1060,7 +1060,7 @@ class _DeadWorker:
 
 def _classify_dead_worker(
     pid: int, claimer: Optional[str], exit_code=None, *, task_id: Optional[str] = None,
-    board: Optional[str] = None,
+    board: Optional[str] = None, oom_killed: bool = False,
 ) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping.
 
@@ -1069,6 +1069,8 @@ def _classify_dead_worker(
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
     dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board)
+    if oom_killed:  # the kernel stopped the worker's scope: book that cause, not its exit
+        _kbsc.book_oom_kill(dead, pid)
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
@@ -1165,24 +1167,18 @@ class _CrashSweep:
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
+    deaths = _kbsc.dead_worker_verdicts(conn, _worker_alive)  # journal reads: outside the txn
     with _kb.write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
-        host_prefix = _kb._host_prefix()
         from hermes_cli.kanban_owner_recovery import apply_attempt_note, managed_run_exit_code, owner_reclaim_blocked
         for row in rows:
-            lock = row["claim_lock"] or ""
-            if not lock.startswith(host_prefix):
-                continue
-            # Launch-window grace so a freshly-spawned worker isn't reclaimed
-            # before its PID is visible on /proc.
-            started_at = _kb._to_epoch(_kb._row_get(row, "started_at"))
-            if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
-                continue
-            if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+            # Host-local, past its launch grace and dead before this txn, as the same worker.
+            oom_killed = deaths.get((row["id"], int(row["worker_pid"]), row["claim_lock"]))
+            if oom_killed is None:
                 continue
             # An ambiguous receipt holds the card while the attempt may still run; once nothing
             # can be executing it (a dead bound interpreter, or a run that never bound one): crash.
@@ -1192,7 +1188,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             pid = int(row["worker_pid"])
             # A managed run's authority-recorded exit (its bound interpreter's, under this claim).
             exit_code = managed_run_exit_code(conn, row["id"], pid, row["claim_lock"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"], board=board)
+            dead = _classify_dead_worker(pid, row["claim_lock"], exit_code, task_id=row["id"],
+                                         board=board, oom_killed=oom_killed)
             apply_attempt_note(conn, row["id"], pid, dead)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
@@ -2902,4 +2899,5 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_default_assignee as _kbda
+from hermes_cli import kanban_db_worker_scopes as _kbsc
 from hermes_cli import kanban_db_workspace as _kbw

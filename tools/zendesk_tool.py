@@ -413,7 +413,6 @@ registry.register(
 _ACTION = "zendesk_create_draft"
 _LOCALE_RE = re.compile(rf"^{_LOC}$")
 _DIGITS = re.compile(r"^\d{1,20}$")
-_SLACK_USER = re.compile(r"^[UW][A-Z0-9]{2,}$")
 
 _WRITE_GUARD_MISSING = (
     "zendesk_create_draft is refused: this profile has no Notion write guard "
@@ -705,38 +704,34 @@ def _describe(spec: dict, title: str, row_url: str = "", images_omitted=()) -> s
 
 
 async def _queue_veto(spec: dict, cfg: dict, m: dict) -> dict:
-    from datetime import timedelta
     from zoneinfo import ZoneInfo
     from agent import autonomy
     from tools import release_asset_gate as gate
-    channel, wait, wh = autonomy.veto_settings(cfg)
-    expiry = autonomy.veto_expiry_hours(cfg)
-    if not channel:
-        return {"error": "autonomy.announce_channel is not configured — a veto-level action must "
-                         "be announced before it can wait out its veto window."}
     now = _now()
-    not_before = autonomy.add_working_hours(now, wait, wh)
-    expires_at = not_before + timedelta(hours=expiry)
+    try:
+        plan = autonomy.plan_veto(cfg, now)
+    except autonomy.AutonomyConfigError as e:
+        return {"error": str(e)}
     pending_id = autonomy.new_pending_id()
     text = (f":hourglass_flowing_sand: I plan to create an *unpublished* Zendesk draft "
             f"{_describe(spec, m['title'], m['row'].url, m['images_omitted'])}. It goes ahead after "
-            f"{not_before.astimezone(ZoneInfo(wh.timezone)):%a %d %b %H:%M} ({_slack_escape(wh.timezone)}) "
+            f"{plan.not_before.astimezone(ZoneInfo(plan.timezone)):%a %d %b %H:%M} ({_slack_escape(plan.timezone)}) "
             f"unless someone reacts :x: here or sets the row to Hold. "
             f"(autonomy: veto · ref {pending_id})")
     try:
-        ts = await gate.post_announcement(channel, text)
+        ts = await gate.post_announcement(plan.channel, text)
     except gate.GateError as e:
         return {"error": f"Could not announce the veto window, so nothing was queued: {e}"}
     autonomy.save_pending(_ACTION, pending_id, {
         "spec": spec, "content_sha": m["sha"], "title": m["title"],
-        "created_at": now.isoformat(), "not_before": not_before.isoformat(),
-        "expires_at": expires_at.isoformat(), "announce_channel": channel,
+        "created_at": now.isoformat(), "not_before": plan.not_before.isoformat(),
+        "expires_at": plan.expires_at.isoformat(), "announce_channel": plan.channel,
         "announcement_ts": ts,
     })
     _audit("autonomy_veto_announced", f"pending={pending_id} row={spec['row_id']}")
     return {
-        "status": "pending", "pending_id": pending_id, "not_before": not_before.isoformat(),
-        "expires_at": expires_at.isoformat(), "announcement_ts": ts,
+        "status": "pending", "pending_id": pending_id, "not_before": plan.not_before.isoformat(),
+        "expires_at": plan.expires_at.isoformat(), "announcement_ts": ts,
         "message": ("Announced. It runs when zendesk_create_draft is called with run_due=true "
                     "(release-watch does this) or with this pending_id after not_before, unless "
                     "vetoed (❌ or Hold) or the row's content changes. It expires at expires_at."),
@@ -754,60 +749,30 @@ async def _say(channel: str, text: str, thread_ts: str = "") -> str:
 
 
 async def _execute_pending(pending_id: str, level: str, cfg: dict) -> dict:
-    from datetime import datetime
     from agent import autonomy
     from tools import release_asset_gate as gate
-    rec = autonomy.load_pending(_ACTION, pending_id)
-    if rec is None:
-        return {"error": f"No pending zendesk_create_draft action {pending_id!r}."}
-    if not autonomy.verify_pending(rec):
-        _audit("autonomy_tampered", f"pending={pending_id}")
-        return {"error": f"Pending action {pending_id} failed its integrity check; not executing."}
-    if rec.get("status") != "pending":
-        return {"error": f"Pending action {pending_id} is {rec.get('status')!r}, not pending."}
-    s = rec["signed"]
-    spec, channel, ts = s["spec"], s["announce_channel"], s["announcement_ts"]
-    now = _now()
 
-    if now > datetime.fromisoformat(s["expires_at"]):
-        autonomy.update_pending(_ACTION, pending_id, status="expired")
-        _audit("autonomy_expired", f"pending={pending_id}")
-        await _say(channel, ":wastebasket: Expired without running; nothing was created.", ts)
-        return {"status": "expired", "pending_id": pending_id}
-    if level == "veto" and now < datetime.fromisoformat(s["not_before"]):
-        return {"error": f"The veto window is open until {s['not_before']}; try again after."}
+    async def execute(signed: dict) -> dict:
+        try:
+            return await _create_once(
+                signed["spec"], cfg, level, require_approved=(level == "signoff"),
+                expected_sha=None if level == "signoff" else signed["content_sha"],
+                pending_id=pending_id)
+        except gate.RowStopped as e:
+            raise autonomy.PendingStop("vetoed", str(e).rstrip("."))
+        except _ContentChanged as e:
+            raise autonomy.PendingStop(
+                "stale", f"{str(e).rstrip('.')} — re-queue it so the team sees the new version")
+        except (gate.GateError, ZendeskWriteRefused, ValueError) as e:
+            raise autonomy.PendingRetry(str(e))
 
-    async def _stop(status: str, reason: str) -> dict:
-        autonomy.update_pending(_ACTION, pending_id, status=status, reason=reason)
-        _audit(f"autonomy_{status}", f"pending={pending_id} {reason}")
-        await _say(channel, f":no_entry_sign: Not creating it: {_slack_escape(reason)}.", ts)
-        return {"status": status, "pending_id": pending_id, "reason": reason}
-
-    try:
-        vetoers = [u for u in await gate.veto_reactions(channel, ts) if _SLACK_USER.match(u)]
-    except gate.GateError as e:
-        return {"error": f"Could not check the announcement for a veto, so nothing was created: {e}"}
-    if vetoers:
-        return await _stop("vetoed", "vetoed with :x: by " + ", ".join(vetoers))
-    try:
-        result = await _create_once(
-            spec, cfg, level, require_approved=(level == "signoff"),
-            expected_sha=None if level == "signoff" else s["content_sha"], pending_id=pending_id)
-    except gate.RowStopped as e:
-        return await _stop("vetoed", str(e).rstrip("."))
-    except _ContentChanged as e:
-        return await _stop("stale", f"{str(e).rstrip('.')} — re-queue it so the team sees the new version")
-    except autonomy.AutonomyBusy as e:
-        return {"error": str(e)}
-    except (gate.GateError, ZendeskWriteRefused, ValueError) as e:
-        autonomy.update_pending(_ACTION, pending_id, status="pending", last_error=str(e))
-        return {"error": str(e)}
-    autonomy.update_pending(_ACTION, pending_id, status="done", article_id=result.get("article_id"))
-    err = await _say(channel, ":white_check_mark: Created the unpublished draft: "
-                     + _slack_link(result.get("edit_url"), _title_of(result)), ts)
-    if err:
-        result["announce_error"] = err
-    return result
+    return await autonomy.run_pending(
+        _ACTION, pending_id, level, now=_now(), veto_reactions=gate.veto_reactions,
+        say=_say, audit=_audit, execute=execute,
+        done_fields=lambda r: {"article_id": r.get("article_id")},
+        done_text=lambda r: (":white_check_mark: Created the unpublished draft: "
+                             + _slack_link(r.get("edit_url"), _title_of(r))),
+        verb="creating it", outcome="created")
 
 
 async def run_due_pending(cfg: dict | None = None) -> list[dict]:
@@ -818,7 +783,6 @@ async def run_due_pending(cfg: dict | None = None) -> list[dict]:
     or a cron pre-run script runs ``python -m tools.zendesk_tool run-due``.
     Applies the same level, write-guard and veto checks as a direct call.
     """
-    from datetime import datetime
     from agent import autonomy
     cfg = _config() if cfg is None else cfg
     try:
@@ -829,20 +793,8 @@ async def run_due_pending(cfg: dict | None = None) -> list[dict]:
         return [{"error": "zendesk_create_draft is turned off for this profile (autonomy level 'off')."}]
     if not _write_guard_enabled(cfg):
         return [{"error": _WRITE_GUARD_MISSING}]
-    now = _now()
-    out = []
-    for rec in autonomy.list_pending(_ACTION):
-        if rec.get("status") != "pending":
-            continue
-        signed = rec.get("signed") if isinstance(rec.get("signed"), dict) else {}
-        try:
-            due = now >= datetime.fromisoformat(signed["not_before"])
-        except (KeyError, TypeError, ValueError):
-            due = True  # let _execute_pending report the broken record
-        if due:
-            out.append({"pending_id": rec.get("pending_id"),
-                        **(await _execute_pending(str(rec.get("pending_id")), level, cfg))})
-    return out
+    return [{"pending_id": pid, **(await _execute_pending(pid, level, cfg))}
+            for pid in autonomy.due_pending_ids(_ACTION, _now())]
 
 
 ZENDESK_CREATE_DRAFT_SCHEMA = {

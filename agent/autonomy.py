@@ -393,3 +393,130 @@ def exclusive(action: str, key: str):
             os.unlink(path)
         except OSError:
             pass
+
+
+# ── veto-window driver (shared by every veto-capable action) ─────────────
+#
+# A veto-level action is: announce in ``autonomy.announce_channel`` →
+# ``save_pending`` (signed) → later, ``run_pending`` re-checks everything and
+# executes unless vetoed (❌ by anyone but the bot, or the tool's own stop
+# signal such as a Hold row), the content went stale, or it expired.
+# ``zendesk_create_draft`` and ``post_release_update`` both drive it.
+
+_SLACK_USER = re.compile(r"^[UW][A-Z0-9]{2,}$")
+
+
+@dataclass(frozen=True)
+class VetoPlan:
+    channel: str
+    not_before: datetime
+    expires_at: datetime
+    timezone: str
+
+
+def plan_veto(config: Optional[dict], now: datetime) -> VetoPlan:
+    """When a veto action announced ``now`` may run, and when it expires.
+    Raises ``AutonomyConfigError`` (no announce channel, bad hours)."""
+    channel, wait, wh = veto_settings(config)
+    expiry = veto_expiry_hours(config)
+    if not channel:
+        raise AutonomyConfigError(
+            "autonomy.announce_channel is not configured — a veto-level action must be "
+            "announced before it can wait out its veto window.")
+    not_before = add_working_hours(now, wait, wh)
+    return VetoPlan(channel, not_before, not_before + timedelta(hours=expiry), wh.timezone)
+
+
+class PendingStop(Exception):
+    """Execution found a stop signal: the pending action ends with ``status``."""
+
+    def __init__(self, status: str, reason: str):
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
+class PendingRetry(Exception):
+    """A transient failure: the action stays pending (``last_error`` recorded)."""
+
+
+def _slack_escape(text) -> str:
+    return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def due_pending_ids(action: str, now: datetime) -> list[str]:
+    """Pending ids whose veto window has passed (or whose record is broken,
+    so ``run_pending`` reports it)."""
+    out = []
+    for rec in list_pending(action):
+        if rec.get("status") != "pending":
+            continue
+        signed = rec.get("signed") if isinstance(rec.get("signed"), dict) else {}
+        try:
+            due = now >= datetime.fromisoformat(signed["not_before"])
+        except (KeyError, TypeError, ValueError):
+            due = True
+        if due:
+            out.append(str(rec.get("pending_id")))
+    return out
+
+
+async def run_pending(action: str, pending_id: str, level: str, *, now: datetime,
+                      veto_reactions, say, audit, execute, done_text,
+                      done_fields=None, verb: str = "doing it",
+                      outcome: str = "done") -> dict:
+    """Execute one announced action if it is due and not vetoed.
+
+    ``execute(signed)`` (async) does the work and returns the result dict; it
+    raises ``PendingStop`` (vetoed / stale), ``PendingRetry`` (stays pending)
+    or ``AutonomyBusy``. ``veto_reactions(channel, ts)`` lists ❌ reactors;
+    ``say(channel, text, thread_ts)`` posts best-effort and returns an error
+    string or ""; ``audit(action, target)`` records to data_access_audit.
+    ``verb`` / ``outcome`` phrase the thread replies ("Not {verb}: …",
+    "nothing was {outcome}").
+    """
+    rec = load_pending(action, pending_id)
+    if rec is None:
+        return {"error": f"No pending {action} action {pending_id!r}."}
+    if not verify_pending(rec):
+        audit("autonomy_tampered", f"pending={pending_id}")
+        return {"error": f"Pending action {pending_id} failed its integrity check; not executing."}
+    if rec.get("status") != "pending":
+        return {"error": f"Pending action {pending_id} is {rec.get('status')!r}, not pending."}
+    s = rec["signed"]
+    channel, ts = s["announce_channel"], s["announcement_ts"]
+
+    if now > datetime.fromisoformat(s["expires_at"]):
+        update_pending(action, pending_id, status="expired")
+        audit("autonomy_expired", f"pending={pending_id}")
+        await say(channel, f":wastebasket: Expired without running; nothing was {outcome}.", ts)
+        return {"status": "expired", "pending_id": pending_id}
+    if level == "veto" and now < datetime.fromisoformat(s["not_before"]):
+        return {"error": f"The veto window is open until {s['not_before']}; try again after."}
+
+    async def _stop(status: str, reason: str) -> dict:
+        update_pending(action, pending_id, status=status, reason=reason)
+        audit(f"autonomy_{status}", f"pending={pending_id} {reason}")
+        await say(channel, f":no_entry_sign: Not {verb}: {_slack_escape(reason)}.", ts)
+        return {"status": status, "pending_id": pending_id, "reason": reason}
+
+    try:
+        vetoers = [u for u in await veto_reactions(channel, ts) if _SLACK_USER.match(str(u))]
+    except Exception as e:
+        return {"error": f"Could not check the announcement for a veto, so nothing was {outcome}: {e}"}
+    if vetoers:
+        return await _stop("vetoed", "vetoed with :x: by " + ", ".join(vetoers))
+    try:
+        result = await execute(s)
+    except PendingStop as e:
+        return await _stop(e.status, e.reason)
+    except AutonomyBusy as e:
+        return {"error": str(e)}
+    except PendingRetry as e:
+        update_pending(action, pending_id, status="pending", last_error=str(e))
+        return {"error": str(e)}
+    update_pending(action, pending_id, status="done", **((done_fields or (lambda r: {}))(result)))
+    err = await say(channel, done_text(result), ts)
+    if err:
+        result["announce_error"] = err
+    return result

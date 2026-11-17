@@ -44,14 +44,22 @@ export async function runExportBoardFlow(os: PluginOs, k: KanbanText, slug: stri
 /** Pick an archive and import it as a new board. Returns the new board's slug,
  *  or null when cancelled or failed. */
 export async function runImportBoardFlow(os: PluginOs, k: KanbanText): Promise<null | string> {
-  const archive = await os.pickOpenPath({ title: k.importBoardTitle, filters: ARCHIVE_FILTERS })
+  const options = { title: k.importBoardTitle, filters: ARCHIVE_FILTERS }
 
-  if (!archive) {
+  // The native dialog names the user's own file. A browser-hosted Desktop has
+  // no OS dialog, so it answers null and the page's own picker takes over: the
+  // app uploads the archive and hands back the copy it staged, which is a path
+  // this backend can read. Asking the first door first keeps the native case
+  // on the user's file and never opens two dialogs.
+  const picked =
+    (await os.pickOpenPath(options)) ?? (await os.pickBrowserFile?.(options))?.path ?? null
+
+  if (!picked) {
     return null
   }
 
   try {
-    const result = await importBoard(archive)
+    const result = await importBoard(picked)
     host.notify({ kind: 'success', message: k.boardImported(result.name) })
 
     // The slug auto-suffixes on collision, and warnings cover tasks parked

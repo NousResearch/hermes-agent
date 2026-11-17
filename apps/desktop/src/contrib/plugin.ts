@@ -88,6 +88,13 @@ export interface PluginOs {
    *  there too; fall back to your own UI (paste, drop) rather than treating a
    *  staged copy as the file the user picked. */
   pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
+  /** The other half of the ladder, for a browser-hosted Desktop: pick a file
+   *  in the page, which the app uploads to the backend and answers with the
+   *  copy it staged plus the name the file had. Resolves null in the native
+   *  app, where `pickOpenPath` is the door, and null on cancel. Reach for
+   *  `pickOpenPath` first and this second; feature-detect on older hosts:
+   *  `ctx.os.pickBrowserFile?.(…)`. */
+  pickBrowserFile: (options?: PluginFileDialogOptions) => Promise<null | PluginPickedUpload>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
 }
@@ -114,6 +121,19 @@ export interface PluginFileDialogOptions {
   defaultPath?: string
   filters?: Array<{ extensions: string[]; name: string }>
   title?: string
+}
+
+/** A file the browser uploaded on this plugin's behalf. There is no user path
+ *  to give: a browser file input cannot reveal where the file came from, so
+ *  the app uploaded it and the backend holds the copy. */
+export interface PluginPickedUpload {
+  /** The name the file had where the user picked it, e.g. `hk_tasks.csv`. */
+  name: string
+  /** The copy, on the BACKEND's filesystem and inside the Hermes home
+   *  (`<profile home>/uploads/`). Read it through your own backend (`rest`) —
+   *  never treat it as the user's original path, and expect any guard that
+   *  refuses the home to refuse it. */
+  path: string
 }
 
 export interface PluginContext {
@@ -270,6 +290,23 @@ function createPluginOs(pluginId: string): PluginOs {
     }
   }
 
+  // And again for the picker that answers with the upload it described.
+  const attemptPick = async (
+    run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<null | PluginPickedUpload>
+  ) => {
+    const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
+
+    if (!bridge) {
+      return null
+    }
+
+    try {
+      return await run(bridge)
+    } catch {
+      return null
+    }
+  }
+
   return {
     notify: input => dispatchPluginNativeNotification(pluginId, input),
     openExternal: url =>
@@ -294,6 +331,29 @@ function createPluginOs(pluginId: string): PluginOs {
         const picked = await bridge.selectPaths?.({ ...options, multiple: false })
 
         return picked?.[0] ?? null
+      }),
+    pickBrowserFile: options =>
+      attemptPick(async bridge => {
+        // The other half of the ladder: this door only means anything where the
+        // page did the picking. In the native shell there is no upload to
+        // describe, so it answers null and pickOpenPath is the door.
+        if (!isBrowserHostedDesktop()) {
+          return null
+        }
+
+        const picked = await bridge.selectPaths?.({ ...options, multiple: false })
+        const path = picked?.[0]
+
+        if (!path) {
+          return null
+        }
+
+        // The name the user's file had, from the bridge that staged it. An older
+        // browser bridge has no lookup, and the staged name still ends in the
+        // user's name after `web-<hex>-`.
+        const name = bridge.getStagedFileDisplayName?.(path) || path.split(/[\\/]/).pop() || path
+
+        return { name, path }
       }),
     pickSavePath: options => attemptPath(async bridge => (await bridge.selectSavePath?.(options)) ?? null),
     revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),

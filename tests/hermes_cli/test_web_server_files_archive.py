@@ -78,17 +78,18 @@ def test_directory_round_trips_through_download_and_upload(archive_client):
 
 
 @pytest.mark.parametrize("hostile", [
-    ("../escape.txt", "file", "pwned"),
-    ("/abs/escape.txt", "file", "pwned"),
-    ("out", "symlink", "../../outside"),
-    ("hard", "hardlink", "inside.txt"),
-], ids=["dotdot", "absolute", "symlink-escape", "hardlink"])
+    [("../escape.txt", "file", "pwned")],
+    [("/abs/escape.txt", "file", "pwned")],
+    [("out", "symlink", "../../outside")],
+    [("d", "symlink", "."), ("p", "symlink", "d/..")],  # reads as "." but resolves to the parent
+    [("hard", "hardlink", "inside.txt")],
+], ids=["dotdot", "absolute", "symlink-escape", "symlink-chain-escape", "hardlink"])
 def test_hostile_archive_is_refused_before_anything_is_written(archive_client, hostile):
     """One bad member refuses the whole archive with 400, and none of the good members before it
     land on disk."""
     client, root = archive_client
     (root / "inbox").mkdir(parents=True)
-    body = _tar(("inside.txt", "file", "ok"), ("nested/also.txt", "file", "ok"), hostile)
+    body = _tar(("inside.txt", "file", "ok"), ("nested/also.txt", "file", "ok"), *hostile)
 
     response = client.put("/api/files/archive", params={"path": "inbox"}, content=body)
 

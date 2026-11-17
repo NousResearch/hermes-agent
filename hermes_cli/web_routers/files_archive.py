@@ -188,7 +188,10 @@ def _add_file(tf: tarfile.TarFile, entry: _Entry) -> None:
 def _produce(entries: list[_Entry], chunks: queue.Queue, cancelled: threading.Event) -> None:
     writer = _QueueWriter(chunks, cancelled)
     try:
-        with tarfile.open(fileobj=cast(IO[bytes], writer), mode="w|gz", format=tarfile.PAX_FORMAT) as tf:
+        with tarfile.open(
+            fileobj=cast(IO[bytes], writer), mode="w|gz", format=tarfile.PAX_FORMAT,
+            dereference=True,  # each name of a hard-linked file carries its content (uploads refuse hard links)
+        ) as tf:
             for entry in entries:
                 _add_entry(tf, entry)
         writer.flush()
@@ -319,15 +322,34 @@ def _plan_archive(tf: tarfile.TarFile) -> list[_Planned]:
         planned = _plan_member(member, kinds)
         if planned is not None:
             plan.append(planned)
+    for item in plan:
+        if item.kind == "symlink":
+            _refuse_link_through_link(item, kinds)
     return plan
+
+
+def _refuse_link_through_link(item: _Planned, kinds: dict[PurePosixPath, str]) -> None:
+    """A link target is checked as text, so it must not pass THROUGH another link in the archive:
+    with ``d -> .``, ``p -> d/..`` reads as ``.`` but resolves to the target's parent."""
+    walked = item.rel.parent
+    for part in PurePosixPath(item.member.linkname).parts[:-1]:
+        walked = walked.parent if part == ".." else walked if part == "." else walked / part
+        if kinds.get(walked) == "symlink":
+            raise _Refused(400, f"{item.rel}: symlink target passes through another symlink ({walked})")
 
 
 def _check_destination(root: str, target: Path, item: _Planned) -> None:
     """Refuse an entry the disk would send outside *root* (an existing symlink on the way) or that
     would replace a directory with a non-directory, or the reverse."""
     dest = target.joinpath(*item.rel.parts)
+    for depth in range(1, len(item.rel.parts)):  # implied parent folders, not just listed ones
+        parent = target.joinpath(*item.rel.parts[:depth])
+        if os.path.lexists(parent) and not parent.is_dir():
+            raise _Refused(409, f"{item.rel}: a file already exists at {item.rel.parents[-depth - 1]}")
     if not _is_under(root, os.path.realpath(dest.parent)):
         raise _Refused(400, f"{item.rel}: an existing symlink leads outside the target directory")
+    if item.kind == "symlink" and not _is_under(root, os.path.realpath(dest.parent / item.member.linkname)):
+        raise _Refused(400, f"{item.rel}: symlink resolves outside the target directory through an existing link")
     if item.kind == "dir":
         if os.path.lexists(dest) and not dest.is_dir():
             raise _Refused(409, f"{item.rel}: a file already exists where the archive has a directory")

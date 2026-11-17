@@ -327,12 +327,10 @@ class GatewaySessionStore:
         self.call("config.set", session_id=session_id, key="yolo", value="1" if enabled else "0")
 
     def _row_revision(self, session_id, default):
-        db = self._db()
-        if db is None:
+        if self._db() is None:
             return default
-        with db._read_ctx() as conn:
-            row = conn.execute("SELECT runtime_revision FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        return row[0] if row else default
+        record = self.persistence.sessions.get(session_id)
+        return record.runtime_revision if record is not None else default
 
     def _title_holder(self, session_id, title):
         if self._db() is None or not title:

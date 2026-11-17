@@ -509,35 +509,38 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
     clearSessionDraft('session-nav')
   })
 
-  it('restores an unfinished time range after navigating away', () => {
-    function DraftEditor() {
-      const { editorRef, syncDraftFromEditor } = useComposerDraft({
-        activeQueueSessionKey: 'session-nav',
-        focusKey: null,
-        inputDisabled: false,
-        queueEditRef: { current: null },
-        sessionId: 'session-nav'
-      })
+  it.each(['21:00~', '21:01~', '12.01~', '2001~ 2005', '2024-01~', '[200~300]', '00~06시'])(
+    'restores numeric draft %s after navigating away',
+    text => {
+      function DraftEditor() {
+        const { editorRef, syncDraftFromEditor } = useComposerDraft({
+          activeQueueSessionKey: 'session-nav',
+          focusKey: null,
+          inputDisabled: false,
+          queueEditRef: { current: null },
+          sessionId: 'session-nav'
+        })
 
-      return (
-        <div
-          contentEditable
-          onInput={event => void syncDraftFromEditor(true, event.currentTarget)}
-          ref={editorRef}
-          role="textbox"
-        />
-      )
+        return (
+          <div
+            contentEditable
+            onInput={event => void syncDraftFromEditor(true, event.currentTarget)}
+            ref={editorRef}
+            role="textbox"
+          />
+        )
+      }
+
+      const mounted = render(<DraftEditor />)
+      const editor = mounted.getByRole('textbox')
+      editor.textContent = text
+      fireEvent.input(editor)
+      mounted.unmount()
+
+      const restored = render(<DraftEditor />)
+      expect(restored.getByRole('textbox').textContent).toBe(text)
     }
-
-    const mounted = render(<DraftEditor />)
-    const editor = mounted.getByRole('textbox')
-    editor.textContent = '21:00~'
-    fireEvent.input(editor)
-    mounted.unmount()
-
-    const restored = render(<DraftEditor />)
-    expect(restored.getByRole('textbox').textContent).toBe('21:00~')
-  })
+  )
 
   it('stashes the unsent draft on unmount and restores it on remount', () => {
     // The user typed but has not sent; the draft was stashed by the normal

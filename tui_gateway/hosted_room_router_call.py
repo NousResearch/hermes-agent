@@ -63,7 +63,7 @@ def ask_router(*, root: Path, db_path: Path, room: Mapping[str, Any], discussion
         roster=_member_roster(room, homes), recent=_recent_messages(db_path, room, int(discussion["seq"])),
         message=str(payload.get("text") or ""),
         attachments=[str(item.get("name") or "file") for item in payload.get("attachments") or ()])
-    handles = {str(m["handle"]).casefold(): str(m["member_id"]) for m in room.get("members") or ()}
+    handles = router.router_handles(room.get("members") or ())
     try:
         with _profile_runtime_scope(root):
             response = call_llm(

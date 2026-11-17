@@ -18,6 +18,8 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from gateway.hosted_room_mentions import mention_index, roster_mention_line
+
 if TYPE_CHECKING:
     from gateway.hosted_room_discussion import DiscussionMember, DiscussionRoom, _ValidatedEvent
 
@@ -170,10 +172,14 @@ def router_prompt(*, room_name: str, purpose: str, notes: str, roster: Sequence[
     if notes:
         lines.append(f"Notes: {notes[:2000]}")
     lines += ["", "Members:"]
-    for member in roster:
+    # One index over the full roster decides which friendly tag is safe to advertise. A router
+    # roster row may carry only its unique immutable handle (no member_id); that is its identity.
+    entries = [{**member, "member_id": str(member.get("member_id") or member.get("handle") or ""),
+                "display_name": str(member.get("name") or member.get("display_name") or "")}
+               for member in roster]
+    for member, entry in zip(roster, entries):
         role = " ".join(str(member.get("description") or "").split())[:300]
-        name = member.get("name") or ""
-        lines.append(f"- @{member['handle']}" + (f" ({name})" if name and name != member["handle"] else "")
+        lines.append(roster_mention_line(entry, members=entries)
                      + (f": {role}" if role else ""))
     if recent:
         lines += ["", "Recent messages (oldest first):"]
@@ -189,10 +195,19 @@ def _one_line(text: str) -> str:
     return flat if len(flat) <= ROUTER_MESSAGE_CHARS else flat[:ROUTER_MESSAGE_CHARS] + "..."
 
 
+def router_handles(members: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """``tag -> member id`` for the router's answer: canonical handles plus unique display-name aliases.
+
+    An alias two members share is left out, so a router answer naming it is invalid (the caller's
+    existing fallback) rather than silently resolved to one of them.
+    """
+    return {tag: str(member["member_id"]) for tag, member in mention_index(members).tags().items()}
+
+
 def parse_router_answer(text: Any, handles: Mapping[str, str]) -> tuple[str, ...] | None:
     """Member ids for a strict ``{"members": [...]}`` answer (``()`` for ``"everyone"``); None when the
     answer is not exactly that object, or names anyone outside the roster. ``handles`` maps casefolded
-    handle -> member id."""
+    tag -> member id (``router_handles``)."""
     raw = str(text or "").strip()
     if raw.startswith("```"):
         raw = raw.strip("`").removeprefix("json").strip()

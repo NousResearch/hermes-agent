@@ -1236,3 +1236,40 @@ it('clears the stop notice only once the gateway reports no work still stopping'
   view.rerender(<CanonicalGroupWorkspace binding={binding} visible />)
   await waitFor(() => expect(screen.queryByText(CANONICAL_GROUP_LOCALES.en.stopped)).toBeNull())
 })
+
+// Hosted rooms keep the immutable handle; an owner that advertises
+// `room_mention_aliases_v1` also answers to the frozen display name. Both the
+// completion popover and Hover Reply insert that friendly tag only there.
+const mentionRoom = (method: string, features: string[], events: unknown[] = []) => method === 'groups.capabilities'
+  ? { driver: true, features, methods: ['groups.capabilities', 'groups.state', 'groups.log', 'groups.send'] }
+  : method === 'groups.state'
+    ? { room: { name: 'Room', members: [
+      { member_id: 'default-long', profile: 'default-long', handle: 'default-long', display_name: 'Scout' },
+      { member_id: 'builder', profile: 'builder', handle: 'builder', display_name: 'Builder' }] }, driver_status: {} }
+    : method === 'groups.log' ? { events } : {}
+
+const replyEvent = [{ seq: 1, kind: 'message.member', actor: { kind: 'member', id: 'default-long' }, payload: { text: 'Ready when you are' } }]
+
+it('completes and addresses a renamed member by its friendly tag on an owner that advertises aliases', async () => {
+  request.mockImplementation(async (_route, method) => mentionRoom(method, ['room_identity', 'room_mention_aliases_v1'], replyEvent))
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'aliases' }} />)
+  const composer = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(composer.disabled).toBe(false))
+  fireEvent.click(await screen.findByRole('button', { name: /^Reply to / }))
+  await waitFor(() => expect(composer.value).toBe('@scout '))
+
+  fireEvent.change(composer, { target: { value: 'hey @sco' } })
+  expect(screen.getAllByRole('button').some((button: Element) => button.textContent?.startsWith('@scout'))).toBe(true)
+})
+
+it('keeps the immutable handle in completion and Hover Reply on an owner without aliases', async () => {
+  request.mockImplementation(async (_route, method) => mentionRoom(method, ['room_identity'], replyEvent))
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'no-aliases' }} />)
+  const composer = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(composer.disabled).toBe(false))
+  fireEvent.click(await screen.findByRole('button', { name: /^Reply to / }))
+  await waitFor(() => expect(composer.value).toBe('@default-long '))
+
+  fireEvent.change(composer, { target: { value: 'hey @sco' } })
+  expect(screen.getAllByRole('button').some((button: Element) => button.textContent?.startsWith('@scout'))).toBe(false)
+})

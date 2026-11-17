@@ -50,6 +50,15 @@ export function groupAdvertisedMethods(value: unknown): ReadonlySet<string> | nu
   return Array.isArray(methods) && stringList(methods) ? new Set(methods) : null
 }
 
+/** The `features` a `groups.capabilities` answer lists, read the same way as its
+ *  methods: `null` when a successful answer lists none, `undefined` until one
+ *  arrives. Mention aliases are offered only when this names the feature. */
+export function groupAdvertisedFeatures(value: unknown): ReadonlySet<string> | null {
+  const features = value && typeof value === 'object' ? (value as Record<string, unknown>).features : undefined
+
+  return Array.isArray(features) && stringList(features) ? new Set(features) : null
+}
+
 export const offersGroupMethod = (methods: GroupMethods, method: string) =>
   methods === null || Boolean(methods?.has(method))
 
@@ -63,14 +72,22 @@ export const offersGroupSafetyMethod = (methods: GroupMethods, method: string) =
 // another connection. A host double without socket state reads as one socket that stays open.
 const onForeground = (connectionId: string) => (host.state?.connectionId?.get() ?? connectionId) === connectionId
 
-/** The group methods `route`'s gateway lists, read once per opening of the gateway socket: an
- *  update restarts the gateway, so a reopened socket may be a gateway with other methods. Until a
- *  read for the current opening succeeds it lists none, so a failed read never offers a control the
- *  gateway did not confirm, and a reply from before the socket changed never publishes. While the
- *  room is visible and the socket open, a failed read is tried again every two seconds. */
-export function useGroupMethods(route: { connectionId: string; profile: string }, visible = true): GroupMethods {
+/** What one `groups.capabilities` read offers: the methods whose controls may be
+ *  shown and the features the composer may rely on. */
+export interface GroupOffers {
+  features: ReadonlySet<string> | null | undefined
+  methods: GroupMethods
+}
+
+/** The group methods and features `route`'s gateway lists, read once per opening of the gateway
+ *  socket: an update restarts the gateway, so a reopened socket may be a gateway with other
+ *  methods. Until a read for the current opening succeeds it lists none, so a failed read never
+ *  offers a control the gateway did not confirm, and a reply from before the socket changed never
+ *  publishes. While the room is visible and the socket open, a failed read is tried again every two
+ *  seconds. */
+export function useGroupOffers(route: { connectionId: string; profile: string }, visible = true): GroupOffers {
   const [opening, setOpening] = useState(0)
-  const [answer, setAnswer] = useState<{ opening: number; methods: ReadonlySet<string> | null } | null>(null)
+  const [answer, setAnswer] = useState<{ features: ReadonlySet<string> | null; methods: ReadonlySet<string> | null; opening: number } | null>(null)
   const [attempt, setAttempt] = useState(0)
   const answered = answer?.opening === opening
 
@@ -83,14 +100,19 @@ export function useGroupMethods(route: { connectionId: string; profile: string }
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     void canonicalGroupRequest<unknown>(route, 'groups.capabilities').then(
-      value => { if (!cancelled) {setAnswer({ opening, methods: groupAdvertisedMethods(value) })} },
+      value => { if (!cancelled) {setAnswer({ features: groupAdvertisedFeatures(value), methods: groupAdvertisedMethods(value), opening })} },
       () => { if (!cancelled) {timer = setTimeout(() => setAttempt(value => value + 1), 2000)} }
     )
 
     return () => { cancelled = true; clearTimeout(timer) }
   }, [route, connectionId, visible, answered, attempt, opening])
 
-  return answered ? answer.methods : undefined
+  return answered ? { features: answer.features, methods: answer.methods } : { features: undefined, methods: undefined }
+}
+
+/** The group methods alone, for the surfaces that only gate controls. */
+export function useGroupMethods(route: { connectionId: string; profile: string }, visible = true): GroupMethods {
+  return useGroupOffers(route, visible).methods
 }
 
 /** The profiles `groups.create` will seat for THIS caller, as `groups.capabilities`

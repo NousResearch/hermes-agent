@@ -17,7 +17,7 @@ description: >-
 maintainer: atostivint
 tier: community
 category: tools
-requires_hermes: ">=0.22"
+requires_hermes: ">=0.22.0"
 image: https://raw.githubusercontent.com/atostivint/hermes-compute-priority/2a1cc9acf552dbb7ba9cf54fb8d05b461883ca39/docs/images/banner.png
 readme: true
 platforms:

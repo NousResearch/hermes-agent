@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
+from tools.terminal_reread_hint import reread_hint
+
 logger = logging.getLogger("tools.terminal_tool")
 
 
@@ -281,6 +283,9 @@ def finalize_foreground_result(
         ("approval", approval_note or None),
         ("exit_code_meaning", exit_note or None),
         ("hint", failure_hint or None),
+        # Its own field, not appended to output: a model copying output into a file must not copy the hint.
+        ("reread", reread_hint(command, command_cwd, task_id or "default")
+         if returncode == 0 and env_type == "local" else None),
         ("sudo_auth_failed", True if sudo_auth_failed else None),
         ("sudo_cache_cleared", True if sudo_cache_cleared else None),
     ]

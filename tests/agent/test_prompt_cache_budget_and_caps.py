@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 import agent.prompt_cache_lifecycle as pcl
+from agent.usage_pricing import PricingEntry
 
 _OPUS = SimpleNamespace(input_cost_per_million=5, output_cost_per_million=25,
                         cache_read_cost_per_million=0.5, cache_write_cost_per_million=10)
@@ -275,3 +276,45 @@ def test_a_long_decode_budget_is_dropped_from_the_replay_and_unknown_clients_are
     assert replay["max_tokens"] == 1 and "max_output_tokens" not in replay["extra_body"]
     assert GeminiNativeClient.effective_output_cap(**replay) == 1
     assert pcl.replay_cap_honoured(SimpleNamespace(chat=None), request, "gemini-4-pro", "chat_completions") is False
+
+
+@pytest.mark.parametrize("tail, expected_calls", [(470, 0), (0, 2)])
+def test_reasoning_replays_reserve_the_full_output_cap(monkeypatch, tail, expected_calls):
+    import json
+
+    import httpx
+    from openai import OpenAI
+
+    entry = PricingEntry(input_cost_per_million=Decimal(10), output_cost_per_million=Decimal(40),
+                         cache_read_cost_per_million=Decimal("2.5"), source="official_docs_snapshot")
+    monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **kw: entry)
+    monkeypatch.setattr(pcl.PromptCacheWarmer, "_pricing", lambda self: entry)
+    sent = []
+
+    def transport(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "id": "warm", "object": "chat.completion", "created": 0, "model": "o3",
+            "choices": [{"index": 0, "finish_reason": "length",
+                         "message": {"role": "assistant", "content": ""}}],
+            "usage": {"prompt_tokens": 1024 + tail, "completion_tokens": 16,
+                      "prompt_tokens_details": {"cached_tokens": 1024}},
+        })
+
+    with OpenAI(api_key="fixture", http_client=httpx.Client(transport=httpx.MockTransport(transport))) as client:
+        agent = _chat(api_mode="chat_completions", provider="openai", model="o3",
+                      base_url="https://api.openai.com/v1")
+        agent.client = client
+        request = {"model": "o3", "max_completion_tokens": 4096,
+                   "messages": [{"role": "user", "content": "hi"}]}
+        usage = SimpleNamespace(prompt_tokens=1024 + tail, completion_tokens=8,
+                                prompt_tokens_details=SimpleNamespace(cached_tokens=1024))
+        _respond(agent, request, SimpleNamespace(usage=usage))
+        warmer = pcl.get_prompt_cache_warmer(agent)
+        for _ in range(pcl.WARM_BUDGET):
+            if warmer._run is not None:
+                _fire(warmer)
+        assert len(sent) == expected_calls
+        assert all(body["max_completion_tokens"] == 16 for body in sent)
+        assert warmer._budget is not None
+        assert warmer._budget.spent_usd <= 0.00768  # 1024 * ($10 - $2.50) / 1M

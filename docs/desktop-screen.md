@@ -62,10 +62,14 @@ attribution providers, not the model prompt; neither is screened
 this cycle (same A6 deferral as attachments/voice_context).
 
 Judge philosophy unchanged: the judge advises, it never replaces
-owner gates. The gate is one engine call per 32k-char chunk, within a
-6s hard funding budget; every model-visible character is judged or
-the submit is held ("screening_incomplete_budget" - fail-closed for
-coverage; an unreachable ENGINE still fails open per Phase 2).
+owner gates. Texts are split into 32k-char chunks with a 256-char
+seam overlap (a payload cannot hide in a chunk boundary), all judged
+within one 6s screening budget shared by the whole submit; every
+model-visible character is judged or the submit is held
+("screening_incomplete_budget"; text over 4M chars is held as
+"oversized_unscreened"). A genuinely unreachable ENGINE still fails
+open per Phase 2; a call clipped by the budget is coverage
+exhaustion and holds.
 
 ## Enablement (per deployment)
 

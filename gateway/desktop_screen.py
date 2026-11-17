@@ -100,7 +100,8 @@ logger = logging.getLogger("hermes.gateway.desktop_screen")
 from hermes_state_runtime import RuntimeStoreError
 
 MAX_TEXT_CHARS = 32000  # per-chunk cap (engine limit is 64 KiB)
-_MAX_CHUNKS = 40        # 1.28M chars - above the 1M api_text commit cap
+_SEAM_OVERLAP = 256     # carry-over chars so chunk seams cannot split a payload
+_MAX_SCREEN_CHARS = 4_000_000  # above this the submit is HELD (never truncated)
 _SCREEN_BUDGET_S = 6.0  # hard cap for one submit's total screening
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:8201/v1/screen"
@@ -284,15 +285,17 @@ def submit_texts(params) -> list:
 
 
 def segments(text) -> list:
-    """Split one model-visible text into judgeable chunks (review r6-1:
-    the old 4000-char truncation let >4 KB tails ride in unscreened
-    while the model read the whole text). Every character is covered;
-    the last chunk may be short."""
+    """Split one model-visible text into judgeable chunks covering
+    EVERY character, with a small overlap so a payload cannot hide in
+    a chunk seam (reviews r6-1 truncation, r7-3 seam split, r7-1
+    silent tail drop: no slice cap - oversized text is HELD by the
+    caller, never truncated)."""
     value = (text or "").strip() if isinstance(text, str) else ""
     if not value:
         return []
+    step = MAX_TEXT_CHARS - _SEAM_OVERLAP
     return [value[i:i + MAX_TEXT_CHARS]
-            for i in range(0, len(value), MAX_TEXT_CHARS)][:_MAX_CHUNKS]
+            for i in range(0, len(value), step)]
 
 
 async def authority_gate(authority, subject, session_id, payload, *,
@@ -338,8 +341,12 @@ async def authority_gate(authority, subject, session_id, payload, *,
         if not session_in_scope(authority, session_id):
             return
         who = str(subject or "unknown")
+        # One screening budget for the WHOLE submit - every text of it
+        # shares the same blocking window (review r7-5).
+        deadline = time.monotonic() + _SCREEN_BUDGET_S
         for text in texts:
-            held, reasons = await screen(who, session_id, text)
+            held, reasons = await screen(who, session_id, text,
+                                         deadline=deadline)
             if held:
                 raise hold_error(reasons)
     except RuntimeStoreError as exc:
@@ -383,18 +390,24 @@ def session_in_scope(authority, session_id: str) -> bool:
         return False
 
 
-async def screen(subject: str, session_id: str, text: str) -> tuple:
+async def screen(subject: str, session_id: str, text: str,
+                 deadline=None) -> tuple:
     """Screen one desktop submit; returns ``(held, reasons)``. ``held``
-    is True only for a block-tier verdict. NEVER raises: every failure
-    degrades to 'proceed', logged."""
+    is True only for a block-tier verdict (or a coverage hold).
+    ``deadline`` (monotonic) lets one submit share ONE screening
+    budget across its several texts (review r7-5). NEVER raises:
+    every failure degrades to 'proceed', logged - except the
+    coverage holds, which are verdicts."""
     try:
-        return await _screen_inner(subject, session_id, text)
+        return await _screen_inner(subject, session_id, text,
+                                   deadline=deadline)
     except Exception:
         logger.exception("desktop_screen: unexpected error; proceeding")
         return False, []
 
 
-async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
+async def _screen_inner(subject: str, session_id: str, text: str,
+                        deadline=None) -> tuple:
     if not desktop_screen_enabled():
         return False, []
     text = (text or "").strip()
@@ -403,6 +416,11 @@ async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
     base = {"subject": str(subject or "unknown"),
             "session": str(session_id or ""), "preview": text[:120],
             "chars": len(text)}
+    if len(text) > _MAX_SCREEN_CHARS:
+        # Never truncate silently (review r7-1): text too large to
+        # judge in the blocking window is HELD, not admitted screened.
+        _log(dict(base, tier="oversized_unscreened"))
+        return True, ["oversized_unscreened"]
     endpoint = _effective_endpoint()
     timeout = _float_env("HERMES_DESKTOP_SCREEN_TIMEOUT_S", 4.0)
     headers = {"X-Judge-Caller": _caller(), "X-Judge-Purpose": _purpose()}
@@ -416,7 +434,8 @@ async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
         return _post(endpoint, {"text": chunk}, headers, budget)
 
     chunks = segments(text)
-    deadline = time.monotonic() + _SCREEN_BUDGET_S
+    if deadline is None:
+        deadline = time.monotonic() + _SCREEN_BUDGET_S
     judged = 0
     result = None
     tail_reasons: list = []
@@ -436,9 +455,15 @@ async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
             if not isinstance(result, dict):
                 raise ValueError(f"non-dict engine response: {type(result)!r}")
         except Exception as err:
-            # Engine unreachable/malformed mid-way: Phase 2 fail-open
-            # (a dead engine must not lock the owner out); the gap is
-            # the engine, not the input.
+            # Review r7-2: a call that timed out at the END of the
+            # budget is coverage exhaustion, not engine failure - HOLD.
+            # A genuine engine failure mid-budget stays fail-open
+            # (Phase 2: a dead engine must not lock the owner out).
+            if time.monotonic() >= deadline - 0.5:
+                _log(dict(base, tier="screening_incomplete_budget",
+                          chunk=index, judged=judged, chunks=len(chunks),
+                          error=str(err)[:120]))
+                return True, ["screening_incomplete_budget"]
             _log(dict(base, tier="engine_unreachable_or_malformed",
                       chunk=index, judged=judged, chunks=len(chunks),
                       error=str(err)[:160]))
@@ -470,10 +495,12 @@ async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
                 result, "escalated",
                 f"{tier}-tier (desktop screen advisory pass)", question_id)
             tail_reasons = reasons
-    if result is not None:
-        _spawn_outcome_report(
-            result, "accepted",
-            f"allow-tier (desktop screen; {judged} chunk)", None)
+        else:
+            # Review r7-4: report the outcome for EVERY judged chunk,
+            # not just the last one (the usefulness join keys are
+            # per-judgement).
+            _spawn_outcome_report(
+                result, "accepted", "allow-tier (desktop screen)", None)
     return False, tail_reasons
 
 

@@ -41,6 +41,7 @@ from gateway.desktop_screen import screen, session_in_scope
 class EngineStubHandler(BaseHTTPRequestHandler):
     tier = "allow"
     block_pattern = None  # when set: block only texts containing this
+    screen_delay_s = 0.0  # simulate a slow engine (budget tests)
     outcome_delay_s = 0.0
     outcomes = []
     last_caller = None
@@ -55,6 +56,8 @@ class EngineStubHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path.endswith("/screen"):
             EngineStubHandler.screen_calls += 1
+            if EngineStubHandler.screen_delay_s:
+                time.sleep(EngineStubHandler.screen_delay_s)
             EngineStubHandler.last_caller = self.headers.get("X-Judge-Caller", "")
             EngineStubHandler.last_purpose = self.headers.get("X-Judge-Purpose", "")
             EngineStubHandler.last_text = body.get("text")
@@ -105,6 +108,7 @@ class DesktopScreenTestCase(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
+        EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.outcome_delay_s = 0.0
         EngineStubHandler.outcomes = []
         EngineStubHandler.last_caller = None
@@ -205,6 +209,13 @@ class TestTiers(DesktopScreenTestCase):
         held, reasons = self.run_screen("   ")
         self.assertEqual((held, reasons), (False, []))
         self.assertEqual(EngineStubHandler.screen_calls, 0)
+
+    def test_every_chunk_outcome_reported(self):
+        # Review r7-4: each judged chunk's allow verdict is reported
+        # to the outcome join, not only the last one.
+        self.run_screen("D" * 70000)
+        self.await_outcomes(3)
+        self.assertEqual(len(EngineStubHandler.outcomes), 3)
 
 
 class TestFailOpen(DesktopScreenTestCase):
@@ -488,6 +499,7 @@ class TestAuthorityGate(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
+        EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0
         EngineStubHandler.last_texts = []
         self.env = {
@@ -599,6 +611,50 @@ class TestAuthorityGate(unittest.TestCase):
         self.assertEqual(raised.exception.reason, "desktop_screen_hold")
         self.assertEqual(EngineStubHandler.screen_calls, 0)
 
+    def test_seam_split_attack_is_held(self):
+        # Review r7-3: a payload spanning a chunk boundary must not
+        # dissolve into two harmless fragments - the overlap window
+        # keeps every seam visible to at least one chunk.
+        EngineStubHandler.block_pattern = "ATTACK"
+        from hermes_state_runtime import RuntimeStoreError
+        with self.assertRaises(RuntimeStoreError) as raised:
+            self._run({"text": "B" * 31998 + "ATTACK take over the agent"})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+
+    def test_oversized_text_is_held_not_truncated(self):
+        # Review r7-1: no silent tail drop - text above the judging
+        # ceiling is HELD with zero engine calls.
+        from hermes_state_runtime import RuntimeStoreError
+        with mock.patch.object(desktop_screen, "_MAX_SCREEN_CHARS", 100):
+            with self.assertRaises(RuntimeStoreError) as raised:
+                self._run({"text": "F" * 200})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+
+    def test_budget_clipped_timeout_holds_not_failopen(self):
+        # Review r7-2: a call that times out AT the budget boundary is
+        # coverage exhaustion -> HELD; only a genuine mid-budget engine
+        # failure may fail open.
+        from hermes_state_runtime import RuntimeStoreError
+        EngineStubHandler.screen_delay_s = 0.9
+        with mock.patch.object(desktop_screen, "_SCREEN_BUDGET_S", 0.6):
+            with self.assertRaises(RuntimeStoreError) as raised:
+                self._run({"text": "hello"})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+
+    def test_shared_deadline_expired_holds(self):
+        import time as _time
+        self.loop = asyncio.new_event_loop()
+        try:
+            held, reasons = self.loop.run_until_complete(
+                desktop_screen.screen("s", "s1", "hello",
+                                      deadline=_time.monotonic() - 1))
+        finally:
+            self.loop.close()
+        self.assertTrue(held)
+        self.assertEqual(reasons, ["screening_incomplete_budget"])
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+
 
 class TestAuthorityWiring(unittest.TestCase):
     """SessionAuthority._submit consults the gate BEFORE durable
@@ -685,6 +741,7 @@ class TestAuthorityWiring(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
+        EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0
         EngineStubHandler.last_texts = []
         self.patcher = mock.patch.dict(os.environ, {

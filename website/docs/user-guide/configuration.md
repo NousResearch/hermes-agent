@@ -651,6 +651,8 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
 
+**CPU and memory:** Vercel fixes memory at 2048 MB per vCPU, so `container_cpu` (rounded down to a whole vCPU count) sizes the sandbox and `container_memory` applies only when `container_cpu` is `0`.
+
 ### Singularity/Apptainer Backend
 
 Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available. It is the official [`singularity` plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity) (formerly built into core; `hermes update` installs it for profiles that already use it):

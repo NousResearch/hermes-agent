@@ -38,6 +38,7 @@ _DEFAULT_CONTAINER_DISK_MB = 51200
 _CREATE_RETRY_ATTEMPTS = 3
 _TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 _RUNNING_WAIT_TIMEOUT = timedelta(seconds=30)
+_VERCEL_MB_PER_VCPU = 2048
 
 
 def _ensure_vercel_sdk() -> None:
@@ -149,6 +150,23 @@ def _sandbox_status_type() -> type[SandboxStatus]:
     return SandboxStatus
 
 
+def _sandbox_resources(cpu: float, memory: int) -> Any:
+    """The SDK resource request for Hermes' ``container_cpu``/``container_memory``.
+
+    Vercel sizes memory from the vCPU count (2048 MB each) and the SDK rejects any other pairing,
+    so with a CPU count only the vCPUs are sent; ``container_memory`` is used only without one.
+    """
+    from vercel.sandbox import Resources
+
+    vcpus = math.floor(cpu) if cpu > 0 else None
+    if vcpus is not None:
+        if memory > 0 and memory != vcpus * _VERCEL_MB_PER_VCPU:
+            logger.info("Vercel: container_memory=%d ignored; %d vCPU sandboxes get %d MB",
+                        memory, vcpus, vcpus * _VERCEL_MB_PER_VCPU)
+        return Resources(vcpus=vcpus)
+    return Resources(memory=memory) if memory > 0 else None
+
+
 def _is_terminal(status: Any) -> bool:
     S = _sandbox_status_type()
     return status in {S.ABORTED, S.FAILED, S.STOPPED}
@@ -177,8 +195,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         self._workspace_root = self._remote_home = DEFAULT_VERCEL_CWD
         self._sync_manager: FileSyncManager | None = None
         _ensure_vercel_sdk()
-        from vercel.sandbox import Resources
-        vcpus, memory_mb = (math.floor(cpu) if cpu > 0 else None), (memory if memory > 0 else None)
+        resources = _sandbox_resources(cpu, memory)
         # Vercel rejects runtime+image together; runtimes are deprecated (Aug 2026), so a runtime is
         # only sent when the user still pins one, and then the image is dropped.
         if runtime:
@@ -188,7 +205,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
             "timeout": max(timedelta(seconds=max(self.timeout, 0)), timedelta(minutes=5)),
             "runtime": runtime or None,
             "image": None if runtime else (image or DEFAULT_VERCEL_IMAGE),
-            "resources": Resources(vcpus=vcpus, memory=memory_mb) if (vcpus, memory_mb) != (None, None) else None}
+            "resources": resources}
         self._attach_fresh_sandbox(cwd)
         self._sync_manager.sync(force=True)
         self.init_session()

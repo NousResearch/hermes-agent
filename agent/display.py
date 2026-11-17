@@ -1250,7 +1250,13 @@ def _rubyish_command(cmd: str) -> bool:
     stripped = cmd.lstrip()
     if stripped.startswith("ruby "):
         return True
-    return bool(re.search(r"(^|[;&|]\s*|\b(mise|rbenv|chruby|asdf)\s+exec\s+)\s*ruby\b", cmd) or re.search(r"\.rb\b", cmd))
+    # version managers, incl. `--` separators and version pins:
+    # `mise exec ruby@3.4 -- script.rb`, `mise x ruby`, `rbenv exec ruby`, ...
+    return bool(
+        re.search(r"(^|[;&|]\s*)ruby\b", cmd)
+        or re.search(r"\b(mise|rbenv|chruby|asdf)\s+(?:exec|x)\s+(?:--\s+)?ruby(?:@[^\s]+)?\b", cmd)
+        or re.search(r"\.rb\b", cmd)
+    )
 
 
 # Completion-line renderers: tool -> f(args, result) -> "┊ {emoji} {verb:9} {detail}" (duration appended by caller).

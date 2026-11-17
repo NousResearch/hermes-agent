@@ -37,7 +37,7 @@ DEFAULT_RETENTION_MINUTES = 60
 SWEEP_INTERVAL_SECONDS = 60.0
 
 _sweep_lock = threading.Lock()
-_last_sweep_at = 0.0
+_last_sweep_at_by_dir: dict[Path, float] = {}
 
 #: Pastes written by this process. Deleted when the process exits so a whole session's pasted text
 #: does not outlive the session; the age sweep is the safety net for anything a crash leaves behind.
@@ -187,13 +187,14 @@ def sweep_pastes(
 
 
 def maybe_sweep_pastes(*, config: Optional[Mapping] = None, home: Optional[Path] = None) -> None:
-    """Sweep at most once per :data:`SWEEP_INTERVAL_SECONDS` per process; never raises."""
-    global _last_sweep_at
+    """Sweep at most once per :data:`SWEEP_INTERVAL_SECONDS` per profile directory; never raises."""
+    directory = paste_dir(home).resolve()
     now = time.monotonic()
     with _sweep_lock:
-        if now - _last_sweep_at < SWEEP_INTERVAL_SECONDS:
+        last = _last_sweep_at_by_dir.get(directory)
+        if last is not None and now - last < SWEEP_INTERVAL_SECONDS:
             return
-        _last_sweep_at = now
+        _last_sweep_at_by_dir[directory] = now
     try:
         sweep_pastes(minutes=retention_minutes(config), home=home)
     except Exception:

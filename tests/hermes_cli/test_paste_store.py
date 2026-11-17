@@ -110,7 +110,7 @@ def test_retention_minutes_defaults_when_key_absent():
 
 
 def test_maybe_sweep_is_throttled_but_still_sweeps_once(tmp_path, monkeypatch):
-    monkeypatch.setattr(paste_store, "_last_sweep_at", 0.0)
+    monkeypatch.setattr(paste_store, "_last_sweep_at_by_dir", {})
     old = paste_store.write_paste("old", 1, home=tmp_path)
     _age(old, 7200)
 
@@ -121,6 +121,25 @@ def test_maybe_sweep_is_throttled_but_still_sweeps_once(tmp_path, monkeypatch):
     _age(second, 7200)
     paste_store.maybe_sweep_pastes(config={"paste_retention_minutes": 60}, home=tmp_path)
     assert second.exists(), "the throttle should skip the immediate second sweep"
+
+
+def test_maybe_sweep_expires_each_gateway_profile_independently(tmp_path, monkeypatch):
+    """Sweeping the launch profile must not suppress cleanup for a secondary profile."""
+    # Reset both throttle representations to make base-RED/head-GREEN deterministic.
+    monkeypatch.setattr(paste_store, "_last_sweep_at", 0.0, raising=False)
+    monkeypatch.setattr(paste_store, "_last_sweep_at_by_dir", {}, raising=False)
+    launch = tmp_path / "launch"
+    secondary = tmp_path / "profiles" / "coder"
+    expired_launch = paste_store.write_paste("launch secret", 1, home=launch)
+    expired_secondary = paste_store.write_paste("secondary secret", 1, home=secondary)
+    _age(expired_launch, 7200)
+    _age(expired_secondary, 7200)
+    policy = {"paste_retention_minutes": 60}
+
+    paste_store.maybe_sweep_pastes(config=policy, home=launch)
+    assert not expired_launch.exists()
+    paste_store.maybe_sweep_pastes(config=policy, home=secondary)
+    assert not expired_secondary.exists(), "first paste must reap expired files in its own profile"
 
 
 def test_list_pastes_is_newest_first_and_skips_pending_json(tmp_path):

@@ -19,7 +19,9 @@ _CARD = {'id': 'share-1', 'text': 'Share "deploy-checklist" with your team?',
 
 @pytest.fixture(autouse=True)
 def _no_delegations():
+    from gateway import plugin_cards
     delegation._reset_for_tests()
+    plugin_cards._recent.clear()  # the per-(plugin, session) rate window is process-wide
     yield
     delegation._reset_for_tests()
 
@@ -305,6 +307,59 @@ async def test_card_by_origin_is_recorded_once_in_the_private_chat_and_never_sen
         assert sent == ['reply'], 'core sends nothing for the card; the plugin sends its own native card'
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_card_admission_runs_in_the_gateway_context_not_the_callers(tmp_path, monkeypatch):
+    """Like ``inject_message``: the admission (and any FIFO drain it starts) runs from the gateway's
+    own context, never the caller's (a session fork's tool handler, a hook inside a turn), from a
+    plugin thread and from the loop alike."""
+    import contextvars
+    from gateway import plugin_cards
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        _serve(runner, monkeypatch)
+        _no_turns(runner)
+        route = authority.sessions[ref.session_id].route
+        scope = contextvars.ContextVar('scope', default='nobody')
+        scope.set('gateway')
+        runner._plugin_injection_context = contextvars.copy_context()
+        seen, original = [], plugin_cards.post
+
+        async def observed(*args, **kwargs):
+            seen.append(scope.get())
+            return await original(*args, **kwargs)
+        monkeypatch.setattr(plugin_cards, 'post', observed)
+        ctx = _ctx()
+
+        def from_thread():
+            scope.set('caller-thread')
+            return ctx.post_card(_CARD, session_key=route)
+        assert (await asyncio.to_thread(from_thread))['status'] == 'queued'
+        scope.set('caller-loop')
+        second = await ctx.apost_card({**_CARD, 'id': 'share-2'}, session_key=route)
+        assert second.get('status') == 'queued', second
+        assert seen == ['gateway', 'gateway'], seen
+        assert scope.get() == 'caller-loop', "the caller's own context is left alone"
+        await authority._drain(ref)
+    finally:
+        authority.db.close()
+
+
+def test_plugin_host_refuses_post_card(tmp_path):
+    """``plugins.isolation: host``: a hosted plugin's ``ctx.post_card`` / ``ctx.apost_card`` exist and
+    raise ``PluginHostUnsupported`` (a ``RuntimeError``), like ``post_message`` and ``fork_session``: the
+    card is admitted on the gateway's event loop into a session it owns, and the host is another process."""
+    from hermes_cli.plugin_host_child import RemotePluginContext
+    from hermes_cli.plugin_host_wire import PluginHostUnsupported
+    from hermes_cli.plugin_isolation import HOST_UNSUPPORTED_CTX_METHODS
+
+    assert {'post_card', 'apost_card'} <= set(HOST_UNSUPPORTED_CTX_METHODS)
+    remote = RemotePluginContext(None, 'cwplug', {'ctx_methods': ['post_card', 'apost_card']})
+    with pytest.raises(PluginHostUnsupported, match='post_card'):
+        remote.post_card(_CARD, session_key='agent:main:local:dm:x')
+    with pytest.raises(PluginHostUnsupported, match='apost_card'):
+        remote.apost_card(_CARD, session_key='agent:main:local:dm:x')
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import logging
 from collections.abc import Mapping
 from typing import Any, Optional
@@ -38,11 +39,7 @@ def _target(session_key: Optional[str], origin: Optional[Mapping[str, Any]]):
     return session_key or "", dict(origin) if origin is not None else None, None
 
 
-async def _post(ctx: Any, card: Any, session_key: str, origin) -> dict[str, Any]:
-    from hermes_cli.plugin_messages import _gateway_loop
-    runner, _loop = _gateway_loop()
-    if runner is None:
-        return _err("gateway_unavailable", "no live gateway is running in this process")
+async def _post(runner: Any, ctx: Any, card: Any, session_key: str, origin) -> dict[str, Any]:
     from gateway import plugin_cards
     try:
         return await plugin_cards.post(runner, card, plugin_id=ctx.plugin_id, plugin_home=ctx._manager.home_path,
@@ -50,6 +47,14 @@ async def _post(ctx: Any, card: Any, session_key: str, origin) -> dict[str, Any]
     except Exception as exc:  # the plugin gets a result, never the raise
         logger.warning("plugin_card plugin=%s post failed", ctx.plugin_id, exc_info=True)
         return _err("post_failed", str(exc)[:512])
+
+
+def _gateway_context(runner: Any) -> contextvars.Context:
+    """The gateway's own context (``_install_plugin_message_injector``), as ``inject_message`` uses:
+    the admission, and the FIFO drain it may start, never inherit the caller's turn scopes (a session
+    fork's tool handler, a hook inside a turn)."""
+    context = getattr(runner, "_plugin_injection_context", None)
+    return contextvars.Context() if context is None else context.copy()
 
 
 def _prepare(ctx: Any, session_key, origin):
@@ -63,7 +68,11 @@ async def apost(ctx: Any, card: Any, *, session_key=None, origin=None) -> dict[s
     key, where, refusal = _prepare(ctx, session_key, origin)
     if refusal is not None:
         return refusal
-    return await _post(ctx, card, key, where)
+    from hermes_cli.plugin_messages import _gateway_loop
+    runner, loop = _gateway_loop()
+    if runner is None or loop is None:
+        return _err("gateway_unavailable", "no live gateway is running in this process")
+    return await loop.create_task(_post(runner, ctx, card, key, where), context=_gateway_context(runner))
 
 
 def post(ctx: Any, card: Any, *, session_key=None, origin=None) -> dict[str, Any]:
@@ -72,12 +81,13 @@ def post(ctx: Any, card: Any, *, session_key=None, origin=None) -> dict[str, Any
     if refusal is not None:
         return refusal
     from hermes_cli.plugin_messages import _gateway_loop, _on_gateway_loop
-    _runner, loop = _gateway_loop()
-    if loop is None:
+    runner, loop = _gateway_loop()
+    if runner is None or loop is None:
         return _err("gateway_unavailable", "no live gateway is running in this process")
     if _on_gateway_loop():
         return _err("on_event_loop", "called from the gateway event loop: use await ctx.apost_card(...)")
-    future = asyncio.run_coroutine_threadsafe(_post(ctx, card, key, where), loop)
+    # The loop runs the scheduling callback, and so the task, in the context it was submitted from.
+    future = _gateway_context(runner).run(asyncio.run_coroutine_threadsafe, _post(runner, ctx, card, key, where), loop)
     try:
         return future.result(_TIMEOUT_S)
     except concurrent.futures.TimeoutError:

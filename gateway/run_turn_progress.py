@@ -824,14 +824,16 @@ class GatewayTurnProgressMixin:
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
     async def _flush_before_reset(self, st) -> None:
-        """Deliver lines the edit throttle is still holding back, or the reset drops them.
-        With no bubble posted yet (the throttle held back the first line too), post one."""
+        """Deliver lines the edit throttle is still holding back, or the reset drops them. With no
+        bubble posted yet (the throttle held back the first line too), post one through the normal
+        delivery path (flood window, owed tails); lines it cannot post now are carried by the reset
+        into the next bubble."""
         await self._roll_progress_overflow_if_needed(st)
         if st.progress_msg_id is not None:
             await self._flush_progress_edit(st)
         elif st.can_edit and st.progress_lines:
-            with suppress(Exception):
-                await self._send_progress_text(st, self._progress_text(st.progress_lines))
+            await self._progress_send_or_edit(st, st.progress_lines[-1])
+            st.owed_fresh = st.owed_fresh or st.progress_msg_id is None
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""

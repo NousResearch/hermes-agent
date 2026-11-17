@@ -51,10 +51,17 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
     _number(payload['dispatched_at'])
     if not isinstance(payload['task'], dict) or set(payload['task']) - _TASK_KEYS:
         raise RuntimeStoreError('invalid_params')
-    session = conn.execute('SELECT source,session_key FROM sessions WHERE id=?', (session_id,)).fetchone()
+    session = conn.execute('SELECT source,created_source,session_key FROM sessions WHERE id=?',
+                           (session_id,)).fetchone()
     # Only compute registrations are currently enabled. Native/child origins need
     # an owner-reserved source envelope, not worker-selected transport identities.
-    if session is None or session['source'] not in ('cli', 'tui', 'gui', 'tool', 'oneshot'):
+    # A ``source_label`` row (``--source heartbeat``) keeps its creating surface in created_source. Only a
+    # creatable label counts: ``/handoff`` rewrites a CLI row's source to its messaging lane and keeps
+    # created_source, and that row is a messaging session now.
+    compute = ('cli', 'tui', 'gui', 'tool', 'oneshot')
+    from gateway.session_source_label import source_label_problem
+    if session is None or (session['source'] not in compute and (
+            session['created_source'] not in compute or source_label_problem(session['source']) is not None)):
         raise RuntimeStoreError('unsupported_producer')
     if (payload['parent_session_id'] != session_id
             or payload['session_key'] != (session['session_key'] or '')

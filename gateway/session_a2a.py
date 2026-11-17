@@ -73,6 +73,10 @@ def storage_source(db, source, session_id, fallback):
     if 'legacy_session_id' in receipt:
         root = db.get_session(receipt['legacy_session_id'])
         return (root or {}).get('source') or label
+    # A creator's ``source_label`` (``--source heartbeat`` on a ``-z`` run) is the row's label for its life.
+    from gateway.session_source_label import requested_source_label
+    if tagged := requested_source_label(receipt['policy'].get('request_json')):
+        return tagged
     from gateway.session_policy import STORED_AS_LOCAL
     return fallback if label in STORED_AS_LOCAL else label
 

@@ -135,6 +135,49 @@ async def test_finite_runs_create_oneshot_sessions_and_explicit_source_wins(monk
 
 
 @pytest.mark.asyncio
+async def test_a_tag_that_is_not_a_surface_rides_as_source_label_on_the_finite_surface(monkeypatch, tmp_path):
+    """``hermes -z ... --source heartbeat`` (#142895): the run stays ``oneshot`` and the tag goes to
+    ``source_label``; a gateway that does not take ``source_label`` still names the unsupported source."""
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    created, parameters = [], ["cwd", "request_id", "source", "source_label"]
+
+    class Peer:
+        async def rpc(self, method, **params):
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli", "tool", "oneshot"], "parameters": parameters}}
+            created.append(params)
+            return {"stored_session_id": "stored"}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    async def rendered(self, query, *, oneshot):
+        return 0
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", rendered)
+    monkeypatch.chdir(tmp_path)
+    assert await gateway_chat.run_gateway_chat(argparse.Namespace(oneshot="z", source="heartbeat")) == 0
+    assert await gateway_chat.run_gateway_chat(argparse.Namespace(oneshot="z", source="tool")) == 0
+    assert [(c["source"], c.get("source_label")) for c in created] == [("oneshot", "heartbeat"), ("tool", None)]
+    parameters.remove("source_label")
+    with pytest.raises(gateway_chat.GatewayClientError, match="'heartbeat'"):
+        await gateway_chat.run_gateway_chat(argparse.Namespace(oneshot="z", source="heartbeat"))
+
+
+def test_top_level_source_pairs_with_z_and_chat_source_does_not_clobber_it():
+    from hermes_cli._parser import build_top_level_parser
+    parser, _subparsers, _chat = build_top_level_parser()
+    assert parser.parse_args(["-z", "hi", "--source", "heartbeat"]).source == "heartbeat"
+    assert parser.parse_args(["--source", "heartbeat", "chat"]).source == "heartbeat"
+    assert parser.parse_args(["chat", "--source", "tool"]).source == "tool"
+    assert parser.parse_args(["chat"]).source is None
+
+
+@pytest.mark.asyncio
 async def test_rpc_preserves_notifications_and_errors():
     import asyncio
     import json

@@ -17,7 +17,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
                            'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env',
-                           'client'})
+                           'client', 'source_label'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_MODEL_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases')
@@ -467,6 +467,10 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         from gateway.session_client import client_problem
         if problem := client_problem(params['client']):
             _refuse('client', problem)
+    if 'source_label' in params:  # the row's stored label only; ``source`` still picks the policy
+        from gateway.session_source_label import source_label_problem
+        if problem := source_label_problem(params['source_label']):
+            _refuse('source_label', problem)
     launch_skills(params)
     config = present_sections(json.loads(json.dumps(config)))
     picked_route = {'model', 'provider', 'base_url'} & set(_without_auto_pick(params))

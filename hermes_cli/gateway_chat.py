@@ -199,13 +199,10 @@ async def run_gateway_chat(args, emitter=None):
             # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);
             # an explicit ``--source`` always wins. A remote gateway predating the label stores ``cli``.
             sources = contract.get("sources", [])
-            from agent.session_source import create_surface
-            source = create_surface(getattr(args, "source", None) or ("oneshot" if oneshot and "oneshot" in sources else "cli"))
-            if source not in sources:
-                raise GatewayClientError(f"Gateway does not support source {source!r}")
             parameters = contract.get("parameters", [])
             policy = _requested_policy(args)
             policy.pop("source", None)
+            source = _create_source(args, oneshot, sources, parameters, policy)
             if create_if_missing:
                 policy["title"] = title
             policy.update(env_launch_flags())
@@ -273,6 +270,19 @@ def exit_on_resume_refusal(exc):
         raise SystemExit(2) from None
 
 
+def _create_source(args, oneshot, sources, parameters, policy):
+    """The ``session.create`` surface for this launch. A ``--source`` tag the gateway serves as no surface
+    (``heartbeat``) rides as ``source_label`` on the run's own surface when the gateway takes it."""
+    from agent.session_source import create_surface
+    default = "oneshot" if oneshot and "oneshot" in sources else "cli"
+    source = create_surface(getattr(args, "source", None) or default)
+    if source not in sources and "source_label" in parameters:
+        policy["source_label"], source = source, default
+    if source not in sources:
+        raise GatewayClientError(f"Gateway does not support source {source!r}")
+    return source
+
+
 def _launch_flags(args):
     """The creation flags the user passed. Identity, not equality: ``--max-turns 0`` (unlimited)
     is a value, while ``0 == False`` would drop it to the profile default."""
@@ -306,6 +316,8 @@ def check_resume_policy(args, snapshot):
         return
     info = snapshot.get("info") if isinstance(snapshot, dict) else None
     frozen = dict((info or {}).get("launch_request") or {})
+    if "source" in requested and requested["source"] == frozen.get("source_label"):
+        requested.pop("source")  # the tag this session was created with (``source_label``)
     if info and "cwd" in info:
         frozen["cwd"] = info["cwd"]
     if "model" in requested and requested["model"] == frozen.get("model_requested"):

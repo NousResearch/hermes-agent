@@ -43,6 +43,17 @@ picks the session policy (send `source: "tui"` for terminal-client behaviour), a
 approval, permission, prompt text or telemetry reads `client`. Hermes does not verify the name,
 so any client can claim any name: never grant anything based on it.
 
+### Labelling the session row
+
+`source` must be a surface (`runtime.describe`'s `session_create.sources`). A client that tags its
+sessions for filtering with any other label sends it as `source_label`, for example
+`{"source": "oneshot", "source_label": "heartbeat"}`. The session runs as its `source` surface; only
+the sessions-row `source` column carries the label, from creation through every turn, and
+`created_source` keeps the surface. The label uses the `client.name` charset. Surfaces, messaging
+platforms and producer labels other readers key on (`local`, `cron`, `kanban`, `a2a`, `api_server`,
+`webhook`, ...) are refused with `invalid_params` (field `source_label`). `hermes -z ... --source <tag>`
+sends it when the owner lists `source_label` in `session_create.parameters`.
+
 Attach another authenticated viewer with `session.resume({session_id})`, and submit
 through `prompt.submit({session_id, submission_id, text})`. The accepted receipt is durable
 admission, not inference completion. Closing every viewer leaves the execution and its

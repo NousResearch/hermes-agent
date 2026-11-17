@@ -64,6 +64,9 @@ class CanonicalCreateParams(ProfileParams):
     client_env: dict[str, str] | None = None
     # The creating client's self-declared label, echoed as ``session.info.client``; no policy reads it.
     client: CanonicalClientIdentity | None = None
+    # The sessions-row ``source`` label (``--source heartbeat``) when it is not a surface; ``source``
+    # still picks the policy. Same charset as ``client.name``; surfaces, producers and platforms are refused.
+    source_label: str | None = None
 
 
 class CanonicalResumeParams(ProfileParams):

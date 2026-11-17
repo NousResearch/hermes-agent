@@ -67,6 +67,7 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_reactions_context import slack_reactions_marker
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_vault_code import SlackVaultCodeMixin
+    from .adapter_progress_history import SlackProgressHistoryMixin
     from .adapter_image_batch import collect_image_uploads
     from .adapter_forwarded import (
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
@@ -81,6 +82,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_reactions_context import slack_reactions_marker  # type: ignore
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
     from adapter_vault_code import SlackVaultCodeMixin  # type: ignore
+    from adapter_progress_history import SlackProgressHistoryMixin  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
 
 
@@ -991,7 +993,7 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         and not is_permanent_tls_error)
 
 
-class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformAdapter):
+class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, SlackProgressHistoryMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -2414,13 +2416,11 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             response = await self._get_client(chat_id).chat_delete(channel=chat_id, ts=message_id)
             if not (hasattr(response, "get") and response.get("ok") is False):
                 return True
-            logger.debug(
-                "[Slack] chat.delete returned ok=false for message %s in channel %s: %s",
-                message_id, chat_id, response.get("error", "unknown"))
+            logger.debug("[Slack] chat.delete returned ok=false for message %s in channel %s: %s",
+                         message_id, chat_id, response.get("error", "unknown"))
             return False
         except Exception as e:  # pragma: no cover - best-effort cleanup
-            logger.debug(
-                "[Slack] Failed to delete message %s in channel %s: %s", message_id, chat_id, e)
+            logger.debug("[Slack] Failed to delete message %s in channel %s: %s", message_id, chat_id, e)
             return False
 
     # Native streaming (chat.startStream/appendStream/stopStream). Unlike Telegram drafts a Slack

@@ -1991,6 +1991,14 @@ display:
   # edit-in-place "⏳ Working — N min" heartbeat). Override under
   # display.platforms.telegram.
 
+  # Long-turn history fold: once a turn has posted more than N progress /
+  # commentary messages, the older ones collapse into one compact history
+  # summary ("<narration> · 3 steps"; Slack: a grey context block) and the
+  # rest are deleted. Needs an adapter that edits and deletes (Slack,
+  # Telegram, Discord). 0 = off (default).
+  # Per-platform override: display.platforms.slack.progress_fold_after
+  progress_fold_after: 0
+
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and

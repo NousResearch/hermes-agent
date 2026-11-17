@@ -1000,6 +1000,9 @@ gateway:
       Réessayez, ou utilisez /reset pour repartir de zéro.
     working_heartbeat: "⏳ En cours — {minutes} min{detail}"
     thinking_prefix: "💬 {text}"
+    history_step: "1 étape"
+    history_steps: "{count} étapes"
+    history_earlier: "… {count} plus tôt"
     tool_head: "{emoji} {tool}"
     tool_verbose: |-
       {emoji} {tool}({keys})

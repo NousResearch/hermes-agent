@@ -334,6 +334,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                         on_new_message=(
                             (lambda: ctx.progress_queue.put(("__reset__",))) if ctx.progress_queue is not None else None
                         ),
+                        on_interim_delivered=self._history_fold_note_narration,
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                     )

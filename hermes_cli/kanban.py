@@ -636,17 +636,24 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     # relies on the gateway-embedded dispatcher.
     from hermes_cli.config import load_config
 
+    # The task id may arrive positionally (like log/show/runs) or via --task (#157080).
+    positional, flagged = getattr(args, "task_id", None), getattr(args, "task", None)
+    if positional and flagged and positional != flagged:
+        return _err(f"conflicting task ids: positional {positional!r} vs --task {flagged!r}", rc=2)
+    task_id = flagged or positional
+
     diag_config = kd.config_from_runtime_config(load_config())
 
     with kbc.connect_closing() as conn:
         # Either one-task mode or fleet mode.
-        if getattr(args, "task", None):
-            task = kb.get_task(conn, args.task)
+        if task_id:
+            task = kb.get_task(conn, task_id)
             if task is None:
-                return _err(f"no such task: {args.task}")
-            diags_by_task = {args.task: kd.compute_task_diagnostics(
-                task, kb.list_events(conn, args.task), kb.list_runs(conn, args.task),
-                graph=kb.task_graph_context(conn, args.task), config=diag_config)}
+                hint = "" if task_id.startswith("t_") else f" (expected the full id, e.g. t_xxxxxxxx; got {task_id!r})"
+                return _err(f"no such task: {task_id}{hint}")
+            diags_by_task = {task_id: kd.compute_task_diagnostics(
+                task, kb.list_events(conn, task_id), kb.list_runs(conn, task_id),
+                graph=kb.task_graph_context(conn, task_id), config=diag_config)}
         else:
             # Fleet mode: pull all non-archived tasks + their events/runs.
             rows = list(conn.execute("SELECT * FROM tasks WHERE status != 'archived'").fetchall())

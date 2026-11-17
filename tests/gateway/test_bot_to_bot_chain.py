@@ -99,7 +99,7 @@ async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatc
 
     first = _event(PEER, "question", True)
     assert await runner._hm_admit_event(first) is not None
-    runner._note_bot_reply(first.source)  # the turn's reply was delivered
+    runner._note_bot_reply(first.source, first)  # the turn's reply was delivered
     # The session authority executes the admitted row through the same handler: not a second hop.
     token = executing_admission.set(True)
     try:

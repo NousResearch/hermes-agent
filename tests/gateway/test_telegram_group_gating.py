@@ -1373,3 +1373,50 @@ def test_channel_posts_run_the_group_gates(guest_mode):
     # Guest mode still lets a group mention cross the allowlist.
     group = _group_message("hi @hermes_bot", chat_id=-200, entities=[_mention_entity("hi @hermes_bot")])
     assert adapter._should_process_message(group) is guest_mode
+
+
+def test_observed_group_bot_turns_keep_their_sender_for_the_bot_loop_guard():
+    """#155764: observe attribution moves a text turn's author off the shared source onto
+    ``event.user_id``. The loop guard read ``source.user_id``, so every peer bot was sender ``""``:
+    the first bot message matched the empty ``replied_to`` and was refused as ``reply_to_reply``."""
+    from gateway.bot_loop_guard import BotLoopGuard, BotLoopGuardSettings
+
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], group_allowed_chats=["-100"],
+                            observe_unmentioned_group_messages=True)
+    runner = object.__new__(GatewayRunner)
+    runner._scale_to_zero_note_real_inbound = lambda: None
+
+    async def _passthrough(event, source):
+        return event
+    runner._hm_pre_gateway_dispatch_hook = _passthrough
+    runner._is_user_authorized_for_source = lambda source, **kw: True
+    settings = BotLoopGuardSettings(max_events=1000, window_seconds=60, cooldown_seconds=600, max_hops=3)
+    runner._bot_loop_guard = BotLoopGuard(settings=lambda: settings, clock=lambda: 1_000.0)
+    runner._adapter_profile_for_source = lambda source: ""
+
+    def observed_bot_turn(bot_id, ask, message_id):
+        text = f"@hermes_bot {ask}"
+        msg = _group_message(text, from_user_id=bot_id, from_user_name=f"Peer {bot_id}",
+                             entities=[_mention_entity(text)])
+        msg.from_user.is_bot = True
+        msg.message_id = message_id
+        event = adapter._apply_telegram_group_observe_attribution(
+            adapter._build_message_event(msg, MessageType.TEXT, update_id=message_id))
+        assert event.source.is_bot and event.source.user_id is None and event.source.shared_session
+        return event
+
+    async def _run():
+        first = observed_bot_turn(501, "what is 2+2?", 1)
+        assert await runner._hm_admit_event(first) is not None
+        runner._note_bot_reply(first.source, first)  # our answer to bot 501 went out
+        # A turn that absorbed a second sender's input has no single recipient to record.
+        merged = observed_bot_turn(505, "steer", 6)
+        merged.absorb_turn_input(observed_bot_turn(506, "redirect", 7))
+        runner._note_bot_reply(merged.source, merged)
+        # Another bot in the shared session is a new ask, not an answer to our answer.
+        assert await runner._hm_admit_event(observed_bot_turn(502, "hello", 2)) is not None
+        assert await runner._hm_admit_event(observed_bot_turn(501, "thanks!", 3)) is None
+        assert await runner._hm_admit_event(observed_bot_turn(503, "me too", 4)) is not None
+        assert await runner._hm_admit_event(observed_bot_turn(504, "and me", 5)) is None  # max_hops=3
+
+    asyncio.run(_run())

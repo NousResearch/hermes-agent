@@ -163,6 +163,14 @@ def _render_one(spec: FileSpec, resolved: Path, budget: int) -> tuple[str, Inlin
     return f"{label}\n{fence}\n{body}{fence}\n", span
 
 
+def _files_are_local() -> bool:
+    """The block is read from this host, so it is the child's view only when the child's file tools run here too.
+    ``_get_env_config`` bridges a config-only backend (``hermes serve``, ACP) that no terminal call has bridged yet."""
+    from tools.environments.sandbox_scope import hosted_scope
+    from tools.terminal_tool import _get_env_config
+    return _get_env_config()["env_type"] == "local" and hosted_scope() is None
+
+
 def resolve_task_files(
     task_list: list[dict[str, Any]], files: Any, parent_agent: Any,
 ) -> tuple[list[Optional[TaskFiles]], Optional[str]]:
@@ -177,6 +185,9 @@ def resolve_task_files(
     if _get_worktree_isolation():
         return [], ("'files' is not supported with delegation.worktree_isolation (the child works in a fresh "
                     "worktree, not the files read here); put the paths in 'context' instead.")
+    if not _files_are_local():
+        return [], ("'files' needs the local terminal backend (on ssh/docker/modal the child's tools see the backend's "
+                    "files, not the ones read here); put the paths in 'context' instead.")
     workspace = _resolve_workspace_hint(parent_agent)
     out: list[Optional[TaskFiles]] = []
     for i, specs in enumerate(task_specs):

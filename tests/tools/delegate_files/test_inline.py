@@ -71,6 +71,13 @@ def test_inlined_range_is_marked_read_for_the_child(tmp_path):
     assert "6|line 6" in other["content"]
 
 
+def test_files_refused_when_the_child_works_on_another_host(tmp_path, monkeypatch):
+    """ssh/docker/modal: the child's tools see the backend, so this host's same-named copy is never inlined."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    _ws, files, err, _msg = _brief(tmp_path, ["small.py"])
+    assert files == [] and "local terminal backend" in err
+
+
 def test_delegate_task_passes_files_through_the_default_backend(tmp_path, monkeypatch):
     """Real delegate_task and real task routing: the stock backend accepts ``files`` and the child is built with the
     FILES block in its context; a refused entry fails the call before any child is built."""

@@ -4,6 +4,7 @@ import pytest
 
 from hermes_cli.session_listing import (
     format_gateway_session_listing,
+    query_numbered_session_listing,
     query_session_listing,
 )
 
@@ -159,3 +160,66 @@ class TestQuerySessionListingLaneScope:
         )
 
         assert [row["id"] for row in rows] == ["foreign_59"]
+
+
+class TestSharedListingRules:
+    """The plain and numbered listings share one query + filter stage.
+
+    Both admit the same rows for the same scope (titled sessions plus the
+    current session, marked ``is_current_session``; other unnamed rows stay
+    out), and differ only in ordering and in where the page is cut: the
+    plain listing cuts to ``limit``, the numbered listing returns every
+    candidate so the gateway can filter by visibility first. The two
+    orderings differ by design (plain default is root ``started_at``,
+    numbered is lineage-tip activity), so membership is compared as sets.
+    """
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_older", "telegram", user_id="1", chat_id="2")
+        db.set_session_title("sess_older", "Older session")
+        db.create_session("sess_newer", "telegram", user_id="1", chat_id="2")
+        db.set_session_title("sess_newer", "Newer session")
+        db.create_session("sess_other", "telegram", user_id="1", chat_id="2")
+        db.set_session_title("sess_other", "Other session")
+        db.create_session("sess_current_untitled", "telegram", user_id="1", chat_id="2")
+        db.create_session("sess_untitled", "telegram", user_id="1", chat_id="2")
+        yield db
+        db.close()
+
+    def test_plain_and_numbered_admit_the_same_rows(self, db):
+        plain = query_session_listing(
+            db, source="telegram", current_session_id="sess_current_untitled",
+            include_current_session=True, limit=10,
+        )
+        numbered = query_numbered_session_listing(
+            db, source="telegram", current_session_id="sess_current_untitled",
+            limit=10,
+        )
+
+        expected = {"sess_older", "sess_newer", "sess_other", "sess_current_untitled"}
+        assert {row["id"] for row in plain} == expected
+        assert {row["id"] for row in numbered} == expected
+        for rows in (plain, numbered):
+            current = [r for r in rows if r["id"] == "sess_current_untitled"]
+            assert len(current) == 1
+            assert current[0]["is_current_session"] is True
+
+    def test_plain_page_cut_draws_from_numbered_candidates(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "many.db")
+        try:
+            for i in range(12):
+                db.create_session(f"sess_{i:02d}", "telegram", user_id="1", chat_id="2")
+                db.set_session_title(f"sess_{i:02d}", f"Session {i:02d}")
+            plain = query_session_listing(db, source="telegram", limit=10)
+            numbered = query_numbered_session_listing(db, source="telegram", limit=10)
+            assert len(numbered) == 12
+            assert len(plain) == 10
+            assert {row["id"] for row in plain} <= {row["id"] for row in numbered}
+        finally:
+            db.close()

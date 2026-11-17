@@ -74,6 +74,53 @@ def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | No
     return flags["all"], flags["full"], " ".join(target_parts).strip(), None
 
 
+def _query_session_candidates(
+    session_db: Any,
+    *,
+    source: str | None,
+    session_key: str | None = None,
+    current_session_id: str | None = None,
+    include_current_session: bool = False,
+    include_all_sources: bool = False,
+    include_unnamed: bool = False,
+    search_query: str | None = None,
+    limit: int = 10,
+    exclude_sources: list[str] | None = None,
+    order_by_last_active: bool = False,
+) -> list[dict[str, Any]]:
+    """One shared query + filter stage for the session listings.
+
+    Queries ``list_sessions_rich`` (over-fetched ``limit * 4`` so a later
+    visibility filter cannot eat page slots), then applies the one
+    membership rule both listings share: unnamed rows stay hidden unless a
+    full listing is asked for, a search is running (an id match may be the
+    only handle), or the row is the current session; the current session
+    itself is dropped unless the caller asked to keep it, and then it is
+    marked ``is_current_session``. Ordering is the caller's explicit
+    choice: lineage-tip activity for the numbered listing, activity only
+    under search for the plain listing. No page cut here — each caller
+    cuts after its own visibility filter.
+    """
+    search = (search_query or "").strip()
+    rows = session_db.list_sessions_rich(
+        source=None if include_all_sources else source,
+        session_key=session_key,
+        exclude_sources=exclude_sources,
+        limit=max(limit * 4, limit),
+        search_query=search or None,
+        order_by_last_active=order_by_last_active,
+    )
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        is_current = bool(current_session_id and row.get("id") == current_session_id)
+        if (is_current and not include_current_session) or (
+            not include_unnamed and not row.get("title") and not search and not is_current
+        ):
+            continue
+        result.append({**row, "is_current_session": True} if is_current else row)
+    return result
+
+
 def query_session_listing(
     session_db: Any,
     *,
@@ -96,25 +143,63 @@ def query_session_listing(
     since an id match may be the only handle.
     """
     search = (search_query or "").strip()
-    rows = session_db.list_sessions_rich(
-        source=None if include_all_sources else source,
+    return _query_session_candidates(
+        session_db,
+        source=source,
         session_key=session_key,
+        current_session_id=current_session_id,
+        include_current_session=include_current_session,
+        include_all_sources=include_all_sources,
+        include_unnamed=include_unnamed,
+        search_query=search_query,
+        limit=limit,
         exclude_sources=exclude_sources,
-        limit=max(limit * 4, limit),
-        search_query=search or None,
         order_by_last_active=bool(search),
+    )[:limit]
+
+
+def query_numbered_session_listing(
+    session_db: Any,
+    *,
+    source: str | None,
+    session_key: str | None = None,
+    current_session_id: str | None = None,
+    include_all_sources: bool = False,
+    include_unnamed: bool = False,
+    limit: int = 10,
+    exclude_sources: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Ordered CANDIDATES for one numbered gateway listing, shared by ``/sessions``
+    (default view) and ``/resume`` (#146798).
+
+    One query, one sort, one filter shape for both commands, so a number shown
+    by one resolves to the same session in the other. Rank is lineage-tip
+    activity (``order_by_last_active=True``): a lineage compressed for days is
+    projected onto its live tip and must sit where the user last touched it
+    (#114271); ranking the default view by root ``started_at`` instead is what
+    made the two numberings disagree. Membership is titled sessions plus the
+    current session (marked ``is_current_session``), unless ``include_unnamed``
+    widens it; the search view is a different listing and keeps its own path.
+    The page is over-fetched (``limit * 4``) and NOT truncated here: the
+    caller applies its visibility filter first, then truncates, so
+    origin-invisible rows cannot eat page slots. Callers that widen scope
+    (admin ``--all``/``all``) pass their own scope parameters; the contract
+    guarantees identical numbering for identical scope, not identical scope
+    across the two admin flags. The query and filter rules live in the shared
+    ``_query_session_candidates`` stage, not here.
+    """
+    return _query_session_candidates(
+        session_db,
+        source=source,
+        session_key=session_key,
+        current_session_id=current_session_id,
+        include_current_session=True,
+        include_all_sources=include_all_sources,
+        include_unnamed=include_unnamed,
+        limit=limit,
+        exclude_sources=exclude_sources,
+        order_by_last_active=True,
     )
-    result: list[dict[str, Any]] = []
-    for row in rows:
-        is_current = bool(current_session_id and row.get("id") == current_session_id)
-        if (is_current and not include_current_session) or (
-            not include_unnamed and not row.get("title") and not search and not is_current
-        ):
-            continue
-        result.append({**row, "is_current_session": True} if is_current else row)
-        if len(result) >= limit:
-            break
-    return result
 
 
 def format_gateway_session_listing(

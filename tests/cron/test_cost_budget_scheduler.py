@@ -307,3 +307,63 @@ def test_cronjob_tool_discretionary_is_set_only(home, monkeypatch):
     refused = json.loads(cronjob_tools.cronjob(action="update", job_id=job_id, discretionary=False))
     assert refused.get("success") is False and "operator" in refused["error"]
     assert jobs.get_job(job_id)["discretionary"] is True
+
+
+
+# ── default_discretionary + essential_jobs ────────────────────────────────
+
+def _agent_created_job(home):
+    """A job the agent creates through the cronjob tool, with no discretionary flag."""
+    import json
+
+    from tools import cronjob_tools
+
+    created = json.loads(cronjob_tools.cronjob(action="create", prompt="explore the KB",
+                                               schedule="every 4h", name="sneaky"))
+    assert created["success"], created
+    job = jobs.get_job(created["job_id"])
+    assert "discretionary" not in job
+    return job
+
+
+def test_default_discretionary_skips_agent_created_job(home, monkeypatch, pipeline):
+    job = _agent_created_job(home)
+    _budget(home, "  default_discretionary: true\n  essential_jobs: [rel-id]\n")
+    _spend(monkeypatch, day=12, month=40)
+
+    s.run_one_job(job)
+
+    assert pipeline["run_job"] == []
+    assert pipeline["skipped"][0][:2] == (job["id"], "skipped_budget")
+    (alert,) = _alerts(pipeline)
+    assert "`sneaky` was skipped" in alert["content"]
+
+
+def test_essential_job_runs_with_loud_alert(home, monkeypatch, pipeline):
+    _budget(home, "  default_discretionary: true\n  essential_jobs: [rel-id]\n"
+                  "  alert_mention: '<!subteam^S1>'\n")
+    _spend(monkeypatch, day=12, month=40)
+
+    s.run_one_job({"id": "rel-id", "name": "release-watch", "discretionary": True})
+
+    assert pipeline["run_job"] == ["rel-id"]
+    (alert,) = _alerts(pipeline)
+    assert alert["content"].startswith("<!subteam^S1> 🚨")
+    assert "`release-watch` is running anyway" in alert["content"]
+
+
+def test_default_false_agent_created_job_still_runs(home, monkeypatch, pipeline):
+    job = _agent_created_job(home)
+    _budget(home)
+    _spend(monkeypatch, day=12, month=40)
+
+    s.run_one_job(job)
+
+    assert pipeline["run_job"] == [job["id"]]
+
+
+def test_cronjob_tool_cannot_mark_a_job_essential():
+    from tools import cronjob_tools
+
+    schema = cronjob_tools.CRONJOB_SCHEMA["parameters"]["properties"]
+    assert not any("essential" in name for name in schema)

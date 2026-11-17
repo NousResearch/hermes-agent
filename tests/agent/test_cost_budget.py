@@ -286,6 +286,31 @@ class TestStatus:
 
 
 class TestDiscretionary:
+    def test_default_discretionary_parsed(self):
+        cfg = load_budget_config({"cost_budget": {"daily_usd": 5, "default_discretionary": True,
+                                                  "essential_jobs": ["rel1", "rel2"]}})
+        assert cfg.default_discretionary is True
+        assert cfg.essential_jobs == frozenset({"rel1", "rel2"})
+        assert load_budget_config({"cost_budget": {"daily_usd": 5}}).default_discretionary is False
+        # Only a real boolean true turns it on.
+        assert load_budget_config({"cost_budget": {"daily_usd": 5,
+                                                   "default_discretionary": "yes"}}).default_discretionary is False
+
+    def test_default_discretionary_covers_every_job_but_essential_ids(self):
+        cfg = _cfg(default_discretionary=True, essential_jobs=["rel1"])
+        assert is_discretionary({"id": "new-agent-job", "name": "x"}, cfg)
+        assert is_discretionary({"id": "x", "discretionary": False}, cfg)
+        assert not is_discretionary({"id": "rel1", "name": "release-watch"}, cfg)
+        assert is_discretionary({"id": "x", "name": "rel1", "essential": True}, cfg)
+
+    def test_essential_wins_over_discretionary_markers(self):
+        cfg = _cfg(discretionary_jobs=["rel1"], essential_jobs=["rel1"])
+        assert not is_discretionary({"id": "rel1", "discretionary": True}, cfg)
+
+    def test_default_false_unchanged(self):
+        cfg = _cfg()
+        assert not is_discretionary({"id": "new-agent-job", "name": "x"}, cfg)
+
     def test_by_field_and_id_only(self):
         cfg = _cfg(discretionary_jobs=["abc123"])
         assert is_discretionary({"id": "zzz", "name": "x", "discretionary": True}, cfg)

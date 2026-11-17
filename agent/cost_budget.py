@@ -84,6 +84,11 @@ class BudgetConfig:
     discretionary_jobs: FrozenSet[str] = frozenset()
     cache_seconds: int = DEFAULT_CACHE_SECONDS
     warnings: Tuple[str, ...] = ()
+    # Opt-in fail-closed mode: every job is discretionary unless its id is in
+    # essential_jobs. Both live only in config.yaml (operator-edited), so a
+    # job the agent creates without the flag cannot escape the budget.
+    default_discretionary: bool = False
+    essential_jobs: FrozenSet[str] = frozenset()
 
 
 _warned: set = set()
@@ -185,16 +190,26 @@ def load_budget_config(raw: Optional[dict] = None) -> Optional[BudgetConfig]:
         alert_channel=channel, alert_mention=mention,
         discretionary_jobs=_str_set(block.get("discretionary_jobs")),
         cache_seconds=max(MIN_CACHE_SECONDS, cache_seconds), warnings=tuple(warnings),
+        default_discretionary=block.get("default_discretionary") is True,
+        essential_jobs=_str_set(block.get("essential_jobs")),
     )
 
 
 def is_discretionary(job: dict, cfg: BudgetConfig) -> bool:
-    """By the job's own ``discretionary: true`` field or its id in ``discretionary_jobs``.
+    """Whether the budget may skip this job.
 
-    Ids only: a name is free text, so a renamed or look-alike job would
-    silently change budget class.
+    An id in ``essential_jobs`` is never discretionary. Under
+    ``default_discretionary`` every other job is. Otherwise a job is
+    discretionary by its own ``discretionary: true`` field or its id in
+    ``discretionary_jobs``. Ids only: a name is free text, so a renamed or
+    look-alike job would silently change budget class.
     """
-    return job.get("discretionary") is True or str(job.get("id") or "") in cfg.discretionary_jobs
+    job_id = str(job.get("id") or "")
+    if job_id in cfg.essential_jobs:
+        return False
+    if cfg.default_discretionary:
+        return True
+    return job.get("discretionary") is True or job_id in cfg.discretionary_jobs
 
 
 # ── spend ─────────────────────────────────────────────────────────────────

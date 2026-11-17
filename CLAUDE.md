@@ -614,6 +614,8 @@ cost_budget:
   alert_channel: slack:C0123ABCD  # deliver-target syntax; a bare C… id means slack:; local/origin rejected
   alert_mention: "<!subteam^S123>"  # optional, prefixed to LOUD alerts only
   discretionary_jobs: [3f9a1c2d4e5b]  # job ids only; or `discretionary: true` on the job
+  default_discretionary: false    # true = EVERY job is skippable unless listed below
+  essential_jobs: [a1b2c3d4e5f6]  # job ids that always run (win over every other marker)
   cache_seconds: 300              # spend snapshot TTL (min 30)
 ```
 
@@ -653,6 +655,16 @@ cost_budget:
   otherwise `cronjob(action='run')` around its own budget. The `cronjob`
   tool takes `discretionary: true` (set-only — clearing it frees a job from
   the budget, so that is an operator edit of `jobs.json` or the config list).
+  **Fail-closed mode (`default_discretionary: true`, opt-in):** every job of
+  the profile is discretionary unless its id is in `essential_jobs` — so a
+  job the agent creates without the flag still cannot escape the budget.
+  Both keys live only in `config.yaml`; the `cronjob` tool has no way to mark
+  a job essential, and a job-level `discretionary: false`/`essential` field is
+  ignored. With the profile write guard (`agent_write_guard`) on, the agent
+  cannot edit config.yaml either. An essential id wins over every other
+  marker. Default `false` keeps the list/flag behaviour above. The educator
+  profile uses `default_discretionary: true` with `essential_jobs:
+  [<release-watch job id>]`.
 - **Alerts** — `watch()` from `tick()` after the dispatch gate, and every
   over-budget preflight. `tick` already runs inside each profile's home
   override with **that profile's own adapters** (the multiplex ticker), so

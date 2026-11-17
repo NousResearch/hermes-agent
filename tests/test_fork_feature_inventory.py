@@ -62,6 +62,7 @@ WIRING = [
     ("cost budget", "cron/scheduler.py", "_cost_budget.preflight_cron_job(job, adapters=adapters, loop=loop)", "pre-run skip in the shared run body"),
     ("cost budget", "cron/scheduler.py", 'mark_job_skipped(job["id"], "skipped_budget"', "skip recorded without consuming a run"),
     ("cost budget", "cron/jobs.py", "def mark_job_skipped", "skip keeps streak/repeat, re-arms one-shots"),
+    ("cost budget", "agent/cost_budget.py", "if job_id in cfg.essential_jobs:", "essential ids always run; default_discretionary fail-closed mode"),
     ("cost budget", "tools/cronjob_tools.py", 'updates["discretionary"] = True', "set-only discretionary flag"),
     ("cost budget", "cron/scheduler.py", "_cost_budget.watch(adapters=adapters, loop=loop)", "tick watches this profile's budget"),
     ("cost budget", "cron/executions.py", "note: Optional[str] = None", "ledger records the skip on a completed row"),

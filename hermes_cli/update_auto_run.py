@@ -132,9 +132,11 @@ def run_update(context: AutoUpdateContext, status: dict, args) -> int:
         if value:
             arguments.extend([f"--{option}", value])
     argv = command(context, arguments)
-    environment = os.environ.copy()
-    environment["HERMES_HOME"] = str(context.home)
-    environment["HERMES_UPDATE_CORRELATION_ID"] = correlation
+    from tools.environments.local import build_subprocess_env
+
+    # The updater needs the caller's credentials (git, PM downloads), so secrets are kept.
+    environment = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False, extra={
+        "HERMES_HOME": str(context.home), "HERMES_UPDATE_CORRELATION_ID": correlation})
     status.update(status="running", lastRunAt=utc_now(), correlationId=correlation, runPending=True,
                   error=None, receiptPath=None, terminalReceipt=None, exitCode=None, finishedAt=None,
                   outcomeSource="updater")

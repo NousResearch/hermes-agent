@@ -390,6 +390,8 @@ _UPDATE_DEPENDENCIES = (
     "agent/proxy_bypass.py",  # update_proxy_env reads NO_PROXY entries with it
     "hermes_cli/backup_retention.py",
     "hermes_cli/subcommands/__init__.py",  # update parser loads its auto-update sibling
+    "hermes_cli/gateway_lifecycle_guards.py",  # update_auto_idle asks gateways for live work
+    "hermes_cli/config_defaults.py",  # update_auto_idle reads updates.auto defaults
     "hermes_cli/relay_plugin_migrate.py",
     "hermes_cli/macos_tcc_anchor.py",
     "hermes_cli/model_catalog.py",

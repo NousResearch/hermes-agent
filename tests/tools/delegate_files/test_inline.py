@@ -177,6 +177,39 @@ def test_fence_refit_drops_a_row_per_pass(tmp_path, monkeypatch):
         assert len(reads) <= 3, (k, len(reads))
 
 
+def test_a_huge_unrequested_line_is_never_held_in_memory(tmp_path):
+    """A short line 1 then a 32 MiB newline-free tail (a minified file): reading 1-1 stays small in memory."""
+    import tracemalloc
+
+    ws = _workspace(tmp_path)
+    with open(ws / "min.js", "wb") as out:
+        out.write(b"ok\n")
+        out.writelines(b"x" * (1 << 20) for _ in range(32))
+    tracemalloc.start()
+    try:
+        _ws, files, err, _msg = _brief(tmp_path, ["min.js:1-1"])
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert err is None and "1|ok\n" in files[0].block and len(files[0].block) < 1000
+    assert peak < 8 * (1 << 20), peak
+
+
+def test_a_label_longer_than_the_remaining_budget_is_skipped_not_rendered(tmp_path):
+    """After a first file fills most of the cap, a later entry whose label alone overflows is listed, not shown."""
+    ws = _workspace(tmp_path)
+    (ws / "wide.txt").write_text("".join("x" * 142 + "\n" for _ in range(400)), encoding="utf-8")
+    deep = ws
+    for i in range(7):
+        deep = deep / (f"{i}" + "d" * 250)
+    deep.mkdir(parents=True)
+    (deep / "ok.txt").write_text("ok\n", encoding="utf-8")
+    long_path = str((deep / "ok.txt").relative_to(ws))
+    _ws, files, err, _msg = _brief(tmp_path, ["wide.txt", long_path])
+    assert err is None and len(files[0].block.encode()) <= dtf.MAX_TOTAL_BYTES
+    assert "not inlined" in files[0].block and "1|ok" not in files[0].block
+
+
 def test_cut_files_stay_unmarked_and_denied_or_binary_files_fail_the_call(tmp_path):
     from tools.file_tools import read_file_tool
 

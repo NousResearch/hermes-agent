@@ -21,6 +21,7 @@ _RANGE_RE = re.compile(r"^(?P<path>.+?):(?P<start>\d+)-(?P<end>\d+)$")
 _SNIFF_BYTES = 8192
 _MIN_ENTRY_BYTES = 512  # below this an entry would be all label and marker; also the skipped-list marker's room
 _MAX_SKIPPED_NAMES = 8
+_CHUNK = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -115,22 +116,52 @@ def _refusal(spec: FileSpec, base: Path) -> tuple[Optional[Path], Optional[str]]
     return resolved, None
 
 
+def _bounded_lines(stream: Any, digest: Any, keep: Any):
+    """Yield ``(n, head, size)`` per ``\\n``-terminated line (and a non-empty unterminated tail), reading
+    ``_CHUNK``-byte blocks so a newline-free line is never held whole: *head* is at most ``keep(n)`` bytes of the
+    line and *size* its full length. Every byte goes through *digest*."""
+    n, held, size, limit = 1, bytearray(), 0, keep(1)
+    while chunk := stream.read(_CHUNK):
+        digest.update(chunk)
+        pos = 0
+        while (nl := chunk.find(b"\n", pos)) != -1:
+            held += chunk[pos:min(nl + 1, pos + max(0, limit - len(held)))]
+            size += nl + 1 - pos
+            yield n, bytes(held), size
+            n, held, size, pos = n + 1, bytearray(), 0, nl + 1
+            limit = keep(n)
+        held += chunk[pos:pos + max(0, limit - len(held))]
+        size += len(chunk) - pos
+    if size:
+        yield n, bytes(held), size
+
+
 def _read_lines(resolved: Path, start: int, end: Optional[int], budget: int) -> tuple[list[str], int, bytes]:
-    """Lines ``start..end`` split on ``\\n`` only (read_file's rule), streamed so a small range of a huge file never
-    loads the file; at most ``MAX_FILE_LINES`` rows within ``budget`` bytes. Returns ``(rows, wanted, sha256)``:
-    *wanted* counts the requested lines that exist and *sha256* covers the whole file (the snapshot the child saw)."""
+    """Lines ``start..end`` split on ``\\n`` only (read_file's rule), streamed in fixed-size chunks so neither a
+    huge file nor one huge line is ever loaded; at most ``MAX_FILE_LINES`` rows within ``budget`` bytes. Returns
+    ``(rows, wanted, sha256)``: *wanted* counts the requested lines that exist and *sha256* covers the whole file
+    (the snapshot the child saw)."""
     digest = hashlib.sha256()
     rows: list[str] = []
     wanted = used = 0
+
+    def keep(n: int) -> int:
+        if n < start or (end is not None and n > end) or len(rows) >= MAX_FILE_LINES or used >= budget:
+            return 0
+        # Slack covers what rendering strips (BOM, \r, \n): a line longer than this can never fit the budget.
+        return budget - used + 8
+
     with open(resolved, "rb") as stream:
-        for n, raw in enumerate(stream, 1):
-            digest.update(raw)
+        for n, head, size in _bounded_lines(stream, digest, keep):
             if n < start or (end is not None and n > end):
                 continue
             wanted += 1
             if len(rows) >= MAX_FILE_LINES or used >= budget:
                 continue
-            text = raw.decode("utf-8", errors="replace").rstrip("\n").removesuffix("\r")
+            if len(head) < size:
+                used = budget
+                continue
+            text = head.decode("utf-8", errors="replace").rstrip("\n").removesuffix("\r")
             row = f"{n}|{text.removeprefix(chr(0xFEFF)) if n == 1 else text}\n"
             if used + len(row.encode("utf-8")) > budget:
                 used = budget
@@ -225,13 +256,18 @@ def read_task_files(specs: list[FileSpec], workspace: Optional[str]) -> tuple[Op
     # Room for the skipped-names marker is held back whenever a later entry could be skipped.
     budget = MAX_TOTAL_BYTES - len(FILES_HEADING) - 1 - (_MIN_ENTRY_BYTES if len(resolved_specs) > 1 else 0)
     for spec, resolved in resolved_specs:
+        label = spec.path if spec.start is None else f"{spec.path}:{spec.start}-{spec.end}"
         if budget < _MIN_ENTRY_BYTES:
-            skipped.append(spec.path if spec.start is None else f"{spec.path}:{spec.start}-{spec.end}")
+            skipped.append(label)
             continue
         try:
             text, span = _render_one(spec, resolved, budget)
         except ValueError as exc:
             return None, str(exc)
+        # A label (with its fences and marker) longer than what is left cannot be cut to fit: list it instead.
+        if len(text.encode("utf-8")) > budget:
+            skipped.append(label)
+            continue
         budget -= len(text.encode("utf-8")) + 1
         parts.append(text)
         spans.append(span)

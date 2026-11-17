@@ -58,3 +58,33 @@ async def test_streamed_fence_is_replaced_by_blocks_on_seal():
     assert update["ts"] == "123.456"
     assert [b["type"] for b in update["blocks"]] == ["header", "divider"]
     assert "slack-blocks" not in update["text"]
+
+
+class _StreamExpired(Exception):
+    def __init__(self):
+        super().__init__("expired")
+        self.response = {"ok": False, "error": "message_not_in_streaming_state"}
+
+
+@pytest.mark.asyncio
+async def test_card_survives_a_stream_reopened_mid_fence():
+    adapter, client = _make_adapter({"agent_blocks": True})
+    split = REPLY.index("[")                      # Slack seals the stream inside the fence
+    await adapter.send_draft("D1", 7, REPLY[:split], metadata=META)
+    client.chat_appendStream = AsyncMock(side_effect=_StreamExpired())
+    client.chat_startStream = AsyncMock(return_value={"ok": True, "ts": "124.000"})
+    await adapter.send_draft("D1", 7, REPLY[:-4], metadata=META)
+    client.chat_appendStream = AsyncMock(return_value={"ok": True})
+    assert (await adapter.send("D1", REPLY, metadata=META)).success
+    update = client.chat_update.await_args.kwargs
+    assert update["ts"] == "124.000"
+    assert [b["type"] for b in update["blocks"]] == ["header", "divider"]
+
+
+@pytest.mark.asyncio
+async def test_reply_too_long_for_one_message_keeps_its_fence():
+    adapter, client = _make_adapter({"agent_blocks": True})
+    await adapter.send("C1", "x" * (adapter.MAX_MESSAGE_LENGTH + 10) + "\n\n" + REPLY.split("\n\n", 1)[1])
+    posted = "".join(c.kwargs["text"] for c in client.chat_postMessage.await_args_list)
+    assert all("blocks" not in c.kwargs for c in client.chat_postMessage.await_args_list)
+    assert '"Weekly metrics"' in posted              # the card's content is delivered as text

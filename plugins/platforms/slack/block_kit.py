@@ -692,20 +692,31 @@ def _defuse_broadcasts(node: Any) -> Any:
     return node
 
 
+_FENCE_LINE_RE = re.compile(r"(`{3,}|~{3,})(.*)")
+
+
+def _closes(stripped: str, opener: str) -> bool:
+    """CommonMark closer: the opener's character only, at least as long, nothing else on the line."""
+    return len(stripped) >= len(opener) and set(stripped) == {opener[0]}
+
+
 def _agent_fences(content: str) -> list[tuple[int, int, str]]:
-    """``(start, end, body)`` of each closed ```slack-blocks fence, in one pass over the lines: an
-    opener with no matching closer (same fence string, on its own line) is not a fence."""
+    """``(start, end, body)`` of each closed ```slack-blocks fence outside any other code block, in
+    one pass over the lines. A ``slack-blocks`` example quoted inside an ordinary (e.g. four-backtick)
+    fence is code, not a card; an opener with no matching closer is not a fence."""
     spans: list[tuple[int, int, str]] = []
-    opened: Optional[tuple[int, str, int]] = None   # (start, fence string, body start)
+    opened: Optional[tuple[int, str, int, bool]] = None   # (start, fence string, body start, is agent)
     pos = 0
     for line in content.splitlines(keepends=True):
         stripped = line.strip()
         if opened is None:
-            m = _AGENT_FENCE_OPEN_RE.fullmatch(stripped)
+            m = _FENCE_LINE_RE.fullmatch(stripped)
             if m:
-                opened = (pos, m.group(1), pos + len(line))
-        elif stripped == opened[1]:
-            spans.append((opened[0], pos + len(line), content[opened[2]:pos]))
+                is_agent = _AGENT_FENCE_OPEN_RE.fullmatch(stripped) is not None
+                opened = (pos, m.group(1), pos + len(line), is_agent)
+        elif _closes(stripped, opened[1]):
+            if opened[3]:
+                spans.append((opened[0], pos + len(line), content[opened[2]:pos]))
             opened = None
         pos += len(line)
     return spans

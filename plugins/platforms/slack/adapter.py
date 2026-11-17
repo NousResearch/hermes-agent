@@ -2677,7 +2677,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         else:
             # A reopened stream's message starts at ``base``; the sealed one before it already
             # shows the prefix. (A ``replace`` rewrite is not prefix-aligned, so use it whole.)
-            shown = text if replace else text[stream.get("base", 0):]
+            # An agent card is extracted from the whole answer: a reopen can split its fence.
+            shown = text if replace or self._agent_card(text) else text[stream.get("base", 0):]
             edited = await self.edit_message(chat_id, ts, shown, finalize=True, metadata=metadata)
             committed = edited.success or (sealed and not replace)
             if not sealed:
@@ -3071,14 +3072,21 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             return [*blocks, self._feedback_block()]
         return blocks
 
+    def _agent_card(self, content: str) -> Optional[tuple]:
+        """``(fallback text, blocks)`` of the reply's ```slack-blocks card when ``agent_blocks`` is on
+        and the fallback fits one message (blocks ride only on a single-chunk post), else ``None``."""
+        if not (content and self._extra_flag("agent_blocks")):
+            return None
+        agent = extract_agent_blocks(content)
+        if agent and len(self.format_message(agent[0])) <= self.MAX_MESSAGE_LENGTH:
+            return agent
+        return None
+
     def _agent_text(self, content: str) -> str:
-        """``content`` without its ```slack-blocks payload when ``agent_blocks`` is on and the payload
-        is valid — the blocks carry it and this text is their fallback — else ``content`` as is."""
-        if content and self._extra_flag("agent_blocks"):
-            agent = extract_agent_blocks(content)
-            if agent:
-                return agent[0]
-        return content
+        """``content`` without its card fence when it carries a sendable card (the blocks hold the
+        payload, this text is their fallback), else ``content`` as is, fence and all."""
+        agent = self._agent_card(content)
+        return agent[0] if agent else content
 
     def _maybe_blocks(self, content: str) -> Optional[list]:
         """Block Kit for ``content``: agent-authored blocks (``agent_blocks``: the reply's own
@@ -3089,10 +3097,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         1. ``markdown_blocks`` — Slack's native ``markdown`` block renders the *raw* standard markdown
         (tables, headers, code fences with syntax highlighting) with Slack doing the translation (#8552). 2.
         """
-        if self._extra_flag("agent_blocks"):
-            agent = extract_agent_blocks(content)
-            if agent:
-                return sanitize_blocks(self._append_feedback_block(agent[1]))
+        agent = self._agent_card(content)
+        if agent:
+            return sanitize_blocks(self._append_feedback_block(agent[1]))
         if self._extra_flag("markdown_blocks"):
             md_blocks = self._markdown_block_payload(content)
             if md_blocks:

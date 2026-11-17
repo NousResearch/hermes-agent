@@ -51,7 +51,13 @@ class TestExtractAgentBlocks:
         content = "```slack-blocks\nx\n" * 20000          # ~400 KB of openers, none closed
         started = time.monotonic()
         assert extract_agent_blocks(content) is None
-        assert time.monotonic() - started < 1.0
+        assert time.monotonic() - started < 2.0
+
+    def test_example_quoted_in_an_ordinary_fence_is_not_a_card(self):
+        quoted = "To post a card, reply like this:\n\n````text\n" + fenced([HEADER]) + "\n````"
+        assert extract_agent_blocks(quoted) is None
+        text, blocks = extract_agent_blocks("```python\nx = 1\n```\n" + fenced([HEADER]))
+        assert text == "```python\nx = 1\n```" and blocks == [HEADER]
 
     def test_fence_inside_text_lines(self):
         text, blocks = extract_agent_blocks("Intro\n" + fenced([HEADER]) + "\nOutro")

@@ -23,7 +23,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.platforms.api_server_authority_runs import respond_prompt, store_error_response
-from gateway.session_asks import STATUSES
+from gateway.session_asks import STATUSES, ledger_of, retired_of
 from gateway.session_contract import SessionActor, SessionRef
 from hermes_state_runtime import RuntimeStoreError
 
@@ -75,13 +75,13 @@ async def _session_ledger(adapter, request) -> tuple[Optional[tuple], Optional[w
     live = authority.sessions.get(session_id)
     if live is None:
         _session, err = await adapter._get_existing_session_or_404(session_id)
-        return (None, err) if err else ((authority, session_id, authority.retired_asks.get(session_id)), None)
+        return (None, err) if err else ((authority, session_id, retired_of(authority).get(session_id)), None)
     try:  # the authority's own read check: deleted, history-mount and profile rules
         authority.authorize(SessionActor("api", authority.profile_id, _READ_ACTOR, "api-asks"),
                             SessionRef(authority.profile_id, session_id), "session:read")
     except RuntimeStoreError as exc:
         return None, _store_error(exc)
-    return (authority, session_id, live.event_stream.asks), None
+    return (authority, session_id, ledger_of(live.event_stream)), None
 
 
 def _store_error(exc: RuntimeStoreError) -> web.Response:

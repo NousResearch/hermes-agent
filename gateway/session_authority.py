@@ -20,7 +20,7 @@ from gateway.session_contract import (
     SubscriptionSnapshot,
 )
 from gateway.session_events import SessionEvents
-from gateway.session_asks import RetiredAsks
+from gateway.session_asks import ledger_of
 from gateway.session_pending_controls import PendingControls
 from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
 from hermes_cli.observability.shared_metrics_busy import busy_row_settled
@@ -101,7 +101,7 @@ class LiveSession:
     background_wait: threading.Event | None = None
 
     def __post_init__(self):
-        self.controls = PendingControls(self.event_stream, self.event_stream.asks)
+        self.controls = PendingControls(self.event_stream, ledger_of(self.event_stream))
 
     @property
     def detached(self):
@@ -168,9 +168,6 @@ class SessionAuthority:
         # Closed local conversations ``session_retirement`` let go (a restored one may linger here until
         # it is deleted or retired again): their source and frozen policy stay on the local adapter.
         self.retired_local = set()
-        # session -> the asks ledger of a conversation retirement let go (gateway/session_asks.py), so its
-        # closed asks stay readable over the API; bounded, dropped with the session.
-        self.retired_asks = RetiredAsks()
         # Every conversation ``session_retirement`` let go and not yet deleted -> its route: a delete or
         # prune of one not in memory still evicts that route's cached agent.
         self.retired_routes = {}

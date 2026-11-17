@@ -7,7 +7,7 @@ where the session's owner already raises it (``PendingControls.register`` / ``re
 answer still goes through the native waiter, and the ask's status is read from how that waiter ended.
 A secret value never enters it.
 
-One ledger per live session event stream (``SessionEvents.asks``), so a profile's asks never mix with
+One ledger per live session event stream (:func:`ledger_of`), so a profile's asks never mix with
 another's and they go when the live session does. Closed asks are kept up to ``_CLOSED_KEEP``.
 """
 from __future__ import annotations
@@ -154,8 +154,18 @@ class AskLedger:
             return [a.as_dict() for a in reversed(self._asks.values()) if a.status in statuses]
 
 
+def ledger_of(events) -> AskLedger:
+    """The asks ledger of one live session event stream, attached on first use (any stream object)."""
+    return vars(events).setdefault("asks", AskLedger())
+
+
+def retired_of(authority) -> RetiredAsks:
+    """*authority*'s ledgers of retired conversations, attached on first use."""
+    return vars(authority).setdefault("retired_asks", RetiredAsks())
+
+
 class RetiredAsks:
-    """The ledgers of conversations retirement let go (``SessionAuthority.retired_asks``), newest kept."""
+    """The ledgers of conversations retirement let go (:func:`retired_of`), newest kept."""
     _KEEP = 256
 
     def __init__(self):

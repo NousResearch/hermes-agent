@@ -426,27 +426,31 @@ def test_a_read_after_close_opens_the_store_again(sole):
     assert len(sole.get_messages("s1")) == 1
 
 
-def test_closes_racing_a_flush_lose_no_write(sole):
-    start = threading.Event()
-    errors = []
+def test_a_close_while_a_write_is_inside_releases_the_store_once_the_write_returns(sole, monkeypatch):
+    from persistence.conversation.messages import NewMessage
 
-    def flush():
-        start.wait()
-        for i in range(40):
-            try:
-                sole.append_message("s1", "tool", content=f"result {i}")
-            except Exception as exc:
-                errors.append(exc)
+    entered, release = threading.Event(), threading.Event()
+    build = NewMessage.from_live
 
-    worker = threading.Thread(target=flush)
+    def held_inside(message):
+        entered.set()
+        assert release.wait(30)
+        return build(message)
+
+    monkeypatch.setattr(NewMessage, "from_live", held_inside)
+    outcome = []
+    worker = threading.Thread(target=lambda: outcome.append(sole.append_message("s1", "tool", content="kept")))
     worker.start()
-    start.set()
+    assert entered.wait(30)
     sole.close()
     sole.close()
+    assert sole._stack is not None  # the write still holds the store
+    release.set()
     worker.join(timeout=30)
-    assert not worker.is_alive()
-    assert errors == []
-    assert len(sole.get_messages("s1")) == 40
+    assert not worker.is_alive() and len(outcome) == 1
+    assert sole._stack is None  # released by the write's return
+    monkeypatch.undo()
+    assert [(row["role"], row["content"]) for row in sole.get_messages("s1")] == [("tool", "kept")]
 
 
 def test_a_read_only_door_refuses_after_close(sole, tmp_path):

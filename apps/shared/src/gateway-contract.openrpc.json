@@ -3589,6 +3589,24 @@
       }
     },
     {
+      "name": "session.render_snapshot",
+      "summary": "What the agent saw: the stored system prompt, model, tools and MCP servers, and what changed between compression segments. Read-only; never rebuilds the prompt.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionRenderSnapshotParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionRenderSnapshotResult"
+        }
+      }
+    },
+    {
       "name": "session.resume",
       "summary": "Attach to a stored session: reuse it if live here, else lazy / deferred / cold / eager rebuild.",
       "params": [
@@ -34806,6 +34824,179 @@
         "title": "ReloadMcpStatus",
         "type": "string"
       },
+      "RenderSnapshotChange": {
+        "additionalProperties": false,
+        "description": "One difference from the previous compression segment. ``kind``: ``model_changed`` |\n``provider_changed`` | ``prompt_changed`` (``before``/``after``: the values, prompt hashes for a\nprompt) | ``tool_added`` | ``tool_removed`` (``name``).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "model_changed",
+              "provider_changed",
+              "prompt_changed",
+              "tool_added",
+              "tool_removed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Before"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "RenderSnapshotChange",
+        "type": "object"
+      },
+      "RenderSnapshotSegment": {
+        "additionalProperties": false,
+        "description": "One stored session of the compression lineage, oldest first.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Reason"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "prompt_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt Hash"
+          },
+          "prompt_chars": {
+            "title": "Prompt Chars",
+            "type": "integer"
+          },
+          "tool_count": {
+            "title": "Tool Count",
+            "type": "integer"
+          },
+          "changes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RenderSnapshotChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "model",
+          "provider",
+          "prompt_chars",
+          "tool_count"
+        ],
+        "title": "RenderSnapshotSegment",
+        "type": "object"
+      },
+      "RenderSnapshotTool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "toolset": {
+            "title": "Toolset",
+            "type": "string"
+          },
+          "mcp_server": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mcp Server"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "toolset",
+          "description"
+        ],
+        "title": "RenderSnapshotTool",
+        "type": "object"
+      },
       "RepoDiscoveryPolicy": {
         "additionalProperties": false,
         "description": "``methods_projects._repo_discovery_policy`` \u2014 the effective ``desktop.repo_scan_*`` config.",
@@ -40131,6 +40322,111 @@
           "reason"
         ],
         "title": "SessionReclaimedPayload",
+        "type": "object"
+      },
+      "SessionRenderSnapshotParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionRenderSnapshotParams",
+        "type": "object"
+      },
+      "SessionRenderSnapshotResult": {
+        "additionalProperties": false,
+        "description": "``agent.render_snapshot.build_render_snapshot``: the stored system prompt (redacted; null before\nthe first turn persists one), the route, the tools as the live agent holds them (``tools_source:\nlive``) or as the row pinned them (``stored``), and the lineage's per-segment changes.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "system_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "System Prompt"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "tools_source": {
+            "enum": [
+              "live",
+              "stored",
+              "none"
+            ],
+            "title": "Tools Source",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/RenderSnapshotTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "toolsets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Toolsets",
+            "type": "array"
+          },
+          "mcp_servers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/RenderSnapshotSegment"
+            },
+            "title": "Segments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "model",
+          "provider",
+          "tools_source",
+          "tools",
+          "toolsets",
+          "mcp_servers",
+          "segments"
+        ],
+        "title": "SessionRenderSnapshotResult",
         "type": "object"
       },
       "SessionResumeParams": {

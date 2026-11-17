@@ -6,6 +6,7 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esContextUsagePanel } from './es_context_usage_panel'
 import { esCronControl } from './es_cron_control'
 import { esErrorCodes } from './es_error_codes'
 import { esErrorLayers } from './es_error_layers'
@@ -4643,32 +4644,7 @@ export const esOverrides = {
         unifiedNote: 'Memoria unificada: la GPU y el sistema comparten este espacio.',
         toggle: 'Recursos del sistema'
       },
-      contextUsagePanel: {
-        categories: {
-          conversation: 'Conversación',
-          mcp: 'MCP',
-          memory: 'Memoria',
-          rules: 'Reglas',
-          skills: 'Skills',
-          subagent_definitions: 'Definiciones de subagente',
-          system_prompt: 'Prompt del sistema',
-          tool_definitions: 'Definiciones de herramientas'
-        },
-        compact: {
-          action: 'Compactar conversación',
-          busyHint: 'Termina o detén primero la respuesta en curso',
-          confirm: 'Compactar',
-          hint: 'Resume el contexto anterior para hacer espacio. Continúa en esta misma conversación.',
-          question: '¿Compactar esta conversación en un resumen?',
-          questionNamed: title => `¿Compactar «${title}» en un resumen?`,
-          working: 'Compactando…'
-        },
-        empty: 'Aún no hay datos de contexto',
-        loading: 'Cargando desglose…',
-        percentFull: percent => `${percent}% lleno`,
-        title: 'Uso del contexto',
-        tokenSummary: (used, max) => `${used} / ${max} tokens`
-      },
+      contextUsagePanel: esContextUsagePanel,
       focusedSince: 'Enfocado desde',
       focusedSinceTitle: 'Tiempo desde que este chat está enfocado — no cuánto lleva un turno',
       yoloOn: 'YOLO activado — autoaprobando comandos peligrosos. Shift+clic lo alterna globalmente.',

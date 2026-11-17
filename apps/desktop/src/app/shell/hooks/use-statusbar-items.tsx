@@ -723,6 +723,7 @@ export function useStatusbarItems({
           <ContextUsagePanel
             breakdown={contextBreakdown}
             compact={compactConversation}
+            inspector={{ requestGateway, sessionId: activeSessionId }}
             loading={contextBreakdownLoading}
             usage={gaugeUsage}
           />
@@ -800,6 +801,7 @@ export function useStatusbarItems({
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
+      activeSessionId,
       approvalModeItem,
       backendVersionItem,
       busy,
@@ -818,6 +820,7 @@ export function useStatusbarItems({
       gatewayState,
       planGauge,
       planUsed,
+      requestGateway,
       systemResourcesItem,
       t.modelPicker,
       terminalShowing,

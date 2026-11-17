@@ -6,6 +6,7 @@ import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhContextUsagePanel } from './zh_context_usage_panel'
 import { zhCronControl } from './zh_cron_control'
 import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
@@ -4068,32 +4069,7 @@ export const zhOverrides = {
         unifiedNote: '统一内存——GPU 与系统共享此内存池。',
         toggle: '系统资源'
       },
-      contextUsagePanel: {
-        categories: {
-          conversation: '对话',
-          mcp: 'MCP',
-          memory: '记忆',
-          rules: '规则',
-          skills: '技能',
-          subagent_definitions: '子代理定义',
-          system_prompt: '系统提示词',
-          tool_definitions: '工具定义'
-        },
-        compact: {
-          action: '压缩对话',
-          busyHint: '请先完成或停止当前回复',
-          confirm: '压缩',
-          hint: '总结较早的上下文以腾出空间，继续当前对话。',
-          question: '将此对话压缩为摘要？',
-          questionNamed: title => `将“${title}”压缩为摘要？`,
-          working: '正在压缩…'
-        },
-        empty: '暂无上下文数据',
-        loading: '正在加载明细…',
-        percentFull: percent => `已用 ${percent}%`,
-        title: '上下文用量',
-        tokenSummary: (used, max) => `${used} / ${max} Tokens`
-      },
+      contextUsagePanel: zhContextUsagePanel,
       focusedSince: '聚焦以来',
       focusedSinceTitle: '自本次聚焦该对话以来的时间，不是回合运行时长',
       yoloOn: 'YOLO 已开启 — 自动批准危险命令。Shift+点击可全局切换。',

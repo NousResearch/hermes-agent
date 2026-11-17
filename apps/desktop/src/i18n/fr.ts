@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frContextUsagePanel } from './fr_context_usage_panel'
 import { frCronControl } from './fr_cron_control'
 import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
@@ -4668,32 +4669,7 @@ export const frOverrides = {
         unifiedNote: 'Mémoire unifiée — le GPU et le système partagent cet espace.',
         toggle: 'Ressources système'
       },
-      contextUsagePanel: {
-        categories: {
-          conversation: 'Conversation',
-          mcp: 'MCP',
-          memory: 'Mémoire',
-          rules: 'Règles',
-          skills: 'Skills',
-          subagent_definitions: 'Définitions de sous-agents',
-          system_prompt: 'Invite système',
-          tool_definitions: "Définitions d'outils"
-        },
-        compact: {
-          action: 'Compacter la conversation',
-          busyHint: "Terminez ou arrêtez d'abord la réponse en cours",
-          confirm: 'Compacter',
-          hint: 'Résumez le contexte ancien pour libérer de la place. Continuez dans cette même conversation.',
-          question: 'Compacter cette conversation en un résumé ?',
-          questionNamed: title => `Compacter « ${title} » en un résumé ?`,
-          working: 'Compaction…'
-        },
-        empty: 'Aucune donnée de contexte pour le moment',
-        loading: 'Chargement du détail…',
-        percentFull: percent => `${percent}% plein`,
-        title: 'Utilisation du contexte',
-        tokenSummary: (used, max) => `${used} / ${max} jetons`
-      },
+      contextUsagePanel: frContextUsagePanel,
       focusedSince: 'Focalisé depuis',
       focusedSinceTitle: 'Temps depuis que cette conversation est au premier plan — pas la durée d’un tour',
       yoloOn: 'YOLO activé — approbation automatique des commandes dangereuses. Shift+clic pour basculer globalement.',

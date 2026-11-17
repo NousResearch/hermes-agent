@@ -10,6 +10,7 @@ import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enContextUsagePanel } from './en_context_usage_panel'
 import { enCronControl } from './en_cron_control'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enErrorCodes } from './en_error_codes'
@@ -4222,32 +4223,7 @@ export const en: Translations = {
         unifiedNote: 'Unified memory — the GPU and system share this pool.',
         toggle: 'System resources'
       },
-      contextUsagePanel: {
-        categories: {
-          conversation: 'Conversation',
-          mcp: 'MCP',
-          memory: 'Memory',
-          rules: 'Rules',
-          skills: 'Skills',
-          subagent_definitions: 'Subagent definitions',
-          system_prompt: 'System prompt',
-          tool_definitions: 'Tool definitions'
-        },
-        compact: {
-          action: 'Compact conversation',
-          busyHint: 'Finish or stop the current reply first',
-          confirm: 'Compact',
-          hint: 'Summarize older context to make room. Continue in this same conversation.',
-          question: 'Compress this chat into a summary?',
-          questionNamed: title => `Compress “${title}” into a summary?`,
-          working: 'Compacting…'
-        },
-        empty: 'No context data yet',
-        loading: 'Loading breakdown…',
-        percentFull: percent => `${percent}% Full`,
-        title: 'Context Usage',
-        tokenSummary: (used, max) => `${used} / ${max} Tokens`
-      },
+      contextUsagePanel: enContextUsagePanel,
       focusedSince: 'Focused for',
       focusedSinceTitle: 'Time since this chat was focused — not how long a turn has been running',
       yoloOn: 'YOLO on — auto-approving dangerous commands. Shift+click toggles globally.',

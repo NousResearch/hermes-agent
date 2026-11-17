@@ -17,7 +17,7 @@ from functools import partial
 from pathlib import Path
 
 from gateway.session_busy_controls import authorize
-from gateway.session_tui_reads import context_breakdown
+from gateway.session_tui_reads import context_breakdown, render_snapshot
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -31,6 +31,7 @@ def handlers(connection):
             'rollback.restore': partial(rollback, connection, kind='restore'),
             'rollback.session_diff': partial(rollback, connection, kind='session_diff'),
             'session.context_breakdown': partial(context_breakdown, connection),
+            'session.render_snapshot': partial(render_snapshot, connection),
             'session.history': partial(session_history, connection)}
 
 

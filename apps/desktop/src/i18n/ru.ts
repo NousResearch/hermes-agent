@@ -6,6 +6,7 @@ import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
+import { ruContextUsagePanel } from './ru_context_usage_panel'
 import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
@@ -3318,32 +3319,7 @@ export const ruOverrides = {
       turnRunning: 'Выполняется',
       contextUsage: 'Использование контекста',
       compressions: count => `Сжатий: ${count}`,
-      contextUsagePanel: {
-        categories: {
-          conversation: 'Диалог',
-          mcp: 'MCP',
-          memory: 'Память',
-          rules: 'Правила',
-          skills: 'Навыки',
-          subagent_definitions: 'Определения субагентов',
-          system_prompt: 'Системный промпт',
-          tool_definitions: 'Определения инструментов'
-        },
-        compact: {
-          action: 'Сжать диалог',
-          busyHint: 'Сначала завершите или остановите текущий ответ',
-          confirm: 'Сжать',
-          hint: 'Сожмите старый контекст, чтобы освободить место. Разговор продолжится здесь же.',
-          question: 'Сжать этот диалог в краткое изложение?',
-          questionNamed: title => `Сжать «${title}» в краткое изложение?`,
-          working: 'Сжимаю…'
-        },
-        empty: 'Данных контекста пока нет',
-        loading: 'Загрузка разбивки…',
-        percentFull: percent => `${percent}% занято`,
-        title: 'Использование контекста',
-        tokenSummary: (used, max) => `${used} / ${max} токенов`
-      },
+      contextUsagePanel: ruContextUsagePanel,
       focusedSince: 'В фокусе с',
       focusedSinceTitle: 'Время с момента фокуса этого чата — не длительность хода',
       yoloOn: 'YOLO включён — автоматическое подтверждение опасных команд. Shift-клик переключает глобально.',

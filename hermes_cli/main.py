@@ -2080,18 +2080,11 @@ def _finalize_update_receipt(code: int, reason: str) -> None:
 
 
 def _update_preflight_handled(args) -> bool:
-    """Managed-install refusal, --plan, admission gate, --check. True = nothing more to do."""
-    from hermes_cli.config import is_managed, managed_error
+    """--plan, admission gate (managed install first), --check. True = nothing more to do."""
     from hermes_cli.update_channel import handle_metadata_args
-    from hermes_cli.update_cmd_common import _record_stop
 
     if handle_metadata_args(args, PROJECT_ROOT):
         sys.exit(0)
-    if is_managed():
-        managed_error("update Hermes Agent")
-        if not any(getattr(args, flag, False) for flag in ("plan", "check", "list_venv_holders")):
-            _record_stop("managed_install", without_receipt="refused")  # an update attempt: a metrics row only
-        return True
 
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
     # docker/nix/apt refusal gates: on an image/package-managed install the
@@ -2124,12 +2117,15 @@ def _update_preflight_handled(args) -> bool:
     # on malformed), then docker/nix/apt heuristics; one shared decision for every mutation surface, so
     # --check never reports git state for an image-managed install. Prints the real update command,
     # records a `refused` receipt and exits 2 (refused-by-contract, distinct from exit 1 errors).
+    # A package-managed install (NixOS/Home Manager) is refused through the same contract, after the
+    # read-only --plan, so fleet tooling sees its blocked attempt too.
     from hermes_cli.update_contract import (
         evaluate_update_admission,
+        managed_install_refusal,
         record_refusal_receipt,
     )
 
-    refusal = evaluate_update_admission(PROJECT_ROOT)
+    refusal = managed_install_refusal() or evaluate_update_admission(PROJECT_ROOT)
     if refusal is not None:
         print(refusal.message)
         record_refusal_receipt(refusal)

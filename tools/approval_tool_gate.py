@@ -24,7 +24,7 @@ import hashlib
 import json
 import logging
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import threading
 from typing import Any, Callable, Optional
 
@@ -57,28 +57,55 @@ class _Scope:
             return self.target
 
 
-def _host_real(path):
-    """Symlinks resolved on host paths so a workspace link cannot widen a workspace grant."""
-    return Path(os.path.realpath(path)) if isinstance(path, Path) else path
+def _backend_readlink(paths: list[str], task_id: str) -> list[str]:
+    """``readlink -f`` for each path on the active SSH / container backend, where the file tools
+    write (``_atomic_write`` follows a link there); ``""`` for a path it cannot resolve."""
+    from shlex import quote
+    from tools.file_tools import _get_file_ops
+    script = "; ".join(f"readlink -f {quote(path)} 2>/dev/null || realpath {quote(path)} 2>/dev/null || echo"
+                       for path in paths)
+    try:
+        result = _get_file_ops(task_id)._exec(script)
+    except Exception:  # health: allow BLE001 -- an unreachable backend leaves every path unresolved (stricter grant)
+        logger.debug("backend path resolution failed for the approval gate", exc_info=True)
+        return [""] * len(paths)
+    lines = result.stdout.splitlines() if result.exit_code == 0 and not result.cwd_error else []
+    return [line.strip() for line in lines] if len(lines) == len(paths) else [""] * len(paths)
+
+
+def _real_paths(paths: list, task_id: str) -> list:
+    """Each path with symlinks resolved where the tool will act: ``realpath`` on host paths,
+    ``readlink -f`` through the backend for the ``PurePosixPath`` of an SSH / container backend.
+    ``None`` for a path that is ``None`` or cannot be resolved, so a link can never widen a grant."""
+    real: list = [Path(os.path.realpath(path)) if isinstance(path, Path) else None for path in paths]
+    remote = [i for i, path in enumerate(paths) if path is not None and not isinstance(path, Path)]
+    if remote:
+        for i, resolved in zip(remote, _backend_readlink([str(paths[i]) for i in remote], task_id)):
+            real[i] = PurePosixPath(resolved) if resolved.startswith("/") else None
+    return real
 
 
 def _split_workspace(paths: list[str], task_id: str) -> tuple[str, list[str]]:
     """``(workspace_root, outside_paths)``; an unresolvable path counts as outside."""
     from tools.file_tools_paths import _resolve_base_dir, _resolve_path_for_task
     try:
-        root = _host_real(_resolve_base_dir(task_id))
+        root = _resolve_base_dir(task_id)
     except Exception:  # health: allow BLE001 -- unknown root: every path is scoped on its own
         logger.debug("workspace root unresolvable for task %s", task_id, exc_info=True)
         root = None
-    outside: list[str] = []
+    targets: list = []
     for raw in paths:
         try:
-            resolved = _host_real(_resolve_path_for_task(raw, task_id))
+            targets.append(_resolve_path_for_task(raw, task_id))
         except Exception:  # health: allow BLE001 -- fall back to the raw path (stricter grant)
             logger.debug("path unresolvable for the approval gate: %s", raw, exc_info=True)
-            outside.append(raw)
-            continue
-        if root is None or not (resolved == root or root in resolved.parents):
+            targets.append(None)
+    root, *real = _real_paths([root, *targets], task_id)
+    outside: list[str] = []
+    for raw, target, resolved in zip(paths, targets, real):
+        if resolved is None:
+            outside.append(raw if target is None else str(target))
+        elif root is None or not (resolved == root or root in resolved.parents):
             outside.append(str(resolved))
     return ("" if root is None else str(root)), sorted(set(outside))
 

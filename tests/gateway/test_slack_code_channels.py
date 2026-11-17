@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.config import Platform
+from gateway.run import GatewayRunner, _resolve_progress_thread_id
 from plugins.platforms.slack.adapter import SlackAdapter
 
 CODE, PLAIN = "C0CODE", "C0PLAIN"
@@ -116,8 +118,17 @@ class TestReplies:
     @pytest.mark.asyncio
     async def test_replies_go_top_level_including_the_streaming_path(self, adapter):
         await adapter._handle_slack_message(_msg(CODE, "10.0"))
+        message = adapter.handle_message.await_args[0][0]
         assert adapter._resolve_thread_ts("10.0", {"slack_team_id": "T1"}) is None
-        assert adapter._resolve_thread_ts("10.0", {"thread_id": "10.0"}) is None  # synthetic root
+        # Progress / stream metadata as the gateway builds it (default reply_in_thread): a synthetic
+        # thread_id on the triggering message; draft frames pass no reply_to.
+        thread = _resolve_progress_thread_id(
+            Platform.SLACK, message.source.thread_id, message.message_id, reply_in_thread=True)
+        stream_md = GatewayRunner._thread_metadata_for_target(
+            object.__new__(GatewayRunner), Platform.SLACK, CODE, thread, chat_type="group",
+            reply_to_message_id=message.message_id)
+        assert stream_md["thread_id"] == "10.0"
+        assert adapter._resolve_thread_ts(None, stream_md) is None
 
     @pytest.mark.asyncio
     async def test_send_posts_top_level(self, adapter):
@@ -153,7 +164,7 @@ class TestStatus:
         api_call.reset_mock()
         await adapter.send_typing(CODE, {"message_id": "10.0"})
         await adapter.send_typing(CODE, {"message_id": "10.0"})
-        await adapter.stop_typing(CODE, {"thread_id": "10.0"})  # a side thread ends: not ours
+        await adapter.stop_typing(CODE, {"thread_id": "10.0", "message_id": "12.0"})  # a side thread
         await adapter.stop_typing(CODE, {"slack_team_id": "T1"})
         calls = [c.kwargs["json"] for c in api_call.await_args_list if c.args[0] == "agents.sessions.setStatus"]
         assert calls == [{"channel_id": CODE, "status": "processing"}, {"channel_id": CODE, "status": "active"}]
@@ -167,6 +178,30 @@ class TestSlash:
         await adapter._handle_slack_message({**_msg(CODE, "10.0"), "user": "U_OTHER"})
         slash, message = (c.args[0] for c in adapter.handle_message.await_args_list)
         assert adapter._event_session_key(slash) == adapter._event_session_key(message)
+
+
+class TestSlashOrder:
+    @pytest.mark.asyncio
+    async def test_two_slashes_during_the_first_lookup_keep_arrival_order(self, adapter):
+        import asyncio
+        release, order = asyncio.Event(), []
+        calls = iter([release.wait(), asyncio.sleep(0)])  # the first lookup is the slow one
+
+        async def conversations_info(channel):
+            await next(calls)
+            return {"channel": {"properties": {"record_channel": {"record_type": "agent_channel"}}}}
+        adapter._get_client.return_value.conversations_info = AsyncMock(side_effect=conversations_info)
+        adapter.handle_message = AsyncMock(side_effect=lambda e: order.append(e.text))
+        first = asyncio.create_task(adapter._handle_slash_command(
+            {"command": "/queue", "text": "one", "user_id": "U_USER", "channel_id": CODE, "team_id": ""}))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(adapter._handle_slash_command(
+            {"command": "/queue", "text": "two", "user_id": "U_USER", "channel_id": CODE, "team_id": ""}))
+        for _ in range(20):  # let the second slash reach (and park on) the lookup
+            await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(first, second)
+        assert order == ["/queue one", "/queue two"]
 
 
 class TestStop:

@@ -7,14 +7,18 @@ top-level, the session status is channel-level (``agents.sessions.setStatus`` wi
 ``thread_ts``) and Slack's Stop button (``agent_session_stopped``) runs ``/stop`` for the session.
 A thread a user starts under a message keeps its own session and stays threaded.
 
-The channel session carries no ``thread_id``, so the reply destination rides with each turn's
-metadata: a ``thread_id`` means a user-started thread; none means the channel session, whose
-``reply_to`` is a top-level message (an immutable fact recorded on arrival) and never a thread to
-open. A later reply under that message cannot move the running turn into the side thread.
+The channel session carries no ``thread_id``; the reply destination rides with each send. With the
+default ``reply_in_thread`` the gateway still stamps the triggering message's ts as a synthetic
+``thread_id`` on progress / stream metadata, next to ``message_id`` (or ``reply_to``) naming the same
+message. So a send is for the channel session when it names no thread, or when its thread is a
+recorded top-level code-channel message AND the message it answers is that same message. A turn in a
+user-started thread answers a reply (``message_id`` != thread), so it stays threaded, and a thread
+opened later under a message cannot move that message's running answer.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -28,6 +32,11 @@ def _thread_of(metadata: Optional[dict[str, Any]]) -> Optional[str]:
     return md.get("thread_id") or md.get("thread_ts") or None
 
 
+def _answered(reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> Optional[str]:
+    """The message a send answers: ``reply_to``, else the ``message_id`` the gateway stamps."""
+    return reply_to or (metadata or {}).get("message_id") or None
+
+
 class SlackCodeChannels:
     """Per-adapter code-channel state. Channel ids are workspace-global in Slack, so the caches key
     by channel id alone."""
@@ -36,6 +45,9 @@ class SlackCodeChannels:
         self._adapter = adapter
         # channel id -> is a code channel; a failed lookup is not cached, so the next event retries.
         self._kinds: dict[str, bool] = {}
+        # In-flight lookups: concurrent events for one channel share it, so they resume in arrival
+        # order (two slashes must not overtake each other on the lookup).
+        self._pending: dict[str, asyncio.Future[None]] = {}
         # Top-level code-channel message ts, recorded on arrival (bounded, oldest first).
         self._roots: dict[str, None] = {}
         # Channels whose channel-session turn shows ``processing`` (sent once per turn;
@@ -66,6 +78,13 @@ class SlackCodeChannels:
         ``properties.code_channel`` can be ``{}`` on a new channel, so it is not used."""
         if not self.enabled or not channel or channel[:1] not in ("C", "G") or channel in self._kinds:
             return
+        pending = self._pending.get(channel)
+        if pending is None:
+            pending = self._pending[channel] = asyncio.ensure_future(self._lookup(channel, team_id))
+            pending.add_done_callback(lambda _f: self._pending.pop(channel, None))
+        await asyncio.shield(pending)
+
+    async def _lookup(self, channel: str, team_id: str) -> None:
         client = self._adapter._get_client(channel, team_id=team_id or None)
         try:
             resp = await client.conversations_info(channel=channel)
@@ -88,17 +107,24 @@ class SlackCodeChannels:
         thread_ts = event.get("thread_ts")
         return self.is_code_channel(event.get("channel", "")) and not (thread_ts and thread_ts != ts)
 
-    def reply_is_flat(self, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> bool:
-        """A channel-session send (no thread metadata) anchored on a top-level code-channel message
-        goes top-level instead of opening a thread under it (``thread_id == reply_to`` is the same
-        message stamped as a synthetic root, not a thread)."""
+    def _channel_turn(self, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> bool:
+        """Is this send for the channel session (see the module docstring)?"""
+        if not self.is_code_channel(chat_id):
+            return False
         thread = _thread_of(metadata)
-        return bool(reply_to) and reply_to in self._roots and (not thread or thread == reply_to)
+        return not thread or (thread in self._roots and _answered(reply_to, metadata) == thread)
+
+    def reply_is_flat(self, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> bool:
+        """A channel-session send answering a top-level code-channel message goes top-level instead
+        of opening a thread under it. Roots are only recorded in code channels, so no channel id is
+        needed here."""
+        answered, thread = _answered(reply_to, metadata), _thread_of(metadata)
+        return bool(answered) and answered in self._roots and (not thread or thread == answered)
 
     async def show_working(self, chat_id: str, metadata: Optional[dict[str, Any]]) -> bool:
         """``processing`` for a channel-session turn; True when handled here (the thread status path
         does not apply)."""
-        if not self.is_code_channel(chat_id) or _thread_of(metadata):
+        if not self._channel_turn(chat_id, None, metadata):
             return False
         if chat_id not in self._busy:
             self._busy.add(chat_id)
@@ -108,7 +134,7 @@ class SlackCodeChannels:
     async def turn_ended(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         """``active`` once the channel-session turn ends (``closed`` would mean the agent stops
         responding). A user-started thread's turn owns no channel status, so it leaves it alone."""
-        if chat_id in self._busy and not _thread_of(metadata):
+        if chat_id in self._busy and self._channel_turn(chat_id, None, metadata):
             self._busy.discard(chat_id)
             await self._set_status(chat_id, "active")
 

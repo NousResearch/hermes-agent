@@ -77,3 +77,80 @@ def test_aux_usage_pricing_lookup_sends_the_configured_key(keyed, monkeypatch):
     finally:
         aux_accounting.reset_accounting_context(token)
     assert seen.get("api_key") == "lab-key"
+
+
+def _failed_mint():
+    raise RuntimeError("secret-bearing command failure")
+
+
+_UNMINTED = [_failed_mint, lambda: object(), lambda: ""]
+_SAVED = [{"key_env": "LAB_LLAMA_KEY"}, {"api_key": "inline-saved"}]
+
+
+@pytest.fixture
+def live_main():
+    """Bind a live main runtime on the model block's endpoint whose credential is *source*."""
+    from agent import auxiliary_client
+
+    def bind(source):
+        auxiliary_client.set_runtime_main("custom", "qwen-lab", base_url=BASE, api_key=source)
+
+    yield bind
+    auxiliary_client.clear_runtime_main()
+
+
+@pytest.mark.parametrize("source", _UNMINTED)
+@pytest.mark.parametrize("saved", _SAVED)
+def test_a_failed_credential_source_keeps_the_vision_probe_keyless(monkeypatch, live_main, source, saved):
+    """A declared credential source owns authentication even when its mint fails: the probe sends no
+    bearer, never the model block's saved key for the same endpoint."""
+    from agent import image_routing
+
+    monkeypatch.setenv("LAB_LLAMA_KEY", "lab-key")
+    cfg = {"model": {"default": "qwen-lab", "provider": "custom", "base_url": BASE, **saved}}
+    live_main(source)
+    assert image_routing._resolve_inference_base_url(cfg, "custom") == BASE
+    assert image_routing._resolve_inference_api_key(cfg, "custom") == ""
+
+
+@pytest.mark.parametrize("source, expected", [(lambda: "minted", "minted"), ("static", "static"), ("", "lab-key")])
+def test_the_vision_probe_key_order_with_a_matching_model_block(keyed, live_main, source, expected):
+    from agent import image_routing
+    from hermes_cli.config import load_config
+
+    live_main(source)
+    assert image_routing._resolve_inference_api_key(load_config(), "custom") == expected
+
+
+def _record_aux_pricing_key(monkeypatch):
+    from agent import aux_accounting
+    from agent import usage_pricing
+
+    seen = {}
+
+    def estimate(model, usage, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(amount_usd=None)
+
+    monkeypatch.setattr(usage_pricing, "estimate_usage_cost", estimate)
+    db = SimpleNamespace(record_auxiliary_usage=lambda *a, **k: None)
+    token = aux_accounting.set_accounting_context(db, "s1")
+    try:
+        response = SimpleNamespace(model="qwen-lab", usage=SimpleNamespace(
+            prompt_tokens=10, completion_tokens=3, total_tokens=13))
+        aux_accounting.record_aux_usage(response, "title_generation", provider="custom", base_url=BASE)
+    finally:
+        aux_accounting.reset_accounting_context(token)
+    return seen
+
+
+@pytest.mark.parametrize("source", [*_UNMINTED, lambda: "minted"])
+def test_aux_pricing_lookup_leaves_a_declared_credential_source_its_endpoint(keyed, monkeypatch, live_main, source):
+    """While a credential source owns the live main endpoint, the model block's saved key is not sent."""
+    live_main(source)
+    assert _record_aux_pricing_key(monkeypatch) == {"provider": "custom", "base_url": BASE, "api_key": None}
+
+
+def test_aux_pricing_lookup_sends_the_configured_key_beside_a_static_live_key(keyed, monkeypatch, live_main):
+    live_main("lab-key")
+    assert _record_aux_pricing_key(monkeypatch)["api_key"] == "lab-key"

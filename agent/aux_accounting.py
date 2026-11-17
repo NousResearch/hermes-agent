@@ -78,10 +78,13 @@ def record_aux_usage(
         model = str(getattr(response, "model", "") or "") or "unknown"
         estimated_cost = None
         try:
-            # A keyed main endpoint's /models (its pricing source) answers 401 without the key.
+            # A keyed main endpoint's /models (its pricing source) answers 401 without the key. A live
+            # credential source owns its endpoint's authentication: no saved key is sent beside it.
+            from agent.auxiliary_client import _runtime_main_value
             from hermes_cli.config import load_config
             from hermes_cli.runtime_provider_custom import model_block_key_for
-            api_key = model_block_key_for(load_config().get("model"), base_url or "") or None
+            api_key = None if callable(_runtime_main_value("api_key")) else (
+                model_block_key_for(load_config().get("model"), base_url or "") or None)
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url, api_key=api_key)
             if cost.amount_usd is not None:
                 estimated_cost = float(cost.amount_usd)

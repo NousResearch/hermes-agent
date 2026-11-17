@@ -44,8 +44,8 @@ class CLIProcessNotificationsMixin:
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
         from tools.process_registry_notifications import (
-            HEARTBEAT_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification, group_process_notifications,
-            heartbeat_display_text)
+            HEARTBEAT_DISPLAY_KIND, OPT_IN_WAKE_TYPES, ProcessNotificationBatch, TimelineNotification,
+            WAKE_NOTICE_KINDS, group_process_notifications, heartbeat_display_text)
 
         claimed = []
         for event, text in process_registry.drain_notifications(
@@ -57,8 +57,8 @@ class CLIProcessNotificationsMixin:
             claimed.append((event, text))
             complete_event_delivery(event, claim)
         if self._background_notifications_suppressed():
-            # Subagent results are not process notifications: they still land.
-            claimed = [(event, text) for event, text in claimed if event.get("type") == "async_delegation"]
+            # Subagent results and async_rewake hook wakes are not process notifications: they still land.
+            claimed = [(event, text) for event, text in claimed if event.get("type") in OPT_IN_WAKE_TYPES]
         for notifications in group_process_notifications(claimed):
             event, text = notifications[0]
             evt_type = event.get("type", "completion")
@@ -66,6 +66,8 @@ class CLIProcessNotificationsMixin:
                 pending = ProcessNotificationBatch(notifications)
             elif evt_type == "heartbeat":
                 pending = TimelineNotification(text, heartbeat_display_text(event), HEARTBEAT_DISPLAY_KIND)
+            elif (kind := WAKE_NOTICE_KINDS.get(evt_type)) is not None:
+                pending = TimelineNotification(text, kind.title(event), kind.display_kind)
             else:
                 pending = TimelineNotification.for_delegation(text, event) if evt_type == "async_delegation" else text
                 from agent.notification_presentation import diagnostic_process_event

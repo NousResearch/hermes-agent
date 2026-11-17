@@ -65,7 +65,7 @@ _INHERITING_CALLS = {
 # Files with intentional stdin= override (e.g. input= creates a pipe).
 # Format: "filepath:line" or just "filepath" to skip the whole file.
 KNOWN_SAFE = {
-    "agent/shell_hooks.py",  # uses input=stdin_json, creates a pipe
+    "agent/shell_hooks/spawn.py",  # uses input=stdin_json, creates a pipe
     "plugins/security-guidance/patterns.py",  # subprocess mentions are in reminder strings, not calls
 }
 

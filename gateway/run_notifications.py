@@ -712,10 +712,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if scope is None:
                 continue  # only this event: the rest of the batch still delivers
             async with scope:
-                from tools.process_registry_notifications import should_surface_notification
+                from tools.process_registry_notifications import OPT_IN_WAKE_TYPES, should_surface_notification
                 if not should_surface_notification(evt):
                     continue
-                if self._load_background_notifications_mode() == "off":
+                if self._load_background_notifications_mode() == "off" and evt.get("type") not in OPT_IN_WAKE_TYPES:
                     continue
                 if evt.get("type") == "heartbeat":
                     from gateway.session_automation import deliver_heartbeat
@@ -1016,7 +1016,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return (evt_type, producer_id, "")
         # A liveness tick is one watch event like a match: without an identity the session authority
         # refuses it and the drain requeues it forever.
-        if evt_type in {"watch_match", "watch_disabled", "heartbeat"} and evt.get("event_id"):
+        from tools.process_registry_notifications import WAKE_NOTICE_KINDS
+        if evt_type in {"watch_match", "watch_disabled", "heartbeat", *WAKE_NOTICE_KINDS} and evt.get("event_id"):
             return (evt_type, str(evt["session_id"]), str(evt["event_id"]))
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")

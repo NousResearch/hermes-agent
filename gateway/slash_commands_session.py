@@ -1239,6 +1239,9 @@ class GatewaySessionCommandsMixin:
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security
         # state in one funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
         self._clear_conversation_scope(session_key, reason="resume")
+        from agent.shell_hooks import cancel_session
+        # Its async_rewake hooks stop waiting, as on the CLI (off-loop: signalling walks the process tree).
+        await asyncio.to_thread(cancel_session, (current_entry.session_id,))
         # switch_session keeps the route's persisted /model pin (a re-pin is not a boundary,
         # #119864); /resume IS one, and the funnel above clears only in-memory state — without this
         # the next turn's _rehydrate_session_model_override resurrects the pin it just cleared.
@@ -1428,6 +1431,8 @@ class GatewaySessionCommandsMixin:
         self._clear_session_boundary_security_state(dest_key)
         self._evict_cached_agent(dest_key)
         if in_place:
+            from agent.shell_hooks import cancel_session
+            await asyncio.to_thread(cancel_session, (parent_session_id,))  # this chat left it: its hooks stop
             await self._rename_telegram_topic_after_switch(dest_source, new_entry, branch_title)
         msg_count = len([m for m in history if m.get("role") == "user"])
         if in_place:

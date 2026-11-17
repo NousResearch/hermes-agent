@@ -250,6 +250,26 @@ class TestHandleResumeCommand:
 
 
     @pytest.mark.asyncio
+    async def test_resume_stops_the_left_sessions_async_rewake_hooks(self, tmp_path, monkeypatch):
+        """The session /resume leaves ends without a finalize hook: its async_rewake hooks must stop
+        waiting (and taking what they wait on) for a conversation nobody looks at."""
+        from agent import shell_hooks
+        from hermes_state import SessionDB
+        cancelled = []
+        monkeypatch.setattr(shell_hooks, "cancel_session", lambda ids: cancelled.append(tuple(ids)))
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001", event=event)
+
+        await runner._handle_resume_command(event)
+
+        assert cancelled == [("current_session_001",)]
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_bare_resume_lists_exact_lane_before_limit(self, tmp_path):
         from hermes_state import SessionDB
 

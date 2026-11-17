@@ -53,7 +53,8 @@ def _cmd_list(_args) -> None:
             for spec in by_event[event]:
                 is_approved = (spec.event, spec.command) in approved
                 status = "✓ allowed" if is_approved else "✗ not allowlisted"
-                print(f"    - {spec.command}{_matcher_part(spec)} (timeout={spec.timeout}s, {status})")
+                mode = ", async_rewake" if spec.async_rewake else ""
+                print(f"    - {spec.command}{_matcher_part(spec)} (timeout={spec.timeout}s{mode}, {status})")
                 entry = shell_hooks.allowlist_entry_for(spec.event, spec.command) if is_approved else None
                 if entry and entry.get("approved_at"):
                     print(f"      approved_at: {entry['approved_at']}")
@@ -225,6 +226,9 @@ def _cmd_test(args) -> None:
     print(f"Firing {len(specs)} hook(s) for event '{event}':\n")
     for spec in specs:
         print(f"  → {spec.command}")
+        if spec.async_rewake and spec.timeout > shell_hooks.MAX_TIMEOUT_SECONDS:
+            print(f"      (async_rewake: runs in the foreground here, capped at {shell_hooks.MAX_TIMEOUT_SECONDS}s "
+                  f"instead of {spec.timeout}s)")
         _print_run_result(shell_hooks.run_once(spec, payload))
         print()
 
@@ -240,11 +244,15 @@ def _print_run_result(result: dict[str, Any]) -> None:
             text = (result.get(stream) or "").strip()
             if text:
                 print(f"      {stream}: {_truncate(text, 400)}")
-    # run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so it is available even
+    # run_once always sets ``parsed`` (agent/shell_hooks/runner.py::_evaluate_result), so it is available even
     # when the hook errored or timed out. A failing hook's decision is the one thing `hooks test` exists
     # to show — failed-open and failed-closed must not render identically (#115968).
     parsed = result.get("parsed")
-    if parsed:
+    if parsed and "wake" in parsed:
+        wake = parsed["wake"]
+        print(f"      wake (async_rewake, exit 2): {_truncate(wake, 400) or '<no output>'}" if wake is not None
+              else "      wake: <none; an async_rewake hook wakes its session only on exit 2>")
+    elif parsed:
         print(f"      parsed (Hermes wire shape): {json.dumps(parsed)}")
     else:
         print("      parsed: <none — hook contributed nothing to the dispatcher>")
@@ -324,6 +332,10 @@ def _doctor_one(spec, shell_hooks) -> int:
         print("      ℹ skipped JSON smoke test — not allowlisted yet. "
               "Approve the hook first (via TTY prompt or --accept-hooks), "
               "then re-run `hermes hooks doctor`.")
+    elif spec.async_rewake:
+        # It may wait for hours by design, and a synthetic firing would reach whatever it waits on.
+        print(f"      ℹ skipped smoke test: async_rewake hook (runs in the background, up to {spec.timeout}s). "
+              f"Fire it with `hermes hooks test {spec.event}` to see the wake it would deliver.")
     elif shell_hooks.script_is_executable(spec.command):
         result = shell_hooks.run_once(spec, _DEFAULT_PAYLOADS.get(spec.event, {"extra": {}}))
         if result.get("timed_out"):

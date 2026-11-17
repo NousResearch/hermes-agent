@@ -130,7 +130,8 @@ _DEDUP_EXTRA_FIELDS = {
 def _notification_event_dedup_key(evt: dict) -> tuple:
     """UI-emission identity for a process notification event."""
     evt_type = evt.get("type", "completion")
-    if evt_type in {"watch_match", "watch_disabled"} and evt.get("event_id"):
+    from tools.process_registry_notifications import WAKE_NOTICE_KINDS
+    if evt_type in {"watch_match", "watch_disabled", *WAKE_NOTICE_KINDS} and evt.get("event_id"):
         return (evt.get("session_id", ""), evt_type, evt["event_id"])
     if evt_type == "async_delegation":
         # No process session_id: else every completion keys as ("", "async_delegation") and the second is suppressed forever.
@@ -648,6 +649,7 @@ def _background_notifications_off(session: dict) -> bool:
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from tools.process_registry_notifications import WAKE_NOTICE_KINDS
     turn_claim = session.get("_notif_turn_claim")
     try:
         claim = claim_event_delivery(evt, "tui-poller")
@@ -670,6 +672,8 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # honour ``hidden``). Only what the agent says about the new output is visible.
         from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
         kwargs = {"display_kind": HEARTBEAT_DISPLAY_KIND}
+    elif (kind := WAKE_NOTICE_KINDS.get(evt_type)) is not None:  # the card the gateway gives a local session
+        kwargs = {"display_kind": kind.display_kind, "display_metadata": {"display_text": kind.title(evt)}}
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
@@ -714,17 +718,21 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     # while distinct watch_match events from one process must stay visible.
     dedup_key = _notification_event_dedup_key(evt)
     if dedup_key not in emitted:
-        from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
+        from tools.process_registry_notifications import (
+            WAKE_NOTICE_KINDS, async_delegation_display_text, process_completion_display_text)
+        kind = WAKE_NOTICE_KINDS.get(evt_type)
         display_text = (async_delegation_display_text(evt) if is_delegation
-                        else process_completion_display_text([evt]) if evt_type == "completion" else text)
+                        else process_completion_display_text([evt]) if evt_type == "completion"
+                        else kind.title(evt) if kind is not None else text)
         from agent.notification_presentation import diagnostic_process_event
         from gateway.warning_notifications import render_notification
         render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": display_text}),
                             platform="tui", diagnostic=diagnostic_process_event(evt))
         emitted.add(dedup_key)
-    if evt_type != "async_delegation" and _background_notifications_off(session):
+    from tools.process_registry_notifications import OPT_IN_WAKE_TYPES
+    if evt_type not in OPT_IN_WAKE_TYPES and _background_notifications_off(session):
         # The user opted out of process-driven agent wakes: the status row above is the whole
-        # delivery. Subagent results are not process notifications and still land.
+        # delivery. Subagent results and async_rewake hook wakes are not process notifications and still land.
         return True
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))

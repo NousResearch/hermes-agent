@@ -15,6 +15,7 @@ WORKFLOWS = Path(__file__).resolve().parents[2] / ".github/workflows"
 CANARY_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 MAIN_TIP = "fedcba9876543210fedcba9876543210fedcba98"
 UPSTREAM = "NousResearch/hermes-agent"
+RUN_ID = 4242
 
 
 def load(name: str) -> dict:
@@ -23,7 +24,7 @@ def load(name: str) -> dict:
 
 def after_canary(conclusion: str = "success", branch: str = "main", repository: str = UPSTREAM) -> dict:
     """A run started by Canary Release finishing; github.sha is main's tip by then."""
-    return {"github": {"event_name": "workflow_run", "repository": repository, "sha": MAIN_TIP,
+    return {"github": {"event_name": "workflow_run", "repository": repository, "sha": MAIN_TIP, "run_id": RUN_ID,
                        "event": {"repository": {"default_branch": "main"},
                                  "workflow_run": {"conclusion": conclusion, "head_branch": branch,
                                                   "head_sha": CANARY_COMMIT}}},
@@ -31,7 +32,7 @@ def after_canary(conclusion: str = "success", branch: str = "main", repository: 
 
 
 def dispatched(commit: str = "") -> dict:
-    return {"github": {"event_name": "workflow_dispatch", "repository": UPSTREAM, "sha": MAIN_TIP,
+    return {"github": {"event_name": "workflow_dispatch", "repository": UPSTREAM, "sha": MAIN_TIP, "run_id": RUN_ID,
                        "event": {}},
             "inputs": {"commit": commit}}
 
@@ -56,7 +57,14 @@ def test_the_trigger_chain_names_real_workflows():
     (dispatched(), True),
 ])
 def test_only_a_successful_upstream_canary_on_the_default_branch_starts_it(ctx, runs):
-    assert gha.condition(load("canary-e2e.yml")["jobs"]["resolve"]["if"], ctx) is runs
+    workflow = load("canary-e2e.yml")
+    assert gha.condition(workflow["jobs"]["resolve"]["if"], ctx) is runs
+    # Only automatic runs that test share the queue: GitHub keeps one pending run per group,
+    # so a run that skips or a dispatch in it would replace a queued set (cancel-in-progress off).
+    queued = ctx["github"]["event_name"] == "workflow_run" and runs
+    group = gha.render(workflow["concurrency"]["group"], ctx)
+    assert group == ("canary-e2e-auto" if queued else f"canary-e2e-{RUN_ID}")
+    assert workflow["concurrency"]["cancel-in-progress"] == "false"
 
 
 @pytest.mark.parametrize(("ctx", "commit"), [

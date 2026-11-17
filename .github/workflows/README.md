@@ -421,8 +421,10 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
 - **Effect:** reporting only. The canary never waits on it and nothing is
   published. `install-e2e-red.yml` keeps one `install-e2e-red` issue in step
   with the latest automatic run.
-- **Concurrency:** group `canary-e2e`, queued. About 1,400 job-minutes and 45
-  minutes wall clock per run.
+- **Concurrency:** automatic runs that will test share group `canary-e2e-auto`,
+  queued. A dispatch or a run that will skip gets its own group, so it never
+  replaces a queued set. About 1,400 job-minutes and 45 minutes wall clock per
+  run.
 - **Manual:** `gh workflow run canary-e2e.yml -f commit=<sha>`.
 
 ### Stable releases

@@ -11,6 +11,7 @@ import {
   $newChatProfile,
   $newChatRoute,
   captureNewChatSource,
+  clearNewChatIntent,
   ensureGatewayAgent,
   ensureGatewayProfile,
   resolveNewChatOwnerRoute
@@ -305,5 +306,91 @@ describe('generic new session default routing', () => {
       profile: expected.profile
     })
     expect(requestGateway).not.toHaveBeenCalled()
+  })
+})
+
+describe('generic new session drops a stale owner pin', () => {
+  // A window can hold a pinned owner route from an earlier draft (or its boot
+  // hint) after the user has moved the active source elsewhere — e.g. the
+  // window now sits on a remote gateway while a prior pin named the local
+  // backend. A generic New session must re-resolve from the live gateway, not
+  // inherit that route (#45000 class).
+  const STALE_LOCAL_PIN = { connectionId: 'local', profile: 'default' } as const
+  const ACTIVE = { connectionId: 'previous', profile: 'other' } as const
+
+  function seedStalePin() {
+    $newChatProfile.set('default')
+    $newChatConnectionId.set('local')
+    $newChatRoute.set({ ...STALE_LOCAL_PIN })
+    captureNewChatSource('local')
+  }
+
+  it('clearNewChatIntent resets the profile, route, source and legacy pin', () => {
+    seedStalePin()
+    clearNewChatIntent()
+
+    expect($newChatProfile.get()).toBeNull()
+    expect($newChatRoute.get()).toBeNull()
+    expect($newChatConnectionId.get()).toBeNull()
+  })
+
+  it.each(['draft', 'slash'] as const)('targets the active gateway for a %s', async action => {
+    seedStalePin()
+    expect(resolveNewChatOwnerRoute()).toEqual(STALE_LOCAL_PIN)
+
+    const { result } = mountActions()
+
+    if (action === 'slash') {
+      const slash = mountSlashCommand(result.current.startFreshSessionDraft)
+      await act(() => slash.result.current('/new'))
+    } else {
+      act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
+    }
+
+    expect($newChatRoute.get()).toBeNull()
+    await act(() => result.current.createBackendSessionForSend())
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      ACTIVE.connectionId,
+      ACTIVE.profile,
+      'session.create',
+      expect.objectContaining({ profile: ACTIVE.profile }),
+      ...FOREGROUND_CREATE_DIAL
+    )
+  })
+
+  it('ignores a secondary pop-out boot hint and follows the active gateway', async () => {
+    // The pop-out was opened on a local session (`?profile=default`), then the
+    // window is pointed at the remote gateway. Using the boot hint as a New
+    // session default would keep minting local chats.
+    window.history.replaceState(null, '', '/?win=secondary&profile=default&connectionId=local')
+    const { result } = mountActions()
+
+    act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
+    await act(() => result.current.createBackendSessionForSend())
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      ACTIVE.connectionId,
+      ACTIVE.profile,
+      'session.create',
+      expect.objectContaining({ profile: ACTIVE.profile }),
+      ...FOREGROUND_CREATE_DIAL
+    )
+  })
+
+  it('a profile-pinned peer window still honours its explicit launch route', async () => {
+    window.history.replaceState(null, '', '/?peer=1&profile=peer-agent&connectionId=peer-host&profileWindow=1')
+    const { result } = mountActions()
+
+    act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
+    await act(() => result.current.createBackendSessionForSend())
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'peer-host',
+      'peer-agent',
+      'session.create',
+      expect.objectContaining({ profile: 'peer-agent' }),
+      ...FOREGROUND_CREATE_DIAL
+    )
   })
 })

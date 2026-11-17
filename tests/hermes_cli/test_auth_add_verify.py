@@ -13,10 +13,10 @@ import hermes_yaml as yaml
 
 class _Provider(http.server.BaseHTTPRequestHandler):
     status = 200
-    body: dict = {"data": [{"id": "m"}]}
+    body: dict | str = {"data": [{"id": "m"}]}
 
     def do_GET(self):
-        payload = json.dumps(self.body).encode()
+        payload = self.body.encode() if isinstance(self.body, str) else json.dumps(self.body).encode()
         self.send_response(self.status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -63,10 +63,14 @@ def test_rejected_key_is_refused_and_not_stored(provider_home, monkeypatch, caps
     assert [e["access_token"] for e in _pool(provider_home)] == ["sk-acme"]
 
 
-@pytest.mark.parametrize("status,message", [(402, "Insufficient credits"), (403, "Key limit exceeded (total limit)")])
-def test_out_of_credit_key_is_stored_benched(provider_home, monkeypatch, capsys, status, message):
+@pytest.mark.parametrize("status,message,body", [
+    (402, "Insufficient credits", {"error": {"message": "Insufficient credits"}}),
+    (403, "Key limit exceeded (total limit)", {"error": {"message": "Key limit exceeded (total limit)"}}),
+    (403, "Insufficient credits", "Insufficient credits"),  # plain-text body, no JSON
+])
+def test_out_of_credit_key_is_stored_benched(provider_home, monkeypatch, capsys, status, message, body):
     monkeypatch.setattr(_Provider, "status", status)
-    monkeypatch.setattr(_Provider, "body", {"error": {"message": message}})
+    monkeypatch.setattr(_Provider, "body", body)
     _add()
     (entry,) = _pool(provider_home)
     assert (entry["last_status"], entry["last_error_code"], entry["failure_reason"]) == ("exhausted", status, "billing")

@@ -62,7 +62,9 @@ def _classify(provider: str, url: str, response: httpx.Response, auth_mode: str)
     detail = message or f"HTTP {status}"
     # The runtime's own verdict decides billing vs auth, so a key ``auth add`` benches is one the
     # turn loop would also bench (OpenRouter "Key limit exceeded" 403, Anthropic credit 400, 402).
-    verdict = classify_api_error(httpx.HTTPStatusError(f"HTTP {status}", request=response.request, response=response),
+    # The message rides in the exception text too: a plain-text body has no JSON for the classifier to read.
+    error = httpx.HTTPStatusError(f"HTTP {status}: {message}", request=response.request, response=response)
+    verdict = classify_api_error(error,
                                  provider=provider, base_url=url).reason
     if verdict is FailoverReason.billing:
         return KeyCheck(KeyCheckOutcome.BILLING, detail, status, auth_mode)

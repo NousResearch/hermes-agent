@@ -1,4 +1,5 @@
 """A sandbox background job's kill stops its whole process group, or reports who survived."""
+import os
 import shlex
 import subprocess
 import sys
@@ -346,3 +347,44 @@ def test_a_slow_process_scan_does_not_stretch_the_grace():
     finally:
         group.kill()
         group.wait()
+
+
+def test_the_kill_exec_timeout_is_whole_seconds():
+    # Modal and Daytona reject a float exec timeout before running anything.
+    registry = ProcessRegistry()
+    env = MagicMock()
+    env.execute.return_value = {"returncode": 0, "output": "__HERMES_PROCESS_TERMINATED__\n"}
+    session = ProcessSession(id="proc_int_timeout", command="w", task_id="t", pid=4321, pid_scope="sandbox", env_ref=env)
+    registry._running[session.id] = session
+    with patch.object(registry, "_write_checkpoint"), _grace({"value": 2.5}):
+        assert registry.kill_process(session.id)["status"] == "killed"
+    timeout = env.execute.call_args.kwargs["timeout"]
+    assert type(timeout) is int and timeout >= 2.5
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass
+def test_a_slow_starting_supervisor_still_has_its_pid_recorded(tmp_path):
+    # BASH_ENV runs before the supervisor's first command, as a heavy shell init would.
+    slow_init = tmp_path / "slow_init.sh"
+    slow_init.write_text("sleep 2\n", encoding="utf-8")
+
+    class SlowInitEnv(BashEnv):
+        def execute(self, command, timeout=10, **_kwargs):
+            with tempfile.TemporaryFile(mode="w+") as output:
+                result = subprocess.run(
+                    ["bash", "-c", command], stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                    timeout=timeout, check=False, start_new_session=True,
+                    env={**os.environ, "BASH_ENV": str(slow_init)})
+                output.seek(0)
+                return {"output": output.read(), "returncode": result.returncode}
+
+    registry = ProcessRegistry()
+    with patch.object(registry, "_write_checkpoint"), _grace({"value": 0.3}):
+        session = registry.spawn_via_env(SlowInitEnv(tmp_path), "sleep 30")
+        try:
+            assert session.pid and psutil.Process(session.pid).is_running()
+            assert registry.kill_process(session.id)["status"] == "killed"
+        finally:
+            session.exited = True
+            _join_poller(session)

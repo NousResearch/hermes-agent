@@ -31,14 +31,14 @@ def env_launch_command(temp_dir: str, command: str, log_path: str, pid_path: str
     descendant that leaves the group (``setsid``, a daemon's double fork) is
     outside it."""
     q = shlex.quote
-    supervisor = (
-        'trap : TERM; printf \'%s\\n\' "$$" > "$2"; bash -lc "$1"; rc=$?; printf \'%s\\n\' "$rc" > "$3"')
+    supervisor = 'trap : TERM; bash -lc "$1"; rc=$?; printf \'%s\\n\' "$rc" > "$2"'
+    # $! is published by the launcher itself, before it returns: a supervisor slow to
+    # start (a heavy BASH_ENV) can never leave a running job with no recorded PID.
     return (
         f"mkdir -p {q(temp_dir)} && {{ "
-        f"set -m; nohup bash -c {q(supervisor)} {LAUNCH_NAME} {q(command)} {q(pid_path)} {q(exit_path)} "
+        f"set -m; nohup bash -c {q(supervisor)} {LAUNCH_NAME} {q(command)} {q(exit_path)} "
         f"> {q(log_path)} 2>&1 < /dev/null & "
-        f"for _hermes_wait in {{1..100}}; do test -s {q(pid_path)} && break; sleep 0.01; done; "
-        f"cat {q(pid_path)}; }}")
+        f"echo $! > {q(pid_path)} && cat {q(pid_path)}; }}")
 
 
 class LogDelta(NamedTuple):

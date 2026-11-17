@@ -4,6 +4,7 @@ Reuse the private native route envelope and FIFO, retaining nonhuman turn semant
 A producer ACK means committed input, not successful inference or outbound delivery.
 """
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import logging
@@ -17,6 +18,15 @@ from persistence.core.errors import AuthorityRefusal
 from session_rules.automation import automation_descriptor as _descriptor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AdmissionReplay:
+    """A producer's created-versus-existing outcome (``admit_route_wake(..., request_id=...)``), stamped
+    inside the admission's own write as ``TranscriptRewrite.applied`` is: None until the write ran, True
+    when this call queued the row, False when an exact earlier admission already had. The idempotency
+    receipt a plugin card reports comes from here, never from a read before the admission."""
+    created: bool | None = None
 
 
 def producer_identity(runner, event):
@@ -663,11 +673,12 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, fold=None, *, replay=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other. ``fold``: ``replaces`` is a completion this
-    batch absorbs (``QueuedFold``), given the tick admission ids it may sit behind."""
+    batch absorbs (``QueuedFold``), given the tick admission ids it may sit behind. ``replay``: an
+    ``AdmissionReplay`` the write stamps with created-versus-existing."""
     authority._require_admission_open()
     payload, entry = snapshot_automation(authority, adapter, event, identity)
     from gateway.session_authority import LiveSession
@@ -702,6 +713,8 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
             supersedes=replaces if fold is None else None,
             fold=None if fold is None else QueuedFold(replaces, frozenset(fold)))
         replaced[:] = [replaces] if created and replaces is not None else []
+        if replay is not None:
+            replay.created = created
         return admission_row(row)
     return await tracked_write(authority, admit, then=admitted, ordered=True,
                                after=partial(authority._schedule_admitted, ref))
@@ -889,13 +902,14 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     return entry, release
 
 
-async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, *, request_id=None):
+async def admit_route_wake(runner, adapter, source, text, producer, metadata=None, *, request_id=None, replay=None):
     """Commit a producer wake (Kanban push wake, /loop tick) for ``source``'s route into the
     authority FIFO, like heartbeats and process completions, instead of a classic turn that
     interrupts or races the admitted one. ``False`` when no authority serves the scope or the
     route holds no committed human turn to borrow provenance from: the caller keeps the adapter
     path (nothing is queued there either). Raises ``AuthorityRefusal`` on a refusal. A producer
-    that names its own ``request_id`` (a plugin card's id) gets the admission's replay dedupe."""
+    that names its own ``request_id`` (a plugin card's id) gets the admission's replay dedupe and
+    reads created-versus-existing from the ``AdmissionReplay`` it passes as ``replay``."""
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import restore_completion_route
     from gateway.session_detached import detached_live, detached_route_of, route_entry
@@ -919,7 +933,7 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
                              message_id=identity, metadata={'gateway_session_key': key,
                                                             'gateway_session_id': entry.session_id,
                                                             **(metadata or {})})
-        await authority.admit_automation(adapter, event, identity)
+        await authority.admit_automation(adapter, event, identity, replay=replay)
         return True
     from gateway.session_envelope import restore_native
     envelope = committed_route_envelope(authority, entry)
@@ -932,5 +946,5 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
                          message_id=identity, metadata={'gateway_session_key': key,
                                                         'gateway_session_id': entry.session_id,
                                                         **(metadata or {})})
-    await authority.admit_automation(adapter, event, identity)
+    await authority.admit_automation(adapter, event, identity, replay=replay)
     return True

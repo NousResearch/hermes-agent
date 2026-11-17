@@ -2470,13 +2470,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return payload
 
     @staticmethod
-    def _message_response(message: dict[str, Any]) -> dict[str, Any]:
+    def _message_response(message: dict[str, Any], *, inline_media: bool = False) -> dict[str, Any]:
         message = _project_client_message(message)
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name",
             "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content",
             "display_kind")
-        return {key: message.get(key) for key in safe_keys if key in message}
+        payload = {key: message.get(key) for key in safe_keys if key in message}
+        # A stored reply keeps the raw MEDIA:<path> form; only the chat handlers resolve it. A
+        # remote frontend has no filesystem, so history reaches it with tags it can never open —
+        # so history needs the same inlining the chat handlers already apply.
+        content = payload.get("content")
+        if inline_media and payload.get("role") == "assistant" and isinstance(content, str):
+            payload["content"] = _resolve_media_to_data_urls(content)
+        return payload
 
     async def _read_json_body(self, request: web.Request) -> tuple[dict[str, Any], Optional[web.Response]]:
         try:
@@ -2748,13 +2755,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
         include_compacted = _coerce_request_bool(request.query.get("include_compacted"), default=False)
+        # Opt-in: inlining base64 media into a page of history is a real payload cost, so clients
+        # that cannot render data URLs must not pay for it. Absent/false keeps today's wire shape.
+        inline_media = _coerce_request_bool(request.query.get("inline_media"), default=False)
         # Compression lineage: return root→tip messages, matching the REST router (#51058).
         messages = await asyncio.to_thread(
             db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted, include_ancestors=True)
         return web.json_response({
             "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
+            "data": [self._message_response(m, inline_media=inline_media) for m in messages],
             "pagination": {
                 "limit": limit, "offset": offset,
                 "order": order or ("latest" if default_page else "oldest"),

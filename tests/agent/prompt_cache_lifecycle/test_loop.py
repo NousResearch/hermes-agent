@@ -1,4 +1,4 @@
-"""The prompt-cache lifecycle loop (agent/prompt_cache_lifecycle.py): an idle human chat warms its
+"""The prompt-cache lifecycle loop (agent/prompt_cache_lifecycle/): an idle human chat warms its
 cache up to three times per user message, then compacts (on a window of 30 minutes or more) and sends
 nothing more until the next user message, or expires and offloads. A miss ends warming at once and
 goes straight to that decision; a machine session never warms idle; an unknown clock makes nothing act.
@@ -61,7 +61,7 @@ def _setup(monkeypatch):
     entry = PricingEntry(**{k: Decimal(str(v)) for k, v in vars(_OPUS).items()}, source="official_docs_snapshot")
     monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: entry)
     monkeypatch.setattr(pcl.PromptCacheWarmer, "_pricing", lambda self: _OPUS)
-    monkeypatch.setattr(pcl.threading, "Timer", _InertTimer)
+    monkeypatch.setattr(pcl.warmer.threading, "Timer", _InertTimer)
 
 
 def _chat(*, platform="cli", client=None, tokens=150_000, provider="anthropic", base_url="https://api.anthropic.com",

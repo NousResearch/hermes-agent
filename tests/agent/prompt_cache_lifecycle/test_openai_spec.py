@@ -49,7 +49,7 @@ def _setup(monkeypatch):
     for key in ("HERMES_SESSION_SOURCE", "HERMES_SESSION_SOURCE_EXPLICIT", "HERMES_SINGLE_QUERY_SESSION"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: _CHEAP)
-    monkeypatch.setattr(pcl.threading, "Timer", _Timer)
+    monkeypatch.setattr(pcl.warmer.threading, "Timer", _Timer)
 
 
 def _agent(model):

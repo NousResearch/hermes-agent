@@ -73,7 +73,7 @@ def _setup(monkeypatch):
     entry = PricingEntry(**{k: Decimal(str(v)) for k, v in vars(_OPUS).items()}, source="official_docs_snapshot")
     monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: entry)
     monkeypatch.setattr(pcl.PromptCacheWarmer, "_pricing", lambda self: _OPUS)
-    monkeypatch.setattr(pcl.threading, "Timer", _InertTimer)
+    monkeypatch.setattr(pcl.warmer.threading, "Timer", _InertTimer)
 
 
 def _chat(client=None, tokens=150_000, **over):
@@ -128,7 +128,7 @@ def test_a_tool_run_that_spent_its_keep_alives_still_compacts_at_the_end_of_the_
     """Ruling A: the budget belongs to the user turn. A long tool run uses the three keep-alives, the
     next tool round's reply moves the prompt on, and the turn ends: step 2 still decides on that prompt,
     at idle and at release, instead of reading ``budget_not_spent`` forever."""
-    monkeypatch.setattr(pcl.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(pcl.warmer.time, "time", lambda: 1000.0)
     agent = _chat()
     warmer = pcl.get_prompt_cache_warmer(agent)
     assert _respond(agent) is None
@@ -136,7 +136,7 @@ def test_a_tool_run_that_spent_its_keep_alives_still_compacts_at_the_end_of_the_
         if warmer._run is not None:
             _fire(warmer)
     assert len(agent._anthropic_client.calls) == pcl.WARM_BUDGET
-    monkeypatch.setattr(pcl.time, "time", lambda: 2000.0)
+    monkeypatch.setattr(pcl.warmer.time, "time", lambda: 2000.0)
     assert _respond(agent) == "warm budget spent this turn"  # the tool's result went out; the model answered
     assert warmer._spent is not None and warmer._spent.due_at == 5000.0
     pcl.end_turn_prompt_cache_warming(agent)

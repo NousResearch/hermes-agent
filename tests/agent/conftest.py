@@ -36,8 +36,8 @@ def _fresh_prompt_cache_misses(monkeypatch):
     """A keep-alive miss is remembered per session id for the process; test chats reuse ids."""
     from collections import OrderedDict
 
-    import agent.prompt_cache_lifecycle as pcl
-    monkeypatch.setattr(pcl, "_MISSED_ROUTES", OrderedDict())
+    import agent.prompt_cache_lifecycle.warmer as warmer
+    monkeypatch.setattr(warmer, "_MISSED_ROUTES", OrderedDict())
 
 
 @pytest.fixture(autouse=True)

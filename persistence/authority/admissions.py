@@ -284,6 +284,10 @@ class AdmissionRepository(Protocol):
         """Hand a queued admission to its FIFO's running claim: an already committed transfer replays ``(row, False)``; a row not queued refuses ``admission_started``; no started claim at ``(epoch, generation)`` on its target refuses ``session_idle``; else the row is terminal ``steering`` bound to the claim, ``(row, True)``."""
         ...
 
+    def move(self, *, epoch: int, admission_id: str, before_admission_id: str | None) -> list[str]:
+        """Move a queued admission directly ahead of ``before_admission_id`` (None: to the tail): the session's queued rows trade their ``seq`` values in the new order, so every reader ordered by ``seq`` sees it. A row not queued refuses ``admission_started``; an anchor that is not a queued row of the same session refuses ``not_found``; the row itself as anchor refuses ``invalid_params``. Returns the queued admission ids in run order."""
+        ...
+
     def revert_steer(self, *, epoch: int, admission_id: str, generation: int) -> bool:
         """Queue a transfer whose text never reached the claim's agent again at its original ``seq``; False when the claim's settlement already decided it."""
         ...

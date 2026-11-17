@@ -11,6 +11,7 @@ import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/st
 import type { QueueEditState } from './composer-utils'
 import { cancelQueuedPrompt, discardLostPrompt, steerQueuedPrompt } from './discard-lost-prompt'
 import { QueuePanel } from './queue-panel'
+import { applyQueueReorder } from './queue-reorder'
 
 export interface ComposerQueueSlotInputs {
   activeQueueSessionKey: null | string
@@ -122,6 +123,18 @@ export function renderComposerQueueSlot({
           : undefined
       }
       onEdit={beginQueuedEdit}
+      onReorder={nextIds => {
+        // A local row reorders in place; a server row is moved by its owner (`prompt.move_queued`)
+        // and the pending fanout repaints every viewer. A refusal restores the previous order.
+        void applyQueueReorder({
+          entries: queuedPrompts,
+          nextIds,
+          onError: (error: unknown) => notifyError(error, t.composer.queueMoveFailed),
+          queueSessionKey: activeQueueSessionKey,
+          request: gateway ? gateway.request.bind(gateway) : null,
+          sessionId
+        })
+      }}
       onResume={() => {
         unparkQueuedPrompts(activeQueueSessionKey)
 

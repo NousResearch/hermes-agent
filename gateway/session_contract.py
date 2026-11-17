@@ -64,7 +64,7 @@ class AdmissionReceipt:
 class PendingAdmission(AdmissionReceipt):
     input_id: str
     text: str
-    # The queued-row verbs this owner serves for the row (``steer`` / ``replace``); empty otherwise.
+    # The queued-row verbs this owner serves for the row (``steer`` / ``replace`` / ``move``); empty otherwise.
     controls: list[str] = field(default_factory=list)
     # A queued admission in transfer to the running turn (``prompt.steer_queued``): it reads ``started``
     # but goes back to its queue place if its text never reached that turn.

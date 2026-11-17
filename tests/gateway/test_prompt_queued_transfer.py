@@ -531,4 +531,4 @@ def test_only_interactive_local_sessions_are_offered_queued_controls(tmp_path, m
             authority.launch_sources = {}
             interactive(authority.persistence, source=source)
             controls = session_queued_controls.queued_controls(authority, row)
-            assert controls == (['steer', 'replace'] if offered else []), (source, controls)
+            assert controls == (['steer', 'replace', 'move'] if offered else []), (source, controls)

@@ -61,8 +61,12 @@ export function ReorderableList({
   )
 }
 
-export function useSortableBindings(id: string) {
-  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
+export function useSortableBindings(id: string, options?: { disabled?: boolean }) {
+  const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
+    id,
+    disabled: options?.disabled
+  })
+
   // The FULL handle (role/tabIndex + dnd-kit's keyboard and pointer
   // activators) belongs on the grabber only. Row shells forward just
   // `onPointerDown` from it: a keyboard activator on a container makes every

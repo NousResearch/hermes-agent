@@ -226,7 +226,7 @@ async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path,
     await _attach(first, sid)  # the gateway stops with this viewer attached: no detach ever runs
 
     authority, finalized = await _owner(tmp_path, monkeypatch)
-    recover_local_sessions(authority, schedule=True)
+    await recover_local_sessions(authority, schedule=True)
     assert [delay for delay, _ in armed] == [300.0]
     if viewer_returns:
         await _attach(authority, sid)
@@ -251,7 +251,7 @@ async def test_a_session_active_before_the_restart_is_kept_for_its_idle_classic_
     await _attach(first, sid)
 
     authority, _ = await _owner(tmp_path, monkeypatch)
-    recover_local_sessions(authority, schedule=True)
+    await recover_local_sessions(authority, schedule=True)
     [(delay, _)] = armed
     assert STARTUP_IDLE_S - 60 < delay <= STARTUP_IDLE_S
 
@@ -310,7 +310,7 @@ async def test_the_legacy_reap_opt_outs_hold_until_the_new_key_is_set(tmp_path, 
     (Path(first.db.db_path).parent / 'config.yaml').write_text(config)
 
     authority, _ = await _owner(tmp_path, monkeypatch)
-    recover_local_sessions(authority, schedule=True)
+    await recover_local_sessions(authority, schedule=True)
     assert [delay for delay, _ in armed] == startup
     viewer, _ = await _attach(authority, sid)
     await viewer.close()
@@ -337,7 +337,7 @@ async def test_a_session_left_with_queued_input_ends_after_boot_once_it_drains(t
     monkeypatch.setattr(finite, 'execute_finite_admission', execute)
 
     authority, finalized = await _owner(tmp_path, monkeypatch)  # the gateway stopped before running it
-    recover_local_sessions(authority, schedule=True)
+    await recover_local_sessions(authority, schedule=True)
     await async_wait_until(lambda: executed == ['queued']
                            and not list_session_admissions(authority.db, session_id=sid))
     assert [delay for delay, _ in armed] == [300.0]

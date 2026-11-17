@@ -740,7 +740,7 @@ export function TreeGroup({
               )}
               data-panel-page-header=""
             >
-              <PaneTab active>{pageHeader()}</PaneTab>
+              <PaneTab active className="max-w-full flex-1">{pageHeader()}</PaneTab>
             </div>
           ) : headerVisible && compactTabs ? (
             <CompactZoneTabs

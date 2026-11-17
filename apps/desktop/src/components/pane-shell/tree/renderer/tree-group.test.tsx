@@ -171,6 +171,32 @@ describe('TreeGroup', () => {
       expect(container!.querySelector('[data-zone-tabstrip]')).toBeNull()
     })
 
+    it('lets the page-controls tab fill the header instead of taking the tab width cap', () => {
+      // A page's own controls (the Kanban switcher + its pinned-board tabs) are
+      // not a tab label: they must take the header's whole width. `PaneTab`
+      // carries the strip's `max-w-48` cap, which clipped them to 192px so every
+      // pinned board past the second was truncated.
+      mountCrowdedStrip(800)
+      act(() => {
+        registry.register({
+          area: 'panes',
+          id: 'terminal',
+          title: 'Kanban',
+          data: {
+            placement: 'main',
+            headerVeto: true,
+            headerContent: () => <button type="button">Board picker</button>
+          },
+          render: () => <div>Board content</div>
+        })
+      })
+
+      const tab = container!.querySelector<HTMLElement>('[data-panel-page-header] [data-slot="pane-tab"]')!
+      expect(tab.className).toContain('max-w-full')
+      expect(tab.className).not.toContain('max-w-48')
+      expect(tab.className).toContain('flex-1')
+    })
+
     it('keeps a fixed drag handle outside the tablist when tabs share the titlebar', () => {
       const { handles } = mountCrowdedStrip(800)
       const fixed = handles.filter(handle => !handle.closest('[role="tablist"]') && handle.style.width !== '')

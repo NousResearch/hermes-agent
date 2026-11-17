@@ -1,18 +1,18 @@
 name: system-one
 repo: https://github.com/salismt/hermes-system-one
-sha: f4f8a009ecc1615aed29129b84112fb3459bf8f2
+sha: 9a48299c73db92e7cb175b23af24dc4315afd49a
 title: System One decision models
 description: >-
   Provider-neutral client for System One decision models: TypeSafe Jev, Liquid AI d1.2 /
-  d1.2-ultra, Upstage Solar Decide, Microsoft-Decision-1 on Azure AI Foundry, a self-hosted server
-  (llama.cpp, laya-serve), or any endpoint that implements the System One contract. One system_one
+  d1.2-ultra, Upstage Solar Decide, Microsoft-Decision-1 on Azure AI Foundry, open models in Ollama
+  (Laya, Tev1) or another self-hosted server (llama.cpp), or any endpoint that implements the System One contract. One system_one
   tool asks typed questions (noul, choice, score, plus the extraction types a model supports) and
   returns calibrated probabilities; provider and model switch in settings. Each model's supported
   question types and limits are checked before sending, and total, daily and per-call spend caps
   are checked against a local ledger before every request. Bundles a skill on writing questions,
   adapted from TypeSafe's MIT typesafe-ai skill. Standard library only; no dependencies.
   Disclosure — the state and questions you send go to the selected provider (api.typesafe.ai,
-  api.liquid.ai, api.upstage.ai, your Azure Foundry resource, your own self-hosted server, or your
+  api.liquid.ai, api.upstage.ai, your Azure Foundry resource, your own Ollama or self-hosted server, or your
   https endpoint) and are billed to your account there (self-hosted is free); API keys are secret
   settings read through get_secret and sent only to their own provider's hosts; the spend ledger
   and an opt-in payload log (off by default, mode 0600) are written under plugin-data/system-one.
@@ -21,7 +21,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23"
 docs_url: https://github.com/salismt/hermes-system-one#readme
-version: "0.4.0"
+version: "0.4.1"
 platforms: []
 capabilities:
   provides_tools: [system_one]

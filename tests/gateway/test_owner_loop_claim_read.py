@@ -37,6 +37,14 @@ async def test_claim_pending_read_keeps_the_owner_loop_ticking(tmp_path, monkeyp
             time.sleep(SLOW_S)  # health: allow HX013 -- the slow storage read IS the stall under test
         return real(*args, **kwargs)
     monkeypatch.setattr(session_authority, 'list_session_admissions', slow_list)
+    real_claim = rt.claim_session_input
+
+    def claim(*args, **kwargs):
+        # Slow only the claim's own reads: the stamp's viewer publish after the commit reads on the
+        # loop by design (under the stream lock), and slowing it made the verdict a ready-queue race.
+        slow.clear()
+        return real_claim(*args, **kwargs)
+    monkeypatch.setattr(session_authority, 'claim_session_input', claim)
     gaps = []
 
     async def tick():

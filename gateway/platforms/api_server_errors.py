@@ -30,6 +30,7 @@ except ImportError:  # the adapter reports the missing dependency; this module m
 from agent.redact import redact_sensitive_text
 
 REQUEST_ID_HEADER = "X-Request-Id"
+REQUEST_ID_KEY = "hermes_request_id"  # request-scoped storage slot set by error_body_middleware
 _REQUEST_ID_RE = re.compile(r"[\x21-\x7e]{1,128}")
 # Statuses a client may retry when the code is not in the table (or absent).
 _RETRYABLE_STATUSES = frozenset({408, 429, 503, 504})
@@ -45,8 +46,10 @@ def _codes(status: int, retryable: bool, *names: str) -> dict[str, ErrorCode]:
     return dict.fromkeys(names, ErrorCode(status, retryable))
 
 
-# The closed table of codes the API server emits. ``status`` is the code's HTTP status;
-# ``retryable`` says whether resending the same request can succeed. Published by /v1/schema.
+# The codes the API server emits, published by /v1/schema. ``status`` is the code's HTTP status;
+# ``retryable`` says whether resending the same request can succeed. A code missing here (a new
+# ``RuntimeStoreError`` reason surfacing through ``store_error_response``) falls back to the
+# response's own retry signals in ``_is_retryable``.
 ERROR_CODES: dict[str, ErrorCode] = {
     **_codes(400, False, "invalid_request", "invalid_json", "invalid_content_length",
              "invalid_params", "missing_message", "missing_model", "invalid_author",
@@ -62,8 +65,11 @@ ERROR_CODES: dict[str, ErrorCode] = {
     **_codes(404, False, "session_not_found", "run_not_found", "profile_not_served"),
     **_codes(409, False, "session_exists", "model_lock_unavailable", "idempotency_key_conflict",
              "admission_conflict", "unknown_execution", "approval_not_pending",
-             "run_not_active", "run_not_accepting_steer", "steer_not_accepted"),
-    **_codes(409, True, "session_active_turn"),
+             "run_not_active", "run_not_accepting_steer", "steer_not_accepted",
+             # run-control refusals from ``store_error_response`` (documented as 409)
+             "not_found", "stale_generation", "stale_epoch", "permission_denied",
+             "profile_mismatch", "revision_conflict", "admission_started"),
+    **_codes(409, True, "session_active_turn", "session_busy"),
     **_codes(413, False, "body_too_large"),
     **_codes(429, True, "rate_limit_exceeded"),
     **_codes(500, False, "model_options_failed", "model_lock_persistence_failed",
@@ -161,13 +167,18 @@ def enrich_error_response(response: web.StreamResponse, request_id: str) -> None
 
 
 async def _error_body_middleware(request: web.Request, handler):
-    """Stamp ``X-Request-Id`` on every unsent response and enrich its error body."""
-    request_id = request_id_for(request)
+    """Bind this request's id (read back by audit logs and ``stamp_request_id``) and enrich
+    its error body."""
+    request[REQUEST_ID_KEY] = request_id = request_id_for(request)
     response = await handler(request)
-    if not response.prepared:
-        response.headers[REQUEST_ID_HEADER] = request_id
-        enrich_error_response(response, request_id)
+    enrich_error_response(response, request_id)
     return response
+
+
+async def stamp_request_id(request: web.Request, response: web.StreamResponse) -> None:
+    """``on_response_prepare`` hook: every response head, SSE streams included (their head is
+    flushed inside the handler, before any middleware sees the response), carries the id."""
+    response.headers.setdefault(REQUEST_ID_HEADER, request.get(REQUEST_ID_KEY) or request_id_for(request))
 
 
 error_body_middleware = web.middleware(_error_body_middleware) if web is not None else None

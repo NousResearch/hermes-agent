@@ -3,7 +3,7 @@ import socket
 
 import pytest
 import pytest_asyncio
-from aiohttp import ClientSession
+from aiohttp import ClientSession, web
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
@@ -17,11 +17,23 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _sse_route(adapter):
+    async def handler(request):
+        """Flushes its head itself (with ``_sse_headers``), as every SSE route does."""
+        response = web.StreamResponse(headers=adapter._sse_headers(request))
+        await response.prepare(request)
+        await response.write(b"data: {}\n\n")
+        return response
+    return handler
+
+
 @pytest_asyncio.fixture
 async def served():
     port = _free_port()
     adapter = APIServerAdapter(PlatformConfig(
-        enabled=True, extra={"host": "127.0.0.1", "port": port, "key": _KEY}))
+        enabled=True, extra={"host": "127.0.0.1", "port": port, "key": _KEY,
+                             "cors_origins": "https://ui.example"}))
+    adapter._handle_toolsets = _sse_route(adapter)
     assert await adapter.connect() is True
     try:
         async with ClientSession(base_url=f"http://127.0.0.1:{port}") as client:
@@ -49,6 +61,13 @@ async def test_errors_keep_openai_envelope_and_add_retry_and_request_fields(serv
         assert resp.status == 503 and error["code"] == "gateway_draining"
         assert error["retryable"] is True and error["retry_after_ms"] == 1000
         assert error["request_id"] == resp.headers["X-Request-Id"] and error["request_id"]
+
+    # A stream's head is flushed inside its handler; it carries the id too, readable by a browser.
+    async with client.get("/v1/toolsets", headers={
+            "X-Request-Id": "trace-sse", "Origin": "https://ui.example"}) as resp:
+        assert resp.headers["X-Request-Id"] == "trace-sse"
+        assert "X-Request-Id" in resp.headers["Access-Control-Expose-Headers"]
+        assert await resp.read() == b"data: {}\n\n"
 
 
 @pytest.mark.asyncio

@@ -237,7 +237,8 @@ def _clean_request_string(value: Any) -> Optional[str]:
 # re-exported here so importers are unaffected.
 from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
 from gateway.platforms.api_server_errors import (
-    _error_response, _invalid_request, _openai_error, _redact_api_error_text, error_body_middleware)
+    _error_response, _invalid_request, _openai_error, _redact_api_error_text, error_body_middleware,
+    REQUEST_ID_KEY, stamp_request_id)
 from gateway.platforms.api_server_schema import schema_route
 
 
@@ -633,7 +634,8 @@ def check_api_server_requirements() -> bool:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id, X-Request-Id"}
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id, X-Request-Id",
+    "Access-Control-Expose-Headers": "X-Request-Id"}
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -1347,6 +1349,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "method": self._clean_log_value(request.method, max_len=16),
             "path": self._clean_log_value(request.path_qs, max_len=500),
             "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
+            "request_id": self._clean_log_value(request.get(REQUEST_ID_KEY, ""), max_len=128),
             # The Portal user a peer pass holder signed in as; set by the dashboard's /api/peer route.
             "peer_principal": self._clean_log_value(request.headers.get("X-Hermes-Peer-Principal", ""), max_len=128)}
 
@@ -3920,6 +3923,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 error_body_middleware, config_unavailable_middleware, self._make_profile_prefix_middleware(), cors_middleware,
                 body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
+            self._app.on_response_prepare.append(stamp_request_id)
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and
             # scopes config/credentials when multiplexing is on).

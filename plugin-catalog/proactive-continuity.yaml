@@ -1,0 +1,22 @@
+name: proactive-continuity
+title: Proactive Continuity
+repo: https://github.com/iknowterry/hermes-proactive-continuity
+sha: 09aae57d2f269f63dd44d914059c355bbfc8ba71
+version: "0.1.0"
+description: "Keeps the agent working through multi-step tasks and stops it losing pending work. Adds working rules as a system prompt section, lists open Kanban cards when a session starts, gives a short catch-up after idle time, continues with the next step when the agent ends a turn with work remaining (capped per hour), hands tool calls that send, post, pay, deploy or edit system files to Hermes' own approval gate, and names a failed tool instead of going silent. Glue over built-in Kanban, cron, approvals and memory: no tool, scheduler, memory store or approval UI of its own. Works with any model. Adds `hermes proactive-continuity setup|status|uninstall` and the `/continuity` slash command. Disclosure — adds working rules to the system prompt and, when the agent ends a turn with work remaining, sends it a continue message on its own (at most 6 per session per hour, needs allow_gateway_injection on messaging platforms); routes tool calls that send, post, pay, deploy or edit system files to Hermes' approval prompt. The `hermes proactive-continuity setup` command, run by the user, backs up config.yaml and SOUL.md under the Hermes home, changes approval and display settings through `hermes config set`, enables the kanban toolset, grants itself allow_gateway_injection, copies one script into the Hermes scripts folder and creates a paused cron job; uninstall reverses this. No network calls and no telemetry."
+maintainer: iknowterry
+tier: community
+category: automation
+requires_hermes: ">=0.23.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - transform_llm_output
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

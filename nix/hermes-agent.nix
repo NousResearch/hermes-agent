@@ -3,7 +3,10 @@
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Users override via:
 #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-#   pkgs.hermes-agent.override { extraDependencyGroups = [ "voice" ]; }
+#   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
+# Both extras add to what the package ships. The shipped groups live in
+# defaultDependencyGroups (set by packages.nix for `full`/`messaging`), so a
+# plain override of the extras never drops them.
 {
   lib,
   stdenv,
@@ -30,7 +33,6 @@
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
-  npm-lockfile-fix,
   # nix/pm-packages.nix output: every pm/lock.json pin as a derivation.
   pmPackages,
   # Locked git revision of the flake source — embedded so banner.py can
@@ -44,6 +46,9 @@
   version ? "0.0.0",
   distance ? 0,
   extraPythonPackages ? [ ],
+  # The optional groups this variant ships; packages.nix owns the lists.
+  defaultDependencyGroups ? [ ],
+  # The user's additions on top of defaultDependencyGroups.
   extraDependencyGroups ? [ ],
 }:
 let
@@ -51,6 +56,8 @@ let
   # nixpkgs interpreter. Everything Python-shaped below derives from it.
   pythonLock = callPackage ./pythonLock.nix { };
   python = pythonLock.interpreter;
+
+  packageDependencyGroups = defaultDependencyGroups ++ extraDependencyGroups;
 
   # Install stamp values — written to install-stamp.json so the Python
   # runtime (CLI, TUI) reads one file instead of env vars or .git probes.
@@ -88,14 +95,16 @@ let
   );
 
   mkHermesVenv =
-    extraDependencyGroups:
+    groups:
     callPackage ./python.nix {
       inherit uv2nix pyproject-nix pyproject-build-systems;
       pythonSrc = hermesNpmLib.pythonSrc;
-      dependency-groups = [ "all" ] ++ extraDependencyGroups;
+      # Deduplicated so naming a group the variant already ships leaves the
+      # venv derivation unchanged.
+      dependency-groups = lib.unique ([ "all" ] ++ groups);
     };
 
-  hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
+  hermesVenv = (mkHermesVenv packageDependencyGroups).venv;
 
   pmRuntime = callPackage ./pm-runtime.nix {
     inherit uv2nix pyproject-nix pyproject-build-systems;
@@ -107,7 +116,7 @@ let
   };
 
   hermesNpmLib = callPackage ./lib.nix {
-    inherit npm-lockfile-fix pmPackages;
+    inherit pmPackages;
   };
 
   hermesTui = callPackage ./tui.nix {
@@ -116,6 +125,11 @@ let
 
   hermesWeb = callPackage ./web.nix {
     inherit hermesNpmLib generatedIcons;
+  };
+
+  # The store is read-only, so the Webapp is built here and never by `hermes webapp`.
+  hermesWebapp = callPackage ./webapp.nix {
+    inherit hermesNpmLib;
   };
 
   bundledSkills = lib.cleanSourceWith {
@@ -215,6 +229,7 @@ let
       frontends = {
         tui = "${hermesTui}/lib/hermes-tui";
         web = toString hermesWeb;
+        webapp = toString hermesWebapp;
       };
       ref = if dirty then null else rev;
       stamp = toString installStampFile;
@@ -329,15 +344,18 @@ stdenv.mkDerivation (finalAttrs: {
       # uv2nix builds the editable venv against the nixpkgs interpreter (it
       # cannot build against a tarball one); devVenv re-homes it onto the
       # interpreter pm/lock.json pins.
-      devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+      devPython = (mkHermesVenv (packageDependencyGroups ++ [ "dev" ])).editableVenv;
       pmPython = pmPackages.python;
 
       # A real venv: pyvenv.cfg's `home` is the pinned interpreter and its
       # site-packages are devPython's, so `.pth` files (the editable checkout)
       # load and nothing depends on the caller's PYTHONPATH. Console scripts
       # are re-shebanged onto it so `pytest` and `python -m pytest` agree.
+      # The project's own commands (`hermes`, ...) go to libexec, off PATH, so
+      # the dev shell never hides the installed Hermes; `hermes-checkout` runs them.
+      projectCommands = builtins.attrNames (lib.importTOML ../pyproject.toml).project.scripts;
       devVenv = runCommand "hermes-agent-dev-venv" { } ''
-        mkdir -p $out/bin $out/lib/python${python.pythonVersion}
+        mkdir -p $out/bin $out/libexec/hermes-checkout $out/lib/python${python.pythonVersion}
         ln -s ${devPython}/${sitePackagesPath} $out/${sitePackagesPath}
         cat > $out/pyvenv.cfg <<EOF
         home = ${pmPython}/bin
@@ -356,13 +374,20 @@ stdenv.mkDerivation (finalAttrs: {
           [ -e "$out/bin/$name" ] && continue
           case "$name" in activate*|Activate*) continue ;; esac
           [ "$(readlink -f "$script")" = "$devInterpreter" ] && continue
+          case " ${lib.concatStringsSep " " projectCommands} " in
+            *" $name "*) dir=$out/libexec/hermes-checkout ;;
+            *) dir=$out/bin ;;
+          esac
           if head -n1 "$script" | grep -q '^#!.*python'; then
-            { echo "#!$out/bin/python3"; tail -n +2 "$script"; } > "$out/bin/$name"
-            chmod +x "$out/bin/$name"
+            { echo "#!$out/bin/python3"; tail -n +2 "$script"; } > "$dir/$name"
+            chmod +x "$dir/$name"
           else
-            ln -s "$script" "$out/bin/$name"
+            ln -s "$script" "$dir/$name"
           fi
         done
+        # The libexec name stays `hermes`: process identity and relaunch read argv[0].
+        printf '#!/bin/sh\nexec %s "$@"\n' "$out/libexec/hermes-checkout/hermes" > $out/bin/hermes-checkout
+        chmod +x $out/bin/hermes-checkout
       '';
 
       pm = writeShellApplication {
@@ -377,6 +402,7 @@ stdenv.mkDerivation (finalAttrs: {
       inherit
         hermesTui
         hermesWeb
+        hermesWebapp
         hermesNpmLib
         hermesVenv
         agentBuilderSrc
@@ -416,6 +442,8 @@ stdenv.mkDerivation (finalAttrs: {
       devDeps =
         runtimeDeps
         ++ [
+          # The pnpm the builds install with: the pm/lock.json pin.
+          hermesNpmLib.pnpm
           pmPackages.uv
           devVenv
           pm

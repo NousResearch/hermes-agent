@@ -73,6 +73,10 @@ nous = NousProfile(
     display_name="Nous Research", description="Nous Research — Hermes model family",
     signup_url="https://nousresearch.com/", fallback_models=("hermes-3-405b", "hermes-3-70b"),
     base_url="https://inference-api.nousresearch.com/v1", auth_type="oauth_device_code",
+    # The Portal's upstream currently drops 1h cache entries after ~7 minutes and bills them at the
+    # 5m rate, so asking for 1h only pays the 2x write. Lift with config
+    # ``prompt_caching.route_ttl_ceilings: {nous: 1h}`` (or delete this line) once that is fixed.
+    prompt_cache_max_ttl="5m",
 )
 
 register_provider(nous)

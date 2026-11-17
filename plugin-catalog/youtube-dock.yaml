@@ -1,6 +1,6 @@
 name: youtube-dock
 repo: https://github.com/metamindedu/hermes-youtube-dock
-sha: 56f3ddcabf766bc927b4ab9144916f00038c851a
+sha: 31d2635ed1ef49250dc89a5707281a5fa66dd76e
 title: YouTube Dock
 description: >-
   Open your signed-in YouTube Home recommendations and Shorts in the existing
@@ -15,16 +15,19 @@ maintainer: metamindedu
 tier: community
 category: desktop
 requires_hermes: ">=0.22.2"
-version: "1.0.0"
+version: "1.1.0"
 docs_url: https://github.com/metamindedu/hermes-youtube-dock
 screenshots:
-  - https://raw.githubusercontent.com/metamindedu/hermes-youtube-dock/56f3ddcabf766bc927b4ab9144916f00038c851a/docs/menu.png
+  - https://raw.githubusercontent.com/metamindedu/hermes-youtube-dock/31d2635ed1ef49250dc89a5707281a5fa66dd76e/docs/menu.png
 readme: true
 platforms: []
 known_issues:
+  - "v1.1.0 removes the rejected manual-setup beta completely. One-click Open preview/Hide is the only workflow; workspace pinning remains manual."
+  - "Activation attempts to remove only the obsolete manualPinGuide preference through plugin-scoped SDK storage. No old-value reads, replacement settings or clipboard access remain."
+  - "The host may reuse an existing Browser; pinning is visibility, not exclusive reservation. Native Windows Home/Shorts opening was checked; no fresh cross-platform, restart or long-running player certification is claimed."
   - "Dedicated picture-in-picture is not included; uses the existing docked Browser."
   - "Google sign-in and playback restrictions still apply; no browser-cookie import."
-  - "Windows 11/Desktop 0.22.2 manually verified; macOS/Linux playback not manually tested."
+  - "Original 1.0.0 launcher: Windows 11/Desktop 0.22.2 manually verified; macOS/Linux playback not manually tested."
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -12,6 +12,7 @@ import {
   getMemoryStatus,
   type MemoryStatusResponse,
   resetMemory,
+  resolveOwnerNow,
   runBackup,
   runCurator,
   runDebugShare,
@@ -26,6 +27,8 @@ import { upsertDesktopActionTask } from '@/store/activity'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { ActionStatusResponse } from '@/types/hermes'
+
+import { MemoryLayersSummary } from '../settings/memory/memory-layers'
 
 const ACTION_POLL_MS = 1200
 const ACTION_POLL_LIMIT = 240 // ~5 minutes of polling before giving up.
@@ -139,12 +142,27 @@ export function MaintenancePanel() {
   )
 
   const shareDebug = useCallback(async () => {
+    // The backend refuses an unconfirmed upload; ask before anything leaves the machine.
+    // The consent covers the profile shown when it was asked, not one switched to behind the dialog.
+    const owner = resolveOwnerNow()
+
+    if (
+      !(await confirm({
+        confirmLabel: mm.debugShare,
+        description: mm.debugShareConfirmDesc,
+        destructive: true,
+        title: mm.debugShareConfirm
+      }))
+    ) {
+      return
+    }
+
     setSharing(true)
     setShare(null)
     setError('')
 
     try {
-      setShare(await runDebugShare())
+      setShare(await runDebugShare(owner))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       notifyError(err, mm.debugShareFailed)
@@ -321,11 +339,7 @@ export function MaintenancePanel() {
           <PageLoader className="min-h-16" label={mm.memoryData} />
         ) : (
           <div>
-            <div className="py-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-              {mm.memoryDataDesc}
-              {' · '}
-              {mm.memoryProvider(memory.active || mm.builtinMemory)}
-            </div>
+            <MemoryLayersSummary status={memory} />
             <MemoryFileRow
               busy={memoryBusy}
               label={mm.memoryFile}

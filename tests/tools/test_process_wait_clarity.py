@@ -68,7 +68,7 @@ class TestWaitYieldRelease:
             assert r["process_running"] is True
             # The process was not killed and the yield bit was consumed.
             assert registry.poll(sid)["status"] == "running"
-            from tools.interrupt import is_thread_yield_requested
-            assert not is_thread_yield_requested(t.ident)
+            from tools.interrupt import consume_yield
+            assert not consume_yield(t.ident)
         finally:
             registry.kill_process(sid)

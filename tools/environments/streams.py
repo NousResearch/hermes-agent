@@ -38,7 +38,9 @@ def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive
         container = getattr(env, "_container_id", None)
         if not container:
             return None
-        argv = [env._docker_exe, "exec"]
+        # From "/", not the container's creation-time -w: if that directory was deleted the OCI
+        # runtime refuses the exec outright (the same guard as DockerEnvironment._run_bash).
+        argv = [env._docker_exe, "exec", "-w", "/"]
         if interactive:
             argv.append("-i")
         if user:
@@ -74,10 +76,6 @@ def sandbox_temp_dir(env: BaseEnvironment) -> str:
     """``env.get_temp_dir()``, or ``/tmp`` for a plugin environment that doesn't subclass ``BaseEnvironment``."""
     get_temp_dir = getattr(env, "get_temp_dir", None)
     return str(get_temp_dir()) if callable(get_temp_dir) else "/tmp"  # no-tmp: ok — sandbox-side temp dir
-
-
-def supports_streams(env: BaseEnvironment) -> bool:
-    return exec_prefix(env, interactive=True) is not None
 
 
 def remote_argv(prefix: Sequence[str], argv: Sequence[str], *, env: Optional[dict] = None,

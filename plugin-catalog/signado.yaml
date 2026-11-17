@@ -1,0 +1,18 @@
+name: signado
+title: Signado
+repo: https://github.com/signado-io/signado-skills
+sha: 469fcfe55ff5a64c42b651d0b52456a45ab243b6
+version: "1.0.2"
+description: "Find warm leads on LinkedIn through Signado's hosted MCP server (Streamable HTTP at https://mcp.signado.io/mcp, OAuth sign-in, no keys in config): list and read warm leads and hiring leads, export them, find work emails, draft first messages, and add, preview, schedule or run the LinkedIn sources that watch keywords, posts, creators and company pages. Bundles three skills: a warm-lead brief, a post engagement catcher and a competitor audience watch. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Signado's hosted server (mcp.signado.io) and acts on the Signado workspace the user chose at sign-in; the tool set is served by that server at runtime and is not covered by the pinned sha. find_email, draft_message, preview_source, add_source, set_source_schedule and run_source_once spend Signado credits, and a Daily or Custom source keeps spending on each scheduled run. Lead results include LinkedIn posts and comments written by other people, which the skills treat as data, never as instructions. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 18+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Signado
+tier: community
+category: tools
+docs_url: https://github.com/signado-io/signado-skills#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

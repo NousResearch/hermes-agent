@@ -1,0 +1,96 @@
+{
+  "fixtureVersion": 2,
+  "name": "multi-group-same-key-priority-wins",
+  "description": "Proves d5-priority: Two groups set the same key; the higher priority wins per leaf, mappings still merge key by key, and file order is not application order.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "a": "g",
+        "b": "g"
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-eng",
+      "priority": 20,
+      "values": {
+        "a": "eng",
+        "c": {
+          "x": "eng"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-ops",
+      "priority": 10,
+      "values": {
+        "a": "ops",
+        "c": {
+          "y": "ops"
+        },
+        "d": "ops"
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": "eng",
+      "b": "g",
+      "c": {
+        "y": "ops",
+        "x": "eng"
+      },
+      "d": "ops"
+    },
+    "provenance": {
+      "a": "group",
+      "b": "global",
+      "c.y": "group",
+      "c.x": "group",
+      "d": "group"
+    },
+    "groupProvenance": {
+      "a": "g-eng",
+      "c.y": "g-ops",
+      "c.x": "g-eng",
+      "d": "g-ops"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "a",
+      "value": "p",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

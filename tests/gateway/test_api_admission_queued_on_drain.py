@@ -10,7 +10,7 @@ import json
 import pytest
 
 from gateway import run_runtime
-from gateway.platforms.api_server import _openai_error
+from gateway.platforms.api_server_errors import _openai_error
 from gateway.platforms.api_server_authority_runs import store_error_response
 from gateway.session_api_turn import AdmissionQueued, observe_api_turn
 from gateway.session_contract import Submission

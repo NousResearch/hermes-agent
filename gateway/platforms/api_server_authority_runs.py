@@ -40,7 +40,7 @@ async def continued_session(adapter, session_id, request_id=None):
     ``storage_unavailable`` (``store_error_response``), as for the header-less chat lookup."""
     import asyncio
     import sqlite3
-    from gateway.platforms.api_server import _openai_error
+    from gateway.platforms.api_server_errors import _openai_error
     from gateway.session_api import continued_api_session
     try:
         return await asyncio.to_thread(

@@ -42,12 +42,6 @@ DEFAULT_FAILURE_LIMIT = 2
 # before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
-# A healthy worker is still alive for a while after kanban_complete /
-# kanban_request_review returns (final assistant turn, session persistence), so
-# a run's retained worker is only reaped once ended_at is at least this old
-# (two default dispatch ticks).
-TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
-
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
@@ -109,6 +103,8 @@ class DispatchResult:
     reaped_terminal_workers: list[str] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
+    reaped_run_scopes: list[str] = field(default_factory=list)
+    """Worker scope units of closed runs stopped by ``reap_terminal_run_scopes``."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -2185,6 +2181,8 @@ def _run_reclaim_phase(
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
+    # The scope is the other half of that leak: a child the worker left keeps it loaded.
+    result.reaped_run_scopes = _kbsc.reap_terminal_run_scopes(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
@@ -2900,4 +2898,5 @@ from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_default_assignee as _kbda
 from hermes_cli import kanban_db_worker_scopes as _kbsc
+from hermes_cli.kanban_db_worker_scopes import TERMINAL_WORKER_REAP_GRACE_SECONDS
 from hermes_cli import kanban_db_workspace as _kbw

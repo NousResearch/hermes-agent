@@ -1,11 +1,15 @@
-"""The transient systemd scope a kanban worker runs in, read by the dispatcher's crash sweep.
+"""The transient systemd scope a kanban worker runs in: how it dies, and what it leaves loaded.
 
 A systemd-hosted dispatcher wraps each worker in ``hermes-worker-kanban-<task>-run-<n>.scope``
-(``_restart_safe_worker_argv``). The scope runs with the default ``OOMPolicy=stop``, so when the
-kernel OOM killer kills a process inside it systemd stops the whole scope and the worker never
-reaches its exit epilogue: the death reaches the sweep as a clean rc=0 or as a vanished pid.
+(``_restart_safe_worker_argv``), and both questions about it are answered by systemd rather than
+by the board's run row. The scope runs with the default ``OOMPolicy=stop``, so when the kernel
+OOM killer kills a process inside it systemd stops the whole scope and the worker never reaches
+its exit epilogue: the death reaches the sweep as a clean rc=0 or as a vanished pid.
 ``--collect`` removes the scope the moment it exits, so ``systemctl show`` cannot tell that death
-from a clean one afterwards; the user manager's journal still can.
+from a clean one afterwards; the user manager's journal still can. And ``--collect`` removes a
+scope only once its cgroup is empty, so a worker that ends leaving a background child behind (a
+dev server, a build daemon, an ``Xvfb``, a wait loop) keeps the scope loaded, holding the
+child's port and memory, until something stops it.
 
 Split out of ``hermes_cli.kanban_db_dispatch`` (a facade over its line cap may not grow);
 origin-resident helpers are reached late-bound via ``_kb`` (import-cycle breaking) so
@@ -14,13 +18,23 @@ monkeypatching ``kanban_db.<name>`` keeps working.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sqlite3
 import subprocess
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
+
+# A healthy worker is still alive for a while after kanban_complete /
+# kanban_request_review returns (final assistant turn, session persistence), so
+# a run's retained worker and its scope are only reaped once ended_at is at
+# least this old (two default dispatch ticks).
+TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
 WORKER_SCOPE_UNIT_PREFIX = "hermes-worker-kanban-"
+WORKER_SCOPE_UNIT_RE = re.compile(
+    rf"^{re.escape(WORKER_SCOPE_UNIT_PREFIX)}(?P<task_id>.+)-run-(?P<run_id>\d+)\.scope$"
+)
 
 _SCOPE_OOM_MARKERS = (
     "Failed with result 'oom-kill'",
@@ -122,6 +136,94 @@ def book_oom_kill(dead: Any, pid: int) -> None:
             "memory than the scope limit"
         )
     dead.event_payload["oom_killed"] = True
+
+
+def _loaded_worker_scope_units() -> list[str]:
+    """Unit names of the worker scopes the user manager still has loaded.
+
+    One ``systemctl --user list-units`` call per tick: the loaded set is the authoritative answer
+    to "which worker cgroups still hold a process", and it reaches a scope whose retained worker
+    evidence a reclaim or an earlier tick already cleared, which a per-run query cannot.
+    ``systemctl`` missing, or a user bus that cannot be reached, is a silent no-op: scope reaping
+    must never be the reason a tick fails.
+    """
+    binary = shutil.which("systemctl")
+    if binary is None:
+        return []
+    from tools.process_registry import systemd_user_bus_env
+
+    try:
+        proc = subprocess.run(
+            [binary, "--user", "list-units", "--type=scope", "--all", "--no-pager",
+             "--plain", "--no-legend", f"{WORKER_SCOPE_UNIT_PREFIX}*.scope"],
+            capture_output=True, text=True, timeout=15, check=False,
+            stdin=subprocess.DEVNULL, env=systemd_user_bus_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    units = (line.split(None, 1)[0] for line in (proc.stdout or "").splitlines() if line.strip())
+    return [unit for unit in units if WORKER_SCOPE_UNIT_RE.match(unit)]
+
+
+def _stop_worker_scope_unit(unit_name: str) -> bool:
+    """``systemctl --user stop`` one worker scope; True if stopped or already gone.
+
+    The stop is the one every other scope-kill path shares (``tools/process_registry``); this
+    wrapper is the sweep's single seam for tests.
+    """
+    from tools.process_registry import _stop_systemd_unit
+
+    return _stop_systemd_unit(unit_name)
+
+
+def reap_terminal_run_scopes(conn: sqlite3.Connection, *, stop_fn: Optional[Callable[[str], bool]] = None) -> list[str]:
+    """Stop the transient worker scope of every run that has already ended.
+
+    A worker scope is a cgroup, so stopping it reaps whatever the worker left running inside it.
+    Those children outlive the agent process that started them, hold their port, and answer to
+    no signal sent to the worker's own pid, which is why ``reap_terminal_workers`` (keyed on the
+    run's retained pid, which a reclaim may already have cleared) cannot clear them.
+
+    Only a scope whose own run row is closed is ever stopped, so a live run is untouched; a scope
+    whose run is not in this board's DB (scopes are named by task id alone) is left to the board
+    that owns it; and a run that ended less than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left
+    alone so a worker still finalising after its own transition is not killed. One scope's failure
+    is logged and skips only that scope. Returns the unit names stopped.
+    """
+    units = _loaded_worker_scope_units()
+    if not units:
+        return []
+    stop = stop_fn if stop_fn is not None else _stop_worker_scope_unit
+    cutoff = int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS
+    stopped: list[str] = []
+    for unit in units:
+        try:
+            if _reap_run_scope(conn, unit, cutoff, stop):
+                stopped.append(unit)
+        except Exception:  # health: allow BLE001 -- per-scope boundary like reap_terminal_workers; logs exc_info
+            _kb._log.debug("kanban dispatch: worker scope reap failed for %s", unit, exc_info=True)
+    return stopped
+
+
+def _reap_run_scope(conn: sqlite3.Connection, unit: str, cutoff: int, stop: Callable[[str], bool]) -> bool:
+    match = WORKER_SCOPE_UNIT_RE.match(unit)
+    if match is None:
+        return False
+    task_id, run_id = match.group("task_id"), int(match.group("run_id"))
+    row = conn.execute(
+        "SELECT ended_at FROM task_runs WHERE id = ? AND task_id = ?", (run_id, task_id),
+    ).fetchone()
+    if row is None or row["ended_at"] is None or int(row["ended_at"]) > cutoff:
+        return False
+    if not stop(unit):
+        return False
+    with _kb.write_txn(conn):
+        _kb._append_event(
+            conn, task_id, "terminal_run_scope_reaped", {"unit": unit, "run_id": run_id}, run_id=run_id,
+        )
+    return True
 
 
 # Late-bound origin namespace (see module docstring).

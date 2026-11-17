@@ -75,6 +75,8 @@ def test_only_a_successful_upstream_canary_on_the_default_branch_starts_it(ctx, 
 ])
 def test_the_commit_under_test_is_the_canarys_not_mains_tip(ctx, commit):
     assert resolved_commit(ctx) == commit
+    # The tracker names the tested commit from the run title, not the run's head_sha.
+    assert gha.render(load("canary-e2e.yml")["run-name"], ctx) == f"Canary E2E on {commit}"
 
 
 def test_a_dispatched_commit_must_be_a_full_sha():

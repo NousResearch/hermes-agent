@@ -249,3 +249,22 @@ async def test_pending_rows_name_the_controls_the_owner_serves(tmp_path, monkeyp
                                                      for r in authority._pending_rows(REF))}
     assert pending['follower'].get('controls') == ['steer', 'replace']
     assert not pending['head'].get('controls'), 'a started row has no queued-row controls'
+
+
+@pytest.mark.parametrize('created, controls', [('desktop', ['steer', 'replace']), ('cli', ['steer', 'replace']),
+                                               ('unknown', []), (None, [])])
+@pytest.mark.asyncio
+async def test_a_peer_refreshed_local_session_keeps_the_controls_of_the_surface_that_created_it(
+        tmp_path, monkeypatch, created, controls):
+    """Peer refresh stores an interactive session as source='local'; its created_source names the surface."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET source='local', created_source=? WHERE id='s'", (created,)))
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        await _submit(authority, 'follower')
+        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
+                                                     for r in authority._pending_rows(REF))}
+    assert (pending['follower'].get('controls') or []) == controls

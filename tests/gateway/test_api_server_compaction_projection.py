@@ -112,6 +112,18 @@ class TestMessageProjection:
         assert "PRIOR CONTEXT" not in projected["content"]
         assert "CONTEXT COMPACTION" not in projected["content"]
 
+    def test_message_response_includes_platform_message_id(self):
+        projected = APIServerAdapter._message_response(
+            _row(
+                "assistant",
+                "hello",
+                platform_message_id="deadbeefcafe",
+            )
+        )
+        assert projected["platform_message_id"] == "deadbeefcafe"
+        assert projected["id"] == 1
+        assert projected["content"] == "hello"
+
     def test_merged_content_array_preserves_blocks_before_summary(self):
         projected = APIServerAdapter._message_response(
             _row(

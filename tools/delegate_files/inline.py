@@ -148,6 +148,8 @@ def _render_one(spec: FileSpec, resolved: Path, budget: int) -> tuple[str, Inlin
     start = spec.start or 1
     before = _file_metadata(str(resolved))
     rows, wanted, digest = _read_lines(resolved, start, spec.end, budget - len(label) - 128)
+    if spec.start is not None and wanted == 0:
+        raise ValueError(f"'files' entry {label!r} starts beyond the end of the file.")
     stable = before is not None and _file_metadata(str(resolved)) == before
     raw = "".join(rows)
     body = redact_sensitive_text(raw, file_read=True, secret_file=_is_secret_file_arg(str(resolved)))
@@ -203,7 +205,10 @@ def read_task_files(specs: list[FileSpec], workspace: Optional[str]) -> tuple[Op
         if budget < _MIN_ENTRY_BYTES:
             skipped.append(spec.path if spec.start is None else f"{spec.path}:{spec.start}-{spec.end}")
             continue
-        text, span = _render_one(spec, resolved, budget)
+        try:
+            text, span = _render_one(spec, resolved, budget)
+        except ValueError as exc:
+            return None, str(exc)
         budget -= len(text.encode("utf-8")) + 1
         parts.append(text)
         spans.append(span)

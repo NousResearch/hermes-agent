@@ -126,3 +126,11 @@ def test_files_follow_read_file_lines_cap_every_byte_and_tie_marks_to_the_shown_
     monkeypatch.setattr("tools.delegate_tool_config._get_worktree_isolation", lambda: True)
     _ws, files, err, _msg = _brief(tmp_path, ["small.py"])
     assert files == [] and "worktree_isolation" in err
+
+
+def test_files_refuse_range_starting_beyond_eof(tmp_path):
+    """A stale parent range must fail before spawn rather than inlining an empty, 'complete' snippet."""
+    _ws, files, err, message = _brief(tmp_path, ["small.py:21-25"])
+    assert files == []
+    assert "'files' entry 'small.py:21-25' starts beyond the end of the file" in err
+    assert message is None

@@ -19,10 +19,9 @@ import pytest
 import hermes_state_dbfile
 import hermes_state_readpool
 import hermes_state_wal
-from hermes_state import (
-    DeletedWalGenerationError, SessionDB, StateDbReplacedError, _close_time_checkpoint_configurable,
-    classify_persistence_error, refuse_deleted_wal_generation,
-)
+from hermes_state import DeletedWalGenerationError, SessionDB, StateDbReplacedError, classify_persistence_error
+from hermes_state_dbfile import refuse_deleted_wal_generation
+from persistence.sqlite._holder import StoreHolder, _close_time_checkpoint_configurable
 from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
 from tests.hermes_state._wal_generation_harness import (
     gateway_writer, integrity_ok_path, lose_sidecars, make_db, message_count, pin_wal, require_wal,
@@ -73,7 +72,7 @@ def test_delete_journal_two_writers_still_work(tmp_path, monkeypatch):
     a = make_db(path, "s", "from-a")
     try:
         assert not Path(os.fspath(path) + "-wal").exists()
-        b = SessionDB(db_path=path)
+        b = SessionDB(holder=StoreHolder(path))
         try:
             b.append_message("s", role="user", content="from-b")
             contents = [m["content"] for m in b.get_messages("s")]
@@ -107,7 +106,7 @@ def test_iter_finds_self_after_wal_unlink(tmp_path, force_wal):
 
 @pytest.mark.platforms("linux")
 def test_second_sessiondb_open_refuses_through_symlinked_home(tmp_path, force_wal):
-    """Regression for #116450. End to end through the real open path: SessionDB stores the
+    """Regression for #116450. End to end through the real open path: the store holder stores the
     alias verbatim and calls the guard with it before connect, so the refusal must fire via the
     alias — /proc reports the kernel-resolved dentry while the caller holds only the symlink."""
     real_home = tmp_path / "hermes-real"
@@ -121,7 +120,7 @@ def test_second_sessiondb_open_refuses_through_symlinked_home(tmp_path, force_wa
     lose_sidecars(alias_db, rename=False)
     try:
         with pytest.raises(DeletedWalGenerationError, match="deleted state.db-wal"):
-            SessionDB(db_path=alias_db)
+            SessionDB(holder=StoreHolder(alias_db))
         assert not Path(os.fspath(alias_db) + "-wal").exists()
     finally:
         writer.close()
@@ -165,7 +164,7 @@ def test_second_sessiondb_open_refuses_and_does_not_mint_wal(tmp_path, force_wal
     assert not wal.exists()
 
     with pytest.raises(DeletedWalGenerationError, match="deleted state.db-wal"):
-        SessionDB(db_path=path)
+        SessionDB(holder=StoreHolder(path))
 
     assert not wal.exists(), "open must refuse before sqlite3.connect mints a WAL"
     # If a WAL somehow reappeared it must not be a new generation.

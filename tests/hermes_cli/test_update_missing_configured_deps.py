@@ -39,7 +39,9 @@ def configured_update(source_launch, tmp_path, monkeypatch):
     # Application source is unchanged; the toy manifest keeps PM resolution
     # offline while exercising the real selected-environment launch boundary.
     for path in repository.iterdir():
-        if path.name in {"hermes_cli", "gateway", "agent", "tools", "plugins", "pm", "hermes_platform", "providers", "utils"} or path.suffix == ".py":
+        if (path.name in {"hermes_cli", "gateway", "agent", "tools", "plugins", "pm", "hermes_platform", "providers", "utils",
+                          "persistence"}
+                or path.suffix == ".py"):
             if (root / path.name).exists():
                 # source_launch already stubs hermes_cli/source_completion.py; link the rest of that
                 # package's modules beside it.

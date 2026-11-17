@@ -125,6 +125,10 @@ async def test_two_profiles_local_and_messaging_keys(tmp_path, monkeypatch):
                 crossed = await _post(plugin, card, session_key=profiles[other][kind])
                 assert crossed['error'] == 'no_conversation', (own, other, kind, crossed)
                 assert crossed.get('ok') is False
+                # Refused by the ownership check itself, not later by the admission finding no route.
+                expected = ("not live in this plugin's profile" if kind == 'local_key'
+                            else 'belongs to another profile')
+                assert expected in crossed['detail'], (own, other, kind, crossed)
         for name, profile in profiles.items():
             authority = profile['authority']
             # The local card is in the plugin's own profile's live session and drains as a note there.

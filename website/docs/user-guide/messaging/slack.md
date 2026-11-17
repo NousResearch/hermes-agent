@@ -599,11 +599,52 @@ platforms:
   recoverable reason (API error, rate limit), Hermes falls back to a single continuously edited text message so
   progress stays live for the turn. A relay egress refusal of the destination
   is not recoverable and suppresses progress for the turn.
-- If Slack closes a stream during a long turn, Hermes opens a fresh card in
-  the same thread with the current task list and keeps updating there. The
-  previous card remains visible.
+- Slack keeps a stream open for at most 10 minutes. Before that limit Hermes
+  closes the card itself with a terminal frame (title "Continued below ⤵", no
+  row still running) and continues on a fresh card in the same thread
+  (`native_task_card_rotate_seconds`, default `540`; `0` turns rotation off and
+  leaves only the reactive reopen when Slack has already sealed the card).
+- When the turn ends, the card's title becomes `Ran N steps` (plus
+  `· K failed` when a step failed). After `/stop`, it reads `Stopped · Ran N
+  steps` and the step that was still running is marked stopped, so no card is
+  left saying Hermes is still working.
+- Once more than 8 rows exist, a status change to an older row is still sent.
 - The card stream is stopped exactly once when the turn finalizes, including
   on interrupt/disconnect, so no dangling live indicator is left behind.
+
+#### Step rollup and reasoning rows (opt-in)
+
+```yaml
+platforms:
+  slack:
+    extra:
+      native_task_cards: true
+      task_card_rollup: true     # one row per run of consecutive steps
+      thinking_cards: true       # narration card; also hosts reasoning rows
+      native_task_card_rotate_seconds: 540
+display:
+  platforms:
+    slack:
+      show_reasoning: true       # needed for the "Thinking…" rows
+```
+
+- `task_card_rollup: true` folds a run of consecutive tool steps between two
+  pieces of assistant text into one row. While the run is live, the row shows
+  the current step plus `N earlier: ✓ read_file · ✓ terminal ×3`. Once text
+  follows, the row reads `Ran N steps · K failed` (the suffix only when a step
+  failed), with every step listed in its details. A failure the agent moved
+  past does not leave the row in the error state.
+- `thinking_cards: true` (salvaged per-turn thinking card) puts narration
+  between tool calls on its own card instead of separate thread replies. With
+  `show_reasoning` also on, a reasoning block that lasts longer than about
+  1.5 s gets a row titled `Thinking…` while it runs, then `Thought for Ns` with
+  a short tail of its notes. Shorter blocks never show.
+
+| Key (under `platforms.slack.extra`) | Default | Meaning |
+|---|---|---|
+| `task_card_rollup` | `false` | Fold consecutive steps between text into one row per run. |
+| `thinking_cards` | `false` | Per-turn thinking card for narration and (with `show_reasoning`) reasoning rows. |
+| `native_task_card_rotate_seconds` | `540` | Close and replace the card this long after it opened (`0` = off). |
 
 #### Rich task cards (opt-in)
 

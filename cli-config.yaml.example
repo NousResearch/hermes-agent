@@ -1555,6 +1555,12 @@ platform_toolsets:
 #       # "<bot name> is thinking", with one collapsible row per narration
 #       # burst. Opt-in beside native_task_cards; slot-keyed so both coexist.
 #       thinking_cards: false
+#       # Fold consecutive tool steps between text into one row per run
+#       # ("Ran N steps · K failed" once text follows).
+#       task_card_rollup: false
+#       # Close and replace the card before Slack's 10-minute stream limit
+#       # (seconds after it opened; 0 = only reopen after Slack seals it).
+#       native_task_card_rotate_seconds: 540
 #       # Slack user IDs whose Web-API posts (user token, e.g. your own
 #       # dashboard/mobile front-end) count as human instead of being dropped
 #       # as app traffic. Narrower than allow_bots: all. Users only — never apps.

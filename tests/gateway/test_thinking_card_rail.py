@@ -192,7 +192,7 @@ async def test_drain_falls_back_to_one_editable_message():
 
 @pytest.mark.asyncio
 async def test_drain_egress_decline_is_terminal(monkeypatch):
-    import gateway.relay.egress as egress
+    from gateway.relay import egress
 
     monkeypatch.setattr(egress, "declined_send", lambda result: True)
     adapter = _thinking_adapter()
@@ -333,11 +333,12 @@ async def test_tool_and_thinking_streams_are_separate_slots(monkeypatch):
         reply_to=None, metadata=md)
     await adapter.send_thinking_card_progress("D1", ["thinking feed"], reply_to=None, metadata=md)
 
-    slots = sorted(key[3] for key in adapter._native_task_card_streams)
+    # The tool card keeps its workspace-thread key; the thinking card adds its slot.
+    slots = sorted(key[3] if len(key) > 3 else "tools" for key in adapter._native_task_card_streams)
     assert slots == ["thinking", "tools"]
     # Stopping one card does not stop the other.
     await adapter.stop_thinking_card_progress("D1", reply_to=None, metadata=md)
-    assert [key[3] for key in adapter._native_task_card_streams] == ["tools"]
+    assert [len(key) for key in adapter._native_task_card_streams] == [3]
 
 
 def test_thinking_cards_enabled_config():

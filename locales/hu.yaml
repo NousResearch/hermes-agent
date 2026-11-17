@@ -875,6 +875,16 @@ gateway:
     task_status_error: "hiba"
     task_line: "- {title} - {status}"
     task_card_title: "A Hermes dolgozik"
+    thinking_card_title: "{name} gondolkodik"
+    task_card_earlier: "{count} korábbi: {trail}"
+    task_card_failed_one: "sikertelen"
+    task_card_done: "{count} lépés lefutott"
+    task_card_done_one: "1 lépés lefutott"
+    task_card_failed_suffix: " · {failed} sikertelen"
+    task_card_stopped: "Leállítva · {steps}"
+    task_stopped: "leállítva"
+    reasoning_card_live: "Gondolkodik…"
+    reasoning_card_done: "{seconds} mp-ig gondolkodott"
   pairing:
     validity_hour: "{hours} óra"
     validity_hours: "{hours} óra"
@@ -1385,6 +1395,7 @@ platform:
       still_working: "még dolgozik… ({elapsed})"
     task_card:
       title: "Hermes dolgozik"
+      continued: "Lent folytatódik ⤵"
     slash:
       reply_truncated: "\n\n_[A válasz csonkolva: még {count} rész túllépte a Slack ideiglenes válaszainak korlátját.]_"
       running: "`/{command}` futtatása…"

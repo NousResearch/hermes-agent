@@ -1011,6 +1011,16 @@ gateway:
     task_status_error: "erreur"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes travaille"
+    thinking_card_title: "{name} réfléchit"
+    task_card_earlier: "{count} précédentes : {trail}"
+    task_card_failed_one: "échec"
+    task_card_done: "{count} étapes exécutées"
+    task_card_done_one: "1 étape exécutée"
+    task_card_failed_suffix: " · {failed} en échec"
+    task_card_stopped: "Arrêté · {steps}"
+    task_stopped: "arrêté"
+    reasoning_card_live: "Réflexion…"
+    reasoning_card_done: "A réfléchi {seconds} s"
   pairing:
     validity_hour: "{hours} heure"
     validity_hours: "{hours} heures"
@@ -1583,6 +1593,7 @@ platform:
       still_working: "toujours en cours… ({elapsed})"
     task_card:
       title: "Hermes travaille"
+      continued: "Suite ci-dessous ⤵"
     slash:
       reply_truncated: |2-
 

@@ -863,6 +863,16 @@ gateway:
     task_status_error: "fout"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes werk"
+    thinking_card_title: "{name} dink"
+    task_card_earlier: "{count} vroeër: {trail}"
+    task_card_failed_one: "misluk"
+    task_card_done: "{count} stappe uitgevoer"
+    task_card_done_one: "1 stap uitgevoer"
+    task_card_failed_suffix: " · {failed} misluk"
+    task_card_stopped: "Gestop · {steps}"
+    task_stopped: "gestop"
+    reasoning_card_live: "Dink…"
+    reasoning_card_done: "Gedink vir {seconds}s"
   pairing:
     validity_hour: "{hours} uur"
     validity_hours: "{hours} uur"
@@ -1368,6 +1378,7 @@ platform:
       still_working: "werk nog… ({elapsed})"
     task_card:
       title: "Hermes is aan die werk"
+      continued: "Gaan hieronder voort ⤵"
     slash:
       reply_truncated: "\n\n_[Antwoord afgekap: nog {count} deel/dele het Slack se limiet vir kortstondige antwoorde oorskry.]_"
       running: "Voer `/{command}` uit…"

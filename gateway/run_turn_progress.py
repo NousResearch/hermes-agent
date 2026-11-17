@@ -19,6 +19,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import typing_metadata_for_turn
+from gateway.progress_rollup import RunTracker, steps_title, summarize_run
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -418,6 +419,12 @@ class GatewayTurnProgressMixin:
         # dynamically so the state is visible where it lives.
         publication_suppressed: bool = False
         anonymous_seq: int = 0
+        # Row ids changed since the last successful native publish (#138193).
+        changed: set = dataclasses.field(default_factory=set)
+        # Opt-in run rollup: consecutive steps between text share one row (gateway/progress_rollup.py).
+        rollup: bool = False
+        runs: RunTracker = dataclasses.field(default_factory=RunTracker)
+        details_sent: set = dataclasses.field(default_factory=set)
 
         @staticmethod
         def _compact(value: Any, limit: int = 120) -> str:
@@ -425,7 +432,65 @@ class GatewayTurnProgressMixin:
             return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
         def visible_tasks(self) -> list[dict[str, str]]:
-            return [self.tasks[task_id] for task_id in self.task_order[-8:]]
+            """The rows to publish: the newest 8, plus any older row changed since the last publish.
+
+            The adapter keeps every row it was sent, so an older row only needs a frame when its
+            status changed; leaving it out kept a long-finished task "in progress" (#138193).
+            """
+            rows = self.rollup_rows() if self.rollup else [
+                {k: v for k, v in self.tasks[task_id].items() if k in ("id", "title", "status")}
+                for task_id in self.task_order]
+            window = rows[-8:]
+            shown = {row["id"] for row in window}
+            older = [row for row in rows[:-8] if row["id"] in self.changed and row["id"] not in shown]
+            return older + window
+
+        def rollup_rows(self, *, final: bool = False) -> list[dict[str, str]]:
+            """One row per run of consecutive steps (``platforms.slack.extra.task_card_rollup``)."""
+            rows = []
+            for index, ids in enumerate(self.runs.runs):
+                closed = final or not (self.runs.open and index == len(self.runs.runs) - 1)
+                summary = summarize_run([self.tasks[i] for i in ids], closed=closed)
+                rows.append(self._rollup_row(f"run-{index + 1}", summary))
+            return rows
+
+        def _rollup_row(self, row_id: str, summary) -> dict[str, str]:
+            if not summary.closed:
+                title = summary.title
+                if summary.earlier:
+                    title += " · " + t("gateway.progress.task_card_earlier", count=summary.earlier,
+                                       trail=summary.earlier_trail)
+                return {"id": row_id, "title": self._compact(title, 250), "status": summary.status}
+            if summary.tool_count == 1:
+                title = summary.title + (" · " + t("gateway.progress.task_card_failed_one")
+                                         if summary.failed else "")
+            else:
+                title = steps_title(summary.tool_count, summary.failed)
+            row = {"id": row_id, "title": self._compact(title, 250), "status": summary.status}
+            # Slack APPENDS details on every re-send of a row: the trail goes out once, at close.
+            if summary.tool_count > 1 and row_id not in self.details_sent:
+                row["details"] = summary.details or ""
+            return row
+
+        def final_frame(self, *, stopped: bool) -> tuple[str, list[dict[str, str]]]:
+            """The card's terminal title and rows: no row left running, a title that says it ended."""
+            for task in self.tasks.values():
+                if task["status"] == "in_progress":
+                    task["status"] = "error" if stopped else "complete"
+                    task["stopped"] = stopped
+                    if stopped:
+                        task["title"] = self._compact(task["title"] + " · " + t("gateway.progress.task_stopped"), 250)
+            self.runs.close()
+            rows = self.rollup_rows(final=True) if self.rollup else [
+                {k: v for k, v in self.tasks[i].items() if k in ("id", "title", "status")} for i in self.task_order]
+            count = len(self.tasks)
+            failed = sum(1 for task in self.tasks.values() if task["status"] == "error" and not task.get("stopped"))
+            title = steps_title(count, failed)
+            return (t("gateway.progress.task_card_stopped", steps=title) if stopped else title), rows
+
+        def mark_published(self, rows: list[dict[str, str]]) -> None:
+            self.changed.clear()
+            self.details_sent.update(row["id"] for row in rows if "details" in row)
 
         def fallback_text(self) -> str:
             labels = {"in_progress": t("gateway.progress.task_status_running"),
@@ -435,14 +500,25 @@ class GatewayTurnProgressMixin:
                      for task in self.visible_tasks()]
             return t("gateway.progress.task_card_title") + "\n" + "\n".join(lines)
 
-        def _upsert(self, call_id: str, title: str) -> dict[str, str]:
+        def _upsert(self, call_id: str, title: str, name: str = "") -> dict[str, str]:
             if call_id not in self.tasks:
                 self.task_order.append(call_id)
             self.tasks[call_id] = {"id": call_id, "title": self._compact(title), "status": "in_progress"}
+            if name:
+                self.tasks[call_id]["name"] = name
+            self._touch(call_id)
             return self.tasks[call_id]
+
+        def _touch(self, call_id: str) -> None:
+            self.changed.add(f"run-{self.runs.add(call_id) + 1}" if self.rollup else call_id)
 
         def apply_event(self, raw: Any) -> bool:
             event_type = raw.get("type") if isinstance(raw, dict) else None
+            if event_type == "text.boundary":
+                closed = self.runs.close() if self.rollup else None
+                if closed is not None:
+                    self.changed.add(f"run-{closed + 1}")
+                return closed is not None
             if event_type not in {"tool.started", "tool.completed"}:
                 return False
             call_id = str(raw.get("tool_call_id") or "")
@@ -452,12 +528,13 @@ class GatewayTurnProgressMixin:
             tool_name = str(raw.get("tool_name") or "tool")
             if event_type == "tool.started":
                 preview = self._compact(raw.get("preview"), 64)
-                self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name)
+                self._upsert(call_id, f"{tool_name} - {preview}" if preview else tool_name, tool_name)
                 return True
             # Completion-only events are rare but valid on some runtimes; keep their real ID instead
             # of guessing a same-name pending call.
-            task = self.tasks.get(call_id) or self._upsert(call_id, tool_name)
+            task = self.tasks.get(call_id) or self._upsert(call_id, tool_name, tool_name)
             task["status"] = "error" if raw.get("is_error") else "complete"
+            self._touch(call_id)
             return True
 
     async def _task_card_send_or_edit_fallback(self, st) -> None:
@@ -519,6 +596,7 @@ class GatewayTurnProgressMixin:
         if not st.native_failed:
             result = await self._task_card_native_publish(st)
             if getattr(result, "success", False):
+                st.mark_published(st.visible_tasks())
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The
             # fallback below sends the same task text to the same chat, which
@@ -584,6 +662,33 @@ class GatewayTurnProgressMixin:
             logger.debug("Slack native progress queue drain failed", exc_info=True)
         return changed
 
+    # Assistant text arrived since the last tool start (one ``text.boundary`` per gap).
+    _text_since_tool = False
+
+    def _task_card_stage_final_frame(self, st) -> None:
+        """Hand the adapter the card's terminal frame before it closes the stream (#141643).
+
+        Late completions still in the queue are applied first (a /stop invalidates the run before
+        the running tool reports back); rows still running then end as stopped or complete.
+        """
+        stage = getattr(st.adapter, "set_native_task_card_final_frame", None)
+        if not callable(stage) or not st.tasks or st.native_failed or st.publication_suppressed:
+            return
+        self._task_card_drain(st)
+        title, rows = st.final_frame(stopped=self._agent_interrupted())
+        ctx = self._ctx
+        stage(ctx.source.chat_id, title=title, tasks=rows, reply_to=ctx._progress_reply_to,
+              metadata=ctx._progress_metadata)
+
+    def _note_text_boundary(self) -> None:
+        """Assistant text arrived: the live run of tool steps ends here (rollup cards only)."""
+        ctx = self._ctx
+        if ctx._native_slack_task_cards and not getattr(self, "_text_since_tool", False) and self._native_card_gate():
+            self._text_since_tool = True
+            ctx.progress_queue.put({"type": "text.boundary"})
+            if getattr(ctx, "thinking_queue", None) is not None:
+                ctx.thinking_queue.put({"type": "reasoning.end"})
+
     async def _send_native_task_card_progress(self, adapter) -> None:
         """Drain progress into native cards; supported destinations retain editable fallback.
         Unsupported destinations and egress refusals suppress publication, never finalization.
@@ -592,6 +697,8 @@ class GatewayTurnProgressMixin:
         """
         ctx = self._ctx
         st = self._TaskCardState(adapter)
+        rollup_enabled = getattr(adapter, "task_card_rollup_enabled", None)
+        st.rollup = bool(callable(rollup_enabled) and rollup_enabled())
         try:
             while ctx._run_still_current():
                 try:
@@ -605,6 +712,7 @@ class GatewayTurnProgressMixin:
             if self._task_card_drain(st) and ctx._run_still_current() and not self._agent_interrupted():
                 await self._task_card_publish(st)
         finally:
+            self._task_card_stage_final_frame(st)
             if hasattr(adapter, "stop_native_task_card_progress"):
                 # Best-effort on the turn-cleanup path: an escaping transport exception would skip
                 # final-delivery logic (cleanup awaits catch only CancelledError).
@@ -1064,6 +1172,9 @@ class GatewayTurnProgressMixin:
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
         if self._ctx._native_slack_task_cards:
+            self._text_since_tool = False
+            if getattr(self._ctx, "thinking_queue", None) is not None:
+                self._ctx.thinking_queue.put({"type": "reasoning.end"})  # a tool call ends a reasoning block
             self.native_tool_start_callback(call_id, tool_name, args)
 
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):

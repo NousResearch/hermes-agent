@@ -40,6 +40,8 @@ import time
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from gateway.progress_rollup import steps_title
+
 logger = logging.getLogger("gateway.slack_task_stream")
 
 
@@ -491,6 +493,7 @@ class SlackTaskStream:
         self._stopped = False
         # Turn stats for the final header title ("4 steps · 12s").
         self._task_count = 0
+        self._failed_count = 0
         self._total_duration = 0.0
         # Distinct tool-category buckets seen this turn, in first-seen order,
         # for the auto-generated header ("Searched · edited files · …").
@@ -700,6 +703,7 @@ class SlackTaskStream:
         # breakage (stream abandoned mid-turn) keeps it meaningful.
         if not ok:
             title = f"{base} · ✗ failed"[:250]
+            self._failed_count += 1
         self._total_duration += duration or 0.0
         # +30 slack vs the run.py-side preview cap so a summary suffix fits.
         # OUTPUT_PREVIEW_CHARS <= 0 disables output previews entirely.
@@ -1236,6 +1240,12 @@ class SlackTaskStream:
                 kwargs: dict[str, Any] = {"channel": self.channel, "ts": self.ts}
                 if final_text:
                     kwargs["markdown_text"] = final_text
+                elif self._task_count and not self._is_subagent:
+                    # Terminal header with the close: never a finished card that still reads live (#141643).
+                    title = steps_title(self._task_count, self._failed_count)
+                    if self.header_label:
+                        title = f"{self.header_label} — {title}"
+                    kwargs["chunks"] = [{"type": "plan_update", "title": title[:250]}]
                 # Footer: a context block with turn stats, attached to the
                 # final message via stopStream's blocks parameter. Plain
                 # context blocks need no interactivity handler (unlike

@@ -26,11 +26,15 @@ def retry_delay(error):
     return max(3.0, value) if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0 else 3.0
 
 
-def rich_text(text):
-    """Preserve complete inline spans and literal newlines in native task details."""
-    from plugins.platforms.slack.block_kit import _inline_elements
+def rich_text(text, inline_elements=None):
+    """Preserve complete inline spans and literal newlines in native task details.
+
+    ``inline_elements`` is the owning adapter's markdown parser (core never imports the Slack
+    plugin); without one the text is kept verbatim as a single element.
+    """
+    elements = inline_elements(text) if callable(inline_elements) else ([{"type": "text", "text": text}] if text else [])
     return {"type": "rich_text", "elements": [
-        {"type": "rich_text_section", "elements": _inline_elements(text) or [{"type": "text", "text": " "}]},
+        {"type": "rich_text_section", "elements": elements or [{"type": "text", "text": " "}]},
     ]}
 
 
@@ -75,7 +79,8 @@ class NativePlan:
             item = deepcopy(row)
             for key in ("details", "output"):
                 if item.get(key):
-                    item[key] = rich_text(item[key])
+                    item[key] = rich_text(item[key], getattr(
+                        getattr(getattr(self.owner, "client", None), "adapter", None), "rich_text_inline_elements", None))
             if continuing and item["status"] == "in_progress":
                 item["status"] = "pending"
                 item["title"] += " · continued below"

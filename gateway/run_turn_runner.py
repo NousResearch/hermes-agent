@@ -246,6 +246,7 @@ class TurnRunner(TurnRunnerThinkingMixin, TaskCardMixin, GatewayTurnProgressMixi
         self._ctx = ctx
         if rich_cards_enabled(ctx):
             ctx._rich_slack_task_cards = True
+        self._init_thinking_cards()
         from gateway.session_authorities import active_authority
         authority = active_authority(runner)
         if authority is not None:
@@ -366,6 +367,8 @@ class TurnRunner(TurnRunnerThinkingMixin, TaskCardMixin, GatewayTurnProgressMixi
                 if not ctx._run_still_current():
                     return
                 delivered = bool(delta_sinks)
+                if text:
+                    self._note_text_boundary()
                 if text is not None:
                     delivered = self._publish_execution("message.delta", {"text": text}) or delivered
                 elif local_viewer_route:
@@ -384,6 +387,8 @@ class TurnRunner(TurnRunnerThinkingMixin, TaskCardMixin, GatewayTurnProgressMixi
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            if str(text or "").strip():
+                self._note_text_boundary()
             # Thinking-card sink: narration replaces per-segment thread replies (Option A).
             if self._route_interim_narration(text, already_streamed=already_streamed):
                 return
@@ -556,7 +561,8 @@ class TurnRunner(TurnRunnerThinkingMixin, TaskCardMixin, GatewayTurnProgressMixi
         from gateway.run_turn_progress import local_viewer_turn
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, (
             self._local_notice_callback_sync if local_viewer_turn(self) else self._notice_callback_sync)
-        agent.reasoning_callback = card_reasoning_callback(self)  # per turn: a reused agent never keeps an earlier API turn's sink
+        # Per turn: a reused agent never keeps an earlier API turn's sink.
+        agent.reasoning_callback = card_reasoning_callback(self) or self._thinking_reasoning_callback()
         if self._approval_owner is not None:
             from gateway.session_api_turn import api_execution, wire_api_observers
             if api_execution.get() is not None:

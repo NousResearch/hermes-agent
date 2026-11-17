@@ -863,6 +863,16 @@ gateway:
     task_status_error: "خطأ"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes يعمل"
+    thinking_card_title: "{name} يفكر"
+    task_card_earlier: "{count} سابقة: {trail}"
+    task_card_failed_one: "فشل"
+    task_card_done: "تم تنفيذ {count} خطوات"
+    task_card_done_one: "تم تنفيذ خطوة واحدة"
+    task_card_failed_suffix: " · {failed} فشلت"
+    task_card_stopped: "أُوقف · {steps}"
+    task_stopped: "أُوقف"
+    reasoning_card_live: "يفكر…"
+    reasoning_card_done: "فكّر لمدة {seconds} ث"
   pairing:
     validity_hour: "{hours} ساعة"
     validity_hours: "{hours} ساعات"
@@ -1368,6 +1378,7 @@ platform:
       still_working: "لا يزال يعمل… ({elapsed})"
     task_card:
       title: "Hermes يعمل"
+      continued: "يتابع أدناه ⤵"
     slash:
       reply_truncated: "\n\n_[اقتُطع الرد: {count} جزء إضافي تجاوز حد الردود المؤقتة في Slack.]_"
       running: "جارٍ تشغيل `/{command}`…"

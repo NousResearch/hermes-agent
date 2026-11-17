@@ -863,6 +863,16 @@ gateway:
     task_status_error: "Fehler"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes arbeitet"
+    thinking_card_title: "{name} denkt nach"
+    task_card_earlier: "{count} vorher: {trail}"
+    task_card_failed_one: "fehlgeschlagen"
+    task_card_done: "{count} Schritte ausgeführt"
+    task_card_done_one: "1 Schritt ausgeführt"
+    task_card_failed_suffix: " · {failed} fehlgeschlagen"
+    task_card_stopped: "Gestoppt · {steps}"
+    task_stopped: "gestoppt"
+    reasoning_card_live: "Denkt nach…"
+    reasoning_card_done: "{seconds} s nachgedacht"
   pairing:
     validity_hour: "{hours} Stunde"
     validity_hours: "{hours} Stunden"
@@ -1368,6 +1378,7 @@ platform:
       still_working: "arbeitet noch… ({elapsed})"
     task_card:
       title: "Hermes arbeitet"
+      continued: "Weiter unten ⤵"
     slash:
       reply_truncated: "\n\n_[Antwort gekürzt: {count} weitere Teil(e) haben Slacks Limit für flüchtige Antworten überschritten.]_"
       running: "Führe `/{command}` aus…"

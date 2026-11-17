@@ -19,8 +19,11 @@ import asyncio
 import dataclasses
 import logging
 import queue
+import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, List, Optional
+
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,11 @@ BURST_SEPARATOR = "\n\n"
 # runaway turn must not ship an unbounded API body. Above this the feed keeps its head and says
 # so -- visible truncation, never silent (acceptance criterion 2).
 MAX_FEED_CHARS = 24_000
+# A reasoning block gets its "Thinking…" row once it has run this long; shorter blocks never show.
+REASONING_CARD_AFTER_S = 1.5
+REASONING_TAIL_CHARS = 200
 _TRUNCATION_ROW = "[... narration truncated at %d chars]" % MAX_FEED_CHARS
+_REASONING_EVENTS = frozenset({"reasoning", "reasoning.end"})
 
 
 def sanitize_thinking_burst(text: Any) -> Optional[str]:
@@ -38,8 +45,30 @@ def sanitize_thinking_burst(text: Any) -> Optional[str]:
         return None
     from agent.history_commentary import visible_commentary
 
-    cleaned = visible_commentary(text).strip()
+    from agent.redact import redact_for_egress
+
+    # The card leaves the process for a chat platform: egress redaction applies even when
+    # ``security.redact_secrets`` is off for local logs.
+    cleaned = redact_for_egress(visible_commentary(text)).strip()
     return cleaned or None
+
+
+def reasoning_tail(notes: str, limit: int = REASONING_TAIL_CHARS) -> str:
+    """The last ``limit`` characters of a reasoning block on one line, redacted for egress."""
+    from agent.redact import redact_for_egress
+
+    text = " ".join(redact_for_egress(notes).split())
+    return text if len(text) <= limit else "…" + text[-limit:]
+
+
+@dataclasses.dataclass
+class _ReasoningBlock:
+    """One live reasoning block: when it started, its notes, and whether its row is on the card."""
+
+    row_id: str
+    started: float
+    notes: str = ""
+    shown: bool = False
 
 
 @dataclasses.dataclass
@@ -47,13 +76,16 @@ class _ThinkingCardState:
     """Per-turn thinking-card rail state for ``send_thinking_card_messages``."""
 
     adapter: Any
-    feed_parts: List[str] = dataclasses.field(default_factory=list)
+    feed_parts: list[str] = dataclasses.field(default_factory=list)
     fallback_msg_id: Optional[str] = None
     native_failed: bool = False
     # Same terminal semantics as the tool card: an egress-guard DECLINE ends delivery for the
     # turn. Re-sending the feed as plain text would launder an authorization refusal.
     publication_suppressed: bool = False
     truncated: bool = False
+    block: Optional[_ReasoningBlock] = None
+    blocks_seen: int = 0
+    last_notes: str = ""
 
     @property
     def feed_text(self) -> str:
@@ -91,6 +123,84 @@ class TurnRunnerThinkingMixin:
         if not already_streamed and str(text or "").strip():
             ctx.thinking_queue.put({"type": "thinking", "text": text})
         return True
+
+    async def send_progress_messages(self):
+        """The progress drain, with the thinking card's drain beside it for the same turn."""
+        if not getattr(self._ctx, "_native_slack_thinking_cards", False):
+            return await super().send_progress_messages()
+        thinking = asyncio.create_task(self.send_thinking_card_messages())
+        try:
+            await super().send_progress_messages()
+        finally:
+            thinking.cancel()
+            with suppress(asyncio.CancelledError):
+                await thinking
+
+    def _init_thinking_cards(self) -> None:
+        """Turn the per-turn thinking card on when the Slack adapter opted in (``thinking_cards``).
+
+        Resolved per turn from the delivering adapter; the card shares the tool card's opt-in.
+        """
+        ctx = self._ctx
+        adapter = None
+        if getattr(ctx, "_native_slack_task_cards", False) and self._runner is not None:
+            adapter = self._runner._delivery_adapter_for(ctx.source)
+        enabled = getattr(adapter, "thinking_cards_enabled", None)
+        if callable(enabled) and enabled():
+            ctx._native_slack_thinking_cards = True
+            ctx.thinking_queue = queue.Queue()
+
+    def _thinking_reasoning_callback(self):
+        """``agent.reasoning_callback`` for "Thinking…" rows: thinking card AND show_reasoning on."""
+        ctx = self._ctx
+        resolve = getattr(self._runner, "_show_reasoning_for_source", None)
+        if not (ctx._native_slack_thinking_cards and ctx.thinking_queue is not None and callable(resolve)
+                and resolve(ctx.source)):
+            return None
+
+        def _reasoning(text):
+            if text and ctx._run_still_current() and not self._agent_interrupted():
+                ctx.thinking_queue.put({"type": "reasoning", "text": str(text), "at": time.monotonic()})
+        return _reasoning
+
+    async def _reasoning_row(self, st: _ThinkingCardState, *, done: bool) -> None:
+        block = st.block
+        send = getattr(st.adapter, "send_reasoning_card_row", None)
+        if block is None or not callable(send) or st.native_failed or st.publication_suppressed:
+            return
+        ctx = self._ctx
+        if done:
+            seconds = max(1, round(time.monotonic() - block.started))
+            title, status, details = t("gateway.progress.reasoning_card_done", seconds=seconds), "complete", (
+                reasoning_tail(block.notes) or None)
+        else:
+            title, status, details = t("gateway.progress.reasoning_card_live"), "in_progress", None
+        result = await send(ctx.source.chat_id, block.row_id, title=title, status=status, details=details,
+                            reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata)
+        block.shown = bool(getattr(result, "success", False)) or block.shown
+
+    async def _thinking_card_reasoning_event(self, st: _ThinkingCardState, raw: dict) -> None:
+        """Track reasoning blocks: a row once a block passes 1.5 s, "Thought for Ns" when it ends."""
+        if raw.get("type") == "reasoning":
+            text = str(raw.get("text") or "")
+            if st.block is None and text.strip() and text in st.last_notes:
+                return  # the provider's whole-block re-delivery after the block already ended
+            if st.block is None:
+                st.blocks_seen += 1
+                st.block = _ReasoningBlock(f"reasoning-{st.blocks_seen}", float(raw.get("at") or time.monotonic()))
+            # A provider may re-deliver the whole block after its deltas: keep it once.
+            st.block.notes = text if text.startswith(st.block.notes) and st.block.notes else st.block.notes + text
+            return
+        if st.block is not None:
+            if st.block.shown:
+                await self._reasoning_row(st, done=True)
+            st.last_notes = st.block.notes
+            st.block = None
+
+    async def _thinking_card_tick(self, st: _ThinkingCardState) -> None:
+        block = st.block
+        if block is not None and not block.shown and time.monotonic() - block.started >= REASONING_CARD_AFTER_S:
+            await self._reasoning_row(st, done=False)
 
     if TYPE_CHECKING:  # borrowed from TurnRunner at mix-in time
         _ctx: Any
@@ -175,9 +285,14 @@ class TurnRunnerThinkingMixin:
                 try:
                     raw = ctx.thinking_queue.get_nowait()
                 except queue.Empty:
+                    if not self._agent_interrupted():
+                        await self._thinking_card_tick(st)
                     await asyncio.sleep(0.3)
                     continue
                 if self._agent_interrupted():
+                    continue
+                if isinstance(raw, dict) and raw.get("type") in _REASONING_EVENTS:
+                    await self._thinking_card_reasoning_event(st, raw)
                     continue
                 burst = self._thinking_card_absorb(raw)
                 if not burst:
@@ -191,12 +306,20 @@ class TurnRunnerThinkingMixin:
                         raw = ctx.thinking_queue.get_nowait()
                     except queue.Empty:
                         break
+                    if isinstance(raw, dict) and raw.get("type") in _REASONING_EVENTS:
+                        if raw.get("type") == "reasoning" and st.block is not None:
+                            st.block.notes += str(raw.get("text") or "")
+                        continue
                     burst = self._thinking_card_absorb(raw)
                     if burst:
                         st.append(burst)
             if st.feed_parts and ctx._run_still_current() and not self._agent_interrupted():
                 await self._thinking_card_publish(st)
         finally:
+            if st.block is not None and st.block.shown:
+                # Terminal title before the close, also on /stop: never a frozen "Thinking…" row.
+                with suppress(Exception):
+                    await self._reasoning_row(st, done=True)
             if hasattr(adapter, "stop_thinking_card_progress"):
                 try:
                     await adapter.stop_thinking_card_progress(

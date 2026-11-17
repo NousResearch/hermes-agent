@@ -863,6 +863,16 @@ gateway:
     task_status_error: "錯誤"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes 正在處理"
+    thinking_card_title: "{name} 正在思考"
+    task_card_earlier: "先前 {count} 項：{trail}"
+    task_card_failed_one: "失敗"
+    task_card_done: "已執行 {count} 個步驟"
+    task_card_done_one: "已執行 1 個步驟"
+    task_card_failed_suffix: " · {failed} 個失敗"
+    task_card_stopped: "已停止 · {steps}"
+    task_stopped: "已停止"
+    reasoning_card_live: "思考中…"
+    reasoning_card_done: "思考了 {seconds} 秒"
   pairing:
     validity_hour: "{hours} 小時"
     validity_hours: "{hours} 小時"
@@ -1368,6 +1378,7 @@ platform:
       still_working: "仍在處理中…（{elapsed}）"
     task_card:
       title: "Hermes 正在處理"
+      continued: "下方繼續 ⤵"
     slash:
       reply_truncated: "\n\n_[回覆已截斷：還有 {count} 個部分超過 Slack 的臨時回覆長度限制。]_"
       running: "正在執行 `/{command}`…"

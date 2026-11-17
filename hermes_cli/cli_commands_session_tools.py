@@ -102,7 +102,7 @@ def _probe(module: str, name: str, default, *args):
 
 class CLICommandsSessionToolsMixin:
     """``/stop``, ``/agents``, ``/journey``, ``/paste``, ``/copy``, ``/image``, ``/tools``,
-    ``/profile`` handlers (moved from ``CLICommandsMixin``)."""
+    ``/profile``, ``/implement`` handlers (moved from ``CLICommandsMixin``)."""
 
     # ---- /rollback chat undo --------------------------------------------------------------
     @staticmethod
@@ -300,6 +300,14 @@ class CLICommandsSessionToolsMixin:
         """/autoprune [on|off|later|status] — the low-disk auto-prune decision."""
         from hermes_cli.slash_exec import CommandContext, execute_command
         _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
+
+    def _handle_implement_command(self, cmd: str):
+        """Handle /implement: run a saved /plan file as the next turn (its text frozen into the
+        turn), resolved in the CLI's tracked cwd like /init. Queues via ``_queue_prompt_turn``."""
+        from agent.implement_prompt import build_implement_prompt_for_session
+        msg, label = build_implement_prompt_for_session(_command_arg(cmd), session_key="")
+        ack = _t("implement.running", plan=label) if label else _t("implement.locating")
+        self._queue_prompt_turn(msg, "/implement", ack)
 
     def _handle_profile_command(self):
         """Display active profile name and home directory."""

@@ -45,13 +45,15 @@ def busy_units(home: Path) -> list[str]:
     """Every live work unit on the gateways serving ``home`` and its named profiles."""
     lines: list[str] = []
     for candidate in profile_homes(home):
+        label = "default" if candidate == home else candidate.name
         work = live_work(candidate) or {}
         units = [u for u in work.get("active_work") or [] if isinstance(u, dict)]
-        # A wedged or restart-safe external cron run never holds a restart; it must not hold this.
-        units = [u for u in units if not (u.get("kind") == "cron" and (u.get("wedged") or u.get("restart_safe")))]
-        lines += [f"{candidate.name}: {describe_active_work_unit(u, candidate)}" for u in units]
+        # A wedged cron run never finishes, so it must not hold the slot. A restart-safe one does
+        # count (unlike for a restart): its worker still imports from the checkout being moved.
+        units = [u for u in units if not (u.get("kind") == "cron" and u.get("wedged"))]
+        lines += [f"{label}: {describe_active_work_unit(u, candidate)}" for u in units]
         if not units and int(work.get("active_agents") or 0) > 0:
-            lines.append(f"{candidate.name}: {work['active_agents']} active agent run(s)")
+            lines.append(f"{label}: {work['active_agents']} active agent run(s)")
     return lines
 
 

@@ -43,7 +43,7 @@ def test_a_slot_skips_the_update_while_a_turn_is_still_running(context, monkeypa
     assert _slot(context, monkeypatch, [turn]) == []
     saved = state.read_status(context)
     assert saved["status"] == "deferred_busy"
-    assert saved["busy"] == ["home: chat turn agent:main:telegram:dm:42"]
+    assert saved["busy"] == ["default: chat turn agent:main:telegram:dm:42"]
 
 
 def test_a_slot_updates_once_the_gateway_goes_idle(context, monkeypatch):

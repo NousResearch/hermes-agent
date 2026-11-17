@@ -200,7 +200,7 @@ def _deferred_busy(context: AutoUpdateContext, status: dict, result: dict) -> bo
     budget_s = idle_wait_minutes(context.home) * 60.0
     if budget_s <= 0:
         return False
-    print(f"Update available; waiting up to {budget_s / 60:.0f} min for the gateways to go idle...")
+    print(f"Update available; waiting up to {budget_s:.0f}s for the gateways to go idle...")
     verdict = wait_for_idle(context.home, budget_s)
     append_log(context, "idle_gate", idle=verdict.idle, waitedS=verdict.waited_s, busy=list(verdict.busy))
     if verdict.idle:
@@ -210,7 +210,7 @@ def _deferred_busy(context: AutoUpdateContext, status: dict, result: dict) -> bo
                   outcomeSource="idle_gate", busy=list(verdict.busy), error=None, runPending=False,
                   correlationId=None, receiptPath=None, terminalReceipt=None, exitCode=0)
     write_status(context, status)
-    print(f"Gateways still busy after {verdict.waited_s / 60:.0f} min; update deferred to the next slot:")
+    print(f"Gateways still busy after {verdict.waited_s:.0f}s; update deferred to the next slot:")
     for line in verdict.busy:
         print(f"  • {line}")
     return True

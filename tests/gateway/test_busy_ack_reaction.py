@@ -27,13 +27,13 @@ sys.modules.setdefault("telegram", _tg)
 sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
-from gateway.platforms.base import (  # noqa: E402
+from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SessionSource,
     build_session_key,
 )
-from gateway.run import GatewayRunner  # noqa: E402
+from gateway.run import GatewayRunner
 
 
 def _make_event() -> MessageEvent:
@@ -170,3 +170,70 @@ async def test_reaction_ack_failure_falls_back_to_text(monkeypatch) -> None:
         reaction_mock=AsyncMock(side_effect=RuntimeError("relay down")),
     )
     adapter._send_with_retry.assert_awaited_once()  # fallback bubble sent
+
+
+def _steer_runner(monkeypatch, display_cfg: dict):
+    import gateway.run as _gr
+    monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {"display": display_cfg})
+    runner = _make_runner()
+    runner._busy_input_mode = "steer"
+    runner._busy_text_mode = "interrupt"
+    runner.config.group_sessions_per_user = True
+    runner.config.thread_sessions_per_user = False
+    runner.session_store = None
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_each_steered_message_gets_its_own_reaction_and_no_bubble(monkeypatch) -> None:
+    """Two follow-ups steered seconds apart: both are marked ⏩ (the bubble's 30s debounce
+    must not swallow the second mark) and no "Steered into current run" bubble is posted."""
+    runner = _steer_runner(monkeypatch, {"platforms": {"buzz": {"busy_ack_reaction": True}}})
+    adapter = _make_adapter(with_reaction=True)
+    first = _make_event()
+    second = MessageEvent(text="and the docs", message_type=MessageType.TEXT, source=first.source, message_id="ev-43")
+    sk = build_session_key(first.source)
+    parent = _make_running_parent()
+    parent.steer = MagicMock(return_value=True)
+    runner._running_agents[sk] = parent
+    runner.adapters[first.source.platform] = adapter
+
+    for event in (first, second):
+        assert await runner._handle_active_session_busy_message(event, sk) is True
+
+    assert parent.steer.call_count == 2
+    assert [(c.kwargs["message_id"], c.kwargs["emoji"]) for c in adapter.send_reaction.await_args_list] == [
+        ("ev-42", "⏩"), ("ev-43", "⏩"),
+    ]
+    adapter._send_with_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False], ids=["continue-below", "legacy"])
+async def test_steer_continues_output_below_the_steering_message(monkeypatch, enabled) -> None:
+    """busy_continue_below: a steer closes the turn's streamed message and progress bubble, so the
+    next text and tool lines land under the steer; off, the turn keeps editing the bubble above."""
+    import queue
+
+    from gateway.turn_context import TurnContext
+
+    runner = _steer_runner(monkeypatch, {"busy_continue_below": enabled})
+    adapter = _make_adapter(with_reaction=False)
+    event = _make_event()
+    sk = build_session_key(event.source)
+    parent = _make_running_parent()
+    parent.steer = MagicMock(return_value=True)
+    runner._running_agents[sk] = parent
+    runner.adapters[event.source.platform] = adapter
+    ctx = TurnContext(progress_queue=queue.Queue())
+    consumer = MagicMock()
+    ctx.stream_consumer_holder[0] = consumer
+    turn = runner._session_state(sk).turn
+    turn.agent, turn.ctx = parent, ctx
+
+    assert await runner._handle_active_session_busy_message(event, sk) is True
+
+    parent.steer.assert_called_once()
+    queued = [ctx.progress_queue.get_nowait() for _ in range(ctx.progress_queue.qsize())]
+    assert queued == ([("__reset__",)] if enabled else [])
+    assert consumer.on_segment_break.call_count == (1 if enabled else 0)

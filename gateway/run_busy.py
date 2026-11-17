@@ -829,7 +829,25 @@ class GatewayBusySessionMixin:
             turn.event.absorb_reply_expected(event)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = turn.event.reply_expected
+        self._continue_turn_below(turn, event)
         return turn
+
+    def _continue_turn_below(self, turn, event: MessageEvent) -> None:
+        """``display.platforms.<p>.busy_continue_below``: the folded-in message now sits under the
+        turn's streamed reply and tool-progress bubble, so close both; the turn's next text and tool
+        lines start new messages below it instead of editing the ones above."""
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_display_setting
+        ctx = turn.ctx
+        if ctx is None or not resolve_display_setting(
+            _load_gateway_config(), _platform_config_key(event.source.platform), "busy_continue_below", False,
+        ):
+            return
+        if ctx.progress_queue is not None:
+            ctx.progress_queue.put(("__reset__",))
+        consumer = ctx.stream_consumer_holder[0]
+        if consumer is not None:
+            consumer.on_segment_break()
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point.
@@ -843,16 +861,12 @@ class GatewayBusySessionMixin:
         # Some mobile chat setups want silent steering — keep the behavior, drop the bubble.
         from gateway.run import _load_gateway_config, _platform_config_key
         from gateway.display_config import resolve_display_setting
-        steer_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED")
-        if steer_ack_env is not None:
-            steer_ack_enabled = steer_ack_env.strip().lower() in {"1", "true", "yes", "on"}
-        else:
-            steer_ack_enabled = bool(
-                resolve_display_setting(
-                    _load_gateway_config(), _platform_config_key(event.source.platform),
-                    "busy_steer_ack_enabled", True,
-                )
+        steer_ack_enabled = bool(
+            resolve_display_setting(
+                _load_gateway_config(), _platform_config_key(event.source.platform),
+                "busy_steer_ack_enabled", True,
             )
+        )
         if not steer_ack_enabled:
             logger.debug("Busy steer ack suppressed for session %s", session_key)
         return steer_ack_enabled
@@ -932,6 +946,35 @@ class GatewayBusySessionMixin:
         except Exception as _onb_err:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
         return message
+
+    # busy_ack_reaction: the emoji that replaces the busy-ack bubble, per resolved busy mode.
+    _BUSY_ACK_REACTIONS = {"steer": "⏩", "redirect": "↪️", "queue": "⏳", "interrupt": "⚡"}
+
+    async def _try_busy_reaction_ack(self, event: MessageEvent, adapter, session_key: str, ack_mode: str) -> bool:
+        """With ``display.platforms.<p>.busy_ack_reaction`` on, react to the follow-up instead of
+        posting the busy-ack bubble. False (send the bubble) when it is off, the adapter has no
+        ``send_reaction``, the event has no message id, or the platform refuses the reaction."""
+        from gateway.bot_peer_notices import automatic_notices_allowed
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_display_setting
+        send_reaction = getattr(adapter, "send_reaction", None)
+        if not (callable(send_reaction) and event.message_id and automatic_notices_allowed(event.source)):
+            return False
+        if not resolve_display_setting(
+            _load_gateway_config(), _platform_config_key(event.source.platform), "busy_ack_reaction", False,
+        ):
+            return False
+        try:
+            reacted = await send_reaction(
+                chat_id=event.source.chat_id, message_id=event.message_id,
+                emoji=self._BUSY_ACK_REACTIONS[ack_mode],
+            )
+        except Exception:
+            logger.debug("Busy reaction-ack failed for session %s; using the text bubble", session_key, exc_info=True)
+            return False
+        if not reacted:
+            logger.debug("Busy reaction-ack not accepted for session %s; using the text bubble", session_key)
+        return bool(reacted)
 
     async def _send_busy_ack_reply(self, event: MessageEvent, adapter, message: str) -> None:
         try:
@@ -1032,62 +1075,21 @@ class GatewayBusySessionMixin:
             logger.debug("Busy ack suppressed for session %s", session_key)
             return  # input still processed, just no ack sent
 
+        ack_mode = ("steer" if is_steer_mode else "redirect" if is_redirect_mode
+                    else "queue" if is_queue_mode else "interrupt")
+        if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
+            return
+        # A reaction marks the message itself, so unlike the bubble it is not debounced: each
+        # steered follow-up gets its own mark.
+        if await self._try_busy_reaction_ack(event, adapter, session_key, ack_mode):
+            return
+
         # Debounce (30s) before the config-heavy display lookup.
         now = time.time()
         if now - (_busy_state.turn.busy_ack_ts if _busy_state else 0) < 30:
             return  # interrupt sent (if not queue), ack already delivered recently
 
-        if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
-            return
-
         self._session_state(session_key).turn.busy_ack_ts = now
-
-        # Reaction-first busy ack: when the adapter supports send_reaction
-        # and the platform opt-in is enabled, acknowledge with a mode-aware
-        # emoji reaction on the user's message instead of a text bubble.
-        # Falls back to the text bubble when the reaction cannot be
-        # delivered (unsupported adapter, missing message id, send failure).
-        from gateway.run import _load_gateway_config, _platform_config_key
-        from gateway.display_config import resolve_display_setting
-        _BUSY_ACK_REACTIONS = {
-            "redirect": "↪️",
-            "steer": "⏩",
-            "queue": "⏳",
-            "interrupt": "⚡",
-        }
-        _ack_mode = (
-            "steer" if is_steer_mode
-            else "redirect" if is_redirect_mode
-            else "queue" if is_queue_mode
-            else "interrupt"
-        )
-        _reaction_ack_enabled = bool(
-            resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(event.source.platform),
-                "busy_ack_reaction",
-                False,
-            )
-        )
-        if (
-            _reaction_ack_enabled
-            and event.message_id
-            and getattr(adapter, "send_reaction", None) is not None
-        ):
-            try:
-                reacted = await adapter.send_reaction(
-                    chat_id=event.source.chat_id,
-                    message_id=event.message_id,
-                    emoji=_BUSY_ACK_REACTIONS.get(_ack_mode, "⚡"),
-                )
-                if reacted:
-                    return
-                logger.debug(
-                    "Busy reaction-ack not accepted for session %s; using text bubble",
-                    session_key,
-                )
-            except Exception:
-                logger.debug("Busy reaction-ack failed; falling back to text", exc_info=True)
 
         message = self._compose_busy_ack_message(
             event, now, _busy_state, running_agent, is_steer_mode=is_steer_mode,

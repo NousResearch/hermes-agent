@@ -606,6 +606,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if self._native_read_enabled():
             error = _native_io.atomic_write(self._native_path(path), content.encode("utf-8", "surrogateescape"))
             return ExecuteResult(stdout=error or "", exit_code=1 if error else 0)
+        # Quoting does not stop mv, stat, mkdir and readlink from reading a leading "-" as an
+        # option; "./" makes a relative option-shaped path (and its parent dir) a plain operand.
+        if path.startswith("-"):
+            path = "./" + path
         q_path = self._escape_shell_arg(path)
         q_parent = self._escape_shell_arg(os.path.dirname(path) or ".")
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")

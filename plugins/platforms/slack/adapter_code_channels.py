@@ -6,6 +6,11 @@ people talk to the agent without an @mention, the whole channel is one shared se
 top-level, the session status is channel-level (``agents.sessions.setStatus`` without
 ``thread_ts``) and Slack's Stop button (``agent_session_stopped``) runs ``/stop`` for the session.
 A thread a user starts under a message keeps its own session and stays threaded.
+
+The channel session carries no ``thread_id``, so the reply destination rides with each turn's
+metadata: a ``thread_id`` means a user-started thread; none means the channel session, whose
+``reply_to`` is a top-level message (an immutable fact recorded on arrival) and never a thread to
+open. A later reply under that message cannot move the running turn into the side thread.
 """
 
 from __future__ import annotations
@@ -16,14 +21,11 @@ from typing import Any, Optional
 logger = logging.getLogger("plugins.platforms.slack.adapter")
 
 _ROOTS_MAX = 5000
-# Message subtypes that are a person talking; joins, edits and bot posts never become roots.
-_PLAIN_SUBTYPES = (None, "file_share", "thread_broadcast")
 
 
-def _bounded_add(entries: dict[str, None], key: str) -> None:
-    entries[key] = None
-    while len(entries) > _ROOTS_MAX:
-        entries.pop(next(iter(entries)))
+def _thread_of(metadata: Optional[dict[str, Any]]) -> Optional[str]:
+    md = metadata or {}
+    return md.get("thread_id") or md.get("thread_ts") or None
 
 
 class SlackCodeChannels:
@@ -32,13 +34,12 @@ class SlackCodeChannels:
 
     def __init__(self, adapter: Any) -> None:
         self._adapter = adapter
-        # channel id -> is a code channel; a failed lookup is not cached, so the next message retries.
+        # channel id -> is a code channel; a failed lookup is not cached, so the next event retries.
         self._kinds: dict[str, bool] = {}
-        # Top-level message ts seen in code channels: replies anchored on them go top-level.
+        # Top-level code-channel message ts, recorded on arrival (bounded, oldest first).
         self._roots: dict[str, None] = {}
-        # Roots a person replied under: that thread is theirs, so replies there stay threaded.
-        self._threaded: dict[str, None] = {}
-        # Channels currently shown as ``processing`` (sent once per turn; _keep_typing refreshes often).
+        # Channels whose channel-session turn shows ``processing`` (sent once per turn;
+        # _keep_typing refreshes often).
         self._busy: set[str] = set()
 
     @property
@@ -48,28 +49,27 @@ class SlackCodeChannels:
     def is_code_channel(self, channel_id: str) -> bool:
         return bool(channel_id) and self._kinds.get(str(channel_id)) is True
 
-    async def note_inbound(self, event: dict) -> None:
-        """Before a message is handled: recognise its channel and remember thread anchors."""
-        channel = str(event.get("channel") or "")
-        if not self.enabled or not channel or channel[:1] not in ("C", "G"):
-            return
-        if channel not in self._kinds:
-            await self._detect(channel, event)
-        if not self.is_code_channel(channel) or event.get("subtype") not in _PLAIN_SUBTYPES:
-            return
-        ts, thread_ts = str(event.get("ts") or ""), str(event.get("thread_ts") or "")
-        if ts and (not thread_ts or thread_ts == ts):
-            _bounded_add(self._roots, ts)
-        elif thread_ts:
-            _bounded_add(self._threaded, thread_ts)
+    async def note_inbound(self, event: dict, body: Optional[dict] = None) -> None:
+        """Before a message is handled: recognise its channel in the workspace that delivered it."""
+        adapter = self._adapter
+        team_id = adapter._event_team_id(event, body, install_set=getattr(adapter, "_team_clients", None))
+        await self.recognise(str(event.get("channel") or ""), team_id)
+        ts = str(event.get("ts") or "")
+        if ts and self.is_top_level(event, ts):
+            self._roots[ts] = None
+            while len(self._roots) > _ROOTS_MAX:
+                self._roots.pop(next(iter(self._roots)))
 
-    async def _detect(self, channel: str, event: dict) -> None:
-        """The documented signal is ``properties.record_channel.record_type == "agent_channel"``;
+    async def recognise(self, channel: str, team_id: str = "") -> None:
+        """One ``conversations.info`` per channel (messages and slash commands both call this). The
+        documented signal is ``properties.record_channel.record_type == "agent_channel"``;
         ``properties.code_channel`` can be ``{}`` on a new channel, so it is not used."""
-        client = self._adapter._get_client(channel, team_id=event.get("team") or None)
+        if not self.enabled or not channel or channel[:1] not in ("C", "G") or channel in self._kinds:
+            return
+        client = self._adapter._get_client(channel, team_id=team_id or None)
         try:
             resp = await client.conversations_info(channel=channel)
-        except Exception as exc:  # inbound must never block on this lookup; retried next message
+        except Exception as exc:  # inbound must never block on this lookup; retried next event
             logger.debug("[Slack] code-channel lookup for %s failed: %s", channel, exc, exc_info=True)
             return
         props = (resp.get("channel") or {}).get("properties") or {}
@@ -89,31 +89,26 @@ class SlackCodeChannels:
         return self.is_code_channel(event.get("channel", "")) and not (thread_ts and thread_ts != ts)
 
     def reply_is_flat(self, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> bool:
-        """A reply to a top-level code-channel message goes top-level. Inbound stamps the message's
-        own ts as ``metadata.thread_id`` and the streaming path passes no ``reply_to``, so key on
-        either."""
-        if not self._roots:
-            return False
-        md = metadata or {}
-        thread = md.get("thread_id") or md.get("thread_ts")
-        anchor = thread or reply_to
-        return (anchor in self._roots and anchor not in self._threaded
-                and (not thread or not reply_to or thread == reply_to))
+        """A channel-session send (no thread metadata) anchored on a top-level code-channel message
+        goes top-level instead of opening a thread under it (``thread_id == reply_to`` is the same
+        message stamped as a synthetic root, not a thread)."""
+        thread = _thread_of(metadata)
+        return bool(reply_to) and reply_to in self._roots and (not thread or thread == reply_to)
 
     async def show_working(self, chat_id: str, metadata: Optional[dict[str, Any]]) -> bool:
-        """``processing`` for a top-level code-channel turn; True when handled here (the thread
-        status path does not apply)."""
-        md = metadata or {}
-        if not self.is_code_channel(chat_id) or self._adapter._resolve_thread_ts(md.get("message_id"), md):
+        """``processing`` for a channel-session turn; True when handled here (the thread status path
+        does not apply)."""
+        if not self.is_code_channel(chat_id) or _thread_of(metadata):
             return False
         if chat_id not in self._busy:
             self._busy.add(chat_id)
             await self._set_status(chat_id, "processing")
         return True
 
-    async def turn_ended(self, chat_id: str) -> None:
-        """``active`` once the turn ends (``closed`` would mean the agent stops responding)."""
-        if chat_id in self._busy:
+    async def turn_ended(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
+        """``active`` once the channel-session turn ends (``closed`` would mean the agent stops
+        responding). A user-started thread's turn owns no channel status, so it leaves it alone."""
+        if chat_id in self._busy and not _thread_of(metadata):
             self._busy.discard(chat_id)
             await self._set_status(chat_id, "active")
 
@@ -146,6 +141,6 @@ class SlackCodeChannels:
         await adapter._handle_slash_command(command)
         # The interrupted turn's stop_typing usually sent ``active`` already. Untracked (a restart
         # since the turn began) Slack still shows ``processing``, so send it then too.
-        if channel in self._busy or not was_busy:
+        if not thread_ts and (channel in self._busy or not was_busy):
             self._busy.add(channel)
             await self.turn_ended(channel)

@@ -2742,7 +2742,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""
-        await self._code_channels.turn_ended(chat_id)
+        await self._code_channels.turn_ended(chat_id, metadata)
         if self._suppressed_ignored(chat_id, "status clear in", level=logging.DEBUG):
             self._active_status_threads.pop(chat_id, None)
             return
@@ -4371,10 +4371,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         # thread root (c) top-level, reply_in_thread=false → scope one session across the whole channel so
         # context accumulates across messages (#15421 bug 1)
         event_thread_ts_raw = event.get("thread_ts")
-        # Align with ``is_thread_reply`` below — a ``thread_ts == ts`` payload (some thread-root shapes) is
-        # not a real reply and must not prevent the shared-session path from taking effect. Matching the
-        # same invariant here keeps the two branches in sync even if Slack introduces new payload variants
-        # (Copilot on #15464).
+        # Align with ``is_thread_reply`` below: a ``thread_ts == ts`` payload (some thread-root shapes) is
+        # not a real reply and must not block the shared-session path (Copilot on #15464).
         if event_thread_ts_raw and event_thread_ts_raw != ts:
             return event_thread_ts_raw
         if self.config.extra.get("reply_in_thread", True):
@@ -4480,7 +4478,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
         so a retry/edit can re-drive it. Pre-existing claims stay."""
-        await self._code_channels.note_inbound(event or {})
+        await self._code_channels.note_inbound(event or {}, payload)
         _ts = str((event or {}).get("ts") or "")
         # getattr: bare test doubles (object.__new__) may lack the map.
         _claims = getattr(self, "_processed_message_ts", None)
@@ -6203,6 +6201,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         rejected = self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_id)
         if rejected and not is_dm:
             return
+        await self._code_channels.recognise(channel_id, team_id)  # before the source: shared key
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)

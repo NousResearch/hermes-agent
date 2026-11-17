@@ -116,15 +116,21 @@ class TestReplies:
     @pytest.mark.asyncio
     async def test_replies_go_top_level_including_the_streaming_path(self, adapter):
         await adapter._handle_slack_message(_msg(CODE, "10.0"))
-        assert adapter._resolve_thread_ts("10.0", {"thread_id": None}) is None
-        assert adapter._resolve_thread_ts(None, {"thread_id": "10.0"}) is None  # stream frames
+        assert adapter._resolve_thread_ts("10.0", {"slack_team_id": "T1"}) is None
+        assert adapter._resolve_thread_ts("10.0", {"thread_id": "10.0"}) is None  # synthetic root
 
     @pytest.mark.asyncio
     async def test_send_posts_top_level(self, adapter):
         await adapter._handle_slack_message(_msg(CODE, "10.0"))
-        await adapter.send(CODE, "Report ready", metadata={"thread_id": "10.0", "user_id": "U_USER"})
+        await adapter.send(CODE, "Report ready", reply_to="10.0", metadata={"user_id": "U_USER"})
         kwargs = adapter._client_for.return_value.chat_postMessage.await_args.kwargs
         assert kwargs["channel"] == CODE and kwargs.get("thread_ts") is None
+
+    @pytest.mark.asyncio
+    async def test_a_side_thread_opened_mid_turn_does_not_move_the_channel_answer(self, adapter):
+        await adapter._handle_slack_message(_msg(CODE, "10.0"))
+        await adapter._handle_slack_message(_msg(CODE, "12.0", text="in a thread", thread_ts="10.0"))
+        assert adapter._resolve_thread_ts("10.0", {}) is None
 
     @pytest.mark.asyncio
     async def test_replies_in_a_user_thread_stay_threaded(self, adapter):
@@ -145,11 +151,22 @@ class TestStatus:
         await adapter._handle_slack_message(_msg(CODE, "10.0"))
         api_call = adapter._get_client.return_value.api_call
         api_call.reset_mock()
-        await adapter.send_typing(CODE, {"message_id": "10.0", "thread_id": "10.0"})
-        await adapter.send_typing(CODE, {"message_id": "10.0", "thread_id": "10.0"})
-        await adapter.stop_typing(CODE, {"thread_id": "10.0"})
+        await adapter.send_typing(CODE, {"message_id": "10.0"})
+        await adapter.send_typing(CODE, {"message_id": "10.0"})
+        await adapter.stop_typing(CODE, {"thread_id": "10.0"})  # a side thread ends: not ours
+        await adapter.stop_typing(CODE, {"slack_team_id": "T1"})
         calls = [c.kwargs["json"] for c in api_call.await_args_list if c.args[0] == "agents.sessions.setStatus"]
         assert calls == [{"channel_id": CODE, "status": "processing"}, {"channel_id": CODE, "status": "active"}]
+
+
+class TestSlash:
+    @pytest.mark.asyncio
+    async def test_slash_before_any_message_uses_the_shared_channel_session(self, adapter):
+        await adapter._handle_slash_command(
+            {"command": "/new", "text": "", "user_id": "U_USER", "channel_id": CODE, "team_id": ""})
+        await adapter._handle_slack_message({**_msg(CODE, "10.0"), "user": "U_OTHER"})
+        slash, message = (c.args[0] for c in adapter.handle_message.await_args_list)
+        assert adapter._event_session_key(slash) == adapter._event_session_key(message)
 
 
 class TestStop:

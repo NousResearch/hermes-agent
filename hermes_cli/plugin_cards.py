@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import inspect
 import logging
+import time
 from collections.abc import Mapping
 from typing import Any, Optional
 
@@ -19,6 +21,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 
 CAPABILITY = "conversation.cards"
 _TIMEOUT_S = 30.0
+_POLL_S = 0.25  # how often a waiting thread checks that the gateway loop is still there
 
 
 def _err(code: str, detail: str = "") -> dict[str, Any]:
@@ -72,7 +75,52 @@ async def apost(ctx: Any, card: Any, *, session_key=None, origin=None) -> dict[s
     runner, loop = _gateway_loop()
     if runner is None or loop is None:
         return _err("gateway_unavailable", "no live gateway is running in this process")
-    return await loop.create_task(_post(runner, ctx, card, key, where), context=_gateway_context(runner))
+    coro = _post(runner, ctx, card, key, where)
+    try:
+        task = loop.create_task(coro, context=_gateway_context(runner))
+    except RuntimeError:  # the loop is closing under us
+        coro.close()
+        return _err("gateway_unavailable", "the gateway loop closed before the card was scheduled")
+    try:
+        return await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():  # the caller's own cancellation, not the gateway's
+            raise
+        return _err("cancelled", "the gateway stopped before answering; the card may not have landed")
+
+
+def _schedule(runner: Any, loop: asyncio.AbstractEventLoop, coro) -> Optional[concurrent.futures.Future]:
+    """*coro* scheduled on the gateway loop in the gateway's context, or None when the loop closed
+    between the lookup and the scheduling (the coroutine is closed, so nothing is left un-awaited).
+    The loop runs the scheduling callback, and so the task, in the context it was submitted from."""
+    try:
+        return _gateway_context(runner).run(asyncio.run_coroutine_threadsafe, coro, loop)
+    except RuntimeError:
+        coro.close()
+        return None
+
+
+def _wait(future: concurrent.futures.Future, loop: asyncio.AbstractEventLoop, coro) -> dict[str, Any]:
+    """The scheduled call's result, or the documented refusal when the loop closes first (the
+    scheduled task never ran: its coroutine is closed), the task is cancelled, or the wait times out."""
+    deadline = time.monotonic() + _TIMEOUT_S
+    while True:
+        try:
+            return future.result(max(0.0, min(_POLL_S, deadline - time.monotonic())))
+        except concurrent.futures.TimeoutError:
+            if loop.is_closed():
+                future.cancel()
+                if inspect.getcoroutinestate(coro) == inspect.CORO_CREATED:
+                    coro.close()  # the loop dropped its callbacks without ever starting the task
+                return _err("gateway_unavailable", "the gateway loop closed before the card was admitted")
+            if time.monotonic() >= deadline:
+                return _err("timeout", f"the gateway did not answer within {_TIMEOUT_S:.0f}s; the card may still land")
+        except concurrent.futures.CancelledError:
+            return _err("cancelled", "the gateway stopped before answering; the card may not have landed")
+        except Exception as exc:  # pragma: no cover - _post answers every error with a result
+            logger.warning("plugin_card post escaped its result shape", exc_info=True)
+            return _err("post_failed", str(exc)[:512])
 
 
 def post(ctx: Any, card: Any, *, session_key=None, origin=None) -> dict[str, Any]:
@@ -86,9 +134,8 @@ def post(ctx: Any, card: Any, *, session_key=None, origin=None) -> dict[str, Any
         return _err("gateway_unavailable", "no live gateway is running in this process")
     if _on_gateway_loop():
         return _err("on_event_loop", "called from the gateway event loop: use await ctx.apost_card(...)")
-    # The loop runs the scheduling callback, and so the task, in the context it was submitted from.
-    future = _gateway_context(runner).run(asyncio.run_coroutine_threadsafe, _post(runner, ctx, card, key, where), loop)
-    try:
-        return future.result(_TIMEOUT_S)
-    except concurrent.futures.TimeoutError:
-        return _err("timeout", f"the gateway did not answer within {_TIMEOUT_S:.0f}s; the card may still land")
+    coro = _post(runner, ctx, card, key, where)
+    future = _schedule(runner, loop, coro)
+    if future is None:
+        return _err("gateway_unavailable", "the gateway loop closed before the card was scheduled")
+    return _wait(future, loop, coro)

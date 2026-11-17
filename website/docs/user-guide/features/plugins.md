@@ -1127,7 +1127,8 @@ does not stop the session's background review or plugin forks, because no turn s
 Result: `{"ok": True, "card_id", "status": "queued" | "duplicate"}`, or `{"ok": False, "error"}`.
 Expected refusals are `consent_required`, `invalid_target`, `no_conversation`, `group_not_allowed`,
 `invalid_card`, `card_conflict`, `rate_limited` (more than 6 cards in 60 seconds for one session),
-`gateway_unavailable`, `on_event_loop`, and `timeout`. An internal admission failure is reported as
+`gateway_unavailable` (no live gateway, or its loop closed while the card was on its way), `on_event_loop`,
+`cancelled` (the gateway stopped before answering) and `timeout`. An internal admission failure is reported as
 `refused` or `post_failed`, not raised into the plugin. Like `inject_message`, the card is admitted from
 the gateway's own context, never the caller's: a card posted from a session fork's tool handler or from a
 hook inside a turn hands none of that turn's scopes to the session queue.

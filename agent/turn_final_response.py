@@ -112,10 +112,10 @@ def finish_text_response(
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
     effective_task_id: Any,
 ) -> FinalResponseVerdict:
-    """Finish (or defer) a text-only assistant response in the original guard order. Every
-    continuation path sets ``final_response = None`` so an acknowledgment never suppresses
-    iteration-limit summarization; the final message is appended and flushed only after the
-    stop gates accept it."""
+    """Finish or defer a text-only response; continuations clear ``final_response`` so
+    acknowledgments cannot suppress iteration-limit summaries. Append and flush only after stop gates pass.
+    Exhausted Kanban handoff nudges clean up and persist, returning a failed, incomplete ``loop_error``
+    result without appending the final message. Errors from cleanup or persistence propagate."""
     from agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
     )
@@ -383,6 +383,23 @@ def finish_text_response(
     if _sg.continue_turn:
         final_response = None
         return _verdict("continue")
+    if _sg.kanban_handoff_failed:
+        # A dispatcher-owned worker ended on prose after its terminal-call nudges were
+        # exhausted. Never mark that narrative as a clean completion: fail the turn so the
+        # one-shot exit code is non-zero and the dispatcher books a crash, not a protocol
+        # violation. Mirrors the repetition-abort path (persist without the prose, return a
+        # failed partial result). No auto-complete: the terminal board call is never forged.
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        _handoff_failure = (
+            "This kanban task could not be handed off: the worker ended without a terminal "
+            "board call (kanban_complete / kanban_request_review / kanban_request_changes / "
+            "kanban_schedule / kanban_block) after repeated nudges. Nothing was auto-completed."
+        )
+        return _verdict("return", stamp_failure(
+            partial_result(messages, api_call_count, _handoff_failure, failed=True),
+            "loop_error", False,
+        ))
 
     # Plugins rewrite the reply BEFORE it is appended and flushed: SQLite treats a non-blank
     # assistant row as settled, so a transform after this write would reach the user but never

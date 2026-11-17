@@ -105,6 +105,8 @@ def test_make_targz_syncs_complete_archive_before_publishing(tmp_path, monkeypat
     assert ("fsync", st.st_ino, st.st_size) in events[:replace_at]
     dir_ino = out_dir.stat().st_ino
     assert any(e[0] == "fsync" and e[1] == dir_ino for e in events[replace_at:])
+    parent_ino = tmp_path.stat().st_ino  # out/ may be new: its own entry must be durable too
+    assert any(e[0] == "fsync" and e[1] == parent_ino for e in events[replace_at:])
 
 
 def test_make_targz_keeps_previous_archive_when_sync_fails(tmp_path, monkeypatch):

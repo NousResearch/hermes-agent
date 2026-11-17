@@ -11,19 +11,22 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 def _fsync_parent(path: str) -> None:
-    """Make a just-renamed file's directory entry durable (best effort).
+    """Make a just-renamed file's directory entry durable, and that directory's own entry (best effort).
 
+    The grandparent is synced too because an export may have just created the directory.
     Stdlib-only on purpose: this module loads on the ``python -S`` early-recovery path
     (profile override), where ``utils`` and its ruamel import are unavailable.
     """
     if os.name == "nt":
         return
-    with suppress(OSError):
-        fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+    parent = os.path.dirname(os.path.abspath(path))
+    for directory in (parent, os.path.dirname(parent)):
+        with suppress(OSError):
+            fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
 
 
 def normalize_archive_parts(member_name: str) -> list[str]:

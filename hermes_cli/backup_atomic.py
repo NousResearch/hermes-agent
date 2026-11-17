@@ -114,3 +114,4 @@ def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Op
             _fsync_file(partial_path)
             os.replace(partial_path, destination)
             fsync_directory(destination.parent)
+            fsync_directory(destination.parent.parent)  # the first backup may also create the directory

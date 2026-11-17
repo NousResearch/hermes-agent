@@ -81,6 +81,7 @@ def test_atomic_output_syncs_archive_data_before_publishing(tmp_path, monkeypatc
     assert ("fsync", published_inode) in events[:replace_at]
     dir_inode = final.parent.stat().st_ino
     assert ("fsync", dir_inode) in events[replace_at:]
+    assert ("fsync", tmp_path.stat().st_ino) in events[replace_at:]  # out/ is new on a first backup
 
 
 def test_atomic_output_publishes_nothing_when_sync_fails(tmp_path, monkeypatch) -> None:
@@ -198,11 +199,13 @@ def test_quick_snapshot_files_are_synced_before_publish(tmp_path, monkeypatch) -
     (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
     (home / "cron" / "jobs.json").write_text('{"jobs": []}\n', encoding="utf-8")
     synced: set[int] = set()
+    synced_after_publish: set[int] = set()
     unsynced_at_publish: list[str] = []
+    published: list[str] = []
     real_fsync, real_replace = os.fsync, os.replace
 
     def spy_fsync(fd):
-        synced.add(os.fstat(fd).st_ino)
+        (synced_after_publish if published else synced).add(os.fstat(fd).st_ino)
         return real_fsync(fd)
 
     def spy_replace(src, dst):
@@ -211,6 +214,7 @@ def test_quick_snapshot_files_are_synced_before_publish(tmp_path, monkeypatch) -
             for path in (src_path, *src_path.rglob("*")):
                 if path.stat().st_ino not in synced:
                     unsynced_at_publish.append(path.relative_to(src_path).as_posix() or ".")
+            published.append(src_path.name)
         return real_replace(src, dst)
 
     monkeypatch.setattr(os, "fsync", spy_fsync)
@@ -219,7 +223,8 @@ def test_quick_snapshot_files_are_synced_before_publish(tmp_path, monkeypatch) -
 
     assert snapshot_id is not None
     assert unsynced_at_publish == []
-    assert (home / "state-snapshots").stat().st_ino in synced
+    # The new entry in state-snapshots/, and state-snapshots/ itself on a first snapshot.
+    assert {(home / "state-snapshots").stat().st_ino, home.stat().st_ino} <= synced_after_publish
 
 
 def test_quick_snapshot_is_not_published_when_sync_fails(tmp_path, monkeypatch) -> None:

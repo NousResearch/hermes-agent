@@ -297,9 +297,16 @@ class GatewaySlashCommandsMixin(
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
-    def _terminal_cwd(self) -> str:
+    def _terminal_cwd(self, source=None) -> str:
+        """The chat's ``/workspace`` root when *source* has one, else the profile's terminal cwd."""
+        from gateway.session_workspace import bound_root
         from tools.terminal_scope import terminal_env
-        return terminal_env("TERMINAL_CWD", str(Path.home()))
+        root = bound_root(self, self._session_key_for_source(source)) if source is not None else ""
+        return root or terminal_env("TERMINAL_CWD", str(Path.home()))
+
+    async def _handle_workspace_command(self, event: MessageEvent) -> str:
+        from gateway.session_workspace import handle_workspace_command
+        return await handle_workspace_command(self, event)
 
     @staticmethod
     def _display_config_target(event: MessageEvent):
@@ -749,7 +756,7 @@ class GatewaySlashCommandsMixin(
         mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
-        cwd = self._terminal_cwd()
+        cwd = self._terminal_cwd(event.source)
         # --all / --force: classic full restore, overwriting user edits too.
         tokens = event.get_command_args().strip().split()
         restore_all = any(tok.lower() in ("--all", "--force") for tok in tokens)
@@ -791,7 +798,7 @@ class GatewaySlashCommandsMixin(
         mode = "working"
         for low in args:
             mode = _DIFF_MODE_BY_ARG.get(low, mode)
-        cwd = self._terminal_cwd()
+        cwd = self._terminal_cwd(event.source)
         if mode == "session":
             # Cumulative checkpoint-baseline diff.
             mgr = self._checkpoint_manager(event.source)

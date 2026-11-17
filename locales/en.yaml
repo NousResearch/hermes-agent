@@ -52,7 +52,6 @@ gateway:
     set: "✅ Workspace set for this chat: `{cwd}`\nFuture turns in this chat will use this directory for project context, file tools, terminal commands, @ references, and rollback."
     cleared: "Workspace override cleared. Future turns will use the global default: `{cwd}`"
     relative_rejected: "Use an absolute path, e.g. `/workspace /home/me/project`."
-    invalid: "Invalid workspace path `{path}`: {error}"
     not_dir: "Workspace path is not an existing directory: `{path}`"
     save_failed: "Failed to save workspace: {error}"
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."

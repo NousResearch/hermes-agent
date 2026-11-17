@@ -41,7 +41,9 @@ def _inbound_cwd(runner, source):
     # the policy scope, so TERMINAL_CWD is still the daemon's own.
     if (policy := policy_for_source(runner, source)) is not None:
         return policy.cwd
-    return terminal_env("TERMINAL_CWD", os.path.expanduser("~"))
+    from gateway.session_workspace import bound_root
+    return (bound_root(runner, runner._session_key_for_source(source))
+            or terminal_env("TERMINAL_CWD", os.path.expanduser("~")))
 
 
 async def inbound_references(runner, source, session_key, text):

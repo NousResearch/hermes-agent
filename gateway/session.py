@@ -1223,6 +1223,8 @@ class SessionStore(
                 session_key, old_entry, session_id, now,
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 is_fresh_reset=True,
+                # /new starts a conversation, not a project: the chat stays bound to its /workspace.
+                metadata={"workspace": old_entry.metadata["workspace"]} if "workspace" in old_entry.metadata else {},
             )
         try:
             self._finish_route_transition(
@@ -1388,10 +1390,10 @@ class SessionStore(
                     ),
                     # Keep this chat's terminal cwd over non-boundary repoints (e.g. compression-tip
                     # binding heals). An explicit /resume opts out, and /new takes the reset path.
-                    metadata=(
-                        {"terminal_cwd": old_entry.metadata["terminal_cwd"]}
-                        if preserve_prompt_pin and "terminal_cwd" in old_entry.metadata else {}
-                    ),
+                    # The chat's /workspace binding is the chat's, so it follows every repoint.
+                    metadata={key: old_entry.metadata[key] for key in (
+                        ("terminal_cwd", "workspace") if preserve_prompt_pin else ("workspace",))
+                        if key in old_entry.metadata},
                 )
         if refused:
             return None

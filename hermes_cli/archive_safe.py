@@ -9,7 +9,21 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from utils import fsync_directory
+
+def _fsync_parent(path: str) -> None:
+    """Make a just-renamed file's directory entry durable (best effort).
+
+    Stdlib-only on purpose: this module loads on the ``python -S`` early-recovery path
+    (profile override), where ``utils`` and its ruamel import are unavailable.
+    """
+    if os.name == "nt":
+        return
+    with suppress(OSError):
+        fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 def normalize_archive_parts(member_name: str) -> list[str]:
@@ -45,7 +59,7 @@ def make_targz(base: str, root_dir: str, base_dir: str) -> str:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, archive_path)
-        fsync_directory(dest_dir)
+        _fsync_parent(archive_path)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)

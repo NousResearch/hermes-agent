@@ -298,6 +298,17 @@ class CLIModalMixin:
                     last = now
                     paint()
 
+    def _poll_modal_queue_with_status(
+        self, response_queue, deadline_attr, *, kind: str, refresh=1.0, paint=None
+    ):
+        """Poll a user-blocking modal while exposing its reason to Herdr."""
+        resume_state = "working" if getattr(self, "_interactive_turn", False) else "idle"
+        self._report_program_status("blocked", kind=kind)
+        try:
+            return self._poll_modal_queue(response_queue, deadline_attr, refresh=refresh, paint=paint)
+        finally:
+            self._report_program_status(resume_state)
+
     def _prompt_text_input_modal(
         self, *, title: str, detail: str, choices: list[tuple[str, str, str]], timeout: float = 120
     ) -> str | None:
@@ -376,8 +387,13 @@ class CLIModalMixin:
         if not _run_on_app_loop(_setup_modal):
             return _stdin_fallback()
         try:
-            result = self._poll_modal_queue(
-                response_queue, "_slash_confirm_deadline", refresh=5.0, paint=self._invalidate)
+            result = self._poll_modal_queue_with_status(
+                response_queue,
+                "_slash_confirm_deadline",
+                kind="question",
+                refresh=5.0,
+                paint=self._invalidate,
+            )
             if result is not _TIMED_OUT:
                 _run_on_app_loop(_teardown_modal)
                 return result
@@ -1017,7 +1033,9 @@ class CLIModalMixin:
         self._ring_bell(prompt=True, context=t("cli.clarify.bell_context"))
         self._paint_now()
 
-        result = self._poll_modal_queue(response_queue, "_clarify_deadline")
+        result = self._poll_modal_queue_with_status(
+            response_queue, "_clarify_deadline", kind="question"
+        )
         if result is not _TIMED_OUT:
             self._clarify_deadline = None
             outcome = "cancelled" if result is None else "submitted"
@@ -1054,7 +1072,9 @@ class CLIModalMixin:
         self._ring_bell(prompt=True, context=t("cli.secret.bell_sudo"))
         self._paint_now()
 
-        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        result = self._poll_modal_queue_with_status(
+            response_queue, "_sudo_deadline", kind="auth", refresh=0
+        )
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
@@ -1097,7 +1117,9 @@ class CLIModalMixin:
             self._ring_bell(prompt=True, context=t("cli.approval.bell_context"), detail=command)
             self._paint_now()
 
-            result = self._poll_modal_queue(response_queue, "_approval_deadline")
+            result = self._poll_modal_queue_with_status(
+                response_queue, "_approval_deadline", kind="permission"
+            )
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
@@ -1160,7 +1182,9 @@ class CLIModalMixin:
         self._ring_bell(prompt=True, context=t("cli.secret.bell_unlock", name=display_name))
         self._paint_now()
 
-        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        result = self._poll_modal_queue_with_status(
+            response_queue, "_sudo_deadline", kind="auth", refresh=0
+        )
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
@@ -1186,7 +1210,9 @@ class CLIModalMixin:
             if step == "identifier":
                 self._ring_bell(prompt=True, context=t("cli.secret.bell_save_login", site=site))
             self._paint_now()
-            result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+            result = self._poll_modal_queue_with_status(
+                response_queue, "_sudo_deadline", kind="auth", refresh=0
+            )
             self._sudo_state = None
             self._sudo_deadline = 0
             self._restore_modal_input_snapshot()
@@ -1209,7 +1235,9 @@ class CLIModalMixin:
         self._sudo_deadline = _time.monotonic() + 180
         self._ring_bell(prompt=True, context=t("cli.secret.bell_verification_code", site=site))
         self._paint_now()
-        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        result = self._poll_modal_queue_with_status(
+            response_queue, "_sudo_deadline", kind="auth", refresh=0
+        )
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
@@ -1222,9 +1250,11 @@ class CLIModalMixin:
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         self._capture_modal_input_snapshot()
+        self._report_program_status("blocked", kind="auth")
         try:
             return prompt_for_secret(self, var_name, prompt, metadata)
         finally:
+            self._report_program_status("working")
             self._restore_modal_input_snapshot()
             self._paint_now()
 

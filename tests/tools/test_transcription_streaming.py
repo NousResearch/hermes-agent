@@ -87,3 +87,17 @@ def test_recording_uses_the_live_transcript_and_falls_back_to_the_file(tmp_path,
     voice_mode._park_live_session(failed_wav, _Session({"success": False, "transcript": "", "error": "socket"}))
     assert voice_mode.transcribe_recording(failed_wav)["transcript"] == "from file"
     assert uploads == [failed_wav]
+
+
+def test_elevenlabs_live_model_defaults_to_scribe_v3_live_and_follows_config(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    from tools import transcription_tools as tt
+    monkeypatch.setattr(tt, "_resolve_provider_key", lambda *_: "k")
+
+    def model_of(section):
+        session = ts._builtin_session("elevenlabs", {"elevenlabs": section}, None, None, None)
+        return parse_qs(urlsplit(session.url).query)["model_id"]
+
+    assert model_of({}) == ["scribe_v3_live"]
+    assert model_of({"streaming_model": "scribe_v2_realtime"}) == ["scribe_v2_realtime"]

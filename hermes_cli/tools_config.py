@@ -273,7 +273,7 @@ TOOL_CATEGORIES = {
             _row("Groq", "free tier", "whisper-large-v3-turbo, whisper-large-v3 — very fast",
                  [_key("GROQ_API_KEY", "Groq API key", "https://console.groq.com/keys")], stt_provider="groq"),
             _row("xAI", tag="Grok Voice Transcribe — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
-            _row("ElevenLabs Scribe", "paid", "scribe_v2 — diarization + audio-event tagging", [_ELEVENLABS_KEY],
+            _row("ElevenLabs Scribe", "paid", "scribe_v3 — diarization + audio-event tagging", [_ELEVENLABS_KEY],
                  stt_provider="elevenlabs"),
             _row("Mistral Voxtral", "paid", "voxtral-mini-latest — multilingual",
                  [_key("MISTRAL_API_KEY", "Mistral API key", "https://console.mistral.ai/")], stt_provider="mistral"),

@@ -1042,6 +1042,13 @@ _DEGENERATE_FINAL_NUDGE = (
     "WAS your complete answer, send it again exactly as before.]"
 )
 
+# Re-prompt after a turn ended on a bare progress note ("I am now compiling the answer.") with no
+# answer in it (#74604). Asks for the deliverable itself, not more tool calls.
+_NARRATION_FINAL_NUDGE = (
+    "[System: Your previous message only said you were preparing the answer; it did not contain "
+    "it. Write the complete answer now, using what you have already gathered.]"
+)
+
 # Re-prompt for finish_reason="tool_calls" with empty tool_calls (an interrupt mid-retry can persist it).
 _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "Your previous turn indicated a tool call but none was included. Do not narrate a plan or "

@@ -29,3 +29,52 @@ def test_a_failed_turn_still_raises_so_the_job_is_marked_failed():
               "turn_exit_reason": "repeated_outer_errors(x)", "messages": [], "api_calls": 3}
     with pytest.raises(RuntimeError):
         _final_response_from_result(result, "job1", "Morning brief", _AIAgent)
+
+
+@pytest.mark.parametrize("final_response", ["🔍 **", "I am now compiling the complete answer."])
+def test_stop_finished_degenerate_output_raises_instead_of_being_delivered(final_response):
+    """A symbol-plus-markdown stub or a bare progress note is not a usable cron report."""
+    result = {
+        "final_response": final_response, "failed": False, "completed": True,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "messages": [{"role": "user", "content": "Send the morning report"}],
+    }
+
+    with pytest.raises(RuntimeError, match="degenerate stop completion"):
+        _final_response_from_result(result, "job1", "Morning brief", _AIAgent)
+
+
+@pytest.mark.parametrize("final_response", ["Done", "No new items.", "✅", "[SILENT]", "{}", "**Done**"])
+def test_stop_finished_legitimate_short_output_fails_open(final_response):
+    result = {
+        "final_response": final_response, "failed": False, "completed": True,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "messages": [{"role": "user", "content": "Send the morning report"}],
+    }
+
+    assert _final_response_from_result(result, "job1", "Morning brief", _AIAgent) == final_response
+
+
+def test_short_response_without_stop_metadata_fails_open():
+    result = {
+        "final_response": "🔍 **", "failed": False, "completed": True,
+        "messages": [{"role": "user", "content": "Send the morning report"}],
+    }
+
+    assert _final_response_from_result(result, "job1", "Morning brief", _AIAgent) == "🔍 **"
+
+
+def test_recovery_nudge_row_is_not_judged_as_the_users_script():
+    """A non-Latin answer after a recovery nudge is judged against the job's own prompt."""
+    from agent.conversation_loop import _DEGENERATE_FINAL_NUDGE
+    result = {
+        "final_response": "Готово", "failed": False, "completed": True,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "messages": [
+            {"role": "user", "content": "Собери отчёт и отчитайся"},
+            {"role": "assistant", "content": "пар"},
+            {"role": "user", "content": _DEGENERATE_FINAL_NUDGE},
+        ],
+    }
+
+    assert _final_response_from_result(result, "job1", "Отчёт", _AIAgent) == "Готово"

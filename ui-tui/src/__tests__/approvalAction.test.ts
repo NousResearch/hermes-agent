@@ -85,4 +85,16 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
       approvalOptions({ choices: ['once', 'deny', 'session', 'always'], command: 'rm -rf /', description: 'blocked' })
     ).toEqual(['once', 'session', 'always', 'deny'])
   })
+
+  it('offers no local permission when gateway choices contain no supported option', () => {
+    const req = {
+      allowPermanent: false,
+      choices: ['later', 'never'],
+      command: 'echo ok',
+      description: 'unsupported choices'
+    }
+
+    expect(approvalOptions(req)).toEqual([])
+    expect(approvalAction('', { return: true }, 0, [])).toEqual({ kind: 'noop' })
+  })
 })

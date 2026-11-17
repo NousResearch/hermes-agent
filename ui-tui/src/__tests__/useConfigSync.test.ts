@@ -1,3 +1,11 @@
+import { resetTuiLocaleSync } from '../i18n/loader.js'
+import { $locale, resetLocale, t } from '../i18n/runtime.js'
+
+import { activateZh, zhMessages } from './localeFixture.js'
+beforeEach(() => {
+  resetLocale()
+  resetTuiLocaleSync()
+})
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -9,6 +17,7 @@ import {
   normalizeIndicatorStyle,
   normalizeMouseTracking,
   normalizeStatusBar,
+  syncConfigRevision,
   syncMcpReload
 } from '../app/useConfigSync.js'
 
@@ -153,6 +162,30 @@ describe('applyDisplay', () => {
     )
 
     expect($uiState.get().sections).toEqual({ activity: 'hidden' })
+  })
+
+  it('preserves the last-good display state when config loading fails', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { language: 'zh', streaming: false } } }, setBell)
+
+    applyDisplay(null, setBell)
+
+    const s = $uiState.get()
+    expect(setBell).toHaveBeenCalledTimes(1)
+
+    expect(s.streaming).toBe(false)
+  })
+
+  it('preserves the last-good locale when the config RPC fails', () => {
+    const setBell = vi.fn()
+
+    activateZh()
+    applyDisplay({ config: { display: { language: 'zh' } } }, setBell)
+    expect($locale.get()).toBe('zh')
+
+    applyDisplay(null, setBell)
+    expect($locale.get()).toBe('zh')
   })
 })
 
@@ -331,9 +364,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     applyDisplay(null, setBell, setVoiceRecordKey)
 
     expect(setVoiceRecordKey).not.toHaveBeenCalled()
-    // bell is still applied (defaults to false on null), so the setter
-    // runs — we specifically only skip voiceRecordKey.
-    expect(setBell).toHaveBeenCalledWith(false)
+    expect(setBell).not.toHaveBeenCalled()
   })
 })
 
@@ -382,7 +413,11 @@ describe('syncMcpReload (revision-aware ack)', () => {
 
   // #141769: a refused revision (one parked MCP server) was re-sent every 5 s poll forever.
   it('backs off a refused revision instead of retrying it every poll tick', async () => {
-    const gw = { request: vi.fn(() => Promise.reject(new Error('mcp_servers_unavailable'))), on: vi.fn(), off: vi.fn() } as any
+    const gw = {
+      request: vi.fn(() => Promise.reject(new Error('mcp_servers_unavailable'))),
+      on: vi.fn(),
+      off: vi.fn()
+    } as any
     const state = freshState()
     let clock = 0
     const now = () => clock
@@ -475,7 +510,9 @@ describe('hydrateFullConfig', () => {
     expect(request).toHaveBeenCalledWith('config.get', { key: 'busy', session_id: 'owner' })
     expect($uiState.get().busyInputMode).toBe('steer')
     request.mockImplementation(async (_method, params) => {
-      if (params.key === 'busy') {throw new Error('disconnected')}
+      if (params.key === 'busy') {
+        throw new Error('disconnected')
+      }
 
       return { config: { display: { busy_input_mode: 'interrupt' } } }
     })
@@ -498,7 +535,10 @@ describe('hydrateFullConfig', () => {
     current = false
     patchUiState({ sid: 'new', busyInputMode: 'interrupt' })
 
-    for (const reply of replies) {reply({ config: { display: { busy_input_mode: 'steer' } }, value: 'steer' })}
+    for (const reply of replies) {
+      reply({ config: { display: { busy_input_mode: 'steer' } }, value: 'steer' })
+    }
+
     await pending
     expect(setBell).not.toHaveBeenCalled()
     expect($uiState.get().busyInputMode).toBe('interrupt')
@@ -527,7 +567,7 @@ describe('hydrateFullConfig', () => {
     expect(setBell).toHaveBeenCalledWith(false)
   })
 
-  it('reapplies the latest value on each invocation (mtime-reload semantics)', async () => {
+  it('reapplies the latest value on each invocation (mtime refresh semantics)', async () => {
     const gw = makeFakeGw({ config: { display: {}, voice: { record_key: 'ctrl+b' } } })
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
@@ -544,6 +584,18 @@ describe('hydrateFullConfig', () => {
     )
   })
 
+  it('refreshes display config without rebuilding MCP tools', async () => {
+    const gw = makeFakeGw({ config: { display: { language: 'zh' } } })
+    const setBell = vi.fn()
+
+    await hydrateFullConfig(gw, setBell)
+
+    expect(gw.request).toHaveBeenCalledWith('i18n.catalog', { lang: 'zh', surface: 'tui' })
+    expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
+    expect(gw.request).not.toHaveBeenCalledWith('reload.mcp', expect.anything())
+    expect($locale.get()).toBe('zh')
+  })
+
   it('leaves cached voiceRecordKey untouched when the RPC fails', async () => {
     const gw = { request: vi.fn(() => Promise.reject(new Error('boom'))), on: vi.fn(), off: vi.fn() } as any
     const setBell = vi.fn()
@@ -551,13 +603,11 @@ describe('hydrateFullConfig', () => {
 
     const result = await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
 
-    // quietRpc() swallows the error and returns null; applyDisplay
-    // sees cfg=null and skips the voice setter (Copilot round-8).
+    // quietRpc() swallows the error and returns null. Hydration must preserve
+    // the entire last-good display state until the next successful poll.
     expect(result).toBeNull()
     expect(setVoiceRecordKey).not.toHaveBeenCalled()
-    // bell setter still fires — applyDisplay's null-cfg path applies
-    // the documented bell default (false).
-    expect(setBell).toHaveBeenCalledWith(false)
+    expect(setBell).not.toHaveBeenCalled()
   })
 
   it('threads through without a voice setter (back-compat call sites)', async () => {
@@ -571,18 +621,104 @@ describe('hydrateFullConfig', () => {
   })
 })
 
+describe('syncConfigRevision', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('retries the same mtime after a transient full-config read failure', async () => {
+    const gw = {
+      request: vi
+        .fn()
+        .mockResolvedValueOnce({ mtime: 42 })
+        .mockRejectedValueOnce(new Error('transient'))
+        .mockResolvedValueOnce({ mtime: 42 })
+        .mockResolvedValueOnce({ config: { display: { language: 'zh' } } })
+        .mockResolvedValueOnce({ lang: 'zh', surface: 'tui', messages: zhMessages }),
+      on: vi.fn(),
+      off: vi.fn()
+    } as any
+
+    const setBell = vi.fn()
+
+    const afterFailure = await syncConfigRevision(gw, 41, setBell)
+    expect(afterFailure).toBe(41)
+    expect(setBell).not.toHaveBeenCalled()
+
+    const afterRetry = await syncConfigRevision(gw, afterFailure, setBell)
+    expect(afterRetry).toBe(42)
+    expect($locale.get()).toBe('zh')
+    expect(gw.request).toHaveBeenNthCalledWith(4, 'config.get', { key: 'full' })
+  })
+})
+
+it('ignores config returned after its session display subscription ended', async () => {
+  resetUiState()
+  const controller = new AbortController()
+  let resolve!: (value: unknown) => void
+
+  const gw = {
+    request: vi.fn(
+      () =>
+        new Promise(yes => {
+          resolve = yes
+        })
+    )
+  } as any
+
+  const setBell = vi.fn()
+
+  const hydration = hydrateFullConfig(gw, setBell, undefined, undefined, {
+    sid: 'cancelled',
+    isCurrent: () => !controller.signal.aborted,
+    signal: controller.signal
+  })
+
+  controller.abort()
+  resolve({ config: { display: { language: 'zh', bell_on_complete: true } } })
+  expect(await hydration).toBeNull()
+  expect($locale.get()).toBe('en')
+  expect(setBell).not.toHaveBeenCalled()
+})
+
+it('a new config revision refreshes a same-language overlay without reloading tools', async () => {
+  let label = '第一版'
+
+  const gw = {
+    request: vi.fn(async (method: string) =>
+      method === 'i18n.catalog'
+        ? { lang: 'zh', surface: 'tui', messages: { 'status.ready': label } }
+        : { config: { display: { language: 'zh' } } }
+    )
+  } as any
+
+  const scope = { sid: 'owner', isCurrent: () => true, signal: new AbortController().signal }
+  await hydrateFullConfig(gw, vi.fn(), undefined, undefined, scope)
+  expect(t('status.ready')).toBe('第一版')
+  label = '第二版'
+  expect(await syncConfigRevision(gw, 1, vi.fn(), undefined, { mtime: 2 }, undefined, scope)).toBe(2)
+  expect(t('status.ready')).toBe('第二版')
+  expect(gw.request.mock.calls.every(([method]: [string]) => method !== 'reload.mcp')).toBe(true)
+})
+
 describe('hydrateVoiceMode (T9)', () => {
   it("seeds the voice bit from the session's gateway /voice mode on the shared owner", async () => {
     const request = vi.fn(async () => ({ value: 'voice_only' }))
     const setVoiceEnabled = vi.fn()
     const { hydrateVoiceMode } = await import('../app/useConfigSync.js')
 
-    await hydrateVoiceMode({ isCanonical: true, request } as never, setVoiceEnabled, { isCurrent: () => true, sid: 's1' })
+    await hydrateVoiceMode({ isCanonical: true, request } as never, setVoiceEnabled, {
+      isCurrent: () => true,
+      sid: 's1'
+    })
     expect(request).toHaveBeenCalledWith('config.get', { key: 'voice', session_id: 's1' })
     expect(setVoiceEnabled).toHaveBeenCalledWith(true)
 
     request.mockClear()
-    await hydrateVoiceMode({ isCanonical: false, request } as never, setVoiceEnabled, { isCurrent: () => true, sid: 's1' })
+    await hydrateVoiceMode({ isCanonical: false, request } as never, setVoiceEnabled, {
+      isCurrent: () => true,
+      sid: 's1'
+    })
     expect(request).not.toHaveBeenCalled()
   })
 })

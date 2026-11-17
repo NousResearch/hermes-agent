@@ -1,4 +1,5 @@
 import type { CompletionResponse } from '@hermes/shared/gateway-types'
+import type { GatewayCompletionItem } from '@hermes/shared/gateway-types'
 import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { inlineSlashTrigger } from '@hermes/shared/slash-input'
 import { rankSlashItems } from '@hermes/shared/slash-score'
@@ -7,9 +8,10 @@ import { useEffect, useRef, useState } from 'react'
 import type { CompletionItem } from '../app/interfaces.js'
 import { getUiState, sessionCwd } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { t } from '../i18n/runtime.js'
+import { t, translateOptional } from '../i18n/runtime.js'
+import { useLocale } from '../i18n/useT.js'
 import { asRpcResult } from '../lib/rpc.js'
-import { listWidgetApps } from '../sdk/registry.js'
+import { listWidgetApps, widgetHelp } from '../sdk/registry.js'
 
 /** Client-side widget apps live in the TUI's registry, not the gateway — so
  *  `/` completions merge their title/metadata here. Registry-driven: a new
@@ -24,10 +26,20 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
 
   const local = rankSlashItems(listWidgetApps(), input, app => ({ description: app.help, id: app.id }))
     .filter(app => !items.some(item => item.text === `/${app.id}`))
-    .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
+    .map(app => ({ display: `/${app.id}`, meta: widgetHelp(app), text: `/${app.id}` }))
 
   return [...items, ...local]
 }
+
+export const localizeCompletionItems = (items: readonly GatewayCompletionItem[]): CompletionItem[] =>
+  items.map(item => ({
+    ...item,
+    meta: translateOptional(
+      item.meta_key?.startsWith('completion.') ? item.meta_key : item.meta_key ? `slash.${item.meta_key}` : undefined,
+      item.meta ?? '',
+      item.meta_vars?.section
+    )
+  }))
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
@@ -84,7 +96,8 @@ export function completionRequestForInput(
 }
 
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
-  const [completions, setCompletions] = useState<CompletionItem[]>([])
+  useLocale()
+  const [completions, setCompletions] = useState<GatewayCompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
   const ref = useRef('')
@@ -179,5 +192,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     return () => clearTimeout(timer)
   }, [blocked, gw, input])
 
-  return { completions, compIdx, setCompIdx, compReplace }
+  const localized = localizeCompletionItems(completions)
+
+  return { completions: localized, compIdx, setCompIdx, compReplace }
 }

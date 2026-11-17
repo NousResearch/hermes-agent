@@ -100,18 +100,18 @@ const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
-import { useI18n } from "@/i18n";
+import { resolveNavLabel, useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
-import { sharedGatewayProfiles, sharedGatewayRestartDescription } from "@/lib/shared-gateway";
+import { sharedGatewayProfiles } from "@/lib/shared-gateway";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
-function RouteFallback({ label = "Loading…" }: { label?: string }) {
+function RouteFallback({ label }: { label: string }) {
   return (
     <div
       className="flex min-h-[12rem] flex-1 items-center justify-center"
@@ -193,7 +193,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -210,14 +210,14 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
+  { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
+  { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
+  { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
+  { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/system", labelKey: "system", label: "System", icon: Wrench },
   {
     path: "/docs",
     labelKey: "documentation",
@@ -269,6 +269,7 @@ function buildNavItems(
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
+      labelKey: manifest.labelKey,
       icon: resolveIcon(manifest.icon),
     };
 
@@ -483,9 +484,9 @@ export default function App() {
         .filter((m) => !m.tab.hidden)
         .map((m) => ({
           path: m.tab.override ?? m.tab.path,
-          label: m.label,
+          label: resolveNavLabel(t, m.label, m.labelKey),
         })),
-    [manifests],
+    [manifests, t],
   );
 
   const layoutVariant = theme.layoutVariant ?? "standard";
@@ -709,7 +710,7 @@ export default function App() {
 
                 <SidebarIconWithTooltip
                   collapsed={isDesktopCollapsed}
-                  label={t.theme?.switchTheme ?? "Switch theme"}
+                  label={t.theme.switchTheme}
                   tooltipWarmRef={tooltipWarmRef}
                 >
                   <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
@@ -758,7 +759,7 @@ export default function App() {
                 )}
               >
                 <ProfileKeyedRoutes>
-                  <Suspense fallback={<RouteFallback />}>
+                  <Suspense fallback={<RouteFallback label={t.common.loading} />}>
                     <Routes>
                       {routes.map(({ key, path, element }) => (
                         <Route key={key} path={path} element={element} />
@@ -777,7 +778,7 @@ export default function App() {
                   !chatOverriddenByPlugin &&
                   (pluginsLoading ? (
                     isChatRoute ? (
-                      <RouteFallback label="Loading chat…" />
+                      <RouteFallback label={t.app.loadingChat} />
                     ) : null
                   ) : chatHostMounted ? (
                     <div
@@ -791,7 +792,7 @@ export default function App() {
                       <Suspense
                         fallback={
                           isChatRoute ? (
-                            <RouteFallback label="Loading chat…" />
+                            <RouteFallback label={t.app.loadingChat} />
                           ) : null
                         }
                       >
@@ -799,7 +800,7 @@ export default function App() {
                       </Suspense>
                     </div>
                   ) : isChatRoute ? (
-                    <RouteFallback label="Loading chat…" />
+                    <RouteFallback label={t.app.loadingChat} />
                   ) : null)}
               </div>
               <PluginSlot name="post-main" />
@@ -839,9 +840,7 @@ function SidebarNavLink({
   const [hovered, setHovered] = useState(false);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
-  const navLabel = labelKey
-    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
+  const navLabel = resolveNavLabel(t, label, labelKey);
   const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
     setHovered(true);
     setTooltipAnchor(event.currentTarget);
@@ -966,12 +965,8 @@ function SidebarSystemActions({
   const [updateConfirmChecking, setUpdateConfirmChecking] = useState(false);
 
   useEffect(() => {
-    if (!updateConfirmOpen) {
-      setUpdateConfirmInfo(null);
-      return;
-    }
+    if (!updateConfirmOpen) return;
     let cancelled = false;
-    setUpdateConfirmChecking(true);
     api
       .checkHermesUpdate(false)
       .then((info) => {
@@ -992,14 +987,24 @@ function SidebarSystemActions({
     if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
       const cmd = updateConfirmInfo.update_command;
       const n = updateConfirmInfo.behind;
-      return `This will run 'hermes update' (${cmd}) and pull ${n} new commit${n === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`;
+      const template =
+        n === 1 ? t.status.updateHermesBehindOneConfirmMessage : t.status.updateHermesBehindConfirmMessage;
+      return template.replace("{command}", cmd).replace("{count}", String(n));
     }
-    const cmd = updateConfirmInfo?.update_command ?? "hermes update";
-    return (
-      t.status.updateHermesConfirmMessage ??
-      `This will run 'hermes update' (${cmd}) and restart the gateway when it finishes.`
-    );
-  }, [t.status.updateHermesConfirmMessage, updateConfirmInfo]);
+    return t.status.updateHermesConfirmMessage;
+  }, [t.status, updateConfirmInfo]);
+
+  const openUpdateConfirm = () => {
+    setUpdateConfirmInfo(null);
+    setUpdateConfirmChecking(true);
+    setUpdateConfirmOpen(true);
+  };
+
+  const closeUpdateConfirm = () => {
+    setUpdateConfirmOpen(false);
+    setUpdateConfirmChecking(false);
+    setUpdateConfirmInfo(null);
+  };
 
   const items: SystemActionItem[] = [
     {
@@ -1027,7 +1032,7 @@ function SidebarSystemActions({
       return;
     }
     if (action === "update") {
-      setUpdateConfirmOpen(true);
+      openUpdateConfirm();
       return;
     }
     void runAction(action);
@@ -1043,7 +1048,7 @@ function SidebarSystemActions({
   };
 
   const confirmUpdate = () => {
-    setUpdateConfirmOpen(false);
+    closeUpdateConfirm();
     void runAction("update");
     navigate("/sessions");
     onNavigate();
@@ -1092,12 +1097,11 @@ function SidebarSystemActions({
 
     <ConfirmDialog
       cancelLabel={t.common.cancel}
-      confirmLabel={sharedGateway ? "Restart all" : t.status.restartGateway}
+      confirmLabel={sharedGateway ? t.sharedGateway.restartAll : t.status.restartGateway}
       description={
         sharedGateway
-          ? sharedGatewayRestartDescription(sharedGateway)
-          : (t.status.restartGatewayConfirmMessage ??
-            "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.")
+          ? t.sharedGateway.restartDescription.replace("{profiles}", sharedGateway.join(", "))
+          : t.status.restartGatewayConfirmMessage
       }
       loading={pendingAction === "restart"}
       onCancel={() => setRestartConfirmOpen(false)}
@@ -1105,22 +1109,22 @@ function SidebarSystemActions({
       open={restartConfirmOpen}
       title={
         sharedGateway
-          ? "Restart the shared gateway?"
-          : (t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`)
+          ? t.sharedGateway.restartTitle
+          : t.status.restartGatewayConfirmTitle
       }
     />
 
     <ConfirmDialog
       cancelLabel={t.common.cancel}
-      confirmLabel={t.status.updateHermesConfirmNow ?? "Update now"}
+      confirmLabel={t.status.updateHermesConfirmNow}
       description={
         updateConfirmChecking ? t.common.loading : updateConfirmDescription
       }
       loading={pendingAction === "update" || updateConfirmChecking}
-      onCancel={() => setUpdateConfirmOpen(false)}
+      onCancel={closeUpdateConfirm}
       onConfirm={confirmUpdate}
       open={updateConfirmOpen}
-      title={t.status.updateHermesConfirmTitle ?? `${t.status.updateHermes}?`}
+      title={t.status.updateHermesConfirmTitle}
     />
     </>
   );

@@ -29,6 +29,7 @@ import {
   toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
+import type { ToolTrailEntry } from '../types.js'
 import type {
   ActiveTool,
   ActivityItem,
@@ -686,6 +687,73 @@ interface Group {
   label: string
 }
 
+function buildTrailGroups(trail: ToolTrailEntry[], t: Theme, T: ReturnType<typeof useT>['chatBits']['thinking']) {
+  const groups: Group[] = []
+  const meta: DetailRow[] = []
+  const pushDetail = (row: DetailRow) => (groups.at(-1)?.details ?? meta).push(row)
+
+  for (const [i, line] of trail.entries()) {
+    const parsed = typeof line === 'string' ? parseToolTrailResultLine(line) : null
+
+    if (parsed) {
+      groups.push({
+        color: parsed.mark === '✗' ? t.color.error : t.color.text,
+        content: parsed.call,
+        details: [],
+        key: `tr-${i}`,
+        label: parsed.call
+      })
+
+      if (parsed.detail) {
+        pushDetail({
+          color: parsed.mark === '✗' ? t.color.error : t.color.muted,
+          content: parsed.detail,
+          dimColor: parsed.mark !== '✗',
+          key: `tr-${i}-d`
+        })
+      }
+
+      continue
+    }
+
+    if (typeof line !== 'string' && line.kind === 'draft') {
+      const label = toolTrailLabel(line.name.trim())
+
+      groups.push({
+        color: t.color.text,
+        content: label,
+        details: [{ color: t.color.muted, content: T.drafting, dimColor: true, key: `tr-${i}-d` }],
+        key: `tr-${i}`,
+        label
+      })
+
+      continue
+    }
+
+    // The trail line is a fixed marker the store emits; only its display is localized.
+    if (typeof line !== 'string' && line.kind === 'analyze') {
+      pushDetail({
+        color: t.color.muted,
+        dimColor: true,
+        key: `tr-${i}`,
+        content: groups.length ? (
+          <>
+            <Spinner color={t.color.accent} variant="think" /> {T.analyzingToolOutput}
+          </>
+        ) : (
+          T.analyzingToolOutput
+        )
+      })
+
+      continue
+    }
+
+    meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
+  }
+
+  return { groups, meta }
+}
+
 export const ToolTrail = memo(function ToolTrail({
   busy = false,
   commandOverride = false,
@@ -723,7 +791,7 @@ export const ToolTrail = memo(function ToolTrail({
   t: Theme
   tools?: ActiveTool[]
   toolTokens?: number
-  trail?: string[]
+  trail?: ToolTrailEntry[]
   activity?: ActivityItem[]
 }) {
   const T = useT().chatBits.thinking
@@ -833,68 +901,7 @@ export const ToolTrail = memo(function ToolTrail({
 
   // ── Build groups + meta ────────────────────────────────────────
 
-  const groups: Group[] = []
-  const meta: DetailRow[] = []
-  const pushDetail = (row: DetailRow) => (groups.at(-1)?.details ?? meta).push(row)
-
-  for (const [i, line] of trail.entries()) {
-    const parsed = parseToolTrailResultLine(line)
-
-    if (parsed) {
-      groups.push({
-        color: parsed.mark === '✗' ? t.color.error : t.color.text,
-        content: parsed.call,
-        details: [],
-        key: `tr-${i}`,
-        label: parsed.call
-      })
-
-      if (parsed.detail) {
-        pushDetail({
-          color: parsed.mark === '✗' ? t.color.error : t.color.muted,
-          content: parsed.detail,
-          dimColor: parsed.mark !== '✗',
-          key: `tr-${i}-d`
-        })
-      }
-
-      continue
-    }
-
-    if (line.startsWith('drafting ')) {
-      const label = toolTrailLabel(line.slice(9).replace(/…$/, '').trim())
-
-      groups.push({
-        color: t.color.text,
-        content: label,
-        details: [{ color: t.color.muted, content: T.drafting, dimColor: true, key: `tr-${i}-d` }],
-        key: `tr-${i}`,
-        label
-      })
-
-      continue
-    }
-
-    // The trail line is a fixed marker the store emits; only its display is localized.
-    if (line === 'analyzing tool output…') {
-      pushDetail({
-        color: t.color.muted,
-        dimColor: true,
-        key: `tr-${i}`,
-        content: groups.length ? (
-          <>
-            <Spinner color={t.color.accent} variant="think" /> {T.analyzingToolOutput}
-          </>
-        ) : (
-          T.analyzingToolOutput
-        )
-      })
-
-      continue
-    }
-
-    meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
-  }
+  const { groups, meta } = buildTrailGroups(trail, t, T)
 
   for (const tool of tools) {
     // A bridged call names its inner calls; anything else is still name + preview.

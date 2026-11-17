@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
+import type { SessionCompressResponse } from '@hermes/shared/gateway-types'
 import { CANONICAL_REASONING_EFFORTS, TUI_SESSION_MODEL_FLAG } from '@hermes/shared/slash-input'
 
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
@@ -8,6 +9,7 @@ import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { getUiState, patchUiState } from '../uiStore.js'
 
+import { printCompressionSummary } from './compressionSummary.js'
 import type { SlashRunCtx } from './types.js'
 
 interface MutationGateway {
@@ -344,7 +346,7 @@ export async function switchCanonicalModel(
   }
 }
 
-type CompressSummary = { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
+type CompressSummary = SessionCompressResponse['summary']
 
 /** The bar's prompt size is the previous reply. Manual /compress does not call the
  *  chat model, and nothing publishes `session.usage` for it, so that size would
@@ -364,6 +366,10 @@ function usageAfterManualCompress<U extends { compressions?: null | number }>(us
 
 /** The authority's report (headline, token line, note), as the native /compress prints it. */
 function printCompressSummary(summary: CompressSummary, ctx: SlashRunCtx) {
+  if (printCompressionSummary(summary, ctx.transcript.sys)) {
+    return
+  }
+
   ctx.transcript.sys(
     summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed')
   )

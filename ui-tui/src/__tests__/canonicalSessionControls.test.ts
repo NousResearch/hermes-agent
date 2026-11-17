@@ -1,8 +1,12 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
+afterEach(resetLocale)
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
 const info = { model: 'old', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 4 }
@@ -384,4 +388,32 @@ it('a guarded switch re-asks with the effort riding the confirmed re-send', asyn
     { model: 'pricey', reasoning: 'max', confirm: 'tok-1' }
   ])
   expect(getUiState().info?.model).toBe('pricey')
+})
+
+it('canonical compression localizes structured refusal feedback without changing the transcript', async () => {
+  activateZh()
+  const { ctx, request, slash } = harness()
+  request.mockImplementation(async (method: string) =>
+    method === 'session.resume'
+      ? ({ revision: 8, execution_generation: 4, info, messages: [] } as any)
+      : ({
+          operation: 'compress',
+          status: 'noop',
+          summary: {
+            headline: 'Compression refused',
+            before_count: 12,
+            after_count: 12,
+            before_tokens: 120000,
+            after_tokens: 130000,
+            noop: true,
+            aborted: true,
+            refused_would_grow: true
+          }
+        } as any)
+  )
+  slash('/compress')
+  await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+  expect(ctx.transcript.sys).toHaveBeenCalledWith('已拒绝压缩（摘要会使对话变大）：保留了 12 条消息')
+  expect(ctx.transcript.sys).toHaveBeenCalledWith('  预计请求大小：约 120000 个 token（未变化）')
+  expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
 })

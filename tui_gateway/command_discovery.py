@@ -24,8 +24,20 @@ _SLASH_EXTRAS = [
     ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]
 
 
-def _item(text: str, meta: str, display: str | None = None) -> dict:
-    return {"text": text, "display": display if display is not None else text, "meta": meta}
+def _item(
+    text: str,
+    meta: str,
+    display: str | None = None,
+    *,
+    meta_key: str | None = None,
+    meta_vars: dict | None = None,
+) -> dict:
+    item = {"text": text, "display": display if display is not None else text, "meta": meta}
+    if meta_key:
+        item["meta_key"] = meta_key
+    if meta_vars:
+        item["meta_vars"] = meta_vars
+    return item
 
 
 def _skill_usage_lookup():
@@ -83,10 +95,12 @@ _DETAILS_SECTIONS = ("thinking", "tools", "subagents", "activity")
 _DETAILS_MODES = ("hidden", "collapsed", "expanded")
 
 
-def _details_root_meta(candidate: str) -> str:
+def _details_root_meta(candidate: str) -> tuple[str, str]:
     if candidate in _DETAILS_SECTIONS:
-        return "section override"
-    return "cycle global mode" if candidate == "cycle" else "global mode"
+        return "section override", "completion.sectionOverride"
+    if candidate == "cycle":
+        return "cycle global mode", "completion.cycleGlobalMode"
+    return "global mode", "completion.globalMode"
 
 
 def _details_completions(text: str) -> list[dict] | None:
@@ -102,22 +116,42 @@ def _details_completions(text: str) -> list[dict] | None:
     root_candidates = (*_DETAILS_MODES, "cycle", *_DETAILS_SECTIONS)
     if not body or (not parts and trailing):
         lead = "" if trailing else " "
-        return [_item(f"{lead}{c}", _details_root_meta(c)) for c in root_candidates]
+        return [
+            _item(f"{lead}{c}", meta, meta_key=meta_key)
+            for c in root_candidates
+            for meta, meta_key in (_details_root_meta(c),)
+        ]
     if len(parts) == 1 and not trailing:
         prefix = parts[0].lower()
-        return [_item(c, _details_root_meta(c)) for c in root_candidates if c.startswith(prefix) and c != prefix]
+        return [
+            _item(c, meta, meta_key=meta_key)
+            for c in root_candidates
+            if c.startswith(prefix) and c != prefix
+            for meta, meta_key in (_details_root_meta(c),)
+        ]
     section = parts[0].lower() if parts else ""
     if section not in _DETAILS_SECTIONS:
         return []
 
-    def section_meta(candidate: str) -> str:
-        return f"clear {section} override" if candidate == "reset" else f"set {section}"
+    def section_meta(candidate: str) -> tuple[str, str]:
+        if candidate == "reset":
+            return f"clear {section} override", "completion.clearSectionOverride"
+        return f"set {section}", "completion.setSection"
     mode_candidates = (*_DETAILS_MODES, "reset")
     if len(parts) == 1:  # trailing space after the section
-        return [_item(c, section_meta(c)) for c in mode_candidates]
+        return [
+            _item(c, meta, meta_key=meta_key, meta_vars={"section": section})
+            for c in mode_candidates
+            for meta, meta_key in (section_meta(c),)
+        ]
     if len(parts) == 2 and not trailing:
         prefix = parts[1].lower()
-        return [_item(c, section_meta(c)) for c in mode_candidates if c.startswith(prefix) and c != prefix]
+        return [
+            _item(c, meta, meta_key=meta_key, meta_vars={"section": section})
+            for c in mode_candidates
+            if c.startswith(prefix) and c != prefix
+            for meta, meta_key in (section_meta(c),)
+        ]
     return []
 
 
@@ -129,13 +163,49 @@ class _Catalog:
         self.pairs: list[list[str]] = []
         self.canon: dict[str, str] = {}
         self.commands: dict[str, dict[str, str | None]] = {}
+        self.description_keys: dict[str, str] = {}
         self.cat_map: dict[str, list[list[str]]] = {}  # insertion order = category order
         self.plugin_commands: dict[str, str] = {}  # every plugin command, also those a display row hides
 
-    def add(self, key: str, desc: str, cat: str) -> None:
+    def add(self, key: str, desc: str, cat: str, *, description_key: str | None = None) -> None:
         self.canon[key.lower()] = key
         self.pairs.append([key, desc])
+        if description_key:
+            self.description_keys[key] = description_key
+        else:
+            self.description_keys.pop(key, None)
         self.cat_map.setdefault(cat, []).append([key, desc])
+
+
+def _command_category_key(category: str) -> str:
+    """Stable presentation id; clients own localized category copy."""
+    return {
+        "Session": "session",
+        "Configuration": "configuration",
+        "Tools & Skills": "tools",
+        "Info": "info",
+        "Exit": "exit",
+        "TUI": "tui",
+        "User commands": "userCommands",
+    }.get(category, "")
+
+
+def command_presentation_messages(lang: str) -> dict[str, str]:
+    """Reuse core command translations and usage hints for the selected TUI language."""
+    from agent.i18n import t
+    from hermes_cli.commands import COMMAND_REGISTRY
+
+    messages = {}
+    for cmd in COMMAND_REGISTRY:
+        key = f"slash.{cmd.name}.description"
+        description = t(key, lang=lang)
+        if description == key:
+            description = cmd.description
+        if cmd.args_hint:
+            description = t("slash.shared.usage_suffix", lang=lang,
+                            description=description, name=cmd.name, args_hint=cmd.args_hint)
+        messages[f"slash.{cmd.name}"] = description
+    return messages
 
 
 def _catalog_registry(cat: _Catalog, module_loader) -> None:
@@ -145,13 +215,13 @@ def _catalog_registry(cat: _Catalog, module_loader) -> None:
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
         if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
             continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
+        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category, description_key=cmd.name)
         for a in cmd.aliases:
             cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
     for name, desc, category in _TUI_EXTRA:
         # Registry command/alias wins over a colliding TUI extra (e.g. /compact, /sessions).
         if name.lower() not in cat.canon:
-            cat.add(name, desc, category)
+            cat.add(name, desc, category, description_key=name.lstrip("/"))
 
 
 def _catalog_quick_commands(cat: _Catalog, load_cfg) -> None:
@@ -245,7 +315,8 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
         "commands": cat.commands,
-        "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
+        "description_keys": cat.description_keys,
+        "categories": [{"name": c, "key": _command_category_key(c), "pairs": rows} for c, rows in cat.cat_map.items()],
         "skills": skills, "skill_count": len(skills), "warning": warning, "plugin_discovery_error": plugin_error,
         "plugin_commands": cat.plugin_commands}
 
@@ -260,6 +331,7 @@ def slash_completions(text: str = "", scope=None) -> dict:
     from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_interactive_skill_commands
+    from hermes_cli.commands import COMMAND_REGISTRY
     from agent.skill_bundles import get_skill_bundles
     with scope if scope is not None else contextlib.nullcontext():
         skill_commands, skill_bundles = dict(get_interactive_skill_commands()), dict(get_skill_bundles())
@@ -269,15 +341,33 @@ def slash_completions(text: str = "", scope=None) -> dict:
     # skills/bundles are the only completions for an inline `/skill` typed mid-message.
     skill_names = {key.lstrip("/").lower() for key in (*skill_commands, *skill_bundles)}
 
+    command_keys = {
+        f"/{key}": cmd.name
+        for cmd in COMMAND_REGISTRY
+        for key in (cmd.name, *cmd.aliases)
+    }
+
     def to_items(doc: Document) -> list[dict]:
         # display/display_meta are FormattedText; the TUI contract is a plain string
         # (the raw list trips Ink's row layout into 1-char truncation).
-        return [
-            {
-                "text": c.text, "display": to_plain_text(c.display) if c.display else c.text,
-                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
-                "kind": "skill" if c.text.strip().lstrip("/").lower() in skill_names else "command"}
-            for c in completer.get_completions(doc, None)]
+        items = []
+        for completion in completer.get_completions(doc, None):
+            item = {
+                "text": completion.text,
+                "display": to_plain_text(completion.display) if completion.display else completion.text,
+                "meta": to_plain_text(completion.display_meta) if completion.display_meta else "",
+                "kind": (
+                    "skill"
+                    if completion.text.strip().lstrip("/").lower() in skill_names
+                    else "command"
+                ),
+            }
+            token = completion.text if completion.text.startswith("/") else f"/{completion.text}"
+            if " " not in doc.text and item["kind"] == "command":
+                if description_key := command_keys.get(token):
+                    item["meta_key"] = description_key
+            items.append(item)
+        return items
     items = to_items(Document(text, len(text)))
     # Rank + bound while a `/token` is under the cursor (the one stage skills are
     # offered at); an argument stage (`/personality `) keeps its command's order.
@@ -296,7 +386,7 @@ def slash_completions(text: str = "", scope=None) -> dict:
     text_lower = text.lower()
     for extra_text, extra_meta in _SLASH_EXTRAS:
         if extra_text.startswith(text_lower) and not any(item["text"] == extra_text for item in items):
-            items.append({**_item(extra_text, extra_meta), "kind": "command"})
+            items.append({**_item(extra_text, extra_meta, meta_key=extra_text.lstrip("/")), "kind": "command"})
     if (details_items := _details_completions(text)) is not None:
         return {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)}
     return {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1}

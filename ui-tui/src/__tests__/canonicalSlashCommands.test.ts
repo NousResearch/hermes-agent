@@ -4,6 +4,9 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { noteCanonicalCompletion } from '../app/slash/canonicalSessionCommands.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
 
 // pastels §2.5: on the shared (canonical) gateway Ink's /title /undo /retry /usage /tools must use
 // the verbs that gateway serves — never the legacy session.title / session.undo / session.usage /
@@ -168,6 +171,7 @@ it('/voice on|off|status run on the owner and mirror its per-session voice mode,
 })
 
 beforeEach(() => {
+  resetLocale()
   resetUiState()
   patchUiState({ sid: 'owner', info: { model: 'm', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 3 } as any })
 })
@@ -496,4 +500,16 @@ it('/timestamps toggles display.timestamps on the owner (config.set) and the tra
   slash('/timestamps on')
   await flush()
   expect(sys.mock.calls.map(([text]) => String(text))).toContain('error: unknown config key: timestamps')
+})
+
+it('explains profile-wide MCP confirmation in the active language without confirming it', async () => {
+  activateZh()
+  const { request, slash, sys } = harness()
+  slash('/reload-mcp')
+  await flush()
+  expect(sys).toHaveBeenCalledWith('重载 MCP 会刷新此配置档的所有会话，并可能使提示缓存失效。运行 /reload-mcp now 确认。')
+  expect(sys).toHaveBeenCalledWith('Reloading MCP refreshes every chat of this profile.')
+  expect(request.mock.calls.filter(([method]) => method === 'reload.mcp')).toEqual([
+    ['reload.mcp', { session_id: 'owner' }]
+  ])
 })

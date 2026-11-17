@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import { useMemo } from "react";
 import { Markdown } from "@/components/Markdown";
 import {
@@ -34,6 +35,7 @@ function ReasoningSegment({
   segment: ReasoningMarkupSegment;
   highlightTerms?: string[];
 }) {
+  const { t } = useI18n();
   if (segment.type === "prose") {
     return (
       <Markdown
@@ -43,7 +45,7 @@ function ReasoningSegment({
     );
   }
 
-  const label = segment.type === "action" ? "Action" : "Result";
+  const label = segment.type === "action" ? t.sessions.reasoningAction : t.sessions.reasoningResult;
 
   return (
     <div className="border border-border bg-secondary/40">

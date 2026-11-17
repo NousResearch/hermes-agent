@@ -4,6 +4,13 @@
 
 export const slashCmdCoreEn = {
   core: {
+    timestamps: {
+      on: 'on',
+      off: 'off',
+      state: (state: string) => `timestamps ${state}`,
+      usage: 'usage: /timestamps [on|off|status]'
+    },
+    config: { title: 'Config' },
     help: {
       skillCommandsAvailable: (count: string) => `${count} skill commands available — /skills to browse`,
       connectors: 'manage connector accounts (rename, add another, reconnect, remove)',

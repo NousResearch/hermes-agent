@@ -2149,14 +2149,14 @@ DEFAULT_CONFIG = {
         # supervisor can't hammer the process. max_starts <= 0 disables. Env escape hatches:
         # HERMES_GATEWAY_MAX_STARTS / HERMES_GATEWAY_START_WINDOW_S.
         "respawn_storm": {"max_starts": 5, "window_seconds": 120},
-        # Prefix user messages IN THE MODEL'S CONTEXT with a timestamp (e.g. "[Tue 2026-04-28
-        # 13:40:53 CEST]") for temporal awareness. Persisted transcripts stay clean (timestamp is
-        # message metadata regardless), so enabling later surfaces past send-times too.
+        # Prefix user messages IN THE MODEL'S CONTEXT with a timestamp ("[Tue 2026-04-28 13:40:53 CEST]");
+        # persisted transcripts stay clean (it is message metadata), so enabling surfaces past send-times too.
         "message_timestamps": {"enabled": False},
-        # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
-        # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or
-        # huge remote URLs (incl. image URLs in agent replies) can OOM-kill constrained deployments.
-        # Enforced in gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
+        # Chat workspaces: per_thread worktree = one git worktree per repo per thread of the /workspace dir.
+        "workspaces": {"per_thread": "off", "fetch_fresh_seconds": 60, "dir": "", "repos": []},
+        # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk: media is read
+        # fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or huge remote URLs can OOM-kill
+        # constrained deployments. Enforced in gateway/platforms/base.py for every adapter. 0 = no cap (128 MiB).
         "max_inbound_media_bytes": 134217728,
         # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
         # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must

@@ -253,6 +253,7 @@ a margin. A large multi-profile boot can therefore run past systemd's default
 | `/approve` | Approve a pending dangerous command |
 | `/deny` | Reject a pending dangerous command |
 | `/sethome` | Set this chat as the home channel |
+| `/workspace [path\|clear\|status]` (alias `/cwd`) | Bind this chat to a project directory (see [Chat workspaces](#chat-workspaces)) |
 | `/compress` | Manually compress conversation context |
 | `/title [name]` | Set or show the session title |
 | `/resume [name]` | Resume a previously named session |
@@ -268,6 +269,31 @@ a margin. A large multi-profile boot can therefore run past systemd's default
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
 | `/<skill-name>` | Invoke any installed skill |
+
+## Chat workspaces
+
+By default every chat works in `terminal.cwd`. `/workspace /abs/path` binds the current chat (DM, channel or thread) to a directory instead: the terminal, file tools, `@` references, context files (`AGENTS.md`), `/rollback` and `/diff` all use it. The binding is saved on the chat, survives gateway restarts and `/new`, and `/workspace clear` returns the chat to `terminal.cwd`. `/workspace` alone shows where the chat works now.
+
+### Per-thread worktrees (opt-in)
+
+With `gateway.workspaces.per_thread: worktree`, every chat thread works on its own git branch instead of sharing the checkout. On the first turn of a thread Hermes forks the bound directory (or `gateway.workspaces.dir` when the chat bound none):
+
+- a git repository gets one worktree, `<repo>/.worktrees/<thread>`, on branch `hermes/<thread>`;
+- a folder of repositories gets one worktree per repository, linked by name under `<folder>/.worktrees/<thread>/`, with an `AGENTS.md` there titled "Repositories in this workspace" listing each one.
+
+Each fork branches from the freshly fetched remote default branch; the fetch is skipped when the repository was fetched less than `fetch_fresh_seconds` ago. A thread never waits on a clone: repositories listed in `gateway.workspaces.repos` that are not cloned yet show up in the index as `not cloned`, with the `git clone --filter=blob:none` command the agent runs when it needs one. Two threads forking the same repository at once are serialized. The forks are ordinary Hermes worktrees, so the stale-worktree sweep (`worktrees.*`) archives and removes idle ones.
+
+```yaml
+gateway:
+  workspaces:
+    per_thread: worktree      # off (default) | worktree
+    fetch_fresh_seconds: 60   # skip the fork-time fetch when FETCH_HEAD is younger
+    dir: ~/work/acme          # optional default for chats that never ran /workspace
+    repos:                    # optional: repositories the folder should hold
+      - {path: web, url: https://github.com/acme/web.git}
+```
+
+The fork is chosen once, when the thread's conversation starts, so the system prompt stays cached for the whole conversation. `/workspace` moves it (the next turn starts in the new directory).
 
 ## Session Management
 

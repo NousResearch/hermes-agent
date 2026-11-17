@@ -1,21 +1,25 @@
 name: hermes-make-it-smart
 repo: https://github.com/tesla963/hermes-make-it-smart
-sha: 4598aefe1ef7ea851e4f303bef16605547ec1ffa
+sha: f0f79708e8a8b2dee869f3a2ee114463feb588c4
 description: >-
   Canonical catalog over every Hermes profile. Reads the local state.db files, gives each
   session the "NNN [Subject] MMM [Tag] [Tag] Description · Verb" name, and exposes faceted
   filters (subject, maker, context, intention, theme, year, project) as a native Desktop
-  page. Includes a Pending view that attributes every memory/skill approval request to the
-  session that produced it, and a Testing tab that simulates the rename, writes a mandatory
-  backup, commits through the host's session.title API and offers one-click revert.
+  page. The window is a three-column box —facet panel, vertical Session Info rail, content—
+  and every window (Session DB, Process, New Rules) keeps its own filters and its own
+  universe, so narrowing one never touches another. Includes a Pending view that attributes
+  every memory/skill approval request to the session that produced it, and a Testing tab
+  that simulates the rename, writes a mandatory backup, commits through the host's
+  session.title API and offers one-click revert.
   Disclosure — reads session titles and message excerpts from the local Hermes databases on
   the user's machine; nothing is sent over the network; the only write is a session title,
-  and only when the user presses Commit.
+  and only when the user presses Commit. Classification through a model is opt-in, off by
+  default, and every excerpt is redacted before it leaves the machine.
 maintainer: tesla963
 tier: community
 category: productivity
 docs_url: https://github.com/tesla963/hermes-make-it-smart#readme
-version: "0.29.0"
+version: "0.30.0"
 platforms: []
 capabilities:
   provides_tools:

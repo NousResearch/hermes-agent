@@ -1,0 +1,9 @@
+[
+  {
+    "repo": "https://github.com/erosika/rom-studio",
+    "sha": "ed04b3ce35d6c942c4e25a7285f6c46dc911b9d6",
+    "path": "kit/kit.ts",
+    "sha256": "1196e7fc3b53e506f11381ac4fa8f7d234d3459613d971b01c4c9f9d3f0fefc4",
+    "why": "downloads the third-party poryscript 3.6.1 compiler from its GitHub release, checks it against a fixed sha256 and unpacks it into kit/.cache; never fetches or replaces rom-studio's own files (PR #153798)"
+  }
+]

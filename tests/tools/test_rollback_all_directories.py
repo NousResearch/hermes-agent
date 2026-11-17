@@ -26,7 +26,6 @@ class TestListAllCheckpoints:
     def test_aggregates_projects_and_labels_workdir(self, tmp_path, monkeypatch):
         workdir = str(tmp_path / "proj")
         store = _make_store_with_project(tmp_path, workdir)
-        monkeypatch.setattr(cm, "CHECKPOINT_BASE", tmp_path)
         monkeypatch.setattr(cm, "_store_path", lambda base=None: store)
 
         mgr = CheckpointManager(enabled=True)
@@ -43,7 +42,6 @@ class TestListAllCheckpoints:
         assert results[0]["workdir"] == workdir
 
     def test_empty_store_returns_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cm, "CHECKPOINT_BASE", tmp_path)
         monkeypatch.setattr(cm, "_store_path", lambda base=None: tmp_path / "missing")
         assert CheckpointManager(enabled=True).list_all_checkpoints() == []
 

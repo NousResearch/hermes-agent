@@ -4,7 +4,8 @@ Legacy compression rotation mints a new physical ``session_id`` mid-conversation
 into a fresh cache bucket. ``resolve_prompt_cache_scope()`` maps the physical id to the ROOT
 of its compression lineage — NOT ``get_conversation_root`` (the Portal-attribution walk),
 which would collapse /branch children and delegate trees into one id. ``/new`` starts a
-fresh scope; fork children (branch, delegate, tool-tagged) are isolated. Hosts minting one id
+fresh scope; fork children (branch, delegate, tool-tagged) are isolated from their parent, and one
+parent's delegated children share a scope of their own (``sibling_cache_scope``). Hosts minting one id
 per RESPONSE declare the conversation via ``gateway_session_key``, which wins over the lineage
 walk and is hashed to ``gwk_<sha256[:24]>`` (it embeds platform/chat/user identifiers).
 """
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _MEMO_ATTR = "_prompt_cache_scope_memo"
 _DECLARED_SCOPE_PREFIX = "gwk_"
+_SIBLING_SCOPE_PREFIX = "sub_"
 
 
 def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
@@ -35,6 +37,35 @@ def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
         if isinstance(root, str) and root:
             return root
     return None
+
+
+def conversation_id(agent: Any) -> str:
+    """The id plugins key per-conversation state on: the compression-lineage root of ``agent.session_id``
+    (the cache scope's walk, plus ``--source tool`` rotations), so compression rotation keeps it while
+    ``/new`` and ``/branch`` start a new one. A delegated child or review fork reports its parent's, stamped
+    at spawn. Memoized per physical id."""
+    inherited = getattr(agent, "_inherited_conversation_id", None)
+    if isinstance(inherited, str) and inherited:
+        return inherited
+    sid = str(getattr(agent, "session_id", None) or "")
+    memo = getattr(agent, "_conversation_id_memo", None)
+    if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == sid:
+        return memo[1]
+    # A plugin hook can ask first from a tool callback Relay drives on its loop, where WorkerRPC
+    # refuses a synchronous read for the rest of the turn (#139029): both walks run off the loop.
+    from agent.runtime_session_store import call_off_event_loop
+    db = getattr(agent, "_session_db", None)
+    root = call_off_event_loop(_lineage_root, sid, db) if sid else None
+    if root == sid:
+        try:
+            root = call_off_event_loop(db.get_tool_rotation_root, sid)
+        except Exception:
+            # Not memoized: the physical id is right for now, and a later call retries the walk.
+            logger.debug("tool-source rotation walk failed", exc_info=True)
+            return sid
+    if root is not None:
+        agent._conversation_id_memo = (sid, root)
+    return root or sid
 
 
 def _agent_source(
@@ -139,6 +170,12 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     fork, else the declared scope, else the compression-lineage root of ``agent.session_id``
     (the physical id without ancestry/DB). Memoized on the agent."""
     inherited = getattr(agent, "_inherited_cache_scope", None)
+    # Two sibling streams under one key evict each other on a slot-keyed route. Read per call:
+    # a child can fall back onto such a route after it was built.
+    if is_sibling_cache_scope(inherited) and is_slot_keyed_cache_route(
+        getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""),
+    ):
+        inherited = None
     if isinstance(inherited, str) and inherited:
         return _apply_fork_tag(agent, inherited)
     sid = str(getattr(agent, "session_id", None) or "")
@@ -161,6 +198,25 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
         except Exception:
             pass  # frozen/slotted doubles: resolution works, just unmemoized
     return _apply_fork_tag(agent, scope)
+
+
+def sibling_cache_scope(parent: Any) -> Optional[str]:
+    """One cache scope for every child of *parent* (``sub_<sha256[:24]>`` of the parent's scope).
+
+    Providers that cache automatically only match inside the scope the client sends, and a
+    scope per child made each sibling pay for the prefix they all share. The scope is not the
+    parent's own, so a delegation tree adds one bucket rather than joining its parent's.
+    ``resolve_prompt_cache_scope`` ignores it while the child is on a slot-keyed route.
+    """
+    parent_scope = resolve_prompt_cache_scope_safe(parent)
+    if not parent_scope:
+        return None
+    return _SIBLING_SCOPE_PREFIX + hashlib.sha256(parent_scope.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+
+def is_sibling_cache_scope(scope: Any) -> bool:
+    """True when *scope* is the one a parent's children share (:func:`sibling_cache_scope`)."""
+    return isinstance(scope, str) and scope.startswith(_SIBLING_SCOPE_PREFIX)
 
 
 # ``<scope>::<tag>`` — double colon so gateway session keys that already contain single

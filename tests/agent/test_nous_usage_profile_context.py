@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import account_usage, billing_usage
+from agent import account_usage_nous, billing_usage
 from hermes_constants import (
     get_hermes_home,
     reset_hermes_home_override,
@@ -12,7 +12,7 @@ from hermes_constants import (
 
 @pytest.mark.parametrize(
     "fetcher",
-    [account_usage._fetch_portal_account, billing_usage.fetch_nous_account],
+    [account_usage_nous._fetch_portal_account, billing_usage.fetch_nous_account],
 )
 def test_nous_account_fetch_preserves_profile_home_in_timeout_worker(
     monkeypatch, tmp_path: Path, fetcher

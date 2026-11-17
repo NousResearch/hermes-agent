@@ -50,7 +50,7 @@ def test_collect_stats_sane_values(populated_db):
     assert stats["sessions"] >= 2
 
     fts = stats["fts_tables"]
-    assert set(fts) == {"messages_fts", "messages_fts_trigram", "messages_fts_cjk"}
+    assert set(fts) == {"messages_fts", "messages_fts_trigram"}
     for name, present in fts.items():
         assert isinstance(present, bool), name
     # Layout marker is absent (None) on legacy DBs, an int once stamped.
@@ -176,7 +176,6 @@ def _base_stats(**overrides):
         "fts_tables": {
             "messages_fts": True,
             "messages_fts_trigram": True,
-            "messages_fts_cjk": False,
         },
         "fts_storage_version": 1,
         "fts_storage_upgrade_needed": False,

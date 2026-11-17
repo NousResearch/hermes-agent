@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
+from agent.route_verdicts import route_visit
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
@@ -301,8 +302,9 @@ def settle_unrecovered_error(
     # so a second reasoning-field rejection means the route refuses the configured reasoning
     # controls themselves — nothing left to drop, so take the fallback chain now instead of
     # replaying the identical request ``max_retries`` times (#114460).
-    reasoning_spent = classified.reason == FailoverReason.reasoning_mandatory and bool(
-        getattr(_retry, "reasoning_mandatory_retry_attempted", False)
+    reasoning_spent = (
+        classified.reason == FailoverReason.reasoning_mandatory
+        and getattr(_retry, "reasoning_mandatory_retry_visit", None) == route_visit(agent)
     )
     is_client_error = (
         is_local_validation_error
@@ -362,7 +364,7 @@ def settle_unrecovered_error(
             agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
             api_messages=api_messages, messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
-            base_url=_base, model=_model, delivered=_delivered,
+            base_url=_base, model=_model, delivered=_delivered, current_turn_user_idx=current_turn_user_idx,
         ))
 
     # An attended session on the free model does not sit through a long cooldown: end the attempt

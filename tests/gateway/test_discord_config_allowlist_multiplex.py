@@ -107,8 +107,8 @@ def test_guild_channel_message_and_button_honor_config_allow_from(config_only_di
     assert _component_check_auth(click, snapshot, set(), live_auth=adapter._component_live_auth) is expected
 
 
-def test_telegram_group_still_requires_group_allow_from(monkeypatch):
-    """Guard: Telegram's ``allow_from`` is DM-only and must not admit the user in a group."""
+def test_telegram_allow_from_admits_the_user_in_groups_too(monkeypatch):
+    """Telegram's ``allow_from`` is global (DMs + groups, per telegram.md); a stranger stays denied."""
     from gateway.config import GatewayConfig, PlatformConfig
     from gateway.pairing import PairingStore
     from gateway.run import GatewayRunner
@@ -131,7 +131,33 @@ def test_telegram_group_still_requires_group_allow_from(monkeypatch):
                              user_id="777")
 
     assert runner._is_user_authorized(source("dm")) is True
-    assert runner._is_user_authorized(source("group")) is False
+    assert runner._is_user_authorized(source("group")) is True
+
+
+def test_discord_ignores_a_stray_group_allow_from(monkeypatch):
+    """Discord has no group list: a ``group_allow_from`` the shared-key bridge copies into its extra
+    must not admit that user in a guild channel (the env path has no Discord group list either)."""
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.pairing import PairingStore
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    for key in ("DISCORD_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(key, raising=False)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    adapter = object.__new__(DiscordAdapter)
+    adapter.config = PlatformConfig(enabled=True, extra={"allow_from": USER, "group_allow_from": STRANGER})
+    runner.config.platforms = {Platform.DISCORD: adapter.config}
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner.pairing_store = PairingStore(profile="default")
+
+    def source(user_id):
+        return SessionSource(platform=Platform.DISCORD, chat_id=CHANNEL, chat_type="group", user_id=user_id)
+
+    assert runner._is_user_authorized(source(USER)) is True
+    assert runner._is_user_authorized(source(STRANGER)) is False
 
 
 def test_button_click_in_a_thread_resolves_a_thread_scoped_route():

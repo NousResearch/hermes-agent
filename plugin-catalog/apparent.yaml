@@ -1,0 +1,21 @@
+name: apparent
+title: Apparent
+repo: https://github.com/tryapparent/apparent
+sha: 8c832bde73c66a36edb72fc13d98a886de8748a8
+subdir: hermes
+description: "Read screen, voice and drawing recordings as timestamped instructions and visual evidence in Hermes. Disclosure — Runs the separately installed Apparent CLI (`apparent fetch`/`apparent inspect`) on the Hermes host, outside the terminal sandbox and without an approval prompt, with only PATH, HOME, TMPDIR and APPARENT_CONFIG passed to it. For Connect IDs, that CLI downloads the recording from the Apparent Connect server it is configured for (default https://hosted.tryapparent.com) using its own sign-in. Recording transcripts and images are then sent to your model provider as tool results."
+maintainer: simonvanlaak
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.3.1"
+docs_url: https://github.com/tryapparent/apparent/blob/8c832bde73c66a36edb72fc13d98a886de8748a8/hermes/README.md
+platforms: [linux, macos]
+known_issues:
+  - Requires a separately installed Apparent CLI on the Hermes backend host; plugin installation does not install the recorder.
+  - Desktop composer integration remains a source candidate requiring a generated Desktop package and compatible Hermes runtime/session APIs; installed acceptance remains pending.
+capabilities:
+  provides_tools: [apparent_inspect]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

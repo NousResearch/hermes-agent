@@ -268,3 +268,22 @@ async def test_second_root_dm_does_not_cancel_an_in_flight_topic_transfer(tmp_pa
     landed = {first.source.thread_id, second.source.thread_id}
     assert landed == {str(NEW_TOPIC_ID + i) for i in range(created)}, "a created topic was left empty"
     assert len(runs) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("create_fails", [True, False], ids=["fallback-topic", "new-topic"])
+async def test_transferred_root_dm_takes_the_topics_prompt_inputs(tmp_path, monkeypatch, create_fails):
+    """A root DM moved by the transfer hook runs in the topic's session, so it carries the topic's
+    channel prompt and skill, not the root chat's (the same inputs a message inside the topic gets)."""
+    target = "222" if create_fails else str(NEW_TOPIC_ID)
+    extra = {"dm_topic_auto_transfer": True,
+             "channel_prompts": {"208214988": "root prompt", target: "topic prompt"}}
+    _runner, adapter, db, _runs = _rig(tmp_path, monkeypatch, extra=extra, create_fails=create_fails)
+    adapter._dm_topics["208214988:Research"] = int(target)
+    adapter._dm_topics_config = [{"chat_id": 208214988, "topics": [{"name": "Research", "skill": "arxiv"}]}]
+
+    event = await _deliver_root_dm(adapter)
+
+    assert event.source.thread_id == target
+    assert (event.source.chat_topic, event.auto_skill, event.channel_prompt) == ("Research", "arxiv", "topic prompt")
+    db.close()

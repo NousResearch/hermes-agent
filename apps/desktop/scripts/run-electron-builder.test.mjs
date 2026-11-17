@@ -75,15 +75,14 @@ test('strict builder refuses absent inputs before loading electron-builder', () 
   assert.doesNotMatch(result.stdout, /electron-builder\s+version/)
 })
 
-test('npm run builder forwards an apostrophe path to the wrapper verbatim', () => {
+test('pnpm run builder forwards an apostrophe path to the wrapper verbatim', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'builder-'))
   const manifest = path.join(root, "r'y'z", 'missing.json')
-  const windows = process.platform === 'win32'
   try {
-    // Windows needs a shell for npm.cmd, which joins argv unquoted.
-    const result = spawnSync('npm', ['run', 'builder', '--silent', '--ignore-scripts', '--',
-      '--prepared', windows ? `"${manifest}"` : manifest, '--native-deps', 'missing', '--dir'],
-    { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8', shell: windows })
+    // pnpm is a native executable (pnpm.exe on Windows): no shell joins argv here.
+    const result = spawnSync('pnpm', ['--silent', 'run', 'builder',
+      '--prepared', manifest, '--native-deps', 'missing', '--dir'],
+    { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8' })
     assert.notEqual(result.status, 0)
     assert.ok(result.stderr.includes(manifest), result.stderr)
   } finally {

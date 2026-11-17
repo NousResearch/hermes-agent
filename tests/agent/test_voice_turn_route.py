@@ -37,14 +37,21 @@ def test_voice_turn_routes_then_restores(tmp_path, monkeypatch, voice_window_ok)
         agent = _agent(home, main.base_url)
 
         first = agent.run_conversation("typed question")
+        # Verdicts the main route earned: the voice route starts without them, main gets them back.
+        agent._stream_options_unsupported = True
+        agent._codex_reasoning_replay_enabled, agent._codex_reasoning_replay_rejected = False, True
         agent._voice_turn_pending = True
         spoken = agent.run_conversation("spoken question", conversation_history=first["messages"])
         agent.run_conversation("typed again", conversation_history=spoken["messages"])
+        assert agent._stream_options_unsupported is True
+        assert (agent._codex_reasoning_replay_enabled, agent._codex_reasoning_replay_rejected) == (False, True)
+        assert "stream_options" not in main.main_requests()[-1]
 
         main_models = [r["model"] for r in main.main_requests()]
         voice_models = [r["model"] for r in voice.main_requests()]
         if voice_window_ok:
             assert voice_models == ["voice-model"]
+            assert "stream_options" in voice.main_requests()[0]
             # Unconfigured effort: the voice turn goes out with reasoning off, the main turns untouched.
             assert voice.main_requests()[0]["reasoning_effort"] == "none"
             assert {r["reasoning_effort"] for r in main.main_requests()} == {"medium"}

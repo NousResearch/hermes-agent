@@ -11,11 +11,11 @@ from agent.tool_executor import _ToolCallRef, _begin_tool_execution, _ensure_fil
 from agent.turn_explainers import TurnExplainersMixin
 from tools.checkpoint_manager import CheckpointManager
 from tools.terminal_tool import _active_environments, _env_lock
+from hermes_constants import get_hermes_home
 
 
 @pytest.fixture
 def manager(tmp_path, monkeypatch):
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", tmp_path / "checkpoints")
     return CheckpointManager(enabled=True)
 
 
@@ -47,10 +47,6 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
 
     monkeypatch.chdir(process_cwd)
     monkeypatch.setenv("TERMINAL_CWD", str(workspace_cwd))
-    monkeypatch.setattr(
-        "tools.checkpoint_manager.CHECKPOINT_BASE",
-        tmp_path / "checkpoints",
-    )
 
     manager = CheckpointManager(enabled=True)
     agent = SimpleNamespace(_checkpoint_mgr=manager)
@@ -87,7 +83,7 @@ def test_container_backend_task_leaves_host_store_untouched(tmp_path, manager, c
         json.dumps({"bytes_written": 1, "resolved_path": path}), False, task_id=container_task_id,
     )
     assert manager.list_checkpoints(str(host_file.parent)) == []
-    assert not (tmp_path / "checkpoints").exists()
+    assert not (get_hermes_home() / "checkpoints").exists()
 
     _ensure_file_checkpoint(agent, "write_file", {"path": path}, "local-task")
     assert len(manager.list_checkpoints(str(host_file.parent))) == 1

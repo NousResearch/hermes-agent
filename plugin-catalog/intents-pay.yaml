@@ -1,0 +1,32 @@
+name: intents-pay
+repo: https://github.com/ayinmodeolarewaju-bot/hermes-intents-pay
+sha: bbd3fad41bd3e9be2a88dcfdda57099ffc3759d9
+description: "Crypto invoices and cross-chain payment quotes for a NEAR account via the NEAR Intents 1-Click API. Dry quotes by default. A quote or invoice requires an explicit recipient — there is no default payee. Payable tool calls (invoices and non-dry quotes) wait for Hermes's approval prompt via a pre_tool_call hook. Never moves funds and never handles signing keys. Disclosure — payments plugin: sends quote and invoice details (amounts, recipient NEAR account, refund address, and an optional partner API key as X-API-Key) to the NEAR Intents 1-Click API (1click.chaindefuser.com by default); creating an invoice or a live quote produces a real deposit address that anyone can pay, gated by Hermes's approval prompt, a one-time confirmation token and a refusal under cron; never signs or sends funds; stores invoices in its plugin-data folder."
+maintainer: ayinmodeolarewaju-bot
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "1.1.0"
+title: Intents Pay
+docs_url: https://github.com/ayinmodeolarewaju-bot/hermes-intents-pay
+image: https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-intents-pay/bbd3fad41bd3e9be2a88dcfdda57099ffc3759d9/docs/screenshots/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-intents-pay/bbd3fad41bd3e9be2a88dcfdda57099ffc3759d9/docs/screenshots/dry-quote.png
+  - https://raw.githubusercontent.com/ayinmodeolarewaju-bot/hermes-intents-pay/bbd3fad41bd3e9be2a88dcfdda57099ffc3759d9/docs/screenshots/usdt-quote.png
+readme: true
+platforms: []
+known_issues:
+  - "Dry quotes on EVM and Solana send a public placeholder refund address so 1-Click can check the format. No deposit is created. A live quote rejects that placeholder and requires the payer's own refund address plus a one-time confirmation token."
+  - "Verification for this release used live dry quotes only. Completing a mainnet deposit address is gated and was not part of the test run."
+  - "A quote or invoice requires an explicit recipient. Payable tool calls wait for Hermes's approval prompt via pre_tool_call."
+capabilities:
+  provides_tools:
+    - intents_list_tokens
+    - intents_quote
+    - intents_create_invoice
+    - intents_invoice_status
+    - intents_verify_quote
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

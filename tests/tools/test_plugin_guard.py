@@ -962,7 +962,7 @@ class TestCatalogSweepFalsePositives:
 
     def test_scanner_version_contract(self):
         # A bump un-blocks previously-quarantined packages; assert the contract (changed), not a literal.
-        assert PLUGIN_SCANNER_VERSION != "plugin-guard-v11"
+        assert PLUGIN_SCANNER_VERSION not in ("plugin-guard-v11", "plugin-guard-v13")
         assert PLUGIN_SCANNER_VERSION.startswith("plugin-guard-v")
 
 

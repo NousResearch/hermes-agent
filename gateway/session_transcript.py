@@ -651,11 +651,37 @@ class SessionTranscriptMixin:
                 "empty: %s", session_id, e, exc_info=True)
             raise TranscriptReadError(session_id) from e
 
+    def retain_refused_turn_for_display(
+        self, session_id: str, *, notice: str, boundary_row_id: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Take the newest (safety-refused) user turn out of the MODEL context — exactly as
+        :meth:`rewind_session` does — while KEEPING the user's message visible in the chat as a
+        greyed refused notice (``SessionDB.retain_refused_turn_for_display``). The owner (gateway /
+        Bot Chat) calls this after the turn lease releases. ``boundary_row_id`` is the refused run's
+        original durable boundary (captured by the refusal handler); without it the target is guessed
+        from the newest user turn. Returns ``{\"retained\": True}`` on success, or ``None`` (no DB / no
+        rewindable turn / persistence failure); best-effort, so a refusal never crashes turn teardown.
+        """
+        db = self._db_for_session_id(session_id)
+        if not db:
+            return None
+        with self._get_transcript_drain_lock():
+            try:
+                retained = db.retain_refused_turn_for_display(
+                    session_id, notice=notice, boundary_row_id=boundary_row_id)
+            except Exception as e:  # health: allow BLE001 -- best-effort; a refusal must never crash teardown
+                logger.debug("retain_refused_turn_for_display: failed: %s", e)
+                return None
+            if not retained:
+                return None
+            self._clear_dirty_transcript(session_id)
+            return {"retained": True}
+
     def rewind_session(
         self, session_id: str, n: int = 1, *, require_retryable_composite: bool = False,
     ) -> Optional[dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete (``active=0``), mirroring CLI ``/undo [N]``.
-        Returns ``{"rewound_count", "turns_undone", "target_text"}`` or ``None`` (no DB / no rewindable
+        Returns ``{"rewound_count", "turns_undone", "target_text", "undo_since"}`` or ``None`` (no DB / no rewindable
         turn / persistence failure); ``n`` clamps to the oldest user turn. ``require_retryable_composite``
         is the gateway ``/retry`` guard: the selected turn must be a composite carrier whose live payload
         is losslessly replayable as text — that replay-policy ``ValueError`` propagates so /retry can
@@ -678,5 +704,7 @@ class SessionTranscriptMixin:
                 logger.debug("rewind_session: rewind failed: %s", e)
                 return None
             self._clear_dirty_transcript(session_id)
+            from tools.checkpoint_undo_hint import undo_span_start
             return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
-                    "target_text": outcome.live_text}
+                    "target_text": outcome.live_text,
+                    "undo_since": undo_span_start(outcome.live_view.get("timestamp"), outcome.prefix)}

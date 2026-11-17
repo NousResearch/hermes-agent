@@ -32,7 +32,7 @@ def test_in_process_turn_routes_with_the_sessions_own_provider_routing(tmp_path,
         _provider_routing={'only': ['DaemonStart']}, _peek_session_state=lambda key: None,
         session_authority=SimpleNamespace(profile_id=str(tmp_path)),
         _resolve_session_agent_runtime=lambda **kw: ('m', {'provider': 'custom'}),
-        _resolve_turn_agent_config=lambda message, model, runtime: {'model': model, 'runtime': runtime})
+        _resolve_turn_agent_config=lambda message, model, runtime, **kw: {'model': model, 'runtime': runtime})
     turn = TurnRunner.__new__(TurnRunner)
     turn._runner = runner
     turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='c'), session_key='k',
@@ -71,7 +71,7 @@ def test_a_local_turn_reloads_the_profiles_env_file_and_keeps_its_own_turn_budge
         _provider_routing={}, _peek_session_state=lambda key: None,
         session_authority=SimpleNamespace(profile_id=str(home)),
         _resolve_session_agent_runtime=lambda **kw: ('m', {'provider': 'custom'}),
-        _resolve_turn_agent_config=lambda message, model, runtime: {'model': model, 'runtime': runtime})
+        _resolve_turn_agent_config=lambda message, model, runtime, **kw: {'model': model, 'runtime': runtime})
     turn = TurnRunner.__new__(TurnRunner)
     turn._runner = runner
     turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='c'), session_key='k',
@@ -98,7 +98,7 @@ def test_each_new_session_reads_its_profiles_prefill_once_and_workers_match(tmp_
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     _prefill(tmp_path, 'prefill.json', 'FIRST')
     runner = SimpleNamespace(config=None, _prefill_messages=STALE, _refresh_fallback_model=lambda: None,
-                             _get_system_prompt_for_channel=lambda *a: None)
+                             _get_system_prompt_for_channel=lambda *a, **k: None)
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     launch = {'cwd': str(tmp_path), **LAUNCH}
     first = build_policy(launch, {'prefill_messages_file': 'prefill.json'})
@@ -143,7 +143,7 @@ def test_an_open_sessions_prefill_survives_cache_pressure_and_file_edits(tmp_pat
     monkeypatch.delenv('HERMES_PREFILL_MESSAGES_FILE', raising=False)
     _prefill(tmp_path, 'prefill.json', 'ORIGINAL')
     runner = SimpleNamespace(config=None, _prefill_messages=STALE, _refresh_fallback_model=lambda: None,
-                             _get_system_prompt_for_channel=lambda *a: None)
+                             _get_system_prompt_for_channel=lambda *a, **k: None)
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     policy = build_policy({'cwd': str(tmp_path), **LAUNCH}, {'prefill_messages_file': 'prefill.json'})
     assert session_prefill(authority, policy, 'open')[0]['content'] == 'ORIGINAL'

@@ -422,4 +422,4 @@ def test_automatic_frontends_use_requested_snapshot_not_current_checkout(tmp_pat
     monkeypatch.setattr(stage.subprocess, "run", run)
     monkeypatch.setattr(stage, "stage_native", lambda args: 0)
     assert stage.main(["--out", str(tmp_path / "out"), "--ref", revision]) == 0
-    assert len(built_sources) == 4
+    assert len(built_sources) == 5

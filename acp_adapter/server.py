@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timezone, UTC
 import contextlib
 import contextvars
+import json
 import logging
 import os
 import threading
@@ -38,6 +39,8 @@ from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
+from agent.turn_failure_copy import (
+    CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE)
 from agent.interrupt_compat import request_hard_interrupt
 from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
 
@@ -123,6 +126,43 @@ def _history_message_chunk(role: str, message: dict[str, Any]) -> UserMessageChu
     )
 
 
+def _content_refused_notice(message: dict[str, Any]) -> str | None:
+    """The stored refusal notice when *message* is a retained ``content_refused`` display row, else
+    ``None``. The row keeps the user's own refused ask VISIBLE but is gone from the MODEL context
+    (``active = 0``), so the active-only model history never carries it — only the display projection
+    does. Falls back to the shared notice when the row predates a stored one."""
+    if message.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
+        return None
+    meta = message.get("display_metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (ValueError, TypeError):
+            meta = None
+    entry = meta.get(CONTENT_REFUSED_METADATA_KEY) if isinstance(meta, dict) else None
+    notice = entry.get("notice") if isinstance(entry, dict) else None
+    return notice if isinstance(notice, str) and notice.strip() else CONTENT_REFUSED_NOTICE
+
+
+def _user_history_updates(message: dict[str, Any]):
+    """Replay a persisted user row. A retained ``content_refused`` row keeps the user's ask visible
+    (tagged ``hermes.contentRefused`` so a client can grey it) and is followed by the refusal notice
+    as an agent message, so a reopened editor still shows "you asked X -> refused" even though the
+    turn was dropped from the model context. A plain user row replays unchanged."""
+    notice = _content_refused_notice(message)
+    if notice is not None:
+        if (text := _flatten_history_text(message.get("content"))):
+            yield UserMessageChunk(
+                session_update="user_message_chunk",
+                content=TextContentBlock(type="text", text=text),
+                field_meta={"hermes": {"contentRefused": True}},
+            )
+        yield acp.update_agent_message_text(notice)
+        return
+    if (chunk := _history_message_chunk("user", message)) is not None:
+        yield chunk
+
+
 def _history_replay_updates(history: list[dict[str, Any]]):
     """Yield ACP session updates that reconstruct a persisted transcript, in order: user/assistant
     text (with compaction ``_meta``), assistant thoughts, and tool-call start/complete pairs
@@ -131,8 +171,7 @@ def _history_replay_updates(history: list[dict[str, Any]]):
     for message in history:
         role = str(message.get("role") or "")
         if role == "user":
-            if (chunk := _history_message_chunk(role, message)) is not None:
-                yield chunk
+            yield from _user_history_updates(message)
         elif role == "assistant":
             thought = _history_reasoning_text(message)
             if thought:
@@ -323,7 +362,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         from hermes_cli.model_switch import switch_model
         from hermes_cli.models import parse_model_input
 
-        current_provider, current_model = getattr(state.agent, "provider", None), str(state.model or "")
+        # Prefer the route's named form (``custom:<name>``): it compares equal against
+        # switch_model's target_provider, which is named too, and an agent whose provider is
+        # empty (a resume that fell back) must never pin the old endpoint under a new
+        # provider's credentials (#139908).
+        current_provider = (getattr(state.agent, "provider_route", None)
+                            or getattr(state.agent, "provider", None))
+        current_model = str(state.model or "")
         explicit_provider, model_input = parse_model_input(raw_model, "")
         cfg = load_config()
         result = switch_model(
@@ -337,7 +382,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             raise ModelRejected(result.error_message or f"Cannot switch to {raw_model}")
         target_provider, new_model = result.target_provider, result.new_model
         endpoint: dict[str, Any] = {}
-        if keep_endpoint and not (current_provider and target_provider != current_provider):
+        # Keep the endpoint only when the provider is KNOWN and equal: an empty current
+        # provider (a resume that fell back) keeping the old base_url while the target
+        # provider's credentials are used is exactly the key/endpoint mismatch of #139908.
+        if keep_endpoint and current_provider and target_provider == current_provider:
             endpoint = {
                 "base_url": getattr(state.agent, "base_url", None), "api_mode": getattr(state.agent, "api_mode", None)
             }
@@ -568,10 +616,20 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def _replay_session_history(self, state: SessionState) -> None:
         """Replay history as user/assistant/thought chunks plus reconstructed tool-call
-        start/complete events so the editor shows the transcript, not a clean thread."""
-        if not self._conn or not state.history:
+        start/complete events so the editor shows the transcript, not a clean thread.
+
+        Replays the DURABLE DISPLAY projection, not ``state.history``: a safety-refused turn is
+        taken out of the model context (``retain_refused_turn_for_display``) so it can't re-lock the
+        chat, but is KEPT in the display projection as a ``content_refused`` row. ``state.history`` is
+        the active-only model view and no longer carries it, so replaying that alone would hide the
+        user's refused ask on every reopen. The display read includes the retained row; it falls back
+        to ``state.history`` when the DB view is unavailable (e.g. a test agent factory)."""
+        if not self._conn:
             return
-        for update in _history_replay_updates(state.history):
+        history = self.session_manager.display_history(state.session_id) or state.history
+        if not history:
+            return
+        for update in _history_replay_updates(history):
             if not await self._send(state.session_id, update, fail_msg="Failed to replay ACP history for session %s"):
                 return
 
@@ -951,6 +1009,24 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             if "messages" in result and isinstance(result["messages"], list):
                 state.history = result["messages"]
                 self.session_manager.save_session(session_id)
+                # Safety refusal: take the whole refused turn (user row + any tool rounds + the
+                # refusal) out of the MODEL context so a fresh session load isn't re-sent the
+                # blocked content and locked, while KEEPING the user's message visible in the chat
+                # as a greyed refused notice. state.history is already the clean pre-refusal history.
+                # Retain ONLY when the OWNING agent flushed incrementally AND save_session skipped
+                # replace_messages — i.e. session.py's exact condition `_session_db is db and
+                # _session_db_created`. A non-owning agent's replace_messages(clean history) already
+                # dropped the refused turn; a second rewind would drop a prior accepted turn.
+                _adb = getattr(state.agent, "_session_db", None)
+                if (result.get("failure_reason") == "content_policy_blocked"
+                        and _adb is not None and _adb is self.session_manager._get_db()
+                        and getattr(state.agent, "_session_db_created", False)):
+                    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+                    from hermes_state_rewind import retain_refused_turn_for_display
+                    retain_refused_turn_for_display(
+                        _adb, getattr(state.agent, "session_id", session_id),
+                        notice=CONTENT_REFUSED_NOTICE,
+                        boundary_row_id=result.get("refused_turn_boundary_row_id"))
 
             # Head rotated (compression split): emit provenance so clients can render the boundary.
             post_turn_hermes_id = getattr(state.agent, "session_id", None)

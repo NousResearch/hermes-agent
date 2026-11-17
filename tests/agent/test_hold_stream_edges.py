@@ -166,3 +166,27 @@ def test_codex_reply_that_failed_after_its_text_is_still_rewritten(monkeypatch):
     assert not [text for text in shown if text]
     displayed = display_projection(result["messages"], home)
     assert [row["text"] for row in displayed if row["role"] == "assistant"] == [REWRITE]
+
+
+def test_a_failed_turn_after_a_lapsed_primary_login_is_rewritten_whole():
+    """The primary's sign-in lead joins a failed backup turn's reply before the held transform runs, so
+    the plugin sees, and can rewrite, the whole reply the user gets."""
+    from hermes_cli import plugins
+    from tests.fakes.fake_llm_provider import Error
+
+    from agent.primary_auth_fallback import PrimaryAuthFailure, attach_primary_auth_failure
+
+    home = Path(os.environ["HERMES_HOME"])
+    with FakeLLMServer([Error(status=401, message="invalid api key")] * 4) as server:
+        redactor_home(home, server.base_url, hold=True)
+        plugins._reset_plugin_managers_for_tests()
+        try:
+            agent = _agent(server, max_iterations=2)
+            attach_primary_auth_failure(agent, PrimaryAuthFailure(
+                provider="nous", error="Portal refused token SECRET-999", relogin="hermes portal", backup="custom"))
+            result = agent.run_conversation("show config")
+        finally:
+            plugins._reset_plugin_managers_for_tests()
+    assert result["failed"] is True
+    assert "hermes portal" in result["final_response"]
+    assert "SECRET-999" not in result["final_response"]

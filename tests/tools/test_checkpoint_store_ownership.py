@@ -10,11 +10,11 @@ from threading import Thread
 
 import tools.checkpoint_manager as checkpoints
 from tools import checkpoint_maintenance
+from hermes_constants import get_hermes_home
 
 
 def test_active_snapshot_owns_store_until_its_ref_is_published(tmp_path, monkeypatch):
-    base = tmp_path / "checkpoints"
-    monkeypatch.setattr(checkpoints, "CHECKPOINT_BASE", base)
+    base = get_hermes_home() / "checkpoints"
     project = tmp_path / "project"
     project.mkdir()
     (project / "initial.txt").write_text("initial", encoding="utf-8")
@@ -23,9 +23,7 @@ def test_active_snapshot_owns_store_until_its_ref_is_published(tmp_path, monkeyp
     (project / "concurrent.txt").write_text("new unpublished bytes", encoding="utf-8")
     program = '''
 import sys
-from pathlib import Path
 from tools import checkpoint_manager as c
-c.CHECKPOINT_BASE = Path(sys.argv[1])
 
 run = c._run_git
 def paused(args, *rest, **kwargs):

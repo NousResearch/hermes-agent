@@ -97,6 +97,9 @@ class SessionSource:
     # Discord auto-thread continuity: the thread id a CHANNEL message WILL be delivered into, so
     # the initiating message and later in-thread follow-ups share ONE session.
     prospective_thread_id: Optional[str] = None
+    # The adapter declares this chat's session shared by every participant even though the
+    # sender id is kept (Telegram observe mode: commands keep user_id for slash access checks).
+    shared_session: bool = False
     # Wire-INVISIBLE trust signal (never in to_dict/from_dict, so a peer cannot forge it): came
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
@@ -151,6 +154,8 @@ class SessionSource:
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         _optional(self._OPTIONAL_TAIL)
+        if self.shared_session:
+            d["shared_session"] = True
         return d
 
     @classmethod
@@ -164,7 +169,8 @@ class SessionSource:
             platform=Platform(data["platform"]), chat_id=str(data["chat_id"]),
             chat_type=data.get("chat_type", "dm"),
             scope_id=data.get("scope_id", data.get("guild_id")),
-            auto_thread_created=bool(data.get("auto_thread_created", False)), **plain,
+            auto_thread_created=bool(data.get("auto_thread_created", False)),
+            shared_session=bool(data.get("shared_session", False)), **plain,
         )
 
 
@@ -174,6 +180,12 @@ class SessionContext:
     source: SessionSource
     connected_platforms: list[Platform]
     home_channels: dict[Platform, HomeChannel]
+    # The current inbound actor may differ from the session route. Telegram observe mode, for
+    # example, deliberately removes a group sender from ``source`` to share the conversation.
+    # Keep that trusted event identity task-local; it must never alter the stored route.
+    actor_user_id: Optional[str] = None
+    actor_user_name: Optional[str] = None
+    turn_event: Any = None  # the MessageEvent the actor came from; a later fold may clear it (session_context)
     shared_multi_user_session: bool = False
     session_key: str = ""
     session_id: str = ""
@@ -364,11 +376,6 @@ _STATIC_PLATFORM_NOTES = {
         "will be delivered as its own iMessage bubble, so write accordingly: one idea per bubble, "
         "1–3 sentences each. If the user needs a detailed answer, give the short version first and "
         "offer to elaborate."
-    ),
-    Platform.YUANBAO: (
-        "**Platform notes:** You are running inside Yuanbao. To send a private (DM) message to a "
-        "user in the current group, use the yb_send_dm tool (look up the recipient by name or pass "
-        "their user_id). Your normal reply is delivered to the group you are responding in."
     ),
 }
 
@@ -664,7 +671,31 @@ def is_shared_multi_user_session(
     isolation rules in :func:`build_session_key`)."""
     if source.chat_type == "dm":
         return False
+    if getattr(source, "shared_session", False):
+        return True
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
+
+
+def label_shared_sender(
+    source: SessionSource, text: str, *, group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> str:
+    """``[Name] text`` in a session shared across participants, so the agent can tell who spoke; the
+    same label whether the message opens a turn or lands mid-turn (steer / redirect). Display names
+    are attacker-influenceable: newlines and control characters are neutralized, or a hostile name
+    masquerades as a markdown section. On Slack the speaker's verifiable ``<@U…>`` id rides along, a
+    trusted target for "mention me" (#17916)."""
+    if not (source.user_name and is_shared_multi_user_session(
+            source, group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user)):
+        return text
+    # The tag's own delimiters are dropped too, so a name can neither end the [Name] prefix early,
+    # forge bracketed structure, nor a second "| Slack user <@id>" span (#127053).
+    from gateway.platforms.helpers import tag_safe_display_name
+    name = tag_safe_display_name(source.user_name)
+    if source.platform == Platform.SLACK and source.user_id:
+        name = f"{name} | Slack user <@{source.user_id}>"
+    return f"[{name}] {text}"
 
 
 def _session_key_namespace(profile: Optional[str]) -> str:
@@ -718,7 +749,10 @@ def build_session_key(
     else:
         # Threads are shared by default; per-user isolation only via thread_sessions_per_user or
         # outside a thread.
-        isolate_user = group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+        isolate_user = (
+            group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+            and not getattr(source, "shared_session", False)
+        )
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 
@@ -1286,6 +1320,33 @@ class SessionStore(
                         len(dropped), "y" if len(dropped) == 1 else "ies", session_id)
         return len(dropped)
 
+    def release_route(self, session_key: str, session_id: str) -> bool:
+        """Drop *session_key*'s routing entry while it still names *session_id*: the conversation
+        moved onto another lane (a handoff into another Telegram topic), so this one starts a fresh
+        conversation at its next message instead of sharing it. Nothing is ended. True = dropped."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or entry.session_id != session_id:
+                return False
+            self._entries.pop(session_key, None)
+            self._save()
+        return True
+
+    def restore_route(self, entry: SessionEntry, *, expected_session_id: str) -> bool:
+        """Undo a ``switch_session`` that could not complete: put *entry* (the route as it was, pins
+        and overrides included) back while its key still names *expected_session_id*, and reopen the
+        row the switch ended. False = the route moved on since (a newer switch owns it)."""
+        with self._lock:
+            current = self._entry_locked(entry.session_key)
+            if current is None or current.session_id != expected_session_id:
+                return False
+            self._entries[entry.session_key] = entry
+            self._save()
+        if self._db_for_key(entry.session_key):
+            self._reopen_session_row(entry.session_key, entry.session_id)
+        self._announce_route(entry.session_key, entry)
+        return True
+
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
@@ -1304,25 +1365,38 @@ class SessionStore(
         """
         with self._lock:
             old_entry = self._entry_locked(session_key)
-            if old_entry is None:
-                return None
-            if expected_session_id is not None and old_entry.session_id != expected_session_id:
+            refused = old_entry is None or (
+                expected_session_id is not None and old_entry.session_id != expected_session_id)
+            if refused and old_entry is not None:
                 logger.info(
                     "Session switch for %s refused: route moved from %s to %s after the caller's snapshot",
                     session_key, expected_session_id, old_entry.session_id,
                 )
-                return None
-            if old_entry.session_id == target_session_id:
-                return old_entry
-            new_entry = self._replace_route_locked(
-                session_key, old_entry, target_session_id, _now(),
-                display_name=old_entry.display_name, model_override=old_entry.model_override,
-                yolo=old_entry.yolo,
-                prompt_pin=(
-                    dict(old_entry.prompt_pin)
-                    if preserve_prompt_pin and old_entry.prompt_pin is not None else None
-                ),
-            )
+            # Adopt a delegate target under the route lock, after the CAS and BEFORE the route moves: a
+            # failed marker write leaves the old route intact, and a refused switch never adopts, so it
+            # has nothing to undo that an overlapping successful switch onto the same row relies on.
+            if not refused and self._db_for_key(session_key):
+                self._adopt_delegate_row(session_key, target_session_id)
+            if not refused and old_entry.session_id != target_session_id:
+                new_entry = self._replace_route_locked(
+                    session_key, old_entry, target_session_id, _now(),
+                    display_name=old_entry.display_name, model_override=old_entry.model_override,
+                    yolo=old_entry.yolo,
+                    prompt_pin=(
+                        dict(old_entry.prompt_pin)
+                        if preserve_prompt_pin and old_entry.prompt_pin is not None else None
+                    ),
+                    # Keep this chat's terminal cwd over non-boundary repoints (e.g. compression-tip
+                    # binding heals). An explicit /resume opts out, and /new takes the reset path.
+                    metadata=(
+                        {"terminal_cwd": old_entry.metadata["terminal_cwd"]}
+                        if preserve_prompt_pin and "terminal_cwd" in old_entry.metadata else {}
+                    ),
+                )
+        if refused:
+            return None
+        if old_entry.session_id == target_session_id:
+            return old_entry
 
         try:
             if self._db_for_key(session_key) and old_entry.session_id:
@@ -1384,7 +1458,7 @@ class SessionStore(
 
 
 def build_session_context(
-    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
+    source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None, event: Any = None,
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
     connected = config.get_connected_platforms()
@@ -1392,9 +1466,11 @@ def build_session_context(
         source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
     )
+    actor = event if getattr(event, "user_id", None) is not None else source
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
-        home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
+        actor_user_id=getattr(actor, "user_id", None), actor_user_name=getattr(actor, "user_name", None),
+        turn_event=event, home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
     )
     if session_entry:
         context.session_key = session_entry.session_key

@@ -71,8 +71,9 @@ def _load_bundled(name: str) -> Optional[DelegationProvider]:
     plugin_dir = get_bundled_plugins_dir() / "delegation" / name
     if not (plugin_dir / "plugin.yaml").is_file():
         return None
+    package = f"{plugin_loader.__package__}.delegation"
     module = plugin_loader.load_plugin_module(
-        f"plugins.delegation.{name.replace('-', '_')}", plugin_dir, parents=("plugins", "plugins.delegation"),
+        f"{package}.{name.replace('-', '_')}", plugin_dir, parents=(plugin_loader.__package__, package),
         logger=logger)
     if module is None:
         return None

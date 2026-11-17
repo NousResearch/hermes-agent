@@ -5,12 +5,14 @@ is called, cannot fail), then an **upgrade** from one small-model call (cheap ti
 JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
 and neither replaces a name the user typed."""
 
+import itertools
 import json
 import logging
 import os
 import re
 import threading
 import time
+import unicodedata
 import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
@@ -58,6 +60,29 @@ MAX_DERIVED_TITLE_CHARS = 48
 # answer-shaped output guard in generate_title; port of can1357/oh-my-pi#7306). 12 leaves headroom for
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
+# Answer-shaped guard, CJK half: Han, kana and Hangul have no inter-word spaces, so the word count above
+# cannot see a full reply in those scripts (a 76-character Chinese answer counts as three "words"). Length
+# alone does not separate them: a plain Japanese title such as "クラウドストレージの同期エラーを解決する方法"
+# runs 22 characters. A reply is a sentence, so over 20 characters it is rejected when it carries sentence
+# punctuation, and past 40 (twice a sidebar title, where the 80-char cut would truncate it anyway) always.
+_MAX_TITLE_CJK_CHARS = 20
+_MAX_UNPUNCTUATED_TITLE_CJK_CHARS = 40
+# CJK script ranges counted by _cjk_char_count (after NFC): Han (Unified Ideographs, Extension A and the
+# supplementary-plane extensions), kana, Hangul syllables, and the CJK punctuation/fullwidth/halfwidth
+# blocks a reply in those scripts is written with, so "可以，直接在这说。…" counts its punctuation too.
+_CJK_RANGES = (
+    ("\u3000", "\u303f"),
+    ("\u3040", "\u30ff"),
+    ("\u3400", "\u4dbf"),
+    ("\u4e00", "\u9fff"),
+    ("\uac00", "\ud7af"),
+    ("\uff01", "\uff9f"),
+    ("\U00020000", "\U0003134f"),
+)
+# Sentence punctuation after NFKC (fullwidth ！？，． fold to ASCII): the ideographic full stop, and ASCII
+# ! ? , or a full stop that ends a sentence (followed by space or the end, so "Node.js" is not one).
+# Not "、" or ":": list commas and "Topic: detail" prefixes are title shapes.
+_SENTENCE_PUNCTUATION = re.compile(r"[\u3002!?,]|\.(?:\s|$)")
 # Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
 # thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
 TITLE_MAX_TOKENS = 512
@@ -425,8 +450,95 @@ def _title_from_reasoning(message: Any) -> str:
     return ""
 
 
-def _clean_title(text: str) -> Optional[str]:
-    """Normalize a model-produced title, or None when nothing usable remains."""
+# Code pages a model's UTF-8 bytes have come back through (``à`` = C3 A0 read as cp1250 gives ``Ă`` plus
+# a no-break space, which the whitespace collapse below would then make permanent).
+_MOJIBAKE_CODECS = ("cp1252", "cp1250", "latin-1")
+
+
+def _repair_mojibake(text: str, typed: Optional[set[str]] = None) -> str:
+    """``text`` with UTF-8 restored when it is UTF-8 read through a single-byte code page; unchanged
+    otherwise. Strict both ways, so ordinary accented text never round-trips into something else. With
+    ``typed`` (the non-ASCII characters of the title input), a repair must only produce characters the
+    user typed: clean Romanian ``Ăş`` is also valid cp1250-read UTF-8 for ``ú``."""
+    for codec in _MOJIBAKE_CODECS:
+        try:
+            repaired = text.encode(codec).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if repaired != text and (typed is None or all(c in typed for c in repaired if ord(c) > 0x7F)):
+            return repaired
+    return text
+
+
+def _typed_chars(source: str) -> set[str]:
+    """Non-ASCII characters of the title input, in both cases (a title may capitalize what the user typed)."""
+    return {c for char in source if ord(char) > 0x7F for c in (char, *char.upper(), *char.lower())}
+
+
+def _byte_spellings() -> dict[str, tuple[int, ...]]:
+    """Each glyph a UTF-8 byte >= 0x80 shows as under the code pages models echo: cp1252/cp1250/latin-1
+    plus Greek cp1253 and Turkish cp1254 (#149025's ``ArkadaμƒΔ±ΕŸ`` mixes cp1252 and cp1253 glyphs)."""
+    table: dict[str, list[int]] = {}
+    for codec in (*_MOJIBAKE_CODECS, "cp1253", "cp1254"):
+        for byte in range(0x80, 0x100):
+            with suppress(UnicodeDecodeError):
+                spelled = table.setdefault(bytes([byte]).decode(codec), [])
+                if byte not in spelled:
+                    spelled.append(byte)
+    return {glyph: tuple(found) for glyph, found in table.items()}
+
+
+_BYTE_SPELLINGS = _byte_spellings()
+
+
+def _decode_spelled(glyphs: str) -> str:
+    """The single character whose UTF-8 bytes ``glyphs`` spell, one glyph per byte; ``""`` otherwise."""
+    options = [_BYTE_SPELLINGS.get(glyph) for glyph in glyphs]
+    if not all(options):
+        return ""
+    for combo in itertools.product(*options):
+        with suppress(UnicodeDecodeError):
+            decoded = bytes(combo).decode("utf-8")
+            if len(decoded) == 1:
+                return decoded
+    return ""
+
+
+def _repair_spelled_chars(text: str, typed: set[str]) -> Optional[str]:
+    """``text`` with each character the user typed restored where the model spelled out its UTF-8 bytes
+    (a model can emit that mixed with intact words, so a whole-string round trip cannot undo it, #149025).
+
+    Only characters in ``typed`` (``_typed_chars`` of the title input) count as repairs, so ordinary text whose letters happen to form a
+    UTF-8 sequence (Turkish ``İş``) stays as is. Once a repair proves the output is byte-damaged, a leftover
+    letter or symbol the user never typed is undecodable residue (``μƒ``): None, so the caller keeps the
+    title derived from the user's own words."""
+    out: list[str] = []
+    i, repaired = 0, False
+    while i < len(text):
+        char = next((c for n in (2, 3, 4) if (c := _decode_spelled(text[i:i + n])) in typed), "")
+        if char:
+            i += len(char.encode("utf-8"))
+            out.append(char)
+            repaired = True
+        else:
+            out.append(text[i])
+            i += 1
+    if not repaired:
+        return text
+    fixed = "".join(out)
+    if any(c not in typed and ord(c) > 0x7F and unicodedata.category(c)[0] in "LS" for c in fixed):
+        logger.debug("Rejecting byte-damaged title output: %r", text)
+        return None
+    return fixed
+
+
+def _clean_title(text: str, source: str = "") -> Optional[str]:
+    """Normalize a model-produced title, or None when nothing usable remains. ``source`` is the text the
+    title was generated from; it lets byte-spelled characters the user typed be restored."""
+    typed = _typed_chars(source) if source else None
+    text = _repair_mojibake(text or "", typed)
+    if typed is not None and (text := _repair_spelled_chars(text, typed)) is None:
+        return None
     title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
     if len(title) > 80:
         title = title[:77].rstrip() + "..."
@@ -466,6 +578,29 @@ def _is_prompt_example_echo(title: str) -> bool:
     """
     normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
     return normalized in _EXAMPLE_ECHO_REJECT
+
+
+def _cjk_char_count(text: str) -> int:
+    """CJK script characters in ``text`` after canonical composition (NFD Hangul is conjoining jamo,
+    outside the syllable block, so the same visible reply would otherwise count 0)."""
+    return sum(1 for ch in unicodedata.normalize("NFC", text) if any(lo <= ch <= hi for lo, hi in _CJK_RANGES))
+
+
+def _is_answer_shaped(title: str) -> bool:
+    """True when the model answered the user instead of titling the session.
+
+    Titling is a 3-7 word task with a short result; a reply is a full sentence. The word count covers
+    space-delimited text and the character budget covers CJK, where ``str.split()`` sees no boundaries.
+    NFKC first, for the judgement only (the stored title keeps its bytes): decomposed Hangul is the
+    same text as precomposed, and fullwidth punctuation the same as ASCII. The character count reads
+    the NFC text, where fullwidth punctuation still counts as CJK text.
+    """
+    text = unicodedata.normalize("NFKC", title)
+    if len(text.split()) > _MAX_TITLE_WORDS:
+        return True
+    cjk = _cjk_char_count(title)
+    return cjk > _MAX_UNPUNCTUATED_TITLE_CJK_CHARS or (
+        cjk > _MAX_TITLE_CJK_CHARS and _SENTENCE_PUNCTUATION.search(text) is not None)
 
 
 def generate_title(
@@ -530,15 +665,18 @@ def generate_title(
             reasoning_config={"enabled": False},
         )
         message = response.choices[0].message
-        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
+        raw_title = _extract_title_text(message.content or "") or _title_from_reasoning(message)
+        title = _clean_title(raw_title, user_snippet)
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
         # which is still an assistant blob — reject instead so the caller retries on the next exchange
         # (maybe_auto_title retries a placeholder title through the third exchange). Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+        # Measured on the text before _clean_title's 80-char cut, so a long URL prefix cannot push
+        # most of an answer past the cut and hide it from the guard.
+        if title is not None and _is_answer_shaped(" ".join(raw_title.split())):
             # Answer-shaped output: reject (not truncate) so the caller retries next exchange.
-            logger.debug("Rejecting answer-shaped title output (%d words > %d)", len(title.split()), _MAX_TITLE_WORDS)
+            logger.debug("Rejecting answer-shaped title output (%r)", title)
             return None
         # Example-echo guard: a title that parrots one of the prompt's own
         # examples back verbatim says nothing about the session — reject it so

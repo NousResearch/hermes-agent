@@ -185,7 +185,7 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
 
 def test_old_memory_manager_import_path_still_resolves():
-    # agent.memory_manager is a public module for plugins (plugin_validate_private_imports._PUBLIC),
+    # agent.memory_manager is a public module for plugins (hermes_cli/data/plugin_api.json),
     # so the helpers that moved to agent.memory_context stay importable from it.
     import agent.memory_context as moved
     import agent.memory_manager as old

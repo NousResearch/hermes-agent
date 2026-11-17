@@ -1,0 +1,29 @@
+name: cutroom
+title: Cutroom
+repo: https://github.com/KaanDRoid/hermes-cutroom
+sha: 6ab0c7b5263acb82adbe0fd9cd7739cc4d59e696
+version: "0.1.1"
+description: "Local-first video editing studio: word-timed transcript cuts and filler review, silence removal, face/gaze/mouth review, person segmentation for graphics behind the subject, three source-quoted hook options with a storyboard, preview renders, human-approved final export, cover and automated quality checks. Ships a Hermes Desktop Studio page, agent tools for projects and background jobs (no approval tool: only a person can approve a final export) and a CLI. Requires FFmpeg/ffprobe on PATH; speech, vision and segmentation need optional Python packages and local model files. Disclosure — reads only the local media paths it is given and launches local FFmpeg/ffprobe and a Python worker subprocess with a minimal allowlisted environment (provider API keys and tokens are not forwarded); the worker interpreter comes only from CUTROOM_PYTHON, the plugin's bundled .venv or Hermes' own interpreter, never from project data or tool arguments; agent tools write projects, renders and reports only under its own workspace in the Hermes home and never overwrite source or existing outputs; models are never downloaded automatically, and `cutroom setup-models --confirm-downloads` fetches pinned files from storage.googleapis.com (MediaPipe) and huggingface.co (faster-whisper-tiny) with SHA-256 verification; optional download/OBS/rclone/calendar adapters run only with explicit confirmation and are not used by the Studio pipeline; no telemetry, no API keys, no self-update. Final-export approval records a person's decision in the Desktop Studio page; it is a workflow record, not a security boundary against other code running as the same user."
+maintainer: KaanDRoid
+category: tools
+tier: community
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/KaanDRoid/hermes-cutroom/blob/6ab0c7b5263acb82adbe0fd9cd7739cc4d59e696/README.md
+readme: true
+capabilities:
+  provides_tools:
+    - cutroom_inspect
+    - cutroom_draft
+    - cutroom_review
+    - cutroom_render
+    - cutroom_project
+    - cutroom_job
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Requires FFmpeg and ffprobe on PATH with libx264 and AAC support.
+  - Speech, vision and segmentation need faster-whisper, MediaPipe and OpenCV in the runtime interpreter plus local models (see cutroom doctor and cutroom setup-models).
+  - Hooks, storyboards and captions are extractive drafts from the transcript, not generated writing; gaze/mouth results are review-only heuristics.
+  - Output filesystems must support hard links (NTFS, ext4, APFS); FAT/exFAT is not supported.
+  - Verified primarily on Windows; Linux and macOS have had less testing.

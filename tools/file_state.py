@@ -39,6 +39,9 @@ def guard_disabled() -> bool:
 
 
 def _mtime_or_none(resolved: str) -> Optional[float]:
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        return None  # a hosted agent's path names its sandbox, not this host
     try:
         return os.path.getmtime(resolved)
     except OSError:

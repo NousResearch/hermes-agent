@@ -69,7 +69,7 @@ const roster = [
 const route = { connectionId: 'remote-1', profile: 'default' }
 const state = host.state as any
 const capCalls = () => request.mock.calls.filter(call => call[1] === 'groups.capabilities').length
-const createButton = () => screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+const createButton = () => screen.getByRole('button', { name: /\(2\)$/ }) as HTMLButtonElement
 
 let latest: any
 

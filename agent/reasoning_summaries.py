@@ -14,7 +14,7 @@ from typing import Any
 
 from agent.message_content import flatten_message_text
 
-__all__ = ["append_streamed_reasoning_detail", "separate_glued_reasoning_blocks"]
+__all__ = ["append_streamed_reasoning_detail", "redact_reasoning_fields", "separate_glued_reasoning_blocks"]
 
 
 def separate_glued_reasoning_blocks(previous: str, delta: Any) -> str:
@@ -34,6 +34,8 @@ def separate_glued_reasoning_blocks(previous: str, delta: Any) -> str:
 # reasoning_details entry types whose consecutive fragments are ONE logical block.
 _MERGEABLE_DETAIL_TEXT_KEYS = {"reasoning.text": "text", "reasoning.summary": "summary"}
 _BACKFILL_DETAIL_KEYS = ("signature", "id", "format", "index")
+# Bedrock Converse persists unsigned reasoning (non-Claude models) as Anthropic-shape ``thinking``.
+_REDACTABLE_DETAIL_TEXT_KEYS = {**_MERGEABLE_DETAIL_TEXT_KEYS, "thinking": "thinking"}
 
 
 def streamed_reasoning_detail_text(detail: Any) -> str:
@@ -73,3 +75,38 @@ def append_streamed_reasoning_detail(details_acc: list, detail: Any) -> None:
                 last[k] = detail[k]
         return
     details_acc.append(dict(detail))
+
+
+def _redact_unsigned_detail(detail: Any) -> Any:
+    """Copy of an unsigned ``reasoning.text`` / ``reasoning.summary`` / ``thinking`` entry with its
+    text redacted."""
+    if not isinstance(detail, dict) or any(detail.get(k) for k in ("signature", "encrypted_content", "data")):
+        return detail
+    dtype = detail.get("type")
+    key = _REDACTABLE_DETAIL_TEXT_KEYS.get(dtype) if isinstance(dtype, str) else None
+    text = detail.get(key) if key else None
+    if not isinstance(text, str) or not text:
+        return detail
+    from agent.redact import redact_sensitive_text
+    redacted = redact_sensitive_text(text)
+    return detail if redacted == text else {**detail, key: redacted}
+
+
+def redact_reasoning_fields(msg: dict) -> None:
+    """Redact the mutable reasoning copies on an assistant storage dict (in place; no-op with
+    ``security.redact_secrets`` off).
+
+    ``reasoning`` / ``reasoning_content`` are unsigned plain text (must-echo providers check
+    presence, not bytes) and unsigned detail text is a readable copy, so masking them is
+    replay-safe. Signed or opaque entries (``signature``, ``encrypted_content``, encrypted /
+    native-carrier types) stay byte-exact: providers verify them on replay. Detail dicts are
+    replaced, never mutated, because they may be the SDK response's own objects.
+    """
+    from agent.redact import redact_sensitive_text
+    for key in ("reasoning", "reasoning_content"):
+        value = msg.get(key)
+        if isinstance(value, str) and value.strip():
+            msg[key] = redact_sensitive_text(value)
+    details = msg.get("reasoning_details")
+    if isinstance(details, list):
+        msg["reasoning_details"] = [_redact_unsigned_detail(d) for d in details]

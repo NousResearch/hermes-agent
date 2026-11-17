@@ -1,0 +1,25 @@
+name: xscapes
+repo: https://github.com/donlucasx/hermes-xscapes
+sha: 3a12d11bdc4e7fd917b256014e7efcf4e79c9e3d
+subdir: ""
+title: xscapes
+description: "Living ASCII scenes under Hermes in the terminal that show what the agent is doing while you wait: the wind, the sea or the rain rises with the work, a thought cloud means it is thinking, owlets, crablets or kittens arrive for subagents, the moon sinks as the context fills, and the companion knocks with a sound when Hermes finishes or needs you (a question, a password prompt, an approval). Forwards fifteen lifecycle hooks to the xscapes CLI (`xscapes hook <event> hermes`, stdin JSON, never waited on, never blocks); needs the xscapes binary. No tools, middleware or env vars; no network. Disclosure — forwards every tool call's name and full arguments, approval commands, and the first line (up to 120 characters) of each prompt and reply to the separately installed xscapes binary, which is not covered by this pin and keeps events under ~/.config/xscapes/."
+maintainer: donlucasx
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://donlucasx.github.io/xscapes/
+version: "0.2.1"
+image: https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/banner-nous.gif
+screenshots:
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/reveal.gif
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/owlets.gif
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/think.gif
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/ask.gif
+  - https://raw.githubusercontent.com/donlucasx/xscapes/26d14fc7c8d673849fe954d8172dc151c898d78d/assets/hermes/scenes.gif
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_session_start, on_session_reset, on_session_end, on_session_finalize, pre_llm_call, post_llm_call, pre_tool_call, post_tool_call, pre_approval_request, post_approval_response, subagent_start, subagent_stop, on_human_input_request, on_human_input_resolved, post_api_request]
+  provides_middleware: []
+  requires_env: []

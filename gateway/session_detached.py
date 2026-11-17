@@ -29,6 +29,7 @@ the context-exhaustion auto-reset, a reset policy, a topic binding heal), wired 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import datetime, timedelta
 
 _SLOT = 'detached'
@@ -118,6 +119,11 @@ def session_env_source(runner, source):
     (``local_source``): whatever it schedules for "here" reaches the apps, never the chat."""
     key = detached_route_of(source)
     if key is None:
+        if getattr(source, 'shared_session', False) and source.chat_type != 'dm':
+            # A shared chat's route has no user (Telegram observe commands keep the sender only for
+            # slash access): kanban/cron/send_message rebuild routes from these vars. The sender
+            # still reaches tools as HERMES_SESSION_ACTOR_*, bound from the SessionContext.
+            return dataclasses.replace(source, user_id=None, user_id_alt=None, user_name=None)
         return source
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import local_source

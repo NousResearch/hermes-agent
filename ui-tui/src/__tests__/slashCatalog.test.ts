@@ -1,9 +1,9 @@
+import type { CommandsCatalogResponse } from '@hermes/shared/gateway-types'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { GatewayRpc } from '../app/interfaces.js'
 import { loadSlashCatalog } from '../app/slashCatalog.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
-import type { CommandsCatalogResponse } from '../gatewayTypes.js'
 import type { SlashCatalog } from '../types.js'
 
 const REPO_SKILL = '/repo-probe'

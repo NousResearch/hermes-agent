@@ -7,7 +7,10 @@ owner subject an owner level; one tenant level. Each level holds env entries ``{
 version)}`` and auth entries ``{provider: (record, version)}`` and a document version. A read
 resolves per name the highest level defining it (profile > instance > owner > tenant). Reserved
 names (the vendored ``secrets-reserved-names.json``) are refused on every write, and so is a name
-outside contract §2's rules (``secret_name_invalid``, as gateway-gateway's ``patch.ts``).
+outside contract §2's rules (``secret_name_invalid``, as gateway-gateway's ``patch.ts``), and so
+are the plane's limits (``types.ts``): a body over 1 MiB (413 ``secret_body_too_large``), an env
+value or auth record (its compact JSON) over 64 KiB (400 ``secret_value_invalid``), and a level
+left holding over 1000 entries (413 ``secret_level_too_large``).
 
 It is a test double, not server conformance evidence; the vendored connector fixtures
 (``test_remote_secrets_conformance.py``) and the connector's own suite are that evidence.
@@ -32,6 +35,9 @@ WORKLOAD_TOKEN = "workload-token-1"
 LEVELS = ("profile", "instance", "owner", "tenant")
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 AUTH_ID = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,63}")
+MAX_ENTRY_BYTES = 64 * 1024
+MAX_ENTRIES_PER_LEVEL = 1000
+MAX_BODY_BYTES = 1024 * 1024
 VENDOR = (Path(__file__).resolve().parents[3] / "plugins" / "secret_store" / "remote" / "vendor" / "conformance")
 
 
@@ -138,9 +144,11 @@ class StubSecretsPlane:
                 self.end_headers()
                 self.wfile.write(raw)
 
-            def _body(self) -> dict[str, Any]:
+            def _body(self) -> Optional[dict[str, Any]]:
+                """The request body; None (after draining it) when it is over the body limit."""
                 n = int(self.headers.get("Content-Length") or 0)
-                return json.loads(self.rfile.read(n) or b"{}")
+                raw = self.rfile.read(n)
+                return None if n > MAX_BODY_BYTES else json.loads(raw or b"{}")
 
             def do_POST(self):
                 if self.path != "/token":
@@ -169,6 +177,11 @@ class StubSecretsPlane:
                     return self._send(404, {"error": "not_found", "message": "no route"})
                 profile = urllib.parse.parse_qs(parsed.query).get("profile", ["default"])[0]
                 body = self._body() if method == "PATCH" else None
+                if method == "PATCH" and body is None:
+                    with plane.lock:
+                        plane.requests.append({"method": "PATCH", "profile": profile, "body": None, "too_large": True})
+                    return self._send(413, {"error": "secret_body_too_large", "message": "body too large",
+                                            "limitBytes": MAX_BODY_BYTES})
                 with plane.lock:
                     plane.requests.append({
                         "method": method, "profile": profile, "body": copy.deepcopy(body),
@@ -214,6 +227,13 @@ class StubSecretsPlane:
                     if rid in plane._auth_reserved:
                         return self._send(400, {"error": "secret_name_reserved", "message": "reserved name",
                                                 "kind": "auth", "name": rid})
+                for kind, name, size in [*(("env", n, len(v.encode("utf-8"))) for n, v in sets.items()),
+                                         *(("auth", r, len(json.dumps(e.get("record"), separators=(",", ":"),
+                                                                      ensure_ascii=False).encode("utf-8")))
+                                           for r, e in auth.items() if e.get("record") is not None)]:
+                    if size > MAX_ENTRY_BYTES:
+                        return self._send(400, {"error": "secret_value_invalid", "message": "too large",
+                                                "kind": kind, "name": name})
                 if (sets or unsets) and "expectedProfileVersion" not in body:
                     return self._send(400, {"error": "secret_request_invalid", "message": "missing version"})
                 if "expectedProfileVersion" in body and body["expectedProfileVersion"] != prof["version"]:
@@ -224,6 +244,11 @@ class StubSecretsPlane:
                     if entry.get("expectedVersion") != current:
                         return self._send(409, {"error": "secret_version_conflict", "message": "stale",
                                                 "provider": rid, "version": current})
+                after = (len(set(prof["env"]) - set(unsets) | set(sets))
+                         + len({*prof["auth"], *auth} - {r for r, e in auth.items() if e.get("record") is None}))
+                if after > MAX_ENTRIES_PER_LEVEL:
+                    return self._send(413, {"error": "secret_level_too_large", "message": "too many entries",
+                                            "limitEntries": MAX_ENTRIES_PER_LEVEL})
                 for name, value in sets.items():
                     prof["env"][name] = (value, prof["version"] + 1)
                 for name in unsets:

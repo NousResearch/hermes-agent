@@ -95,6 +95,12 @@ def request(method: str, home: Path, profile: str, *, etag: Optional[str] = None
                 headers={"X-Hermes-Instance-Id": instance_id()})
 
 
+def encode_body(body: dict[str, Any]) -> bytes:
+    """The exact request bytes :func:`send` puts on the wire for *body* (callers check a plane's
+    body limit against them). Raises UnicodeEncodeError for a lone surrogate."""
+    return json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
 def send(method: str, url: str, *, token: str, etag: Optional[str] = None, body: Optional[dict[str, Any]] = None,
          headers: Optional[dict[str, str]] = None) -> Response:
     """One credentialed JSON request to a connector plane route at *url* (already checked against
@@ -103,7 +109,7 @@ def send(method: str, url: str, *, token: str, etag: Optional[str] = None, body:
     headers = {"Authorization": f"Bearer {token}", **(headers or {}), "Accept": "application/json"}
     data = None
     if body is not None:
-        data = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        data = encode_body(body)
         headers["Content-Type"] = "application/json"
     if etag:
         headers["If-None-Match"] = etag

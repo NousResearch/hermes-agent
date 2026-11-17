@@ -13,9 +13,10 @@ memory only:
   already has the profile (409) it wins and the local entries move to ``.env.unimported`` /
   ``auth.unimported.json`` (``importer.py``), all under one per-profile import lock. A kept-local
   ``.env`` line must be literal: one holding a ``${...}`` reference fails that profile's boot
-  closed before anything is staged or sent, as does a name the plane cannot store (in the files
-  or a leftover staging). The original bytes are kept in ``.env.pre-import`` /
-  ``auth.pre-import.json`` (0600, first original wins, never removed) before staging;
+  closed before anything is staged or sent, as does a name or size the plane cannot store (in the
+  files or a leftover staging; ``limits.py``). Every rewrite of ``.env`` / ``auth.json`` by the
+  import first appends the exact bytes it replaces to ``.env.pre-import`` /
+  ``auth.pre-import.json`` (0600, append-only, never removed; ``pre_import.py``);
 - **change detection**: a per-process poller asks for every booted view with ``If-None-Match`` every
   :data:`POLL_SECONDS`, holding the version the process booted with or last wrote itself. Nothing is
   installed from a poll: a different version asks the process for a graceful restart
@@ -54,7 +55,7 @@ from hermes_secret_port import (
 from plugins.config_backends.remote import client as config_client
 from plugins.config_backends.remote.credentials import IDP_ENV_PREFIX, PLANE_CREDENTIAL_ENV_NAMES, PlaneCredentialError
 
-from . import client
+from . import client, limits
 
 logger = logging.getLogger(__name__)
 
@@ -354,8 +355,7 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
         env, records = entries
         imported = False
         if (env or records) and view.profile_version == 0:
-            body = {"expectedProfileVersion": 0, "set": env,
-                    "auth": {rid: {"expectedVersion": 0, "record": r} for rid, r in records.items()}}
+            body = limits.import_body(env, records)   # checked against the plane's limits before staging
             try:
                 resp = client.request("PATCH", home, profile, body=body, token=token)
             except client.TransportError:

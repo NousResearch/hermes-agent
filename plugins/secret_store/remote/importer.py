@@ -11,16 +11,19 @@ from a fresh read (normally finding nothing left to import). Under the lock (:fu
 2. every kept-local ``.env`` line must be literal (:func:`non_literal_kept_names`): one the loader
    would expand stops the boot (``SecretStoreUnavailable``, names only) before anything is staged,
    refreshed, written or sent;
-3. every name to be sent (the staging's, then the files' entries outside the bootstrap set) must
-   meet the plane's name rules (:func:`invalid_names`, contract §2): an invalid one stops the boot
-   (``SecretStoreUnavailable``, names shown escaped, never a value) before anything is backed up,
-   staged, refreshed, written or sent; for a leftover staging file the stop names that file;
-4. the exact bytes read of ``.env`` and ``auth.json`` are kept in :data:`PRE_IMPORT`
-   (``.env.pre-import`` / ``auth.pre-import.json``, 0600) unless a backup is already there: the
-   first original wins, so a crash after the cleanup never replaces it with rewritten bytes, and
-   nothing here ever removes one. The plane stores what the local store serves, which for some
-   files is not every byte the user wrote (a satellite serves only the first line of a quoted
-   multiline value, or of one holding U+2028 / NEL); the backup keeps the rest recoverable;
+3. every entry to be sent (the staging's, then the files' entries outside the bootstrap set, then
+   both together) must meet the plane's name rules (:func:`invalid_names`, contract §2) and its
+   limits (:mod:`.limits`: value and record size, entries per profile, request size): a violation
+   stops the boot (``SecretStoreUnavailable``, names shown escaped, never a value) before anything
+   is backed up, staged, refreshed, written or sent; for a leftover staging file the stop names
+   that file;
+4. the exact bytes read of ``.env`` and ``auth.json`` are appended to their append-only backups
+   (:mod:`.pre_import`: ``.env.pre-import`` / ``auth.pre-import.json``, 0600) unless the last
+   entry already holds them; and every later rewrite of either file by the import appends the
+   exact bytes it replaces first. Nothing here rewrites or removes a backup. The plane stores what
+   the local store serves, which for some files is not every byte the user wrote (a satellite
+   serves only the first line of a quoted multiline value, or of one holding U+2028 / NEL); the
+   backups keep every version replaced recoverable;
 5. the entries outside the bootstrap set (``.env`` values exactly as the local store serves them
    for the captured bytes, ``hermes_secret_routing.local_served_env``; ``auth.json`` records from
    the captured bytes) are staged in :data:`STAGING` (0600, merged over an unfinished staging)
@@ -53,6 +56,7 @@ from typing import Any, NamedTuple, NoReturn
 
 from dotenv.parser import parse_stream
 from agent.secret_scope import invalidate_env_file_cache
+from plugins.secret_store.remote import limits, pre_import
 from utils import atomic_json_write, atomic_replace, fsync_directory, mkstemp_beside
 
 logger = logging.getLogger(__name__)
@@ -61,8 +65,8 @@ LOCK = ".secrets-import.lock"
 STAGING = ".secrets-import.json"
 UNIMPORTED_ENV = ".env.unimported"
 UNIMPORTED_AUTH = "auth.unimported.json"
-#: Each import input and the backup of its original bytes (beside it, 0600, never removed here).
-PRE_IMPORT = {".env": ".env.pre-import", "auth.json": "auth.pre-import.json"}
+#: Each import input and its append-only backup (beside it, 0600, never rewritten or removed).
+PRE_IMPORT = pre_import.BACKUPS
 #: The plane's name rules (contract §2; gateway-gateway refuses others with ``secret_name_invalid``).
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 AUTH_ID = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,63}")
@@ -138,13 +142,20 @@ def prepare(home: Path, provider, profile: str) -> Prepared:
         _stop(refusal_text(profile, names))
     staged_env, staged_auth = _staged(sources.staging)
     if names := invalid_names(staged_env, staged_auth):
-        _stop(staging_refusal_text(profile, Path(home), names))
+        _stop(staging_refusal_text(profile, Path(home), [f"invalid name {n}" for n in names]))
+    if found := limits.problems(staged_env, staged_auth, _shown):
+        _stop(staging_refusal_text(profile, Path(home), found))
     env, records = _local_entries(home, provider, sources)
+    from_files = (bool(env), bool(records))
     if names := invalid_names(env, records):
         _stop(invalid_text(profile, names))
+    if found := limits.problems(env, records, _shown):
+        _stop(limit_text(profile, found))
     env, records = {**staged_env, **env}, {**staged_auth, **records}
+    if sources.staging is not None and (found := limits.problems(env, records, _shown)):
+        _stop(staging_refusal_text(profile, Path(home), found))
     if env or records:
-        _keep_originals(Path(home), sources)
+        _keep_originals(Path(home), sources, from_files)
         _write_private_json(Path(home) / STAGING, {"env": env, "auth": records})
     return Prepared(sources, env, records)
 
@@ -172,26 +183,32 @@ def invalid_text(profile: str, names: list[str]) -> str:
             ".env saved as UTF-16 must be saved as UTF-8) and restart Hermes.")
 
 
-def staging_refusal_text(profile: str, home: Path, names: list[str]) -> str:
+def limit_text(profile: str, found: list[str]) -> str:
+    return (f"Remote secrets: profile {profile!r} has .env / auth.json entries the secrets plane cannot store: "
+            f"{'; '.join(found)}. Hermes does not start (nothing was sent or written; there is no fallback to "
+            "the local store). Shorten or remove those entries and restart Hermes.")
+
+
+def staging_refusal_text(profile: str, home: Path, found: list[str]) -> str:
     return (f"Remote secrets: profile {profile!r} has an unfinished import ({home / STAGING}) holding "
-            f"invalid name(s) {', '.join(names)}, which the secrets plane cannot store. Hermes does not start "
-            "(nothing was sent or written; there is no fallback to the local store). Check that "
-            f"{' / '.join(str(home / n) for n in PRE_IMPORT.values())} (if present) and the .env hold "
+            f"what the secrets plane cannot store: {', '.join(found)}. Hermes does not start (nothing was "
+            "sent or written; there is no fallback to the local store). That file is JSON (its \"env\" and "
+            "\"auth\" entries may be the only copy of a value or auth record): copy out what you need, check "
+            f"that {' / '.join(str(home / n) for n in PRE_IMPORT.values())} (if present) and the .env hold "
             f"what you need, then delete {home / STAGING} and restart Hermes.")
 
 
-def _keep_originals(home: Path, sources: Sources) -> None:
-    """Keep the captured bytes of each import input in its :data:`PRE_IMPORT` backup (0600,
-    atomic), unless one is already there: the first original wins."""
-    for backup_name, raw in zip(PRE_IMPORT.values(), (sources.env, sources.auth)):
-        backup = home / backup_name
-        if raw is not None and not os.path.lexists(backup):
-            _write_bytes(backup, raw)
+def _keep_originals(home: Path, sources: Sources, from_files: tuple[bool, bool]) -> None:
+    """Append the captured bytes of each import input that holds entries to import to its backup
+    (:mod:`.pre_import`), unless its last entry already holds them."""
+    for backup_name, raw, holds in zip(PRE_IMPORT.values(), (sources.env, sources.auth), from_files):
+        if raw is not None and holds:
+            pre_import.append(home / backup_name, raw, "staged", unless_last=True)
 
 
 def pre_import_backups(home: Path) -> list[Path]:
     """The pre-import backups present in *home* (``hermes doctor`` names them)."""
-    return [p for p in (Path(home) / n for n in PRE_IMPORT.values()) if os.path.lexists(p)]
+    return pre_import.present(home)
 
 
 def non_literal_kept_names(provider, assignments: list[tuple[str, str | None]]) -> list[str]:
@@ -281,7 +298,7 @@ def finish(home: Path, profile: str, view, provider, prepared: Prepared, importe
     if prepared.env or prepared.auth:
         if not imported:
             _move_unimported(home, profile, view, prepared.env, prepared.auth)
-        _keep_bootstrap_only(home, provider, prepared.sources)
+        _keep_bootstrap_only(home, provider, prepared.sources, "cleanup" if imported else "plane-wins")
     _remove(Path(home) / STAGING)
     if imported:
         logger.info("Remote secrets: imported %d env name(s) and %d auth record(s) of profile %r",
@@ -350,10 +367,11 @@ def _write_bytes(path: Path, data: bytes, mode: Any = 0o600) -> None:
         raise
 
 
-def _keep_bootstrap_only(home: Path, provider, sources: Sources) -> None:
+def _keep_bootstrap_only(home: Path, provider, sources: Sources, reason: str) -> None:
     """Rewrite *home*'s ``.env`` and ``auth.json`` to their bootstrap entries, each only while it
-    still holds the bytes in *sources* (compared under its lock): a file another writer changed
-    since is left whole, and the next boot sets aside what it holds. In ``.env`` each other
+    still holds the bytes in *sources* (compared under its lock), appending those exact bytes to
+    its backup first (*reason* in the entry): a file another writer changed since is left whole,
+    and the next boot backs up and sets aside what it holds. In ``.env`` each other
     assignment is removed whole (a quoted value with all its lines); every other byte stays. No
     import, credential resolution or logging under the file locks (trap 25)."""
     from hermes_cli import auth
@@ -368,17 +386,19 @@ def _keep_bootstrap_only(home: Path, provider, sources: Sources) -> None:
             data = bom + kept.encode(codec)
             with _env_write_lock(env_path):
                 if _holds(env_path, sources.env, changed):
+                    pre_import.append(pre_import.backup_path(env_path), sources.env, reason)
                     _write_bytes(env_path, data, stat.S_IMODE(env_path.stat().st_mode))
         bindings = kept = data = None
     store = _auth_store(sources.auth)
     auth_path = Path(home) / "auth.json"
-    if store is not None:
-        keep = provider.bootstrap_auth_records()
+    keep = provider.bootstrap_auth_records()
+    if store is not None and not set(auth_records(store)) <= keep:    # else nothing to remove: left as is
         local = auth_store_from_records({rid: r for rid, r in auth_records(store).items() if rid in keep})
         local.update((k, store[k]) for k in ("version", "updated_at") if k in store)
         data = json.dumps(local).encode("utf-8")
         with auth._auth_store_lock(target_path=auth_path):
             if _holds(auth_path, sources.auth, changed):
+                pre_import.append(pre_import.backup_path(auth_path), sources.auth, reason)
                 _write_bytes(auth_path, data)
         store = local = data = None
     invalidate_env_file_cache()

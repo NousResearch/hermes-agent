@@ -1,10 +1,12 @@
 """The one-time import never destroys what the user wrote, and never stages a name the plane refuses.
 
-Before anything is staged the import keeps the exact bytes it read of ``.env`` and ``auth.json`` in
-``.env.pre-import`` / ``auth.pre-import.json`` (0600, beside them). The first original wins: an
-existing backup is never overwritten, and cleanup never removes one. So a value the import could not
-carry whole (a satellite's quoted multiline PEM, a U+2028 / NEL inside a value: the satellite scope
-serves only the first line, and that is what the plane stores) stays recoverable byte for byte.
+Before anything is staged the import appends the exact bytes it read of ``.env`` and ``auth.json``
+to ``.env.pre-import`` / ``auth.pre-import.json`` (0600, beside them, append-only), and every
+rewrite of either file appends the bytes it replaces first. An existing backup is never
+overwritten, and cleanup never removes one. So a value the import could not carry whole (a
+satellite's quoted multiline PEM, a U+2028 / NEL inside a value: the satellite scope serves only
+the first line, and that is what the plane stores) stays recoverable byte for byte. Later versions
+of the files: ``test_remote_import_backup_history.py``.
 
 Every name to be sent is checked against the plane's name rules (contract §2) first: an invalid one
 (a UTF-16 file read as text, a quoted key, a name with a space, an upper-case auth provider id) fails
@@ -20,7 +22,7 @@ from pathlib import Path
 import pytest
 
 import hermes_secret_routing as routing
-from plugins.secret_store.remote import importer
+from plugins.secret_store.remote import importer, pre_import
 from tests.plugins.secret_store.stub_secrets_plane import CLIENT_ID, CLIENT_SECRET
 from tests.plugins.secret_store.test_remote_import_refusal import _files, _fresh, _write
 from tests.plugins.secret_store.test_remote_load_at_start import _boot
@@ -68,6 +70,11 @@ def _backups(home):
     return Path(home) / ".env.pre-import", Path(home) / "auth.pre-import.json"
 
 
+def _versions(path):
+    """The (reason, bytes) of each whole entry of the backup at *path*."""
+    return [(e.reason, e.data) for e in pre_import.read_entries(path) if e.whole]
+
+
 def _no_value_shown(err):
     shown = str(err.value.code)
     for value in SECRETS:
@@ -101,12 +108,13 @@ def test_a_satellite_value_imported_in_part_is_kept_whole_in_the_pre_import_back
     assert not (home / ".secrets-import.json").exists()
     assert body not in (home / ".env").read_bytes()                  # cleanup removed the binding...
     env_backup, auth_backup = _backups(home)
-    assert env_backup.read_bytes() == raw                            # ...but the original is kept, exactly
-    assert auth_backup.read_bytes() == auth_raw
+    assert _versions(env_backup) == [("staged", raw), ("cleanup", raw)]   # ...but the original is kept
+    assert _versions(auth_backup) == [("staged", auth_raw), ("cleanup", auth_raw)]
     assert _mode(env_backup) == 0o600 and _mode(auth_backup) == 0o600
+    kept = env_backup.read_bytes(), auth_backup.read_bytes()
     routing.routed_provider()._states.clear()
     _boot_sat(home)                                                  # a later start keeps them
-    assert env_backup.read_bytes() == raw and auth_backup.read_bytes() == auth_raw
+    assert (env_backup.read_bytes(), auth_backup.read_bytes()) == kept
 
 
 def test_the_process_home_backup_is_the_bytes_the_import_read(plane, monkeypatch):
@@ -116,7 +124,7 @@ def test_the_process_home_backup_is_the_bytes_the_import_read(plane, monkeypatch
     raw = (plane.home / ".env").read_bytes()
     _boot(plane.home)
     assert _stored(plane, "default") == {"RV_PEM": PEM, "RV_A": "rv-plain"}
-    assert _backups(plane.home)[0].read_bytes() == raw
+    assert _versions(_backups(plane.home)[0]) == [("staged", raw), ("cleanup", raw)]
     assert not _backups(plane.home)[1].exists()                       # no auth.json, no backup
 
 
@@ -128,17 +136,24 @@ def test_nothing_to_import_writes_no_backup(plane, monkeypatch):
 
 
 def test_an_earlier_backup_is_never_overwritten_nor_removed(plane, monkeypatch):
+    """A backup an earlier version wrote whole (unframed) keeps every byte; the import appends."""
     _start(monkeypatch)
     env_backup, auth_backup = _backups(plane.home)
     env_backup.write_bytes(b"EARLIER=original\n")
     auth_backup.write_bytes(b'{"earlier": true}')
     _write(plane.home, "RV_A=rv-plain\n")
+    raw = (plane.home / ".env").read_bytes()
     (plane.home / "auth.json").write_text(json.dumps({"providers": {"openai-codex": {"t": "codex-local"}}}),
                                           encoding="utf-8")
+    auth_raw = (plane.home / "auth.json").read_bytes()
     _boot(plane.home)
     assert _stored(plane, "default") == {"RV_A": "rv-plain"}
-    assert env_backup.read_bytes() == b"EARLIER=original\n"
-    assert auth_backup.read_bytes() == b'{"earlier": true}'
+    assert env_backup.read_bytes().startswith(b"EARLIER=original\n")
+    assert auth_backup.read_bytes().startswith(b'{"earlier": true}')
+    assert pre_import.read_entries(env_backup)[0] == ("", "unframed", b"EARLIER=original\n", False)
+    assert pre_import.read_entries(auth_backup)[0].data.startswith(b'{"earlier": true}')
+    assert _versions(env_backup) == [("staged", raw), ("cleanup", raw)]
+    assert _versions(auth_backup) == [("staged", auth_raw), ("cleanup", auth_raw)]
 
 
 def test_backups_survive_the_plane_already_having_the_profile(plane, monkeypatch):
@@ -148,10 +163,10 @@ def test_backups_survive_the_plane_already_having_the_profile(plane, monkeypatch
     raw = (plane.home / ".env").read_bytes()
     _boot(plane.home)
     assert (plane.home / ".env.unimported").exists()
-    assert _backups(plane.home)[0].read_bytes() == raw
+    assert _versions(_backups(plane.home)[0]) == [("staged", raw), ("plane-wins", raw)]
 
 
-# --- crash at each step: the first original wins ---------------------------------------------------
+# --- crash at each step: the original bytes stay in the backup ------------------------------------
 
 def _crash_once(monkeypatch, target, attr, when):
     real = getattr(target, attr)
@@ -166,6 +181,7 @@ def _crash_once(monkeypatch, target, attr, when):
 
 
 _REAL = {name: getattr(importer, name) for name in ("_write_bytes", "_write_private_json", "_remove")}
+_REAL["append"] = pre_import.append
 
 
 def _named(path_part):
@@ -173,8 +189,8 @@ def _named(path_part):
 
 
 CRASHES = {
-    "env_backup": (importer, "_write_bytes", _named(".env.pre-import")),
-    "auth_backup": (importer, "_write_bytes", _named("auth.pre-import.json")),
+    "env_backup": (pre_import, "append", _named(".env.pre-import")),
+    "auth_backup": (pre_import, "append", _named("auth.pre-import.json")),
     "staging": (importer, "_write_private_json", _named(".secrets-import.json")),
     "env_cleanup": (importer, "_write_bytes", _named(".env")),
     "auth_cleanup": (importer, "_write_bytes", _named("auth.json")),
@@ -200,7 +216,9 @@ def test_a_crash_at_any_step_keeps_the_original_bytes(plane, monkeypatch, step):
     assert (plane.home / ".env").read_bytes() == f"{CID}={CLIENT_ID}\n".encode()
     assert not (plane.home / ".secrets-import.json").exists()
     env_backup, auth_backup = _backups(plane.home)
-    assert env_backup.read_bytes() == raw and auth_backup.read_bytes() == auth_raw
+    assert {data for _r, data in _versions(env_backup)} == {raw}
+    assert {data for _r, data in _versions(auth_backup)} == {auth_raw}
+    assert [e for e in pre_import.read_entries(env_backup) + pre_import.read_entries(auth_backup) if not e.whole] == []
     assert _mode(env_backup) == 0o600 and _mode(auth_backup) == 0o600
     assert not [p.name for p in plane.home.iterdir() if p.name.endswith(".tmp")]
 

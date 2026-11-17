@@ -117,6 +117,49 @@ def _claim(conn, room_id: str, local_id: str, handoff_id: str, owner: str, now: 
     conn.execute("INSERT OR IGNORE INTO state_meta(key, value) VALUES (?, ?)", (_OWNER + room_id, owner))
 
 
+def _move_aside_standalone_member_rows(conn, room_ids) -> int:
+    """Retitle each handed-over room's standalone-era member rows out of the
+    ``Group: <room_id>`` title namespace, inside the import transaction (#149682).
+
+    Provenance is exact here and nowhere else: these rooms come from the standalone
+    backend's own handoff fence, and the move runs before the gateway serves any of
+    them, so a ``source='bot_room'`` row without a routing session key holding the
+    room title is pre-migration state — whatever created it (the standalone bot
+    backend or its no-authority API dispatch), its retry contract ended with the
+    handoff. Rows of other sources (a user-titled chat) keep their exact title; a
+    squatted suffix title bumps to ``(standalone 2)`` instead of colliding. The
+    gateway's own room session then takes the freed title on the member's first turn
+    instead of failing the label UPDATE after its session row already committed.
+    A target without a sessions table (bare coordination store) has nothing to move.
+    """
+    has_sessions = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone()
+    if not has_sessions:
+        return 0
+    moved = 0
+    for room_id in sorted(room_ids):
+        room_title = f'Group: {room_id}'
+        legacy = conn.execute(
+            "SELECT id FROM sessions WHERE title=? AND source='bot_room' "
+            "AND (session_key IS NULL OR session_key='') "
+            "AND ifnull(title_source,'')!='user'", (room_title,)).fetchall()
+        if not legacy:
+            continue
+        suffix = ' (standalone)'
+        n = 1
+        ids = [row[0] for row in legacy]
+        placeholders = ','.join('?' * len(ids))
+        while conn.execute(
+                f"SELECT 1 FROM sessions WHERE title=? AND id NOT IN ({placeholders})",
+                (room_title + suffix, *ids)).fetchone():
+            n += 1
+            suffix = f' (standalone {n})'
+        conn.execute(f"UPDATE sessions SET title=title||? WHERE id IN ({placeholders})",
+                     (suffix, *ids))
+        moved += len(ids)
+    return moved
+
+
 def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None) -> int:
     """Move the standalone backend's live rooms into ``target_db`` once; returns rooms copied.
 
@@ -138,8 +181,6 @@ def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None
         local_id, handoff_id = local_authority_gateway_id(), handoff_gateway_id()
         _fence_source(source, local_id, handoff_id)
         fenced = _fenced_ids(source, handoff_id)
-        if not fenced:
-            return 0
         owner, now = host_owner_subject(), clock(None)
         with _transaction(target_db, immediate=True) as conn:
             if runtime_epoch is not None:
@@ -151,7 +192,18 @@ def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None
             copied = _copy_rows(conn, source, only=missing) if missing else 0
             for room_id in sorted(missing):
                 _claim(conn, room_id, local_id, handoff_id, owner, now)
+            # Sweep every room this store CURRENTLY holds under the local authority —
+            # including rooms imported by an earlier gateway (before this cleanup existed;
+            # upgrade repair) — but never rooms demoted to a peer: the claim is re-read
+            # inside this transaction, so a demotion committed before it is respected.
+            # Idempotent per title.
+            claimed_now = {str(row[0]) for row in conn.execute(
+                "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=?", (local_id,))}
+            moved_aside = _move_aside_standalone_member_rows(conn, claimed_now)
         _record_handoff(source, fenced, now)
+        if moved_aside:
+            logger.info("hosted rooms: moved %d standalone-era member session row(s) out of the "
+                        "Group Chat title namespace for %d imported room(s)", moved_aside, len(missing))
     except (OSError, sqlite3.Error, HostedRoomError, RuntimeStoreError) as exc:
         logger.warning("hosted rooms: could not import the standalone Group Chats from %s (%s); "
                        "will retry on the next start", source, exc)
@@ -159,6 +211,83 @@ def import_standalone_rooms(target_db: Path, *, runtime_epoch: int | None = None
     if copied:
         logger.info("hosted rooms: imported %d standalone Group Chat(s) from %s", copied, source)
     return copied
+
+
+
+def _locally_claimed_room_ids(db_path, local_id) -> set:
+    """Room ids this store's coordination registry holds under the local authority."""
+    from contextlib import closing
+    from gateway.hosted_rooms import _read_connection
+    with closing(_read_connection(Path(db_path))) as conn:
+        return {str(row[0]) for row in conn.execute(
+            "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=?", (local_id,))}
+
+
+def sweep_standalone_member_rows(authorities) -> int:
+    """Move pre-migration member rows aside in EVERY served profile store (#149682).
+
+    The standalone handoff is only visible beside the launch profile's store, so
+    ``import_standalone_rooms`` repairs that store; members seated on named profiles
+    keep their titled rows in their own stores, which have no import source of their
+    own. This sweep runs after the ready import against the union of locally-claimed
+    room ids and the same per-row rules (``bot_room``, no routing key, not
+    user-retitled).
+
+    Claims are recorded per source store and re-read immediately before each write:
+    every store carries ``hosted_rooms`` tables (empty in named stores, where the
+    authoritative claim lives in the claiming store's registry), so a room's claim is
+    revalidated in the registry that actually holds it. A demotion committed before a
+    store's write stops that room's sweep everywhere; one committed after the last
+    source read can still produce a single cosmetic suffix update — the row's
+    transcript, id, visibility and routing key are never touched. Idempotent: an
+    already-suffixed row no longer matches its room's title.
+    """
+    from gateway.hosted_rooms import _read_connection, _transaction, local_authority_gateway_id
+    from hermes_state_runtime import RuntimeStoreError, _epoch
+    import sqlite3 as _sqlite3
+    local_id = local_authority_gateway_id()
+    claim_sources: list = []
+    for authority in authorities:
+        try:
+            rooms = _locally_claimed_room_ids(Path(authority.db.db_path), local_id)
+            if rooms:
+                claim_sources.append((Path(authority.db.db_path), rooms))
+        except (OSError, _sqlite3.Error):
+            continue
+    if not claim_sources:
+        return 0
+    claimed = set().union(*(rooms for _, rooms in claim_sources))
+
+    def fresh_claims() -> set:
+        fresh: set = set()
+        for source_path, _ in claim_sources:
+            try:
+                fresh |= _locally_claimed_room_ids(source_path, local_id)
+            except (OSError, _sqlite3.Error):
+                continue
+        return fresh
+
+    moved = 0
+    for authority in authorities:
+        try:
+            with _transaction(Path(authority.db.db_path), immediate=True) as conn:
+                epoch = getattr(authority, 'epoch', None)
+                if epoch is not None:
+                    _epoch(conn, epoch)
+                still_claimed = fresh_claims()
+                if conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosted_rooms'").fetchone():
+                    # This store's own registry is authoritative for its own claims:
+                    # re-read it inside the write transaction.
+                    still_claimed |= {str(row[0]) for row in conn.execute(
+                        "SELECT room_id FROM hosted_rooms WHERE authority_gateway_id=?", (local_id,))}
+                moved += _move_aside_standalone_member_rows(conn, claimed & still_claimed)
+        except (OSError, _sqlite3.Error, RuntimeStoreError) as exc:
+            logger.warning("hosted rooms: standalone member-row sweep skipped for %s (%s)",
+                           getattr(authority.db, 'db_path', authority), exc)
+    if moved:
+        logger.info("hosted rooms: swept %d standalone-era member session row(s) across profile stores", moved)
+    return moved
 
 
 def import_after_ready(authorities) -> None:
@@ -176,9 +305,13 @@ def import_after_ready(authorities) -> None:
         service._ready_import_started = True
         target, epoch = Path(authority.db.db_path), authority.epoch
 
-        def run(target=target, epoch=epoch, service=service, authority=authority):
+        def run(target=target, epoch=epoch, service=service, authority=authority,
+                authorities=tuple(authorities)):
             from gateway.session_authorities import owner_scope
             with owner_scope(authority):  # a new thread holds the launch profile's scope otherwise
                 if import_standalone_rooms(target, runtime_epoch=epoch):
                     service.wakeup()
+                # Named-profile member stores have no import source of their own; sweep
+                # them for the claimed rooms once the handoff import has settled.
+                sweep_standalone_member_rows(authorities)
         threading.Thread(target=run, name="hosted-rooms-ready-import", daemon=True).start()

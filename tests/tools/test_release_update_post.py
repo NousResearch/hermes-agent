@@ -92,6 +92,7 @@ class World:
             del cfg["slack"]["post_allowed_channels"]
         if self.guard:
             cfg["notion"] = {"write_guard": {"enabled": True}}
+            cfg["agent_write_guard"] = True
         return cfg
 
     async def fetch(self, page_id):
@@ -435,3 +436,45 @@ def test_auto_still_needs_jira_done_and_not_hold(w):
     w.jira["BA-1"] = "To Do"
     assert "error" in _call(_gated())
     assert w.release_posts == []
+
+
+
+# ── review round ─────────────────────────────────────────────────────────
+
+def test_requires_agent_write_guard(w, monkeypatch):
+    cfg = w.config()
+    del cfg["agent_write_guard"]
+    monkeypatch.setattr(rup, "_config", lambda: cfg)
+    assert "agent_write_guard" in _call(_gated())["error"] and w.posts == []
+
+
+@pytest.mark.parametrize("level", ["veto", "auto"])
+def test_rejected_row_never_posts_without_approval(w, level):
+    w.level = level
+    w.row = _row(status="Changes requested")
+    assert "error" in _call(_gated())
+    assert w.posts == []
+
+
+def test_waiting_row_not_announced_twice(w):
+    pid = _queue(w)
+    out = _call(_gated())
+    assert out["pending_id"] == pid
+    assert len([p for p in w.posts if p[0] == CHOME]) == 1
+
+
+def test_vetoed_row_not_requeued(w):
+    pid = _queue(w)
+    w.vetoers = ["U0VETO"]
+    w.now = NOW + timedelta(hours=5)
+    assert _call({"pending_id": pid})["status"] == "vetoed"
+    out = _call(_gated())
+    assert "vetoed" in out["error"]
+    # a human approving it is the way forward
+    w.row = _row(status="Approved")
+    assert _call(_gated())["ok"] is True and len(w.release_posts) == 1
+
+
+def test_channel_name_refused(w):
+    assert "channel id" in _call({"chat_id": "#product-education", "message": "hi"})["error"]
+    assert w.free_posts == []

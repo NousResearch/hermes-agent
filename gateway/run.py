@@ -30228,7 +30228,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return loaded
 
     def _slack_source_ignored(self, source: SessionSource) -> bool:
-        """``_is_slack_ignored_channel`` against the source profile's config."""
+        """``_is_slack_ignored_channel`` against the source profile's config —
+        plus the profile's ``slack.post_gated_channels`` (fork, education
+        design 5b): a gated channel accepts no free text from the bot, so it
+        never answers there, mentioned or not."""
+        if self._slack_source_gated(source):
+            return True
         config = getattr(self, "config", None)
         chat_id = getattr(source, "chat_id", None)
         if not getattr(config, "multiplex_profiles", False):
@@ -30240,6 +30245,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return _is_slack_ignored_channel(_load_config_cached(), chat_id)
         except Exception:
             logger.warning("multiplex: ignored-channel check failed", exc_info=True)
+            return False
+
+    def _slack_source_gated(self, source: SessionSource) -> bool:
+        channel_id = _slack_parent_channel_id(getattr(source, "chat_id", None))
+        if not channel_id:
+            return False
+        try:
+            from agent.slack_post_policy import is_gated
+            from hermes_cli.config import read_raw_config
+
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                    return is_gated(channel_id, read_raw_config())
+            return is_gated(channel_id, read_raw_config())
+        except Exception:
+            logger.warning("gated-channel check failed", exc_info=True)
             return False
 
     def _multiplex_adapter_for(self, source, platform):

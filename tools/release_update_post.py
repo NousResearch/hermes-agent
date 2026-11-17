@@ -39,6 +39,7 @@ Config (all optional except the data source)::
       asset_type_value: Slack update
       status_property: Status
       approved_statuses: [Approved]
+      pre_approval_statuses: [Draft, In review]   # veto/auto may act from these only
       hold_statuses: [Hold]
       published_status: Published
       published_url_property: Published URL
@@ -70,7 +71,7 @@ _MAX_KEYS = 30
 
 _WRITE_GUARD_MISSING = (
     "Posting a release update is refused: this profile's Notion write guard is not enforcing "
-    "(notion.write_guard). Without it the agent could set a Release Assets row to Approved "
+    "(notion.write_guard, plus agent_write_guard). Without it the agent could set a Release Assets row to Approved "
     "itself, so the row is not a human signal. An admin must enable the guard first.")
 
 
@@ -102,6 +103,7 @@ class Settings:
     type_value: str
     status_prop: str
     approved: frozenset
+    pre_approval: frozenset
     hold: frozenset
     published: str
     url_prop: str
@@ -132,6 +134,9 @@ def settings(cfg: dict) -> Settings:
         status_prop=name("status_property", "Status"),
         # `Published` can never count as sign-off: it means already posted.
         approved=frozenset(names("approved_statuses", ["Approved"])) - {published},
+        # veto / auto may act on a row not yet Approved — but only from these
+        # statuses; a row a human rejected or sent back never posts.
+        pre_approval=frozenset(names("pre_approval_statuses", ["Draft", "In review"])),
         hold=frozenset(names("hold_statuses", ["Hold"])),
         published=published,
         url_prop=name("published_url_property", "Published URL"),
@@ -272,6 +277,10 @@ def _check_row(row, s: Settings, *, require_approved: bool) -> None:
         raise gate.GateError(
             f"Sign-off required: the row's {s.status_prop} is {row.status or 'empty'!r}; it must be "
             f"{' / '.join(sorted(s.approved))} (set by a product-team member).")
+    if row.status not in s.approved and row.status not in s.pre_approval:
+        raise gate.RowStopped(
+            f"The row's {s.status_prop} is {row.status or 'empty'!r} — not "
+            f"{' / '.join(sorted(s.approved | s.pre_approval))}, so it is not posted.")
 
 
 async def materialize(spec: dict, cfg: dict, *, require_approved: bool) -> dict:
@@ -473,15 +482,16 @@ async def execute_pending(pending_id: str, level: str, cfg: dict) -> dict:
 def _level(cfg: dict) -> tuple[Optional[str], Optional[str]]:
     """(level, error) after the level / write-guard preconditions."""
     from agent import autonomy
-    from tools.notion_write_guard import is_enforcing
+    from tools.notion_write_guard import autonomy_precondition
     try:
         level = autonomy.resolve_level(ACTION, cfg)
     except autonomy.AutonomyConfigError as e:
         return None, str(e)
     if level == "off":
         return None, "Posting release updates is turned off for this profile (autonomy level 'off')."
-    if not is_enforcing(cfg):
-        return None, _WRITE_GUARD_MISSING
+    why = autonomy_precondition(cfg)
+    if why:
+        return None, f"{_WRITE_GUARD_MISSING} ({why})"
     return level, None
 
 
@@ -505,6 +515,25 @@ def list_waiting() -> list[dict]:
              "not_before": (r.get("signed") or {}).get("not_before"),
              "expires_at": (r.get("signed") or {}).get("expires_at")}
             for r in autonomy.list_pending(ACTION) if r.get("status") == "pending"]
+
+
+def _earlier_veto(row_id: str) -> Optional[dict]:
+    """A row already waiting returns that record; a row someone vetoed is not
+    re-queued (re-announcing until nobody objects would wear vetoes down) —
+    after a veto it posts only once a human sets it Approved."""
+    from agent import autonomy
+    for rec in autonomy.list_pending(ACTION):
+        signed = rec.get("signed") if isinstance(rec.get("signed"), dict) else {}
+        if (signed.get("spec") or {}).get("row_id") != row_id or not autonomy.verify_pending(rec):
+            continue
+        if rec.get("status") in ("pending", "executing"):
+            return {"status": "pending", "pending_id": rec.get("pending_id"),
+                    "not_before": signed.get("not_before"), "expires_at": signed.get("expires_at"),
+                    "message": "Already announced and waiting out its veto window."}
+        if rec.get("status") == "vetoed":
+            return {"error": "This row was vetoed (" + str(rec.get("reason") or "") + "). It is not "
+                             "re-announced; it posts once a product-team member sets it Approved."}
+    return None
 
 
 async def post_release_update(args: dict, cfg: dict) -> dict:
@@ -531,6 +560,9 @@ async def post_release_update(args: dict, cfg: dict) -> dict:
         if autonomy.ledger_get(ACTION, spec["row_id"]) is None and level == "veto":
             m = await materialize(spec, cfg, require_approved=False)
             if m["row"].status not in settings(cfg).approved:
+                earlier = _earlier_veto(spec["row_id"])
+                if earlier is not None:
+                    return earlier
                 return await queue_veto(spec, cfg, m)
         result = await post_once(spec, cfg, level, require_approved=(level in ("signoff", "veto")))
     except (ValueError, gate.GateError, autonomy.AutonomyBusy, autonomy.AutonomyConfigError) as e:

@@ -415,8 +415,8 @@ _LOCALE_RE = re.compile(rf"^{_LOC}$")
 _DIGITS = re.compile(r"^\d{1,20}$")
 
 _WRITE_GUARD_MISSING = (
-    "zendesk_create_draft is refused: this profile has no Notion write guard "
-    "(notion.write_guard.enabled: true). Without it the agent could set a Release Assets "
+    "zendesk_create_draft is refused: this profile has no enforcing Notion write guard "
+    "(notion.write_guard.enabled: true, with agent_write_guard on). Without it the agent could set a Release Assets "
     "row to Approved itself through notion_api, so the row is not a human signal. An admin "
     "must deploy and enable the guard first.")
 
@@ -446,11 +446,12 @@ def _audit(action: str, target: str) -> None:
 
 
 def _write_guard_enabled(cfg: dict) -> bool:
-    """True iff the Notion write guard is enforcing for this profile — the
-    SAME predicate the guard itself uses, so "enabled" can never mean "off"
-    (an enabled-but-invalid block enforces by denying every write)."""
-    from tools.notion_write_guard import is_enforcing
-    return is_enforcing(cfg)
+    """True iff the Notion write guard is enforcing for this profile (the
+    guard's own predicate, so "enabled" can never mean "off" — an enabled but
+    invalid block enforces by denying every write) and agent_write_guard
+    keeps the agent out of its own config.yaml."""
+    from tools.notion_write_guard import autonomy_precondition
+    return autonomy_precondition(cfg) is None
 
 
 def _int_arg(value, name: str, *, nullable: bool = False):

@@ -480,7 +480,7 @@ def _alert_owner_of_undelivered_failure(
     try:
         if not (content or "").strip():
             return
-        if _resolve_delivery_targets(job):
+        if _apply_post_policy(_resolve_delivery_targets(job))[0]:
             return  # the alert already went to a real target
         if incident_id and not already_deduped:
             from cron.incidents import get_incident
@@ -3289,8 +3289,11 @@ def _apply_post_policy(targets: List[dict], cfg: Optional[dict] = None) -> tuple
             from hermes_cli.config import read_raw_config
             cfg = read_raw_config()
     except Exception as e:
-        logger.warning("cron delivery: posting policy unavailable (%s); not filtering", e)
-        return targets, []
+        # Fail closed for Slack (the policy may be what forbids the target);
+        # other platforms are outside the policy.
+        logger.error("cron delivery: posting policy unavailable (%s); refusing Slack targets", e)
+        kept = [t for t in targets if str(t.get("platform") or "").lower() != "slack"]
+        return kept, ["posting policy unavailable"] * (len(targets) - len(kept))
     kept, refused = [], []
     for target in targets:
         if str(target.get("platform") or "").lower() == "slack":

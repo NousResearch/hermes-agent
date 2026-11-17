@@ -219,6 +219,10 @@ def _parse(cfg: dict) -> GuardConfig:
     for targets in transitions.values():
         if targets & gc.idea_human_statuses:
             raise GuardConfigError(f"{p}.ideas.own_transitions cannot move a row into a human-only status")
+    if not _agent_write_guard_on(cfg):
+        raise GuardConfigError(
+            "notion.write_guard needs agent_write_guard enabled in the same config.yaml — "
+            "otherwise the agent could edit its own boundary config with the file tools")
     from agent import autonomy
     for action in GUARDED_ACTIONS:
         try:
@@ -228,6 +232,15 @@ def _parse(cfg: dict) -> GuardConfig:
         if level != "off":  # unreachable while BUILT_LEVELS has only `off`
             raise GuardConfigError(f"autonomy.actions.{action}: {level!r} is not built")
     return gc
+
+
+def _agent_write_guard_on(cfg) -> bool:
+    """The self-modification guard (4e) protects this config.yaml; the write
+    guard is only trustworthy when the agent can't edit its own rules."""
+    raw = cfg.get("agent_write_guard") if isinstance(cfg, dict) else None
+    if raw is True:
+        return True
+    return isinstance(raw, dict) and raw.get("enabled", True) is True
 
 
 _LOGGED: set[str] = set()
@@ -246,6 +259,18 @@ def load_guard(cfg) -> Optional[GuardConfig]:
             _LOGGED.add(msg)
             logger.error("[notion_write_guard] %s — every Notion write is denied until fixed", msg)
         return GuardConfig(error=msg)
+
+
+def autonomy_precondition(cfg) -> Optional[str]:
+    """Why a sign-off-gated action (zendesk_create_draft, post_release_update)
+    must refuse every level but ``off``, or None. The row's Status is a human
+    signal only while the agent can neither set it (this guard enforcing) nor
+    rewrite its own rules (``agent_write_guard``)."""
+    if not is_enforcing(cfg):
+        return "the Notion write guard is not enforcing (notion.write_guard.enabled: true)"
+    if not _agent_write_guard_on(cfg):
+        return "agent_write_guard is off, so the agent could edit its own boundary config"
+    return None
 
 
 def validate(cfg) -> list[str]:
@@ -465,6 +490,44 @@ def _normalise(props: dict, schema: dict) -> dict:
     return out
 
 
+def _relation_ids(name: str, value) -> set[str]:
+    if not isinstance(value, dict) or set(value) - {"relation", "type", "has_more"}:
+        raise _Deny(f"Notion write refused: {name!r} must be set as {{'relation': [{{'id': ...}}]}}.")
+    items = value.get("relation")
+    if not isinstance(items, list):
+        raise _Deny(f"Notion write refused: {name!r} must be a list of related pages.")
+    out = set()
+    for item in items:
+        pid = _hex((item or {}).get("id")) if isinstance(item, dict) else ""
+        if not pid:
+            raise _Deny(f"Notion write refused: {name!r} has an entry that is not a page id.")
+        out.add(pid)
+    return out
+
+
+def _check_relations(props: dict, schema: dict, current: Optional[dict], guard: GuardConfig,
+                     lookup) -> None:
+    """A two-way relation write also changes every page added or removed on
+    the other side — so each of those pages must itself be writable (a Draft
+    kit row, its own idea, a free page). Otherwise an edit to a Draft row
+    could rewrite an Approved row's relations (and the Jira tickets a
+    release update checks), a PRD, or someone else's idea."""
+    for name, value in props.items():
+        if (schema.get(name) or {}).get("type") != "relation":
+            continue
+        new = _relation_ids(name, value)
+        old: set[str] = set()
+        if current is not None:
+            cur = current.get(name) if isinstance(current.get(name), dict) else {}
+            if cur.get("has_more"):
+                raise _Deny(f"Notion write refused: {name!r} has more related pages than Notion "
+                            "returned, so the change can't be checked.")
+            old = {_hex((i or {}).get("id")) for i in cur.get("relation") or [] if isinstance(i, dict)}
+            old.discard("")
+        for pid in sorted(new ^ old):
+            _content_rule(_classify_page(pid, guard, lookup), guard, lookup)
+
+
 def _is_own(row: dict, lookup) -> bool:
     me = lookup.me()
     creator = (row.get("created_by") or {}).get("id") if isinstance(row.get("created_by"), dict) else None
@@ -503,8 +566,10 @@ def _page_update(ep: _Endpoint, body: dict, guard: GuardConfig, lookup) -> None:
         return
     row_props = t.row.get("properties") if isinstance(t.row.get("properties"), dict) else {}
     props = _normalise(body.get("properties") or {}, row_props)
+    if t.kind in ("kit", "idea"):
+        _content_rule(t, guard, lookup)  # Draft kit row / own idea
+        _check_relations(props, row_props, row_props, guard, lookup)
     if t.kind == "kit":
-        _content_rule(t, guard, lookup)  # current status must be Draft
         if guard.kit_status in props and _new_value(guard.kit_status, props[guard.kit_status]) != guard.kit_draft:
             raise _Deny(f"Notion write refused: {guard.kit_status!r} may only be {guard.kit_draft!r} — "
                         "advancing a row is human-only (autonomy action advance_asset_status is off).")
@@ -551,6 +616,7 @@ def _create(body: dict, guard: GuardConfig, lookup) -> None:
         schema = lookup.data_source(ds)
         schema_props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
         props = _normalise(body.get("properties") or {}, schema_props)
+        _check_relations(props, schema_props, None, guard, lookup)
         if ds in guard.kits:
             if guard.kit_status not in props or _new_value(guard.kit_status, props[guard.kit_status]) != guard.kit_draft:
                 raise _Deny(f"Notion write refused: a new Release Kit row must set {guard.kit_status!r} "
@@ -588,6 +654,30 @@ def _comment(body: dict, guard: GuardConfig, lookup) -> None:
     _content_rule(_classify_page(page, guard, lookup), guard, lookup)
 
 
+def _dangerous_nested(body, depth: int = 0) -> Optional[str]:
+    """Deletes and schema creation hidden inside a body: the markdown
+    endpoint's ``allow_deleting_content`` (replace_content may trash child
+    pages / databases) and ``child_database`` blocks."""
+    if depth > 40:
+        return "Notion write refused: the request body is nested too deeply to check."
+    if isinstance(body, dict):
+        if body.get("allow_deleting_content"):
+            return ("Notion write refused: allow_deleting_content can trash child pages and "
+                    "databases — never allowed for this profile.")
+        if body.get("type") == "child_database" or "child_database" in body:
+            return "Notion write refused: creating databases (child_database) is a schema change."
+        for value in body.values():
+            hit = _dangerous_nested(value, depth + 1)
+            if hit:
+                return hit
+    elif isinstance(body, list):
+        for value in body:
+            hit = _dangerous_nested(value, depth + 1)
+            if hit:
+                return hit
+    return None
+
+
 def check_request(method: str, path: str, body, *, cfg: dict, lookup=None) -> Optional[str]:
     """Return a denial message for this ``notion_api`` request, or None."""
     method = str(method or "GET").strip().upper()
@@ -614,6 +704,9 @@ def check_request(method: str, path: str, body, *, cfg: dict, lookup=None) -> Op
         return "Notion write refused: body must be a JSON object."
     if _TRASH_KEYS & set(body):
         return "Notion write refused: archiving, trashing or restoring is never allowed for this profile."
+    nested = _dangerous_nested(body)
+    if nested:
+        return nested
     lookup = lookup or NotionLookup()
     try:
         if ep.kind == "create":

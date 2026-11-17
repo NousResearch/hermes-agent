@@ -9,7 +9,7 @@ IDS = {"release_kits": {"data_sources": ["1" * 32]}, "prds": {"data_sources": ["
 
 def test_clean_and_unconfigured():
     assert boundary_config_errors({}) == []
-    cfg = {"notion": {"write_guard": {"enabled": True, **IDS}},
+    cfg = {"notion": {"write_guard": {"enabled": True, **IDS}}, "agent_write_guard": True,
            "autonomy": {"announce_channel": "C1", "actions": {"post_release_update": "veto",
                                                                "zendesk_create_draft": "auto"}},
            "slack": {"post_allowed_channels": ["C1", "C2"], "post_gated_channels": ["C2"]}}

@@ -19,7 +19,7 @@ def _guarded(**over):
              "prds": {"data_sources": ["3" * 32]},
              "ideas": {"data_sources": ["4" * 32]}}
     guard.update(over)
-    return {"notion": {"write_guard": guard}}
+    return {"notion": {"write_guard": guard}, "agent_write_guard": True}
 
 
 class _Proc:
@@ -106,23 +106,31 @@ def test_backstop_denial_function():
 
 # ── the contract with zendesk_create_draft ───────────────────────────────
 
+AWG = {"agent_write_guard": True}
+
+# (config, guard enforcing, zendesk / posting may act above `off`)
 _MATRIX = [
-    ({}, False),
-    ({"notion": {}}, False),
-    ({"notion": {"write_guard": None}}, False),
-    ({"notion": {"write_guard": False}}, False),
-    ({"notion": {"write_guard": {"enabled": False}}}, False),
-    ({"notion": {"write_guard": {"enabled": True}}}, True),          # incomplete → enforcing, denies all
-    ({"notion": {"write_guard": True}}, True),
-    ({"notion": {"write_guard": {"enabled": "true"}}}, True),         # malformed → enforcing
-    (_guarded(), True),
+    ({}, False, False),
+    ({"notion": {}, **AWG}, False, False),
+    ({"notion": {"write_guard": None}, **AWG}, False, False),
+    ({"notion": {"write_guard": False}, **AWG}, False, False),
+    ({"notion": {"write_guard": {"enabled": False}}, **AWG}, False, False),
+    ({"notion": {"write_guard": {"enabled": True}}, **AWG}, True, True),   # incomplete → enforcing, denies all
+    ({"notion": {"write_guard": True}, **AWG}, True, True),
+    ({"notion": {"write_guard": {"enabled": "true"}}, **AWG}, True, True),  # malformed → enforcing
+    (_guarded(), True, True),
+    ({"notion": _guarded()["notion"]}, True, False),   # no agent_write_guard: guard denies, zendesk refuses
 ]
 
 
-@pytest.mark.parametrize("config,enforcing", _MATRIX)
-def test_zendesk_precondition_agrees_with_guard(config, enforcing):
+@pytest.mark.parametrize("config,enforcing,may_act", _MATRIX)
+def test_zendesk_precondition_agrees_with_guard(config, enforcing, may_act):
     assert g.is_enforcing(config) is enforcing
-    assert zt._write_guard_enabled(config) is enforcing
+    assert zt._write_guard_enabled(config) is may_act
+    assert (g.autonomy_precondition(config) is None) is may_act
+    # may_act implies enforcing: Zendesk never treats Approved as a human
+    # signal while the agent could set it.
+    assert enforcing or not may_act
     # Whenever Zendesk treats the row's Approved status as a human signal,
     # the guard must refuse the agent setting Approved itself.
     denial = g.check_request("PATCH", f"v1/pages/{ROW}",

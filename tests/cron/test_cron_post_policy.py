@@ -16,10 +16,11 @@ def test_no_policy_is_inert():
 
 
 def test_allowlist_and_gated_filtering():
-    cfg = {"slack": {"post_allowed_channels": ["CHOME", "CREL"], "post_gated_channels": ["CREL"]}}
-    kept, refused = sch._apply_post_policy([_t("chome"), _t("CREL"), _t("COTHER"), _t("9", "telegram")], cfg)
-    assert [t["chat_id"] for t in kept] == ["chome", "9"]
-    assert len(refused) == 2
+    cfg = {"slack": {"post_allowed_channels": ["CHOME001", "CREL0001"], "post_gated_channels": ["CREL0001"]}}
+    kept, refused = sch._apply_post_policy(
+        [_t("chome001"), _t("CREL0001"), _t("COTHER01"), _t("#release-updates"), _t("9", "telegram")], cfg)
+    assert [t["chat_id"] for t in kept] == ["chome001", "9"]
+    assert len(refused) == 3
 
 
 def test_guarded_profile_without_allowlist_delivers_nowhere_on_slack():
@@ -29,10 +30,28 @@ def test_guarded_profile_without_allowlist_delivers_nowhere_on_slack():
 
 def test_deliver_result_refuses_before_sending(monkeypatch):
     import hermes_cli.config as hc
-    monkeypatch.setattr(hc, "read_raw_config", lambda: {"slack": {"post_gated_channels": ["CREL"]}})
+    monkeypatch.setattr(hc, "read_raw_config", lambda: {"slack": {"post_gated_channels": ["CREL0001"]}})
     sent = []
     import tools.send_message_tool as smt
     monkeypatch.setattr(smt, "_send_to_platform", lambda *a, **k: sent.append(a))
-    err = sch._deliver_result({"id": "j1", "name": "feed", "deliver": "slack:CREL"}, "hello")
+    err = sch._deliver_result({"id": "j1", "name": "feed", "deliver": "slack:CREL0001"}, "hello")
     assert err and "posting policy" in err
     assert sent == []
+
+
+def test_config_failure_refuses_slack_only(monkeypatch):
+    import hermes_cli.config as hc
+
+    def boom():
+        raise OSError("disk")
+    monkeypatch.setattr(hc, "read_raw_config", boom)
+    kept, refused = sch._apply_post_policy([_t("CHOME001"), _t("9", "telegram")])
+    assert kept == [_t("9", "telegram")] and len(refused) == 1
+
+
+def test_owner_alerted_when_policy_refused_every_target(monkeypatch):
+    import hermes_cli.config as hc
+    monkeypatch.setattr(hc, "read_raw_config", lambda: {"slack": {"post_gated_channels": ["CREL0001"]}})
+    job = {"id": "j1", "name": "feed", "deliver": "slack:CREL0001"}
+    assert sch._resolve_delivery_targets(job)
+    assert sch._apply_post_policy(sch._resolve_delivery_targets(job))[0] == []

@@ -22,8 +22,11 @@ multiplex), never ``os.getenv``.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
+
+_CHANNEL_ID = re.compile(r"^[CGD][A-Z0-9]{6,}$")
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,9 @@ def channel_denial(chat_id, cfg, *, gated_ok: bool = False) -> Optional[str]:
     if policy.error:
         return policy.error
     cid = normalise(chat_id)
+    if (policy.gated or policy.allowed is not None) and not _CHANNEL_ID.match(cid):
+        return (f"{cid or 'that target'} is not a Slack channel id; with a posting policy set, "
+                "post only by channel id (names like #release-updates are refused).")
     if cid in policy.gated and not gated_ok:
         return (f"{cid} is a gated channel (slack.post_gated_channels): it accepts no free text. "
                 "Post a release update by passing release_asset_row_id instead of message.")

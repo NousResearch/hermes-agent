@@ -29,7 +29,7 @@ def cfg(**guard_over):
         "writable_pages": [HOME],
     }
     guard.update(guard_over)
-    return {"notion": {"write_guard": guard}}
+    return {"notion": {"write_guard": guard}, "agent_write_guard": True}
 
 
 def _row(page_id, ds, status, *, status_type="select", created_by=BOT, extra_props=None, **kw):
@@ -401,3 +401,70 @@ def test_off_autonomy_levels_are_fine(lk):
     config = cfg()
     config["autonomy"] = {"actions": {"advance_asset_status": "off", "ideas_accept_own": "off"}}
     assert g.load_guard(config).error == ""
+
+
+# ── review round: relations, hidden deletes, self-edit tie ───────────────
+
+def _with_relation(row, ids, has_more=False):
+    row["properties"]["Release"] = {"id": "rel", "type": "relation",
+                                    "relation": [{"id": i} for i in ids], "has_more": has_more}
+    return row
+
+
+def test_relation_change_must_touch_only_writable_pages(lk):
+    approved = "b" * 32                      # In review kit row
+    draft = "a" * 32
+    other_draft = "8" * 32
+    lk.pages[other_draft] = _row(other_draft, ASSETS, "Draft")
+    _with_relation(lk.pages[draft], [other_draft])
+    rel = lambda ids: {"properties": {"Release": {"relation": [{"id": i} for i in ids]}}}
+    # adding a Draft row: fine; unchanged list: fine
+    assert check(lk, "PATCH", f"v1/pages/{draft}", rel([other_draft])) is None
+    # adding a non-Draft row (its back-relation would change) → refused
+    assert check(lk, "PATCH", f"v1/pages/{draft}", rel([other_draft, approved]))
+    # removing a link to an approved row → refused
+    _with_relation(lk.pages[draft], [approved])
+    assert check(lk, "PATCH", f"v1/pages/{draft}", rel([]))
+    # linking a PRD → refused
+    assert check(lk, "PATCH", f"v1/pages/{draft}", rel(["c" * 32]))
+    # truncated current list → refused
+    _with_relation(lk.pages[draft], [other_draft], has_more=True)
+    assert check(lk, "PATCH", f"v1/pages/{draft}", rel([other_draft]))
+    # malformed value
+    assert check(lk, "PATCH", f"v1/pages/{draft}", {"properties": {"Release": {"relation": "x"}}})
+
+
+def test_relation_on_create_checked(lk, monkeypatch):
+    orig = _ds_schema
+
+    def schema(ds):
+        out = orig(ds)
+        out["properties"]["Release"] = {"id": "rel", "type": "relation"}
+        return out
+    monkeypatch.setattr(lk, "data_source", lambda ds: schema(ds.replace("-", "")))
+    body = lambda ids: {"parent": {"data_source_id": ASSETS}, "properties": {
+        "Status": status("Draft"), "Release": {"relation": [{"id": i} for i in ids]}}}
+    assert check(lk, "POST", "v1/pages", body(["a" * 32])) is None
+    assert check(lk, "POST", "v1/pages", body(["b" * 32]))
+
+
+@pytest.mark.parametrize("body", [
+    {"type": "replace_content", "replace_content": {"new_str": "x", "allow_deleting_content": True}},
+    {"children": [{"type": "child_database", "child_database": {"title": "x"}}]},
+    {"children": [{"type": "toggle", "toggle": {"children": [{"child_database": {}}]}}]},
+])
+def test_hidden_deletes_and_schema_denied(lk, body):
+    assert check(lk, "PATCH", f"v1/pages/{HOME}/markdown", body)
+    assert check(lk, "PATCH", f"v1/blocks/{'a' * 32}/children", body)
+
+
+def test_guard_requires_agent_write_guard(lk):
+    config = cfg()
+    del config["agent_write_guard"]
+    guard = g.load_guard(config)
+    assert guard.error and "agent_write_guard" in guard.error
+    assert check(lk, "PATCH", f"v1/pages/{HOME}/markdown", {}, config=config)
+    config["agent_write_guard"] = {"enabled": True, "extra_paths": ["x"]}
+    assert g.load_guard(config).error == ""
+    config["agent_write_guard"] = {"enabled": False}
+    assert g.load_guard(config).error

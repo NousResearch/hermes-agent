@@ -720,13 +720,22 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   `own_transitions`, never Accepted/Rejected/Parked or `Decision note`;
   `writable_pages` and descendants free; everything else refused.
   Properties referenced by id (URL-encoded or not) are mapped to names; a
-  status set by option id or `null` is refused. Reads (GET, `search`,
+  status set by option id or `null` is refused. A **relation** write is
+  allowed only if every page added or removed is itself writable (Notion
+  updates the other side of a two-way relation — otherwise editing a Draft
+  row could rewrite an Approved row's links and the Jira keys 5b checks).
+  `allow_deleting_content` (markdown `replace_content`) and `child_database`
+  anywhere in a body are refused. **The guard requires `agent_write_guard`**
+  (4e) in the same config.yaml — without it the block is invalid (deny all
+  writes), since the agent could edit its own rules. Known gap: a human
+  changing a row between the guard's page GET and the write. Reads (GET, `search`,
   `…/query`) and `file_uploads` pass. **Contract:** any `notion.write_guard`
   value other than absent/`null`/`false`/`{enabled: false}` *enforces*; an
   invalid or incomplete block denies every write with the validation error
   (logged once, and at gateway startup via
   [agent/boundary_config.py](agent/boundary_config.py)) — never silently off.
-  `zendesk_create_draft` and gated posting use the same `is_enforcing`.
+  `zendesk_create_draft` and gated posting share `autonomy_precondition`
+  (guard enforcing AND `agent_write_guard` on) for every level but `off`.
   Autonomy actions `advance_asset_status` / `ideas_accept_own` are built for
   `off` only; any other value breaks the guard closed.
 - **Posting policy** — [agent/slack_post_policy.py](agent/slack_post_policy.py):
@@ -734,22 +743,30 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   `slack_post_thread` and **cron delivery** reach — `_apply_post_policy` in
   [cron/scheduler.py](cron/scheduler.py), which also covers cost-budget
   alerts) and `slack.post_gated_channels` (always: no free text, ever; cron
-  never delivers there). A profile whose Notion guard is enforcing but has no
-  allowlist posts nowhere. Owner failure DMs (`_send_dm`) are not affected.
+  never delivers there). With either list set, only channel ids pass (a
+  name like `#release-updates` is refused). A profile whose Notion guard is
+  enforcing but has no allowlist posts nowhere. Cron filtering fails closed
+  for Slack targets; a job whose every target was refused gets the
+  owner-DM failure alert (`_send_dm`, unaffected by the policy). The
+  gateway also treats a profile's gated channels as **ignored inbound**
+  (`_slack_source_gated`), so the bot never answers there, even mentioned.
 - **Gated release updates** — [tools/release_update_post.py](tools/release_update_post.py),
   reached via `slack_post_thread(chat_id=<gated>, release_asset_row_id=…)`
   (no `message`, no `thread_ts`). Fresh row read: parent = Release Assets
   (`release_updates.release_assets_data_source_id`, falling back to the
   zendesk key), `Asset type = Slack update`, not Published / Hold, `Status`
   Approved per `autonomy.actions.post_release_update` (built for off /
-  signoff / veto / auto; `auto` skips only the Approved check). Every Jira
+  signoff / veto / auto; `auto` skips only the Approved check, and veto/auto
+  act on a not-yet-Approved row only from `pre_approval_statuses`, default
+  Draft / In review — a rejected row never posts). Every Jira
   key on the row's `jira_key_properties` and on pages reached through
   `jira_relation_properties` (two hops, e.g. row → Release → PRD) must be in
   `jira_done_statuses` (default `Done`) — read with `get_secret` creds and
   `jira_api_tool._jira_request`; no key found or a truncated relation
   (`has_more`) refuses. The post is the row body as escaped mrkdwn
   (`notion_blocks_html.render_blocks_mrkdwn`; tables/unknown blocks refused,
-  images refused unless `omit_images`). Then the **only 5a exception**:
+  images refused unless `omit_images`; page/database/link **mentions** are
+  refused in both renderers because their text is the target's live title). Then the **only 5a exception**:
   `release_asset_gate.update_page_properties` PATCHes a fixed body
   (`Published URL` = permalink, `Status` = Published) directly, never via
   `notion_api`. One post per row (O_EXCL lock + ledger under `autonomy/`);
@@ -757,9 +774,11 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   reposted. Veto: announced (with a preview) in `autonomy.announce_channel`,
   posted after the window by `slack_post_thread(run_due=true)` or `python -m
   tools.release_update_post run-due`, unless ❌ / Hold / content change
-  (`stale`) / expiry; a reopened Jira ticket keeps it pending. Shared driver:
+  (`stale`) / expiry; a reopened Jira ticket keeps it pending; a row already
+  waiting is not re-announced and a vetoed row is never re-queued (it posts
+  once a human sets it Approved). Shared driver:
   `autonomy.plan_veto` / `run_pending` / `due_pending_ids`.
-- **Deployment (educator profile):** set `notion.write_guard` with the real
+- **Deployment (educator profile):** set `agent_write_guard: true`, `notion.write_guard` with the real
   data-source ids, `slack.post_allowed_channels` (home + `#release-updates`),
   `slack.post_gated_channels` (`#release-updates`), a `release_updates:`
   block, `autonomy.announce_channel`; the Notion integration must be shared

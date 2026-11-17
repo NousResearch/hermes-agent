@@ -67,3 +67,15 @@ def test_images_and_unsupported_reported():
     ])
     assert out.images == ["Settings page"]
     assert out.unsupported == ["table", "embed"]
+
+
+def test_live_mentions_refused_static_ones_kept():
+    from tools.notion_blocks_html import render_blocks
+    page_mention = {"type": "mention", "plain_text": "Some page", "mention": {"type": "page", "page": {"id": "x"}}}
+    user_mention = {"type": "mention", "plain_text": "@Dana", "annotations": {},
+                    "mention": {"type": "user", "user": {"id": "u"}}}
+    blocks = [blk("paragraph", rt("See "), page_mention, rt(" by "), user_mention)]
+    out = render_blocks_mrkdwn(blocks)
+    assert out.unsupported == ["page mention"] and "Some page" not in out.text and "@Dana" in out.text
+    html = render_blocks(blocks)
+    assert html.unsupported == ["page mention"] and "Some page" not in html.html

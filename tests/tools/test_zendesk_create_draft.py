@@ -79,6 +79,7 @@ class World:
                            "default_permission_group_id": 7, "default_user_segment_id": 12}}
         if self.guard:
             cfg["notion"] = {"write_guard": {"enabled": True}}
+            cfg["agent_write_guard"] = True
         return cfg
 
     async def zendesk(self, base, token, path, method="GET", json_body=None):
@@ -146,9 +147,13 @@ def test_refused_without_notion_write_guard(w, monkeypatch, level):
     # enforces by denying every Notion write, so the precondition holds and
     # the agent still cannot set the row to Approved itself.
     import tools.notion_write_guard as nwg
+    no_self_guard = w.config()
+    no_self_guard["notion"] = {"write_guard": {"enabled": True}}
+    assert zt._write_guard_enabled(no_self_guard) is False  # agent could edit its config
     for guard in (True, {"enabled": "yes"}, {}):
         cfg = w.config()
         cfg["notion"] = {"write_guard": guard}
+        cfg["agent_write_guard"] = True
         assert zt._write_guard_enabled(cfg) is True
         assert nwg.check_request("PATCH", f"v1/pages/{ROW_KEY}",
                                  {"properties": {"Status": {"select": {"name": "Approved"}}}},

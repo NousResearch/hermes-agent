@@ -48,10 +48,29 @@ def _safe_href(href) -> str | None:
     return escape(href, quote=True)
 
 
-def _rich(items) -> str:
+# A mention's plain_text is resolved LIVE from what it points at (a page's
+# current title, a link preview's fetched title): someone who can edit that
+# page could change an approved row's rendered text without touching the row.
+# User and date mentions are fixed values and stay.
+_STATIC_MENTIONS = frozenset({"user", "date"})
+
+
+def _dynamic_mention(item: dict) -> str | None:
+    if item.get("type") != "mention":
+        return None
+    kind = str((item.get("mention") or {}).get("type") or "unknown")
+    return None if kind in _STATIC_MENTIONS else f"{kind} mention"
+
+
+def _rich(items, problems: list | None = None) -> str:
     out = []
     for item in items or []:
         if not isinstance(item, dict):
+            continue
+        dynamic = _dynamic_mention(item)
+        if dynamic:
+            if problems is not None:
+                problems.append(dynamic)
             continue
         text = escape(str(item.get("plain_text") or "")).replace("\n", "<br>")
         if not text:
@@ -110,7 +129,7 @@ class _Renderer:
 
     def block(self, b: dict, kind: str, depth: int) -> str:
         body = b.get(kind) if isinstance(b.get(kind), dict) else {}
-        text = _rich(body.get("rich_text"))
+        text = _rich(body.get("rich_text"), self.unsupported)
         if kind == "paragraph":
             inner = f"<p>{text}</p>" if text else ""
             return inner + self.children(b, depth)
@@ -154,7 +173,7 @@ class _Renderer:
             cells = ((row or {}).get("table_row") or {}).get("cells") or []
             cell_tag = "th" if header and i == 0 else "td"
             rows.append("<tr>" + "".join(
-                f"<{cell_tag}>{_rich(c)}</{cell_tag}>" for c in cells) + "</tr>")
+                f"<{cell_tag}>{_rich(c, self.unsupported)}</{cell_tag}>" for c in cells) + "</tr>")
         return f"<table><tbody>{''.join(rows)}</tbody></table>"
 
 
@@ -207,10 +226,15 @@ def _wrap(text: str, mark: str) -> str:
     return f"{lead}{mark}{core}{mark}{trail}"
 
 
-def _mrkdwn_rich(items) -> str:
+def _mrkdwn_rich(items, problems: list | None = None) -> str:
     out = []
     for item in items or []:
         if not isinstance(item, dict):
+            continue
+        dynamic = _dynamic_mention(item)
+        if dynamic:
+            if problems is not None:
+                problems.append(dynamic)
             continue
         text = _mrkdwn_escape(str(item.get("plain_text") or ""))
         if not text:
@@ -255,7 +279,7 @@ class _MrkdwnRenderer:
 
     def block(self, b: dict, kind: str, depth: int, prefix: str, number: int) -> list[str]:
         body = b.get(kind) if isinstance(b.get(kind), dict) else {}
-        text = _mrkdwn_rich(body.get("rich_text"))
+        text = _mrkdwn_rich(body.get("rich_text"), self.unsupported)
         kids = b.get("children") or []
         if kind == "paragraph":
             return [prefix + text] + self.blocks(kids, depth + 1, prefix)

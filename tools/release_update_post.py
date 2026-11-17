@@ -45,8 +45,9 @@ Config (all optional except the data source)::
       hold_statuses: [Hold]
       published_status: Published
       published_url_property: Published URL
-      prd_relation_path: [Release, PRD]   # row → Release row → PRD (relation names)
-      prd_data_sources: [<id>]            # else notion.write_guard.prds.data_sources
+      prd_relation_path: [Release, PRD]   # row → Release row → PRD; must end with the write
+                                          # guard's release_kits.prd_relation_property. The PRD and
+                                          # kit data sources come from notion.write_guard.
       prd_jira_property: JIRA             # the ONLY source of the gating Jira keys
       prd_status_property: Release Comms Status
       prd_active_status: In progress      # required for veto / auto
@@ -114,6 +115,10 @@ class Settings:
     url_prop: str
     prd_path: tuple
     prd_data_sources: frozenset
+    kit_sources: frozenset
+    kit_status_prop: str
+    kit_draft: str
+    config_error: str
     prd_jira_prop: str
     prd_status_prop: str
     prd_active: str
@@ -134,9 +139,24 @@ def settings(cfg: dict) -> Settings:
         return str(r.get(key) or default).strip()
 
     published = name("published_status", "Published")
+    guard, config_error = _guard_settings(cfg)
+    prd_relation = guard.kit_prd_relation if guard else "PRD"
+    path = names("prd_relation_path", ["Release", prd_relation])
+    data_source = str(r.get("release_assets_data_source_id")
+                      or z.get("release_assets_data_source_id") or "").strip()
+    if not config_error:
+        if "prd_data_sources" in r:
+            config_error = ("release_updates.prd_data_sources is not used: the PRD data sources come "
+                            "from notion.write_guard.prds.data_sources — remove it.")
+        elif not path or path[-1] != prd_relation:
+            config_error = (f"release_updates.prd_relation_path must end with the write guard's "
+                            f"release_kits.prd_relation_property ({prd_relation!r}), the only PRD link "
+                            "the guard protects.")
+        elif _hex(data_source) not in guard.kits:
+            config_error = ("release_updates.release_assets_data_source_id must be one of "
+                            "notion.write_guard.release_kits.data_sources.")
     return Settings(
-        data_source=str(r.get("release_assets_data_source_id")
-                        or z.get("release_assets_data_source_id") or "").strip(),
+        data_source=data_source,
         type_prop=name("asset_type_property", "Asset type"),
         type_value=name("asset_type_value", "Slack update"),
         status_prop=name("status_property", "Status"),
@@ -148,8 +168,12 @@ def settings(cfg: dict) -> Settings:
         hold=frozenset(names("hold_statuses", ["Hold"])),
         published=published,
         url_prop=name("published_url_property", "Published URL"),
-        prd_path=names("prd_relation_path", ["Release", "PRD"]),
-        prd_data_sources=_prd_sources(cfg, r),
+        prd_path=path,
+        prd_data_sources=guard.prds if guard else frozenset(),
+        kit_sources=guard.kits if guard else frozenset(),
+        kit_status_prop=guard.kit_status if guard else "Status",
+        kit_draft=guard.kit_draft if guard else "Draft",
+        config_error=config_error,
         prd_jira_prop=name("prd_jira_property", "JIRA"),
         prd_status_prop=name("prd_status_property", "Release Comms Status"),
         prd_active=name("prd_active_status", "In progress"),
@@ -162,18 +186,16 @@ def _hex(value) -> str:
     return h if re.fullmatch(r"[0-9a-f]{32}", h) else ""
 
 
-def _prd_sources(cfg: dict, r: dict) -> frozenset:
-    """The PRD data sources: ``release_updates.prd_data_sources``, else the
-    write guard's ``prds.data_sources`` (the collection the agent can't edit)."""
-    raw = r.get("prd_data_sources")
-    if raw is None:
-        notion = cfg.get("notion") if isinstance(cfg.get("notion"), dict) else {}
-        guard = notion.get("write_guard") if isinstance(notion.get("write_guard"), dict) else {}
-        prds = guard.get("prds") if isinstance(guard.get("prds"), dict) else {}
-        raw = prds.get("data_sources")
-    if isinstance(raw, str):
-        raw = [raw]
-    return frozenset(h for h in (_hex(x) for x in raw or []) if h)
+def _guard_settings(cfg: dict):
+    """The write guard's config — the single source of the kit / PRD data
+    sources and the PRD link name (no duplicates to drift apart)."""
+    from tools.notion_write_guard import load_guard
+    guard = load_guard(cfg)
+    if guard is None:
+        return None, "notion.write_guard is not configured."
+    if guard.error:
+        return None, f"notion.write_guard is invalid ({guard.error})."
+    return guard, ""
 
 
 def _row_key(row_id) -> str:
@@ -226,9 +248,8 @@ async def resolve_prds(page: dict, s: Settings) -> list[dict]:
     come ONLY from these PRDs — a collection the agent cannot write (5a) —
     never from the row, which the agent drafts. Raises GateError."""
     from tools import release_asset_gate as gate
-    if not s.prd_data_sources:
-        raise gate.GateError("No PRD data source is configured (release_updates.prd_data_sources or "
-                             "notion.write_guard.prds.data_sources) — cannot find the release's tickets.")
+    if s.config_error:
+        raise gate.GateError(s.config_error)
     frontier = [page]
     fetched = 0
     for hop, name in enumerate(s.prd_path):
@@ -251,6 +272,9 @@ async def resolve_prds(page: dict, s: Settings) -> list[dict]:
         if not frontier:
             raise gate.GateError(f"No PRD is linked (nothing under {' → '.join(s.prd_path[:hop + 1])}); a "
                                  "release update posts only for a PRD whose tickets are Done.")
+        if hop < len(s.prd_path) - 1:
+            for mid in frontier:
+                _check_intermediate(mid, s)
     prds = []
     for prd in frontier:
         parent = prd.get("parent") if isinstance(prd.get("parent"), dict) else {}
@@ -260,6 +284,23 @@ async def resolve_prds(page: dict, s: Settings) -> list[dict]:
             raise gate.GateError("The linked PRD is in the trash.")
         prds.append(prd)
     return prds
+
+
+def _check_intermediate(page: dict, s: Settings) -> None:
+    """A row between the asset and the PRD (the Release row) must be a Release
+    Kit row a human has moved past Draft: while it is Draft the agent could
+    still edit it, so it can't vouch for which PRD the release belongs to."""
+    from tools import release_asset_gate as gate
+    parent = page.get("parent") if isinstance(page.get("parent"), dict) else {}
+    if not ({_hex(parent.get("data_source_id")), _hex(parent.get("database_id"))} & s.kit_sources):
+        raise gate.GateError("A page on the row's path to its PRD is not a Release Kit row.")
+    if page.get("in_trash") or page.get("archived") or page.get("is_archived"):
+        raise gate.GateError("The Release row on the path to the PRD is in the trash.")
+    state = _select((page.get("properties") or {}).get(s.kit_status_prop))
+    if not state or state == s.kit_draft:
+        raise gate.GateError(
+            f"The Release row is {state or 'empty'!r} — it must be moved past {s.kit_draft!r} by the "
+            "team before its release updates post (until then its PRD link isn't settled).")
 
 
 def jira_keys_of(prds: list[dict], s: Settings) -> list[str]:
@@ -577,6 +618,9 @@ def _level(cfg: dict) -> tuple[Optional[str], Optional[str]]:
     why = autonomy_precondition(cfg)
     if why:
         return None, f"{_WRITE_GUARD_MISSING} ({why})"
+    config_error = settings(cfg).config_error
+    if config_error:
+        return None, f"Posting release updates is refused: {config_error}"
     return level, None
 
 

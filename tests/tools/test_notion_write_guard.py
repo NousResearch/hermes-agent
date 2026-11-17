@@ -498,33 +498,37 @@ def _link_prd(lk, ids):
 PRD_CFG = cfg(prds={"data_sources": [PRDS], "back_relation_property": "Release Kit"})
 
 
-def test_release_row_links_its_prd_once(lk, monkeypatch):
+def _create_with_prd(ids):
+    return {"parent": {"data_source_id": KITS},
+            "properties": {"Status": status("Draft"), "PRD": {"relation": [{"id": i} for i in ids]}}}
+
+
+def test_prd_link_only_in_the_create_body(lk, monkeypatch):
     monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd())
-    _link_prd(lk, [])
-    body = lambda ids: {"properties": {"PRD": {"relation": [{"id": i} for i in ids]}}}
+    assert check(lk, "POST", "v1/pages", _create_with_prd(["c" * 32]), config=PRD_CFG) is None
+    assert check(lk, "POST", "v1/pages", _create_with_prd(["b" * 32]), config=PRD_CFG)  # not a PRD
+    # any later change — adding to an empty link included — is refused
     path = f"v1/pages/{'a' * 32}"
-    assert check(lk, "PATCH", path, body(["c" * 32]), config=PRD_CFG) is None
-    assert check(lk, "PATCH", path, body(["b" * 32]), config=PRD_CFG)          # not a PRD
+    body = lambda ids: {"properties": {"PRD": {"relation": [{"id": i} for i in ids]}}}
+    for current, new in (([], ["c" * 32]), (["c" * 32], []), (["c" * 32], ["c" * 31 + "d"])):
+        _link_prd(lk, current)
+        assert "set only when the row is created" in check(lk, "PATCH", path, body(new), config=PRD_CFG)
     _link_prd(lk, ["c" * 32])
-    assert check(lk, "PATCH", path, body(["c" * 32]), config=PRD_CFG) is None  # unchanged
-    assert "set once" in check(lk, "PATCH", path, body([]), config=PRD_CFG)
-    assert "set once" in check(lk, "PATCH", path, body(["c" * 32, "c" * 31 + "d"]), config=PRD_CFG)
+    assert check(lk, "PATCH", path, body(["c" * 32]), config=PRD_CFG) is None  # unchanged: no-op
 
 
 def test_prd_link_back_relation_must_be_the_configured_one(lk, monkeypatch):
-    _link_prd(lk, [])
-    body = {"properties": {"PRD": {"relation": [{"id": "c" * 32}]}}}
-    path = f"v1/pages/{'a' * 32}"
+    create = _create_with_prd(["c" * 32])
     monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd(synced="Owner notes"))
-    assert check(lk, "PATCH", path, body, config=PRD_CFG)
+    assert check(lk, "POST", "v1/pages", create, config=PRD_CFG)
     monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd())
-    assert check(lk, "PATCH", path, body, config=cfg())          # back relation not configured
+    assert check(lk, "POST", "v1/pages", create, config=cfg())          # back relation not configured
     monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd(kind="single_property"))
-    assert check(lk, "PATCH", path, body, config=cfg()) is None  # far side untouched
+    assert check(lk, "POST", "v1/pages", create, config=cfg()) is None  # far side untouched
     monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd(kind=""))
-    assert check(lk, "PATCH", path, body, config=PRD_CFG)        # schema silent
+    assert check(lk, "POST", "v1/pages", create, config=PRD_CFG)        # schema silent
     monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd(target=IDEAS))
-    assert check(lk, "PATCH", path, body, config=PRD_CFG)        # points elsewhere
+    assert check(lk, "POST", "v1/pages", create, config=PRD_CFG)        # points elsewhere
 
 
 def test_single_property_relation_targets_unchecked(lk, monkeypatch):

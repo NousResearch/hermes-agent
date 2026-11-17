@@ -541,9 +541,10 @@ def _check_relations(props: dict, schema: dict, current: Optional[dict], guard: 
     checked; a relation whose schema can't be read is treated as two-way.
 
     The one way into a PRD: a Release Kit row's ``prd_relation_property``
-    may be SET ONCE (from empty) to PRD pages — never removed or repointed,
-    so the release a human approved stays tied to the PRD whose tickets gate
-    its posts; for a two-way relation the PRD side must be exactly
+    may be set ONLY in that row's create body, to PRD pages — never added,
+    removed or repointed later, so the agent can't pick the PRD (and so the
+    tickets that gate a post) after a human approved the release's assets;
+    for a two-way relation the PRD side must be exactly
     ``prds.back_relation_property``."""
     for name, value in props.items():
         meta = schema.get(name) or {}
@@ -564,9 +565,10 @@ def _check_relations(props: dict, schema: dict, current: Optional[dict], guard: 
         if not changed:
             continue
         if row_kind == "kit" and name == guard.kit_prd_relation:
-            if old:
-                raise _Deny(f"Notion write refused: {name!r} is set once — linking a release to its "
-                            "PRD can't be changed or removed by the teammate (ask the team).")
+            if current is not None:
+                raise _Deny(f"Notion write refused: {name!r} is set only when the row is created — "
+                            "linking a release to its PRD can't be added, changed or removed later by "
+                            "the teammate (a missing or wrong link is fixed by the team).")
             if target and target not in guard.prds:
                 raise _Deny(f"Notion write refused: {name!r} does not point at the PRD database.")
             if kind == "dual_property" and (not guard.prd_back_relation or synced != guard.prd_back_relation):

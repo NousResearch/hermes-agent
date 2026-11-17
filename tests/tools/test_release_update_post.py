@@ -22,6 +22,12 @@ ROW_KEY = ROW.replace("-", "")
 RELEASE = "c" * 32
 PRD = "d" * 32
 PRD_DS = "e" * 32
+KITS_DS = "f" * 32
+IDEAS_DS = "9" * 31 + "8"
+GUARD = {"enabled": True,
+         "release_kits": {"data_sources": [DS, KITS_DS]},
+         "prds": {"data_sources": [PRD_DS]},
+         "ideas": {"data_sources": [IDEAS_DS]}}
 CHOME, CREL, COTHER = "CHOME0001", "CREL00001", "COTHER001"
 NOW = datetime(2026, 11, 18, 10, 0, tzinfo=timezone.utc)  # a Wednesday
 
@@ -39,9 +45,11 @@ def _prd(keys=("BA-1", "BA-2"), state="In progress", parent=PRD_DS):
                 "Release Comms Status": {"type": "select", "select": {"name": state}}}}
 
 
-def _release(prds=(PRD,), has_more=False):
-    return {"id": RELEASE, "properties": {
-        "PRD": {"type": "relation", "relation": [{"id": p} for p in prds], "has_more": has_more}}}
+def _release(prds=(PRD,), has_more=False, status="Approved", parent=KITS_DS):
+    return {"id": RELEASE, "parent": {"type": "data_source_id", "data_source_id": parent},
+            "properties": {
+                "Status": {"type": "select", "select": {"name": status} if status else None},
+                "PRD": {"type": "relation", "relation": [{"id": p} for p in prds], "has_more": has_more}}}
 
 
 def _row(status="Approved", asset_type="Slack update", jira="BA-9", relation=(RELEASE,), has_more=False,
@@ -101,12 +109,11 @@ class World:
         cfg = {"autonomy": {"announce_channel": CHOME, "veto_wait_working_hours": 4,
                             "veto_expiry_hours": 72, "actions": {"post_release_update": self.level}},
                "slack": {"post_allowed_channels": self.allowed, "post_gated_channels": self.gated},
-               "release_updates": {"release_assets_data_source_id": DS,
-                                   "prd_data_sources": [PRD_DS]}}
+               "release_updates": {"release_assets_data_source_id": DS}}
         if self.allowed is None:
             del cfg["slack"]["post_allowed_channels"]
         if self.guard:
-            cfg["notion"] = {"write_guard": {"enabled": True}}
+            cfg["notion"] = {"write_guard": json.loads(json.dumps(GUARD))}
             cfg["agent_write_guard"] = True
         return cfg
 
@@ -317,12 +324,37 @@ def test_relation_has_more_refused(w):
     assert w.posts == []
 
 
-def test_prd_sources_fall_back_to_write_guard(w, monkeypatch):
+@pytest.mark.parametrize("status", ["Draft", None])
+def test_release_row_still_draft_refused(w, status):
+    # The agent could still set a Draft Release row's PRD — it can't vouch.
+    w.pages[RELEASE] = _release(status=status)
+    assert "past 'Draft'" in _call(_gated())["error"] and w.posts == []
+
+
+def test_release_row_outside_kits_refused(w):
+    w.pages[RELEASE] = _release(parent="7" * 32)
+    assert "Release Kit row" in _call(_gated())["error"] and w.posts == []
+
+
+@pytest.mark.parametrize("over,needle", [
+    ({"prd_relation_path": ["Release", "Linked PRD"]}, "prd_relation_path"),
+    ({"prd_data_sources": [PRD_DS]}, "prd_data_sources"),
+    ({"release_assets_data_source_id": "7" * 32}, "release_assets_data_source_id"),
+])
+def test_inconsistent_config_refuses_posting(w, monkeypatch, over, needle):
     cfg = w.config()
-    del cfg["release_updates"]["prd_data_sources"]
-    cfg["notion"]["write_guard"]["prds"] = {"data_sources": [PRD_DS]}
+    cfg["release_updates"].update(over)
     monkeypatch.setattr(rup, "_config", lambda: cfg)
-    assert _call(_gated())["ok"] is True
+    assert needle in _call(_gated())["error"] and w.posts == []
+    from agent.boundary_config import boundary_config_errors
+    assert any(needle in e for e in boundary_config_errors(cfg))
+
+
+def test_invalid_guard_refuses_posting(w, monkeypatch):
+    cfg = w.config()
+    cfg["notion"]["write_guard"] = {"enabled": True}
+    monkeypatch.setattr(rup, "_config", lambda: cfg)
+    assert "write_guard" in _call(_gated())["error"] and w.posts == []
 
 
 def test_unsupported_content_and_images(w):

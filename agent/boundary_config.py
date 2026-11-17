@@ -157,6 +157,12 @@ def boundary_config_errors(cfg) -> list[str]:
         except autonomy.AutonomyConfigError as e:
             errors.append(str(e))
 
+    if isinstance(cfg.get("release_updates"), dict):
+        from tools.release_update_post import settings
+        rup_error = settings(cfg).config_error
+        if rup_error:
+            errors.append(f"release_updates: {rup_error}")
+
     from agent.slack_post_policy import post_policy
     policy = post_policy(cfg)
     if policy.error:

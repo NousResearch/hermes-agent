@@ -39,6 +39,10 @@ const EN = {
   directory: 'Search powered by Radio Browser', note: 'Live radio · next switches stations',
   streamError: 'This stream could not connect. Try again or choose another station.',
   popularError: 'The popular list is unavailable. Your stations still work.',
+  shoutcastEmpty: 'No Shoutcast stations found', shoutcastError: 'Shoutcast is unavailable. Try again, or restart Hermes if the Radio backend is not loaded.',
+  tuneinEmpty: 'No TuneIn stations found', tuneinHint: 'Type a station name. TuneIn has no top list, but genre:jazz works.',
+  tuneinError: 'TuneIn is unavailable. Try again, or restart Hermes if the Radio backend is not loaded.',
+  sourceAll: 'All', sourcePopular: 'Popular', sourceShoutcast: 'Shoutcast', sourceTunein: 'TuneIn',
   hlsNote: 'HLS streams are hidden in this edition.', skippedNote: 'unplayable results hidden',
   close: 'Close radio', nowPlaying: 'Now playing', elsewhere: 'Paused — playing in another window',
   settingsTitle: 'Radio', autoplayLabel: 'Start the last station on launch',
@@ -115,6 +119,11 @@ const CSS = `
 .hermes-radio-edit-actions,.hermes-radio-add-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 .hermes-radio-add-note{font-size:11px;line-height:16px;color:var(--ui-text-secondary)}
 .hermes-radio-actions{display:flex;align-items:center;gap:3px;padding:0 4px 5px}
+.hermes-radio-chip{height:20px;padding:0 8px;border:0;border-radius:10px;font-family:inherit;font-size:11px;line-height:20px;background:transparent;color:var(--ui-text-tertiary);opacity:.7;cursor:pointer;transition:background .12s,color .12s,opacity .12s}
+.hermes-radio-chip:hover{background:var(--chrome-action-hover);color:var(--ui-text-secondary);opacity:1}
+.hermes-radio-chip[data-active=true]{background:var(--ui-bg-quaternary);color:var(--ui-text-primary);opacity:1;box-shadow:inset 0 0 0 .5px var(--ui-stroke-secondary)}
+.hermes-radio-chip:focus-visible{outline:1px solid var(--ui-accent);outline-offset:1px}
+.hermes-radio-sources-space{flex:1;min-width:6px}
 .hermes-radio-addbtn{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:0;border-radius:999px;background:var(--ui-bg-quaternary);color:var(--ui-text-secondary);cursor:pointer;flex-shrink:0;opacity:1;pointer-events:auto}
 .hermes-radio-addbtn[data-active=true]{color:var(--ui-accent);box-shadow:inset 0 0 0 1px var(--ui-accent)}
 .hermes-radio-volume{display:flex;align-items:center;gap:4px;height:28px;padding:2px 2px 0}
@@ -214,6 +223,10 @@ async function browseRows(path, signal) {
 }
 
 const PAGE_SIZE = 40
+// The directory sends its whole list at once, so pages from the two proxied
+// sources are smaller: every row costs a resolve and probe before it reaches UI.
+const SHOUTCAST_PAGE = 30
+const TUNEIN_PAGE = 30
 const TAG_PATTERN = /\b(country|genre):("[^"]+"|\S+)/gi
 
 function parseQuery(text) {
@@ -887,6 +900,71 @@ function StationRow({ station, player }) {
   ] })
 }
 
+async function shoutcastQuery(ctx, text, { offset = 0, limit = SHOUTCAST_PAGE } = {}) {
+  const path = text
+    ? `/shoutcast/search?${new URLSearchParams({ q: text, limit: String(limit), offset: String(offset) })}`
+    : `/shoutcast/top?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`
+  const payload = await ctx.rest(path, { timeoutMs: 30000 })
+  const rows = Array.isArray(payload?.stations) ? payload.stations : []
+  return {
+    stations: uniqueStations(rows.flatMap(row => {
+      const url = streamUrl(row?.url)
+      if (!url || typeof row.id !== 'string' || typeof row.name !== 'string') return []
+      return [{ id: row.id, name: row.name.trim(), url, provider: 'Shoutcast', description: row.description ?? '', nowPlaying: row.nowPlaying ?? '', homepage: httpsUrl(row.homepage) }]
+    })),
+    skipped: Number(payload?.skipped) || 0,
+    hasMore: Number(payload?.next ?? 0) < Number(payload?.count ?? 0),
+    nextOffset: Number(payload?.next ?? 0)
+  }
+}
+
+async function shoutcastStations(ctx, text, options = {}) {
+  if (typeof ctx.rest !== 'function') throw new Error('The Shoutcast route is not loaded')
+  const parsed = parseQuery(text)
+  const query = parsed.name || parsed.genre
+  if (String(text ?? '').trim() && !query) return { stations: [], skipped: 0, hasMore: false, nextOffset: 0 }
+  const results = await Promise.all(searchTerms(query).map(term => shoutcastQuery(ctx, term, options)))
+  return {
+    stations: uniqueStations(results.flatMap(result => result.stations)),
+    skipped: results.reduce((total, result) => total + result.skipped, 0),
+    hasMore: results.some(result => result.hasMore),
+    nextOffset: Math.max(...results.map(result => result.nextOffset))
+  }
+}
+
+async function tuneinQuery(ctx, text, { offset = 0, limit = TUNEIN_PAGE } = {}) {
+  const payload = await ctx.rest(`/tunein/search?${new URLSearchParams({ q: text, limit: String(limit), offset: String(offset) })}`, { timeoutMs: 30000 })
+  const rows = Array.isArray(payload?.stations) ? payload.stations : []
+  return {
+    stations: uniqueStations(rows.flatMap(row => {
+      const url = streamUrl(row?.url)
+      if (!url || typeof row.id !== 'string' || typeof row.name !== 'string') return []
+      return [{ id: row.id, name: row.name.trim(), url, provider: 'TuneIn', description: row.description ?? '', nowPlaying: row.nowPlaying ?? '', homepage: '' }]
+    })),
+    skipped: Number(payload?.skipped) || 0,
+    hasMore: Number(payload?.next ?? 0) < Number(payload?.count ?? 0),
+    nextOffset: Number(payload?.next ?? 0)
+  }
+}
+
+async function tuneinStations(ctx, text, options = {}) {
+  if (typeof ctx.rest !== 'function') throw new Error('The TuneIn route is not loaded')
+  const parsed = parseQuery(text)
+  const query = parsed.name || parsed.genre
+  if (!query) return { stations: [], skipped: 0, hasMore: false, nextOffset: 0 }
+  const results = await Promise.all(searchTerms(query).map(term => tuneinQuery(ctx, term, options)))
+  return {
+    stations: uniqueStations(results.flatMap(result => result.stations)),
+    skipped: results.reduce((total, result) => total + result.skipped, 0),
+    hasMore: results.some(result => result.hasMore),
+    nextOffset: Math.max(...results.map(result => result.nextOffset))
+  }
+}
+
+const SOURCE_LABELS = { all: 'sourceAll', popular: 'sourcePopular', shoutcast: 'sourceShoutcast', tunein: 'sourceTunein' }
+const SOURCE_PAGE = { all: PAGE_SIZE, popular: PAGE_SIZE, shoutcast: SHOUTCAST_PAGE, tunein: TUNEIN_PAGE }
+const EMPTY_LABELS = { shoutcast: 'shoutcastEmpty', tunein: 'tuneinEmpty' }
+
 function listRows(results, { browseStation, current, ownList }) {
   const rows = Array.isArray(results) ? results : []
   const anchored = ownList && browseStation && !rows.some(item => sameStation(item, browseStation))
@@ -897,7 +975,7 @@ function listRows(results, { browseStation, current, ownList }) {
     : anchored
 }
 
-function Stations({ player }) {
+function Stations({ player, ctx }) {
   const t = usePluginI18n(ID)
   const favorites = useValue(player.favorites)
   const stored = useValue(player.stations)
@@ -906,6 +984,7 @@ function Stations({ player }) {
   const listRef = useRef(null)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
+  const [source, setSource] = useState('all')
   const [more, setMore] = useState([])
   const [moreState, setMoreState] = useState('idle')
   const moreOffset = useRef(0)
@@ -917,7 +996,7 @@ function Stations({ player }) {
   const [draftUrl, setDraftUrl] = useState('')
   const [addNote, setAddNote] = useState('')
   const text = search.trim()
-  useEffect(() => { if (listRef.current) listRef.current.scrollTop = 0 }, [text])
+  useEffect(() => { if (listRef.current) listRef.current.scrollTop = 0 }, [text, source])
   useEffect(() => {
     const timer = setTimeout(() => setQuery(text), 350)
     return () => clearTimeout(timer)
@@ -928,25 +1007,44 @@ function Stations({ player }) {
     moreRows.current = []
     setMoreState('idle')
     moreOffset.current = 0
-  }, [query])
+  }, [query, source])
   const browser = useQuery({
     queryKey: [ID, 'search', query], queryFn: ({ signal }) => searchStations(query, signal),
-    enabled: query.length >= 2 && text === query, staleTime: 300000, retry: false
+    enabled: source === 'all' && query.length >= 2 && text === query, staleTime: 300000, retry: false
   })
-  const fetchPage = (token, offset) => searchStations(token, new AbortController().signal, { offset })
+  const popular = useQuery({
+    queryKey: [ID, 'popular'], queryFn: ({ signal }) => popularStations(signal),
+    enabled: source === 'popular', staleTime: 600000, retry: false
+  })
+  const shoutcast = useQuery({
+    queryKey: [ID, 'shoutcast', query], queryFn: () => shoutcastStations(ctx, query),
+    enabled: source === 'shoutcast' && text === query, staleTime: 300000, retry: false
+  })
+  const tunein = useQuery({
+    queryKey: [ID, 'tunein', query], queryFn: () => tuneinStations(ctx, query),
+    enabled: source === 'tunein' && text === query, staleTime: 300000, retry: false
+  })
+  const sourceQuery = { all: browser, popular, shoutcast, tunein }
+  const fetchPage = {
+    all: (token, offset) => searchStations(token, new AbortController().signal, { offset }),
+    popular: (token, offset) => popularStations(new AbortController().signal, { offset }),
+    shoutcast: (token, offset) => shoutcastStations(ctx, token, { offset }),
+    tunein: (token, offset) => tuneinStations(ctx, token, { offset })
+  }
   const parsedText = parseQuery(text)
   const filterText = parsedText.name
   const tagQuery = Boolean(parsedText.country || parsedText.genre)
   const matches = item => !filterText || [item.name, item.description, item.provider].some(value => fold(value).includes(fold(filterText)))
-  const canPage = text.length >= 2 && Boolean(browser.data?.hasMore) && moreState !== 'done'
+  const active = sourceQuery[source]
+  const canPage = (source !== 'all' || text.length >= 2) && Boolean(active.data?.hasMore) && moreState !== 'done'
   const loadMore = async () => {
     if (!canPage || moreBusy.current || query !== queryRef.current) return
     moreBusy.current = true
     const token = query
-    const offset = moreOffset.current || PAGE_SIZE
+    const offset = moreOffset.current || SOURCE_PAGE[source]
     setMoreState('loading')
     try {
-      const next = await fetchPage(token, offset)
+      const next = await fetchPage[source](token, offset)
       if (queryRef.current !== token) return
       moreOffset.current = next.nextOffset || offset + PAGE_SIZE
       const merged = uniqueStations([...moreRows.current, ...next.stations])
@@ -960,15 +1058,24 @@ function Stations({ player }) {
       moreBusy.current = false
     }
   }
-  const local = !tagQuery ? uniqueStations([...favorites, ...stored]).filter(matches) : []
-  const remoteResult = text.length >= 2 && query === text ? browser.data : null
-  const remote = remoteResult?.stations ?? []
-  const results = uniqueStations([...local, ...remote, ...more])
-  const items = listRows(results, { browseStation, current, ownList: true })
-  const pending = text.length >= 2 && (text !== query || browser.isFetching)
-  const failed = browser.isError && text.length >= 2
-  const empty = !pending && !failed && results.length === 0 && text.length > 0
+  const local = source === 'all' && !tagQuery ? uniqueStations([...favorites, ...stored]).filter(matches) : []
+  const remoteResult = source === 'all'
+    ? (text.length >= 2 && query === text ? browser.data : null)
+    : source === 'popular'
+      ? popular.data
+      : (text === query ? active.data : null)
+  const remote = [...(remoteResult?.stations ?? []), ...more]
+    .filter(item => source !== 'popular' || !text || matches(item))
+  const results = uniqueStations([...local, ...remote])
+  const items = listRows(results, { browseStation, current, ownList: source === 'all' })
+  const pending = source === 'all'
+    ? text.length >= 2 && (text !== query || browser.isFetching)
+    : active.isFetching || (source !== 'popular' && text !== query)
+  const failed = active.isError && (source !== 'all' || text.length >= 2)
+  const errorText = t({ popular: 'popularError', shoutcast: 'shoutcastError', tunein: 'tuneinError' }[source] ?? 'searchError')
+  const empty = !pending && !failed && results.length === 0 && (text.length > 0 || source !== 'all')
   const hls = remoteResult?.hls ?? 0
+  const skipped = remoteResult?.skipped ?? 0
   const openAdd = () => { setAddNote(''); setDraftName(''); setDraftUrl(''); setAdding(true) }
   const closeAdd = () => { setAdding(false); setDraftName(''); setDraftUrl(''); setAddNote('') }
   const save = () => {
@@ -984,6 +1091,11 @@ function Stations({ player }) {
       trailingAction: pending ? jsx('span', { className: 'hermes-radio-search-loader', children: jsx(GlyphSpinner, { ariaLabel: t('searching') }) }) : null
     }) }),
     jsxs('div', { className: 'hermes-radio-actions', children: [
+      Object.entries(SOURCE_LABELS).map(([value, label]) => jsx('button', {
+        type: 'button', className: 'hermes-radio-chip', 'data-active': source === value, 'aria-pressed': source === value,
+        onClick: () => { setBrowseStation(player.station.get()); setSource(value) }, children: t(label)
+      }, value)),
+      jsx('span', { className: 'hermes-radio-sources-space' }),
       jsx(Tip, { label: t('add'), children: jsx('button', { type: 'button', className: 'hermes-radio-addbtn', 'data-active': adding, 'aria-label': t('add'), 'aria-expanded': adding,
         onClick: () => adding ? closeAdd() : openAdd(), children: jsx(icons.Plus, { size: 12 }) }) })
     ] }),
@@ -1007,9 +1119,10 @@ function Stations({ player }) {
         ...items.map(station => jsx(StationRow, { station, player }, station.id)),
         moreState === 'loading' && jsx('div', { className: 'hermes-radio-more', role: 'status', children: t('loadingMore') }),
         pending && !items.length && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('searching') }),
-        failed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('searchError') }),
-        empty && !failed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('noResults') }),
-        hls > 0 && jsx('div', { className: 'hermes-radio-error', children: `${hls} ${t('hlsNote')}` })
+        failed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: errorText }),
+        empty && !failed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: source === 'tunein' && !text ? t('tuneinHint') : t(EMPTY_LABELS[source] ?? 'noResults') }),
+        hls > 0 && jsx('div', { className: 'hermes-radio-error', children: `${hls} ${t('hlsNote')}` }),
+        skipped > 0 && jsx('div', { className: 'hermes-radio-error', children: `${skipped} ${t('skippedNote')}` })
       ]
     })
   ] })
@@ -1055,7 +1168,7 @@ function RadioBar({ player, ctx }) {
       }) }),
       jsx(PopoverContent, { side: 'top', align: 'end', className: 'hermes-radio-panel', 'aria-label': t('radio'), 'data-tour': 'radio-panel', children:
         jsxs('div', { children: [
-          jsx(Stations, { player }), jsx(Signal, { player, ctx }), jsx(Transport, { player, ctx })
+          jsx(Stations, { player, ctx }), jsx(Signal, { player, ctx }), jsx(Transport, { player, ctx })
         ] })
       })
     ] }),
@@ -1091,7 +1204,8 @@ function RadioSettingsPage({ ctx, player }) {
 export {
   artistProfile, resolveArtist, trackCredit, autoplayOnLaunch, shouldAutoplay, RadioSettingsPage,
   streamUrl, validStation, PRESETS, parseQuery, searchParams, searchStations, popularStations,
-  rowsToStations, transliterate, fold, searchTerms, matchScore, listRows, isHlsRow
+  rowsToStations, transliterate, fold, searchTerms, matchScore, listRows, isHlsRow,
+  shoutcastStations, tuneinStations, Stations
 }
 
 export default {

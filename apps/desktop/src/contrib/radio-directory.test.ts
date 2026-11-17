@@ -17,6 +17,16 @@ interface RadioModule {
   fold: (text: string) => string
   searchTerms: (text: string) => string[]
   matchScore: (item: { name: string }, terms: string[]) => number
+  shoutcastStations: (
+    ctx: { rest: (path: string, options?: unknown) => Promise<unknown> },
+    text: string,
+    options?: { offset?: number; limit?: number }
+  ) => Promise<{ stations: Array<{ id: string; name: string; provider: string; nowPlaying?: string }>; skipped: number; hasMore: boolean; nextOffset: number }>
+  tuneinStations: (
+    ctx: { rest: (path: string, options?: unknown) => Promise<unknown> },
+    text: string,
+    options?: { offset?: number; limit?: number }
+  ) => Promise<{ stations: Array<{ id: string; name: string; provider: string }>; skipped: number; hasMore: boolean; nextOffset: number }>
 }
 
 const modules = import.meta.glob<RadioModule>('../plugins/radio/plugin.js', { eager: true })
@@ -102,6 +112,43 @@ describe('Radio directory search', () => {
     const second = await radio.searchStations('jazz', signal(), { limit: 20, offset: 20 })
     expect(second.stations[0].id).toBe('s20')
     expect(paths.some(path => path.includes('/json/stations/search'))).toBe(true)
+  })
+
+  it('maps Shoutcast and TuneIn route rows and reports skipped dead rows', async () => {
+    const paths: string[] = []
+    const ctx = {
+      rest: async (path: string) => {
+        paths.push(path)
+        if (path.includes('/shoutcast/')) {
+          return {
+            stations: [
+              { id: 'sc-1', name: 'Smooth Jazz UK', url: 'http://example.test/sc1', description: 'Smooth Jazz', nowPlaying: 'Rod Lucas', homepage: 'https://example.test' },
+              { id: 'sc-2', name: 'No Stream', url: null }
+            ],
+            skipped: 2, count: 60, next: 30
+          }
+        }
+        return { stations: [{ id: 'ti-1', name: 'BNR', url: 'https://example.test/bnr', description: '128 kbps' }], skipped: 1, count: 45, next: 30 }
+      }
+    }
+    const shoutcast = await radio.shoutcastStations(ctx, 'genre:jazz')
+    expect(shoutcast.stations).toHaveLength(1)
+    expect(shoutcast.stations[0]).toMatchObject({ id: 'sc-1', provider: 'Shoutcast', nowPlaying: 'Rod Lucas' })
+    expect(shoutcast.skipped).toBe(2)
+    expect(shoutcast.hasMore).toBe(true)
+    expect(shoutcast.nextOffset).toBe(30)
+    expect(paths[0]).toContain('/shoutcast/search?q=jazz')
+    expect(paths[0]).toContain('limit=30')
+
+    const tunein = await radio.tuneinStations(ctx, 'jazz')
+    expect(tunein.stations[0]).toMatchObject({ id: 'ti-1', provider: 'TuneIn' })
+    expect(tunein.skipped).toBe(1)
+    expect(paths[1]).toContain('/tunein/search?q=jazz')
+  })
+
+  it('a missing backend reports failure instead of silently succeeding', async () => {
+    await expect(radio.shoutcastStations({ rest: undefined as never }, 'jazz')).rejects.toThrow(/not loaded/)
+    await expect(radio.tuneinStations({ rest: undefined as never }, 'jazz')).rejects.toThrow(/not loaded/)
   })
 
   it('reads the top-vote directory through the same 40-row page contract', async () => {

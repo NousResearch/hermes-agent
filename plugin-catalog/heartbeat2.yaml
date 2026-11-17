@@ -21,7 +21,7 @@ platforms: [linux, macos]
 known_issues:
   - "A wake turn that fails at the provider shows Hermes's own failure notice; the plugin cannot suppress it (NousResearch/hermes-agent#136749). HeartBeat 2.0 backs all wakes off until a model call on the profile succeeds."
   - "notify=false silences the final reply; platforms that show tool progress by default (Discord, WhatsApp, Matrix) still show a progress bubble per wake turn unless display.platforms.<p>.tool_progress is off (quiet injection requested upstream: NousResearch/hermes-agent#136825)."
-  - "Delivers only to messaging-gateway chats: DMs by default, group and topic chats too when dm_only is off; CLI, TUI, Desktop, API-server and cron arming are refused until Hermes core supports silent injected turns there."
+  - "Delivers to messaging-gateway chats (DMs by default, group and topic chats too when dm_only is off) and, on Hermes 0.23 or later, to Desktop and TUI chats, where a wake waits while the app window is closed and Hermes still shows a silent turn's text (NousResearch/hermes-agent#156465). CLI, API-server (NousResearch/hermes-agent#156466) and cron arming are refused."
   - "When Hermes falls back to another model during a wake turn, its model-fallback notice is posted to the chat, even for a wake that stays silent (NousResearch/hermes-agent#137738)."
 capabilities:
   provides_tools:

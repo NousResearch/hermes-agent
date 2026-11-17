@@ -361,8 +361,13 @@ def _file_version(resolved: str) -> tuple | None:
             if (handle.st_dev, handle.st_ino) != (before.st_dev, before.st_ino):
                 return None  # the path was replaced between the stat and the open
             digest = hashlib.file_digest(stream, "sha256").digest()
+            # Path ctime is creation time on Windows: it cannot detect an in-place
+            # rewrite whose size and mtime were restored during the digest.
+            handle_after = os.fstat(stream.fileno())
             after = os.stat(resolved)
         fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(handle, field) != getattr(handle_after, field) for field in fields):
+            return None
         version = tuple(getattr(before, name) for name in fields)
         if version == tuple(getattr(after, name) for name in fields):
             return (*version, digest)

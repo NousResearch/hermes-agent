@@ -3057,7 +3057,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         history = await self._conversation_history_for_session(session_id)
         from gateway.platforms.api_server_authority_runs import RuntimeStoreError, store_error_response
         try:
-            result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
+            result, usage = await self._run_agent(conversation_history=history, history_from_session=True, **ctx["run_kwargs"])
             # One policy-gated re-run of a transiently failed turn, as the local (``tools.bot_mode_dm``)
             # and relayed (``tui_gateway.methods_bot_relay``) delivery lanes do (#93091 item 5, #115325):
             # transient classes re-run the SAME session once, resuming the failed attempt's unanswered
@@ -3142,7 +3142,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
-                    conversation_history=history, stream_delta_callback=_delta,
+                    conversation_history=history, history_from_session=True, stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
                     active_run_id=run_id, approval_notify_callback=approval_notify,
                     approval_session_key=run_id, **ctx["run_kwargs"])

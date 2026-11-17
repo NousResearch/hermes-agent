@@ -497,7 +497,10 @@ stay 409.
 When `session_id` identifies an existing Hermes session and no explicit
 `conversation_history` or `previous_response_id` is supplied, the run loads
 that session's active transcript. Session turn leases serialize concurrent
-writers and refresh the transcript after a contended wait.
+writers and refresh the transcript after a contended wait. The transcript is
+read when the turn runs, so a turn another writer finished after the request
+arrived is part of its context. The same holds for `X-Hermes-Session-Id` on
+Chat Completions and for the session-chat endpoints.
 
 **API sessions are their own sessions.** `session_id` (here) and the
 `X-Hermes-Session-Id` header (on `/v1/chat/completions` and `/v1/responses`) may

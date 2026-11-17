@@ -18,6 +18,52 @@ logger = logging.getLogger(__name__)
 Persist = Optional[Callable[[bool], Any]]
 
 
+#: What a refused caller is told when the refusing plugin gave no sentence of its own.
+BYPASS_REFUSED = "Turning approvals off was refused by a plugin."
+
+
+def _bypass_hook_kwargs(surface, scope, session_key, identity, platform, user_id, session_owner) -> dict:
+    return {
+        "surface": surface, "scope": scope, "session_key": session_key or "",
+        "identity": {k: identity.get(k) for k in ("user_id", "provider")} if isinstance(identity, dict) else None,
+        "platform": str(getattr(platform, "value", platform) or ""), "user_id": str(user_id or ""),
+        "session_owner": str(session_owner or ""),
+    }
+
+
+def _bypass_refusal(results: list, default: str) -> Optional[str]:
+    for result in results:
+        if isinstance(result, dict) and result.get("action") == "block":
+            message = result.get("message")
+            return message.strip()[:500] if isinstance(message, str) and message.strip() else default
+    return None
+
+
+def approval_bypass_refusal(*, surface: str, scope: str = "session", session_key: str = "",
+                            identity: Optional[dict] = None, platform: Any = None, user_id: Any = None,
+                            session_owner: Any = None, default: str = BYPASS_REFUSED) -> Optional[str]:
+    """Ask ``pre_approval_bypass`` plugins whether this caller may switch approvals off; the refusal
+    sentence (the plugin's, else ``default``), or None to go ahead.
+
+    Every surface asks before it turns a bypass ON or re-arms a stored one, and before anything is
+    written; switching approvals back on is never asked. The caller is whoever the surface verified:
+    ``identity`` (a connection's server-verified login, passed on as its ``user_id`` and ``provider``),
+    a messaging sender (``platform``, ``user_id``) or, when re-arming a stored chat's bypass, that
+    chat's stored owner (``session_owner``). Nobody named is the local operator."""
+    from hermes_cli.plugins import invoke_hook
+    return _bypass_refusal(invoke_hook("pre_approval_bypass", **_bypass_hook_kwargs(
+        surface, scope, session_key, identity, platform, user_id, session_owner)), default)
+
+
+async def approval_bypass_refusal_async(*, surface: str, scope: str = "session", session_key: str = "",
+                                        identity: Optional[dict] = None, platform: Any = None, user_id: Any = None,
+                                        session_owner: Any = None, default: str = BYPASS_REFUSED) -> Optional[str]:
+    """:func:`approval_bypass_refusal` for callers on the gateway loop (``async def`` callbacks are awaited there)."""
+    from hermes_cli.plugins import ainvoke_hook
+    return _bypass_refusal(await ainvoke_hook("pre_approval_bypass", **_bypass_hook_kwargs(
+        surface, scope, session_key, identity, platform, user_id, session_owner)), default)
+
+
 def _persist(persist: Persist, enabled: bool, session_key: str) -> None:
     # Best-effort: the live flag is authoritative for this process; a failed write only costs the restore.
     if persist is None:
@@ -54,6 +100,15 @@ def restore_session_yolo(session_key: str, persisted: bool) -> bool:
         return False
     approval.enable_session_yolo(session_key)
     return True
+
+
+def restore_stored_session_yolo(session_key: str, row: Optional[dict]) -> bool:
+    """:func:`restore_session_yolo` from a stored chat's row, while its stored owner (the row's ``user_id``)
+    may still switch approvals off (``pre_approval_bypass``); True when this call turned it on."""
+    from hermes_state import SessionDB
+    stored = SessionDB.session_yolo_enabled(row)
+    return restore_session_yolo(session_key, stored and approval_bypass_refusal(
+        surface="restore", session_key=session_key, session_owner=(row or {}).get("user_id")) is None)
 
 
 def apply_launch_yolo(session_key: str) -> None:

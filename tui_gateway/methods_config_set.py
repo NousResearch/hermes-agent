@@ -343,12 +343,46 @@ def _set_approval_mode(rid, params, key, value, session):
     return _set_word(rid, params, "approvals.mode", value, session)  # legacy alias reports the real key
 
 
+def _yolo_would_enable(scope, raw, session) -> bool:
+    """Whether this ``config.set yolo`` switches approvals off: an explicit on, or a toggle of a bypass that is off."""
+    wanted = _BOOL_WORDS.get(raw)
+    if wanted is not None:
+        return wanted
+    if scope == "global":
+        from tools.approval_context import _normalize_approval_mode
+        appr = _load_cfg().get("approvals")
+        return _normalize_approval_mode((appr if isinstance(appr, dict) else {}).get("mode", "manual")) != "off"
+    if session:
+        from tools.approval import is_session_yolo_enabled
+        return not is_session_yolo_enabled(session["session_key"])
+    return not is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
+
+
+def _approval_bypass_refused(rid, scope, session):
+    """4030 with the refusal when a ``pre_approval_bypass`` plugin refuses this connection's login; else None."""
+    from tools.approval_yolo import approval_bypass_refusal
+    from tui_gateway.transport import current_transport
+    refusal = approval_bypass_refusal(
+        surface="rpc", scope=scope, session_key=(session or {}).get("session_key", ""),
+        identity=getattr(current_transport(), "auth_identity", None))
+    return None if refusal is None else _err(rid, 4030, refusal)
+
+
+def _slash_yolo_refused(rid, session, base):
+    """``slash.exec /yolo``: the slash worker toggles and stores the bypass in another process, so which
+    way it flips is not known here; it is always asked before the worker runs."""
+    return _approval_bypass_refused(rid, "session", session) if base == "yolo" else None
+
+
 @_cfgset_guarded
 def _set_yolo(rid, params, key, value, session):
     # scope="session" (default; Shift+Tab) toggles ONLY this session's flag; scope="global"
     # (Shift+click the zap) flips persistent approvals.mode between "off" and "manual".
     scope = _word(params.get("scope") or "session")
     raw = _word(value)
+    if _yolo_would_enable(scope, raw, session) and (refused := _approval_bypass_refused(
+            rid, "global" if scope == "global" else "session" if session else "process", session)) is not None:
+        return refused
     if scope == "global":
         from tools.approval_context import _normalize_approval_mode
         appr = _load_cfg().get("approvals")
@@ -601,6 +635,10 @@ def _(rid, params: dict) -> dict:
         handler = _set_display_toggle
     if handler is None:
         return _err(rid, 4002, f"unknown config key: {key}")
+    # approvals.mode off is the profile-wide form of the session bypass.
+    if key in ("approvals.mode", "approval_mode") and _word(value) == "off" \
+            and (refused := _approval_bypass_refused(rid, "global", session)) is not None:
+        return refused
     from hermes_cli.config_backend import ConfigWriteError
     try:
         return handler(rid, params, key, value, session)

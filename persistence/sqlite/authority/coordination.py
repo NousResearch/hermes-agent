@@ -20,7 +20,7 @@ from persistence import (
     AuthorityRefusal, DelegationId, JsonValue, PersistenceError, SessionId, StoreContention, StoreReplaced,
 )
 from persistence.core.errors import HandoffUnsettled
-from hermes_state_write import write_site, writer_mutex_until
+from persistence.sqlite._state.write import write_site, writer_mutex_until
 from persistence.authority.coordination import (
     COMPLETION_DELIVERIES, DELEGATION_CLAIM_STALE_SECONDS, DELEGATION_FAILURE_WINDOW_SECONDS,
     DELEGATION_MAX_DELIVERY_ATTEMPTS, DELEGATION_MAX_DURABLE_PENDING, DELEGATION_MAX_RETAINED_TERMINAL,

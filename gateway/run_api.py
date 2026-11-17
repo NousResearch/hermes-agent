@@ -226,8 +226,10 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     # Existing routers/auth helpers share one process-local app. Never rebind it
     # underneath another listener. Each authority is bound to its own profile DB.
     loaded_web = sys.modules.get("hermes_cli.web_server")
+    # Another thread may still be importing this module, before its app has been assigned.
+    loaded_app = getattr(loaded_web, "app", None)
     if _ACTIVE_RUNNER is not None or (
-            loaded_web is not None and getattr(loaded_web.app.state, "gateway_runner", None) is not None):
+            loaded_app is not None and getattr(loaded_app.state, "gateway_runner", None) is not None):
         raise RuntimeError("gateway API already started")
     public_url = _listener_public_url(webapp)
     if public_url is None:

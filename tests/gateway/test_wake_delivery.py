@@ -182,3 +182,51 @@ def test_persist_delegation_delivery_raises_without_db():
         ))
 
 
+def test_persist_delegation_delivery_with_active_turn_lease(tmp_path):
+    """Internal delegation delivery rows must persist even when the session holds an active turn lease."""
+    from hermes_state import SessionDB
+    from gateway.wake import persist_delegation_delivery
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "coord-session-turn-lease"
+    db.create_session(sid, source="api_server")
+    db.append_message(sid, "user", content="run subagents in background")
+    db.append_message(sid, "assistant", content="dispatched subagents", finish_reason="tool_calls")
+
+    # Acquire an active turn lease (simulating coordinator mid-turn)
+    acquired = db.try_acquire_session_turn_lease(sid, "coordinator_active_lease", ttl_seconds=300.0)
+    assert acquired is True
+
+    class DbAdapter(ApiServerLikeAdapter):
+        def _ensure_session_db(self):
+            return db
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_active_lease_test",
+        "results": [{"status": "completed"}],
+        "total_duration_seconds": 3.2,
+    }
+
+    # Must NOT raise SessionTurnLeaseLostError
+    asyncio.run(persist_delegation_delivery(
+        DbAdapter(), text="[ASYNC DELEGATION BATCH COMPLETE — deleg_active_lease_test]",
+        session_id=sid, evt=evt,
+    ))
+
+    rows = db.get_messages(sid)
+    assert len(rows) == 3
+    delivery = rows[-1]
+    assert delivery["role"] == "user"
+    assert delivery["display_kind"] == "async_delegation_complete"
+    assert delivery["display_metadata"]["delegation_id"] == "deleg_active_lease_test"
+
+    # Idempotent deduplication check
+    asyncio.run(persist_delegation_delivery(
+        DbAdapter(), text="[ASYNC DELEGATION BATCH COMPLETE — deleg_active_lease_test]",
+        session_id=sid, evt=evt,
+    ))
+    assert len(db.get_messages(sid)) == 3
+
+
+

@@ -1052,7 +1052,7 @@ class CLISessionMixin:
         ``agent.prompt_cache_lifecycle``) or, once the cache is over, offload old tool output (step 3).
         Nothing is sent after either until the next user message. Runs on the input loop between turns,
         so no turn is in flight; queued input waits for it like it waits for ``/compress``."""
-        from agent.prompt_cache_lifecycle import CHECK_INTERVAL_SECONDS, TRIGGER, claim_compaction, claim_offload
+        from agent.prompt_cache_lifecycle import CHECK_INTERVAL_SECONDS, TRIGGER, get_prompt_cache_warmer
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import MIN_MESSAGES, CompressRequest, compress_now
 
@@ -1063,11 +1063,12 @@ class CLISessionMixin:
         if (self.agent is None or self._agent_running or not self._pending_input.empty()
                 or len(self.conversation_history or ()) < MIN_MESSAGES):
             return
-        if not claim_compaction(self.agent, now=now):
-            if claim_offload(self.agent, now=now):
-                from agent.turn_proactive_prune import offload_cold_history
+        action = get_prompt_cache_warmer(self.agent).claim_edge(now=now)
+        if action == "offload":
+            from agent.turn_proactive_prune import offload_cold_history
 
-                self.conversation_history = offload_cold_history(self.agent, self.conversation_history, self.session_id)
+            self.conversation_history = offload_cold_history(self.agent, self.conversation_history, self.session_id)
+        if action != "compact":
             return
         with self._busy_command(t("cli.session.compress_busy"), blocks_input=False):
             try:
@@ -1077,7 +1078,7 @@ class CLISessionMixin:
                 finalize_context_engine_compression_notification(self.agent, committed=False)
                 logging.getLogger(__name__).warning("cache-expiry compaction failed: %s", exc, exc_info=True)
                 return
-            if result.status == "compressed":
+            if result.committed:
                 self._adopt_compress_result(result)
 
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:

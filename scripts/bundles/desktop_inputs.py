@@ -33,7 +33,7 @@ def build_environment(prepared: PreparedDesktop, variant: str, inherited: Mappin
 
     request = prepared.request
     env = bootstrap_environment(request.source, request.work, request.cache, inherited)
-    selection = verified_tools(["python", "node", "npm"], source_store=request.cache / "tools",
+    selection = verified_tools(["python", "node", "pnpm"], source_store=request.cache / "tools",
                                target=request.target, lock=Lockfile(request.source / "pm/lock.json"))
     if prepared.python != selection.entries["python"].binary or prepared.node != selection.entries["node"].binary:
         raise ValueError("prepared Python/Node paths do not match selected tools; prepare again")
@@ -47,12 +47,11 @@ def identity_environment(request: BuildRequest, variant: str, inherited: Mapping
     request.validate_channel()
     if request.channel_request is not None and variant != "bundled":
         raise ValueError("channel builds currently support only the bundled variant")
-    bundle_env = {**request.bundle_env, "HERMES_GUEST_ONBOARDING": "1"} if variant == "store" else request.bundle_env
     env = dict(inherited)
     env.update(CI="true", PYTHONUTF8="1", GITHUB_SHA=request.commit,
                HERMES_DESKTOP_VARIANT=variant,
                HERMES_PAYLOAD_VERSION=request.version,
-               HERMES_BUNDLE_ENV_JSON=json.dumps(bundle_env, sort_keys=True))
+               HERMES_BUNDLE_ENV_JSON=json.dumps(request.bundle_env, sort_keys=True))
     if request.release_epoch is None:
         env.pop("HERMES_RELEASE_EPOCH", None)
     else:

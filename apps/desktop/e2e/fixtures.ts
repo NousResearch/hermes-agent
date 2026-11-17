@@ -17,7 +17,7 @@
  * `electron-builder --dir` step and matches `hermes desktop --source`. The
  * packaged-binary path is already covered by `launch.spec.ts`.
  *
- * Prerequisite: `npm run build` must have been run so that `dist/` exists.
+ * Prerequisite: `pnpm run build` must have been run so that `dist/` exists.
  */
 
 import * as fs from 'node:fs'
@@ -31,6 +31,7 @@ import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts
 import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { resolveElectronBinary } from './electron-binary'
+import { stopSandboxGatewayDaemons } from './run-tmp-reaper'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -111,7 +112,9 @@ export interface Sandbox {
 }
 
 export function createSandbox(prefix: string): Sandbox {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-e2e-${prefix}-${Math.random()}`))
+  // Canonical path: the backend resolves HERMES_HOME, so a symlinked tmpdir (macOS /var, a
+  // symlinked scratch dir) would otherwise make every HERMES_HOME match against the sandbox miss.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `hermes-e2e-${prefix}-${Math.random()}`)))
   const hermesHome = path.join(root, 'hermes-home')
   const userDataDir = path.join(root, 'electron-user-data')
 
@@ -148,6 +151,10 @@ export function createSandbox(prefix: string): Sandbox {
     hermesHome,
     userDataDir,
     cleanup: () => {
+      // `app.close()` leaves the detached gateway the app dialled; alive, it
+      // would also rewrite this home right after the rmSync below.
+      stopSandboxGatewayDaemons(root, hermesHome)
+
       try {
         fs.rmSync(root, { recursive: true, force: true })
       } catch {
@@ -216,6 +223,8 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     // mid-flight — otherwise the quit confirmation waits on a click that no
     // one is there to make, and the worker dies on a teardown timeout.
     HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
+    // Never repoint the user's OS hermes:// handler (HKCU on Windows) at a test checkout.
+    HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION: '1',
     // Clear dev-server override — we want the built dist/, not a vite server.
     // The dev-server check in main.ts looks for this env var; if it's set,
     // it loads from the vite URL instead of the local file.
@@ -237,14 +246,14 @@ function assertDistBuilt(): void {
 
   if (!fs.existsSync(electronMain)) {
     throw new Error(
-      `Desktop dist not built. Run 'cd apps/desktop && npm run build' first.\n` +
+      `Desktop dist not built. Run 'cd apps/desktop && pnpm run build' first.\n` +
         `Missing: ${electronMain}`,
     )
   }
 
   if (!fs.existsSync(indexHtml)) {
     throw new Error(
-      `Desktop dist/index.html not found. Run 'cd apps/desktop && npm run build' first.\n` +
+      `Desktop dist/index.html not found. Run 'cd apps/desktop && pnpm run build' first.\n` +
         `Missing: ${indexHtml}`,
     )
   }
@@ -252,18 +261,17 @@ function assertDistBuilt(): void {
 
 /**
  * Find the Electron binary. In the nix devshell, `electron` is on PATH.
- * As a fallback, use the node_modules/electron install from either package.
+ * As a fallback, use the desktop package's node_modules/electron install.
  */
 export function findElectron(): string {
   // In dev mode, we use the `electron` binary directly (not the packaged app).
   // The dev:electron script in package.json does exactly this: `electron .`
   // after building. We replicate that here.
   //
-  // The desktop package is searched first: npm workspaces only hoist
-  // `electron` to the repo root when nothing conflicts, so a workspace-local
-  // install is just as ordinary an outcome as a hoisted one. The rules live in
-  // ./electron-binary so they can be unit-tested per platform.
-  return resolveElectronBinary([DESKTOP_ROOT, REPO_ROOT])
+  // pnpm links `electron` into the desktop package, the workspace that
+  // declares it. The rules live in ./electron-binary so they can be
+  // unit-tested per platform.
+  return resolveElectronBinary([DESKTOP_ROOT])
 }
 
 /**
@@ -480,19 +488,19 @@ export interface PackagedAppFixture {
 }
 
 /**
- * Launch the *packaged* Electron binary (from `npm run pack` →
+ * Launch the *packaged* Electron binary (from `pnpm run pack` →
  * `electron-builder --dir`) with `BOOT_FAKE=1` so it simulates boot
  * progress without spawning a real Hermes backend.
  *
  * Uses the same sandbox isolation (credential stripping, isolated
  * HERMES_HOME + userData, unique app name) as the dev-mode fixtures.
  *
- * Skips if the packaged binary doesn't exist — run `npm run pack` first.
+ * Skips if the packaged binary doesn't exist — run `pnpm run pack` first.
  */
 export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   if (!packagedBinaryExists()) {
     throw new Error(
-      `Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'npm run pack' first.`,
+      `Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'pnpm run pack' first.`,
     )
   }
 

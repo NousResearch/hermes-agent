@@ -39,9 +39,11 @@ class Kind:
     prepare: Callable[[ConnectionOperation], None]
     observe: Callable[[ConnectionOperation], None]
     note: str
+    # Replaces the per-target result for an operation the model reads differently (the display card).
+    result: Optional[Callable[[ConnectionOperation], dict[str, Any]]] = None
 
 
-def reissue(operation: ConnectionOperation, names: Sequence[str]) -> Optional[str]:
+def reissue(operation: ConnectionOperation, names: Sequence[str], *, initiator: Optional[str] = None) -> Optional[str]:
     from tools.connectors.contract import Actor, TargetState, allowed
 
     targets = [operation.target(name) for name in names]
@@ -57,9 +59,10 @@ def reissue(operation: ConnectionOperation, names: Sequence[str]) -> Optional[st
     if any(allowed(target.kind, target.state, TargetState.initiated) is None for target in targets):
         return NOT_ALLOWED
     if targets[0].kind == "connector":
-        from tools.connectors.managed import managed_client, mint
+        from tools.connectors.managed import CARD_RETRY, managed_client, mint
 
-        mint(managed_client(), operation, stale, reinitiate=True, actor=Actor.user)
+        client = managed_client(creates_guest=True, initiator=initiator or CARD_RETRY, call=operation.call)
+        mint(client, operation, stale, reinitiate=True, actor=Actor.user)
         return None
     from tools.connectors import catalog
     from tools.connectors.mcp import retry
@@ -71,9 +74,22 @@ def reissue(operation: ConnectionOperation, names: Sequence[str]) -> Optional[st
 def apply_answer(operation: ConnectionOperation, raw: str) -> None:
     """Hand the card's answer to the module running this operation (a catalog install or an MCP
     one); a managed operation's card only skips and continues, which the MCP fold also covers."""
-    from tools.connectors import catalog, mcp
+    from tools.connectors import catalog, display, mcp
 
+    if isinstance(operation, display.DisplayOperation):
+        display.apply_answer(operation, raw)
+        return
     (catalog.apply_answer if catalog.owns(operation.op_id) else mcp.apply_answer)(operation, raw)
+
+
+def respond(operation: ConnectionOperation, raw: str) -> bool:
+    """The card's answer: apply it, settle once every target is resolved, close a settled operation. Returns whether it settled; raises ``IllegalTransition`` for an answer the operation refuses."""
+    apply_answer(operation, raw)
+    if not operation.settled and operation.all_resolved:
+        operation.settle(SettleReason.all_resolved)
+    if operation.settled:
+        live.close(operation)
+    return operation.settled
 
 
 def run_operation(
@@ -85,9 +101,27 @@ def run_operation(
     connection_callback: Optional[Callback],
     tick_seconds: Optional[float] = None,
     with_urls_in_result: bool,
+    call: Optional[Any] = None,
 ) -> str:
     """Block the tool thread until the operation settles; return the tool's JSON string."""
-    operation = ConnectionOperation(targets, session_key=session_key, tool_call_id=tool_call_id)
+    return open_and_drive(
+        ConnectionOperation(targets, session_key=session_key, tool_call_id=tool_call_id, call=call),
+        kind,
+        connection_callback=connection_callback,
+        tick_seconds=tick_seconds,
+        with_urls_in_result=with_urls_in_result,
+    )
+
+
+def open_and_drive(
+    operation: ConnectionOperation,
+    kind: Kind,
+    *,
+    connection_callback: Optional[Callback],
+    tick_seconds: Optional[float] = None,
+    with_urls_in_result: bool,
+) -> str:
+    """Register ``operation`` as the session's open one and drive it; one open per session."""
     try:
         live.open(operation)
     except live.OperationAlreadyOpen as exc:
@@ -122,6 +156,8 @@ def drive_operation(
         _watch(operation, kind, tick_seconds)
     finally:
         live.close(operation)
+    if kind.result is not None:
+        return json.dumps(kind.result(operation), ensure_ascii=False)
     payload = operation.result(with_urls=with_urls_in_result)
     payload["status"] = "settled"
     payload["note"] = kind.note

@@ -1,0 +1,26 @@
+name: chess-coach
+title: Chess Coach
+repo: https://github.com/oppai/chess-coach
+sha: c317bc3c7818be9279cb66765b578128e6fe102f
+description: Practice mate in one to four or play Hermes with piece odds on an interactive Desktop chessboard.
+maintainer: oppai
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.2.0"
+capabilities:
+  provides_tools:
+    - chess_new_game
+    - chess_set_position
+    - chess_board
+    - chess_list_games
+    - chess_legal_moves
+    - chess_make_move
+    - chess_undo
+    - chess_review_position
+    - chess_solve_mate
+    - chess_material
+    - chess_pgn
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

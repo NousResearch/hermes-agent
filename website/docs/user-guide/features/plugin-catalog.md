@@ -14,18 +14,12 @@ can install by name with a single command:
 hermes plugins install <name>
 ```
 
-Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
-category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
-Models), with search, tier filters (Official / Community), capability chips, and
-copyable install commands for every entry.
-
-Every entry also has its own page at `/docs/plugins/<name>` (click a card):
-the full description and any disclosure, the pinned commit, tools, hooks and
-environment variables, the Desktop install button and CLI command, optional
-screenshots and the README from the reviewed commit, plus a **More by this
-author** shelf. Authors have a page at `/docs/plugins/by/<maintainer>` listing
-everything they maintain in the catalog. Both are generated at build time from
-the same catalog files, so a merged PR is the only way a page changes.
+Browse it on the **[Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace)**, with search, categories,
+tier labels (Official / Verified / Community) and an install button or CLI command
+for every entry. Each entry has its own page at `/marketplace/<name>` with the
+description, the pinned commit, optional screenshots, the README from the
+reviewed commit and more plugins by the same maintainer. The Marketplace reads
+the same catalog files, so a merged PR is the only way a listing changes.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
@@ -49,14 +43,15 @@ directory of the hermes-agent repository, declaring:
 | `repo` | The plugin's public git repository |
 | `sha` | The **exact 40-hex commit** that was reviewed — installs check out this pin, not a branch tip |
 | `subdir` | Path to the plugin inside the repo for monorepos — a plain relative path matching `[A-Za-z0-9._/-]+` (no `..`, `.`, empty segments, absolute or backslash forms) (optional, default repo root) |
-| `tier` | `official` (maintained by NousResearch) or `community` |
+| `tier` | `official` (maintained by NousResearch), `verified` (verified by the Nous team to come from the reputable company whose product it integrates), or `community`. Only Nous maintainers set `official` or `verified` |
 | `category` | Browse shelf: `desktop` (default), `memory`, `platform`, `web`, `tools`, `voice`, `automation`, `models` or `general` |
 | `maintainer` | Who owns the plugin |
 | `capabilities` | Declared tools, hooks, middleware, and required env vars |
-| `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional) |
+| `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional). Enforced: installing on an older Hermes is refused with the version it needs, and `hermes plugins update` keeps the installed version until you update Hermes. `search` and `info` still list the entry, marked as needing a newer Hermes |
 | `platforms` | OS restrictions, empty = all (optional) |
 | `title` | Human name shown on cards, e.g. `NVIDIA App` (optional; defaults to `name`) |
-| `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official entries only (optional, default `false`) |
+| `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official or verified entries only (optional, default `false`) |
+| `default` | `true` installs and enables the plugin in every Hermes home, once: at the end of an install (or on first start for Desktop, Docker, Nix and Termux), on `hermes update` when it became a default since, and when a profile is created. Removing or disabling it sticks. Official or verified entries only; nothing is fetched where `security.allow_lazy_installs` is off (optional, default `false`) |
 | `docs_url` | External documentation link (optional) |
 | `known_issues` | Short notes shown at the install prompt, e.g. an unsupported install mode. Informational; they never block the install (optional) |
 | `version` | Human-readable label for the pinned sha, e.g. `"1.4.0"`; shown as `1.4.0 @ abcd1234` in the CLI, on the catalog card and on the Desktop **Update to** button (optional, cosmetic) |
@@ -88,8 +83,8 @@ The catalog is designed so you know exactly what you're installing:
   bridge, storage of other plugins). What protects you is the trust model
   above — a human read the exact pinned commit, and the install is that
   commit — plus two tripwires: admission's `desktop surface` lint refuses
-  the obvious moves outside the plugin SDK (patching built-in prototypes,
-  `eval`, importing anything other than `@hermes/plugin-sdk`/`react`,
+  the obvious moves outside the plugin SDK (`eval`, importing anything
+  other than `@hermes/plugin-sdk`/`react`,
   including remote scripts), and the app's loader refuses every non-SDK
   import again at load time. The lint reads a `<script` regex — a literal, or
   the pattern string of a `new RegExp(...)` passed straight to
@@ -159,7 +154,7 @@ hermes plugins enable touchdesigner   # same as: hermes plugins enable td
 
 In the Desktop app a package with both an agent half and a Desktop half
 (`desktop/plugin.js`) is one row with one switch per half. Turning the
-package on (the install dialog's **Enable agent plugin after install**, or
+package on (installing it from the install dialog, which turns it on, or
 the row's **Agent** switch) turns its Desktop half on as well, unless you
 switched that half off yourself. Turning it off stays per half, because the
 Desktop half is shared by every profile.
@@ -269,5 +264,5 @@ code or Desktop UI at runtime.
   configuration
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
 - [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
-- [Plugin Catalog page](/plugins) — the browsable catalog
+- [Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace) — browse the catalog
 - [Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md) — admission rules and the submission guide

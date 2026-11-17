@@ -21,7 +21,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.auxiliary_client import call_llm
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
+from agent.message_metadata import DATA_USE
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
@@ -125,11 +126,10 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
-    from utils import file_signature
-    try:
-        cfg_stamp = file_signature(get_config_path().stat())
-    except OSError:
-        cfg_stamp = None
+    from hermes_cli.config_backend import config_cache_version_or_none
+    from agent.safe_worker_policy import worker_config_snapshot
+    # A safe worker's config is its frozen snapshot: never open the profile file (uncached there).
+    cfg_stamp = None if worker_config_snapshot() is not None else config_cache_version_or_none(get_config_path())
     moa_raw = load_config().get("moa") or {}
     key = (cfg_stamp, preset_name)
     with _preset_cache_lock:
@@ -365,7 +365,7 @@ def _maybe_apply_moa_cache_control(
         # None → "5m"; cache-disabled routes already returned above. Envelope routes
         # reject part-level markers in tool_result.content[].
         return apply_anthropic_cache_control(
-            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
+            messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url),
             native_anthropic=native_layout,
             tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
         )
@@ -395,6 +395,22 @@ def _price_reference_response(
         return usage, None, None, None
 
 
+def _slot_request_headers(runtime: dict[str, Any], agent: Any = None) -> dict[str, str] | None:
+    """User-initiated request headers of the slot's provider, attributed at that provider's own endpoint
+    (MoA attributes by slot provider, whatever account host the slot resolved to). Asked like every
+    per-request hook (``route_answer``: memoized, one failure policy for the agent's session)."""
+    from agent.auxiliary_client import _normalize_aux_provider
+    from agent.provider_route_hooks import route_answer
+    from providers import get_provider_profile
+
+    provider = _normalize_aux_provider(str(runtime.get("provider") or ""))
+    profile = get_provider_profile(provider) if provider else None
+    if profile is None:
+        return None
+    return route_answer("request_headers", provider=provider, base_url=profile.base_url or "",
+                        model=str(runtime.get("model") or ""), user_initiated=True, scope=agent)
+
+
 def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
@@ -420,10 +436,9 @@ def _run_reference(
         )
         trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
 
-        # Copilot gates premium models on request attribution; MoA fan-out serves the
-        # user's current turn, so mirror the main agent's x-initiator header.
-        from agent.auxiliary_client import _normalize_aux_provider
-        is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
+        # Providers may gate premium models on request attribution; MoA fan-out serves the
+        # user's current turn, so mirror the main agent's user-initiated request headers.
+        initiator_headers = _slot_request_headers(runtime, agent)
         if agent is not None:
             from agent.auxiliary_client import aux_progress_hook
 
@@ -432,14 +447,14 @@ def _run_reference(
                     task="moa_reference", messages=trimmed, temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-                    extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+                    extra_headers=initiator_headers, **runtime,
                 )
         else:
             response = call_llm(
                 task="moa_reference", messages=trimmed, temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-                extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+                extra_headers=initiator_headers, **runtime,
             )
         output_text = _extract_text(response) or "(empty response)"
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
@@ -795,6 +810,9 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 rendered[-1]["content"] = rendered[-1]["content"] + "\n" + block
             else:
                 rendered.append({"role": "assistant", "content": block})
+            # The preview is still the raw result, so the folded turn keeps its data-use requirement.
+            if msg.get(DATA_USE):
+                rendered[-1][DATA_USE] = sorted({*rendered[-1].get(DATA_USE, ()), *msg[DATA_USE]})
         # system and any other role are ignored.
 
     # Anthropic rejects trailing assistant prefill: end on a synthetic user request.
@@ -946,18 +964,14 @@ def aggregate_moa_context(
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
-    cache_disabled, cache_ttl = _agent_cache_opts(agent)
     _touch_fanout_progress(
         agent, f"MoA: synthesizing aggregator guidance ({agg_label})"
     )
     try:
-        # Same cache_control decoration as the advisor calls; this synthesis call is
-        # a third independent MoA call path that otherwise re-bills its full input.
-        agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], _with_cache_disabled(agg_runtime, cache_disabled), cache_ttl=cache_ttl,
-        )
+        # Undecorated: the prompt embeds this call's reference outputs, so no later call
+        # reads it back and a marker would only pay a cache write (is_one_shot_request).
         synthesis = _extract_text(call_llm(
-            task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
+            task="moa_aggregator", messages=[{"role": "user", "content": synth_prompt}], temperature=aggregator_temperature,
             reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
         ))
     except Exception as exc:
@@ -1063,6 +1077,9 @@ class MoAChatCompletions:
         self._accounting_lock = threading.Lock()
         # Real aggregator slot so cost accounting prices the acting turn at its model.
         self.last_aggregator_slot: Any = None
+        # Resolved aggregator destination + the cache facts of the payload sent (prompt-cache clock).
+        self.last_aggregator_route: Any = None
+        self.last_aggregator_attempt: Any = None
         # Full-turn trace parts from a cache-MISS create(), flushed by consume_and_save_trace.
         self._pending_trace: Any = None
         # Per-advisor metrics for observability hooks; NOT consumed (post_api_request
@@ -1199,6 +1216,10 @@ class MoAChatCompletions:
         agg_messages, tools = self._plan_aggregator_cache(
             prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
         )
+        # The prompt-cache clock reads the resolved destination and the payload actually sent, not the
+        # configured slot (which has no base_url/api_mode) or the virtual preset's request.
+        from agent.prompt_cache_clock import attempt_facts
+        self.last_aggregator_route = {k: agg_runtime.get(k) for k in ("provider", "model", "base_url", "api_mode")}
         trace = self._pending_trace
         if trace is not None:
             trace["aggregator_label"] = _slot_label(aggregator)
@@ -1227,6 +1248,7 @@ class MoAChatCompletions:
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+        self.last_aggregator_attempt = attempt_facts({"messages": agg_messages, "tools": tools, "extra_body": agg_extra_body})
         try:
             agg_response = send(messages=agg_messages)
         except Exception as exc:
@@ -1241,6 +1263,8 @@ class MoAChatCompletions:
                 "destination for the rest of the session and retrying once: %.200s", _slot_label(aggregator), exc,
             )
             agg_messages = retry_messages
+            self.last_aggregator_attempt = attempt_facts({"messages": agg_messages, "tools": tools,
+                                                          "extra_body": agg_extra_body})
             agg_response = send(messages=agg_messages)
         if trace is not None:
             # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).
@@ -1483,6 +1507,14 @@ class MoAClient:
     @property
     def last_aggregator_slot(self) -> Any:
         return getattr(self.chat.completions, "last_aggregator_slot", None)
+
+    @property
+    def last_aggregator_route(self) -> Any:
+        return getattr(self.chat.completions, "last_aggregator_route", None)
+
+    @property
+    def last_aggregator_attempt(self) -> Any:
+        return getattr(self.chat.completions, "last_aggregator_attempt", None)
 
     def consume_and_save_trace(self, session_id: Any = None, aggregator_output_fallback: Any = None) -> None:
         return self.chat.completions.consume_and_save_trace(session_id, aggregator_output_fallback=aggregator_output_fallback)

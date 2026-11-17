@@ -1,0 +1,20 @@
+name: idealphase-elevenlabs-audio-tags
+title: IdealPhase Audio Tags
+repo: https://github.com/IdealPhaseLLC/hermes-elevenlabs-audio-tags
+sha: a88e8422cf2e1b9a34ac931d59685b3b0b26b467
+description: "Hermes plugin that adds a few honest ElevenLabs delivery tags so speech sounds more human. It does not replace the built-in ElevenLabs voice provider, and it does not change the chat transcript. Disclosure — sends the prepared speech, voice ID, model ID, and any pronunciation-dictionary locator to api.elevenlabs.io with your ELEVENLABS_API_KEY; synthesis is billed to your ElevenLabs account. When automatic tags are on, the untagged transcript is also sent to the model configured for auxiliary.idealphase_elevenlabs_audio_tags, or your normal chat model if you did not pin one. Audio is written only to the path Hermes requests. No tools, hooks, or middleware. Does not store the key, phone home, or log the transcript."
+maintainer: IdealPhaseLLC
+tier: community
+category: voice
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/IdealPhaseLLC/hermes-elevenlabs-audio-tags#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/IdealPhaseLLC/hermes-elevenlabs-audio-tags/a88e8422cf2e1b9a34ac931d59685b3b0b26b467/docs/banner.jpg
+known_issues:
+  - "If the tag model misses the no-progress window, speech still goes out, without tags."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ELEVENLABS_API_KEY

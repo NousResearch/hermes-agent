@@ -45,6 +45,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_module
 from tests.e2e.core.upgrade._helpers import (
     WORKTREE,
     describe,
@@ -102,7 +103,7 @@ _PLATFORM_ALLOWLIST: dict[str, str] = {}
 _PRELOAD = (
     "openai", "httpx", "pydantic", "rich", "prompt_toolkit", "yaml", "ruamel.yaml", "requests", "jinja2",
     "fastapi", "starlette", "uvicorn", "anthropic", "cryptography", "psutil", "websockets", "dotenv",
-    "tenacity", "fire", "croniter", "markdown", "jwt", "packaging", "PIL",
+    "fire", "croniter", "markdown", "jwt", "packaging", "PIL",
 )
 
 # Import sites the pre-hand-off updater (v2026.9.14 update_cmd_fleet/_maint) reaches AFTER
@@ -203,10 +204,6 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
         for f in sorted(pdir.glob("*.py")):
             rel = f.relative_to(WORKTREE).as_posix()
             if f.name.startswith("test_") or f.name == "conftest.py" or f.stem == "__main__":
-                continue
-            # This frozen old-updater shim exits at import time to force a relaunch.
-            # Importing it is neither safe nor an import-graph smoke test.
-            if rel == "hermes_cli/psutil_android.py":
                 continue
             if tracked is not None and rel not in tracked:
                 continue
@@ -460,15 +457,6 @@ def _sandbox_or_skip() -> None:
 # --------------------------------------------------------------------------- (a) import smoke
 
 
-def test_relaunch_shim_is_excluded_only_while_it_exits_on_import():
-    shim = WORKTREE / "hermes_cli" / "psutil_android.py"
-    top_level = ast.parse(shim.read_text(encoding="utf-8")).body
-    assert any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-               and isinstance(node.value.func, ast.Name) and node.value.func.id == "stop_for_relaunch"
-               for node in top_level)
-    entries, _ = _shipped_modules()
-    assert "hermes_cli.psutil_android" not in {entry["id"] for entry in entries}
-
 def test_optional_import_table_only_names_optional_or_platform_deps():
     """The tolerance table cannot launder a missing CORE dependency into a skip."""
     core, extras = _requirements()
@@ -492,7 +480,8 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
     ids = [e["id"] for e in entries]
     # Non-vacuous: the list really is the packaging config (every root module, every package).
     assert len(ids) == len(set(ids)), "duplicate module ids in the enumeration"
-    assert {"hermes_cli.main", "run_agent", "gateway.run", "tui_gateway.entry", "acp_adapter.entry"} <= set(ids)
+    entry_points = ("hermes_cli.main", "run_agent", "gateway.run", "tui_gateway.entry", "acp_adapter.entry")
+    assert {current_module(name) for name in entry_points} <= set(ids)
     find_tops = {p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]}
     covered_tops = {i.split(".")[0] if not i.endswith(".py") else i.split("/")[0] for i in ids}
     assert find_tops <= covered_tops, f"packages.find tops with no module enumerated: {find_tops - covered_tops}"
@@ -536,14 +525,13 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
 
 def _pre_handoff_tag() -> tuple[str, str] | None:
     """Newest release tag whose updater still ran post-pull phases in the pre-pull interpreter."""
-    cp = _git("for-each-ref", "--merged=HEAD", "--sort=-version:refname",
-              "--format=%(refname:short)", "refs/tags/v20*")
-    for tag in cp.stdout.split()[:15] if cp.returncode == 0 else []:
-        if _git("cat-file", "-e", f"{tag}:hermes_cli/update_handoff.py").returncode == 0:
-            continue
-        grep = _git("grep", "-l", "def _purge_stale_hermes_modules", tag, "--", "hermes_cli")
-        return (tag, grep.stdout.strip()) if grep.returncode == 0 and grep.stdout.strip() else None
-    return None
+    from tests.e2e.core.upgrade import _install_helpers as I
+
+    tag = next((t for t in I.release_tags() if I.updater_generation(t) == "pre-handoff"), None)
+    if tag is None:
+        return None
+    grep = _git("grep", "-l", "def _purge_stale_hermes_modules", tag, "--", "hermes_cli")
+    return (tag, grep.stdout.strip()) if grep.returncode == 0 and grep.stdout.strip() else None
 
 
 def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
@@ -562,6 +550,7 @@ def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
             _link_or_copy(s, dst / name)
 
 
+@pytest.mark.allow_network  # the old updater's requirements export provisions the PM toolchain
 def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     """#114616 / #112522 shape: v2026.9.14's updater purges package prefixes only, keeps root
     modules (``utils``, ``hermes_constants``) cached, then imports new restart-phase code.
@@ -577,14 +566,18 @@ def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     # The old updater starts under its installed dependencies, then switches code in place.
     # The current test environment deliberately lacks PyYAML; provision the legacy direct
     # requirement in an isolated PM environment rather than mutating the test interpreter.
+    # Core's set comes from uv.lock, overrides included: re-resolving the bare dependency
+    # list cannot satisfy core's [tool.uv] override-dependencies (Pillow over browser-harness).
     from packaging.requirements import Requirement
-    from pm import ensure_environment
+    from pm import build_requirements_environment, export_requirements
 
     legacy_yaml = [r for r in old_deps if Requirement(r).name.lower() == "pyyaml"]
     assert len(legacy_yaml) == 1, f"{tag} no longer declares exactly one PyYAML requirement"
-    legacy_python = ensure_environment(
-        "pre-handoff-updater", [*PYPROJECT["project"]["dependencies"], *legacy_yaml],
-        root=tmp_path / "legacy-deps", explicit=True,
+    exported = tmp_path / "core-requirements.txt"
+    export_requirements(WORKTREE, exported, explicit=True)
+    legacy_python = build_requirements_environment(
+        [*exported.read_text(encoding="utf-8").splitlines(), *legacy_yaml],
+        out=tmp_path / "legacy-deps", lock=WORKTREE / "uv.lock", explicit=True,
     )
     pkg_tops = sorted({p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]})
     old_entries = [n for n in _git("ls-tree", "--name-only", tag).stdout.split()

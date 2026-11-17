@@ -20,10 +20,21 @@ import pytest
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point HERMES_HOME at a temp dir so session creation stays isolated."""
+    """Point HERMES_HOME at a temp dir so session creation stays isolated. The gateway is the single
+    writer: ``session.create {title}`` is played by a stand-in that writes the row the owner would."""
     home = tmp_path / "hermes_home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_cli import gateway_session_store
+
+    def create_titled(title):
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
+        with open_persistence(profile_scope()) as store:
+            sid = "local-" + "ab" * 32
+            seed_session(store, sid, "local", title=title)
+            return sid
+    monkeypatch.setattr(gateway_session_store, "create_titled_session", create_titled)
     return home
 
 
@@ -61,29 +72,23 @@ class TestCreateTitledSession:
         sid = _create_titled_session("Bot Chat")
         assert sid, "should return a session id"
 
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        try:
-            session = db.get_session(sid)
+        with open_persistence(profile_scope()) as store:
+            session = store.sessions.get(sid)
             assert session is not None
-            assert db.get_session_title(sid) == "Bot Chat"
-        finally:
-            db.close()
+            assert store.sessions.get_title(sid) == "Bot Chat"
 
     def test_created_session_resolvable_by_title(self, isolated_home):
         """After creation, resolve_session_by_title finds it (idempotent sends)."""
         sid = _create_titled_session("Bot Chat")
         assert sid
 
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        try:
-            resolved = db.resolve_session_by_title("Bot Chat")
+        with open_persistence(profile_scope()) as store:
+            resolved = store.sessions.resolve_by_title("Bot Chat")
             assert resolved == sid
-        finally:
-            db.close()
 
 
 class TestChatCFailLoudlyOnStderr:
@@ -134,9 +139,15 @@ class TestChatCFailLoudlyOnStderr:
         assert not stderr_lines[0].startswith("Use 'hermes sessions list'")
 
     def test_create_if_missing_sets_resume(self, isolated_home, monkeypatch):
-        """--create-if-missing resolves to a new session id on args.resume."""
+        """--create-if-missing resolves to a new session id on args.resume. The classic CLI's
+        gateway is the single writer: the titled session is the gateway's ``session.create`` (with
+        ``title``), and this process writes no state.db row."""
         import hermes_cli.main as main_mod
+        import hermes_cli.gateway_session_store as store_mod
 
+        created = []
+        monkeypatch.setattr(store_mod, "create_titled_session",
+                            lambda title: created.append(title) or "local-" + "a" * 64, raising=False)
         args = type(
             "Args",
             (),
@@ -149,11 +160,19 @@ class TestChatCFailLoudlyOnStderr:
 
         main_mod._resolve_continue_arg(args, use_tui=False)
 
-        assert args.resume, "resume should be set to the new session id"
-        from hermes_state import SessionDB
+        assert args.resume == "local-" + "a" * 64, "resume should be set to the new session id"
+        assert created == ["Bot Chat"]
+        assert not (isolated_home / "state.db").exists(), "the CLI must not write the titled row itself"
 
-        db = SessionDB()
-        try:
-            assert db.get_session_title(args.resume) == "Bot Chat"
-        finally:
-            db.close()
+    def test_tui_create_if_missing_keeps_the_local_titled_row(self, isolated_home):
+        """The TUI launch is unchanged: main's titled row, then the TUI resumes it."""
+        import hermes_cli.main as main_mod
+
+        args = type("Args", (), {"continue_last": "Bot Chat", "resume": None, "create_if_missing": True})()
+        main_mod._resolve_continue_arg(args, use_tui=True)
+
+        assert args.resume, "resume should be set to the new session id"
+        from persistence_assembly import open_persistence, profile_scope
+
+        with open_persistence(profile_scope()) as store:
+            assert store.sessions.get_title(args.resume) == "Bot Chat"

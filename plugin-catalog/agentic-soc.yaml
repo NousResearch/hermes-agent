@@ -1,0 +1,29 @@
+name: agentic-soc
+title: Hermes Agentic SOC
+repo: https://github.com/CyStrat-Services-GmbH/hermes-agentic-soc
+sha: 7206d9e1d4a4a5ba1dd843e45ada77214f06119c
+description: "Evidence-first SOC and DFIR work for Hermes: six defense specialist personas (L1 triage, L2 incident response, threat hunting, DFIR compromise assessment, detection engineering, vulnerability management), 39 skills, 25 technology scaffolds and deterministic THOR Lite triage with exact event counts, correlation, audit trail and human approval. Everything is local file work. Disclosure — runs the user's own separately licensed THOR Lite executable (path set in plugin settings) on operator-allowed scan directories, and can create a new Hermes profile through the local `hermes` CLI that gets a persona SOUL.md and a copy of the plugin's skills; both actions run only after Hermes approval, and child processes get a minimal environment (PATH, locale and temp vars; HERMES_HOME for the `hermes` CLI). Reads evidence files only inside operator-configured roots and writes reports, a pseudonym salt and an audit log under the plugin's data directory; no network calls."
+maintainer: CyStrat-Services-GmbH
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/CyStrat-Services-GmbH/hermes-agentic-soc
+version: "0.2.6"
+platforms: []
+known_issues:
+  - "Local THOR triage needs a separately licensed THOR Lite executable: set `thor_path` in the plugin settings. No THOR binary, signature or rule set is bundled or downloaded."
+  - "Evidence analysis covers THOR JSON v1/v2 and NDJSON only; THOR JSON v3, legacy text and CSV exports are not parsed in this version."
+  - "Offensive-research profiles and skills are not part of this release; they are planned for a later version and nothing of them is present, previewable or enableable here."
+capabilities:
+  provides_tools:
+    - soc_capabilities
+    - soc_template_list
+    - soc_template_install
+    - thor_lite_scan
+    - thor_parse
+    - thor_first_assessment
+    - soc_alert_triage
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

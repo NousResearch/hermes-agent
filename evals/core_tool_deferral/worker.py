@@ -56,14 +56,16 @@ TASK = taskmod.TASKS_BY_ID[TASK_ID]
 
 # --- seed session DB for recall tasks (both arms, always — cheap) ---------
 def seed_sessions():
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from persistence.conversation.messages import NewMessage
+    from persistence.conversation.sessions import NewSession
+    from persistence_assembly import open_persistence, profile_scope
+    db = open_persistence(profile_scope(), eager=True)
     month_ago = time.time() - 30 * 86400
     def sess(sid, msgs, t0):
-        db.create_session(sid, source="cli")
+        db.sessions.create(NewSession(session_id=sid, source="cli"))
         t = t0
         for role, content in msgs:
-            db.append_message(sid, role, content=content, timestamp=t)
+            db.messages.append(sid, NewMessage(role=role, content=content, timestamp=t))
             t += 60
     sess("seed_shadow_vet", [
         ("user", "Back from the vet with Shadow. They put him on carprofen for the leg inflammation."),
@@ -115,6 +117,11 @@ def clarify_cb(questions):
         match = next((str(c) for c in entry["choices"] or [] if ans.lower() in str(c).lower()), None)
         answers[entry["qid"]] = match or ans
     return {"answers": answers, "outcome": "submitted"}
+
+def theme_cb(payload):
+    CALLBACK_LOG.append({"name": "theme", "payload": payload})
+    return {"success": True, "applied": {k: v for k, v in payload.items() if k != "picker"}}
+
 
 def tour_cb(payload):
     CALLBACK_LOG.append({"name": "tour", "payload": payload})
@@ -224,6 +231,7 @@ agent = AIAgent(
     max_iterations=40,
     clarify_callback=clarify_cb,
     tour_callback=tour_cb,
+    theme_callback=theme_cb,
     read_terminal_callback=read_terminal_cb,
     read_preview_callback=read_preview_cb,
     drive_preview_callback=drive_preview_cb,

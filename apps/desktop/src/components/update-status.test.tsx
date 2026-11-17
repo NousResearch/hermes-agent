@@ -5,8 +5,9 @@ import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { en } from '@/i18n/en'
 import type { UpdateApplyState } from '@/store/updates'
+import { $backendUpdateApply, $backendUpdateStatus, $updateApply, $updateStatus } from '@/store/updates'
 
-import { deriveUpdateStatus, VersionHero } from './update-status'
+import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
 
 // VersionHero is the shared About/overlay hero. Its module imports the real
 // updates store graph; mock it shallowly — these tests exercise the hero's
@@ -93,6 +94,58 @@ describe('deriveUpdateStatus', () => {
     expect(derive({ supported: true, behind: 0, branch: 'main' }).line).toBe(en.updates.latestBody)
   })
 
+  it('names a stable release the updater refuses as held, never an update', () => {
+    const view = deriveUpdateStatus({
+      apply: IDLE_APPLY,
+      checking: false,
+      held: en.settings.about.channel.heldBody,
+      latestRelease: en.settings.about.channel.latestRelease,
+      status: {
+        supported: true,
+        behind: 0,
+        updateAvailable: false,
+        held: 'downgrade',
+        channel: 'stable',
+        sourceVersion: '0.22.2',
+        targetSha: 'd'.repeat(40),
+        currentSha: 'e'.repeat(40),
+        aheadOfRelease: false,
+        rollback: false
+      },
+      target: 'client',
+      u: en.updates
+    })
+
+    expect(view.updateAvailable).toBe(false)
+    expect(view.tone).toBe('idle')
+    expect(view.line).toBe(en.settings.about.channel.heldBody('v0.22.2'))
+  })
+
+  it('names a stable release the checkout already contains as a rollback, never a new update', () => {
+    const status = {
+      supported: true,
+      behind: -1,
+      channel: 'stable',
+      sourceVersion: '0.21.7',
+      updateAvailable: true,
+      aheadOfRelease: false
+    }
+
+    const view = (rollback: boolean) =>
+      deriveUpdateStatus({
+        apply: IDLE_APPLY,
+        checking: false,
+        rollback: en.settings.about.channel.rollbackBody,
+        status: { ...status, rollback },
+        target: 'client',
+        u: en.updates
+      }).line
+
+    expect(view(true)).toBe(en.settings.about.channel.rollbackBody('v0.21.7'))
+    expect(view(true)).not.toBe(en.updates.updateReadyUnknown)
+    expect(view(false)).toBe(en.updates.updateReadyUnknown)
+  })
+
   it('never-checked: idle tone, invites a check', () => {
     const view = derive(null)
 
@@ -153,6 +206,37 @@ describe('deriveUpdateStatus', () => {
     expect(view.tone).toBe('idle')
     expect(view.updateAvailable).toBe(false)
     expect(view.line).toBe(en.updates.latestBody)
+  })
+
+  it('hides the client status card while a bundle restart is pending', () => {
+    $updateApply.set(IDLE_APPLY)
+    $updateStatus.set({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
+    const version = { appVersion: '0.19.0', bundleSwapPending: false } as DesktopVersionInfo
+    const { rerender, unmount } = render(<UpdateStatusCard target="client" version={version} />)
+
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    rerender(<UpdateStatusCard target="client" version={{ ...version, bundleSwapPending: true }} />)
+    expect(screen.queryByText(en.updates.cantReach)).toBeNull()
+    expect(screen.queryByText('ECONNREFUSED', { exact: false })).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+    rerender(<UpdateStatusCard target="client" version={version} />)
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.updates.checkNow })).toBeTruthy()
+    unmount()
+    $updateStatus.set(null)
+  })
+
+  it('keeps the independent backend status visible during a client restart', () => {
+    $backendUpdateApply.set(IDLE_APPLY)
+    $backendUpdateStatus.set({ supported: true, error: 'backend-check-failed' })
+
+    const { unmount } = render(
+      <UpdateStatusCard target="backend" version={{ appVersion: '0.19.0', bundleSwapPending: true } as DesktopVersionInfo} />
+    )
+
+    expect(screen.getByText(en.updates.cantReach)).toBeTruthy()
+    unmount()
+    $backendUpdateStatus.set(null)
   })
 
   it('backend target says the backend is current, not "you"', () => {

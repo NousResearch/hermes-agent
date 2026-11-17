@@ -58,7 +58,7 @@ def test_completed_maintenance_survives_stamp_io_error(tmp_path, monkeypatch, ca
     from hermes_cli import source_build, source_stamp, update_cmd_maint
 
     monkeypatch.setattr(venv_sync, "publish_launchers", lambda root: None)
-    monkeypatch.setattr(source_build, "build_update_products", lambda root, *, desktop: None)
+    monkeypatch.setattr(source_build, "build_update_products", lambda root, *, desktop, after_dependencies=None: None)
     monkeypatch.setattr(update_cmd_maint, "_run_post_update_maintenance", lambda **kwargs: True)
     monkeypatch.setattr(source_stamp, "write_source_stamp", lambda root: (_ for _ in ()).throw(OSError("readonly")))
     assert source_completion.complete_source_checkout(tmp_path, desktop=False, assume_yes=True)

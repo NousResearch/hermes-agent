@@ -35,8 +35,26 @@ def adapter_supports_push(adapter: Any) -> bool:
     return bool(getattr(adapter, "supports_async_delivery", True))
 
 
+# Store refusal codes (``AuthorityRefusal.reason``) that refuse a notice for good by themselves: the
+# route has no session (``not_found``) or the payload is malformed (``invalid_params``). A bare
+# ``admission_conflict`` proves nothing: an unowned completion, or one pinned to a live session the
+# route does not run, may still find its owner (d6635ffe03b), so it is permanent only when the
+# authority's state proves the pin gone (``refusal_proven_permanent``). Every other refusal
+# (``runtime_draining`` during a restart's after-turn wait or a parked profile, ``queue_full``,
+# ``session_busy``, ``stale_epoch``, ...) clears on its own: back off, never give the notice up.
+PERMANENT_REFUSAL_REASONS = frozenset({'not_found', 'invalid_params'})
+
+
 class WakeNotAccepted(RuntimeError):
-    """No adapter admission: retry without treating a healthy chat as dead."""
+    """No adapter admission: retry without treating a healthy chat as dead. ``reason`` is the
+    store's refusal code when the session authority refused it, ``runtime_draining`` when the
+    adapter path refused it during a drain (None: the adapter did not accept);
+    ``permanent`` is set once the refusal is proven final (``refusal_proven_permanent``)."""
+
+    def __init__(self, message: str = "internal wake not accepted by adapter", *, reason: Optional[str] = None):
+        super().__init__(message)
+        self.reason = reason
+        self.permanent = False
 
 
 def session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:
@@ -50,7 +68,6 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
     unserved profile, a missing row, a row stamped for another profile, or an unreadable store all
     fail closed. Shared by the Kanban notifier and the background-process wake path.
     """
-    import contextlib
     from pathlib import Path
     if not session_id or not profile:
         return False
@@ -60,20 +77,17 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
         home = dict(_multiplex_profile_homes(config)).get(profile)
         if home is None:
             return False
-        from hermes_state import SessionDB
-        db = SessionDB(Path(home) / "state.db", read_only=True)
+        from persistence_assembly import open_persistence_reader
     except Exception as exc:
         logger.debug("wake: session ownership check unavailable for %s/%s: %s", profile, session_id, exc)
         return False
     try:
-        row = db.get_session(str(session_id))
+        with open_persistence_reader(Path(home)) as store:
+            row = store.sessions.get(str(session_id))
     except Exception as exc:
         logger.debug("wake: session ownership lookup failed for %s/%s: %s", profile, session_id, exc)
         return False
-    finally:
-        with contextlib.suppress(Exception):
-            db.close()
-    return bool(row) and (row.get("profile_name") or profile) == profile
+    return row is not None and (row.profile_name or profile) == profile
 
 
 async def admit_internal_event(adapter: Any, event: Any) -> None:
@@ -83,9 +97,27 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     not model execution, authorization of a later turn, or successful outbound delivery.
     """
     event._gateway_accepted = False
+    # A draining gateway answers new work with a drain notice and discards queued follow-ups,
+    # so a wake admitted now would never run. Refuse it so the caller keeps it for a retry.
+    if _runner_draining(adapter):
+        raise WakeNotAccepted("gateway is draining; retry after restart", reason="runtime_draining")
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
-        raise WakeNotAccepted("internal wake not accepted by adapter")
+        raise WakeNotAccepted()
+    # handle_message can await before it claims or queues the event (Telegram topic recovery, the
+    # busy handler's profile scope). A drain seen here dooms the stored event: the drain gate refuses
+    # a claimed turn and the pending discard drops a queued follow-up. Refuse it so the producer
+    # retries it after the restart.
+    if _runner_draining(adapter):
+        raise WakeNotAccepted("gateway began draining during admission; retry after restart",
+                              reason="runtime_draining")
+    # No drain began before or during admission, so the producer takes this receipt as final and
+    # will not retry: a drain that begins later must run the wake rather than drop it (#138123).
+    event._admitted_before_drain = True
+
+
+def _runner_draining(adapter: Any) -> bool:
+    return getattr(getattr(adapter, "gateway_runner", None), "_draining", False) is True
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
@@ -100,6 +132,16 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
         from gateway.platforms.event import MessageEvent, MessageType
+        runner = getattr(adapter, "gateway_runner", None)
+        if runner is not None:
+            from gateway.session_automation import admit_route_wake
+            from persistence.core.errors import AuthorityRefusal
+            category = {"notification_category": notification_category} if notification_category != "result" else {}
+            try:
+                if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):
+                    return  # committed to the session FIFO: never interrupts the admitted turn
+            except AuthorityRefusal as exc:
+                raise WakeNotAccepted(str(exc), reason=exc.reason) from exc
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
                                    metadata={"notification_category": notification_category})
         await admit_internal_event(adapter, synth_event)
@@ -155,9 +197,10 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
     if not session_id:
         raise ValueError("persist_delegation_delivery: raw session id required to persist "
                          "the completion on the api_server session transcript")
-    ensure = getattr(adapter, "_ensure_session_db", None)
+    ensure = getattr(adapter, "_ensure_store", None)
     db: Any = await asyncio.to_thread(ensure) if callable(ensure) else None
-    if db is None:
+    store = adapter._store_beside(db) if db is not None else None
+    if store is None:
         raise RuntimeError("persist_delegation_delivery: api_server SessionDB unavailable — "
                            f"cannot persist completion for session {session_id}")
     # #98619: the parent run may have compressed/rotated between dispatch and this detached
@@ -166,17 +209,15 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
     # id). Adopt the live continuation tip first, the same canonical resolution
     # /api/sessions/{id}/messages reads use, so the delivery row lands where the next run and
     # the messages endpoint both resolve. Fails open to the original id.
-    resolver = getattr(db, "resolve_resume_session_id", None)
-    if callable(resolver):
-        try:
-            resolved = await asyncio.to_thread(resolver, session_id)
-            if resolved:
-                session_id = str(resolved)
-        except Exception:
-            logger.debug("delegation delivery continuation resolve failed for %s", session_id, exc_info=True)
-    await asyncio.to_thread(
-        db.append_delegation_delivery, session_id, text, _delegation_display_metadata(evt or {}),
-    )
+    try:
+        resolved = await store.aio.lineage.resolve_resume_target(session_id)
+        if resolved:
+            session_id = str(resolved)
+    except Exception:
+        logger.debug("delegation delivery continuation resolve failed for %s", session_id, exc_info=True)
+    from persistence.conversation.messages import DelegationDelivery
+    await store.aio.messages.append_delegation_delivery(
+        session_id, DelegationDelivery(text, _delegation_display_metadata(evt or {})))
     logger.info(
         "async delegation completion persisted as delivery row for api_server session %s (no wake turn)", session_id
     )

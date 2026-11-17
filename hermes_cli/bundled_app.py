@@ -174,6 +174,7 @@ def launch_detached(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         close_fds=True,
+        # detached-spawn: ok — the desktop app launch, meant to outlive the CLI that opens it
         **windows_detach_popen_kwargs(),
     )
     return child.pid

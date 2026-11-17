@@ -99,21 +99,52 @@ def test_run_job_does_not_hang_when_sessiondb_init_wedges(owner_run, tmp_path, m
         assert closed.wait(5)
 
 
-@pytest.mark.parametrize("failure", ["wrong-store", "acquire-error"])
+@pytest.mark.parametrize("failure", ["closed-owner", "other-generation", "acquire-error"])
 def test_owner_store_failure_never_runs_unpersisted_agent(owner_run, failure):
     owner, job, execution_id, agent_cls = owner_run
-    # A handle opened after the owner's store closed holds a store of its own.
+    # A handle opened after the owner's store closed, or after its file was replaced, holds a store of its own.
     wrong_db = MagicMock()
-    if failure == "wrong-store":
-        owner.persistence.ready.side_effect = RuntimeError("persistence handle used after close")
+    if failure == "closed-owner":
+        owner.persistence.serves_same_store.side_effect = RuntimeError("persistence handle used after close")
+    elif failure == "other-generation":
+        owner.persistence.serves_same_store.return_value = False
     with patch("persistence_assembly.open_persistence", return_value=wrong_db,
                side_effect=OSError("store unavailable") if failure == "acquire-error" else None):
         success, _, response, error = scheduler.run_job(job, execution_id=execution_id)
     assert not success and response == ""
-    assert error and ("canonical owner store" if failure == "wrong-store" else "store unavailable") in error
+    assert error and ("store unavailable" if failure == "acquire-error" else "canonical owner store") in error
     agent_cls.assert_not_called()
     owner.persistence.close.assert_not_called()
-    assert wrong_db.close.call_count == (1 if failure == "wrong-store" else 0)
+    assert wrong_db.close.call_count == (0 if failure == "acquire-error" else 1)
+
+
+@pytest.mark.parametrize("replaced", [False, True])
+def test_a_store_replaced_under_the_owner_refuses_the_run(owner_run, tmp_path, monkeypatch, replaced):
+    """A handle opened after state.db was replaced serves another generation, where the run's writes would miss
+    the owner's accepted-work record, so cron refuses it; an unreplaced store serves the run."""
+    import os
+
+    from persistence.sqlite._holder import StoreHolder
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    owner, job, _execution_id, _agent_cls = owner_run
+    monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0")
+    with open_persistence(profile_scope(home=tmp_path), eager=True) as persistence:
+        owner.persistence = persistence
+        persistence.state_meta.set("who", "original")
+        if replaced:
+            donor = StoreHolder(tmp_path / "donor" / "state.db")
+            donor.set_meta("who", "replacement")
+            donor.close()
+            held = raw_holder(persistence)
+            with held._lock:
+                held._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            os.replace(tmp_path / "donor" / "state.db", tmp_path / "state.db")
+            with pytest.raises(RuntimeError, match="canonical owner store"):
+                scheduler._open_cron_session_db(job)
+        else:
+            with scheduler._open_cron_session_db(job) as store:
+                assert store.state_meta.get("who") == "original"
 
 
 def test_guard_is_released_and_job_refires_after_sessiondb_hang(owner_run, monkeypatch):

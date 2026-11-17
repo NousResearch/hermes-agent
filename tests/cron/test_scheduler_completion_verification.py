@@ -74,7 +74,7 @@ def _run_booked_job(monkeypatch, tmp_path):
     from persistence_assembly import profile_scope
 
     db = _RecordingStore()
-    owner = SimpleNamespace(persistence=SimpleNamespace(scope=profile_scope(home=tmp_path), ready=lambda: None))
+    owner = SimpleNamespace(persistence=SimpleNamespace(scope=profile_scope(home=tmp_path), serves_same_store=lambda _store: True))
     monkeypatch.setattr("persistence_assembly.open_persistence", lambda _scope, eager=False: db)
     monkeypatch.setattr(run_agent, "AIAgent", _FakeCronAgent)
     monkeypatch.setattr(

@@ -1830,10 +1830,12 @@ def _open_cron_session_db(job: dict):
                 return open_persistence(profile_scope(), eager=True)
             store = open_persistence(owner[0].persistence.scope, eager=True)
             try:
-                # Handles on one profile share its store while any is open; the owner's handle answers only
-                # while its store is open, else this handle holds a store of its own.
-                owner[0].persistence.ready()
+                # The owner's accepted-work record and this run's writes must land in one store generation: a
+                # handle opened after the file was replaced, or after the owner's store closed, holds another.
+                same = owner[0].persistence.serves_same_store(store)
             except Exception:  # health: allow BLE001 -- a failing owner handle means its store is closed
+                same = False
+            if not same:
                 store.close()
                 raise RuntimeError('cron requires the canonical owner store')
             return store

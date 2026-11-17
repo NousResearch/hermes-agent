@@ -50,7 +50,9 @@ _EXIT_REASON_PREFIX_EXPLANATIONS = tuple(
 )
 
 # ``session_persistence_failed`` refined by the classified cause (lock contention ≠ disk full).
-_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk"})
+# ``owner_unavailable`` = the worker's persistence RPC reached no gateway owner (drain/restart/
+# stalled loop); it is not storage damage, so it must not render the disk/default wording.
+_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "owner_unavailable", "disk"})
 
 
 def _persistence_explanation_key(cause: Optional[str]) -> str:

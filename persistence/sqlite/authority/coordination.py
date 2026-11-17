@@ -451,21 +451,21 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             conn.execute(
                 "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?" + keep, (cutoff,))
             terminal_count = conn.execute(
-                "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')" + keep
+                "SELECT COUNT(*) FROM async_delegations WHERE state!='running'" + keep
             ).fetchone()[0]
             if terminal_count > DELEGATION_MAX_RETAINED_TERMINAL:
                 conn.execute(f"""DELETE FROM async_delegations WHERE delegation_id IN (
                          SELECT delegation_id FROM async_delegations
-                         WHERE state NOT IN ('running','finalizing'){keep}
+                         WHERE state!='running'{keep}
                          ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
                                   updated_at ASC LIMIT ?
                        )""", (terminal_count - DELEGATION_MAX_RETAINED_TERMINAL,))
             pending_count = conn.execute("""SELECT COUNT(*) FROM async_delegations
-                   WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'""").fetchone()[0]
+                   WHERE state!='running' AND delivery_state='pending'""").fetchone()[0]
             if pending_count > DELEGATION_MAX_DURABLE_PENDING:
                 conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
                          SELECT delegation_id FROM async_delegations
-                         WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                         WHERE state!='running' AND delivery_state='pending'
                          ORDER BY updated_at ASC LIMIT ?
                        )""", (pending_count - DELEGATION_MAX_DURABLE_PENDING,))
         with translated():
@@ -547,7 +547,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
                           owner_pid, owner_started_at, delivery_attempts
                    FROM async_delegations
-                   WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                   WHERE state!='running' AND delivery_state='pending'
                      AND event_json IS NOT NULL AND updated_at < ?
                      AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
                    ORDER BY completed_at, delegation_id""",
@@ -700,7 +700,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
         def _read(conn):
             return conn.execute(
                 f"""SELECT delegation_id, state, dispatched_at, completed_at, task_json, result_json FROM async_delegations
-                    WHERE ({owner_sql}) AND state NOT IN ('running','finalizing') AND completed_at >= ?
+                    WHERE ({owner_sql}) AND state!='running' AND completed_at >= ?
                     ORDER BY completed_at DESC LIMIT ?""",
                 (*(val for _, val in selectors), cutoff, limit)).fetchall()
         with translated():
@@ -717,7 +717,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             return conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                           parent_session_id, dispatched_at, owner_pid,
                           owner_started_at, task_json, origin_session_id, result_json, state, updated_at
-                   FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
+                   FROM async_delegations WHERE state='running'""").fetchall()
         with translated():
             rows = self._ledger_read(_read)
         return tuple(InflightDelegation(
@@ -741,7 +741,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
         def _read(conn):
             return conn.execute("""SELECT DISTINCT owner_pid, owner_started_at
                    FROM async_delegations
-                   WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                   WHERE state!='running' AND delivery_state='pending'
                      AND event_json IS NOT NULL AND updated_at < ?
                      AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
                 (now - DELEGATION_ORPHAN_STALE_SECONDS, now - DELEGATION_CLAIM_STALE_SECONDS)).fetchall()
@@ -753,7 +753,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
         def _read(conn):
             return conn.execute("""SELECT delegation_id, owner_pid, owner_started_at, updated_at
                    FROM async_delegations
-                   WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                   WHERE state!='running' AND delivery_state='pending'
                      AND event_json IS NOT NULL AND updated_at < ?
                      AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
                    ORDER BY completed_at, delegation_id""",
@@ -773,7 +773,7 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             return conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
                           owner_pid, owner_started_at, delivery_attempts
                    FROM async_delegations
-                   WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                   WHERE state!='running' AND delivery_state='pending'
                      AND event_json IS NOT NULL AND updated_at < ?
                      AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
                    ORDER BY completed_at, delegation_id""",

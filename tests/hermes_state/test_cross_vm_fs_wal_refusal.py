@@ -30,9 +30,10 @@ SPACE_VIRTIOFS = "615 25 0:55 / /mnt/my\\040share rw,relatime - virtiofs share r
 
 class TestDetectCrossVmFs:
     @pytest.mark.parametrize("path,expected", [
-        ("/data/agent", True),          # fuse.virtiofs bind mount
-        ("/mnt/host/db", True),         # 9p bind mount
-        ("/mnt/my share/db", True),     # octal-escaped mount point
+        # Detection reads Linux mountinfo only; the off-Linux answer is its own test below.
+        pytest.param("/data/agent", True, marks=pytest.mark.platforms("linux")),       # fuse.virtiofs bind mount
+        pytest.param("/mnt/host/db", True, marks=pytest.mark.platforms("linux")),      # 9p bind mount
+        pytest.param("/mnt/my share/db", True, marks=pytest.mark.platforms("linux")),  # octal-escaped mount point
         ("/home/user/.hermes", False),  # ext4 root
         ("/data/native/db", False),     # ext4 mounted over the virtiofs tree — longest prefix wins
         ("/datastore", False),          # sibling path sharing a prefix string, not a mount prefix
@@ -51,6 +52,11 @@ class TestDetectCrossVmFs:
 
     def test_missing_mountinfo_conservative_false(self, tmp_path):
         assert _detect_cross_vm_fs("/data", mountinfo_path=str(tmp_path / "nope")) is False
+
+    @pytest.mark.platforms("not linux")
+    def test_off_linux_a_virtiofs_row_is_not_flagged(self, tmp_path):
+        mi = _mountinfo(tmp_path, [ROOT_EXT4, BIND_VIRTIOFS])
+        assert _detect_cross_vm_fs("/data/agent", mountinfo_path=mi) is False
 
 
 class TestWalRefusalOnCrossVmFs:

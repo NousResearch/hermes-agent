@@ -30,9 +30,10 @@ BIND_VIRTIOFS = "623 25 0:63 / /data rw,relatime - virtiofs mount0 rw"
 
 class TestDetectNetworkFs:
     @pytest.mark.parametrize("path,expected", [
-        ("/srv/nas/agent", True),         # nfs bind mount
-        ("/mnt/share/db", True),          # cifs bind mount
-        ("/home/remote/.hermes", True),   # fuse.sshfs bind mount
+        # Detection reads Linux mountinfo only; the off-Linux answer is its own test below.
+        pytest.param("/srv/nas/agent", True, marks=pytest.mark.platforms("linux")),        # nfs bind mount
+        pytest.param("/mnt/share/db", True, marks=pytest.mark.platforms("linux")),         # cifs bind mount
+        pytest.param("/home/remote/.hermes", True, marks=pytest.mark.platforms("linux")),  # fuse.sshfs bind mount
         ("/home/local/.hermes", False),   # ext4 root
         ("/data/agent", False),           # virtiofs belongs to the cross-VM class, not this one
     ])
@@ -50,6 +51,11 @@ class TestDetectNetworkFs:
 
     def test_missing_mountinfo_conservative_false(self, tmp_path):
         assert _detect_network_fs("/srv/nas", mountinfo_path=str(tmp_path / "nope")) is False
+
+    @pytest.mark.platforms("not linux")
+    def test_off_linux_an_nfs_row_is_not_flagged(self, tmp_path):
+        mi = _mountinfo(tmp_path, [ROOT_EXT4, BIND_NFS])
+        assert _detect_network_fs("/srv/nas/agent", mountinfo_path=mi) is False
 
 
 class TestNetworkFsExistingWalWarn:

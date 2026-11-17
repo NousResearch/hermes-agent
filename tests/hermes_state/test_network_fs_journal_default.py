@@ -124,6 +124,7 @@ def test_existing_wal_store_on_network_fs_keeps_wal_and_names_the_offline_remedy
     assert "database.journal_mode: delete" in text
 
 
+@pytest.mark.platforms("linux")  # mountinfo detection is Linux-only
 def test_network_fstypes_cover_nfs_and_smb_variants(tmp_path):
     rows = ["25 1 8:1 / / rw - ext4 /dev/sda1 rw"] + [
         f"{600 + i} 25 0:{60 + i} / /mnt/{fs.replace('.', '_')} rw - {fs} srv:/x rw"

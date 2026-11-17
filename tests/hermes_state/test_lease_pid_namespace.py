@@ -59,6 +59,7 @@ def test_turn_lease_of_sibling_namespace_is_not_stolen(tmp_path) -> None:
     assert db.try_acquire_session_turn_lease("legacy", contender, ttl_seconds=300) is False
 
 
+@pytest.mark.platforms("posix")  # the flock holder record and its liveness probe are the POSIX lock path
 def test_flock_holder_record_qualifies_pid_namespaces(monkeypatch, tmp_path) -> None:
     dead = _dead_pid()
     provably_dead = hermes_state_common._lock_holder_provably_dead

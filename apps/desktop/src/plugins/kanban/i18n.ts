@@ -44,6 +44,8 @@ type KanbanMessages = {
   collapse: (label: string) => string
   /** Done lane footer when the board holds only its newest cards. */
   showMoreDone: (page: number, hidden: number) => string
+  /** The Done lane footer while the next page loads. */
+  loadingMoreDone: string
   newTaskIn: (label: string) => string
   empty: string
   unassigned: string
@@ -276,6 +278,7 @@ export const en: KanbanMessages = {
   expand: label => `Expand ${label}`,
   collapse: label => `Collapse ${label}`,
   showMoreDone: (page, hidden) => `Show ${page} more (${hidden} older)`,
+  loadingMoreDone: 'Loading…',
   newTaskIn: label => `New task in ${label}`,
   empty: 'Empty',
   unassigned: 'unassigned',
@@ -509,6 +512,7 @@ const ja: KanbanMessages = {
   expand: label => `${label} を展開`,
   collapse: label => `${label} を折りたたむ`,
   showMoreDone: (page, hidden) => `さらに ${page} 件表示（古い ${hidden} 件）`,
+  loadingMoreDone: '読み込み中…',
   newTaskIn: label => `${label} に新しいタスク`,
   empty: '空',
   unassigned: '未割り当て',
@@ -740,6 +744,7 @@ const zh: KanbanMessages = {
   expand: label => `展开 ${label}`,
   collapse: label => `折叠 ${label}`,
   showMoreDone: (page, hidden) => `再显示 ${page} 条（还有 ${hidden} 条更早的）`,
+  loadingMoreDone: '加载中…',
   newTaskIn: label => `在 ${label} 新建任务`,
   empty: '空',
   unassigned: '未分配',
@@ -969,6 +974,7 @@ const zhHant: KanbanMessages = {
   expand: label => `展開 ${label}`,
   collapse: label => `摺疊 ${label}`,
   showMoreDone: (page, hidden) => `再顯示 ${page} 筆（還有 ${hidden} 筆更早的）`,
+  loadingMoreDone: '載入中…',
   newTaskIn: label => `在 ${label} 新增任務`,
   empty: '空',
   unassigned: '未指派',

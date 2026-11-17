@@ -369,7 +369,7 @@ function Column({
   column: { name: string; tasks: KanbanTask[] }
   columns: string[]
   /** Load the next page of a capped lane (the Done column's history). */
-  more?: { label: string; onClick: () => void }
+  more?: { label: string; loading?: boolean; onClick: () => void }
   onAdd: (status: string) => void
   onDelete: (id: string) => void
   onDropTask: (id: string, status: string) => void
@@ -522,12 +522,16 @@ function Column({
               />
             ))}
         {more && (
+          // Locked while the next page loads: the click is visibly taken and can't stack.
           <button
-            className="shrink-0 rounded-md py-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+            aria-busy={more.loading || undefined}
+            className="flex shrink-0 items-center justify-center gap-1.5 rounded-md py-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-(--ui-text-tertiary)"
+            disabled={more.loading}
             onClick={more.onClick}
             type="button"
           >
-            {more.label}
+            <Codicon name={more.loading ? 'loading' : 'chevron-down'} size="0.7rem" spinning={more.loading} />
+            {more.loading ? k.loadingMoreDone : more.label}
           </button>
         )}
         {/* Jira-style lane add — dashed, faded in on lane hover. Opacity (not
@@ -1137,16 +1141,43 @@ function donePagingProps(
   paging: DonePaging,
   filtering: boolean,
   label: (page: number, hidden: number) => string,
-  onMore: () => void
+  more: { loading: boolean; onMore: () => void }
 ): Pick<Parameters<typeof Column>[0], 'more' | 'total'> {
   if (name !== 'done' || paging.hidden === 0) {
     return {}
   }
 
   return {
-    more: { label: label(Math.min(DONE_PAGE, paging.hidden), paging.hidden), onClick: onMore },
+    more: {
+      label: label(Math.min(DONE_PAGE, paging.hidden), paging.hidden),
+      loading: more.loading,
+      onClick: more.onMore
+    },
     total: filtering ? undefined : paging.total
   }
+}
+
+/** "Show more" for the capped done column: raise the limit by a page and refetch.
+ *  `loading` holds from the click until that refetch settles (or fails), so the
+ *  footer locks and spins instead of looking like nothing happened. */
+export function useShowMoreDone(queryKey: readonly unknown[], shown: number) {
+  const qc = useQueryClient()
+  const [loading, setLoading] = useState(false)
+
+  const onMore = () => {
+    if (loading) {
+      return
+    }
+
+    setLoading(true)
+    $doneLimit.set(Math.max($doneLimit.get(), shown) + DONE_PAGE)
+    // Unlock on either outcome; a failed refetch surfaces through the board query itself.
+    const unlock = () => setLoading(false)
+
+    void qc.invalidateQueries({ queryKey }).then(unlock, unlock)
+  }
+
+  return { loading, onMore }
 }
 
 // ── page ─────────────────────────────────────────────────────────────────────
@@ -1260,11 +1291,7 @@ export function KanbanBoardPage() {
 
   const done = donePaging(board)
   const filtering = [search.trim(), tenant, assignee].some(Boolean)
-
-  const showMoreDone = () => {
-    $doneLimit.set(Math.max($doneLimit.get(), done.shown) + DONE_PAGE)
-    void qc.invalidateQueries({ queryKey: boardKey(scope, slug, archived) })
-  }
+  const showMoreDone = useShowMoreDone(boardKey(scope, slug, archived), done.shown)
 
   const moveMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => patchTask(id, { status }),

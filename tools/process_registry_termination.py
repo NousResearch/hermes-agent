@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("tools.process_registry")
 
-_ENV_GONE = "__HERMES_PROCESS_TERMINATED__"
-_ENV_SURVIVORS = "__HERMES_PROCESS_SURVIVORS__"
+ENV_GONE_MARKER = "__HERMES_PROCESS_TERMINATED__"
+ENV_SURVIVORS_MARKER = "__HERMES_PROCESS_SURVIVORS__"
 _ENV_TICK = 0.05
 # Exec round trip to a remote sandbox, on top of the signal waits the script itself makes.
 _ENV_KILL_TRANSPORT_SECONDS = 10.0
@@ -27,16 +27,16 @@ def env_group_kill_command(pgid: int, grace: float) -> str:
     """Shell command that stops sandbox process group *pgid* and proves it is gone.
 
     SIGTERM, then after *grace* seconds SIGKILL (no SIGKILL when *grace* is 0,
-    matching ``terminal.daemon_term_grace_seconds``). Prints ``_ENV_GONE`` once
+    matching ``terminal.daemon_term_grace_seconds``). Prints ``ENV_GONE_MARKER`` once
     ``kill -0`` fails with ESRCH; any other failure (EPERM: the member belongs to
     another user) still counts as alive. When the group outlives every signal,
-    prints ``_ENV_SURVIVORS`` and the member PIDs read from ``/proc`` (none when
+    prints ``ENV_SURVIVORS_MARKER`` and the member PIDs read from ``/proc`` (none when
     the sandbox has no ``/proc``)."""
     if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 1:
         # kill -- -1 signals every process the sandbox user can reach.
         raise ValueError(f"not a sandbox process group id: {pgid!r}")
     term_ticks = max(1, math.ceil(grace / _ENV_TICK)) if grace else round(1 / _ENV_TICK)
-    gone_exit = f"{{ echo {_ENV_GONE}; exit 0; }}"
+    gone_exit = f"{{ echo {ENV_GONE_MARKER}; exit 0; }}"
     escalate = f'kill -KILL -- "-$g" 2>/dev/null; wait_gone 20 && {gone_exit}; ' if grace else ""
     return (
         f"g={pgid}; "
@@ -49,7 +49,7 @@ def env_group_kill_command(pgid: int, grace: float) -> str:
         # makes its read fail, and that message must not land inside the PID line.
         'm=""; { for s in /proc/[0-9]*/stat; do read -r l < "$s" || continue; '
         'set -f; set -- ${l##*) }; set +f; [ "$3" = "$g" ] && m+=" ${s//[!0-9]/}"; done; } 2>/dev/null; '
-        f'echo "{_ENV_SURVIVORS}$m"; exit 1'
+        f'echo "{ENV_SURVIVORS_MARKER}$m"; exit 1'
     )
 
 
@@ -58,11 +58,11 @@ def parse_env_group_kill(result: dict) -> "list[int] | None":
     gone, the listed PIDs when it outlived the signals, ``None`` when the reply proves
     neither (transport failure, no bash)."""
     lines = str(result.get("output", "")).splitlines()
-    if result.get("returncode") == 0 and _ENV_GONE in lines:
+    if result.get("returncode") == 0 and ENV_GONE_MARKER in lines:
         return []
     for line in lines:
-        if line.startswith(_ENV_SURVIVORS):
-            return [int(tok) for tok in line[len(_ENV_SURVIVORS):].split() if tok.isascii() and tok.isdigit()]
+        if line.startswith(ENV_SURVIVORS_MARKER):
+            return [int(tok) for tok in line[len(ENV_SURVIVORS_MARKER):].split() if tok.isascii() and tok.isdigit()]
     return None
 
 

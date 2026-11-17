@@ -8,6 +8,10 @@ from typing import Any, NamedTuple
 _HEADER = re.compile(r"([0-9]{1,20}) ([0-9]{1,20}) (?:(run)|exit:([0-9]{0,9}))")
 
 
+#: ``$0`` of the supervisor shell: names the job in ``ps`` and marks the launch exec.
+LAUNCH_NAME = "hermes-bg"
+
+
 def env_launch_command(temp_dir: str, command: str, log_path: str, pid_path: str, exit_path: str) -> str:
     """Shell command that starts *command* in the background and prints the job's PID.
 
@@ -25,7 +29,7 @@ def env_launch_command(temp_dir: str, command: str, log_path: str, pid_path: str
         'trap : TERM; printf \'%s\\n\' "$$" > "$2"; bash -lc "$1"; rc=$?; printf \'%s\\n\' "$rc" > "$3"')
     return (
         f"mkdir -p {q(temp_dir)} && {{ "
-        f"set -m; nohup bash -c {q(supervisor)} hermes-bg {q(command)} {q(pid_path)} {q(exit_path)} "
+        f"set -m; nohup bash -c {q(supervisor)} {LAUNCH_NAME} {q(command)} {q(pid_path)} {q(exit_path)} "
         f"> {q(log_path)} 2>&1 < /dev/null & "
         f"for _hermes_wait in {{1..100}}; do test -s {q(pid_path)} && break; sleep 0.01; done; "
         f"cat {q(pid_path)}; }}")

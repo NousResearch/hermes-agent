@@ -70,7 +70,7 @@ def is_mapped(email: str) -> bool:
     # Case-insensitive: the directory cannot hold two case variants of one email.
     folded = email.casefold()
     emails_dir = REPO_ROOT / "contributors" / "emails"
-    if emails_dir.is_dir() and any(p.name.casefold() == folded for p in emails_dir.iterdir()):
+    if emails_dir.is_dir() and any(p.name.casefold() == folded and p.is_file() for p in emails_dir.iterdir()):
         return True
     authors_py = REPO_ROOT / "scripts" / "releases" / "authors_legacy.py"
     try:

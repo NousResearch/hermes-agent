@@ -180,6 +180,11 @@ def test_contributor_check_matches_a_mapping_whatever_case_the_commit_uses(repo,
         commit(repo, {email: "x"}, author=("Known", email))
     assert step.run(repo, "check_contributor_emails.py").returncode == 0
 
+    # A folder named like the email is not a mapping: release notes read files only.
+    commit(repo, {"contributors/emails/jane@example.com/login.txt": "jane\n"})
+    commit(repo, {"j": "1"}, author=("Jane", "Jane@example.com"))
+    assert step.run(repo, "check_contributor_emails.py").returncode == 1
+
 
 def test_supply_chain_scan_flags_payload_lines_but_not_lockfiles(repo, step):
     base = git(repo, "rev-parse", "HEAD").strip()

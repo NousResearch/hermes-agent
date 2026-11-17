@@ -139,6 +139,31 @@ def test_every_call_is_the_claims_call_on_the_canary_commit():
         assert job.get("secrets") == claim[0].get("secrets"), name
 
 
+def _call_closure(rel: str, seen: set[str]) -> None:
+    if rel in seen:
+        return
+    seen.add(rel)
+    for job in load(rel)["jobs"].values():
+        uses = job.get("uses", "")
+        if uses.startswith("./.github/workflows/"):
+            _call_closure(uses.removeprefix("./.github/workflows/"), seen)
+
+
+def test_artifacts_are_named_for_the_commit_under_test():
+    """Under this caller github.sha is main's tip, so a name built from it labels the wrong commit."""
+    called: set[str] = set()
+    for job in load("canary-e2e.yml")["jobs"].values():
+        if "uses" in job:
+            _call_closure(job["uses"].removeprefix("./.github/workflows/"), called)
+    ctx = {"github": {"sha": MAIN_TIP}, "inputs": {"commit": CANARY_COMMIT}}
+    uploads = [(rel, step) for rel in sorted(called) for job in load(rel)["jobs"].values()
+               for step in job.get("steps", []) if "upload-artifact@" in str(step.get("uses", ""))]
+    assert uploads
+    for rel, step in uploads:
+        name = step["with"].get("name", "")  # unset: upload-artifact's default, "artifact"
+        assert MAIN_TIP not in str(gha.render(name, ctx)), f"{rel}: {name}"
+
+
 @pytest.mark.parametrize(("started_by", "conclusion", "tracks"), [
     ("workflow_run", "failure", True),
     ("workflow_run", "success", True),

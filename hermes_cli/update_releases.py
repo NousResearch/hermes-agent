@@ -102,12 +102,12 @@ def select(args, git_cmd, root: Path, request: dict) -> tuple | None:
     return target, target, True, None
 
 
-def record_left(request: dict) -> None:
+def record_left(git_cmd, request: dict) -> None:
     """Record the commit this update moved off, once the move landed on ``expected_sha``."""
     ledger = request.get("release_ledger")
     landed = request.get("expected_sha")
     if not ledger or not landed or ledger["leaving"] == landed:
         return
-    ref = record_release(["git"], Path(request["source"]), ledger["leaving"], ledger["keep"])
+    ref = record_release(git_cmd, Path(request["source"]), ledger["leaving"], ledger["keep"])
     if ref:
         print(f"  ✓ Kept {ledger['leaving'][:12]} for `hermes update --rollback` ({ref.rsplit('/', 1)[1]})")

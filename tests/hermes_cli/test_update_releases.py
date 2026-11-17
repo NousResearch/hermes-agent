@@ -47,7 +47,7 @@ def _update(checkout, landing, *, rollback=False):
     target = _select(checkout, request, rollback=rollback)
     _git(checkout.repo, "checkout", "-q", "--detach", landing or target[0])
     request.setdefault("expected_sha", _git(checkout.repo, "rev-parse", "HEAD"))
-    update_releases.record_left(request)
+    update_releases.record_left(["git"], request)
     return target
 
 

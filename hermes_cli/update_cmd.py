@@ -1746,7 +1746,7 @@ def _apply_pulled_update(
             _record_stop("head_moved")
             sys.exit(1)
         completion_request["expected_sha"] = pinned or observed
-        _releases.record_left(completion_request)  # the move landed: now the ledger may rotate
+        _releases.record_left(git_cmd, completion_request)  # the move landed: now the ledger may rotate
     _complete_source_update(completion_request)
 
 

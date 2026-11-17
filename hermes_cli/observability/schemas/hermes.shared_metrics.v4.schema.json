@@ -1955,6 +1955,7 @@
                     "scan_blocked",
                     "staged",
                     "stale_entry",
+                    "stale_source",
                     "unknown",
                     "would_empty"
                   ]

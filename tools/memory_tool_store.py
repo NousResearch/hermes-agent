@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from utils import atomic_write_text
 from tools.threat_patterns import first_threat_message as _first_threat_message
@@ -193,6 +193,9 @@ class MemoryStore:
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
+        # Entries this store last read or wrote, per target; None until the first read. A locked
+        # re-read that differs is a change another writer made since (a session, reset, restore).
+        self._seen: dict[str, Optional[set[str]]] = {"memory": None, "user": None}
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
     # reset_consolidation_failures() (#42405).
@@ -248,6 +251,7 @@ class MemoryStore:
             # Deduplicate (order-preserving, first occurrence wins).
             entries = list(dict.fromkeys(self._read_file(path)))
             self._set_entries(target, entries)
+            self._seen[target] = set(entries)
             # External writers (MCP bridges, hand edits) can exceed the cap; the limit only fires on
             # add/replace, so the oversized block would silently ride in the prompt while every later
             # add is refused with no visible cause (#10877). Warn; never truncate a user's memories.
@@ -304,6 +308,71 @@ class MemoryStore:
     def _path_for(target: str) -> Path:
         from tools import memory_tool  # get_memory_dir is monkeypatched there
         return memory_tool.get_memory_dir() / ("USER.md" if target == "user" else "MEMORY.md")
+
+    @classmethod
+    @contextmanager
+    def publication(cls, path: Path):
+        """Hold the store's mutation lock on *path* while a writer outside ``MemoryStore``
+        replaces the file (a backup restore). Without it, a store that read before the
+        publication can rewrite its older snapshot over the published file afterwards."""
+        with cls._file_lock(path):
+            yield
+
+    @classmethod
+    def reset_file(cls, path: Path) -> bool:
+        """Delete one store file under its mutation lock.
+
+        A reset must participate in the same lock as a normal memory write: otherwise a
+        writer which read before the unlink can publish that old snapshot afterwards.
+        Returns whether this call removed a file (a concurrent reset may win first).
+        """
+        with cls._file_lock(path):
+            if not path.exists():
+                return False
+            path.unlink()
+            return True
+
+    @classmethod
+    def merge_file(cls, path: Path, incoming: list[str], limit: int, normalize,
+                   before_write=None) -> dict[str, int]:
+        """Merge imported entries from a locked, current on-disk snapshot.
+
+        Importers prepare *incoming* outside the critical section, then this method
+        re-reads the destination while holding the store lock before publishing.  This
+        prevents an import from replacing a memory mutation committed after its preview.
+        """
+        with cls._file_lock(path):
+            raw, read_ok = cls._read_raw_checked(path)
+            if not read_ok:
+                raise RuntimeError(f"Could not read memory file: {path}")
+            existing = cls._parse_entries(raw)
+            merged = list(existing)
+            seen = {normalize(entry) for entry in existing if entry.strip()}
+            stats = {"existing": len(existing), "added": 0, "duplicates": 0, "overflowed": 0}
+            current_len = len(ENTRY_DELIMITER.join(merged))
+            for entry in incoming:
+                normalized = normalize(entry)
+                if not normalized:
+                    continue
+                if normalized in seen:
+                    stats["duplicates"] += 1
+                    continue
+                candidate_len = len(entry) if not merged else current_len + len(ENTRY_DELIMITER) + len(entry)
+                if candidate_len > limit:
+                    stats["overflowed"] += 1
+                    continue
+                merged.append(entry)
+                seen.add(normalized)
+                current_len = candidate_len
+                stats["added"] += 1
+            if stats["added"]:
+                from hermes_constants import mkdir_under_hermes_home
+
+                mkdir_under_hermes_home(path.parent)
+                if before_write is not None:
+                    before_write()
+                cls._write_file(path, merged)
+            return stats
 
     def _entries_for(self, target: str) -> list[str]:
         return self.user_entries if target == "user" else self.memory_entries
@@ -372,6 +441,7 @@ class MemoryStore:
             oversized = not skip_drift and self._has_oversized_entry(target, raw)
             before = list(dict.fromkeys(self._parse_entries(raw)))
             self._set_entries(target, before)
+            added, removed = self._external_changes(target, before)
             FAILURE_CLASS.set("other")  # read below: only this closure's refusal counts
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
@@ -398,7 +468,23 @@ class MemoryStore:
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
+            if added or removed:  # merged onto another writer's changes: say so, never silently
+                extra_fields["external_changes"] = {
+                    "added": added, "removed": removed, "note": (
+                        f"{path.name} changed on disk since this session last read it (another session, "
+                        f"a reset, an import or a manual edit). This write was applied to the CURRENT "
+                        f"file, not your earlier view; 'added'/'removed' list what changed. Re-check "
+                        f"that your edit still targets the entry you meant.")}
+            self._seen[target] = set(result[0])
             return self._success_response(target, result[1], **extra_fields)
+
+    def _external_changes(self, target: str, current: list[str]) -> tuple[list[str], list[str]]:
+        """``(added, removed)``: entries other writers put on disk / took off it since this
+        store last read or wrote *target*; both empty for a store that never read it."""
+        seen = self._seen[target]
+        if seen is None:
+            return [], []
+        return [e for e in current if e not in seen], sorted(seen.difference(current))
 
     def add(self, target: str, content: str) -> dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -565,12 +651,16 @@ class MemoryStore:
         working[idx:idx + 1] = [patched]
         return None, previous_content, "none", patched
 
-    def apply_batch(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
-        """Apply add/replace/remove ops atomically against the FINAL budget, so one call
-        can free space and add entries. All-or-nothing: any malformed / unmatched op or
-        an over-limit result writes NOTHING and returns the first failure. Aborts do not
-        echo ``current_entries`` — the store is unchanged and the model already has it."""
-        return self._batch(target, operations, commit=True)
+    def apply_batch(self, target: str, operations: list[dict[str, Any]], *,
+                    expected_entries: Optional[Sequence[str]] = None) -> dict[str, Any]:
+        """Apply an all-or-nothing batch, optionally against a reviewed snapshot.
+
+        ``expected_entries`` requires an exact ordered match after the native file
+        lock re-reads disk; a mismatch aborts without writing. ``None`` preserves
+        the historical unconditional behavior, while an empty list is a real
+        precondition. Aborts never echo the full store to the caller.
+        """
+        return self._batch(target, operations, commit=True, expected_entries=expected_entries)
 
     def resolve_batch_entries(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
         """Dry-run ``apply_batch`` under the lock without persisting: the same content scan,
@@ -579,13 +669,16 @@ class MemoryStore:
         entry its replace/remove selects now (None for add), in batch order."""
         return self._batch(target, operations, commit=False)
 
-    def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
+    def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool,
+               expected_entries: Optional[Sequence[str]] = None) -> dict[str, Any]:
         from tools.memory_tool import _memory_target_error
         if target_error := _memory_target_error(self, target, operations):
             return target_error
         if not operations:
             return _error("operations list is empty.", "invalid_args")
         ops = [op or {} for op in operations]
+        # Freeze caller-owned input so it cannot change while the file lock is acquired.
+        expected_snapshot = tuple(expected_entries) if expected_entries is not None else None
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
             scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
@@ -593,6 +686,12 @@ class MemoryStore:
                 return _error(f"Operation {i + 1}: {scan_error}", "scan_blocked")
 
         def _apply(entries, limit):
+            if expected_snapshot is not None and tuple(entries) != expected_snapshot:
+                failure = self._batch_failure(
+                    target, "Stored memory changed since the reviewed snapshot; refresh before applying.",
+                    "stale_source")
+                failure["failure_class"] = "stale_source"
+                return failure
             working = list(entries)  # only committed if the whole batch validates
             matched = []  # per op, the entry a replace/patch/remove selected (None for add)
             produced = {}  # 1-based op index -> the entry a patch produced

@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import threading
 import pytest
 from pathlib import Path
 
@@ -147,6 +148,90 @@ class TestMemoryFileLockPermissions:
                 pass
 
         assert outside.read_text(encoding="utf-8") == "do not touch"
+
+
+class TestMemoryStoreResetAndImportLocking:
+    def test_cli_reset_during_an_inflight_add_never_resurrects_reset_entries(self, monkeypatch):
+        """`hermes memory reset` racing an add paused after its locked read: the result is a
+        serial outcome (empty), never the add's pre-reset snapshot A + B written back."""
+        from argparse import Namespace
+
+        from hermes_cli.main_agent_cmds import _cmd_memory_reset
+        from hermes_constants import get_hermes_home
+
+        mem_dir = get_hermes_home() / "memories"
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: mem_dir)
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+        assert store.add("memory", "entry A")["success"]
+        original_write = MemoryStore._write_file
+        add_read_done, resume_add = threading.Event(), threading.Event()
+
+        def pause_after_locked_read(write_path, entries):
+            if entries == ["entry A", "entry B"]:
+                add_read_done.set()
+                assert resume_add.wait(timeout=10)
+            original_write(write_path, entries)
+
+        monkeypatch.setattr(MemoryStore, "_write_file", staticmethod(pause_after_locked_read))
+        reset_reached_store = threading.Event()  # the reset reached its MEMORY.md deletion step
+        real_exists, reset_thread = Path.exists, []
+
+        def watch_reset(path, *a, **kw):
+            if threading.current_thread() in reset_thread and path.name == "MEMORY.md":
+                reset_reached_store.set()
+            return real_exists(path, *a, **kw)
+
+        monkeypatch.setattr(Path, "exists", watch_reset)
+        adder = threading.Thread(target=lambda: store.add("memory", "entry B"))
+        adder.start()
+        assert add_read_done.wait(timeout=10)
+        resetter = threading.Thread(target=lambda: _cmd_memory_reset(Namespace(target="memory", yes=True)))
+        reset_thread.append(resetter)
+        resetter.start()
+        assert reset_reached_store.wait(timeout=10)
+        resetter.join(timeout=2)  # main: the unlocked unlink completes here; head: it waits on the lock
+        reset_ran_during_add = not resetter.is_alive()
+        resume_add.set()
+        adder.join(timeout=10)
+        resetter.join(timeout=10)
+
+        assert not adder.is_alive() and not resetter.is_alive()
+        assert MemoryStore._read_file(mem_dir / "MEMORY.md") == []
+        assert not reset_ran_during_add
+
+    def test_a_write_after_another_session_changed_the_file_merges_and_reports_the_change(self, store, tmp_path):
+        """Another session adds and removes entries after this one read: this session's write lands
+        on the CURRENT file (nothing lost, nothing resurrected) and its result names what changed."""
+        assert store.add("memory", "old deploy note")["success"]
+        other = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        other.load_from_disk()
+        assert other.add("memory", "deploy target is staging-2")["success"]
+        assert other.apply_batch("memory", [{"action": "remove", "old_text": "old deploy note"}])["success"]
+
+        result = json.loads(memory_tool(target="memory", store=store, operations=[
+            {"action": "add", "content": "prefers short answers"}]))
+
+        assert result["success"] is True
+        assert result["external_changes"]["added"] == ["deploy target is staging-2"]
+        assert result["external_changes"]["removed"] == ["old deploy note"]
+        assert "changed on disk since this session last read it" in result["external_changes"]["note"]
+        assert MemoryStore._read_file(tmp_path / "MEMORY.md") == [
+            "deploy target is staging-2", "prefers short answers"]
+        # Once reported, the next write by this session carries no stale notice.
+        assert "external_changes" not in store.add("memory", "uses vim")
+
+    def test_import_merge_rereads_a_committed_memory_mutation(self, store, tmp_path):
+        """An import publishes against the current store, not an earlier preview snapshot."""
+        store.add("memory", "existing entry")
+        store.add("memory", "committed while import was pending")
+
+        stats = MemoryStore.merge_file(
+            tmp_path / "MEMORY.md", ["imported entry"], 500, lambda value: value.lower())
+
+        assert stats == {"existing": 2, "added": 1, "duplicates": 0, "overflowed": 0}
+        assert MemoryStore._read_file(tmp_path / "MEMORY.md") == [
+            "existing entry", "committed while import was pending", "imported entry"]
 
 
 class TestMemoryStoreAdd:
@@ -528,6 +613,48 @@ class TestMemoryToolDispatcher:
 
 class TestMemoryBatch:
     """The 'operations' batch shape: atomic, all-or-nothing, final-budget."""
+
+    def test_conditional_batch_rejects_second_writer_without_data_loss(self, store):
+        assert store.add("memory", "first durable fact")["success"]
+        assert store.add("memory", "second durable fact")["success"]
+        reviewed = list(store.memory_entries)
+
+        # Separate instance writes after review and before the conditional batch.
+        writer = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        writer.load_from_disk()
+        assert writer.add("memory", "third concurrent fact")["success"]
+
+        ops = [
+            {"action": "remove", "old_text": "first durable fact"},
+            {"action": "remove", "old_text": "second durable fact"},
+            {"action": "add", "content": "reviewed compacted facts"},
+        ]
+        result = store.apply_batch("memory", ops, expected_entries=reviewed)
+        assert result["success"] is False
+        assert result["failure_class"] == "stale_source"
+        assert "changed since the reviewed snapshot" in result["error"]
+        persisted = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        persisted.load_from_disk()
+        assert persisted.memory_entries == reviewed + ["third concurrent fact"]
+
+        refreshed = list(persisted.memory_entries)
+        assert persisted.apply_batch("memory", ops, expected_entries=refreshed)["success"]
+        persisted.load_from_disk()
+        assert persisted.memory_entries == ["third concurrent fact", "reviewed compacted facts"]
+
+    def test_conditional_batch_empty_precondition_and_legacy_call(self, store):
+        assert store.add("user", "existing user fact")["success"]
+        ops = [{"action": "add", "content": "another user fact"}]
+        rejected = store.apply_batch("user", ops, expected_entries=[])
+        assert rejected["success"] is False
+        assert store.user_entries == ["existing user fact"]
+
+        reviewed = list(store.user_entries)
+        assert store.apply_batch("user", ops, expected_entries=reviewed)["success"]
+        assert store.user_entries == reviewed + ["another user fact"]
+        assert store.apply_batch("user", [{"action": "add", "content": "legacy batch"}])["success"]
+        assert store.user_entries == reviewed + ["another user fact", "legacy batch"]
+
 
     def test_batch_add_and_remove_atomic(self, store):
         store.add("memory", "stale one")

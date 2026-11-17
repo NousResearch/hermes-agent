@@ -85,6 +85,16 @@ The most common report looks like this: you tell the agent where something lives
 
 5. **Remember the snapshot is frozen at session start.** A fact saved in the current session is visible to the *next* session, not to another session that was already running. Start a new session (`/new`, or a fresh CLI invocation) after the write.
 
+### Several sessions, resets and restores
+
+Every write to `MEMORY.md` / `USER.md` re-reads the file under one store lock first, so a write
+never puts back an older copy of the file. `hermes memory reset`, the dashboard's memory reset and
+`hermes import` (restoring a backup) take that same lock: a reset that races a save waits for it
+and then deletes the file; it never leaves the pre-reset entries behind. When another session, a
+reset, a restore or a hand edit changed the file since this session last read it, the write still
+lands on the current file and its result carries `external_changes` (the entries added and removed
+in the meantime) so the agent can re-check what it meant to edit.
+
 Two things that do **not** make the agent remember: variables in `.env` (those are credentials and settings, not memory) and facts mentioned in passing without asking for them to be saved. For a location the agent needs on every run of a recurring task, a [skill](./skills.md) is often the better home than a memory entry — it loads only when relevant and does not compete for the 2,200-character budget.
 
 ## Memory Tool Actions

@@ -1343,6 +1343,20 @@ def wait_before_retry(response, fallback=5.0):
     time.sleep(fallback if seconds is None else seconds)
 ```
 
+### Send the Hermes User-Agent header
+
+`hermes_cli.version_info.hermes_user_agent(product)` returns `<product>/<Hermes version>`, for
+example `Hermes-Agent/0.23.1`, for the `User-Agent` header of a request your plugin sends. Pass the
+product name the service knows your integration by; the default is `hermes-cli`. Call it where the
+request is built, not at module level: on a source checkout it reads the version from git.
+
+```python
+from hermes_cli.version_info import hermes_user_agent
+
+def request_headers(api_key):
+    return {"Authorization": f"Bearer {api_key}", "User-Agent": hermes_user_agent("Hermes-Agent")}
+```
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —

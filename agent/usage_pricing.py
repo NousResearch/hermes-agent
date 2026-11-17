@@ -71,6 +71,10 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
+    # Granted cache tier per written token, when the response names it: Anthropic (and Kimi's
+    # Messages wire) ``cache_creation.ephemeral_5m/1h_input_tokens``, OpenAI Responses
+    # ``cache_write_tokens_details.ttl_30m/12h_tokens``. ``(("1h", 4096),)``; empty = not reported.
+    cache_write_by_ttl: tuple[tuple[str, int], ...] = ()
 
     @property
     def prompt_tokens(self) -> int:
@@ -81,15 +85,18 @@ class CanonicalUsage:
         return self.prompt_tokens + self.output_tokens
 
     def __add__(self, other: CanonicalUsage) -> CanonicalUsage:
-        """Sum two usage buckets. ``raw_usage`` (single-response detail) is
-        dropped; ``request_count`` adds so callers see how many API calls a
+        """Sum two usage buckets. ``raw_usage`` and ``cache_write_by_ttl`` (single-response
+        detail) are dropped; ``request_count`` adds so callers see how many API calls a
         combined figure covers."""
         if not isinstance(other, CanonicalUsage):
             return NotImplemented
         return CanonicalUsage(**{
             f.name: getattr(self, f.name) + getattr(other, f.name)
-            for f in fields(CanonicalUsage) if f.name != "raw_usage"
+            for f in fields(CanonicalUsage) if f.name not in _PER_RESPONSE_FIELDS
         })
+
+
+_PER_RESPONSE_FIELDS = frozenset({"raw_usage", "cache_write_by_ttl"})
 
 
 @dataclass(frozen=True)
@@ -197,9 +204,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "claude-opus-5": _OPUS,
         "claude-opus-5-5": _OPUS_5_5,
     }),
-    # Fable 5.2: cache hits are 0.025x input.
+    # Fable 5.2 and Mythos 5.2 share rates; cache hits are 0.025x input.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-11", {
-        "claude-fable-5-2": _FABLE_5_2,
+        ("claude-fable-5-2", "claude-mythos-5-2"): _FABLE_5_2,
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
@@ -213,7 +220,13 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
-    # Introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-12", {
+        "gemini-4-hydrogen": ("1.50", "7.50", "0.075"),
+    }),
+    # Gemini 4 introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
+    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-10", {
+        "gemini-4-carbon": ("2.00", "10.00", "0.10"),
+    }),
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-10-13", {
         "gemini-4-argon": ("2.00", "10.00", "0.10"),
     }),
@@ -353,7 +366,7 @@ _ANTHROPIC_FAST_MODE_PRICING: dict[str, PricingEntry] = {
     for _models, _rates in (
         (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
         (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00")),
-        (("claude-fable-5-2",), ("16.00", "80.00", "0.40", "20.00")),
+        (("claude-fable-5-2", "claude-mythos-5-2"), ("16.00", "80.00", "0.40", "20.00")),
     )
     for _model in _models
 }
@@ -646,6 +659,20 @@ _CHAT_USAGE_SHAPE = (
 )
 
 
+# Where each wire reports the tier a cache write was granted at: (tier, path).
+_CACHE_WRITE_TIER_PATHS = (
+    ("5m", ("cache_creation", "ephemeral_5m_input_tokens")),
+    ("1h", ("cache_creation", "ephemeral_1h_input_tokens")),
+    ("30m", ("input_tokens_details", "cache_write_tokens_details", "ttl_30m_tokens")),
+    ("12h", ("input_tokens_details", "cache_write_tokens_details", "ttl_12h_tokens")),
+)
+
+
+def cache_write_tiers(response_usage: Any) -> tuple[tuple[str, int], ...]:
+    """Non-zero ``(tier, tokens)`` pairs the response proved for its cache writes."""
+    return tuple((tier, n) for tier, path in _CACHE_WRITE_TIER_PATHS if (n := _usage_field(response_usage, *path)))
+
+
 def normalize_usage(
     response_usage: Any, *, provider: Optional[str] = None, api_mode: Optional[str] = None
 ) -> CanonicalUsage:
@@ -675,9 +702,11 @@ def normalize_usage(
 
     # Responses API: output_tokens_details.reasoning_tokens. Chat Completions
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.
-    # Hidden thinking dominates output spend on reasoning models, so read both.
+    # Anthropic Messages: output_tokens_details.thinking_tokens (the full thinking, not the summary).
+    # Hidden thinking dominates output spend on reasoning models, so read all three.
     reasoning_tokens = _first_nonzero(
-        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens")
+        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens"),
+        ("output_tokens_details", "thinking_tokens"),
     )
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant
@@ -699,6 +728,7 @@ def normalize_usage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
         raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
+        cache_write_by_ttl=cache_write_tiers(u),
     )
 
 

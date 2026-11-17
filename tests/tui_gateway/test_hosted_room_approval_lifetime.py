@@ -35,6 +35,14 @@ def pending_approval(tmp_path):
     return service, task, lease
 
 
+
+def _serve_tasks(monkeypatch, rows):
+    """The room's tasks as both readers see them: ``list_tasks`` (Allow, Stop) and the one-snapshot
+    ``room_task_summary`` behind ``status()``."""
+    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: rows)
+    monkeypatch.setattr(driver, "room_task_summary", lambda *_a, statuses, **_kw: (
+        {row["status"]: 1 for row in rows}, [row for row in rows if row["status"] in tuple(statuses)]))
+
 def test_stop_withdraws_cached_approval_before_and_after_acknowledgement(pending_approval):
     service, task, _lease = pending_approval
     db = service.db_path
@@ -146,7 +154,7 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path, monkeypa
         ],
     )
     identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
-    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
+    _serve_tasks(monkeypatch, [{
         "identity": identity, "execution_generation": 2, "status": "running",
         "payload": {"target_member_id": "member-peer", "target_profile": "reviewer"}}])
     transport = service._resolve_member_transport(
@@ -225,7 +233,7 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path,
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
-    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
+    _serve_tasks(monkeypatch, [{
         "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
         "execution_generation": 1, "status": "running", "payload": {"target_profile": "local"}}])
     action = {

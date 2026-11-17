@@ -245,8 +245,9 @@ async def rollback(connection, ref, params, *, kind):
             return {'enabled': False, 'checkpoints': []} if kind == 'list' else {'enabled': False}
         # Host checkpoints are not a container-backed session's tree (main's _container_checkpoint_refusal),
         # classified under the session's frozen terminal policy, not the owner's ambient one.
-        from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-        token = set_terminal_scope(terminal)
+        from agent.runtime_scope import bind_terminal_policy
+        from tools.terminal_scope import reset_terminal_scope
+        token = bind_terminal_policy(terminal, profile_home=authority.profile_id)
         try:
             refusal = mgr.unsupported_backend_reason(task_id)
         finally:

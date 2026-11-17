@@ -63,8 +63,11 @@ def _fire_pre_api_request_hook(
     api_call_count: Any, api_request_id: Any, api_start_time: Any, effective_task_id: Any,
     turn_id: Any,
 ) -> None:
+    from agent.auxiliary_hooks import begin_loop_aux_attempt
     from agent.conversation_loop import _system_prompt_for_hooks
 
+    if begin_loop_aux_attempt(agent, api_kwargs, api_request_id):
+        return  # a plugin session fork: auxiliary work, never a turn request
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("pre_api_request"):
@@ -168,6 +171,8 @@ def build_request_payload(
         logger.warning("LLM request middleware failed; sending the request unmodified", exc_info=True)
         _original_api_kwargs = dict(api_kwargs)
         _llm_middleware_trace = []
+    from agent.prompt_cache_clock import record_attempt_sent
+    record_attempt_sent(agent, api_kwargs)
     return ApiRequestBuild(
         "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
         _original_api_kwargs, _llm_middleware_trace,

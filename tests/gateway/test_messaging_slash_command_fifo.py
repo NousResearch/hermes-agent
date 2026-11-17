@@ -12,6 +12,8 @@ import pytest
 
 from tests.waiting import async_wait_until
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 def _owner(monkeypatch, mode=None):
     from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -202,8 +204,8 @@ async def test_an_admitted_turn_never_answers_a_pending_prompt(monkeypatch, prom
     opened = []
     monkeypatch.setattr(clarify_gateway, 'get_pending_for_session',
                         lambda key, **_: SimpleNamespace(clarify_id='q', response=None) if opened else None)
-    monkeypatch.setattr(clarify_gateway, 'attempt_text_response_for_session',
-                        lambda key, text: answered.append(text) or clarify_gateway.TEXT_RESOLVED)
+    monkeypatch.setattr(clarify_gateway, 'attempt_text_response',
+                        lambda cid, text: answered.append(text) or clarify_gateway.TEXT_RESOLVED)
 
     async def open_prompt(rig):
         opened.append(prompt)

@@ -86,7 +86,9 @@ _CHAIN_CAP = 1000
 # carries them onto the child (per-segment keys such as usage anchors stay behind).
 # ``prompt_refresh_epoch`` too: without it a rotated child looks older than any past
 # ``hermes sessions refresh-prompts`` request and rebuilds its prompt once more after eviction.
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch")
+# ``_chat_adopted`` (``gateway.session_lifecycle.CHAT_ADOPTED_MARKER``): a delegate row the user resumed a
+# chat onto stays that chat's conversation past a rotation, or the route guard rejects the new tip.
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:

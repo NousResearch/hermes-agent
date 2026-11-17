@@ -228,7 +228,7 @@ async def test_native_http_preserves_gated_auth_and_actual_socket_boundary(tmp_p
                          for info in entries if info.family == socket.AF_INET
                          and not ipaddress.ip_address(info.address).is_loopback}
             assert addresses, 'real non-loopback interface required for this invariant'
-            address = sorted(addresses)[0]
+            address = min(addresses)
             async with httpx.AsyncClient(base_url=f'http://{address}:{port}', trust_env=False) as remote:
                 assert (await remote.get('/api/config', headers={**headers(mint()),
                     'X-Forwarded-For': '127.0.0.1', 'Host': f'127.0.0.1:{port}'})).status_code == 401

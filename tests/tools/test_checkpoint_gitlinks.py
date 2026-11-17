@@ -11,7 +11,6 @@ from utils import rmtree_readonly
 
 @pytest.fixture
 def checkpoint(tmp_path, monkeypatch):
-    monkeypatch.setattr(cm, "CHECKPOINT_BASE", tmp_path / "checkpoints")
     work = tmp_path / "workspace"
     work.mkdir()
     nested = work / "tool"

@@ -148,6 +148,11 @@ def check_api_response(
             return _verdict(_iv.action, _iv.result)
 
     agent._turn_received_provider_response = True
+    # Every row this response becomes (truncation fragments and Codex incomplete interims are built
+    # before record_response_usage runs) is stamped with THIS response's reasoning count, never a
+    # previous response's.
+    from agent.turn_usage import note_response_reasoning_tokens
+    note_response_reasoning_tokens(agent, response)
     finish_reason = _derive_finish_reason(agent, response, messages)
     from hermes_cli.observability.shared_metrics_harness import record_reply_finish
     record_reply_finish(agent, response, finish_reason)

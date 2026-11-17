@@ -347,7 +347,6 @@ def is_base64_archive_roundtrip(finding: Finding, line: str) -> bool:
 # ``"sudo apt install x"``, ``"env | grep KEY"`` or ``"mkfs.ext4 /dev/sda1"`` inside a
 # ``subprocess.run(...)`` literal is how an attack is written and never qualifies. Only
 # word-shaped patterns are eligible.
-LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env", "format_filesystem"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
     r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[dgimsuvy]*(?![A-Za-z]))"""  # js regex literal
@@ -472,7 +471,7 @@ def is_env_dump_in_safety_clause(finding: Finding, line: str) -> bool:
 # doc (comment / CHANGELOG), the phrase is a description of a defense, not an instruction — it caps to a
 # note rather than the one-step comment cap. An UNQUOTED injection in a README/SKILL.md prose line, or
 # a quoted phrase outside a comment/CHANGELOG, keeps full severity.
-_INJECTION_PHRASE_IDS = {"prompt_injection_ignore", "disregard_rules"}
+_INJECTION_PHRASE_IDS = {"prompt_injection_ignore", "disregard_rules", "forget_rules"}
 _QUOTED_SPAN = re.compile(r'"[^"\n]*"|\'[^\'\n]*\'|`[^`\n]*`|«[^»\n]*»|“[^”\n]*”|‘[^’\n]*’')
 
 
@@ -799,38 +798,3 @@ def is_own_proc_read(finding: Finding, line: str) -> bool:
         return False
     leaves = [m.group(1) for m in _PROC_PATH.finditer(line)]
     return bool(leaves) and all(leaf in _BENIGN_PROC_LEAVES for leaf in leaves) and not _PROC_WRITE.search(line)
-
-
-__all__ = [
-    "DOC_PROSE_EXTENSIONS",
-    "LITERAL_INERT_PATTERN_IDS",
-    "STEP_DOWN",
-    "TEST_TREE_DIRS",
-    "is_agent_facing",
-    "is_authorized_keys_prose",
-    "is_base64_archive_roundtrip",
-    "is_base64_media",
-    "is_benign_lazy_os_import",
-    "is_ci_workflow",
-    "is_coin_name_only",
-    "is_disclosed_config_note",
-    "is_doc_prose",
-    "is_env_dump_in_safety_clause",
-    "is_hex_in_char_class",
-    "is_inert_fixture_line",
-    "is_json_prose_value",
-    "is_loopback_continuation",
-    "is_loopback_only",
-    "is_own_proc_read",
-    "is_pip_install_in_prose_literal",
-    "is_public_client_key",
-    "is_quoted_injection_phrase",
-    "is_regex_alternation_token",
-    "is_repo_root_traversal",
-    "is_self_uninstall_doc",
-    "is_sudo_inert",
-    "is_test_tree",
-    "is_trusted_installer_pipe",
-    "logical_line",
-    "prose_cap",
-]

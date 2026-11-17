@@ -782,6 +782,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/provider-runtime',
             'developer-guide/config-backend',
             'developer-guide/programmatic-integration',
+            'developer-guide/gateway-ssh-clients',
           ],
         },
         {
@@ -888,6 +889,11 @@ const sidebars: SidebarsConfig = {
         'reference/cli-symbols',
         'reference/faq',
       ],
+    },
+    {
+      type: 'link',
+      label: 'Compare Hermes Agent',
+      href: 'https://hermes-agent.nousresearch.com/compare',
     },
   ],
 };

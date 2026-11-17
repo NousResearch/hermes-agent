@@ -1,6 +1,6 @@
 """Concurrent dashboard config writers must not drop each other's mutations.
 
-Only ``PUT /api/config`` (and the ``config_write_scope`` routers) held ``_CONFIG_MUTATION_LOCK``.
+Only ``PUT /api/config`` (and the ``config_write_scope`` routers) held ``CONFIG_MUTATION_LOCK``.
 The custom-endpoint handlers, the profile-create model write, ``POST /api/model/set`` and
 ``PUT /api/model/moa`` ran their load→mutate→save cycles on worker threads without it, so a
 writer racing the desktop's debounced whole-record autosave interleaved as::

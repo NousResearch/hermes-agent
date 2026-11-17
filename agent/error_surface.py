@@ -57,7 +57,7 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
     "provider_policy_blocked", "data_policy_denied", "model_not_found", "format_error", "ssl_cert_verification",
-    "context_overflow", "interpreter_shutdown", "upstream_blocked",
+    "context_overflow", "interpreter_shutdown", "upstream_blocked", "guardrail_blocked",
 }
 
 # Providers whose base_url is user-supplied rather than a known vendor.
@@ -195,6 +195,11 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
             if message := str(free_tier.get("message") or ""):
                 surface["message"] = message
             return surface
+        # The primary's login lapsed at route time and the fallback was refused too: signing the primary
+        # back in is the fix, so the card names it. A fallback rate limit or overflow keeps its own card.
+        if (reason in ("auth", "auth_permanent") and isinstance(primary := result.get("primary_auth_failure"), dict)
+                and primary.get("provider")):
+            return _surface(LAYER_AUTH, "auth", False, str(primary["provider"]))
         if not reason:  # failed result without a classified reason (legacy paths)
             drop = _looks_like_stream_drop(error_text)
             return _surface(LAYER_STREAMING if drop else LAYER_PROVIDER, "stream_drop" if drop else "unknown", True, provider, model)

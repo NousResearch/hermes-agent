@@ -17,6 +17,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import struct
 import sys
 import threading
@@ -26,8 +27,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
 from hermes_state_common import (
-    FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
+    FTS_REBUILD_DEFERRAL_KEY, path_is_under, stat_db_file_identity as _stat_db_file_identity
 )
+from hermes_state_lockguard import own_descriptors
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -68,10 +70,79 @@ def _prepare_connection_retirement():
 # cached for the life of the process (opening never cancels locks).  When the path is re-pointed
 # at a new inode (the very replacement this probe detects) the stale fd is RETIRED, never closed
 # — closing it would cancel the live connection's locks.  Replacements are rare and halt writes.
+# close_all_under (hermes_state_registry) closes a home's probes, but only once no other
+# descriptor in the process is open on the inode: the only lock-safe time to close.
 _HEADER_PROBE_LOCK = threading.Lock()
+# close_header_probe_if_unchanged runs while _live_lock is held (offline_file_access), and a
+# collection can finalize an unclosed SessionDB inside _pread_db_range (which holds this lock),
+# so the release must never wait unbounded here or the two locks deadlock for good. 100 ms is far
+# more than any normal critical section needs (copy a dict / one open+preead) yet still breaks the
+# cycle in the rare contend-with-GC case; this path is unserve / delete / restore, never a hot path.
+_HEADER_PROBE_LOCK_TIMEOUT = 0.1
 _HEADER_PROBE_FDS: dict[str, tuple[int, int, int]] = {}  # key -> (fd, dev, ino)
 _RETIRED_HEADER_PROBE_FDS: list[int] = []  # intentionally never closed
 _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram")
+
+
+def _is_operator_store_link(link: Path, link_st: os.stat_result) -> bool:
+    """A ``state.db`` symlink this user owns, to an existing file this user owns.
+
+    A dangling link is refused: SQLite would create the store wherever it points, such as an
+    unmounted volume's mount point (symlinked home directories follow the same rule). A link or
+    target owned by anyone else is refused as planted (#109857).
+    """
+    try:
+        target_st = os.stat(link)
+    except OSError:
+        return False
+    uid = os.geteuid()
+    return link_st.st_uid == uid and target_st.st_uid == uid
+
+
+def refuse_planted_state_db_link(path: Path) -> None:
+    """Raise ``ELOOP`` when ``path`` is a symlink other than the operator's own store link.
+
+    For openers that canonicalize the path before ``SessionDB`` sees it (the registry), so the
+    link is judged before ``resolve()`` hides it.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if stat.S_ISLNK(st.st_mode) and not _is_operator_store_link(path, st):
+        raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
+
+
+def _chmod_pinned_inode(path: Path, mode: int) -> None:
+    """Tighten ``path`` without following a link swapped in after the lstat().
+
+    A bare chmod(2) on the path re-resolves the name, so a replacement symlink
+    racing between validation and chmod could change the mode of an unrelated
+    target (#109857). On Linux the validated inode is pinned with an O_PATH
+    descriptor and reached through ``/proc/self/fd/<fd>``; an O_PATH descriptor
+    holds no POSIX locks, so closing it stays lock-neutral for live SQLite
+    connections. Platforms without O_PATH (macOS/BSD) use the no-follow chmod,
+    which applies to the link itself, never to a swapped-in target.
+    """
+    if hasattr(os, "O_PATH"):
+        # O_PATH|O_NOFOLLOW pins a swapped-in symlink itself instead of failing.
+        fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            st_mode = os.fstat(fd).st_mode
+            if stat.S_ISLNK(st_mode):
+                raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
+            if not stat.S_ISREG(st_mode):
+                return
+            try:
+                os.chmod(f"/proc/self/fd/{fd}", mode)
+            except FileNotFoundError:
+                # No /proc (minimal chroot/sandbox): leave the mode as is rather
+                # than fall back to a pathname chmod that could follow a swap.
+                logger.debug("state db: /proc unavailable; not tightening %s", path)
+        finally:
+            os.close(fd)
+    else:
+        os.chmod(path, mode, follow_symlinks=False)
 
 
 def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
@@ -109,6 +180,61 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
         with contextlib.suppress(OSError):
             return os.pread(cached[0], length, offset)
     return None
+
+
+def header_probes_under(root: Path) -> dict[str, tuple[int, int, int]]:
+    """Snapshot of the cached probes at or under *root*: key -> (fd, dev, ino)."""
+    with _HEADER_PROBE_LOCK:
+        entries = dict(_HEADER_PROBE_FDS)
+    return {key: entry for key, entry in entries.items() if path_is_under(Path(key), root)}
+
+
+def inodes_with_other_descriptors(identities: set[tuple[int, int]]) -> Optional[set[tuple[int, int]]]:
+    """Which of *identities* (``(st_dev, st_ino)``) have a non-probe descriptor open in this
+    process; None when the fd table is unreadable (callers then close nothing). Probes are left
+    out: they hold no locks, so two spellings of one path must not pin each other. The probe lock
+    is taken only to copy the probe fds, never across the scan, and never unbounded: callers run
+    this while ``offline_file_access`` holds ``_live_lock``, and a writer holding the probe lock in
+    ``_pread_db_range`` may be waiting on ``_live_lock`` behind a collection that finalizes an
+    unclosed ``SessionDB``. On timeout this returns None, so the caller closes nothing."""
+    if not _HEADER_PROBE_LOCK.acquire(timeout=_HEADER_PROBE_LOCK_TIMEOUT):
+        logger.debug(
+            "header-probe scan skipped: probe lock busy for %.2fs, closing nothing",
+            _HEADER_PROBE_LOCK_TIMEOUT)
+        return None
+    try:
+        probe_fds = {entry[0] for entry in _HEADER_PROBE_FDS.values()}
+        probe_fds.update(_RETIRED_HEADER_PROBE_FDS)  # retired probes hold no locks either
+    finally:
+        _HEADER_PROBE_LOCK.release()
+    descriptors = own_descriptors()
+    if descriptors is None:
+        return None
+    return {ident for fd, ident in descriptors if fd not in probe_fds and ident in identities}
+
+
+def close_header_probe_if_unchanged(key: str, expected: tuple[int, int, int]) -> bool:
+    """False, and the fd stays, when the entry changed since the caller checked it, or when the
+    probe lock cannot be taken within ``_HEADER_PROBE_LOCK_TIMEOUT`` seconds.
+
+    This runs while ``offline_file_access`` holds ``_live_lock``; waiting unbounded for the probe
+    lock here can deadlock against a collection that finalizes an unclosed ``SessionDB`` inside
+    ``_pread_db_range`` (probe lock held, finalizer needs ``_live_lock``). On timeout the entry is
+    left alone and the sweep simply keeps the probe for another round."""
+    if not _HEADER_PROBE_LOCK.acquire(timeout=_HEADER_PROBE_LOCK_TIMEOUT):
+        logger.debug(
+            "header probe of %s kept: probe lock busy for %.2fs, the next sweep retries",
+            key, _HEADER_PROBE_LOCK_TIMEOUT)
+        return False
+    try:
+        if _HEADER_PROBE_FDS.get(key) != expected:
+            return False
+        del _HEADER_PROBE_FDS[key]
+        with contextlib.suppress(OSError):
+            os.close(expected[0])
+    finally:
+        _HEADER_PROBE_LOCK.release()
+    return True
 
 
 def _pread_db_header(db_path: Path, length: int) -> Optional[bytes]:
@@ -440,22 +566,7 @@ def _own_descriptor_for_identity(identity) -> Optional[int]:
     if not identity:
         return None
     wanted = tuple(identity)
-    for fd_dir in ("/proc/self/fd", "/dev/fd"):
-        try:
-            names = os.listdir(fd_dir)
-        except OSError:
-            continue
-        for name in names:
-            if not name.isdigit():
-                continue
-            try:
-                st = os.fstat(int(name))
-            except OSError:
-                continue
-            if (st.st_dev, st.st_ino) == wanted:
-                return int(name)
-        return None  # the table was readable: a definitive miss
-    return None
+    return next((fd for fd, ident in own_descriptors() or () if ident == wanted), None)
 
 
 def _copy_range(read: Callable[[int, int], Optional[bytes]], dest: Path, *, size: int) -> dict[str, Any]:

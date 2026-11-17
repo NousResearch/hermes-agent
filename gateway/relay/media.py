@@ -21,6 +21,7 @@ import mimetypes
 import os
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -70,6 +71,7 @@ class RelayMediaClient:
         self._base_url = base_url.rstrip("/")
         self._gateway_id = gateway_id or ""
         self._secret = secret or ""
+        self._warned_foreign_rehosts: set[tuple] = set()
 
     @property
     def enabled(self) -> bool:
@@ -80,8 +82,56 @@ class RelayMediaClient:
         return make_upgrade_token(self._gateway_id, self._secret)
 
     def is_relay_media_url(self, url: str) -> bool:
-        """Is ``url`` a connector re-host reference (needs our bearer to GET)?"""
-        return "/relay/media/" in (url or "")
+        """Is ``url`` a connector re-host reference (needs our bearer to GET)?
+
+        Only a URL on the connector's own origin (scheme, host, effective port) under
+        its ``{base path}/relay/media/`` gets the bearer: inbound ``media_urls`` are
+        platform-influenced, so a bare path-substring match would hand the bearer to
+        any host that names that path. Userinfo is refused outright so a parser
+        differential (``https://evil\\@connector/…``) cannot split host and target.
+        """
+        from hermes_cli.urllib_security import url_origin
+
+        try:
+            candidate = urllib.parse.urlsplit(url or "")
+            base = urllib.parse.urlsplit(self._base_url)
+            origin, base_origin = url_origin(url), url_origin(self._base_url)
+        except ValueError:
+            return False
+        if "@" in candidate.netloc or "\\" in candidate.netloc or origin[0] not in ("http", "https"):
+            return False
+        if not origin[1] or origin != base_origin:
+            return False
+        # A normalizing proxy in front of a multi-tenant connector would resolve `..`
+        # (also `%2e%2e`, `..%5c`) out of this base path with this tenant's bearer.
+        if ".." in urllib.parse.unquote(candidate.path).replace("\\", "/").split("/"):
+            return False
+        return candidate.path.startswith(f"{base.path.rstrip('/')}/relay/media/")
+
+    def _warn_foreign_rehost(self, url: str) -> None:
+        """Say once per origin when a re-host-shaped URL gets no bearer.
+
+        The connector mints re-hosts from its ``PUBLIC_BASE_URL``, which a deployment can
+        set apart from the ``GATEWAY_RELAY_URL`` this client is built from; those downloads
+        then 401 and the attachment is lost, so name both origins instead of failing quietly.
+        """
+        from hermes_cli.urllib_security import url_origin
+
+        try:
+            parts = urllib.parse.urlsplit(url)
+            origin = url_origin(url)
+            if origin == url_origin(self._base_url):
+                return
+        except ValueError:
+            return
+        if "/relay/media/" not in parts.path or origin in self._warned_foreign_rehosts:
+            return
+        self._warned_foreign_rehosts.add(origin)
+        logger.warning(
+            "relay media: %s://%s serves a /relay/media/ path but is not on the relay origin %s, "
+            "so it is fetched without the gateway bearer; if it is the connector, its "
+            "PUBLIC_BASE_URL must share GATEWAY_RELAY_URL's origin", parts.scheme, parts.netloc, self._base_url,
+        )
 
     async def upload(
         self, file_path: str, *, mime: Optional[str] = None, filename: Optional[str] = None
@@ -184,6 +234,8 @@ class RelayMediaClient:
         if not url:
             return None
         needs_auth = self.is_relay_media_url(url)
+        if not needs_auth:
+            self._warn_foreign_rehost(url)
         if needs_auth and not self.enabled:
             return None
         headers = {"User-Agent": _MEDIA_USER_AGENT}
@@ -191,8 +243,9 @@ class RelayMediaClient:
             headers["Authorization"] = f"Bearer {self._bearer()}"
 
         def _get() -> Optional[tuple[str, str]]:
-            req = urllib.request.Request(url, headers=headers)
             try:
+                # Inside the try: a malformed URL (`https://[::1/…`) raises ValueError here.
+                req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     if int(resp.headers.get("Content-Length") or 0) > MEDIA_MAX_BYTES:
                         logger.warning("relay media download too large: %s", url)

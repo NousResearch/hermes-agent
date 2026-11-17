@@ -1,0 +1,21 @@
+name: sessionretitler
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: bad20c04a7428dbf7f59f386f5e24f621c08dbc9
+subdir: public/sessionretitler
+description: "Keeps the session list readable as the topic drifts. Every 10 titleable user messages by default, retitles the session from the latest exchanges, then again as the interval elapses. A title you set yourself is never overwritten. Disclosure: writes the new title through agent.title_generator and hermes_state.SessionDB because no plugin SDK title-write seam exists yet; those imports are guarded, a failed write is logged and the previous title is restored."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/sessionretitler
+version: "1.1.3"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/bad20c04a7428dbf7f59f386f5e24f621c08dbc9/public/sessionretitler/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.0"

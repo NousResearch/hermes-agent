@@ -54,8 +54,9 @@ row's already-screened text). Attachments and `voice_context` are
 not screened this cycle (media triage is use case A6, later in the
 queue). NOTE: the visible client artefact of a hold is the RPC error
 frame `4001 desktop_screen_hold` whose `error.message` carries the
-full hold notice (reason list) - the same notice is in the screen
-log. Round-6 review NOTEs, documented as out of
+full hold notice (the same text the screen log records alongside the
+tier and reasons; the reason list itself is not on the wire).
+Round-6 review NOTEs, documented as out of
 scope: `display_v1.title_preview` feeds only the display titler
 (an auxiliary call that writes a chat title, never the session
 prompt) and `cli_turn_v1.turn_author.name` reaches memory
@@ -70,7 +71,8 @@ held (position-dependent) and anything longer than one chunk
 (32k) reaches the engine as fragments - every character judged in
 all cases. All chunks are judged within one 6s screening budget
 shared by the whole submit. Whitespace-only chunks are skipped (no
-payload, and the engine rejects blank text); every other
+payload, and the engine rejects blank text; logged as tier
+"blank_chunk_skipped"); every other
 model-visible character is judged or the submit is held
 ("screening_incomplete_budget"; text over 4M chars is held as
 "oversized_unscreened"; a deterministic engine 4xx rejection holds

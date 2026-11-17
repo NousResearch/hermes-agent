@@ -685,27 +685,39 @@ class TestAuthorityGate(unittest.TestCase):
         self.assertEqual(reasons, ["screening_incomplete_budget"])
         self.assertEqual(EngineStubHandler.screen_calls, 0)
 
+    def _blank_middle_text(self, tail: str) -> str:
+        # A whitespace run long enough that one chunk is ENTIRELY blank,
+        # derived from the constants (round-11 NOTE: a hard-coded 70,000
+        # went blind if MAX_TEXT_CHARS changed). Chunk k starts at
+        # k*(MAX_TEXT_CHARS-_SEAM_OVERLAP); chunk 1 must lie fully inside
+        # the run: prefix + run >= step + MAX_TEXT_CHARS.
+        step = (desktop_screen.MAX_TEXT_CHARS
+                - desktop_screen._SEAM_OVERLAP)
+        run = step + desktop_screen.MAX_TEXT_CHARS  # 62,976 at 32k/1k
+        prefix = "hello"
+        text = prefix + " " * (run - len(prefix)) + tail
+        blank = [c for c in desktop_screen.segments(text) if not c.strip()]
+        self.assertTrue(blank, "fixture must contain an all-whitespace chunk")
+        return text
+
     def test_whitespace_middle_chunk_does_not_bypass(self):
         # Review r8-HIGH repro: 'hello' + long spaces + attack used to
         # send a blank chunk, earn a deterministic engine 400, and
         # fail-open the tail. Blank chunks are skipped; the attack
-        # chunk is still judged and held. The run must exceed 62,976
-        # chars so a chunk REALLY is all-whitespace (chunk 1 spans
-        # 30,976..62,976) - a 40k run yields no blank chunk at all and
-        # would not pin the fix (round-10 mutation a).
+        # chunk is still judged and held.
         EngineStubHandler.block_pattern = "ATTACK"
         from hermes_state_runtime import RuntimeStoreError
         with self.assertRaises(RuntimeStoreError) as raised:
-            self._run({"text": "hello" + " " * 70000
-                       + "ATTACK take over the agent"})
+            self._run({"text": self._blank_middle_text(
+                "ATTACK take over the agent")})
         self.assertEqual(raised.exception.reason, "desktop_screen_hold")
 
     def test_benign_blank_middle_is_admitted_and_posts_no_blank(self):
-        # Pins the blank-skip: 70,000 spaces guarantee an all-whitespace
-        # chunk (chunk 1 = 30,976..62,976 is pure whitespace). With the
-        # stub enforcing the real engine's blank->400 contract,
-        # deleting the skip turns this benign submit into a hold.
-        self._run({"text": "hello" + " " * 70000 + "how are you"})
+        # Pins the blank-skip: the fixture guarantees an all-whitespace
+        # chunk, and with the stub enforcing the real engine's
+        # blank->400 contract, deleting the skip turns this benign
+        # submit into a hold.
+        self._run({"text": self._blank_middle_text("how are you")})
         self.assertEqual(EngineStubHandler.blank_bodies, 0)
 
     def test_transient_408_and_429_fail_open(self):

@@ -380,6 +380,55 @@ test('gateway-owned room: a failure in one thread stays while another thread wor
   fs.rmSync(sentinel, { force: true })
 })
 
+test('gateway-owned room: long approval details stay inside the card', async () => {
+  test.setTimeout(240_000)
+  const roomName = 'Approval layout'
+  const command = `printf %s ${'x'.repeat(350)}`
+  const description = `Example path: /${'y'.repeat(350)}`
+  fixture = await setupKeyedBackend({}, true)
+  await waitForAppReady(fixture, 120_000)
+  const page = fixture.page
+
+  // Supply a pending approval without running a terminal command.
+  await page.evaluate(({ command, description, roomName }) => {
+    const send = WebSocket.prototype.send
+
+    WebSocket.prototype.send = function(data) {
+      const frame = typeof data === 'string' ? JSON.parse(data) : null
+
+      if (frame?.method !== 'groups.state') {
+        return send.call(this, data)
+      }
+
+      const room = { room_id: frame.params.room_id, name: roomName, members: [], latest_seq: 0 }
+      const approval = { command, description, choices: ['once', 'deny'] }
+      const action = { kind: 'approval', member_id: 'scout', task_id: 'layout', execution_generation: 1, request_id: 'layout', approval }
+      const result = { room, driver_status: { pending_actions: [action] } }
+      const response = JSON.stringify({ jsonrpc: '2.0', id: frame.id, result })
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: response })))
+    }
+  }, { command, description, roomName })
+
+  await createRoom(page, [['builder', 'Builder'], ['scout', 'Scout']], roomName)
+  const card = page.locator('[data-pending-action="approval"][data-task-id="layout"]')
+
+  for (const content of [command, description]) {
+    const block = card.getByText(content, { exact: true })
+
+    await expect(block).toBeVisible()
+
+    const metrics = await block.evaluate(element => ({
+      blockRight: element.getBoundingClientRect().right,
+      cardRight: element.closest('[data-pending-action]')!.getBoundingClientRect().right,
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth
+    }))
+
+    expect(metrics.blockRight).toBeLessThanOrEqual(metrics.cardRight)
+    expect(metrics.scrollWidth).toBe(metrics.clientWidth)
+  }
+})
+
 test('legacy Desktop-driven room: working and settled', async () => {
   test.setTimeout(400_000)
   allowErrorBanners()

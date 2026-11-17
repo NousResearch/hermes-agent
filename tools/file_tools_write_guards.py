@@ -12,6 +12,7 @@ whole-file overwrite of content this task never saw or that changed since.
 
 import fnmatch
 import os
+import unicodedata
 from pathlib import Path
 
 from agent.file_safety import deny_key, get_nt_namespace_error
@@ -174,6 +175,12 @@ _PROTECTED_INSTRUCTION_BASENAMES = frozenset({
     "agents.md", "claude.md", "soul.md", ".cursorrules"})
 
 
+def _name_key(name: str) -> str:
+    """``name`` as APFS compares it: NFC, then full Unicode case folding. ``.lower()`` keeps ``ſ`` and
+    ``ß``, which APFS folds to ``s``/``ss``, so ``AGENTſ.md`` opens ``AGENTS.md`` (CERT/CC VU#604762)."""
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold())
+
+
 def _protected_instruction_config() -> tuple[bool, list[str]]:
     """Return ``(enabled, extra_patterns)`` from ``security.protected_instruction_files`` /
     ``security.protected_instruction_extra_patterns`` (fnmatch on basename). Config read
@@ -227,9 +234,9 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     # no other file-tool guard covers them (#92146).
     for candidate in (normalized, resolved):
         base = os.path.basename(candidate)
-        base_lower = base.lower()
-        if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
-                fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
+        key = _name_key(base)
+        if key in _PROTECTED_INSTRUCTION_BASENAMES or any(
+                fnmatch.fnmatch(key, _name_key(pattern)) for pattern in extra_patterns):
             return base
 
     # The ``.hermes`` component rule below targets PROJECT-LOCAL config, and the home

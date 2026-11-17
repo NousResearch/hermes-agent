@@ -750,6 +750,19 @@ class TestProtectedInstructionFiles:
         res = self._write(tmp_path / "rules.mdc")
         assert res.get("error") and "BLOCKED" in res["error"]
 
+    @pytest.mark.parametrize("name", ["AGENT\u017f.md", "\u017foul.md", ".cur\u017forrule\u017f"])
+    def test_case_fold_spellings_are_gated(self, name):
+        """APFS folds long s to s, so these open the protected file (CERT/CC VU#604762)."""
+        import tools.file_tools_write_guards as ft
+        assert ft._protected_instruction_reason(f"/repo/{name}", enabled=True, extra_patterns=[]) == name
+
+    def test_extra_patterns_match_folded_and_nfd_names(self):
+        import tools.file_tools_write_guards as ft
+        reason = ft._protected_instruction_reason
+        assert reason("/repo/Gro\u00dfe.md", enabled=True, extra_patterns=["grosse.md"])
+        assert reason("/repo/fu\u0308r.md", enabled=True, extra_patterns=["f\u00fcr.md"])
+        assert reason("/repo/notes.md", enabled=True, extra_patterns=["grosse.md"]) is None
+
     # ---- adversarial path shapes ----------------------------------------
 
     @pytest.mark.require_symlinks

@@ -149,6 +149,8 @@ def export_board(
         # resolves its own.
         meta.pop("db_path", None)
         meta["default_workdir"] = None
+        # Only meaningful paired with the machine's own default_workdir.
+        meta["default_workspace_kind"] = None
         meta["project_id"] = None
         _write_json(staged / "board.json", meta)
 

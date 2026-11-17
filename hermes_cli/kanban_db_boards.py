@@ -46,6 +46,9 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        # Declared kind tasks are born with when no explicit --workspace is
+        # passed (None = unset; scratch/project-inherit as before). #123288
+        "default_workspace_kind": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
         "created_at": None,
@@ -70,10 +73,13 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    default_workspace_kind: Optional[str] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    "" = clear (``project_id`` is not validated here).
+    ``default_workspace_kind``: ``None`` = unchanged, "" = clear, otherwise a
+    ``VALID_WORKSPACE_KINDS`` member tasks inherit when no workspace is explicit."""
     _kb._assert_not_delegated_child_mutation()
     slug = _kb._slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -89,6 +95,29 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    if default_workspace_kind is not None:
+        kind = str(default_workspace_kind).strip()
+        if kind:
+            if kind not in _kb.VALID_WORKSPACE_KINDS:
+                raise ValueError(
+                    f"default_workspace_kind must be one of {sorted(_kb.VALID_WORKSPACE_KINDS)}, "
+                    f"got {default_workspace_kind!r}"
+                )
+            meta["default_workspace_kind"] = kind
+        else:
+            meta["default_workspace_kind"] = None
+    # Both persistent kinds anchor defaulted tasks in the board
+    # default_workdir (worktree: <repo>/.worktrees/<id>; dir: the workdir
+    # itself); without the anchor, every defaulted task dies at dispatch
+    # workspace resolution instead of at this write (#123288) — dir raises
+    # "workspace_kind=dir but no workspace_path" just like worktree does.
+    _kind = (meta.get("default_workspace_kind") or "").strip()
+    if _kind in {"worktree", "dir"} and not (meta.get("default_workdir") or "").strip():
+        raise ValueError(
+            f"default_workspace_kind {_kind!r} requires the board default_workdir "
+            "to be set (the anchor defaulted tasks resolve against); set it "
+            "with `hermes kanban boards set-default-workdir <slug> <path>`"
+        )
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -103,16 +132,18 @@ def write_board_metadata(
 def create_board(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
-    project_id: Optional[str] = None,
+    project_id: Optional[str] = None, default_workspace_kind: Optional[str] = None,
 ) -> dict:
-    """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
+    """Create board dir + DB + metadata, with an optional declared default
+    workspace kind (``mkdir -p`` semantics: existing board returns its metadata)."""
     normed = _kb._require_slug(slug)
     # Explicit creation clears any archived tombstone at this slug (left by
     # remove_board(archive=True)) — otherwise _kb.init_db() below would rightly
     # refuse to recreate the archived board's DB (#43243).
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
-        default_workdir=default_workdir, project_id=project_id, archived=False,
+        default_workdir=default_workdir, project_id=project_id,
+        default_workspace_kind=default_workspace_kind, archived=False,
     )
     # Touch the DB so list_boards() sees it immediately.
     _kb.init_db(board=normed)

@@ -1248,7 +1248,7 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
 
 
 def _fast_mode_route_supported(
-    model_id: Optional[str], provider: Optional[str], base_url: Optional[str]) -> bool:
+    model_id: Optional[str], provider: Optional[str], base_url: Optional[str], tier: Optional[str] = None) -> bool:
     """Only the first-party endpoint that bills for fast mode may receive its params."""
     from urllib.parse import urlparse
 
@@ -1260,7 +1260,7 @@ def _fast_mode_route_supported(
         allowed = {"xai": "api.x.ai"}
     else:
         from hermes_cli.models_fast_regions import openai_fast_region_allows
-        if openai_fast_region_allows(base_url, model_id):
+        if openai_fast_region_allows(base_url, model_id, tier):
             base_url = "https://api.openai.com"  # Eligibility only; the runtime URL stays regional.
         allowed = {"openai": "api.openai.com", "openai-api": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:
@@ -1287,7 +1287,7 @@ def resolve_fast_mode_overrides(
         return bedrock_fast_mode_overrides(model_id, base_url, tier)
     if not model_supports_fast_mode(model_id):
         return None
-    if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
+    if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url, tier):
         return None
     if tier == "ultrafast":
         return {"service_tier": "ultrafast"} if model_supports_ultrafast(model_id) else None

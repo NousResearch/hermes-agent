@@ -1,27 +1,8 @@
-/* The page-frame contract (tokens/space.css): the agent column holds the form width and sits
-   centred in the stage, as the chat column does. No bottom padding: the scrollers run to the
-   stage's edge and keep their own end space. */
+/* The column is the page stage contract's (portal-pages.css). No bottom padding: the scrollers run
+   to the stage's edge and keep their own end space. */
 [data-page-surface] .management-panel.agent-management {
-  --agent-frame-nav: 0px;
-  --agent-frame-gutter: max(
-    var(--page-panel-inset),
-    (100% - var(--agent-frame-nav) - var(--page-form-max-width)) / 2
-  );
-
-  width: 100%;
-  max-width: none;
-  margin-inline: 0;
-  padding: var(--portal-page-top) var(--agent-frame-gutter) 0
-    calc(var(--agent-frame-nav) + var(--agent-frame-gutter));
+  padding-block: var(--portal-page-top) 0;
   font-family: var(--portal-font-body);
-}
-
-/* Beside the list panel the stage starts past it, and every tab hangs off the same column, so
-   switching Overview / History / Settings never moves the header. */
-[data-page-surface] .management-panel.agent-management:has(> .page-sidebar-panel) {
-  --agent-frame-nav: var(--page-nav-width);
-
-  position: relative;
 }
 
 .agent-management-avatar {
@@ -307,13 +288,8 @@
   }
 }
 
-/* Below wide (breakpoints.ts: max-width 1023.98px) the agents list is a sheet, not a column: the page
-   keeps its stage frame whether the sheet is open or not. */
+/* Below wide (breakpoints.ts: max-width 1023.98px). */
 @media (max-width: 1023.98px) {
-  [data-page-surface] .management-panel.agent-management:has(> .page-sidebar-panel) {
-    --agent-frame-nav: 0px;
-  }
-
   .agent-overview-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 32px;

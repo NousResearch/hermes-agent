@@ -20,18 +20,14 @@
   }
 }
 
+/* Its column is the page stage contract's (portal-pages.css). */
 .library-stage {
   display: flex;
-  width: 100%;
-  max-width: calc(var(--page-catalog-max-width) + 2 * var(--page-panel-inset));
   min-height: 0;
   flex: 1;
   flex-direction: column;
   gap: 1.25rem;
-  margin-inline: auto;
-  padding: var(--portal-page-top) var(--page-panel-inset) var(--portal-page-end-space);
-  overflow-y: auto;
-  scrollbar-gutter: stable;
+  padding-block: var(--portal-page-top) var(--portal-page-end-space);
 }
 
 .library-stage > .portal-page-header {

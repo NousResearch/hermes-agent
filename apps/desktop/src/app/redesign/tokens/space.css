@@ -83,12 +83,14 @@
   --portal-status-bar-open-inset: 2.5rem;
   --portal-status-bar-corner: 0.4375rem;
   --portal-status-bar-glyph: 0.8125rem;
-  /* The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and
-     tables (919:9281: 980), and the conversation shared by the transcript and the docked composer:
-     both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat
-     16292:16175); the owner keeps the wider column. */
-  --portal-column-form: 52.5rem;
-  --portal-column-catalog: 61.25rem;
+  /* The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library,
+     Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page
+     stage contract (portal-pages.css), which is its only reader outside this folder
+     (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the
+     owner keeps one width so no heading moves between pages. Then the conversation shared by the
+     transcript and the docked composer: both 640 wide, the transcript flush with the composer's
+     edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. */
+  --portal-column-page: 61.25rem;
   --portal-column-conversation: 40rem;
   --portal-column-conversation-inset: 0px;
   /* The landing's composer before the first message, as wide as a conversation's (16292:14822). */
@@ -96,11 +98,15 @@
   /* The developer tool panel's default width (Files, Terminal, Review and Browser share one width,
      redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. */
   --portal-tool-panel-width: 26.25rem;
-  /* Full-width pages without a panel pad their catalog column by this much on each side. */
+  /* The least a page's column keeps clear of its stage's sides, when the stage is narrower than the
+     column. */
   --page-content-inset: 1.5rem;
   /* How far a sideways scroller's trailing edge fades while more follows (portal-pages.css). */
   --portal-scroll-edge-fade: 1.5rem;
-  --page-content-max-width: calc(var(--portal-column-catalog) + 2 * var(--page-content-inset));
+  --page-content-max-width: calc(var(--portal-column-page) + 2 * var(--page-content-inset));
+  /* The app's scrollbar (styles.css draws every native scroller's at this width): what a scrolling
+     page stage reserves on both sides and gives back from its gutters. */
+  --portal-scrollbar-size: 0.5rem;
   /* The space a page scroller keeps below its last row, under its bottom fade. */
   --portal-page-end-space: 2rem;
   /* The page header (PageHeader, app/redesign/page-header.tsx), one geometry for every routed page so
@@ -155,8 +161,6 @@
   /* Names in use before the role names; Phase B moves their readers to the role and deletes them. */
   --page-nav-width: var(--portal-panel-width);
   --page-panel-inset: var(--portal-frame-inset);
-  --page-form-max-width: var(--portal-column-form);
-  --page-catalog-max-width: var(--portal-column-catalog);
   --portal-chrome-button-size: var(--portal-row-chrome);
 }
 

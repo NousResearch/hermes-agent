@@ -141,7 +141,7 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     // Opening another agent swaps this window's gateway profile, so it waits for a click; the page
     // keeps its frame (the Agents panel, the agent's name) around that one action.
     return (
-      <Panel contentClassName="agent-management" onClose={props.onClose}>
+      <Panel contentClassName="agent-management page-stage" onClose={props.onClose}>
         <AgentNavigation connectionId={props.owner.connectionId ?? active ?? 'local'} profile={props.owner.profile} />
         <EmptyState
           action={
@@ -507,7 +507,7 @@ function AgentSettingsContent({
   const emptySessions = <RecentPlaceholder recent={recent} />
 
   return (
-    <Panel contentClassName="agent-management" onClose={props.onClose}>
+    <Panel contentClassName="agent-management page-stage" onClose={props.onClose}>
       {selectedTab === 'settings' ? (
         <AgentSettingsPanel
           counts={counts.nav}

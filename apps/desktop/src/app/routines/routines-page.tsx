@@ -64,7 +64,7 @@ export function RoutinesPage({ onClose, onOpenSession }: RoutinesPageProps) {
     <Panel closeLabel={t.cron.close} contentClassName="routines-page" onClose={onClose}>
       <RoutinesPanel actions={actions} onCreate={create} selection={selected ? selection : null} source={source} />
       {/* Keyed by what it shows, so opening a routine starts at its top, not the list's scroll. */}
-      <div className="routines-stage" key={selected ? routineKey(selected) : 'overview'}>
+      <div className="routines-stage page-stage" data-scrolls="" key={selected ? routineKey(selected) : 'overview'}>
         {selected ? (
           <RoutineDetail
             actions={actions}

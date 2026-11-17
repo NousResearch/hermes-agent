@@ -335,7 +335,7 @@ export function LibraryPage(props: ComponentProps<'section'>) {
         </PageSidebarList>
       </PageSidebarPanel>
 
-      <div className="library-stage">
+      <div className="library-stage page-stage" data-scrolls="">
         {viewImage ? (
           <ImagePreview
             {...viewImage}

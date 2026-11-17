@@ -123,6 +123,20 @@ def test_undefined_portal_references_are_found_across_css_and_tsx(tmp_path):
     assert missing == ["--portal-nope", "--portal-radius-crad"]
 
 
+def test_only_the_page_stage_contract_lays_the_page_column(tmp_path):
+    for rel, css in {
+        "app/redesign/tokens/space.css": ":root { --portal-column-page: 61.25rem; --w: var(--portal-column-page); }",
+        "app/redesign/portal-pages.css": ".page-stage { max-width: var(--portal-column-page); }",
+        "app/library/library.css": ".library-stage {\n  max-width: var(--portal-column-page);\n}",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(css)
+    _, refs = GUARD.references(tmp_path)
+    assert [str(f) for f in GUARD.page_column_findings(refs)] == [
+        "app/library/library.css:2: page-column: --portal-column-page"
+    ]
+
+
 def test_docs_tables_list_dark_and_light_values_per_token(tmp_path):
     (tmp_path / "shape.css").write_text(
         ":root[data-shell='portal'] {\n  /* Cards, tables, menus. */\n  --portal-radius-card: 4px;\n"

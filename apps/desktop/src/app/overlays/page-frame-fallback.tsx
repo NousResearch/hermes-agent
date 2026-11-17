@@ -23,7 +23,7 @@ export function PageFrameFallback({ frame, onClose }: PageFrameFallbackProps) {
   }
 
   return (
-    <Panel contentClassName="page-frame-fallback" onClose={onClose}>
+    <Panel contentClassName="page-frame-fallback page-stage" onClose={onClose}>
       {page.panel && <PageSidebarPanel title={page.panel}>{null}</PageSidebarPanel>}
       <PageHeaderSkeleton frame={page} />
     </Panel>

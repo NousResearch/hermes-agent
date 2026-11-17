@@ -25,6 +25,9 @@ to refresh the baseline (``--write-baseline``). Two findings always fail, baseli
 
   undefined-token  ``var(--portal-…)`` naming a property defined nowhere (CSS or TS): a typo or a
                    token deleted while still in use
+  page-column      ``var(--portal-column-page)`` read outside tokens/ and the page stage contract
+                   (``app/redesign/portal-pages.css``): a page sizing its own column instead of
+                   marking its stage ``page-stage``, which is how pages drift apart
   stale-docs       the generated token tables in ``apps/desktop/DESIGN.md`` differ from tokens/
 
 Tokens defined in tokens/ that nothing reads are listed as an advisory.
@@ -56,6 +59,9 @@ SRC = DESKTOP / "src"
 TOKENS = "app/redesign/tokens/"
 DESIGN_MD = DESKTOP / "DESIGN.md"
 BASELINE = REPO / "scripts" / "desktop_design_tokens_baseline.json"
+# The rail pages' one column and the only file outside tokens/ that may lay it out.
+PAGE_COLUMN = "--portal-column-page"
+PAGE_STAGE_CONTRACT = "app/redesign/portal-pages.css"
 
 _REDESIGN_ONLY = (
     re.compile(r"^app/redesign/[^/]+\.css$"),
@@ -413,6 +419,15 @@ def collect(src: Path) -> list[Finding]:
     return found
 
 
+def page_column_findings(refs: dict[str, list[tuple[str, int]]]) -> list[Finding]:
+    """Reads of the page column outside tokens/ and the page stage contract."""
+    return sorted(
+        Finding(rel, line, "page-column", PAGE_COLUMN)
+        for rel, line in refs.get(PAGE_COLUMN, [])
+        if not rel.startswith(TOKENS) and rel != PAGE_STAGE_CONTRACT
+    )
+
+
 def ratchet(counts: dict[str, int], baseline: dict[str, int]) -> tuple[list[str], list[str]]:
     """(files over their baseline, files under it)."""
     over = sorted(f for f, n in counts.items() if n > baseline.get(f, 0))
@@ -465,11 +480,12 @@ def main(argv: list[str] | None = None) -> int:
             token_names.update(_CSS_DEF.findall(path.read_text(encoding="utf-8-sig")))
     unused = sorted(name for name in token_names if name not in refs)
     stale = docs_block(markdown) != docs
+    own_column = page_column_findings(refs)
 
     if args.list:
         for f in found:
             print(f)
-    failed = bool(over or undefined or stale)
+    failed = bool(over or undefined or stale or own_column)
     for rel in over:
         print(f"{rel}: {counts[rel]} design-token findings, baseline {baseline.get(rel, 0)} (it may only go down):")
         for f in found:
@@ -477,6 +493,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {f}")
     for f in undefined:
         print(f"{f}  (defined nowhere: a typo or a deleted token)")
+    for f in own_column:
+        print(f"{f}  (mark the page's stage `page-stage`; only {PAGE_STAGE_CONTRACT} lays the column)")
     if stale:
         print("apps/desktop/DESIGN.md token tables are stale: run python scripts/check_desktop_design_tokens.py --write-docs")
     if under and not args.write_baseline:

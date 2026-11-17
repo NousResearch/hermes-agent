@@ -399,13 +399,17 @@ A page's list panel (Agents, Routines; `PageSidebarPanel`) wears the chat sideba
 Settings column's header: its title 30px in and 30px down on a 36px line, its start row (New agent,
 New routine) 122px under the panel's top where New chat starts, as New chat's borderless light/5 slab
 with rimless mono keycaps, and its open row a light/5 fill with no stroke.
-Every routed page keeps one page frame (`tokens/space.css`): the content column sits centred in
-the stage, as the chat column does, and beside a sidebar panel the stage is what lies past the
-panel's divider, on Agents, Settings and Routines alike. Figma left-anchors the column; the owner
-centres it. A stage narrower than the column keeps `--portal-frame-inset` (20px) on both sides.
-One max width per page kind:
-`--portal-column-form` (840) for forms and details, `--portal-column-catalog` (980) for
-catalogs, lists and tables. Every H1 (or agent hero) tops out at the same y; header actions end
+Every rail page keeps one page frame, laid by one rule: the page stage contract in
+`redesign/portal-pages.css`. A page marks the element its content hangs off `page-stage` (plus
+`data-scrolls` when that element scrolls) and sizes nothing itself; the contract centres the one
+page column, `--portal-column-page` (980), in the stage, as the chat column is centred. Beside a
+sidebar panel the stage is what lies past the panel's divider. Figma left-anchors the column and
+draws forms at 840; the owner centres it and keeps one width, so no heading moves between Agents,
+Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree, or between a page's tabs.
+A stage narrower than the column keeps `--page-content-inset` (24px, 16 on a phone) on both sides.
+`scripts/check_desktop_design_tokens.py` fails any stylesheet outside `tokens/` and the contract
+that reads the column token (`page-column`), so a new page cannot lay its own.
+Every H1 (or agent hero) tops out at the same y; header actions end
 at the column's right edge. Global Settings is the exception ("Prod - Desktop" 06 · Settings/Account,
 16292:16447): a 640px column centred in the stage, its H1 (Oswald Light 40/48, -1px) 104px under the
 stage's top with a mono description; the column's content box is its text column, 32px inside
@@ -829,15 +833,15 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-status-bar-open-inset` | `2.5rem` | ″ |  |
 | `--portal-status-bar-corner` | `0.4375rem` | ″ |  |
 | `--portal-status-bar-glyph` | `0.8125rem` | ″ |  |
-| `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer: both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. |
-| `--portal-column-catalog` | `61.25rem` | ″ |  |
+| `--portal-column-page` | `61.25rem` | ″ | The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page stage contract (portal-pages.css), which is its only reader outside this folder (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the owner keeps one width so no heading moves between pages. Then the conversation shared by the transcript and the docked composer: both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. |
 | `--portal-column-conversation` | `40rem` | ″ |  |
 | `--portal-column-conversation-inset` | `0px` | ″ |  |
 | `--portal-column-landing` | `40rem` | ″ | The landing's composer before the first message, as wide as a conversation's (16292:14822). |
 | `--portal-tool-panel-width` | `26.25rem` | ″ | The developer tool panel's default width (Files, Terminal, Review and Browser share one width, redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. |
-| `--page-content-inset` | `1rem` | ″ | Full-width pages without a panel pad their catalog column by this much on each side. |
+| `--page-content-inset` | `1rem` | ″ | The least a page's column keeps clear of its stage's sides, when the stage is narrower than the column. |
 | `--portal-scroll-edge-fade` | `1.5rem` | ″ | How far a sideways scroller's trailing edge fades while more follows (portal-pages.css). |
-| `--page-content-max-width` | `calc(var(--portal-column-catalog) + 2 * var(--page-content-inset))` | ″ |  |
+| `--page-content-max-width` | `calc(var(--portal-column-page) + 2 * var(--page-content-inset))` | ″ |  |
+| `--portal-scrollbar-size` | `0.5rem` | ″ | The app's scrollbar (styles.css draws every native scroller's at this width): what a scrolling page stage reserves on both sides and gives back from its gutters. |
 | `--portal-page-end-space` | `2rem` | ″ | The space a page scroller keeps below its last row, under its bottom fade. |
 | `--portal-page-top` | `1rem` | ″ | The page header (PageHeader, app/redesign/page-header.tsx), one geometry for every routed page so its H1, description and tab bar sit at the same y on all of them: the column's top (856:2827 y 18), a title block that always reserves the agent header's 68 (877:4166: 56 tile, or H1 44 + 6 + one 13px line), 24 to the tabs and from the tabs to the content (877:4166 gap 24), 32h tabs (877:4200) and the page rhythm of 32 between sections and after a heading with no tabs (1036:7405). |
 | `--portal-page-title-block` | `4.25rem` | ″ |  |
@@ -867,8 +871,6 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-row-panel` | `2.5rem` | ″ |  |
 | `--page-nav-width` | `var(--portal-panel-width)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |
 | `--page-panel-inset` | `var(--portal-frame-inset)` | ″ |  |
-| `--page-form-max-width` | `var(--portal-column-form)` | ″ |  |
-| `--page-catalog-max-width` | `var(--portal-column-catalog)` | ″ |  |
 | `--portal-chrome-button-size` | `var(--portal-row-chrome)` | ″ |  |
 
 #### Shape: radii, strokes, shadows (`shape.css`)

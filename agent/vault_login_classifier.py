@@ -356,17 +356,91 @@ _FILL_JS_TEMPLATE = """(() => {
 })()"""
 
 
-def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
+def build_fill_verify_js(fills: list[dict[str, Any]], nonce: str = "", *, unstamp: bool = True) -> str:
     """Build a JS expression that reads the filled controls back and removes the inspection stamps.
 
     The fill script's count is a claim about the write; this is the claim about the page. Called one
     turn of the event loop later, it catches a framework that reverted the value, a field that was
     re-rendered (stamp gone) and a partial write. Returns counts only — no value leaves the page.
+
+    ``unstamp=False`` keeps the inspection stamps: the trusted-typing path verifies ONE field
+    between two ``Input.insertText`` calls and must still find the next field by its stamp.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_VERIFY_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+    return (_VERIFY_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+            .replace("__UNSTAMP__", "true" if unstamp else "false"))
+
+
+def build_focus_js(fills: list[dict[str, Any]], nonce: str = "") -> str:
+    """Build a JS expression that focuses ONE stamped field and asserts it really holds focus.
+
+    ``Input.insertText`` types into whatever element currently has focus, so the caller MUST
+    know which element that is before typing a secret into it. This script focuses the element
+    stamped ``<nonce>:<index>`` by the inspection and only reports success when
+    ``document.activeElement`` IS that element — a page that moves focus (a re-render, a modal,
+    an autofocus elsewhere) is refused instead of receiving the secret.
+
+    Takes the same ``fills`` shape as :func:`build_fill_js` but is meant for exactly one field.
+    Returns JSON: ``{"focused": <index>}`` or
+    ``{"refused": "focus_lost", "tag": <tag>, "found": <active tag or null>}`` /
+    ``{"refused": "not_password"}`` / ``{"refused": "not_found"}``.
+    """
+    payload = json.dumps(
+        [{"index": f["index"], "token": f.get("token", "current-password")} for f in fills]
+    )
+    return _FOCUS_JS_TEMPLATE.replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce))
+
+
+_FOCUS_JS_TEMPLATE = """(() => {
+  const fills = __FILLS__;
+  const nonce = __NONCE__;
+  const f = fills[0];
+  if (!f) return JSON.stringify({ refused: "not_found" });
+  const roots = [];
+  (function walk(root) {
+    roots.push(root);
+    for (const e of root.querySelectorAll("*")) if (e.shadowRoot) walk(e.shadowRoot);
+  })(document);
+  const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
+  const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
+  if (!el) return JSON.stringify({ refused: "not_found" });
+  // Same guard as the fill script: a password fill never lands in a text box.
+  if (f.token === "current-password" && el.type !== "password") {
+    return JSON.stringify({ refused: "not_password" });
+  }
+  try { el.focus(); } catch (e) { /* focus can throw on a detached node */ }
+  if (document.activeElement === el) return JSON.stringify({ focused: f.index });
+  const active = document.activeElement;
+  return JSON.stringify({ refused: "focus_lost", tag: el.tagName,
+                          found: active ? active.tagName : null });
+})()"""
+
+
+def build_origin_check_js(expected_origin: str) -> str:
+    """Build a JS expression that asserts the page's origin inside the page itself.
+
+    The trusted-typing path writes through CDP, outside any page script, so it needs the same
+    in-page origin assertion the JS fill path has: if the page navigated between the origin
+    pre-check and the keystrokes, nothing is typed.
+    """
+    return ("(() => { if (window.location.origin !== %s) "
+            "return JSON.stringify({ refused: 'origin_changed', found: window.location.origin }); "
+            "return JSON.stringify({ ok: true }); })()" % json.dumps(expected_origin))
+
+
+def build_unstamp_js(nonce: str = "") -> str:
+    """Build a JS expression that removes every inspection stamp from the page.
+
+    Used when a fill aborts half-way: the stamps address controls deterministically, and a stamp
+    left behind would let a later read address the control the fill just targeted.
+    """
+    return ("(() => { const roots = []; (function walk(root) { roots.push(root); "
+            "for (const e of root.querySelectorAll('*')) if (e.shadowRoot) walk(e.shadowRoot); "
+            "})(document); const find = (s) => roots.flatMap((r) => Array.from(r.querySelectorAll(s))); "
+            "find('[data-hermes-vault-slot]').forEach((n) => n.removeAttribute('data-hermes-vault-slot')); "
+            "return JSON.stringify({ unstamped: true }); })()")
 
 
 _VERIFY_JS_TEMPLATE = """(() => {
@@ -387,6 +461,6 @@ _VERIFY_JS_TEMPLATE = """(() => {
     if (el.tagName === "SELECT") { landed += 1; continue; }
     if (String(el.value) === String(f.value)) landed += 1; else reverted += 1;
   }
-  find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  if (__UNSTAMP__) find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
   return JSON.stringify({ landed, reverted, missing });
 })()"""

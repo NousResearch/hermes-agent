@@ -39,17 +39,18 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
-_RESULT_CHARS = 64_000
-_RETENTION_S = 30 * 24 * 3600
+_RETENTION_S = 30 * 24 * 3600  # finished results are dropped after this; the decision row is kept for good
 _SCHEMA = """CREATE TABLE IF NOT EXISTS decisions (
     id TEXT PRIMARY KEY, tool TEXT NOT NULL, args_digest TEXT NOT NULL, status TEXT NOT NULL,
     approved_by TEXT, owner_pid INTEGER, owner_start INTEGER, result TEXT,
     created REAL NOT NULL, updated REAL NOT NULL)"""
 
 # Decisions the gate approved for a call that has not been dispatched yet, keyed by
-# ``(tool_call_id, tool, args_digest)``. Dispatch takes the id from here; the digest in the key
-# is what makes it exact-args: a call whose args changed after approval finds nothing.
-_pending: dict[tuple[str, str, str], list[str]] = {}
+# ``(hermes_home, session_key, tool_call_id, tool, args_digest)``. Dispatch takes the id from here;
+# the digest in the key is what makes it exact-args (a call whose args changed after approval finds
+# nothing), and the profile home and session keep one process's profiles and sessions from taking
+# each other's decisions (execute_code calls carry no tool call id).
+_pending: dict[tuple[str, str, str, str, str], list[str]] = {}
 _pending_lock = threading.Lock()
 
 
@@ -86,28 +87,37 @@ def get(decision_id: str) -> Optional[dict]:
 
 
 def mint(decision_id: str, tool: str, digest: str, approved_by: str) -> None:
-    """Record an approved decision (no-op when the id already exists: a replay keeps its record)."""
+    """Record an approved decision (no-op when the id already exists: a replay keeps its record).
+    Old finished results are emptied, never their rows: a deleted row would let a replay of that
+    call mint it again as ``approved`` and run ``apply`` a second time."""
     now = time.time()
     with closing(_connect()) as con, con:
-        con.execute("DELETE FROM decisions WHERE updated < ? AND status IN ('applied', 'failed')",
-                    (now - _RETENTION_S,))
+        con.execute("UPDATE decisions SET result = NULL WHERE updated < ? AND status IN ('applied', 'failed') "
+                    "AND result IS NOT NULL", (now - _RETENTION_S,))
         con.execute("INSERT OR IGNORE INTO decisions (id, tool, args_digest, status, approved_by, created, updated) "
                     "VALUES (?, ?, ?, 'approved', ?, ?, ?)", (decision_id, tool, digest, approved_by, now, now))
 
 
+def _pending_key(tool_call_id: str, tool: str, digest: str) -> tuple[str, str, str, str, str]:
+    from tools.approval_context import get_current_session_key
+    return str(get_hermes_home()), get_current_session_key(), tool_call_id, tool, digest
+
+
 def queue_for_dispatch(tool_call_id: str, tool: str, digest: str, decision_id: str) -> None:
+    key = _pending_key(tool_call_id, tool, digest)
     with _pending_lock:
-        _pending.setdefault((tool_call_id, tool, digest), []).append(decision_id)
+        _pending.setdefault(key, []).append(decision_id)
 
 
 def _take_queued(tool_call_id: str, tool: str, digest: str) -> Optional[str]:
+    key = _pending_key(tool_call_id, tool, digest)
     with _pending_lock:
-        queued = _pending.get((tool_call_id, tool, digest))
+        queued = _pending.get(key)
         if not queued:
             return None
         decision_id = queued.pop(0)
         if not queued:
-            _pending.pop((tool_call_id, tool, digest), None)
+            _pending.pop(key, None)
         return decision_id
 
 
@@ -145,17 +155,22 @@ def _claim(decision_id: str, digest: str) -> Optional[dict]:
     return record
 
 
-def _finish(decision_id: str, status: str, result: str) -> None:
+def _finish(decision_id: str, status: str, result: str | dict) -> None:
+    """Store the outcome losslessly (JSON of the string or the multimodal envelope), so a replay
+    returns exactly what the first execution returned."""
     with closing(_connect()) as con, con:
         con.execute("UPDATE decisions SET status = ?, result = ?, updated = ? WHERE id = ?",
-                    (status, result[:_RESULT_CHARS], time.time(), decision_id))
+                    (status, json.dumps(result, ensure_ascii=False), time.time(), decision_id))
 
 
-def _replay(tool: str, decision_id: str, record: dict) -> str:
+def _replay(tool: str, decision_id: str, record: dict) -> str | dict:
     from tools.registry import tool_error
     status = record["status"]
     if status in ("applied", "failed"):
-        return record.get("result") or ""
+        if record.get("result") is None:
+            return tool_error(f"{tool} decision {decision_id} was already {status}; its stored result has "
+                              "expired. It was not run again.", decision_id=decision_id, decision_status=status)
+        return json.loads(record["result"])
     messages = {
         "applying": f"{tool} decision {decision_id} is already being applied; it was not run again.",
         "unconfirmed": (f"UNCONFIRMED: {tool} decision {decision_id} started applying but the process stopped "
@@ -168,7 +183,7 @@ def _replay(tool: str, decision_id: str, record: dict) -> str:
 
 
 def run_once(tool: str, args: dict, decision_id: str, apply: Callable[[], Any],
-             normalize: Callable[[Any], str]) -> str:
+             normalize: Callable[[Any], str | dict]) -> str | dict:
     """Run ``apply()`` at most once for ``decision_id``; every later call returns the stored outcome."""
     digest = args_digest(args)
     record = _claim(decision_id, digest)
@@ -186,7 +201,7 @@ def run_once(tool: str, args: dict, decision_id: str, apply: Callable[[], Any],
     return result
 
 
-def apply_approved(entry, args: dict, kwargs: dict, normalize: Callable[[Any], str]) -> str:
+def apply_approved(entry, args: dict, kwargs: dict, normalize: Callable[[Any], str | dict]) -> str | dict:
     """Dispatch for a tool that declared ``apply``: only from a decision the gate approved for
     these exact args, and at most once per decision."""
     from tools.approval_context import _approval_tool_call_id

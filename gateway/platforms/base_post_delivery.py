@@ -26,3 +26,12 @@ async def run_post_delivery_callback(callback: Any, timeout: float) -> None:
             result = callback()
             if inspect.isawaitable(result):
                 await asyncio.wait_for(result, timeout=timeout)
+
+
+def held_for_gateway_drain(adapter: Any, session_key: str) -> bool:
+    """True while a restart has closed admission and the session's queued follow-up must stay in
+    the slot: the shutdown flush persists it for the next process, where a drain task would only
+    see it refused and dropped (#82381). A wake admitted before the drain still runs here."""
+    event = adapter._pending_messages.get(session_key)
+    return (bool(getattr(getattr(adapter, "gateway_runner", None), "_draining", False))
+            and event is not None and getattr(event, "_admitted_before_drain", False) is not True)

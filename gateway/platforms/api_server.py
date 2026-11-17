@@ -238,7 +238,7 @@ def _clean_request_string(value: Any) -> Optional[str]:
 from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
 from gateway.platforms.api_server_errors import (
     _error_response, _invalid_request, _openai_error, _redact_api_error_text, error_body_middleware,
-    REQUEST_ID_KEY, stamp_request_id)
+    current_request_id, stamp_request_id)
 from gateway.platforms.api_server_schema import schema_route
 
 
@@ -1349,7 +1349,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "method": self._clean_log_value(request.method, max_len=16),
             "path": self._clean_log_value(request.path_qs, max_len=500),
             "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
-            "request_id": self._clean_log_value(request.get(REQUEST_ID_KEY, ""), max_len=128),
+            "request_id": self._clean_log_value(current_request_id.get(), max_len=128),
             # The Portal user a peer pass holder signed in as; set by the dashboard's /api/peer route.
             "peer_principal": self._clean_log_value(request.headers.get("X-Hermes-Peer-Principal", ""), max_len=128)}
 

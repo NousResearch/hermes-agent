@@ -18,6 +18,7 @@ import json
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
@@ -30,7 +31,9 @@ except ImportError:  # the adapter reports the missing dependency; this module m
 from agent.redact import redact_sensitive_text
 
 REQUEST_ID_HEADER = "X-Request-Id"
-REQUEST_ID_KEY = "hermes_request_id"  # request-scoped storage slot set by error_body_middleware
+REQUEST_ID_KEY = "hermes_request_id"  # request slot read by stamp_request_id
+# The in-flight request's id for log lines (audit suffixes) emitted while its handler runs.
+current_request_id: ContextVar[str] = ContextVar("api_server_request_id", default="")
 _REQUEST_ID_RE = re.compile(r"[\x21-\x7e]{1,128}")
 # Statuses a client may retry when the code is not in the table (or absent).
 _RETRYABLE_STATUSES = frozenset({408, 429, 503, 504})
@@ -170,7 +173,11 @@ async def _error_body_middleware(request: web.Request, handler):
     """Bind this request's id (read back by audit logs and ``stamp_request_id``) and enrich
     its error body."""
     request[REQUEST_ID_KEY] = request_id = request_id_for(request)
-    response = await handler(request)
+    token = current_request_id.set(request_id)
+    try:
+        response = await handler(request)
+    finally:
+        current_request_id.reset(token)
     enrich_error_response(response, request_id)
     return response
 

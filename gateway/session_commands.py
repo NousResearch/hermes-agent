@@ -418,6 +418,28 @@ def _session_workspace(runner, source):
         reset_session_cwd(cwd_token)
 
 
+def _command_source_denial(local, command, source):
+    """The refusal for a viewer whose command cannot run on this session, else None (#153927).
+
+    ``authorize_local_source`` answers True (this runtime's live local route), False (a LOCAL
+    source naming a profile this runtime does not serve — a forged one, so a real denial) or None
+    (no local route at all). None is the reported case: the session belongs to a messaging chat,
+    so the attached viewer is in the wrong chat rather than unauthorized. ``execute_command`` runs
+    a command against the session's own local policy, which such a session has none of here, so
+    the refusal names where the command does run instead of the bare ``permission_denied`` the CLI
+    printed verbatim (it reads as an unexplained authorization failure).
+    """
+    if local is False:
+        return RuntimeStoreError('permission_denied')
+    if local is None:
+        platform = getattr(getattr(source, 'platform', None), 'value', None)
+        where = (f'the {platform} chat that owns this session' if platform
+                 else 'the surface that owns this session')
+        return RuntimeStoreError('unsupported_command', field='session_source',
+                                 detail=f'/{command} runs in {where}, not from this viewer')
+    return None
+
+
 async def execute_command(connection, ref, params, *, dispatch=False):
     authority, actor = connection.authority, connection.actor
     authority.authorize(actor, ref, 'session:read')
@@ -463,8 +485,10 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if is_history_mount(live):
         raise read_only()  # no policy or agent to run even a read command against
     from gateway.session_local import authorize_local_source
-    if authorize_local_source(authority.runner, live.source) is not True:
-        raise RuntimeStoreError('permission_denied')
+    denial = _command_source_denial(
+        authorize_local_source(authority.runner, live.source), canonical, live.source)
+    if denial is not None:
+        raise denial
     if capability != 'session:read':
         authority._require_admission_open()
     if definition is not None and (canonical in _INFO_READS or canonical in _OWNER_COMMANDS

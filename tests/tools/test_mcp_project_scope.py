@@ -1142,3 +1142,47 @@ def test_an_in_flight_call_survives_a_rekey_and_stays_releasable(probe, monkeypa
         worker.join(timeout=30)
         shutdown_mcp_servers(scope="rekey2-scope", names={"cwdprobe"})
         _reap_bare_keyed_clones()
+
+
+def test_cancelled_eviction_shutdown_hands_child_to_reaper(monkeypatch):
+    """Cancelling a concurrent.futures.Future must pass evicted children to the reaper.
+    The default clone limit is used: one victim and a full set of live project entries.
+    """
+    from concurrent.futures import Future
+
+    from agent import async_utils
+    from tools import mcp_tool, mcp_tool_project_scope as scope
+
+    name = "cancelled-eviction-shutdown"
+    victim_key = (name, "/old-project")
+    keep_keys = [
+        (name, f"/project-{n}")
+        for n in range(scope._MAX_SCOPED_TRANSPORTS_PER_SERVER)
+    ]
+    victim = mcp_tool.MCPServerTask(name)
+    victim._last_tool_call_at = 1.0
+    kept = [mcp_tool.MCPServerTask(name) for _ in keep_keys]
+    for n, clone in enumerate(kept, start=2):
+        clone._last_tool_call_at = float(n)
+    shutdown_future = Future()
+    handed_off = []
+
+    def _schedule(coro, _loop, **_kwargs):
+        coro.close()  # cancellation before shutdown starts; no child spawned by this test
+        return shutdown_future
+
+    monkeypatch.setattr(async_utils, "safe_schedule_threadsafe", _schedule)
+    monkeypatch.setattr(scope, "_hand_clone_pids_to_reaper", handed_off.append)
+    with scope._core._lock:
+        scope._scoped_servers[victim_key] = victim
+        for key, clone in zip(keep_keys, kept):
+            scope._scoped_servers[key] = clone
+    try:
+        scope._evict_idle_overflow(name, keep=keep_keys[-1])
+        assert victim_key not in scope._scoped_servers
+        assert shutdown_future.cancel()
+        assert handed_off == [victim], "cancellation skipped the orphan-reaper handoff"
+    finally:
+        with scope._core._lock:
+            for key in (victim_key, *keep_keys):
+                scope._scoped_servers.pop(key, None)

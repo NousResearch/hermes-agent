@@ -22,6 +22,7 @@ reconnects on its next call. Eviction design after kvnloo/hermes-agent@33847118.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextvars
 import logging
 import os
@@ -399,7 +400,7 @@ def _evict_idle_overflow(key: Any, *, keep: tuple) -> None:
         def _reap_if_failed(fut, _clone=clone):
             try:
                 exc = fut.exception()
-            except asyncio.CancelledError:  # the shutdown will not run; the reaper owns the child
+            except (asyncio.CancelledError, concurrent.futures.CancelledError):  # no shutdown; reaper owns child
                 logger.warning("MCP server '%s': the evicted transport's shutdown was cancelled",
                                _clone.name)
                 _hand_clone_pids_to_reaper(_clone)

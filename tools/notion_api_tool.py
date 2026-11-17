@@ -122,11 +122,41 @@ def _notion_api_handler(args: dict, **_kw) -> str:
     if not shutil.which("ntn"):
         return tool_error("Notion CLI 'ntn' is not installed on this host.")
 
+    if body is not None:
+        try:
+            json.dumps(body)
+        except (TypeError, ValueError) as e:
+            return tool_error(f"body is not JSON-serializable: {e}")
+
+    # Fork boundary (education design 5a): a profile with notion.write_guard
+    # gets every non-read request checked against its rules before ntn runs.
+    # Mirrored in the model_tools execution backstop. Inert when unguarded.
+    from tools.notion_write_guard import guard_denial
+    denial = guard_denial(method, path, body)
+    if denial:
+        return tool_error(denial)
+
+    ok, data = _run_ntn(path, method, body)
+    if not ok:
+        return tool_error(str(data))
+    if data is None:
+        return tool_result({"ok": True, "data": None})
+    if isinstance(data, str):
+        # Non-JSON payload (e.g. a raw markdown body) — return it as text.
+        return tool_result({"ok": True, "text": data})
+    return tool_result({"ok": True, "data": data})
+
+
+def _run_ntn(path: str, method: str, body) -> tuple[bool, object]:
+    """Run ``ntn api <path> -X <method>`` (body JSON on stdin).
+
+    Returns ``(True, parsed_json | raw_text | None)`` or ``(False, error)``.
+    Shared with the write guard's target lookups (tools/notion_write_guard.py)
+    so both use the same credentials path.
+    """
     env = _ntn_env()
     if not env.get("NOTION_API_TOKEN"):
-        return tool_error(
-            "Notion token not configured (set NOTION_API_KEY or NOTION_API_TOKEN)."
-        )
+        return False, "Notion token not configured (set NOTION_API_KEY or NOTION_API_TOKEN)."
 
     argv = ["ntn", "api", path, "-X", method]
     stdin_data = None
@@ -136,7 +166,7 @@ def _notion_api_handler(args: dict, **_kw) -> str:
             # subprocess feeds this via input= below.
             stdin_data = json.dumps(body)
         except (TypeError, ValueError) as e:
-            return tool_error(f"body is not JSON-serializable: {e}")
+            return False, f"body is not JSON-serializable: {e}"
 
     try:
         proc = subprocess.run(
@@ -148,9 +178,9 @@ def _notion_api_handler(args: dict, **_kw) -> str:
             env=env,
         )
     except subprocess.TimeoutExpired:
-        return tool_error(f"ntn timed out after {_NTN_TIMEOUT_SECONDS}s ({method} {path}).")
+        return False, f"ntn timed out after {_NTN_TIMEOUT_SECONDS}s ({method} {path})."
     except Exception as e:  # pragma: no cover - defensive
-        return tool_error(f"ntn invocation failed: {e}")
+        return False, f"ntn invocation failed: {e}"
 
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
@@ -158,16 +188,14 @@ def _notion_api_handler(args: dict, **_kw) -> str:
     if proc.returncode != 0:
         detail = stderr or stdout or f"exit code {proc.returncode}"
         logger.warning("[notion_api] ntn failed (%s %s): %s", method, path, detail)
-        return tool_error(f"Notion API error: {detail}")
+        return False, f"Notion API error: {detail}"
 
     if not stdout:
-        return tool_result({"ok": True, "data": None})
+        return True, None
     try:
-        data = json.loads(stdout)
+        return True, json.loads(stdout)
     except ValueError:
-        # Non-JSON payload (e.g. a raw markdown body) — return it as text.
-        return tool_result({"ok": True, "text": stdout})
-    return tool_result({"ok": True, "data": data})
+        return True, stdout
 
 
 def _check_notion_api() -> bool:

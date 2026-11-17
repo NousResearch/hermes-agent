@@ -447,9 +447,11 @@ def _audit(action: str, target: str) -> None:
 
 
 def _write_guard_enabled(cfg: dict) -> bool:
-    notion = cfg.get("notion") if isinstance(cfg.get("notion"), dict) else {}
-    guard = notion.get("write_guard")
-    return isinstance(guard, dict) and guard.get("enabled") is True
+    """True iff the Notion write guard is enforcing for this profile — the
+    SAME predicate the guard itself uses, so "enabled" can never mean "off"
+    (an enabled-but-invalid block enforces by denying every write)."""
+    from tools.notion_write_guard import is_enforcing
+    return is_enforcing(cfg)
 
 
 def _int_arg(value, name: str, *, nullable: bool = False):

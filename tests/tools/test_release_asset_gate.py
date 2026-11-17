@@ -148,3 +148,55 @@ def test_slack_unscoped_is_gate_error(monkeypatch):
     monkeypatch.setattr(ss, "get_secret", unscoped)
     with pytest.raises(g.GateError):
         _run_async(g.post_announcement("C1", "x"))
+
+
+def test_row_state_reads_title_and_refuses_trashed():
+    p = _page()
+    p["properties"]["Name"] = {"type": "title", "title": [
+        {"plain_text": "Help article · "}, {"plain_text": "Account points"}]}
+    assert g.row_state(p, DS).title == "Help article · Account points"
+    for flag in ("archived", "in_trash"):
+        q = _page()
+        q[flag] = True
+        with pytest.raises(g.RowStopped, match="archived or in the trash"):
+            g.row_state(q, DS)
+
+
+def test_fetch_block_tree_paginates_and_recurses(monkeypatch):
+    import agent.secret_scope as ss
+    monkeypatch.setattr(ss, "get_secret", lambda n, d=None: "tok" if n == "NOTION_API_KEY" else None)
+    calls = []
+    page = DS.replace("-", "")
+
+    async def fake(method, url, headers, **kw):
+        calls.append((url, dict(kw.get("params") or {})))
+        if url.endswith(f"/blocks/{page}/children"):
+            if "start_cursor" not in kw["params"]:
+                return 200, {"results": [{"id": "b1", "type": "paragraph", "has_children": False}],
+                             "has_more": True, "next_cursor": "c2"}
+            return 200, {"results": [{"id": "b2", "type": "bulleted_list_item", "has_children": True},
+                                     {"id": "b3", "type": "child_page", "has_children": True}],
+                         "has_more": False}
+        if url.endswith("/blocks/b2/children"):
+            return 200, {"results": [{"id": "b21", "type": "paragraph", "has_children": False}],
+                         "has_more": False}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(g, "_http_json", fake)
+    tree = _run_async(g.fetch_block_tree(DS))
+    assert [b["id"] for b in tree] == ["b1", "b2", "b3"]
+    assert [c["id"] for c in tree[1]["children"]] == ["b21"]
+    assert "children" not in tree[2]  # never descends into a child page
+    assert calls[1][1]["start_cursor"] == "c2"
+
+
+def test_fetch_block_tree_error_raises(monkeypatch):
+    import agent.secret_scope as ss
+    monkeypatch.setattr(ss, "get_secret", lambda n, d=None: "tok" if n == "NOTION_API_KEY" else None)
+
+    async def fake(method, url, headers, **kw):
+        return 404, {"message": "Could not find block"}
+
+    monkeypatch.setattr(g, "_http_json", fake)
+    with pytest.raises(g.GateError, match="404"):
+        _run_async(g.fetch_block_tree(DS))

@@ -100,16 +100,45 @@ def test_veto_settings_defaults():
     assert channel == "C1" and hours == 2
 
 
-def test_pending_roundtrip_and_list():
-    pid = au.save_pending("zendesk_create_draft", {"request": {"title": "T"}, "status": "pending"})
+def test_pending_roundtrip_signed_and_list():
+    pid = au.new_pending_id()
     assert len(pid) == 12
+    au.save_pending("zendesk_create_draft", pid, {"row": "r1", "not_before": "t"}, title="T")
     rec = au.load_pending("zendesk_create_draft", pid)
-    assert rec["request"] == {"title": "T"} and rec["pending_id"] == pid
+    assert rec["signed"] == {"row": "r1", "not_before": "t"} and rec["status"] == "pending"
+    assert rec["title"] == "T" and au.verify_pending(rec)
     au.update_pending("zendesk_create_draft", pid, status="done", article_id=5)
     rec = au.load_pending("zendesk_create_draft", pid)
-    assert rec["status"] == "done" and rec["article_id"] == 5
+    assert rec["status"] == "done" and rec["article_id"] == 5 and au.verify_pending(rec)
     assert [r["pending_id"] for r in au.list_pending("zendesk_create_draft")] == [pid]
     assert au.list_pending("other_action") == []
+    with pytest.raises(ValueError):
+        au.update_pending("zendesk_create_draft", pid, signed={"row": "evil"})
+    with pytest.raises(ValueError):
+        au.save_pending("zendesk_create_draft", pid, {"row": "again"})
+
+
+def test_tampered_pending_record_fails_verification():
+    import json
+    pid = au.new_pending_id()
+    au.save_pending("zendesk_create_draft", pid, {"row": "r1", "not_before": "t"})
+    path = au.autonomy_dir() / "pending" / "zendesk_create_draft" / f"{pid}.json"
+    rec = json.loads(path.read_text())
+    rec["signed"]["not_before"] = "1970-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(rec))
+    assert au.verify_pending(au.load_pending("zendesk_create_draft", pid)) is False
+    assert au.verify_pending({"pending_id": pid}) is False
+
+
+def test_hmac_key_is_private_and_stable():
+    import stat
+    pid = au.new_pending_id()
+    au.save_pending("zendesk_create_draft", pid, {"x": 1})
+    key = au.autonomy_dir() / ".hmac_key"
+    assert stat.S_IMODE(key.stat().st_mode) == 0o600
+    first = key.read_text()
+    au.save_pending("zendesk_create_draft", au.new_pending_id(), {"x": 2})
+    assert key.read_text() == first
 
 
 def test_pending_id_rejects_traversal():
@@ -117,3 +146,33 @@ def test_pending_id_rejects_traversal():
     assert au.load_pending("zendesk_create_draft", "abc") is None
     with pytest.raises(ValueError):
         au.update_pending("zendesk_create_draft", "../x", status="done")
+    with pytest.raises(ValueError):
+        au.save_pending("../evil", au.new_pending_id(), {})
+
+
+def test_ledger_roundtrip_and_key_validation():
+    assert au.ledger_get("zendesk_create_draft", "abc123") is None
+    au.ledger_put("zendesk_create_draft", "abc123", {"article_id": 5})
+    assert au.ledger_get("zendesk_create_draft", "abc123") == {"article_id": 5}
+    for bad in ("../x", "a/b", "", "x" * 65):
+        with pytest.raises(ValueError):
+            au.ledger_put("zendesk_create_draft", bad, {})
+
+
+def test_exclusive_lock_blocks_second_holder_and_releases():
+    with au.exclusive("zendesk_create_draft", "row1"):
+        with pytest.raises(au.AutonomyBusy):
+            with au.exclusive("zendesk_create_draft", "row1"):
+                pass
+        with au.exclusive("zendesk_create_draft", "row2"):
+            pass
+    with au.exclusive("zendesk_create_draft", "row1"):
+        pass  # released
+
+
+def test_veto_expiry_hours():
+    assert au.veto_expiry_hours({}) == 72
+    assert au.veto_expiry_hours(_cfg(veto_expiry_hours=24)) == 24
+    for bad in (0, -1, "x"):
+        with pytest.raises(au.AutonomyConfigError):
+            au.veto_expiry_hours(_cfg(veto_expiry_hours=bad))

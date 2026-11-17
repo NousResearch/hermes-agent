@@ -44,6 +44,7 @@ class RowState:
     asset_type: str
     destination: str
     url: str
+    title: str = ""
 
 
 def _secret(*names: str) -> str:
@@ -118,13 +119,72 @@ def row_state(page: dict, expected_parent: str) -> RowState:
     have = {_hex_id(str(parent.get(k) or "")) for k in ("data_source_id", "database_id")}
     if want not in have:
         raise GateError("That Notion page is not a Release Assets row.")
+    if page.get("archived") or page.get("in_trash") or page.get("is_archived"):
+        raise RowStopped("That Release Assets row is archived or in the trash.")
     props = page.get("properties") if isinstance(page.get("properties"), dict) else {}
+    title = ""
+    for prop in props.values():
+        if isinstance(prop, dict) and prop.get("type") == "title":
+            title = "".join(str(t.get("plain_text") or "") for t in prop.get("title") or []
+                            if isinstance(t, dict)).strip()
+            break
     return RowState(
         status=_select_name(props.get("Status")),
         asset_type=_select_name(props.get("Asset type")),
         destination=_select_name(props.get("Destination")),
         url=str(page.get("url") or ""),
+        title=title,
     )
+
+
+_MAX_BLOCKS = 2000
+_MAX_BLOCK_DEPTH = 8
+
+
+async def fetch_block_tree(page_id: str) -> list[dict]:
+    """The page's content as a block list, each block with its ``children``
+    fetched (paginated, depth- and count-capped). Raises ``GateError``."""
+    hexid = _hex_id(page_id)
+    if not re.fullmatch(r"[0-9a-f]{32}", hexid):
+        raise GateError(f"{page_id!r} is not a Notion page id.")
+    token = _secret("NOTION_API_KEY", "NOTION_API_TOKEN")
+    if not token:
+        raise GateError("Notion not configured (NOTION_API_KEY) — cannot read the row's content.")
+    headers = {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION}
+    count = 0
+
+    async def children(block_id: str, depth: int) -> list[dict]:
+        nonlocal count
+        out: list[dict] = []
+        cursor = None
+        while True:
+            params = {"page_size": "100"}
+            if cursor:
+                params["start_cursor"] = cursor
+            try:
+                status, data = await _http_json(
+                    "GET", f"https://api.notion.com/v1/blocks/{block_id}/children",
+                    headers, params=params)
+            except Exception as e:
+                raise GateError(f"Notion request failed: {e}") from e
+            if status != 200:
+                raise GateError(f"Notion API error (HTTP {status}): {str(data.get('message', ''))[:200]}")
+            for block in data.get("results") or []:
+                count += 1
+                if count > _MAX_BLOCKS:
+                    raise GateError(f"The row's content has more than {_MAX_BLOCKS} blocks.")
+                if block.get("has_children") and block.get("type") not in ("child_page", "child_database"):
+                    if depth >= _MAX_BLOCK_DEPTH:
+                        raise GateError("The row's content is nested too deeply.")
+                    block["children"] = await children(str(block.get("id")), depth + 1)
+                out.append(block)
+            if not data.get("has_more"):
+                return out
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return out
+
+    return await children(hexid, 0)
 
 
 # ── Slack ────────────────────────────────────────────────────────────────

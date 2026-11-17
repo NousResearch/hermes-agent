@@ -29,11 +29,14 @@ Design: docs/superpowers/specs/2026-11-16-product-education-teammate-design.md
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -165,6 +168,19 @@ def add_working_hours(start: datetime, hours: float, wh: WorkingHours) -> dateti
     raise AutonomyConfigError("autonomy.working_hours: veto window never closes")
 
 
+def veto_expiry_hours(config: Optional[dict] = None) -> float:
+    """Wall-clock hours after ``not_before`` at which an unexecuted veto
+    action expires (``autonomy.veto_expiry_hours``, default 72)."""
+    raw = _block(_load_config(config)).get("veto_expiry_hours", 72)
+    try:
+        hours = float(raw)
+    except (TypeError, ValueError):
+        raise AutonomyConfigError("autonomy.veto_expiry_hours must be a number")
+    if hours <= 0:
+        raise AutonomyConfigError("autonomy.veto_expiry_hours must be > 0")
+    return hours
+
+
 def veto_settings(config: Optional[dict] = None) -> tuple[str, float, WorkingHours]:
     """Return ``(announce_channel, wait_working_hours, working_hours)``."""
     config = _load_config(config)
@@ -179,31 +195,46 @@ def veto_settings(config: Optional[dict] = None) -> tuple[str, float, WorkingHou
     return channel, wait, working_hours_from_config(config)
 
 
-# ── pending (veto-window) actions ────────────────────────────────────────
+# ── on-disk state: pending actions, ledger, locks ────────────────────────
+#
+# Everything lives under ``$HERMES_HOME/autonomy/``, which the file tools treat
+# as a protected path (agent/file_safety.py) — the agent can neither read nor
+# write it. Pending records are additionally HMAC-signed with a host-local key
+# (``autonomy/.hmac_key``, 0600) so a hand-edited record is refused rather
+# than executed. Not a boundary against a shell user on the host.
 
 _PENDING_ID = re.compile(r"^[0-9a-f]{12}$")
 _ACTION_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+_KEY = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-def _pending_dir(action: str) -> Path:
-    if not _ACTION_NAME.match(action):
-        raise ValueError(f"invalid action name {action!r}")
+class AutonomyBusy(RuntimeError):
+    """Another execution holds the lock for this key (or crashed holding it)."""
+
+
+def autonomy_dir() -> Path:
     from hermes_constants import get_hermes_home
-    return get_hermes_home() / "autonomy" / "pending" / action
+    return get_hermes_home() / "autonomy"
 
 
-def _pending_path(action: str, pending_id: str) -> Path:
-    if not isinstance(pending_id, str) or not _PENDING_ID.match(pending_id):
-        raise ValueError(f"invalid pending id {pending_id!r}")
-    return _pending_dir(action) / f"{pending_id}.json"
+def _check_action(action: str) -> str:
+    if not _ACTION_NAME.match(action or ""):
+        raise ValueError(f"invalid action name {action!r}")
+    return action
+
+
+def _check_key(key: str) -> str:
+    if not isinstance(key, str) or not _KEY.match(key):
+        raise ValueError(f"invalid key {key!r}")
+    return key
 
 
 def _atomic_write(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".pending-", suffix=".tmp")
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
+            json.dump(data, fh, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -213,11 +244,60 @@ def _atomic_write(path: Path, data: dict) -> None:
         raise
 
 
-def save_pending(action: str, record: dict) -> str:
-    """Persist a new pending action; returns its ``pending_id``."""
-    pending_id = secrets.token_hex(6)
-    _atomic_write(_pending_path(action, pending_id), {**record, "pending_id": pending_id})
-    return pending_id
+def _read_json(path: Path) -> Optional[dict]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+# signing
+
+def _hmac_key() -> bytes:
+    path = autonomy_dir() / ".hmac_key"
+    try:
+        return bytes.fromhex(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:  # another process won the race
+        return bytes.fromhex(path.read_text(encoding="utf-8").strip())
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(secrets.token_hex(32))
+    return bytes.fromhex(path.read_text(encoding="utf-8").strip())
+
+
+def _signature(pending_id: str, signed: dict) -> str:
+    msg = json.dumps({"pending_id": pending_id, "signed": signed},
+                     sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hmac.new(_hmac_key(), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+# pending (veto-window) actions
+
+def new_pending_id() -> str:
+    return secrets.token_hex(6)
+
+
+def _pending_path(action: str, pending_id: str) -> Path:
+    if not isinstance(pending_id, str) or not _PENDING_ID.match(pending_id):
+        raise ValueError(f"invalid pending id {pending_id!r}")
+    return autonomy_dir() / "pending" / _check_action(action) / f"{pending_id}.json"
+
+
+def save_pending(action: str, pending_id: str, signed: dict, **state) -> None:
+    """Persist a new pending action. ``signed`` holds everything execution
+    trusts (what to do, when, where it was announced) and is HMAC-signed;
+    ``state`` is the mutable status (``status``, outcome fields)."""
+    path = _pending_path(action, pending_id)
+    if path.exists():
+        raise ValueError(f"pending id {pending_id} already exists")
+    record = {"status": "pending", **state, "pending_id": pending_id,
+              "signed": signed, "sig": _signature(pending_id, signed)}
+    _atomic_write(path, record)
 
 
 def load_pending(action: str, pending_id: str) -> Optional[dict]:
@@ -225,22 +305,35 @@ def load_pending(action: str, pending_id: str) -> Optional[dict]:
         path = _pending_path(action, pending_id)
     except ValueError:
         return None
+    return _read_json(path)
+
+
+def verify_pending(record: dict) -> bool:
+    """True iff the record's signed part is untampered."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+        signed, sig, pid = record["signed"], record["sig"], record["pending_id"]
+        if not isinstance(signed, dict) or not isinstance(sig, str):
+            return False
+        return hmac.compare_digest(_signature(pid, signed), sig)
+    except Exception:
+        return False
 
 
-def update_pending(action: str, pending_id: str, **fields) -> None:
+def update_pending(action: str, pending_id: str, **state) -> None:
+    """Update a record's mutable state. The signed part cannot be changed."""
+    if {"signed", "sig", "pending_id"} & set(state):
+        raise ValueError("the signed part of a pending record is immutable")
     path = _pending_path(action, pending_id)
-    record = load_pending(action, pending_id) or {"pending_id": pending_id}
-    record.update(fields)
+    record = _read_json(path)
+    if record is None:
+        raise ValueError(f"no pending record {pending_id}")
+    record.update(state)
     _atomic_write(path, record)
 
 
 def list_pending(action: str) -> list[dict]:
     """All records for ``action`` (any status), oldest file first."""
-    directory = _pending_dir(action)
+    directory = autonomy_dir() / "pending" / _check_action(action)
     if not directory.is_dir():
         return []
     out = []
@@ -249,3 +342,47 @@ def list_pending(action: str) -> list[dict]:
         if rec is not None:
             out.append(rec)
     return out
+
+
+# ledger: what an action already did, per key (e.g. one draft per source row)
+
+def _ledger_path(action: str, key: str) -> Path:
+    return autonomy_dir() / "ledger" / _check_action(action) / f"{_check_key(key)}.json"
+
+
+def ledger_get(action: str, key: str) -> Optional[dict]:
+    return _read_json(_ledger_path(action, key))
+
+
+def ledger_put(action: str, key: str, value: dict) -> None:
+    _atomic_write(_ledger_path(action, key), value)
+
+
+# locks
+
+@contextmanager
+def exclusive(action: str, key: str):
+    """Hold an O_EXCL lock file for (action, key) for the duration.
+
+    Raises ``AutonomyBusy`` if it is already held. A process that dies while
+    holding it leaves the file behind ON PURPOSE: it may have died after an
+    external write, so the key stays locked until an operator checks and
+    removes ``autonomy/locks/<action>/<key>.lock``.
+    """
+    path = autonomy_dir() / "locks" / _check_action(action) / f"{_check_key(key)}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        raise AutonomyBusy(
+            f"{action} for {key} is already running, or a previous run died mid-way "
+            f"(lock {path}). An operator must check the target system, then remove the lock.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"{os.getpid()}\n")
+        yield
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass

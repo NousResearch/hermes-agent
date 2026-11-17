@@ -183,3 +183,24 @@ def test_sshd_process_running_matches_comm_exactly(tmp_path, monkeypatch):
     assert audit._sshd_process_running(tmp_path / "missing") is None
 
 
+@pytest.mark.parametrize(
+    ("tcp6_permission_denied", "should_warn"),
+    [(False, False), (True, True)],
+)
+def test_stock_ssh_finding_requires_readable_ipv6_socket_table(monkeypatch, tcp6_permission_denied, should_warn):
+    """Socket-activated SSH may be listening on IPv6 before an sshd process exists."""
+    monkeypatch.setattr(audit, "_iter_sshd_config_lines", lambda: list(_STOCK_SSHD_LINES))
+    monkeypatch.setattr(audit, "_sshd_process_running", lambda: False, raising=False)
+
+    def read_socket_table(path, *args, **kwargs):
+        if path == Path("/proc/net/tcp"):
+            return _TCP_HEADER + "\n"  # IPv4 has no listener
+        if path == Path("/proc/net/tcp6"):
+            if tcp6_permission_denied:
+                raise PermissionError("IPv6 socket table not readable")
+            return _TCP_HEADER + "\n"  # no IPv6 listener either
+        raise AssertionError(f"unexpected read from {path}")
+
+    monkeypatch.setattr(Path, "read_text", read_socket_table)
+    finding = audit._ssh_password_auth_enabled()
+    assert (finding is not None) is should_warn

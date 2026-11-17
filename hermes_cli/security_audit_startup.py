@@ -68,8 +68,10 @@ def _listening_tcp_ports(
     for path in paths:
         try:
             rows = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        except FileNotFoundError:
+            continue  # an absent protocol table cannot contain a listener
         except OSError:
-            continue
+            return None  # a partially unreadable /proc cannot prove no SSH service
         readable = True
         for row in rows[1:]:  # first line is the column header
             fields = row.split()

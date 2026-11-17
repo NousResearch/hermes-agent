@@ -1,12 +1,16 @@
-"""A busy cron ledger on the firer's informational progress stamp must not cost a live run its
-supervision: the run completes, the job is not paused and the owner gets no failure notice."""
+"""A busy or unwritable cron ledger on the firer's informational progress stamp must not cost a
+live run its supervision: the run completes, the job is not paused and the owner gets no failure
+notice."""
 import asyncio
+import functools
 import sqlite3
 from contextlib import asynccontextmanager
 
+import pytest
+
 from cron import executions, jobs, scheduler
 from cron.scheduler_worker_failure import record_unknown_worker_outcome
-from hermes_cli import gateway_client
+from hermes_cli import gateway_client, sqlite_util
 
 
 def _fire(tmp_path, monkeypatch, status):
@@ -51,6 +55,9 @@ def _fire(tmp_path, monkeypatch, status):
 
 
 def test_locked_ledger_on_progress_stamp_keeps_supervising_the_run(tmp_path, monkeypatch, caplog):
+    # The ledger's 5 s busy timeout, shortened so the held lock fails fast.
+    monkeypatch.setattr(sqlite_util, 'open_db',
+                        functools.partial(sqlite_util.open_db, busy_timeout_ms=50))
     holder = []
     stamp = executions.touch_execution_progress
 
@@ -92,14 +99,16 @@ def test_owner_lost_mid_run_still_pauses_and_notifies(tmp_path, monkeypatch):
     assert len(notices) == 1 and 'Gateway disconnected' in notices[0]
 
 
-def test_transient_database_open_error_on_progress_stamp_does_not_pause_run(
-        tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize('message', ['unable to open database file', 'disk I/O error',
+                                     'database or disk is full'])
+def test_transient_storage_error_on_progress_stamp_does_not_pause_run(
+        tmp_path, monkeypatch, caplog, message):
     """A non-lock SQLite failure in an informational stamp cannot cost a live run."""
     stamped = []
 
     def touch(execution_id):
         stamped.append(execution_id)
-        raise sqlite3.OperationalError('unable to open database file')
+        raise sqlite3.OperationalError(message)
 
     def status(n, db):
         if n == 1:
@@ -114,4 +123,70 @@ def test_transient_database_open_error_on_progress_stamp_does_not_pause_run(
     assert job['state'] != 'paused'
     assert row['status'] == 'completed'
     assert notices == []
-    assert 'progress stamp skipped: unable to open database file' in caplog.text
+    assert f'progress stamp skipped: {message}' in caplog.text
+
+
+def _unopenable_ledger(tmp_path, kind):
+    """A real ledger path that fails the way a damaged or vanished cron home does."""
+    if kind == 'not a database':
+        path = tmp_path / 'garbage.db'
+        path.write_bytes(b'not sqlite ' * 512)  # sqlite3.DatabaseError, not OperationalError
+        return path
+    if kind == 'a directory':
+        path = tmp_path / 'dir.db'
+        path.mkdir()  # sqlite3.OperationalError: unable to open database file
+        return path
+    blocker = tmp_path / 'cron-home'
+    blocker.write_text('')  # the ledger's parent is a file: OSError before SQLite is reached
+    return blocker / 'executions.db'
+
+
+@pytest.mark.parametrize('kind', ['not a database', 'a directory', 'parent is a file'])
+def test_unopenable_ledger_on_progress_stamp_does_not_pause_run(tmp_path, monkeypatch, caplog, kind):
+    """Any storage failure of the informational stamp, raised by the real stamp code, is skipped."""
+    bad = _unopenable_ledger(tmp_path, kind)
+    stamp = executions.touch_execution_progress
+    raised = []
+
+    def touch(execution_id):
+        good = executions.EXECUTIONS_FILE
+        executions.EXECUTIONS_FILE = bad
+        try:
+            return stamp(execution_id)
+        except Exception as exc:
+            raised.append(exc)
+            raise
+        finally:
+            executions.EXECUTIONS_FILE = good
+
+    def status(n, db):
+        if n == 1:
+            return {'status': 'started', 'progress_at': 'p1'}
+        return {'status': 'terminal', 'result': [True, 'document', 'answer', None]}
+
+    monkeypatch.setattr(executions, 'touch_execution_progress', touch)
+    ok, job, row, polls, notices = _fire(tmp_path, monkeypatch, status)
+    assert len(raised) == 1 and isinstance(raised[0], (sqlite3.Error, OSError))
+    assert ok is True
+    assert polls == 2
+    assert job['state'] != 'paused'
+    assert row['status'] == 'completed'
+    assert notices == []
+    assert 'progress stamp skipped' in caplog.text
+
+
+def test_programming_error_in_progress_stamp_still_surfaces(tmp_path, monkeypatch):
+    """Only storage failures are informational: a bug in the stamp still ends the run loudly."""
+    def touch(execution_id):
+        raise TypeError('stamp bug')
+
+    def status(n, db):
+        return {'status': 'started', 'progress_at': f'p{n}'}
+
+    monkeypatch.setattr(executions, 'touch_execution_progress', touch)
+    ok, job, row, polls, notices = _fire(tmp_path, monkeypatch, status)
+    assert ok is False
+    assert polls == 1
+    assert job['state'] == 'paused'
+    assert row['status'] == 'unknown'
+    assert len(notices) == 1 and 'stamp bug' in notices[0]

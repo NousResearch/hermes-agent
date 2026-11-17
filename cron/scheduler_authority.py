@@ -126,9 +126,12 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 progress = state['progress_at']
                 try:
                     await asyncio.to_thread(touch_execution_progress, request_id)
-                except sqlite3.OperationalError as exc:
-                    # This stamp is informational even if the ledger cannot be opened or written.
-                    # Keep observing the owner; terminal ledger writes still report their errors.
+                except (sqlite3.Error, OSError) as exc:
+                    # This stamp is informational even if the ledger cannot be opened or written:
+                    # any SQLite error (locked, disk full, I/O, not a database) or an OSError from
+                    # creating its directory. Keep observing the owner; the next owner stamp
+                    # retries and terminal ledger writes still report their errors. A bug in the
+                    # stamp itself (any other exception) still ends the run loudly.
                     logger.warning('Cron %s progress stamp skipped: %s', job['id'], exc)
             if state['status'] == 'terminal':
                 job.update(state.get('job_flags') or {})

@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 from collections import namedtuple
 from functools import partial
@@ -84,6 +85,14 @@ _backends: dict[str, ComputerUseBackend] = {}
 _backend_call_locks: dict[str, threading.RLock] = {}
 _backend_permission_modes: dict[str, str] = {}
 _backend_displays: dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
+# Idle release. A cached backend holds a live cua-driver for as long as its session lives, and the session
+# outlives agent-cache eviction on purpose. On a screen inside the terminal backend that driver is a remote
+# exec stream, and an open stream keeps a pausable sandbox (Sprites, Modal...) awake and billed. A backend
+# unused for its profile's Bot Desktop idle window is released; the next call starts a fresh one.
+_backend_last_used: dict[str, float] = {}     # time.monotonic() of the last admission or finished call
+_backend_idle_limits: dict[str, float] = {}   # seconds, read in the owning profile's scope at install; 0 = never
+_IDLE_SWEEP_S = 60.0
+_idle_sweeper_started = threading.Event()
 # Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
 # gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
 # once-per-session escalation warning is tracked here.
@@ -165,11 +174,18 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
     _backend_displays[sid] = desktop_identity()
     _backend_call_locks[sid] = threading.RLock()
+    from tools.bot_desktop.runtime import idle_stop_seconds
+    _backend_idle_limits[sid], _backend_last_used[sid] = idle_stop_seconds(), time.monotonic()
+    if _backend_idle_limits[sid] > 0 and not _idle_sweeper_started.is_set():
+        _idle_sweeper_started.set()
+        # health: allow HX012 -- one process-wide sweep; each backend carries its own profile's limit
+        threading.Thread(target=_idle_sweep_loop, name="computer-use-idle-release", daemon=True).start()
     return backend
 
 def _detach_locked(sid: str) -> tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
     """Remove one session's cache entries. Caller holds ``_backend_lock``."""
     _backend_permission_modes.pop(sid, None), _backend_displays.pop(sid, None)
+    _backend_last_used.pop(sid, None), _backend_idle_limits.pop(sid, None)
     backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
     return backend, call_lock
 
@@ -181,6 +197,32 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
             backend.stop()
     except Exception as e:
         on_error(e)
+
+def release_idle_backends(now: Optional[float] = None) -> list[str]:
+    """Release every cached backend unused for longer than its idle limit; the scoped keys released. A call
+    in flight finishes first (the stop waits for its call lock) and one queued behind it re-admits onto a
+    fresh backend, as for any release."""
+    now = time.monotonic() if now is None else now
+    with _backend_lock:
+        due = [sid for sid, limit in _backend_idle_limits.items()
+               if limit > 0 and now - _backend_last_used.get(sid, now) >= limit]
+        detached = [(sid, *_detach_locked(sid)) for sid in due]
+    for sid, backend, call_lock in detached:
+        _reset_screenshot_dedup(sid)
+        if backend is None:
+            continue
+        logger.info("computer_use backend for session %s idle; released", sid)
+        _stop_backend(backend, call_lock,
+                      lambda e: logger.debug("computer_use idle release failed for session %s", sid, exc_info=True))
+    return due
+
+def _idle_sweep_loop() -> None:
+    while True:
+        time.sleep(_IDLE_SWEEP_S)
+        try:
+            release_idle_backends()
+        except Exception:
+            logger.debug("computer_use idle sweep failed", exc_info=True)
 
 def _scoped_sid(session_id: str) -> str:
     """Cache key for one Hermes session's backend. Outside a served-profile scope it is the bare id
@@ -237,7 +279,13 @@ def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
                 if (_backend_permission_modes.get(sid) != _cua_permission_mode(str(session_id or ""))
                         or backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
                     continue
-            yield backend
+                _backend_last_used[sid] = time.monotonic()
+            try:
+                yield backend
+            finally:
+                with _backend_lock:
+                    if _backends.get(sid) is backend:
+                        _backend_last_used[sid] = time.monotonic()
             return
 
 
@@ -268,6 +316,7 @@ def _shutdown_backend_atexit() -> None:
     with _backend_lock:
         unique = {id(b): (b, _backend_call_locks.get(sid)) for sid, b in _backends.items()}
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
+        _backend_last_used.clear(), _backend_idle_limits.clear()
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():

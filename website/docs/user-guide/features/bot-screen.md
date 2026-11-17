@@ -89,7 +89,11 @@ reverse proxy's access log may record an already-spent ticket.
   `hermes computer-use screen start` refuses; a screen already running is never
   taken down by this check. A screen nobody uses is stopped after
   `bot_desktop.idle_stop_minutes` (default 30) and comes back on the next use, so
-  an instance pays for a desktop only while something is on it. The screen
+  an instance pays for a desktop only while something is on it. A
+  `computer_use` session unused for that same window also closes its
+  cua-driver, which a terminal sandbox that pauses when idle (Sprites, Modal)
+  needs: the driver's open connection would otherwise keep it awake until the
+  session ends. The screen
   applies that window itself too, so it also stops when the gateway that
   started it is gone and never restarts. A screen a human has taken over is
   kept while their viewer keeps it in use; once nothing has used it for four
@@ -342,7 +346,7 @@ bot_desktop:
   geometry: "1440x900"      # screen size; the viewer scales to fit the pane
   auto_start: false         # set true to start on the first computer_use call or headed browser use
   min_free_memory_mb: 1536  # refuse to start below this much free memory (0 = never check)
-  idle_stop_minutes: 30     # stop a screen nobody used for this long (0 = keep it up)
+  idle_stop_minutes: 30     # stop a screen nobody used for this long, and close an unused computer_use driver (0 = keep both)
   placement: auto           # auto | terminal | gateway — see "Where the screen runs"
 ```
 

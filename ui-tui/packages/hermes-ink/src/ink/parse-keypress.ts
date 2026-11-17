@@ -350,7 +350,8 @@ export function parseMultipleKeypresses(
   const burst: TextBurst = { pendingReturn: false, pasteBurstAt: prevState.pasteBurstAt ?? -Infinity }
 
   // Get or create tokenizer
-  const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true, legacyAltEnter: true })
+  const tokenizer =
+    prevState._tokenizer ?? createTokenizer({ x10Mouse: true, legacyAltEnter: true, legacyAltBackspace: true })
 
   // Tokenize the input
   const tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)

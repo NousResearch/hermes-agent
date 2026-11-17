@@ -53,8 +53,8 @@ def gate_env(tmp_path, monkeypatch, request):
     workspace.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "secret.txt").write_text("outside-secret\n")
-    (workspace / "notes.txt").write_text("workspace-notes\n")
+    (outside / "secret.txt").write_text("outside-secret\n", encoding="utf-8")
+    (workspace / "notes.txt").write_text("workspace-notes\n", encoding="utf-8")
     monkeypatch.setenv("TERMINAL_CWD", str(workspace))
     monkeypatch.chdir(workspace)
     hc._LOAD_CONFIG_CACHE.clear()
@@ -88,7 +88,7 @@ def test_workspace_session_grant_does_not_open_other_paths(gate_env):
     assert "error" not in first
     second = _call("write_file", {"path": "sub/b.txt", "content": "two"})
     assert "error" not in second
-    assert (gate_env["workspace"] / "sub" / "b.txt").read_text() == "two"
+    assert (gate_env["workspace"] / "sub" / "b.txt").read_text(encoding="utf-8-sig") == "two"
     assert len(human.prompts) == 1  # the session grant covered the second workspace write
 
     escaped = _call("write_file", {"path": str(gate_env["outside"] / "c.txt"), "content": "x"})
@@ -171,12 +171,12 @@ def test_patch_prompt_leads_with_the_changed_lines(gate_env):
     rows = human.prompts[0][0].splitlines()
     assert "notes.txt" in rows[0] and "line 1" in rows[0] and "1 line changed: -1 +1" in rows[0]
     assert rows[1:3] == ["-workspace-notes", "+1|yeni deger"]
-    assert (gate_env["workspace"] / "notes.txt").read_text() == "workspace-notes\n"
+    assert (gate_env["workspace"] / "notes.txt").read_text(encoding="utf-8-sig") == "workspace-notes\n"
 
 
 def test_patch_header_counts_what_the_short_view_hides(gate_env):
     old = "".join(f"old {i}\n" for i in range(20))
-    (gate_env["workspace"] / "long.txt").write_text(old)
+    (gate_env["workspace"] / "long.txt").write_text(old, encoding="utf-8")
     human = _Human("deny")
     set_approval_callback(human)
     _call("patch", {"path": "long.txt", "old_string": old, "new_string": old.replace("old", "new")})
@@ -218,7 +218,7 @@ def test_write_file_grant_does_not_cover_patch(gate_env):
     assert "error" not in _call("write_file", {"path": "a.txt", "content": "one"})
     _call("patch", {"path": "notes.txt", "old_string": "workspace-notes", "new_string": "changed"})
     assert len(human.prompts) == 2
-    assert (gate_env["workspace"] / "notes.txt").read_text() == "workspace-notes\n"
+    assert (gate_env["workspace"] / "notes.txt").read_text(encoding="utf-8-sig") == "workspace-notes\n"
 
 
 def test_dangerous_match_is_flagged_and_titled_apart_from_a_plain_call(gate_env):
@@ -281,7 +281,7 @@ def test_unreachable_human_is_a_definitive_denial_not_a_pending_prompt(gate_env,
     for result in (first, again):
         assert "cannot be reached" in json.dumps(result) and "Do NOT retry" in json.dumps(result)
     assert not (gate_env["workspace"] / "sub").exists()
-    assert get_current_session_key() not in approval._pending
+    assert get_current_session_key() not in approval._gateway_queues
 
 
 @pytest.mark.parametrize("gate_env", ["dangerous"], indirect=True)

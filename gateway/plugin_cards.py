@@ -12,6 +12,7 @@ own native card there, and the row records that it did.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -110,7 +111,6 @@ def _rate_window(plugin_id: str, session_key: str) -> deque:
 
 
 def _posting_lock(plugin_id: str, session_key: str):
-    import asyncio
     lock = _posting.get((plugin_id, session_key))
     if lock is None:
         lock = _posting[(plugin_id, session_key)] = asyncio.Lock()
@@ -145,7 +145,6 @@ def _resolve(runner, *, session_key: str, origin, plugin_home, plugin_id: str):
 async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: str = "",
                origin: Optional[Mapping[str, Any]] = None) -> dict:
     """Admit *card* into the target conversation's FIFO. Runs on the gateway loop; never raises."""
-    import asyncio
     normalized, detail = validate(card, plugin_id)
     if normalized is None:
         return _err("invalid_card", detail)

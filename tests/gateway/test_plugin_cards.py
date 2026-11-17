@@ -285,6 +285,41 @@ async def test_concurrent_exact_replays_get_one_queued_and_spend_one_slot(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_concurrent_distinct_cards_respect_one_atomic_rate_window(tmp_path, monkeypatch):
+    """The rate check and admission are one critical section: distinct concurrent cards cannot all
+    observe the same open slot before any admission has appended its stamp."""
+    from gateway import plugin_cards
+
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        _serve(runner, monkeypatch)
+        _no_turns(runner)
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        ctx = _ctx()
+        cards = [{**_CARD, 'id': f'distinct-{n}', 'text': f'card {n}'} for n in range(8)]
+
+        results = await asyncio.gather(*[
+            plugin_cards.post(
+                runner,
+                card,
+                plugin_id=ctx.plugin_id,
+                plugin_home=ctx._manager.home_path,
+                session_key=route,
+            )
+            for card in cards
+        ])
+
+        assert sorted(str(result.get('status', result.get('error'))) for result in results) == [
+            'queued' for _ in range(plugin_cards.RATE_LIMIT[0])
+        ] + ['rate_limited', 'rate_limited']
+        assert len(plugin_cards._recent[('cwplug', route)]) == plugin_cards.RATE_LIMIT[0]
+        await authority._drain(ref)
+        assert len(_cards(authority, target)) == plugin_cards.RATE_LIMIT[0]
+    finally:
+        close_stores_under(authority.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
 async def test_a_full_rate_window_still_answers_an_exact_replay(tmp_path, monkeypatch):
     from gateway import plugin_cards
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)

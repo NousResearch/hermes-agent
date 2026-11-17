@@ -70,6 +70,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
+# Import-time value; a re-pointed CHECKPOINT_BASE (tests) still wins. Otherwise
+# the base resolves per call: under gateway.multiplex_profiles one process
+# serves several profiles, and an import-time path would store every
+# profile's checkpoints in the default's home.
+_CHECKPOINT_BASE_AT_IMPORT = CHECKPOINT_BASE
+
+
+def _checkpoint_base() -> Path:
+    if CHECKPOINT_BASE != _CHECKPOINT_BASE_AT_IMPORT:
+        return CHECKPOINT_BASE
+    return get_hermes_home() / "checkpoints"
 
 # Single shared store directory under CHECKPOINT_BASE.
 _STORE_DIRNAME = "store"
@@ -210,7 +221,7 @@ def _project_hash(working_dir: str) -> str:
 
 def _store_path(base: Optional[Path] = None) -> Path:
     """Return the single shared shadow store path."""
-    return (base or CHECKPOINT_BASE) / _STORE_DIRNAME
+    return (base or _checkpoint_base()) / _STORE_DIRNAME
 
 
 def _shadow_repo_path(working_dir: str) -> Path:  # pragma: no cover — kept for BC
@@ -818,7 +829,7 @@ class CheckpointManager:
             if digest is None:
                 return
             working_dir = self.get_working_dir_for_path(str(path))
-            store = _store_path(CHECKPOINT_BASE)
+            store = _store_path(_checkpoint_base())
             dir_hash = _project_hash(working_dir)
             ledger = _load_ledger(store, dir_hash)
             ledger[str(path)] = {"sha256": digest, "ts": time.time()}
@@ -840,7 +851,7 @@ class CheckpointManager:
             return {"success": False, "error": hash_err}
 
         abs_dir = str(_normalize_path(working_dir))
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path(_checkpoint_base())
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
@@ -930,7 +941,7 @@ class CheckpointManager:
     def list_checkpoints(self, working_dir: str) -> List[Dict]:
         """List available checkpoints for a directory (most recent first)."""
         abs_dir = str(_normalize_path(working_dir))
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path(_checkpoint_base())
 
         if not (store / "HEAD").exists():
             return []
@@ -977,7 +988,7 @@ class CheckpointManager:
         entry carries the extra ``workdir`` key so callers can label which
         project a checkpoint belongs to.
         """
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path(_checkpoint_base())
         if not (store / "HEAD").exists():
             return []
         results: List[Dict] = []
@@ -1011,7 +1022,7 @@ class CheckpointManager:
             return {"success": False, "error": hash_err}
 
         abs_dir = str(_normalize_path(working_dir))
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path(_checkpoint_base())
 
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
@@ -1114,7 +1125,7 @@ class CheckpointManager:
             if path_err:
                 return {"success": False, "error": path_err}
 
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path(_checkpoint_base())
 
         if not (store / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
@@ -1264,7 +1275,7 @@ class CheckpointManager:
 
     def _take(self, working_dir: str, reason: str) -> bool:
         """Take a snapshot.  Returns True on success."""
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path(_checkpoint_base())
 
         err = _init_store(store, working_dir)
         if err:
@@ -1808,7 +1819,7 @@ def prune_checkpoints(
 
     Never raises — maintenance must never block interactive startup.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _checkpoint_base()
     result = {
         "scanned": 0,
         "deleted_orphan": 0,
@@ -2062,7 +2073,7 @@ def maybe_auto_prune_checkpoints(
     Returns ``{"skipped": bool, "result": prune_checkpoints-dict,
     "error": optional str}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _checkpoint_base()
     out: Dict[str, object] = {"skipped": False}
 
     try:
@@ -2132,7 +2143,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     ``pre_v2_projects``, since ``prune_checkpoints`` deletes orphans from
     both layouts.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _checkpoint_base()
     out: Dict = {
         "base": str(base),
         "store_size_bytes": 0,
@@ -2207,7 +2218,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
     Returns ``{"bytes_freed": N, "deleted": bool}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _checkpoint_base()
     out = {"bytes_freed": 0, "deleted": False}
     if not base.exists():
         return out
@@ -2226,7 +2237,7 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
     Returns ``{"bytes_freed": N, "deleted": count}``.
     """
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _checkpoint_base()
     out = {"bytes_freed": 0, "deleted": 0}
     if not base.exists():
         return out

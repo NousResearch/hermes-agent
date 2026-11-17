@@ -1020,6 +1020,51 @@ _PROFILE_SETTING_KEYS = (
 
 _UNSET = object()
 
+# Keys the adapter used to read from os.environ ONLY (single-profile, .env
+# beats config.yaml for these). Under multiplex config.yaml wins, so a value
+# set differently in both places flips when multiplex is switched on.
+_ENV_ONLY_SETTING_KEYS = (
+    "strict_mention",
+    "ignore_other_user_mentions",
+    "thread_require_mention",
+    "wake_in_bot_authored_threads",
+    "allow_bots",
+    "require_mention_channels",
+    "reactions",
+    "reaction_triggers",
+    "reaction_trigger_target",
+    "home_channel_prompt",
+    "disable_dms",
+    "allowed_channels",
+    "ignored_channels",
+)
+
+
+def _setting_text(value) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(sorted(str(v).strip() for v in value if str(v).strip()))
+    if isinstance(value, str) and "," in value:
+        return ",".join(sorted(p.strip() for p in value.split(",") if p.strip()))
+    return str(value).strip().lower()
+
+
+def env_yaml_precedence_conflicts(slack_cfg: dict, env) -> List[str]:
+    """Env-only Slack keys set in both ``env`` and ``slack_cfg`` with different
+    values — the ones whose effective value flips under multiplex (config.yaml
+    wins there, .env wins single-profile). Returns key NAMES only."""
+    out: List[str] = []
+    if not isinstance(slack_cfg, dict):
+        return out
+    for key in _ENV_ONLY_SETTING_KEYS:
+        if slack_cfg.get(key) is None:
+            continue
+        raw = (env or {}).get(f"SLACK_{key.upper()}")
+        if raw is None or not str(raw).strip():
+            continue
+        if _setting_text(raw) != _setting_text(slack_cfg[key]):
+            out.append(key)
+    return out
+
 
 def _multiplex_on() -> bool:
     try:

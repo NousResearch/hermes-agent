@@ -1712,6 +1712,56 @@ def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
     return _csv_or_list_to_set(raw)
 
 
+def _warn_slack_precedence_flips(profile_homes) -> list:
+    """Warn about Slack keys whose effective value flips under multiplex.
+
+    Single-profile, ``.env`` beats ``config.yaml`` for the Slack keys that
+    used to be read only from the environment; under multiplex the profile's
+    ``config.yaml`` wins. Where both set such a key to different values,
+    enabling multiplex silently changes that bot's behaviour — so list every
+    such key per profile (names only, never values). Returns
+    ``[(profile, [keys])]`` for tests.
+    """
+    found = []
+    try:
+        import yaml
+
+        from agent.secret_scope import build_profile_secret_scope
+        from hermes_constants import get_process_hermes_home, hermes_home_key
+        from plugins.platforms.slack.adapter import env_yaml_precedence_conflicts
+
+        process_key = hermes_home_key(get_process_hermes_home())
+        for name, home in profile_homes:
+            cfg_path = Path(home) / "config.yaml"
+            try:
+                data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError):
+                continue
+            slack_cfg = data.get("slack") if isinstance(data, dict) else None
+            if not isinstance(slack_cfg, dict):
+                continue
+            # The default profile's single-profile environment was the process
+            # env (.env loaded into it, plus systemd/shell exports).
+            env = (
+                dict(os.environ)
+                if hermes_home_key(home) == process_key
+                else build_profile_secret_scope(Path(home))
+            )
+            keys = env_yaml_precedence_conflicts(slack_cfg, env)
+            if keys:
+                found.append((name, keys))
+                logger.warning(
+                    "multiplex: profile %r sets Slack keys in both .env and "
+                    "config.yaml with different values; under multiplex "
+                    "config.yaml wins (single-profile, .env won): %s",
+                    name,
+                    ", ".join(keys),
+                )
+    except Exception:
+        logger.debug("Slack precedence check skipped", exc_info=True)
+    return found
+
+
 _DENY_ALL_ADMIN_ID = "__multiplex_profile_config_unavailable__"
 
 
@@ -16616,6 +16666,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             logger.warning("could not register served profile homes", exc_info=True)
+        _warn_slack_precedence_flips(profile_homes)
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop

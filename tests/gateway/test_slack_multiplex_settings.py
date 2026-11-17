@@ -249,3 +249,44 @@ class TestMultiplexOff:
         seeded = {PROFILE_SETTINGS_KEY: {"quiet_channels": ["CPROFILE"]}}
         a = SlackAdapter(PlatformConfig(enabled=True, token="xoxb", extra=seeded))
         assert a._slack_quiet_channels() == {"CDEFAULTQUIET"}
+
+
+class TestPrecedenceFlipWarning:
+    """Enabling multiplex flips .env-vs-config.yaml precedence for env-only
+    keys; startup names every disagreeing key per profile (never values)."""
+
+    def test_conflicts_detects_disagreeing_env_only_keys(self):
+        from plugins.platforms.slack.adapter import env_yaml_precedence_conflicts
+
+        yaml_block = {
+            "strict_mention": True,          # env says false → flips
+            "allowed_channels": ["C2", "C1"],  # same set, different order → no flip
+            "reactions": False,               # env unset → no flip
+            "quiet_channels": ["CQ"],         # not env-only (already extra-first)
+        }
+        env = {
+            "SLACK_STRICT_MENTION": "false",
+            "SLACK_ALLOWED_CHANNELS": "C1,C2",
+            "SLACK_QUIET_CHANNELS": "COTHER",
+        }
+        assert env_yaml_precedence_conflicts(yaml_block, env) == ["strict_mention"]
+
+    def test_startup_warning_per_profile_names_only(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        from gateway.run import _warn_slack_precedence_flips
+
+        root = tmp_path / "hermes"
+        edu = root / "profiles" / "educator"
+        edu.mkdir(parents=True)
+        (root / "config.yaml").write_text("slack:\n  disable_dms: true\n", encoding="utf-8")
+        (edu / "config.yaml").write_text("slack:\n  allow_bots: mentions\n", encoding="utf-8")
+        (edu / ".env").write_text("SLACK_ALLOW_BOTS=all-secret-ish\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setenv("SLACK_DISABLE_DMS", "false")
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            found = _warn_slack_precedence_flips([("default", root), ("educator", edu)])
+        assert found == [("default", ["disable_dms"]), ("educator", ["allow_bots"])]
+        text = " ".join(r.getMessage() for r in caplog.records)
+        assert "disable_dms" in text and "allow_bots" in text
+        assert "all-secret-ish" not in text and "mentions" not in text

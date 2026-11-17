@@ -390,3 +390,23 @@ class TestDriveCredentials:
         from plugins.google_drive_sa import client as gd
 
         assert gd._get_credentials() == ("creds", "default")
+
+
+# ── Module-level home captures resolve per call ───────────────────────────
+
+
+def test_checkpoint_and_process_paths_follow_the_profile(tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools import checkpoint_manager as cm
+    from tools import process_registry as pr
+
+    seen = {}
+    for name in ("a", "b"):
+        home = tmp_path / name
+        tok = set_hermes_home_override(str(home))
+        try:
+            seen[name] = (cm._checkpoint_base(), pr._checkpoint_path())
+        finally:
+            reset_hermes_home_override(tok)
+    assert seen["a"] == (tmp_path / "a" / "checkpoints", tmp_path / "a" / "processes.json")
+    assert seen["b"] == (tmp_path / "b" / "checkpoints", tmp_path / "b" / "processes.json")

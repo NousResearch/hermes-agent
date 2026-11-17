@@ -63,14 +63,16 @@ def _fake_cli(agent):
 class TestOneShotDurableFlush:
     """#88583: the one-shot exit path must retry persistence and finalize."""
 
-    def test_finalize_single_query_persists_unflushed_turn(self, monkeypatch):
+    @pytest.mark.parametrize("cli_history", ["fresh", "aliased"])
+    def test_finalize_single_query_persists_unflushed_turn(self, monkeypatch, cli_history):
         """A turn whose in-loop flush failed must still reach state.db.
 
         Simulates the reported failure: run_conversation produced the turn's
         messages in memory (``_session_messages``) but the transcript flush
         never landed (transient write-lock loss). Without the fix,
         ``_finalize_single_query`` performs no durable write and the turn
-        evaporates — this test fails.
+        evaporates — this test fails. ``aliased`` is the normal post-turn
+        state: the CLI's ``conversation_history`` IS the list the turn persisted.
         """
         from hermes_state import SessionDB
 
@@ -87,6 +89,8 @@ class TestOneShotDurableFlush:
                 assert db.get_messages(agent.session_id) == []
 
                 fake = _fake_cli(agent)
+                if cli_history == "aliased":
+                    fake.conversation_history = agent._session_messages
                 monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **kw: None)
                 monkeypatch.setattr(
                     cli_mod, "_notify_single_query_session_finalize", lambda _c: None

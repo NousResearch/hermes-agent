@@ -134,3 +134,19 @@ def coverage_for_commit(
     if not covered and not marked:
         return None, None
     return covered, unresolved
+
+
+def carried_for_commit(
+    compressor: Any, carried_messages: Optional[list], compressed: Sequence[Any],
+) -> Optional[list]:
+    """``carried_messages`` for the archive, plus every row of a pruning-only candidate.
+
+    A summarized commit tags its carried tail so the archive supersedes those originals.
+    A pruning-only candidate has no tagged tail: its unchanged rows would stay in compacted
+    history beside their live copies and be recalled twice. The archive rewinds only rows
+    still byte-identical to their active original, so a pruned row keeps its full original
+    in compacted history for recall.
+    """
+    if not getattr(compressor, "_last_compress_pruning_only", False):
+        return carried_messages
+    return [*(carried_messages or ()), *(m for m in compressed if isinstance(m, dict))]

@@ -17,6 +17,7 @@ from unittest.mock import patch
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
+from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
 from tui_gateway.server import (
     _collect_kanban_notifications,
     _format_kanban_event_text,
@@ -268,10 +269,11 @@ class TestNotificationPollerLoopKanbanWiring:
         monkeypatch.setattr(
             server, "_emit", lambda event, sid, payload=None: emits.append((event, payload))
         )
-        def accept(rid, sid, sess, text):
-            # Model execution is replaced, including its concrete admission receipt.
+        def accept(rid, sid, sess, text, **kwargs):
+            # Model execution is replaced, including its concrete admission receipt. The
+            # kwargs are recorded because the persisted row's kind rides them.
             server._emit("message.start", sid)
-            submits.append(text)
+            submits.append({"text": text, **kwargs})
             return True
         monkeypatch.setattr(server, "_run_prompt_submit", accept)
         stop = threading.Event()
@@ -318,7 +320,10 @@ class TestNotificationPollerLoopKanbanWiring:
         status_texts = [p["text"] for e, p in emits if e == "status.update" and p]
         assert any(tid in t for t in status_texts), status_texts
         assert any(e == "message.start" for e, _ in emits)
-        assert any(tid in text for text in submits), submits
+        assert any(tid in item["text"] for item in submits), submits
+        # A self-injected turn: unmarked, its row is a plain role=user row that nothing can
+        # tell from the user's own words.
+        assert submits[0]["display_kind"] == INTERNAL_NOTIFICATION_DISPLAY_KIND, submits
         assert session["running"] is True  # poller claimed the turn
         assert not session.get("_kanban_pending")
 
@@ -345,6 +350,6 @@ class TestNotificationPollerLoopKanbanWiring:
             stop.set()
             thread.join(timeout=5)
 
-        assert any(tid in text for text in submits), submits
+        assert any(tid in item["text"] for item in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True

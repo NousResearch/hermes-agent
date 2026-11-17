@@ -266,7 +266,10 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
                 _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
                 return
             # Releases the claim on failure: the swallow below would otherwise leave the session busy for good.
-            _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
+            # The schedule speaking, not the user typing now: marked like the gateway's internal loop wakeup.
+            from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+            _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed",
+                          display_kind=INTERNAL_NOTIFICATION_DISPLAY_KIND)
             return
     except Exception:
         pass
@@ -623,8 +626,13 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         batch = [text for text in pending if not split or isinstance(text, DiagnosticText) == diagnostic]
         session["_kanban_pending"] = [text for text in pending if split and isinstance(text, DiagnosticText) != diagnostic]
     with contextlib.suppress(Exception):
+        # A self-injected turn, typed like every other notice this poller dispatches. Unmarked, it
+        # persisted as a role=user row no column tells from the user's own message, so a reader of
+        # user turns (a confirmation phrase, an approval reply) could take a kanban notice for them.
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
                       "kanban notification dispatch failed",
+                      display_kind=INTERNAL_NOTIFICATION_DISPLAY_KIND,
                       **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 

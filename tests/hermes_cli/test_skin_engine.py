@@ -350,6 +350,47 @@ class TestSkinParseCache:
         os.replace(replacement, path)
         assert skin_engine.set_active_skin("cached").get_color("banner_title") == "#445566"
 
+    def test_an_atomic_replace_with_preserved_size_and_mtime_reloads(self, tmp_path, monkeypatch):
+        """A temp-file + ``os.replace`` swap keeps size and mtime but changes the inode: a reconnect
+        must not serve the previous skin's colours. The inode alone changes here, so a
+        ``(path, mtime, size)`` key would hit and hand back ``#112233``."""
+        from hermes_cli import skin_engine
+        import hermes_yaml as yaml
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        path = self._write_skin(skins_dir, monkeypatch, title="#112233", age_s=60)
+
+        parses = []
+        real = skin_engine._load_skin_from_yaml
+
+        def counting(p):
+            parses.append(p)
+            return real(p)
+
+        monkeypatch.setattr(skin_engine, "_load_skin_from_yaml", counting)
+
+        assert skin_engine.load_skin("cached").get_color("banner_title") == "#112233"
+        assert skin_engine.load_skin("cached").get_color("banner_title") == "#112233"
+        assert len(parses) == 1, "an unchanged skin must still hit the cache"
+
+        before = path.stat()
+        body = yaml.safe_dump({"name": "cached", "colors": {"banner_title": "#445566"}})
+        assert len(body.encode()) == before.st_size, "the test needs an equal-length replacement"
+
+        replacement = skins_dir / ".cached.yaml.swp"
+        replacement.write_text(body, encoding="utf-8")
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(replacement, path)
+
+        after = path.stat()
+        assert after.st_size == before.st_size and after.st_mtime_ns == before.st_mtime_ns
+        assert after.st_ino != before.st_ino, "os.replace must change the inode for this to be a test"
+
+        assert skin_engine.load_skin("cached").get_color("banner_title") == "#445566"
+        assert len(parses) == 2, "the replaced file has to be parsed again"
+        assert skin_engine.set_active_skin("cached").get_color("banner_title") == "#445566"
+
     def test_a_just_written_skin_file_is_never_cached(self, tmp_path, monkeypatch):
         """A same-tick rewrite can land after the stat, so a fresh mtime cannot be a cache key."""
         from hermes_cli.skin_engine import load_skin

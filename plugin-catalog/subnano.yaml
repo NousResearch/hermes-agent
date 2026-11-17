@@ -9,7 +9,7 @@ maintainer: subnano-ai
 tier: community
 category: tools
 docs_url: https://docs.subnano.ai
-requires_hermes: '>=0.22.7'
+requires_hermes: ">=0.22.7"
 readme: true
 platforms: []
 capabilities:

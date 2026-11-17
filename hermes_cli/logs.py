@@ -328,10 +328,12 @@ def _read_tail_records(path: Path, num_records: int, log_name: str, **filters) -
     traceback keeps its stamped header; a record the read window cut off at the top is dropped."""
     window = max(num_records * 20, 2000)
     raw_lines = _read_last_n_lines(path, window)
+    if len(raw_lines) >= window:
+        # Trim the headerless fragment BEFORE filtering, so a filter can't hide it from the trim.
+        first = next((i for i, line in enumerate(raw_lines) if _parse_line_timestamp(line)), len(raw_lines))
+        raw_lines = raw_lines[first:]
     keep = _LineFilter(**filters)
     records = parse_log_records([line for line in raw_lines if keep(line)], log_name)
-    if len(raw_lines) >= window and records and _parse_line_timestamp(raw_lines[0]) is None:
-        records = records[1:]
     return records[-num_records:] if num_records > 0 else []
 
 

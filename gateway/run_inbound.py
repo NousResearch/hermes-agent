@@ -703,6 +703,15 @@ class GatewayInboundMixin(
         ``messaging:*`` rows of this route's logical owner first (automation wakes, LOCAL/API input
         and ``unknown`` rows are untouched; settled silently, no pause notice), then interrupts the
         claimed generation: a turn still constructing its agent latches the Stop for adopt_agent."""
+        from gateway.session_goal_waits import pause_route
+        try:
+            await pause_route(self, _quick_key)
+        finally:
+            # A failed goal write must not keep the already-authorized turn running.
+            await self._hm_interrupt_owner_turn(_quick_key)
+
+    async def _hm_interrupt_owner_turn(self, _quick_key: str) -> None:
+        """Fence queued messaging input and interrupt only its current claimed generation."""
         from gateway.session_authorities import active_authority
         authority = active_authority(self)
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None

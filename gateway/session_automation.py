@@ -429,7 +429,7 @@ def automation_display_metadata(metadata):
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
     'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
-    'completion_wakes_parent', 'completion_resumes_parent', 'requester_user_id'})
+    'completion_wakes_parent', 'completion_resumes_parent', 'requester_user_id', 'goal_wait'})
 
 
 def admission_display(payload):
@@ -586,6 +586,8 @@ def snapshot_automation(authority, adapter, event, identity):
         'event': {'message_id': identity}, 'provenance': provenance,
         'automation': {'identity': identity, 'owner': owner}}
     envelope['automation'].update(notification)
+    from gateway.session_goal_waits import metadata as goal_metadata
+    envelope['automation'].update(goal_metadata(event.metadata.get('goal_wait')))
     if getattr(event, '_heartbeat_session_id', None):
         envelope['automation']['heartbeat'] = event._heartbeat_session_id
     identities = event.metadata.get('automation_identities')
@@ -637,6 +639,8 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     descriptor.update(automation_notification_metadata(event.metadata))
     descriptor.update(automation_display_metadata(event.metadata))
     descriptor.update(_tick_metadata(event.metadata))
+    from gateway.session_goal_waits import metadata as goal_metadata
+    descriptor.update(goal_metadata(event.metadata.get('goal_wait')))
     if 'completion_wakes_parent' in event.metadata:
         # A failed async delegation: the parent must act on it, so it runs as a turn even when no viewer
         # is attached (gateway/session_completion_notes.py). Only ``True`` is stored, so an older
@@ -724,12 +728,20 @@ async def admit_automation(authority, adapter, event, identity, replaces=None, f
             if replaced:  # the guard ran in the committed write; an exact replay runs no guard
                 authority._settle_cancelled(ref, replaces)
             return admitted(row)
+    from gateway.session_goal_waits import guard as goal_guard
+    goal_check = goal_guard(authority, payload, sid, entry.session_key, replaces=replaces)
+    replacement_check = replaces and (
+        _replace_queued(replaces, ref.session_id, replaced) if fold is None
+        else _fold_queued(replaces, ref.session_id, replaced, fold))
+    def authorize(conn):
+        if replacement_check:
+            replacement_check(conn)
+        if goal_check:
+            goal_check(conn)
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and (
-            _replace_queued(replaces, ref.session_id, replaced) if fold is None
-            else _fold_queued(replaces, ref.session_id, replaced, fold)))),
+        _authorize_write=authority._admission_gate(authorize)),
         then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
 
 

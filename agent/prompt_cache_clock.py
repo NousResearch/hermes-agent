@@ -26,7 +26,12 @@ Two ends per window, because a documented minimum is not an expiry:
 - ``guaranteed_until``: the EARLIEST coverage deadline, so the whole cached prefix is warm before
   it (a response that wrote two tiers is only as warm as its shorter one). ``None`` = no guarantee.
 - ``estimated_until``: after it the entry is treated as gone (cold offload and expiry act on it): the
-  latest coverage deadline on both specs.
+  latest coverage deadline on both specs, except where the request or the host says the entry
+  outlives the warming deadline. A request that asks ``prompt_cache_retention: 24h`` keeps 30m as
+  its guarantee (warming still refreshes at 25 minutes) but is estimated to live ``read + 24h``; a
+  local or private-network endpoint (loopback, RFC-1918, ``*.local``: a llama.cpp / vLLM / Ollama
+  box) evicts on memory pressure, not on a clock, so it has no estimated end (``None`` with a known
+  confidence) and is never cold on the clock. A route switch or compaction still invalidates both.
 
 Consumers ask :func:`cache_certainly_warm` (before ``guaranteed_until``) or
 :func:`cache_certainly_cold` (past ``estimated_until``; never past only a minimum). Between the two
@@ -63,6 +68,8 @@ PROVEN, DECLARED, ASSUMED, UNKNOWN = "proven", "declared", "assumed", "unknown"
 STORAGE_UNAVAILABLE = -1  # a generation read that failed: never equal to a real (>= 0) generation
 _CONFIDENCE_RANK = {UNKNOWN: 0, ASSUMED: 1, DECLARED: 2, PROVEN: 3}
 _OPENAI_READ_FLOOR = "30m"
+#: ``prompt_cache_retention`` values a request can ask for, as the entry's estimated lifetime.
+_RETENTION_SECONDS = {"24h": 86_400}
 #: Route classes saved by earlier builds, read as the API spec they were sent on.
 _LEGACY_CLASSES = {"openai_ttl": "openai_spec", "openai_retention": "openai_spec", "implicit": "openai_spec",
                    "route_ceiling": "anthropic_spec", "anthropic_native": "anthropic_spec",
@@ -251,6 +258,23 @@ def _fold_coverage(previous: Optional[CacheEvent], verdict: _Verdict, route_clas
 
 def _ends(coverage: dict[str, float]) -> tuple[Optional[float], Optional[float]]:
     return (min(coverage.values()), max(coverage.values())) if coverage else (None, None)
+
+
+def _estimated_end(coverage: dict[str, float], *, base_url: str, retention: Any, at: float,
+                   previous: Optional[CacheEvent], carried: bool) -> Optional[float]:
+    """When the entry is treated as gone: None for a local endpoint (no time-based expiry), else the
+    latest coverage deadline, stretched to ``at + retention`` when the request asked for a longer
+    retention (and never shortened below what a carried event already estimated)."""
+    from agent.model_metadata import is_local_endpoint
+
+    if not coverage or is_local_endpoint(base_url):
+        return None
+    estimated = max(coverage.values())
+    if isinstance(retention, str) and retention in _RETENTION_SECONDS:
+        estimated = max(estimated, at + _RETENTION_SECONDS[retention])
+    if carried and previous is not None and previous.estimated_until is not None:
+        estimated = max(estimated, previous.estimated_until)
+    return estimated
 
 
 def _confidence(verdict: _Verdict, previous: Optional[CacheEvent], carried: bool, write: int) -> tuple[str, str]:
@@ -455,13 +479,15 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     at = float(attempt.get("sent_at") or time.time())
     _learn(previous, provider, base_url, model, attempt, read, write, at)
     coverage, carried = _fold_coverage(previous, verdict, ctx.route_class, at, read, write)
-    guaranteed, estimated = _ends(coverage)
+    guaranteed = _ends(coverage)[0]
+    estimated = _estimated_end(coverage, base_url=base_url, retention=ctx.retention, at=at, previous=previous,
+                               carried=carried)
     confidence, reason = _confidence(verdict, previous, carried, write)
     event = CacheEvent(
         route=route, destination=destination, route_class=ctx.route_class,
         requested_ttl=ctx.requested_ttl, sent_at=at, read_tokens=read, write_tokens=write,
         tier=min(coverage, key=coverage.__getitem__) if coverage else None,
-        confidence=confidence if estimated is not None else UNKNOWN, reason=reason, coverage=coverage,
+        confidence=confidence if coverage else UNKNOWN, reason=reason, coverage=coverage,
         guaranteed_until=guaranteed, estimated_until=estimated, session_id=session_id, generation=generation,
     )
     agent._prompt_cache_clock_restored = True  # a live event supersedes a store that could not be read
@@ -588,7 +614,8 @@ def _unknown(reason: str, event: Optional[CacheEvent] = None) -> CacheWindow:
 
 
 def _window(event: CacheEvent) -> CacheWindow:
-    if event.confidence == UNKNOWN or event.estimated_until is None:
+    # No estimated end with a guarantee: a local endpoint, warm until evicted, never cold on the clock.
+    if event.confidence == UNKNOWN or (event.estimated_until is None and event.guaranteed_until is None):
         return _unknown(event.reason, event)
     return CacheWindow(event.guaranteed_until, event.estimated_until, event.tier, event.confidence, event.reason,
                        event.sent_at, dict(event.coverage))
@@ -656,7 +683,8 @@ def cache_certainly_warm(window: Any, *, now: Optional[float] = None) -> bool:
 
 def cache_certainly_cold(window: Any, *, now: Optional[float] = None) -> bool:
     """True only past the estimated end (Anthropic's exact tier, OpenAI's retention ceiling), never
-    past only a minimum. An unknown window is never certainly cold."""
+    past only a minimum. An unknown window, or one with no estimated end (a local endpoint), is never
+    certainly cold."""
     if window is None or _field(window, "confidence") == UNKNOWN:
         return False
     estimated = _field(window, "estimated_until")
@@ -702,7 +730,7 @@ def render_prompt_cache_line(window: Optional[dict[str, Any]], *, now: Optional[
 def _cache_line(window: dict[str, Any], estimated: Any, now: Optional[float]) -> str:
     from agent.i18n import t
 
-    if window.get("confidence") == UNKNOWN or estimated is None:
+    if window.get("confidence") == UNKNOWN or (estimated is None and not cache_certainly_warm(window, now=now)):
         line = _UNKNOWN_LINES.get(str(window.get("reason") or ""), "cache_unknown_route")
         return t(f"gateway.context.{line}")
     now = time.time() if now is None else now
@@ -710,7 +738,7 @@ def _cache_line(window: dict[str, Any], estimated: Any, now: Optional[float]) ->
     if cache_certainly_warm(window, now=now):
         guaranteed = float(window["guaranteed_until"])
         return t("gateway.context.cache_warm", until=_clock(guaranteed), remaining=_duration(guaranteed - now), **facts)
-    if not cache_certainly_cold(window, now=now):
+    if not cache_certainly_cold(window, now=now):  # estimated is set: a warm window returned above
         return t("gateway.context.cache_maybe_warm", until=_clock(estimated), remaining=_duration(float(estimated) - now),
                  **facts)
     return t("gateway.context.cache_expired", ago=_duration(now - float(estimated)), **facts)

@@ -16,6 +16,7 @@ import {
 
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 
+import { SESSION_SWITCHING_ATTRIBUTE } from './session-switching'
 import { TranscriptWindowProvider, type TranscriptWindowValue } from './transcript-window'
 
 import { Thread } from '.'
@@ -127,11 +128,34 @@ function ScrollHarness({
 }
 
 describe('list session-scroll restore', () => {
+  it('marks the chat surface data-session-switching while a switched transcript settles, then clears it', async () => {
+    // The documented theme hook for chat-switch transitions: present from the
+    // commit the new transcript lands until its scroll restore settles.
+    const surface = (key: string) => (
+      <div data-chat-surface="">
+        <ScrollHarness messages={sessionMessages(key, 3)} sessionKey={key} />
+      </div>
+    )
+
+    const { container, rerender } = render(surface('a'))
+    const root = container.querySelector<HTMLElement>('[data-chat-surface]')!
+
+    await settleScroll(10)
+    expect(root.getAttribute(SESSION_SWITCHING_ATTRIBUTE)).toBeNull()
+
+    rerender(surface('b'))
+    expect(root.getAttribute(SESSION_SWITCHING_ATTRIBUTE)).toBe('true')
+
+    await settleScroll(10)
+    expect(root.getAttribute(SESSION_SWITCHING_ATTRIBUTE)).toBeNull()
+  })
+
   it('keeps a bottom-pinned reader pinned while a running turn grows the content (#118482)', async () => {
     // use-stick-to-bottom follows a content resize on the next animation frame,
     // so streamed growth paints at the stale scrollTop and the viewport drifts
     // up before the re-pin. The transcript ResizeObserver closes that frame.
     const previousObserver = globalThis.ResizeObserver
+
     const observers = new Set<{
       callback: ResizeObserverCallback
       targets: Set<Element>
@@ -254,6 +278,7 @@ describe('list session-scroll restore', () => {
     const { container, unmount } = render(
       <ScrollHarness clampToComposer isRunning messages={sessionMessages('clr')} sessionKey="clr" />
     )
+
     const vp = viewportEl(container)
     const clearance = vp.querySelector('[data-slot="aui_composer-clearance"]')
 

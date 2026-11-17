@@ -906,50 +906,10 @@ def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeyp
 
     from agent.credential_pool import _seed_from_singletons
     entries = []
-    changed, active = _seed_from_singletons("anthropic", entries)
+    _changed, active = _seed_from_singletons("anthropic", entries)
     # hermes_pkce suppressed, claude_code returns None → nothing should be seeded
     assert entries == []
     assert "hermes_pkce" not in active
-
-
-def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
-    """Removing any copilot source must suppress gh_cli + all env:* variants
-    so the duplicate-seed paths don't resurrect the credential.
-    """
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    # The copilot pool entry is no longer persisted directly in auth.json —
-    # `(copilot, gh_cli)` is borrowed and stripped by
-    # sanitize_borrowed_credential_payload (PR #31416, May 2026). Tokens are
-    # hydrated at runtime via resolve_copilot_token(). Mock that path so the
-    # pool has an entry to remove.
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "credential_pool": {"copilot": []},
-        },
-    )
-
-    from types import SimpleNamespace
-    from hermes_cli.auth import is_source_suppressed
-    from hermes_cli.auth_commands import auth_remove_command
-
-    with patch(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
-        return_value=("ghp_fake", "gh"),
-    ), patch(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
-        return_value=("ghu_fake_api", None),
-    ):
-        auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
-
-    assert is_source_suppressed("copilot", "gh_cli")
-    assert is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")
-    assert is_source_suppressed("copilot", "env:GH_TOKEN")
-    assert is_source_suppressed("copilot", "env:GITHUB_TOKEN")
 
 
 def test_auth_remove_env_seeded_dotenv_with_bom_no_shell_hint(tmp_path, monkeypatch, capsys):

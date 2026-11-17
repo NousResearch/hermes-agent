@@ -1,4 +1,5 @@
 import type {
+  AppHandoffStatus,
   ConfigSchemaResponse,
   CustomEndpointsResponse,
   CustomEndpointUpdate,
@@ -208,12 +209,19 @@ export function getEnvVars(profile?: null | string): Promise<Record<string, EnvV
   })
 }
 
-export function setEnvVar(key: string, value: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
+// `providerSetup`: the caller is connecting a model provider, so shared metrics count the save as a
+// provider setup even when a tool panel uses the same key (Gemini, xAI...).
+export function setEnvVar(
+  key: string,
+  value: string,
+  profile?: ProfileScope,
+  { providerSetup = false }: { providerSetup?: boolean } = {}
+): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...capabilityScoped(profile),
     path: '/api/env',
     method: 'PUT',
-    body: { key, value }
+    body: providerSetup ? { key, provider_setup: true, value } : { key, value }
   })
 }
 
@@ -346,14 +354,37 @@ export function submitOAuthCode(
   })
 }
 
+// A long-poll waits this long at most for a change (the backend caps it at 25 s); the request's own
+// timeout leaves room for the hold plus a slow answer.
+export const OAUTH_LONG_POLL_SECONDS = 25
+const OAUTH_LONG_POLL_TIMEOUT_MS = 45_000
+
+/** One sign-in poll. With `waitSeconds` it is a long-poll: the backend answers
+ *  once the session leaves `pending`, or after the wait with `pending`. */
 export function pollOAuthSession(
   providerId: string,
   sessionId: string,
-  profile?: ProfileScope
+  profile?: ProfileScope,
+  waitSeconds = 0
 ): Promise<OAuthPollResponse> {
+  const query = waitSeconds > 0 ? `?wait=${waitSeconds}` : ''
+
   return window.hermesDesktop.api<OAuthPollResponse>({
     ...capabilityScoped(profile),
-    path: `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`
+    path: `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}${query}`,
+    ...(waitSeconds > 0 ? { timeoutMs: OAUTH_LONG_POLL_TIMEOUT_MS } : {})
+  })
+}
+
+/** The free tier's handoff after a Nous sign-in. A long-poll: given `since`
+ *  (the `updated_at` on screen) the backend answers once the record changes. */
+export function getNousHandoffStatus(since: null | string, profile?: ProfileScope): Promise<AppHandoffStatus> {
+  const query = new URLSearchParams({ wait: String(OAUTH_LONG_POLL_SECONDS), ...(since ? { since } : {}) })
+
+  return window.hermesDesktop.api<AppHandoffStatus>({
+    ...capabilityScoped(profile),
+    path: `/api/providers/oauth/nous/handoff?${query}`,
+    timeoutMs: OAUTH_LONG_POLL_TIMEOUT_MS
   })
 }
 

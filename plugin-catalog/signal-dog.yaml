@@ -1,0 +1,48 @@
+name: signal-dog
+repo: https://github.com/scottleimroth/signal-dog
+sha: 002e33b67b636f295788c3e7ddc5c486ea8e95cc
+title: Signal Dog
+description: >-
+  Listens through the microphone for household sounds (a door knock, an appliance beeping, a smoke alarm
+  or other steady tone) and sends a chat message through the agent's messaging platform. A signal dog is a
+  dog trained to alert a deaf person to sounds; this does the same job with a microphone, and it is built
+  by a deaf developer. Off until the user turns it on with /signaldog on. Not a certified smoke alarm: it
+  can miss sounds and raise false alerts, with measured rates and limits in the README.
+  Disclosure: microphone: while switched on it listens to the microphone continuously.
+  Background process: it runs one long-running ffmpeg process (two for about 30 seconds every 10 minutes
+  while one replaces the other), stopped when the user turns it off or the plugin unloads; ffmpeg must
+  already be installed and the plugin never downloads anything.
+  Audio from the microphone is never kept: it is analysed in memory and dropped, with no option to keep it.
+  /signaldog demo writes one recording made by code (no real sound) to a private temporary folder and
+  deletes it when the demo ends.
+  Stored locally: a size-limited numbers log in $HERMES_HOME/signal-dog/events.log (times, levels, what was
+  detected, plus an optional note of up to 80 characters the user types after /signaldog wrong or right).
+  The read-only tool signal_dog_recent_alerts returns alert times, kinds, pitches, the user's right and
+  wrong marks and the listener state to the agent, so it reaches the user's model provider; it does not
+  check who is asking, so do not use the plugin on an agent that strangers can message.
+  Network: the plugin makes no network calls and has no telemetry; alerts are delivered by the agent
+  through the messaging app the user already set up. No credentials are read or stored. The pre_llm_call
+  hook only notices which chat session is live and reads no message content. While a beep keeps
+  sounding, it edits its own first alert ("still beeping", then "no longer detected") where the messaging
+  app allows edits, and otherwise sends periodic reminder messages (every three minutes by default, for as long as the beep
+  continues); it never edits anyone else's messages.
+maintainer: scottleimroth
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+image: https://raw.githubusercontent.com/scottleimroth/signal-dog/002e33b67b636f295788c3e7ddc5c486ea8e95cc/docs/demo-scene.png
+screenshots:
+  - https://raw.githubusercontent.com/scottleimroth/signal-dog/002e33b67b636f295788c3e7ddc5c486ea8e95cc/docs/demo-scene.png
+  - https://raw.githubusercontent.com/scottleimroth/signal-dog/002e33b67b636f295788c3e7ddc5c486ea8e95cc/docs/measured.png
+docs_url: https://github.com/scottleimroth/signal-dog/blob/002e33b67b636f295788c3e7ddc5c486ea8e95cc/README.md
+version: "0.1.2"
+platforms:
+  - linux
+  - windows
+capabilities:
+  provides_tools:
+    - signal_dog_recent_alerts
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

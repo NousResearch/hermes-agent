@@ -103,7 +103,7 @@ def _run(site, url, monkeypatch, tmp_path):
     """Return the body-bearing result, or None when the site refused (raised or returned None)."""
     try:
         result = SITES[site](url, monkeypatch, tmp_path)
-    except Exception:  # noqa: BLE001 - each site wraps in its own error type
+    except Exception:
         return None
     if isinstance(result, list):  # catalogs: any entry means a hostile <loc> body was consumed
         return result or None

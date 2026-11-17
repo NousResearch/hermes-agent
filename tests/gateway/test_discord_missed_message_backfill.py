@@ -48,8 +48,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import discord  # noqa: E402
-from plugins.platforms.discord.adapter import (  # noqa: E402
+import discord
+from plugins.platforms.discord.adapter import (
     DiscordAdapter,
     _apply_yaml_config,
 )
@@ -95,7 +95,7 @@ def make_message(*, message_id=1, author_id=42, content="please ingest", reactio
         author=SimpleNamespace(id=author_id, bot=False, display_name="Emo", name="emo"),
         channel=channel,
         guild=getattr(channel, "guild", None),
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(dt.UTC),
         attachments=[],
         mentions=list(mentions or []),
         reference=None,
@@ -134,7 +134,7 @@ async def test_should_not_backfill_message_with_non_down_bot_response(adapter):
         content="Done — captured it.",
         author=SimpleNamespace(id=999, bot=True),
         reference=SimpleNamespace(message_id=1),
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(dt.UTC),
     )
     channel = FakeChannel(history_messages=[bot_reply])
     message = make_message(message_id=1, channel=channel)
@@ -149,7 +149,7 @@ async def test_parent_channel_unreferenced_bot_message_does_not_suppress_backfil
         content="Done — captured a different item.",
         author=SimpleNamespace(id=999, bot=True),
         reference=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(dt.UTC),
     )
     channel = FakeChannel(history_messages=[unrelated_bot_post])
     message = make_message(message_id=1, channel=channel)
@@ -164,7 +164,7 @@ async def test_thread_unreferenced_bot_message_does_not_mask_request(adapter):
         content="Done — captured a different request.",
         author=SimpleNamespace(id=999, bot=True),
         reference=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(dt.UTC),
     )
     thread = FakeChannel(channel_id=456, parent_id=123, history_messages=[bot_post])
     message = make_message(message_id=1, channel=thread)
@@ -179,7 +179,7 @@ async def test_backfills_when_only_down_notice_exists(adapter):
         content="The agent is down right now.",
         author=SimpleNamespace(id=999, bot=True),
         reference=SimpleNamespace(message_id=1),
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(dt.UTC),
     )
     channel = FakeChannel(history_messages=[down_notice])
     message = make_message(message_id=1, channel=channel)
@@ -194,7 +194,7 @@ async def test_generic_unavailable_response_counts_as_completed(adapter):
         content="That package is unavailable on this platform.",
         author=SimpleNamespace(id=999, bot=True),
         reference=SimpleNamespace(message_id=1),
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(dt.UTC),
     )
     channel = FakeChannel(history_messages=[bot_reply])
     message = make_message(message_id=1, channel=channel)
@@ -337,7 +337,7 @@ def test_explicit_empty_backfill_channel_list_disables_the_scan(monkeypatch):
 
 
 def test_recovery_ledger_prunes_expired_rows(adapter):
-    old = (datetime.now(timezone.utc) - dt.timedelta(days=31)).isoformat()
+    old = (datetime.now(dt.UTC) - dt.timedelta(days=31)).isoformat()
 
     def insert_old_rows(conn):
         conn.execute(
@@ -555,7 +555,7 @@ async def test_stored_cursor_cannot_widen_scan_window_or_leak_into_threads(adapt
 
     thread = RecordingChannel(channel_id=456, parent_id=123)
     channel = RecordingChannel(channel_id=123, threads=[thread])
-    window_floor = datetime.now(timezone.utc) - dt.timedelta(hours=1)
+    window_floor = datetime.now(dt.UTC) - dt.timedelta(hours=1)
     old_cursor = ((int((window_floor - dt.timedelta(hours=11)).timestamp() * 1000) - 1420070400000) << 22)
     fresh_cursor = ((int((window_floor + dt.timedelta(minutes=30)).timestamp() * 1000) - 1420070400000) << 22)
 

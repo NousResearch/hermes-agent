@@ -53,7 +53,7 @@ def _mock_result(tool_name: str) -> str:
     return json.dumps({"result": {"ok": True, "op": short, "actor": "/Game/Level:PersistentLevel.Cube_1"}})
 
 
-def load_epic_tools(scale: str) -> List[Dict[str, Any]]:
+def load_epic_tools(scale: str) -> list[dict[str, Any]]:
     with open(PROBE, encoding="utf-8-sig") as f:
         raw = json.load(f)
     out = []
@@ -94,7 +94,7 @@ def register_epic_tools(scale: str) -> int:
 
 # Expected tools use SUBSTRING match against sanitized names (full names are
 # long dotted paths, e.g. editor_toolset_toolsets_scene_SceneTools_..._add_to_scene_from_class).
-SCENARIOS: List[Dict[str, Any]] = [
+SCENARIOS: list[dict[str, Any]] = [
     {
         "id": "U1_spawn_named",
         "description": "Direct ask naming the operation (spawn actor)",
@@ -171,20 +171,19 @@ def run_one(scenario, mode, scale, rep, out_dir: Path):
 
     from tools.registry import registry
     original_dispatch = registry.dispatch
-    tool_call_log: List[str] = []
+    tool_call_log: list[str] = []
 
     def logging_dispatch(name, args, **kw):
         tool_call_log.append(name)
         return original_dispatch(name, args, **kw)
     registry.dispatch = logging_dispatch
 
-    usage_log: List[Dict[str, Any]] = []
+    usage_log: list[dict[str, Any]] = []
 
     started = time.time()
     error = None
     final_response = ""
-    messages_out: List[Dict[str, Any]] = []
-    pm = None
+    messages_out: list[dict[str, Any]] = []
     _orig_norm = None
     try:
         from run_agent import AIAgent

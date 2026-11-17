@@ -6,12 +6,15 @@ import type { GatewayEvent } from '@hermes/shared'
 // running=false is the turn's finally-block signal and the only settle edge
 // those paths still emit, so it must finalize the bubble.
 import { act, cleanup } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { clearAllPrompts, sessionApprovalRequest, setApprovalRequest } from '@/store/prompts'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
 const SID = 'stale-pending-session'
+const OTHER_SID = 'other-session'
 
 let stream: MessageStreamHarness
 
@@ -32,8 +35,13 @@ const flushDeltas = async () => {
 const emit = (event: GatewayEvent) => act(() => stream.handleEvent(event))
 
 describe('turn end without message.complete (session.info running=false)', () => {
+  beforeEach(() => {
+    clearAllPrompts()
+  })
+
   afterEach(() => {
     cleanup()
+    clearAllPrompts()
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -83,5 +91,50 @@ describe('turn end without message.complete (session.info running=false)', () =>
     // pending, and the stream binding is released.
     expect(state?.messages.every(message => !message.pending)).toBe(true)
     expect(state?.streamId).toBeNull()
+  })
+
+  // A turn whose message.complete was swallowed (reconnect gap, provider
+  // crash) used to leave its approval entry parked: the floating "needs
+  // approval" bar kept reappearing on a session the sidebar already showed
+  // as finished. running=false is the agent loop's finally-block edge — it
+  // must clear the turn's prompts just like message.complete does (#86577).
+  it('retires the finished session approval when message.complete was missed', async () => {
+    await mountHarness()
+
+    emit({ session_id: SID, type: 'message.start', payload: {} })
+    await act(async () => {
+      stream.handleRequest('approval', {
+        command: 'rm -rf stale',
+        description: 'stale request',
+        session_id: SID
+      })
+    })
+    setApprovalRequest({ command: 'rm other', description: 'other request', sessionId: OTHER_SID })
+
+    expect(sessionApprovalRequest(SID).get()?.command).toBe('rm -rf stale')
+
+    emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
+
+    expect(sessionApprovalRequest(SID).get()).toBeNull()
+    // Bystander sessions keep their prompts: only the finished turn clears.
+    expect(sessionApprovalRequest(OTHER_SID).get()?.command).toBe('rm other')
+  })
+
+  // An idle session's running=false heartbeat carries no turn edge, so it
+  // must not retire a prompt another session's turn just raised.
+  it('does not clear prompts on a running=false heartbeat for a session that was never busy', async () => {
+    await mountHarness()
+
+    await act(async () => {
+      stream.handleRequest('approval', {
+        command: 'tail -f log',
+        description: 'live request',
+        session_id: SID
+      })
+    })
+
+    emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
+
+    expect(sessionApprovalRequest(SID).get()?.command).toBe('tail -f log')
   })
 })

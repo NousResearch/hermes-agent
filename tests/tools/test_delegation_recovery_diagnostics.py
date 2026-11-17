@@ -16,11 +16,20 @@ def test_unfinished_delegation_recovery_keeps_transcript_locator(tmp_path, split
            "REPRO_HANDLE": str(handle_path), "REPRO_SPLIT": str(int(split)),
            "REPRO_MISSING": str(int(missing_writer))}
     (tmp_path / 'config.yaml').write_text('delegation:\n  independent_completions: true\n', encoding='utf-8')
+    # The owner's git state comes from a throwaway repo: a CI checkout carries a repo-local
+    # includeIf credential include, on which internal git deliberately refuses to run.
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", str(owner)]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    (owner / "dirty.txt").write_text("x", encoding="utf-8")
     producer = r'''
 import json, os, threading
 from pathlib import Path
 from unittest.mock import MagicMock
 import tools.delegate_tool as dt
+import tools.delegate_tool_routes as routes
 parent = MagicMock()
 parent._delegate_depth = 0
 parent.session_id = "diagnostic-parent"
@@ -41,7 +50,7 @@ creds = dict(model="m", provider=None, base_url=None, api_key=None,
              api_mode=None, command=None, args=None)
 dt._build_child_agent = build
 dt._run_single_child = child
-dt._resolve_delegation_credentials = lambda *a, **k: creds
+routes._resolve_delegation_credentials = lambda *a, **k: creds
 if os.environ['REPRO_MISSING'] == '1':
     import tools.delegation_live_log as live
     original = live.create_live_transcripts
@@ -57,8 +66,8 @@ assert started.wait(10), "child did not start"
 Path(os.environ["REPRO_HANDLE"]).write_text(json.dumps(handle), encoding="utf-8")
 os._exit(0)
 '''
-    first = subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env,
-                           text=True, capture_output=True, timeout=30)
+    first = subprocess.run([sys.executable, "-c", producer], cwd=owner, env=env,
+                           text=True, capture_output=True, timeout=30, check=False)
     assert first.returncode == 0, first.stdout + first.stderr
     handle = json.loads(handle_path.read_text(encoding="utf-8"))
     transcripts = handle["live_transcripts"]
@@ -73,7 +82,7 @@ events = [q.get_nowait() for _ in range(count)]
 print(json.dumps([{"event": event, "message": format_process_notification(event)} for event in events]))
 '''
     second = subprocess.run([sys.executable, "-c", consumer], cwd=repo, env=env,
-                            text=True, capture_output=True, timeout=20)
+                            text=True, capture_output=True, timeout=20, check=False)
     assert second.returncode == 0, second.stdout + second.stderr
     restored = json.loads(second.stdout.strip().splitlines()[-1])
     assert len(restored) == (2 if split else 1)

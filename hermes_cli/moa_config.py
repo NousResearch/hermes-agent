@@ -238,6 +238,29 @@ _FLAT_PRESET_KEYS = (
     "fanout", "enabled")
 
 
+# Aggregator slot fields ``_clean_slot`` reads, accepted under any preset name (the schema walk only
+# knows the seeded ``default`` preset's provider/model). As there, a slot left without provider or model
+# is dropped by the normalizer and the default aggregator applies. The ``fanout`` mapping keys keep the
+# notice: ``n`` only takes effect beside ``mode: every_n`` (either one alone normalizes to ``user_turn``),
+# and ``fanout every_n:N`` sets the cadence in one write.
+_AGGREGATOR_SLOT_FIELDS = frozenset({"provider", "model", "reasoning_effort"})
+
+
+def is_preset_field_path(parts: list[str]) -> bool:
+    """True for a split ``moa.presets.<name>.<field>`` path whose field ``_normalize_preset`` reads, or
+    ``moa.presets.<name>.aggregator.<slot field>``.
+
+    ``<name>`` may be anything except blank or whitespace-padded: :func:`normalize_moa_config` strips
+    names, so a ``" review "`` entry would silently replace the ``review`` preset. Such a path is
+    not a field path and keeps the unknown-key notice.
+    """
+    if len(parts) not in (4, 5) or parts[:2] != ["moa", "presets"] or parts[3] not in _FLAT_PRESET_KEYS:
+        return False
+    if not parts[2] or parts[2] != parts[2].strip():
+        return False
+    return len(parts) == 4 or (parts[3] == "aggregator" and parts[4] in _AGGREGATOR_SLOT_FIELDS)
+
+
 # When the reference fan-out runs. "user_turn" (default) runs the advisors ONCE per user turn (the original
 # MoA shape, and the cheapest cadence — #67199): the aggregator gets their upfront plan-level advice, then
 # acts alone for the rest of the tool loop. "per_iteration" re-runs the advisors whenever the advisory view
@@ -291,6 +314,37 @@ def resolve_moa_preset(config: Any, name: str | None = None) -> dict[str, Any]:
     return deepcopy(preset)
 
 
+def skip_deep_merge(prefix: str, key: str) -> bool:
+    """True when the generic missing-config recursion must NOT descend into this section key.
+
+    ``moa.presets`` is a named map; a present-but-partial user map is authoritative
+    (see :func:`apply_user_moa_presets`), so the new-key probe must not imply a
+    union into it.
+    """
+    return prefix == "moa" and key == "presets"
+
+
+def apply_user_moa_presets(merged: dict[str, Any], raw: Any) -> None:
+    """Treat an explicit user MoA preset map as authoritative.
+
+    ``moa.presets`` is a named map. Generic default merging must not union the
+    schema's built-in names into a user map, because that resurrects presets
+    the user deleted. An omitted ``moa.presets`` key still receives defaults;
+    an explicit empty map remains empty. Called by the config load/merge paths
+    right after ``_deep_merge``.
+    """
+    raw_moa = raw.get("moa") if isinstance(raw, dict) else None
+    if not isinstance(raw_moa, dict) or "presets" not in raw_moa:
+        return
+    raw_presets = raw_moa.get("presets")
+    if not isinstance(raw_presets, dict):
+        return
+    merged_moa = merged.get("moa")
+    if not isinstance(merged_moa, dict):
+        return
+    merged_moa["presets"] = deepcopy(raw_presets)
+
+
 def exact_moa_preset_name(config: Any, text: str) -> str | None:
     """Return the preset name iff ``text`` exactly matches an *enabled* preset.
 
@@ -322,37 +376,3 @@ def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
 
 def moa_usage() -> str:
     return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) -> str:
-    """Encode a /moa one-shot turn for frontends that can only send text."""
-    payload = {
-        "prompt": str(prompt or ""),
-        "config": resolve_moa_preset(config or {}, preset),
-    }
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    ).decode("ascii")
-    return f"{MOA_MARKER_PREFIX}{encoded}"
-
-def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | None = None) -> str:
-    """Build the hidden one-shot payload used by TUI/gateway routing."""
-    return encode_moa_turn(user_prompt, config, preset=preset)
-
-def list_moa_presets(config: Any) -> list[str]:
-    cfg = normalize_moa_config(config)
-    return list(cfg["presets"].keys())
-
-def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
-    cfg = normalize_moa_config(config)
-    clean = str(name or "").strip()
-    if clean and clean not in cfg["presets"]:
-        raise KeyError(clean)
-    cfg["active_preset"] = clean
-    return cfg
-# ---- END PLUGIN-COMPAT ----

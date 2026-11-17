@@ -41,7 +41,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class FakeTree:
@@ -141,3 +141,41 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+
+
+class FakeChannel:
+    """Only what reacting needs: ``get_partial_message`` returns a message with reaction mocks."""
+
+    def __init__(self):
+        self.partials = {}
+
+    def get_partial_message(self, message_id):
+        return self.partials.setdefault(message_id, SimpleNamespace(
+            id=message_id, add_reaction=AsyncMock(), remove_reaction=AsyncMock()))
+
+
+@pytest.mark.asyncio
+async def test_queued_event_without_raw_message_reacts_through_a_partial_message(adapter):
+    """A queued message restored from the session queue has its ids but no live message."""
+    channel = FakeChannel()
+    adapter._client.get_channel = lambda channel_id: channel if channel_id == 123 else None
+
+    event = _make_event("1234567890", None)
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    partial = channel.partials[1234567890]
+    assert [c.args for c in partial.add_reaction.await_args_list] == [("👀",), ("✅",)]
+    assert partial.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
+
+
+@pytest.mark.asyncio
+async def test_queued_event_with_a_non_discord_id_skips_reactions(adapter):
+    channel = FakeChannel()
+    adapter._client.get_channel = lambda channel_id: channel
+
+    event = _make_event("not-a-discord-id", None)
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert channel.partials == {}

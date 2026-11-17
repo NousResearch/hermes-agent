@@ -23,7 +23,7 @@ import cli
 
 
 def _run(args, cwd):
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30)
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30, check=False)
 
 
 def _commit(repo, name, msg):
@@ -87,6 +87,21 @@ class TestResolveWorktreeBase:
         assert resolved == remote_head
         assert resolved != stale_local_head
 
+    def test_resolves_remote_tip_on_tag_pinned_narrow_clone(self, remote_and_clone, tmp_path):
+        """`--single-branch --branch <tag>` maps remote.origin.fetch to the tag only, so a
+        by-name fetch writes FETCH_HEAD and never creates origin/main (#125686)."""
+        clone, remote_head, _ = remote_and_clone
+        _run(["git", "tag", "v0"], clone)  # the clone's stale HEAD; origin/main is past it
+        _run(["git", "push", "origin", "v0"], clone)
+        remote = _run(["git", "remote", "get-url", "origin"], clone).stdout.strip()
+        narrow = tmp_path / "narrow"
+        _run(["git", "clone", "-q", "--single-branch", "--branch", "v0", remote, str(narrow)], tmp_path)
+
+        base_ref, label = worktree_ops._resolve_worktree_base(str(narrow))
+
+        assert (base_ref, label) == ("origin/main", "origin/main (fetched)")
+        assert _run(["git", "rev-parse", base_ref], narrow).stdout.strip() == remote_head
+
     def test_falls_back_to_head_without_remote(self, tmp_path):
         repo = tmp_path / "no-remote"
         repo.mkdir()
@@ -131,7 +146,7 @@ class TestResolveWorktreeBaseStartupCost:
 
     def test_stale_fetch_head_refetches(self, remote_and_clone):
         """FETCH_HEAD older than the window -> a real fetch happens."""
-        clone, remote_head, _ = remote_and_clone
+        clone, _remote_head, _ = remote_and_clone
         _run(["git", "fetch", "origin", "main"], clone)
         fetch_head = Path(clone) / ".git" / "FETCH_HEAD"
         old = time.time() - 3600
@@ -143,7 +158,7 @@ class TestResolveWorktreeBaseStartupCost:
     def test_fetch_timeout_falls_back_to_cached_ref(self, remote_and_clone, monkeypatch):
         """A stalled fetch must yield the locally-cached tracking ref, fast —
         not cascade into a second fetch or blow up."""
-        clone, remote_head, stale_local_head = remote_and_clone
+        clone, _remote_head, stale_local_head = remote_and_clone
 
         real_run = subprocess.run
         fetches = []
@@ -205,7 +220,7 @@ class TestSetupWorktreeSyncBase:
         assert (Path(info["path"]) / "feature.txt").exists()
 
     def test_sync_false_branches_from_local_head(self, remote_and_clone):
-        clone, remote_head, stale_local_head = remote_and_clone
+        clone, _remote_head, stale_local_head = remote_and_clone
         info = cli._setup_worktree(str(clone), sync_base=False)
         assert info is not None
         # Opted out -> branch from the stale local HEAD (old behavior).

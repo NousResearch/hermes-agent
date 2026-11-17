@@ -62,6 +62,7 @@ it('does not share one config record across two gateways', async () => {
   const laptop = { display: { theme: 'dark' } }
   const devbox = { display: { theme: 'light' } }
   let releaseDevbox: (record: typeof devbox) => void = () => undefined
+
   const devboxFetch = new Promise<typeof devbox>(resolve => {
     releaseDevbox = resolve
   })

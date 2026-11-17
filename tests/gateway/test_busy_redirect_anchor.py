@@ -25,6 +25,9 @@ class Receiver:
     def redirect(self, text):
         return self.accept
 
+    def steer(self, text):
+        return self.accept
+
 
 def _running_turn(runner, key, receiver):
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", user_id="u1", chat_type="dm")
@@ -74,3 +77,28 @@ async def test_refused_or_foreign_redirect_leaves_the_anchor_on_the_opening_mess
     opening2, ctx2, redirecting2, _ = _running_turn(runner, "key2", Receiver())
     assert await runner._resolve_busy_steer_or_redirect(redirecting2, "key2", "interrupt", displaced)
     assert _reply_anchor_for_event(opening2) == "A" and ctx2.event_message_id == "A"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route", ["busy_interrupt", "priority_interrupt", "busy_steer", "priority_steer", "slash_steer"])
+async def test_a_turn_that_takes_in_an_addressed_message_keeps_the_silence_fallback(route):
+    """Redirect and steer fold a new message into the running turn, which then answers it too: if
+    that message was addressed to the bot, a bare silence marker must not end the turn silently."""
+    runner = GatewayRunner(config=GatewayConfig())
+    receiver = Receiver()
+    opening, ctx, incoming, source = _running_turn(runner, "key", receiver)
+    opening.reply_expected, incoming.reply_expected = False, True
+
+    if route == "priority_interrupt":
+        await runner._hm_busy_interrupt(incoming, source, receiver, "key")
+    elif route == "priority_steer":
+        runner._hm_busy_steer(incoming, receiver, "key")
+    elif route == "slash_steer":
+        incoming.text = "/steer " + incoming.text
+        assert (await runner._busy_steer_command(incoming, "key", source)).startswith("⏩")
+    else:
+        outcome = await runner._resolve_busy_steer_or_redirect(incoming, "key", route[5:], receiver)
+        assert outcome.redirected or outcome.steered
+
+    assert (opening.reply_expected, ctx.reply_expected) == (True, True)

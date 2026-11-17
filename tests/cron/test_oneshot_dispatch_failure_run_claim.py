@@ -50,7 +50,7 @@ class TestClearRunClaim:
     def test_clears_claim_on_oneshot(self, cron_store):
         job = _make_oneshot(claimed=True)
         assert clear_run_claim(job["id"]) is True
-        reloaded = [j for j in jobs_mod.load_jobs() if j["id"] == job["id"]][0]
+        reloaded = next(j for j in jobs_mod.load_jobs() if j["id"] == job["id"])
         assert reloaded.get("run_claim") is None
 
     def test_noop_when_already_clear(self, cron_store):
@@ -65,7 +65,7 @@ class TestClearRunClaim:
                 j["run_claim"] = {"at": "2026-08-17T10:00:00+00:00", "by": "test:1"}
         jobs_mod.save_jobs(jobs)
         assert clear_run_claim(job["id"]) is False
-        reloaded = [j for j in jobs_mod.load_jobs() if j["id"] == job["id"]][0]
+        reloaded = next(j for j in jobs_mod.load_jobs() if j["id"] == job["id"])
         assert reloaded.get("run_claim") is not None  # untouched
 
     def test_unknown_job_id_returns_false(self, cron_store):
@@ -85,7 +85,7 @@ class TestDispatchFailurePathsClearClaim:
         job = _make_oneshot(claimed=True)
         with patch.object(sched, "_interpreter_shutting_down", return_value=True):
             self._tick_one(job)
-        reloaded = [j for j in jobs_mod.load_jobs() if j["id"] == job["id"]][0]
+        reloaded = next(j for j in jobs_mod.load_jobs() if j["id"] == job["id"])
         assert reloaded.get("run_claim") is None, (
             "shutdown-path dispatch failure must clear run_claim (#86522)"
         )
@@ -95,7 +95,7 @@ class TestDispatchFailurePathsClearClaim:
         job = _make_oneshot(claimed=True)
         with patch.object(sched, "create_execution", side_effect=RuntimeError("db gone")):
             self._tick_one(job)
-        reloaded = [j for j in jobs_mod.load_jobs() if j["id"] == job["id"]][0]
+        reloaded = next(j for j in jobs_mod.load_jobs() if j["id"] == job["id"])
         assert reloaded.get("run_claim") is None
         assert job["id"] not in sched.get_running_job_ids()
 
@@ -110,7 +110,7 @@ class TestDispatchFailurePathsClearClaim:
         pool = _ExplodingPool()
         with patch.object(sched, "_get_parallel_pool", return_value=pool):
             self._tick_one(job)
-        reloaded = [j for j in jobs_mod.load_jobs() if j["id"] == job["id"]][0]
+        reloaded = next(j for j in jobs_mod.load_jobs() if j["id"] == job["id"])
         assert reloaded.get("run_claim") is None
         assert job["id"] not in sched.get_running_job_ids()
 

@@ -59,7 +59,7 @@ class TestIsThinkingOnlyAssistant:
         # on a model turn.
         healed = {
             "role": "assistant",
-            "content": "[response interrupted]",
+            "content": "[interrupt: no assistant output for this turn]",
             "_thinking_prefill": True,
         }
         assert AIAgent._is_thinking_only_assistant(healed)

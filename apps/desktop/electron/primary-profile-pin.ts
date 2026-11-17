@@ -61,9 +61,10 @@ export class PrimaryProfilePin {
  * next boot's decision instead of splitting routing identity from
  * `--profile`.
  */
-export function resolveLaunchProfile(
-  readPreference: () => null | string | undefined
-): { argvProfile: null | string; routingProfile: string } {
+export function resolveLaunchProfile(readPreference: () => null | string | undefined): {
+  argvProfile: null | string
+  routingProfile: string
+} {
   const argvProfile = String(readPreference() ?? '').trim() || null
 
   return { argvProfile, routingProfile: argvProfile ?? 'default' }

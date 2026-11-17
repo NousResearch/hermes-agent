@@ -32,7 +32,5 @@ export function resolveLiveProjectFilter(
 export function filterToSessionBearingProjects<
   T extends { isAuto?: boolean; isNoProject?: boolean; sessionCount?: number }
 >(projects: readonly T[]): T[] {
-  return projects.filter(
-    project => !project.isAuto || project.isNoProject || (project.sessionCount ?? 0) > 0
-  )
+  return projects.filter(project => !project.isAuto || project.isNoProject || (project.sessionCount ?? 0) > 0)
 }

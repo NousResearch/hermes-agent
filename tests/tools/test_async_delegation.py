@@ -417,7 +417,7 @@ def test_stalled_event_carries_structured_stall_metadata(monkeypatch):
     res = ad.dispatch_async_delegation(
         goal="stall metadata", context=None, toolsets=None, role="leaf",
         model="m", session_key="", max_async_children=1,
-        runner=lambda: {} if gate.wait(timeout=10) else {},
+        runner=lambda: (gate.wait(timeout=10), {})[1],
         progress_fn=lambda: ((0, "terminal"), True),
     )
     assert res["status"] == "dispatched"
@@ -444,7 +444,7 @@ def test_list_async_delegations_exposes_live_activity(monkeypatch):
     res = ad.dispatch_async_delegation(
         goal="live listing", context=None, toolsets=None, role="leaf",
         model="m", session_key="", max_async_children=1,
-        runner=lambda: {} if gate.wait(timeout=10) else {},
+        runner=lambda: (gate.wait(timeout=10), {})[1],
         progress_fn=lambda: (((3, "web_search", base_ts),), True),
     )
     try:
@@ -497,7 +497,8 @@ def test_in_tool_stall_uses_higher_threshold(monkeypatch):
 
 
 def test_real_process_restart_restores_owned_completion_once(tmp_path):
-    """Real-import E2E: a fresh interpreter restores a prior process's result."""
+    """Real-import E2E: the owning runtime, in a fresh interpreter, restores a prior process's
+    result exactly once. Importing the tools graph alone restores nothing (client fence)."""
     repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
     producer = r'''
@@ -519,9 +520,13 @@ print(r["delegation_id"])
     )
     delegation_id = first.stdout.strip().splitlines()[-1]
 
+    # The ledger replays on the first consumer, not at import (#123265).
     consumer = r'''
 import json
 from tools.process_registry import process_registry
+from tools.async_delegation import restore_undelivered_completions
+assert process_registry.completion_queue.empty(), "import must not restore"
+restore_undelivered_completions(process_registry.completion_queue)
 evt = process_registry.completion_queue.get_nowait()
 print(json.dumps(evt, sort_keys=True))
 '''
@@ -537,14 +542,15 @@ print(json.dumps(evt, sort_keys=True))
 
     acker = f'''
 from tools import async_delegation as ad
-assert ad.mark_completion_delivered({delegation_id!r})
+assert ad.claim_completion_delivery({delegation_id!r}, 'acker')
+assert ad.complete_completion_delivery({delegation_id!r}, 'acker')
 '''
     subprocess.run(
         [sys.executable, "-c", acker], cwd=repo, env=env,
         text=True, capture_output=True, timeout=15, check=True,
     )
     probe = subprocess.run(
-        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
+        [sys.executable, "-c", "from tools.process_registry import process_registry; process_registry.restore_completions(); print(process_registry.completion_queue.qsize())"],
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"
@@ -589,7 +595,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     # remain active while the background worker runs.
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
     monkeypatch.setattr(dt, "_run_single_child", slow_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     out = dt.delegate_task(
         goal="the real task", context="ctx",
         background=True, parent_agent=parent,
@@ -645,7 +651,7 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
         "api_mode": None, "command": None, "args": None,
     }
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     monkeypatch.setattr(
         dt,
         "_run_single_child",
@@ -814,7 +820,6 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     assert "finished cleanly" in text
     assert "cut off mid-work" in text
     # ...but the banner is tied to the truncated task, not the clean one.
-    trunc_pos = text.index("cut off mid-work")
     clean_pos = text.index("finished cleanly")
     banner_pos = text.index("TRUNCATED")
     # The header banner for task 2 appears after task 1's summary.
@@ -950,7 +955,7 @@ def _grouped_fanout(monkeypatch, tasks, gates):
              "args": None}
     monkeypatch.setattr(dt, "_build_child_agent", build)
     monkeypatch.setattr(dt, "_run_single_child", child)
-    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr("tools.delegate_tool_routes._resolve_delegation_credentials", lambda *a, **k: creds)
     return json.loads(dt.delegate_task(tasks=tasks, background=True, parent_agent=parent))
 
 
@@ -958,7 +963,7 @@ def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch
     """With delegation.independent_completions on, a finished ungrouped task must not wait for its siblings;
     tasks sharing a `group` must."""
     import tools.delegate_tool as dt
-    monkeypatch.setattr(dt, "_load_config", lambda: {"independent_completions": True})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: {"independent_completions": True})
     gates = [threading.Event() for _ in range(4)]
     tasks = [
         {"goal": "review PR 1 thoroughly and report"},
@@ -1009,7 +1014,7 @@ def test_multi_task_call_is_one_completion_unless_independent_completions(monkey
     """Default: a background fan-out returns as ONE message when every task is done, so an orchestrator
     is not woken N times per call; `group` is inert until delegation.independent_completions is on."""
     import tools.delegate_tool as dt
-    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", dict)
     gates = [threading.Event() for _ in range(3)]
     tasks = [{"goal": "review PR 1 thoroughly and report"}, {"goal": "review PR 2 thoroughly and report", "group": "g"},
              {"goal": "review PR 3 thoroughly and report", "group": "g"}]
@@ -1028,7 +1033,7 @@ def test_units_beyond_slot_count_still_start_and_are_not_stalled_while_queued(mo
     and a unit must not be judged stalled for time it spent waiting to start."""
     _fast_stale_monitor(monkeypatch, idle=0.3, grace=0.2)
     started, release = [], threading.Event()
-    frozen = lambda: (((0, None, None),), False)  # noqa: E731 - child never progresses => token never changes
+    frozen = lambda: (((0, None, None),), False)
 
     def blocker(uid):
         def run():
@@ -1065,6 +1070,7 @@ def test_child_finished_before_crash_is_recovered_with_its_result(tmp_path):
 import os, sys, time
 from unittest.mock import MagicMock
 import tools.delegate_tool as dt
+import tools.delegate_tool_routes as routes
 parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
 parent._active_children = []; parent._active_children_lock = None
 def child(task_index, goal, child=None, parent_agent=None, **kw):
@@ -1075,13 +1081,13 @@ def child(task_index, goal, child=None, parent_agent=None, **kw):
 def build(**kw):
     c = MagicMock(); c._delegate_role = "leaf"; c._subagent_id = f"s{kw['task_index']}"; return c
 creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None, "args": None}
-dt._build_child_agent = build; dt._run_single_child = child; dt._resolve_delegation_credentials = lambda *a, **k: creds
+dt._build_child_agent = build; dt._run_single_child = child; routes._resolve_delegation_credentials = lambda *a, **k: creds
 dt.delegate_task(tasks=[{"goal": "fast member of the group task", "group": "g"},
                         {"goal": "slow member of the group task", "group": "g"}], background=True, parent_agent=parent)
 time.sleep(2.0)
 sys.stdout.flush(); os._exit(1)
 '''
-    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30, check=False)
     consumer = r'''
 import json, queue
 from tools import async_delegation as ad
@@ -1112,6 +1118,7 @@ def test_one_child_unit_keeps_its_finished_child_when_the_owner_dies(tmp_path):
 import os, sys, time
 from unittest.mock import MagicMock
 import tools.delegate_tool as dt
+import tools.delegate_tool_routes as routes
 import tools.delegate_tool_dispatch as dtd
 parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
 parent._active_children = []; parent._active_children_lock = None
@@ -1121,7 +1128,7 @@ def child(task_index, goal, child=None, parent_agent=None, **kw):
 def build(**kw):
     c = MagicMock(); c._delegate_role = "leaf"; c._subagent_id = f"s{kw['task_index']}"; return c
 creds = {"model": "m", "provider": None, "base_url": None, "api_key": None, "api_mode": None, "command": None, "args": None}
-dt._build_child_agent = build; dt._run_single_child = child; dt._resolve_delegation_credentials = lambda *a, **k: creds
+dt._build_child_agent = build; dt._run_single_child = child; routes._resolve_delegation_credentials = lambda *a, **k: creds
 def held_finalize(*a, **k):
     # The child's result exists; the owner still has host-owned finalize + transcripts + manifest + the durable
     # write to do. Block HERE so the driver kills the owner inside that window: deterministic, no race.

@@ -89,6 +89,21 @@ const identity = {
 
 const { channelBuildRequest } = require('../../scripts/msix-shared.mjs')
 const request = channelBuildRequest()
-module.exports = request
-  ? Object.freeze({ ...request.identity, store: false, light: false, channel: request.channel })
-  : identity
+
+// A channel created with --branding stable copies stable's identity, so it IS
+// the regular app. It must also run like one: a token would make the runtime
+// pin a userData dir and single-instance lock that installed stable doesn't use.
+// The updater reads the token from the stamped request, not from this export.
+const officialChannel =
+  request !== null &&
+  ['appId', 'displayName', 'appNamePascal', 'artifactNamePascal', 'windowsExecutableName', 'cliName', 'msixAppIdWithOrg'].every(
+    key => request.identity[key] === identity[key]
+  )
+
+module.exports = !request
+  ? identity
+  : Object.freeze(
+      officialChannel
+        ? { ...identity, channel: request.channel }
+        : { ...request.identity, store: false, light: false, channel: request.channel }
+    )

@@ -28,7 +28,7 @@ pytest.importorskip(
     reason="MCP SDK 1.26.0+ required for OAuth support",
 )
 
-from tools.mcp_oauth import (  # noqa: E402 — after the SDK availability gate
+from tools.mcp_oauth import (
     HermesTokenStorage,
     _CIMD_CLIENT_METADATA_URL,
     _CIMD_PORTS,
@@ -310,7 +310,6 @@ def test_dashboard_flow_falls_back_to_dcr(tmp_path, monkeypatch, private_ports):
     flow = DashboardOAuthFlow(
         flow_id="flow-1",
         server_name="srv",
-        profile=None,
         hermes_home=str(tmp_path),
         redirect_uri="https://agent.example/api/mcp/oauth/callback/srv",
     )
@@ -445,23 +444,12 @@ def test_cached_pinned_port_is_not_handed_to_a_sibling_server(
 # Provider wiring
 # ---------------------------------------------------------------------------
 
-def test_build_oauth_auth_forwards_the_document_url(
-    tmp_path, monkeypatch, private_ports
-):
+def test_manager_omits_the_url_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _set_interactive_stdin(monkeypatch)
-    from tools.mcp_oauth import build_oauth_auth
+    from tools.mcp_oauth_manager import MCPOAuthManager
 
-    provider = build_oauth_auth("srv", "https://mcp.example.com/mcp", {})
-
-    assert provider.context.client_metadata_url == _CIMD_CLIENT_METADATA_URL
-
-def test_build_oauth_auth_omits_the_url_when_disabled(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _set_interactive_stdin(monkeypatch)
-    from tools.mcp_oauth import build_oauth_auth
-
-    provider = build_oauth_auth("srv", "https://mcp.example.com/mcp", {"cimd": False})
+    provider = MCPOAuthManager().get_or_build_provider("srv", "https://mcp.example.com/mcp", {"cimd": False})
 
     assert provider.context.client_metadata_url is None
 
@@ -488,9 +476,9 @@ def test_sdk_chooses_cimd_only_when_the_server_advertises_it(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _set_interactive_stdin(monkeypatch)
     from mcp.client.auth.utils import should_use_client_metadata_url
-    from tools.mcp_oauth import build_oauth_auth
+    from tools.mcp_oauth_manager import MCPOAuthManager
 
-    provider = build_oauth_auth("srv", "https://mcp.example.com/mcp", {})
+    provider = MCPOAuthManager().get_or_build_provider("srv", "https://mcp.example.com/mcp", {})
     server_metadata = SimpleNamespace(client_id_metadata_document_supported=advertised)
 
     chosen = should_use_client_metadata_url(

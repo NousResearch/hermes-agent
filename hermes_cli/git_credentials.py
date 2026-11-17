@@ -72,7 +72,7 @@ def _gh_cli_token() -> Optional[str]:
             env.pop(var, None)
         result = subprocess.run(
             [gh, "auth", "token"], capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=10, stdin=subprocess.DEVNULL, env=env, creationflags=windows_hide_flags())
+            timeout=10, stdin=subprocess.DEVNULL, env=env, creationflags=windows_hide_flags(), check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.debug("gh auth token lookup failed: %s", exc)
         return None
@@ -102,7 +102,7 @@ def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
         result = subprocess.run(
             [git, "-c", "core.askPass=", "credential", "fill"], input=request, capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=15, env=env,
-            creationflags=windows_hide_flags())
+            creationflags=windows_hide_flags(), check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.debug("git credential fill failed for %s: %s", origin, exc)
         return None
@@ -204,13 +204,13 @@ def run_git_with_credential_fallback(
     # Username", and the refusal below is never classified. Same drop _credential_fill does.
     env.pop("GIT_ASKPASS", None)
     env.pop("SSH_ASKPASS", None)
-    result = subprocess.run(argv, env=env, **run_kwargs)
+    result = subprocess.run(argv, env=env, **run_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     if result.returncode == 0 or not url or not is_credential_required_error(result):
         return result
     auth_env = with_git_auth(env, url)
     if auth_env == env:
         return result
-    result = subprocess.run(argv, env=auth_env, **run_kwargs)
+    result = subprocess.run(argv, env=auth_env, **run_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     sent = _auth_headers(auth_env)
     rejected: list[str] = []
     # The first credential (typically GITHUB_TOKEN from .env) was refused too: it is stale or
@@ -226,7 +226,7 @@ def run_git_with_credential_fallback(
         sent |= headers
         logger.warning("%s rejected the credential from %s; retrying with %s",
                        _https_origin(url), ", ".join(rejected) or "the stored credential", source)
-        result = subprocess.run(argv, env=candidate_env, **run_kwargs)
+        result = subprocess.run(argv, env=candidate_env, **run_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
         if result.returncode != 0 and is_credential_required_error(result):
             rejected.append(source)
     if result.returncode != 0 and "GITHUB_TOKEN/GH_TOKEN" in rejected and isinstance(result.stderr, str):

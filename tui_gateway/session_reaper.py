@@ -239,13 +239,23 @@ def _sessions_quiescent(exclude: str | None = None) -> bool:
     return all(_session_is_lru_evictable(sid, s) for sid, s in others)
 
 
+def _session_is_reapable(sid: str, session: dict) -> bool:
+    """Reaper eligibility: the LRU exemptions, and not the sole receiver of a pending wake-up — an active /loop or
+    /heartbeat, or a running background process that will notify it (closing the session stops the notification
+    poller that delivers both, and ``agent_close`` kills the process). Kept out of ``_sessions_quiescent``: an idle
+    session waiting on a wake-up does not block a memory trim."""
+    return (_session_is_lru_evictable(sid, session) and not _session_owns_live_wakeup_schedule(session)
+            and not _session_owns_pending_process_notification(session))
+
+
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
-    """TTL eviction: the LRU exemptions plus idle-for-TTL AND older-than-TTL."""
-    if not _session_is_lru_evictable(sid, session):
-        return False
+    """TTL eviction: idle-for-TTL AND older-than-TTL, plus the reap exemptions (the cheap clock check first: the
+    exemptions read the session store, and this runs for every session on each reaper pass)."""
     last_active = float(session.get("last_active") or 0.0)
     created_at = float(session.get("created_at") or 0.0)
-    return (now - last_active) > _SESSION_TTL_S and (now - created_at) > _SESSION_TTL_S
+    if (now - last_active) <= _SESSION_TTL_S or (now - created_at) <= _SESSION_TTL_S:
+        return False
+    return _session_is_reapable(sid, session)
 
 
 def _reap_idle_sessions() -> None:
@@ -262,6 +272,11 @@ def _reap_idle_sessions() -> None:
             predicate=lambda session, vs=sid: _session_is_evictable(vs, session, time.time()))
     _repair_missing_ws_orphan_reaps()
     _enforce_session_cap()
+    try:
+        if released := _release_idle_session_leases(now):
+            logger.info("Released %d idle Desktop active-session lease(s)", released)
+    except Exception:
+        logger.debug("idle lease release failed", exc_info=True)
     _reclaim_orphaned_leases()
     # Long-lived processes: gen2 GC rarely runs at steady state and glibc retains freed pages as RSS, so trim
     # every quiescent scan to prevent unbounded RSS growth over days/weeks. Forced trims (agent close, cache
@@ -270,8 +285,8 @@ def _reap_idle_sessions() -> None:
         logger.debug("idle reaper periodic trim deferred: a session is busy or attached")
         return
     try:
-        from hermes_cli.mem_trim import trim_memory
-        trim_memory(reason="idle reaper periodic trim")
+        from hermes_cli.mem_trim import trim_memory_when_idle
+        trim_memory_when_idle(reason="idle reaper periodic trim")
     except Exception as exc:  # debug, not warning — a persistent failure would repeat every scan.
         logger.debug("idle reaper memory trim failed: %s: %s", type(exc).__name__, exc)
 
@@ -302,6 +317,54 @@ def _repair_missing_ws_orphan_reaps() -> None:
         ]
         for sid in missing:
             _schedule_ws_orphan_reap(sid)
+
+
+# An idle Desktop record keeps its runtime (warm tab reopen) but not its active-session lease. Desktop's tab
+# close sends no RPC and the app's live socket exempts the record from TTL/LRU reaping, while
+# _own_live_lease_ids vouches for every resident record, so a lease claimed on turn 1 fenced Telegram, the
+# dashboard and message_agent out of that chat until the app quit (#146735). The next turn re-claims it
+# through _admit_prompt_turn; a surface that took the chat meanwhile then refuses it, as exclusivity requires.
+_IDLE_LEASE_RELEASE_S = 600.0
+
+
+def _session_lease_is_idle(sid: str, session: dict, now: float) -> bool:
+    """A liveness-tracked (Desktop) lease on a record with no turn, build, input wait or delegation in flight,
+    untouched for ``_IDLE_LEASE_RELEASE_S``. A borrowed compute-host token (``enabled=False``) is not ours."""
+    lease = session.get("active_session_lease")
+    if lease is None or not getattr(lease, "track_liveness", False) or not getattr(lease, "enabled", True):
+        return False
+    if now - float(session.get("last_active") or 0.0) <= _IDLE_LEASE_RELEASE_S:
+        return False
+    if session.get("running") or session.get("_compute_host_turn_id") or _session_holds_transcript_claim(session, now):
+        return False
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set():
+        return False
+    return not (_session_pending_kind(sid) or _session_has_active_delegations(sid, session)
+                or _session_owns_live_wakeup_schedule(session) or _session_owns_pending_process_notification(session))
+
+
+def _release_idle_session_leases(now: float | None = None) -> int:
+    """Release the active-session lease of every idle resident Desktop record; returns the count."""
+    now = time.time() if now is None else now
+    with _sessions_lock:
+        candidates = [(sid, s) for sid, s in _sessions.items() if s.get("active_session_lease") is not None]
+    released = 0
+    for sid, session in candidates:
+        if not _session_lease_is_idle(sid, session, now):
+            continue
+        # Turns mark ``running`` and off-turn writers refresh ``last_active`` / hold a transcript claim under
+        # history_lock: re-evaluate the WHOLE predicate there, or a writer that passed its ownership check after
+        # the unlocked probe above loses the lease mid-write. ``_lease_idle_released`` is set under the same lock:
+        # a submit that checked the lease before this release, and every rewind, refuses to write the transcript
+        # until the lease is re-claimed.
+        with session.get("history_lock") or contextlib.nullcontext():
+            if session.get("_finalized") or not _session_lease_is_idle(sid, session, now):
+                continue
+            if _release_active_session_slot(session):
+                session["_lease_idle_released"] = sid  # the writer identity a re-claim must present
+                released += 1
+    return released
 
 
 def _reclaim_orphaned_leases() -> None:
@@ -343,7 +406,7 @@ def _enforce_session_cap() -> None:
     with _sessions_lock:
         if len(_sessions) <= cap:
             return
-        evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_lru_evictable(sid, s)]
+        evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_reapable(sid, s)]
     # Oldest-touched first; evict only down to the cap (may stop short: live sessions are never eligible).
     evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
     for sid, _s in evictable:
@@ -351,7 +414,7 @@ def _enforce_session_cap() -> None:
             if len(_sessions) <= cap:
                 break
         _close_session_by_id(
-            sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_lru_evictable(vs, session))
+            sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_reapable(vs, session))
 
 
 def _reaper_daemon_timer(delay: float, fn, fail_log: str, level: str = "debug") -> None:

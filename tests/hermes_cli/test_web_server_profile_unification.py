@@ -140,7 +140,7 @@ class TestProfileScopedMcp:
     ):
         """An `auth: oauth` server that serves tools/list anonymously must not
         false-green: a successful probe with no token on disk reports needs-auth."""
-        import hermes_cli.mcp_config as mcp_config
+        from hermes_cli import mcp_config
 
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  oauth-srv:\n    url: http://x/sse\n    auth: oauth\n",
@@ -174,7 +174,7 @@ class TestProfileScopedMcp:
         """The probe's per-tool `schema_chars` (details out-param) surfaces as an
         ADDITIVE per-tool field on the wire; tools without a size stay bare so
         older/partial probes degrade to 'no estimate' in the renderer."""
-        import hermes_cli.mcp_config as mcp_config
+        from hermes_cli import mcp_config
 
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  sized-srv:\n    url: http://x/mcp\n",
@@ -209,8 +209,8 @@ class TestProfileScopedMcp:
         (Bitwarden/1Password) never has it in the shared process env, so the
         probe used to send the literal placeholder — or the default profile's
         value of the same name — and the server answered 400 (#109901)."""
-        import hermes_cli.env_loader as env_loader
-        import hermes_cli.mcp_config as mcp_config
+        from hermes_cli import env_loader
+        from hermes_cli import mcp_config
 
         worker_home = isolated_profiles["worker_beta"]
         (worker_home / "config.yaml").write_text(
@@ -249,7 +249,7 @@ class TestProfileScopedMcp:
     ):
         """Same class for the read endpoint: a ``${VAR}`` in a secondary profile's server
         ``url`` must expand from THAT profile's secret scope, never the dashboard process env."""
-        import hermes_cli.env_loader as env_loader
+        from hermes_cli import env_loader
 
         worker_home = isolated_profiles["worker_beta"]
         (worker_home / "config.yaml").write_text(
@@ -382,7 +382,7 @@ class TestProfileScopedGateway:
     def test_status_reads_requested_profile_home(
         self, client, isolated_profiles, monkeypatch
     ):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_constants import get_hermes_home
 
         seen_homes = []
@@ -391,7 +391,6 @@ class TestProfileScopedGateway:
             # /api/status?profile= now passes pid_path= explicitly (the TTL
             # cache would otherwise serve another profile's PID) — accept it.
             seen_homes.append(str(get_hermes_home()))
-            return None
 
         monkeypatch.setattr(_cfg_mod, "check_config_version", lambda: (1, 1))
         # get_status probes via the TTL-cached wrapper (PR #53511 salvage);
@@ -413,7 +412,7 @@ class TestProfileScopedGateway:
     def test_status_uses_runtime_pid_when_profile_pid_file_is_missing(
         self, client, isolated_profiles, monkeypatch
     ):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         worker_home = isolated_profiles["worker_beta"]
         (worker_home / ".env").write_text(
@@ -471,7 +470,7 @@ class TestProfileScopedGateway:
         Non-fatal leftovers (e.g. a platform that connected before the crash)
         are still dropped — only fatals survive.
         """
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         runtime = {
             "pid": 4242,
@@ -512,7 +511,7 @@ class TestProfileScopedGateway:
         self, client, isolated_profiles, monkeypatch
     ):
         """A durable stop intent takes precedence over an old startup failure."""
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         runtime = {
             "pid": 4242,
@@ -542,7 +541,7 @@ class TestProfileScopedGateway:
         self, client, isolated_profiles, monkeypatch
     ):
         """A cleanly stopped gateway still reports no platforms (stale-noise rule)."""
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         runtime = {
             "pid": 4242,
@@ -631,7 +630,7 @@ class TestProfileScopedChatPty:
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
-        argv, cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
@@ -728,7 +727,7 @@ class TestProfileScopedChatPty:
         import logging
 
         import hermes_cli.config as config_mod
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         (isolated_profiles["default"] / "config.yaml").write_text(
             "terminal:\n  backend: docker\n",
@@ -768,7 +767,7 @@ class TestProfileScopedAudio:
     ):
         import base64
 
-        import tools.voice_mode as voice_mode
+        from tools import voice_mode
 
         seen = {}
 

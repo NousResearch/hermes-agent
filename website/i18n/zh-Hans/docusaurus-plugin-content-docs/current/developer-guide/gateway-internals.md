@@ -20,7 +20,6 @@ description: "消息 gateway 如何启动、授权用户、路由会话以及投
 | `gateway/hooks.py` | Hook（钩子）发现、加载与生命周期事件分发 |
 | `gateway/mirror.py` | 为 `send_message` 提供跨会话消息镜像 |
 | `gateway/status.py` | 面向 profile 范围的 gateway 实例的 token 锁管理 |
-| `gateway/builtin_hooks/` | 始终注册的 hook 扩展点（当前未内置任何 hook） |
 | `gateway/platform_registry.py` | 适配器注册表、工厂，以及对捆绑平台插件的延迟（惰性）加载 |
 | `plugins/platforms/<name>/` | 捆绑的消息适配器（多数平台：`adapter.py` + `plugin.yaml`） |
 | `gateway/platforms/` | 共享的 `base.py` 与遗留/直接适配器（Signal、API server、webhooks 等） |
@@ -145,14 +144,15 @@ Gateway 从多个来源读取配置：
 
 ## 平台适配器
 
-大多数消息平台以插件适配器形式位于 `plugins/platforms/<name>/adapter.py`；少数旧适配器仍直接位于 `gateway/platforms/`。它们都继承 `gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
+所有消息平台都以插件适配器形式位于 `plugins/platforms/<name>/`；`gateway/platforms/` 只保留基类和 HTTP 入站适配器（`api_server`、`webhook`、`msgraph_webhook`）。它们都继承 `gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
 
 ```text
 plugins/platforms/                  # 插件打包的适配器（每个一个目录）
 ├── telegram/adapter.py     # Telegram Bot API（长轮询或 webhook）
 ├── discord/adapter.py      # Discord bot（通过 discord.py）
 ├── slack/adapter.py        # Slack Socket Mode
-├── whatsapp/adapter.py     # WhatsApp Business Cloud API
+├── whatsapp/adapter.py     # WhatsApp（通过本地 Baileys 桥接）
+├── whatsapp_cloud/adapter.py # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix（通过 mautrix，可选 E2EE）
 ├── mattermost/adapter.py   # Mattermost WebSocket API
 ├── email/adapter.py        # 电子邮件（通过 IMAP/SMTP）
@@ -162,17 +162,15 @@ plugins/platforms/                  # 插件打包的适配器（每个一个目
 ├── wecom/adapter.py        # 企业微信（WeCom）回调
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
+├── signal/adapter.py       # Signal（通过 signal-cli HTTP 守护进程，SSE + JSON-RPC）
 ├── irc/adapter.py          # IRC（作用域锁的标准示例）
-├── homeassistant/adapter.py # Home Assistant 对话集成
+├── bluebubbles/adapter.py  # Apple iMessage（通过 BlueBubbles macOS 服务端）
+├── weixin/adapter.py       # 微信（个人版，通过 iLink Bot API）
+├── qqbot/                  # QQ Bot（腾讯 QQ，通过官方 API v2）
 └── …                       # google_chat、ntfy、photon、raft、simplex 等
 
-gateway/platforms/                  # 核心 base 与旧的直接适配器
+gateway/platforms/                  # 核心 base 与 HTTP 入站适配器
 ├── base.py              # BasePlatformAdapter — 所有平台的共享逻辑
-├── signal.py            # Signal（通过 signal-cli REST API）
-├── weixin.py            # 微信（个人版，通过 iLink Bot API）
-├── bluebubbles.py       # Apple iMessage（通过 BlueBubbles macOS 服务端）
-├── qqbot/               # QQ Bot（腾讯 QQ，通过官方 API v2，子包）
-├── yuanbao.py           # 元宝（腾讯）私信/群组适配器
 ├── msgraph_webhook.py   # Microsoft Graph 变更通知 webhook（Teams、Outlook 等）
 ├── webhook.py           # 入站/出站 webhook 适配器
 └── api_server.py        # REST API 服务器适配器
@@ -215,7 +213,7 @@ Gateway hook 是响应生命周期事件的 Python 模块。
 | `agent:end` | Agent 完成并返回响应时 |
 | `command:*` | 任意斜杠命令被执行时 |
 
-Hook 从 `gateway/builtin_hooks/`（扩展点 — 当前发行版中为空；`_register_builtin_hooks()` 是一个空操作存根）和 `~/.hermes/hooks/`（用户安装）中发现。每个 hook 是一个包含 `HOOK.yaml` 清单和 `handler.py` 的目录。
+Hook 从 `~/.hermes/hooks/`（用户安装）中发现。每个 hook 是一个包含 `HOOK.yaml` 清单和 `handler.py` 的目录。
 
 ## 内存提供者集成
 

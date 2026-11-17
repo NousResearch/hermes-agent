@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
-import { getAllSessionMessages, listAllProfileSessions } from '@/hermes'
+import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { resolveBrandIcon } from '@/lib/brand-icon'
 import {
@@ -138,9 +138,12 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     try {
       const sessions = (await listAllProfileSessions(30, 1)).sessions
 
-      const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(
-        sessions,
-        async session => (await getAllSessionMessages(session.id, session.profile)).messages
+      const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(sessions, (session, page) =>
+        getSessionMessages(session.id, session.profile, {
+          ...page,
+          includeCompacted: true,
+          order: 'oldest'
+        })
       )
 
       if (failures.length > 0) {

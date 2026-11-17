@@ -57,16 +57,18 @@ def _drop_config_yaml_copies(key: str) -> bool:
 
 
 def save_env_setting(key: str, value: str) -> None:
-    from hermes_cli.config import save_env_value
+    from hermes_cli.config import require_env_writable, save_env_value
 
+    require_env_writable(key.upper(), "set")
     save_env_value(key.upper(), value)
     _drop_config_yaml_copies(key)
 
 
 def remove_env_setting(key: str) -> bool:
     """Remove the ``.env`` entry and any stale ``config.yaml`` copy; False when neither existed."""
-    from hermes_cli.config import remove_env_value
+    from hermes_cli.config import remove_env_value, require_env_writable
 
+    require_env_writable(key.upper(), "remove")
     removed = remove_env_value(key.upper())
     return _drop_config_yaml_copies(key) or removed
 

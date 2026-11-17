@@ -27,7 +27,7 @@ def _parse(argv):
     return parser.parse_args(["send", *argv])
 
 class _FakeTool:
-    """Replacement for ``tools.send_message_tool.send_message_tool``."""
+    """Replacement for ``gateway.outbound.send.send_message_tool``."""
 
     def __init__(self, payload):
         self.payload = payload
@@ -45,12 +45,12 @@ def fake_tool(monkeypatch):
 
     fake = _FakeTool({"success": True, "message_id": "m123"})
 
-    mod = types.ModuleType("tools.send_message_tool")
+    mod = types.ModuleType("gateway.outbound.send")
     mod.send_message_tool = fake
-    # Register the stub so ``from tools.send_message_tool import ...`` inside
+    # Register the stub so ``from gateway.outbound.send import ...`` inside
     # cmd_send resolves to our fake. Also patch the parent ``tools`` package
     # entry so attribute lookup works.
-    monkeypatch.setitem(sys.modules, "tools.send_message_tool", mod)
+    monkeypatch.setitem(sys.modules, "gateway.outbound.send", mod)
     return fake
 
 # ---------------------------------------------------------------------------
@@ -68,17 +68,22 @@ def whatsapp_bridge(monkeypatch):
 
     from gateway.config import Platform
     from hermes_cli.plugins import discover_plugins
+    from plugins.platforms.whatsapp.adapter import _bridge_auth_proof
 
+    token = "standalone-test-token-0123456789abcdef"
     calls = []
     state = {"supports_mentions": True}
 
     class BridgeResponse:
         status = 200
 
-        def __init__(self, *, health=False):
+        def __init__(self, *, health=False, proof=None):
             self.health = health
+            self.proof = proof
 
         async def json(self):
+            if self.proof is not None:
+                return {"authProof": self.proof}
             if self.health:
                 return {"capabilities": {"outboundMentions": state["supports_mentions"]}}
             return {"messageId": f"m{len(calls)}"}
@@ -99,10 +104,13 @@ def whatsapp_bridge(monkeypatch):
         async def __aexit__(self, *_args):
             return False
 
-        def get(self, url, *, timeout):
+        def get(self, url, *, timeout, headers=None):
+            if url.endswith("/auth-proof"):
+                return BridgeResponse(proof=_bridge_auth_proof(token, headers["X-Hermes-Bridge-Challenge"]))
             return BridgeResponse(health=True)
 
-        def post(self, url, *, json, timeout):
+        def post(self, url, *, json, timeout, headers=None):
+            assert headers == {"Authorization": f"Bearer {token}"}
             calls.append((url.rsplit("/", 1)[-1], json))
             return BridgeResponse()
 
@@ -112,10 +120,15 @@ def whatsapp_bridge(monkeypatch):
         get_home_channel=lambda _platform: None,
     )
     monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    # Standalone senders only READ the token the gateway persisted beside the session.
+    from hermes_constants import get_hermes_home
+    session_dir = get_hermes_home() / "platforms" / "whatsapp" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / ".bridge-token").write_text(token)
     monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
     monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
-    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *_args: False)
+    monkeypatch.setattr("gateway.outbound.send._mirror_sent_message", lambda *_args: False)
     monkeypatch.setattr(aiohttp, "ClientSession", lambda *_args, **_kwargs: BridgeSession())
     return SimpleNamespace(calls=calls, state=state)
 
@@ -287,6 +300,24 @@ def test_load_hermes_env_bridges_config_yaml_scalars(tmp_path, monkeypatch):
     assert os.environ.get("SOME_TOKEN") == "abc123"
     assert os.environ.get("TELEGRAM_HOME_CHANNEL") == "5550001111"
 
+
+def test_load_hermes_env_ignores_launch_only_keys_in_config_yaml(tmp_path, monkeypatch):
+    """A user-writable config.yaml must not repoint managed scope via ``hermes send`` (#135200)."""
+    import os
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        f"HERMES_MANAGED_DIR: {tmp_path}\nTELEGRAM_HOME_CHANNEL: '5550001111'\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+    send_cmd._load_hermes_env()
+
+    assert os.environ.get("TELEGRAM_HOME_CHANNEL") == "5550001111"
+    assert "HERMES_MANAGED_DIR" not in os.environ
+
 def test_load_hermes_env_utf8_bom_preserves_first_key(tmp_path, monkeypatch):
     """A leading UTF-8 BOM must not mangle the first .env key name.
 
@@ -448,7 +479,7 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     assert "~/.hermes" not in help_text
 
     fake_gw_config = types.ModuleType("gateway.config")
-    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=lambda: [])
+    fake_gw_config.load_gateway_config = lambda: types.SimpleNamespace(get_connected_platforms=list)
     monkeypatch.setitem(sys.modules, "gateway.config", fake_gw_config)
     fake_dir = types.ModuleType("gateway.channel_directory")
     fake_dir.load_directory = lambda: {"updated_at": None, "platforms": {}}

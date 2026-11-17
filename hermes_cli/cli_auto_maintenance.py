@@ -1,4 +1,4 @@
-"""Startup auto-maintenance for the classic CLI: state-db pack/vacuum and checkpoint pruning run off the prompt thread.
+"""Startup auto-maintenance for the classic CLI: state-db pack/vacuum.
 
 Split out of ``cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
 cli-level names through ``from cli import ...`` at call time so facade monkeypatch seams hold.
@@ -7,7 +7,7 @@ cli-level names through ``from cli import ...`` at call time so facade monkeypat
 from __future__ import annotations
 
 import logging
-import threading
+import sqlite3
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
@@ -35,14 +35,20 @@ def _run_state_db_auto_maintenance(session_db) -> None:
                 "Finalized %d orphaned compression sessions", "Orphan compression finalize skipped: %s",
             ),
         ):
+            if session_db.get_meta(meta_key):
+                continue
             try:
-                if not session_db.get_meta(meta_key):
-                    count = repair()
-                    session_db.set_meta(meta_key, "1")
-                    if count:
-                        logger.info(done_msg, count)
-            except Exception as _exc:
-                logger.debug(skip_msg, _exc)
+                count = repair()
+            # Every SessionDB refusal: sqlite/IO, RuntimeStoreError (ValueError), and the
+            # hermes_state_errors busy/replaced family (RuntimeError).
+            except (sqlite3.Error, OSError, ValueError, RuntimeError) as _exc:
+                # Latched below regardless: a repair this store refuses (live ledger work,
+                # locked file) must surface once, not retry silently on every start.
+                logger.warning(skip_msg, _exc)
+                count = 0
+            session_db.set_meta(meta_key, "1")
+            if count:
+                logger.info(done_msg, count)
 
         cfg = (_load_full_config().get("sessions") or {})
 
@@ -65,10 +71,3 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)
 
-
-def _run_checkpoint_auto_maintenance() -> None:
-    """Checkpoint store retention on a daemon thread: its ``git gc`` can block for tens of seconds
-    on a large store, which used to stall the prompt once a day. ``auto_prune_from_config`` owns the
-    config gate and the 24h marker and never raises."""
-    from tools.checkpoint_maintenance import auto_prune_from_config
-    threading.Thread(target=auto_prune_from_config, name="checkpoint-auto-prune", daemon=True).start()

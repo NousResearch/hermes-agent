@@ -12,18 +12,39 @@
  * through the plugin host loader (next phase); this is that seam.
  */
 
+import type { ReadableAtom } from 'nanostores'
+
 import { pluginRest, type PluginRestOptions, pluginSocket } from '@/hermes'
 import { createPluginI18n, type PluginI18n } from '@/i18n'
+import {
+  listPluginAppActions,
+  type PluginAppActionId,
+  type PluginAppActionInfo,
+  type PluginRunActionResult,
+  runPluginAppAction
+} from '@/lib/keybinds/plugin-actions'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
+import { $petActive } from '@/store/pet'
+import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
+import { createPluginFiles, type PluginFiles } from './plugin-files'
+import { createPluginPreview, type PluginPreview } from './plugin-preview'
+import { $pluginRecords } from './plugins-store'
 import { registry } from './registry'
+import { type PluginSettingsPage, settingsPageContribution } from './settings-pages'
+
+export type { PluginFileEntry, PluginFiles, PluginFilesResult, PluginFolder } from './plugin-files'
+export type { PluginPreview } from './plugin-preview'
 import type { Contribution } from './types'
 
+export type { PluginSettingsPage, PluginSettingsSubpage } from './settings-pages'
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
+export type { PluginAppActionId, PluginAppActionInfo, PluginRunActionResult } from '@/lib/keybinds/plugin-actions'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
+export type { PetMessageTone, PetSayOptions } from '@/store/pet-plugin-messages'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
@@ -67,6 +88,24 @@ export interface PluginOs {
   writeClipboard: (text: string) => Promise<boolean>
 }
 
+/** The pet door: short lines in the core pet's speech bubble, attributed to
+ *  this plugin, instead of locating the pet in the app DOM and drawing over
+ *  it. The host renders them in the in-window pet and the pop-out overlay;
+ *  they show only while the user has a pet visible. */
+export interface PluginPet {
+  /** Show one plain-text line (no HTML; control characters stripped, capped
+   *  at 120 chars) with this plugin's name as a small label. Lasts `ttlMs`
+   *  (default 6 s, clamped 1–30 s); the same `id` replaces in place. Core
+   *  error / waiting-on-you states keep priority over it. Rate-limited per
+   *  plugin. Returns a disposer that removes the line early. */
+  say: (text: string, options?: PetSayOptions) => () => void
+  /** Remove one line by `id`, or every line this plugin has up. */
+  clear: (id?: string) => void
+  /** True while a pet is installed and shown (in-window or popped out). A
+   *  plugin can fall back to its own chip or pane while this is false. */
+  visible: ReadableAtom<boolean>
+}
+
 export interface PluginFileDialogOptions {
   defaultPath?: string
   filters?: Array<{ extensions: string[]; name: string }>
@@ -80,6 +119,10 @@ export interface PluginContext {
   register: (c: PluginContribution) => () => void
   /** Register several at once; the returned disposer removes all of them. */
   registerMany: (cs: PluginContribution[]) => () => void
+  /** Add this plugin's page (and optional sub-pages) to Settings ▸ Plugins.
+   *  Removed with the plugin on disable/unload. Feature-detect on older hosts:
+   *  `ctx.registerSettingsPage?.(...)`. */
+  registerSettingsPage: (page: PluginSettingsPage) => () => void
   /** Register an arbitrary cleanup to run on unload/disable — for side effects
    *  that aren't contributions or sockets (store subscriptions, timers). Runs
    *  alongside every other disposer when the plugin deactivates. */
@@ -118,8 +161,32 @@ export interface PluginContext {
    *  manager, clipboard — attributed to this plugin, result-shaped (never
    *  throws for a missing capability). */
   os: PluginOs
+  /** The pet door: lines in the core pet's speech bubble, attributed to this
+   *  plugin and cleared when it unloads. Feature-detect on older hosts:
+   *  `ctx.pet?.say(...)`. */
+  pet: PluginPet
+  /** Run a built-in app action (toggle the browser panel, open Settings,
+   *  focus the composer, …) through the same handler its keyboard shortcut
+   *  and palette entry use, so rebinding or unbinding the shortcut changes
+   *  nothing. Only view / navigation actions are allowed (`listActions()`);
+   *  an unknown or denied id is refused with `{ ok: false, error }` and a
+   *  console warning, never thrown. Feature-detect on older hosts:
+   *  `ctx.runAction?.('view.showBrowser')`. */
+  runAction: (id: PluginAppActionId) => PluginRunActionResult
+  /** The actions `runAction` accepts, with their localized labels. */
+  listActions: () => PluginAppActionInfo[]
+  /** Run JavaScript in the preview Browser page. Closed unless the plugin
+   *  declares `capabilities: ['preview.executeJavaScript']`, and even then
+   *  the app asks the user once per page origin before anything runs.
+   *  Feature-detect on older hosts: `ctx.preview?.executeJavaScript`. */
+  preview: PluginPreview
   /** Plugin-scoped persistence. */
   storage: PluginStorage
+  /** Folder-scoped file access: this plugin's own data folder plus folders
+   *  the user grants it through the app's picker, by relative path. The app
+   *  checks every call; nothing outside those folders (or inside Hermes'
+   *  own data) is reachable. Feature-detect on older hosts: `ctx.files?.…`. */
+  files: PluginFiles
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
    *  resolved against the app's active locale — no core `en.ts` edit. */
   i18n: PluginI18n
@@ -136,6 +203,10 @@ export interface HermesPlugin {
    *  for opt-in plugins: they inventory in Capabilities ▸ Plugins, off until the
    *  user flips the switch. */
   defaultEnabled?: boolean
+  /** Sensitive doors this plugin uses, declared up front so the app can show
+   *  them and gate them. Today: `'preview.executeJavaScript'` (`ctx.preview`).
+   *  A door the plugin did not declare refuses every call. */
+  capabilities?: readonly string[]
   /** Called once at load; wire contributions through `ctx`. */
   register: (ctx: PluginContext) => void
 }
@@ -215,6 +286,26 @@ function createPluginOs(pluginId: string): PluginOs {
   }
 }
 
+// Lines are attributed by the inventory name the loader published before
+// register() ran; the id is the fallback. Every line this plugin still has up
+// is cleared with it on unload/disable (tracked on first use).
+function createPluginPet(pluginId: string, track: (dispose: () => void) => () => void): PluginPet {
+  let tracked = false
+
+  return {
+    clear: id => clearPetMessages(pluginId, id),
+    say: (text, options) => {
+      if (!tracked) {
+        tracked = true
+        track(() => clearPetMessages(pluginId))
+      }
+
+      return sayPetMessage(pluginId, $pluginRecords.get()[pluginId]?.name ?? pluginId, text, options)
+    },
+    visible: $petActive
+  }
+}
+
 /** Timers and DOM listeners a plugin takes out through `ctx`, retired as ONE
  *  tracked disposer. A fired timeout drops out of the set on its own, so a
  *  long-lived plugin firing many one-shots does not accumulate cleanups. */
@@ -270,9 +361,21 @@ function createPluginLifetime(track: (dispose: () => void) => () => void) {
   }
 }
 
+/** The declared capabilities of a plugin export, strings only. */
+export function declaredCapabilities(plugin: Pick<HermesPlugin, 'capabilities'>): string[] {
+  return Array.isArray(plugin.capabilities)
+    ? plugin.capabilities.filter((entry): entry is string => typeof entry === 'string')
+    : []
+}
+
 /** Build the scoped context handed to a plugin's `register`. `onDispose`
- *  receives every registration's disposer (the loader's unload/reload hook). */
-export function createPluginContext(pluginId: string, onDispose?: (dispose: () => void) => void): PluginContext {
+ *  receives every registration's disposer (the loader's unload/reload hook);
+ *  `capabilities` is what the plugin declared (`declaredCapabilities`). */
+export function createPluginContext(
+  pluginId: string,
+  onDispose?: (dispose: () => void) => void,
+  capabilities: readonly string[] = []
+): PluginContext {
   const source = `plugin:${pluginId}`
   const scope = (c: PluginContribution): Contribution => ({ ...c, id: `${pluginId}:${c.id}`, source })
 
@@ -286,13 +389,19 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     source,
     register: c => track(registry.register(scope(c))),
     registerMany: cs => track(registry.registerMany(cs.map(scope))),
+    registerSettingsPage: page => track(registry.register(scope(settingsPageContribution(page)))),
     onDispose: fn => void track(fn),
     onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
     ...createPluginLifetime(track),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     os: createPluginOs(pluginId),
+    pet: createPluginPet(pluginId, track),
+    runAction: id => runPluginAppAction(pluginId, id),
+    listActions: listPluginAppActions,
+    preview: createPluginPreview(pluginId, capabilities),
     storage: createPluginStorage(pluginId),
+    files: createPluginFiles(pluginId),
     i18n: createPluginI18n(pluginId, track)
   }
 }

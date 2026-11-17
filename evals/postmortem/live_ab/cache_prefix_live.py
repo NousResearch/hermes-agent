@@ -40,7 +40,7 @@ t0 = time.time()
 r = ag.run_conversation(task)
 print("final:", (r.get("final_response") or "")[:80], "| wall", round(time.time() - t0, 1), "s")
 time.sleep(1)
-log = subprocess.run(f"grep -h '\\[{sid}\\]' ~/.hermes/logs/agent.log | grep 'API call #'", shell=True, capture_output=True).stdout.decode("utf-8", "replace")
+log = subprocess.run(f"grep -h '\\[{sid}\\]' ~/.hermes/logs/agent.log | grep 'API call #'", shell=True, capture_output=True, check=False).stdout.decode("utf-8", "replace")
 rows = re.findall(r"API call #(\d+): .*in=(\d+) out=(\d+) .*cache=(\d+)/(\d+) \((\d+)%\)", log)
 tot_in = tot_c = 0
 for n, i, o, c, ct, p in rows:

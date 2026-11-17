@@ -9,8 +9,8 @@ from pm.lock import Lockfile
 
 
 @pytest.mark.parametrize("target,vendor,expected", [
-    ("linux-x64", "nvidia", "vulkan"),
-    ("linux-arm64", "nvidia", "vulkan"),
+    ("linux-x64", "nvidia", "cuda"),
+    ("linux-arm64", "nvidia", "cuda"),
     ("win32-arm64", "nvidia", "cuda"),
     ("win32-arm64", "AMD Radeon", "cpu"),
     ("win32-x64", "AMD Radeon", "vulkan"),
@@ -20,7 +20,32 @@ from pm.lock import Lockfile
 def test_auto_backend_uses_only_compatible_pins(target, vendor, expected):
     assert binaries.resolve_backend("auto", gpu_vendor=vendor, target=target) == expected
     with pytest.raises(binaries.BinaryResolutionError):
-        binaries.resolve_backend("cuda", target="linux-x64")
+        binaries.resolve_backend("cuda", target="darwin-arm64")
+
+
+def test_linux_cuda_runtime_libraries_land_beside_the_server(tmp_path):
+    """The engine's RUNPATH is $ORIGIN and its archive carries neither the CUDA
+    runtime nor OpenMP, so the cudart tarball's top-level dir and the libgomp
+    .deb's usr/lib/<triplet>/ library must both end up next to llama-server."""
+    package = pm.get_package("llamacpp-cuda")
+    staged = tmp_path / "tree"
+    (staged / "llama-b1").mkdir(parents=True)
+    (staged / "llama-b1" / "llama-server").write_bytes(b"engine")
+    (staged / "cudart-llama-b1-bin-ubuntu-cuda-13.4-x64").mkdir()
+    (staged / "cudart-llama-b1-bin-ubuntu-cuda-13.4-x64" / "libcudart.so.13").write_bytes(b"rt")
+    gomp = staged / "usr" / "lib" / "x86_64-linux-gnu"
+    gomp.mkdir(parents=True)
+    (gomp / "libgomp.so.1.0.0").write_bytes(b"omp")
+    (gomp / "libgomp.so.1").symlink_to("libgomp.so.1.0.0")
+
+    package.stage(None, staged, "1", "linux-x64")
+
+    assert package.binary(staged, "linux-x64").is_file()
+    assert (staged / "libcudart.so.13").is_file()
+    assert not list(staged.glob("cudart-*"))
+    assert not (staged / "libgomp.so.1").is_symlink()
+    assert (staged / "libgomp.so.1").read_bytes() == b"omp"
+    assert not (staged / "usr").exists()
 
 
 def test_missing_pin_is_refused_instead_of_constructing_download_url(tmp_path, monkeypatch):

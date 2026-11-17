@@ -54,7 +54,7 @@ class TestSaveModelChoiceAlwaysDict:
 
 
 class TestProviderPersistsAfterModelSave:
-    def test_update_config_for_provider_uses_atomic_config_write(self, config_home):
+    def test_update_config_for_provider_uses_atomic_config_replace(self, config_home):
         """Provider switches delegate config writes to the comment-preserving config writer."""
         from hermes_cli.auth import _update_config_for_provider
 
@@ -68,7 +68,7 @@ class TestProviderPersistsAfterModelSave:
             assert data["model"]["default"] == "some-old-model"
             raise OSError("simulated atomic write failure")
 
-        with patch("hermes_cli.auth.atomic_config_write", side_effect=_boom) as mock_write:
+        with patch("hermes_cli.auth.atomic_config_replace", side_effect=_boom) as mock_write:
             with pytest.raises(OSError, match="simulated atomic write failure"):
                 _update_config_for_provider(
                     "nous",

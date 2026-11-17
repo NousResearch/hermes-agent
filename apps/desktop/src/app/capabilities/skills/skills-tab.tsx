@@ -3,9 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
+import { Loader } from '@/components/ui/loader'
 import { editLearningNode, getLearningNode, type ProfileScope, profileScopeKey, setSkillEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { Lock } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { notify, notifyError } from '@/store/notifications'
@@ -13,6 +14,7 @@ import type { SkillInfo } from '@/types/hermes'
 
 import { DetailPane, ListStripMenu, type ListStripMenuToggle } from '../../master-detail'
 import { CatalogAlert } from '../catalog/catalog-alert'
+import { CatalogSwitch } from '../catalog/catalog-switch'
 import { SkillCatalog } from '../catalog/skill-catalog'
 import { UpdateSkillsButton } from '../catalog/update-skills-button'
 
@@ -79,6 +81,7 @@ function ScopedSkillsTab({
     if (mutationBusy.current || installedPending || installedError || targets.length === 0) {
       return
     }
+
     mutationBusy.current = true
     setBusy(true)
     let done = 0
@@ -90,8 +93,10 @@ function ScopedSkillsTab({
         if (!mounted.current) {
           break
         }
+
         const previous =
           queryClient.getQueryData<SkillInfo[]>(skillsQueryKey(profile))?.find(skill => skill.name === row.name) ?? row
+
         setSkills(current => current?.map(skill => (skill.name === row.name ? { ...skill, enabled } : skill)))
 
         try {
@@ -147,6 +152,7 @@ function ScopedSkillsTab({
     if (saving.current || skillEditor?.name === name) {
       return
     }
+
     const request = ++editorRequest.current
 
     try {
@@ -155,6 +161,7 @@ function ScopedSkillsTab({
       if (!mounted.current || request !== editorRequest.current) {
         return
       }
+
       setSkillEditor({ name })
       setSkillDraft(node.content)
     } catch (err) {
@@ -173,6 +180,7 @@ function ScopedSkillsTab({
     if (!skillEditor || saving.current) {
       return
     }
+
     const editor = skillEditor
     const request = editorRequest.current
     saving.current = true
@@ -184,6 +192,7 @@ function ScopedSkillsTab({
       if (!result.ok) {
         throw new Error(result.message)
       }
+
       void queryClient.invalidateQueries({ queryKey: ['skill-content', editor.name, profileScopeKey(profile)] })
       void queryClient.invalidateQueries({ queryKey: skillsQueryKey(profile), exact: true })
       invalidateSlashCompletions()
@@ -191,11 +200,13 @@ function ScopedSkillsTab({
       if (!mounted.current) {
         return
       }
+
       notify({ kind: 'success', title: t.skills.skillUpdated, message: t.skills.appliesToNewSessions(editor.name) })
 
       if (request === editorRequest.current) {
         setSkillEditor(null)
       }
+
       onRefresh()
     } catch (err) {
       if (mounted.current) {
@@ -215,9 +226,7 @@ function ScopedSkillsTab({
       {installedError instanceof Error ? installedError.message : null}
     </CatalogAlert>
   ) : installedPending ? (
-    <p className="px-3 py-2 text-xs text-(--ui-text-tertiary)" role="status">
-      {t.skills.loading}
-    </p>
+    <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.skills.loading} type="rose-curve" />
   ) : null
 
   return (
@@ -250,13 +259,26 @@ function ScopedSkillsTab({
         profile={profile}
         query={query}
         renderInstalledAction={skill => (
-          <Switch
-            aria-label={skill.name}
-            checked={skill.enabled}
-            disabled={controlsDisabled}
-            onCheckedChange={enabled => void applyEnabled([skill], enabled)}
-            size="xs"
-          />
+          <span className="inline-flex items-center gap-2">
+            {skill.locked && (
+              <span
+                aria-label={t.skills.locked}
+                className="inline-flex text-(--ui-text-tertiary)"
+                data-slot="skill-locked-indicator"
+                role="img"
+                title={t.skills.lockHint}
+              >
+                <Lock className="size-3.5" />
+              </span>
+            )}
+            <CatalogSwitch
+              aria-label={skill.name}
+              checked={skill.enabled}
+              disabled={controlsDisabled}
+              onCheckedChange={enabled => void applyEnabled([skill], enabled)}
+              size="xs"
+            />
+          </span>
         )}
         renderInstalledDetail={skill => (
           <>

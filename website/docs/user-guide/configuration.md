@@ -3208,6 +3208,27 @@ approvals:
 
 Patterns are case-insensitive fnmatch globs and must be quoted in YAML (a bare leading `*` is a parse error). See [Security — User-Defined Deny Rules](./security.md#user-defined-deny-rules-approvalsdeny) for details.
 
+### Protected processes
+
+On the local POSIX backend, an always-on floor resolves common `pkill`, `killall`, and `kill`
+targets without sending signals. It refuses commands targeting PID 1, the agent or its ancestors,
+or Hermes gateway, dashboard, relay, and worker processes, even with `approvals.mode: off` or
+`--yolo`. Quoted regex patterns use the host's `pgrep` option semantics.
+
+`approvals.protected_processes` extends the built-in list with regular expressions matched
+against full process command lines:
+
+```yaml
+approvals:
+  protected_processes:
+    - 'my-service-worker'
+```
+
+If a matched service leads a process group, its group members are protected too. Invalid regexes
+are logged and ignored. Unresolvable targets and unavailable process probes fall through to the
+other approval checks; remote and container process tables are not inspected. This is accident
+prevention, not an OS security boundary.
+
 ### Custom smart-approval policy
 
 `approvals.smart_policy` lets you append your own rules to the smart-approval reviewer's instructions. When set, the text is added to the guardian LLM's system prompt (the trusted channel — never alongside the untrusted command text), so you can tighten or relax its judgment for your environment without editing code:

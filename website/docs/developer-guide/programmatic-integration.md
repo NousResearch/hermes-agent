@@ -187,18 +187,21 @@ Endpoints:
 POST /v1/chat/completions        OpenAI Chat Completions (streaming via SSE)
 POST /v1/responses               OpenAI Responses API (stateful)
 POST /v1/runs                    Start a run, returns run_id (202)
-GET  /v1/runs/{id}               Run status (?wait_ms=&status= long-polls to a target state)
+GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
 POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
-GET  /api/sessions/{id}/events    Durable numbered event log, long-poll (sessions.event_log)
 GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
 GET  /health, /health/detailed
+GET  /api/sessions/{id}/events    Durable numbered event log, long-poll (sessions.event_log)
 ```
+
+`GET /v1/runs/{id}` also accepts `wait_ms` (max 30000) and `status=` to long-poll a run to a
+target state (default: any terminal state); details in [API Server](../user-guide/features/api-server#session-event-log-long-poll).
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 

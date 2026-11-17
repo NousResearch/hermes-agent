@@ -2352,12 +2352,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
         runner = getattr(self, "gateway_runner", None)
         features = {
-            "chat_completions": True, "chat_completions_streaming": True,
+            "chat_completions": True, "chat_completions_streaming": True, "session_event_log": _session_events._log(self) is not None,
             "responses_api": True, "responses_streaming": True, "run_submission": True,
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
             **_STATIC_FEATURE_FLAGS,
             "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
-            "session_event_log": _session_events._log(self) is not None, "cors": bool(self._cors_origins)}
+            "cors": bool(self._cors_origins)}
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,

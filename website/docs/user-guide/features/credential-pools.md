@@ -126,7 +126,8 @@ Each `hermes auth add openai-codex` login becomes its own pool entry, but only *
 | `hermes auth list` | Show all pools and credentials |
 | `hermes auth list <provider>` | Show a specific provider's pool |
 | `hermes auth add <provider>` | Add a credential (prompts for type and key) |
-| `hermes auth add <provider> --type api-key --api-key <key>` | Add an API key non-interactively |
+| `hermes auth add <provider> --type api-key --api-key <key>` | Add an API key non-interactively; the key is checked once against the provider first and a rejected key is not stored |
+| `hermes auth add <provider> --api-key <key> --no-verify` | Store an API key without the live check (offline/CI) |
 | `hermes auth add <provider> --type oauth` | Add an OAuth credential via browser login |
 | `hermes auth add openai-codex --browser` | Codex only: sign in with the browser authorization-code + PKCE flow on `localhost:1455` instead of the default device code (for orgs that disable device-code grants); falls back to device code when the port is busy. Default for every Codex login via `auth.codex_login_flow: browser` |
 | `hermes auth add <provider> --priority 0` | Add a credential and place it first in the `fill_first` order |

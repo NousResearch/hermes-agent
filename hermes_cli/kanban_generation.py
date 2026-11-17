@@ -11,6 +11,7 @@ import sqlite3
 import struct
 import time
 from contextvars import ContextVar
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -22,6 +23,7 @@ class GenerationError(ValueError):
 CHILD_TABLES = ("task_comments", "task_events", "task_runs", "task_attachments")
 POINTER_FIELDS = {"format_version", "generation_id", "generation_nonce", "ready_sha256"}
 ACCEPTED_FIELDS = {"format_version", "generation_id", "generation_nonce", "ready_sha256", "fence_epoch", "accepted_at"}
+ACTIVATED_FIELDS = {"format_version", "generation_id", "generation_nonce", "ready_sha256", "fence_epoch", "activated_at"}
 _ACTIVE_FENCE_TOKEN: ContextVar[str | None] = ContextVar("kanban_fence_token", default=None)
 LEASE_RECLAIM_GRACE_SECONDS = 60
 _HELD_FENCE_HANDLES: dict[str, tuple[Any, Any]] = {}
@@ -163,10 +165,15 @@ def _atomic_json(path: Path, value: Any, *, durability: DurabilityAdapter | None
         os.fsync(fd)
     finally:
         os.close(fd)
-    if durability:
-        durability.checkpoint(f"{path.name}-before-rename")
-    os.replace(temporary, path)
-    (durability or DurabilityAdapter()).fsync_dir(path.parent)
+    try:
+        if durability:
+            durability.checkpoint(f"{path.name}-before-rename")
+        os.replace(temporary, path)
+        (durability or DurabilityAdapter()).fsync_dir(path.parent)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
 
 
 @contextlib.contextmanager
@@ -182,7 +189,8 @@ def _lock(path: Path, *, exclusive: bool) -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def board_write_guard(board_dir: Path, *, owner: str = "native", token: str | None = None) -> Iterator[None]:
+def board_write_guard(board_dir: Path, *, owner: str = "native", token: str | None = None,
+                      expected_generation: str | None = None) -> Iterator[None]:
     """The one shared guard for database and filesystem mutations."""
     del owner
     # Legacy boards retain their historical filesystem footprint.  Do not
@@ -194,33 +202,37 @@ def board_write_guard(board_dir: Path, *, owner: str = "native", token: str | No
     ):
         yield
         return
-    custody = contextlib.nullcontext() if str(board_dir.resolve()) in _HELD_FENCE_HANDLES else _lock(board_dir / "generation.writer-lock", exclusive=True)
+    # Ordinary writers share the board custody.  A publication/GC fence takes
+    # the same lock exclusively and therefore waits for every in-flight write
+    # to finish before it can mutate the generation catalog.
+    custody = contextlib.nullcontext() if str(board_dir.resolve()) in _HELD_FENCE_HANDLES else _lock(board_dir / "generation.writer-lock", exclusive=False)
     with custody:
         fence_path = board_dir / "generation.writer-fence"
         if fence_path.exists():
             validate_fence(board_dir, token or "")
-        read_pointer(board_dir)
+        pointer = read_pointer(board_dir)
+        if pointer is not None and expected_generation is not None:
+            if pointer["generation_id"] != expected_generation:
+                raise GenerationError("GENERATION_POINTER_CHANGED")
         yield
 
 
 def acquire_fence(board_dir: Path, *, generation: str, owner: str) -> dict[str, Any]:
     path = board_dir / "generation.writer-fence"
-    if path.exists():
-        raise GenerationError("WRITER_FENCE_HELD")
     catalog_handle = (board_dir / "generation.catalog-lock").open("a+b")
     writer_handle = path.with_name("generation.writer-lock").open("a+b")
     import fcntl
-    try:
-        # Every custody path is catalog → writer → activation.  Retaining the
-        # catalog handle here prevents publish/rollback/GC from taking the
-        # locks in the opposite order while this fence is live.
-        fcntl.flock(catalog_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        fcntl.flock(writer_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
+    # Every custody path is catalog → writer → activation.  A fence is an
+    # exclusive barrier, so it waits for an ordinary shared writer instead of
+    # racing it or failing spuriously during a slow attachment write.
+    fcntl.flock(catalog_handle.fileno(), fcntl.LOCK_EX)
+    fcntl.flock(writer_handle.fileno(), fcntl.LOCK_EX)
+    if path.exists():
+        fcntl.flock(writer_handle.fileno(), fcntl.LOCK_UN)
         fcntl.flock(catalog_handle.fileno(), fcntl.LOCK_UN)
-        catalog_handle.close()
         writer_handle.close()
-        raise GenerationError("WRITER_FENCE_HELD") from exc
+        catalog_handle.close()
+        raise GenerationError("WRITER_FENCE_HELD")
     record = {"board": board_dir.name, "generation_id": generation,
               "epoch": time.time_ns(), "owner": owner, "token": secrets.token_urlsafe(24)}
     try:
@@ -374,7 +386,18 @@ def validate_generation(path: Path, *, activated: bool = False) -> dict[str, Any
             raise GenerationError("GENERATION_META_INVALID") from exc
         if meta is None or meta["generation_id"] != ready["generation_id"] or meta["generation_nonce"] != ready["generation_nonce"]:
             raise GenerationError("GENERATION_META_INVALID")
-        manifest = row_manifest(conn)
+        if activated:
+            try:
+                integrity = [row[0] for row in conn.execute("PRAGMA integrity_check")]
+                foreign_keys = list(conn.execute("PRAGMA foreign_key_check"))
+            except sqlite3.Error as exc:
+                raise GenerationError("GENERATION_META_INVALID") from exc
+            if integrity != ["ok"] or foreign_keys:
+                raise GenerationError("GENERATION_META_INVALID")
+        try:
+            manifest = row_manifest(conn)
+        except sqlite3.Error as exc:
+            raise GenerationError("GENERATION_META_INVALID") from exc
         if not activated and (manifest_digest(manifest) != ready["manifest_digest"] or manifest != ready["manifest"]):
             raise GenerationError("READY_INVALID")
     if activated:
@@ -382,7 +405,12 @@ def validate_generation(path: Path, *, activated: bool = False) -> dict[str, Any
             marker = json.loads((path / "ACTIVATED.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as exc:
             raise GenerationError("ACTIVATION_INVALID") from exc
-        if marker.get("generation_id") != ready["generation_id"] or marker.get("generation_nonce") != ready["generation_nonce"] or marker.get("ready_sha256") != sha256_file(path / "READY.json"):
+        if (not isinstance(marker, dict) or set(marker) != ACTIVATED_FIELDS or
+                marker.get("format_version") != 1 or
+                not isinstance(marker.get("fence_epoch"), int) or
+                marker.get("generation_id") != ready["generation_id"] or
+                marker.get("generation_nonce") != ready["generation_nonce"] or
+                marker.get("ready_sha256") != sha256_file(path / "READY.json")):
             raise GenerationError("ACTIVATION_INVALID")
     return ready
 
@@ -395,12 +423,46 @@ def active_manifest(path: Path) -> str:
 
 
 def _assert_not_poisoned(path: Path) -> None:
-    if (path / "ACTIVATION.poison.json").exists():
+    if ((path / "ACTIVATION.poison.json").exists() or
+            (path / "ACTIVATION.poison").exists()):
         raise GenerationError("ACTIVATION_POISONED")
 
 
+def _mark_activation_poisoned(path: Path, payload: dict[str, Any]) -> None:
+    """Publish poison through an independent fallback if JSON publication fails."""
+    try:
+        _atomic_json(path / "ACTIVATION.poison.json", payload)
+        return
+    except (OSError, TypeError, ValueError, GenerationError):
+        sentinel = path / "ACTIVATION.poison"
+        try:
+            fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, canonical_json(payload) + b"\n")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            _fsync_dir(path)
+            return
+        except FileExistsError:
+            _fsync_dir(path)
+            return
+        except (OSError, TypeError, ValueError, GenerationError) as fallback_exc:
+            raise GenerationError("ACTIVATION_POISON_DURABILITY_FAILED") from fallback_exc
+
+
 def recover_publication(board_dir: Path) -> None:
-    """Finish or refuse an interrupted acceptance-before-pointer transition."""
+    """Finish an interrupted publication while holding exclusive catalog custody."""
+    held = str(board_dir.resolve()) in _HELD_FENCE_HANDLES
+    custody = contextlib.nullcontext() if held else _lock(
+        board_dir / "generation.catalog-lock", exclusive=True
+    )
+    with custody:
+        _recover_publication_locked(board_dir)
+
+
+def _recover_publication_locked(board_dir: Path) -> None:
+    """Locked publication recovery; never call under shared catalog custody."""
     accepted_path = board_dir / "generation.accepted.json"
     if not accepted_path.exists():
         return
@@ -423,21 +485,21 @@ def recover_publication(board_dir: Path) -> None:
             write_pointer(board_dir, expected)
         elif pointer != expected:
             raise ValueError("ambiguous publication")
-        # Acceptance is a recovery journal, not a second active-state marker.
-        # Once the pointer is durable and the candidate has either remained
-        # prepared or crossed the first-write boundary, remove it so a later
-        # reopen cannot mistake a mutated active DB for an unprepared one.
-        accepted_path.unlink(missing_ok=True)
-        _fsync_dir(board_dir)
+        # Preserve the accepted fence epoch until first-write activation.  It
+        # is the durable custody receipt that ACTIVATED.json authenticates.
     except (OSError, ValueError, KeyError, TypeError, GenerationError) as exc:
+        if isinstance(exc, GenerationError) and str(exc) == "ACTIVATION_POISONED":
+            raise
         _atomic_json(board_dir / "generation.publication.poison.json", {"reason": str(exc), "accepted": accepted})
         raise GenerationError("PUBLICATION_POISONED") from exc
 
 
-def open_generation(board_dir: Path, *, require_activation: bool = False) -> tuple[Path, dict[str, Any]]:
+def open_generation(board_dir: Path, *, require_activation: bool = False,
+                    recover: bool = True) -> tuple[Path, dict[str, Any]]:
     if (board_dir / "generation.publication.poison.json").exists():
         raise GenerationError("PUBLICATION_POISONED")
-    recover_publication(board_dir)
+    if recover:
+        recover_publication(board_dir)
     pointer = read_pointer(board_dir)
     if pointer is None:
         raise GenerationError("BOARD_NOT_GENERATED")
@@ -452,44 +514,103 @@ def open_generation(board_dir: Path, *, require_activation: bool = False) -> tup
     return path / "kanban.db", ready
 
 
-def activate_first_write(path: Path, *, fence_epoch: int,
+def activate_first_write(path: Path, *, fence_epoch: int | None = None,
                          durability: DurabilityAdapter | None = None,
                          board_dir: Path | None = None) -> dict[str, Any]:
     ready = validate_generation(path)
-    marker = {"format_version": 1, "generation_id": ready["generation_id"], "generation_nonce": ready["generation_nonce"], "ready_sha256": sha256_file(path / "READY.json"), "fence_epoch": fence_epoch, "activated_at": time.time()}
     board_dir = board_dir or path.parents[1]
     with _lock(board_dir / "generation.activation-lock", exclusive=True):
         _assert_not_poisoned(path)
+        accepted_path = board_dir / "generation.accepted.json"
+        accepted = None
+        if accepted_path.exists():
+            try:
+                accepted = json.loads(accepted_path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError) as exc:
+                raise GenerationError("PUBLICATION_POISONED") from exc
+            expected_ready = sha256_file(path / "READY.json")
+            if (not isinstance(accepted, dict) or set(accepted) != ACCEPTED_FIELDS or
+                    accepted.get("format_version") != 1 or
+                    not isinstance(accepted.get("fence_epoch"), int) or
+                    accepted.get("generation_id") != ready["generation_id"] or
+                    accepted.get("generation_nonce") != ready["generation_nonce"] or
+                    accepted.get("ready_sha256") != expected_ready or
+                    (fence_epoch is not None and fence_epoch != accepted["fence_epoch"])):
+                raise GenerationError("ACTIVATION_FENCE_MISMATCH")
+            fence_epoch = accepted["fence_epoch"]
+        if not isinstance(fence_epoch, int):
+            raise GenerationError("ACTIVATION_FENCE_REQUIRED")
+
+        marker = {"format_version": 1, "generation_id": ready["generation_id"],
+                  "generation_nonce": ready["generation_nonce"],
+                  "ready_sha256": sha256_file(path / "READY.json"),
+                  "fence_epoch": fence_epoch, "activated_at": time.time()}
         final = path / "ACTIVATED.json"
         if final.exists():
-            return json.loads(final.read_text(encoding="utf-8-sig"))
+            try:
+                _fsync_dir(path)
+            except OSError as exc:
+                try:
+                    final.unlink()
+                    _fsync_dir(path)
+                except OSError as cleanup_exc:
+                    _mark_activation_poisoned(path, {
+                        "generation_id": ready["generation_id"],
+                        "reason": str(cleanup_exc),
+                        "ready_sha256": marker["ready_sha256"],
+                    })
+                    raise GenerationError("ACTIVATION_POISONED") from cleanup_exc
+                raise GenerationError("ACTIVATION_RETRYABLE") from exc
+            try:
+                existing = json.loads(final.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError) as exc:
+                _mark_activation_poisoned(path, {
+                    "generation_id": ready["generation_id"],
+                    "reason": str(exc),
+                    "ready_sha256": marker["ready_sha256"],
+                })
+                raise GenerationError("ACTIVATION_POISONED") from exc
+            if (not isinstance(existing, dict) or set(existing) != ACTIVATED_FIELDS or
+                    any(existing.get(key) != marker[key] for key in
+                        ("format_version", "generation_id", "generation_nonce",
+                         "ready_sha256", "fence_epoch"))):
+                _mark_activation_poisoned(path, {
+                    "generation_id": ready["generation_id"],
+                    "reason": "invalid surviving activation marker",
+                    "ready_sha256": marker["ready_sha256"],
+                })
+                raise GenerationError("ACTIVATION_POISONED")
+            if accepted_path.exists():
+                accepted_path.unlink()
+                _fsync_dir(board_dir)
+            return existing
         try:
             _atomic_json(final, marker, durability=durability)
             if json.loads(final.read_text(encoding="utf-8-sig")) != marker:
                 raise GenerationError("ACTIVATION_INVALID")
-            accepted = path.parents[1] / "generation.accepted.json"
-            if accepted.exists():
-                try:
-                    record = json.loads(accepted.read_text(encoding="utf-8-sig"))
-                except (OSError, ValueError) as exc:
-                    raise GenerationError("PUBLICATION_POISONED") from exc
-                if record.get("generation_id") != marker["generation_id"]:
-                    raise GenerationError("PUBLICATION_POISONED")
-                accepted.unlink()
-                _fsync_dir(accepted.parent)
         except Exception as exc:
-            with contextlib.suppress(OSError):
-                final.unlink()
-            with contextlib.suppress(OSError):
-                _fsync_dir(path)
-            _atomic_json(path / "ACTIVATION.poison.json", {
-                "generation_id": ready["generation_id"],
-                "reason": str(exc),
-                "ready_sha256": marker["ready_sha256"],
-            })
+            # A reported in-process publication failure cannot be converted to
+            # success from readback alone. Durably remove any marker and return
+            # retryable; poison only when cleanup cannot be proven.
+            try:
+                if final.exists():
+                    final.unlink()
+                    _fsync_dir(path)
+                if final.exists():
+                    raise OSError("activation marker cleanup did not persist")
+            except Exception as cleanup_exc:
+                _mark_activation_poisoned(path, {
+                    "generation_id": ready["generation_id"],
+                    "reason": str(cleanup_exc),
+                    "ready_sha256": marker["ready_sha256"],
+                })
+                raise GenerationError("ACTIVATION_POISONED") from cleanup_exc
             if isinstance(exc, OSError):
                 raise
             raise GenerationError("ACTIVATION_RETRYABLE") from exc
+        if accepted_path.exists():
+            accepted_path.unlink()
+            _fsync_dir(board_dir)
     return marker
 
 
@@ -589,9 +710,14 @@ def acquire_reader_lease(board_dir: Path, *, consumer: str, operation_id: str,
                          consumer_pid: int | None = None,
                          require_activation: bool = True) -> dict[str, Any]:
     held = str(board_dir.resolve()) in _HELD_FENCE_HANDLES
+    # Publication recovery mutates generation.current and therefore completes
+    # under exclusive catalog custody before the shared selection transaction.
+    recover_publication(board_dir)
     catalog = contextlib.nullcontext() if held else _lock(board_dir / "generation.catalog-lock", exclusive=False)
     with catalog, _lock(board_dir / "generation.activation-lock", exclusive=False):
-        db, ready = open_generation(board_dir, require_activation=require_activation)
+        db, ready = open_generation(
+            board_dir, require_activation=require_activation, recover=False
+        )
         pid = os.getpid()
         consumer_pid = os.getpid() if consumer_pid is None else consumer_pid
         lease_id = secrets.token_urlsafe(18)
@@ -604,7 +730,8 @@ def acquire_reader_lease(board_dir: Path, *, consumer: str, operation_id: str,
         activated = db.parent / "ACTIVATED.json"
         return {"database_path": str(db), "storage_mode": "generation",
                 "activated_sha256": sha256_file(activated) if activated.exists() else None,
-                **{key: lease[key] for key in ("generation_id", "generation_nonce", "ready_sha256", "lease_id", "lease_keeper_pid", "lease_keeper_start_fingerprint", "consumer_pid", "consumer_start_fingerprint")}}
+                "selected_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                **{key: lease[key] for key in ("generation_id", "generation_nonce", "ready_sha256", "lease_id", "lease_keeper_pid", "lease_keeper_start_fingerprint", "consumer_pid", "consumer_start_fingerprint", "consumer_kind")}}
 
 
 def _reclaim_stale_leases(leases: Path) -> None:
@@ -648,20 +775,38 @@ def discard_created_blobs(conn: sqlite3.Connection, paths: list[Path]) -> None:
     if board_dir is None or not (Path(db_file).parent / "READY.json").is_file():
         _discard_blob_paths(paths)
         return
+    expected_generation = getattr(conn, "_kanban_generation_id", None)
+    if expected_generation is None:
+        try:
+            expected_generation = _generation_id(db_path.parent)
+        except GenerationError:
+            expected_generation = None
     with board_write_guard(
         board_dir,
         owner="attachment-rollback",
         token=current_fence_token(),
+        expected_generation=expected_generation,
     ):
-        for path in paths:
-            relative = str(path.relative_to(db_path.parent))
-            referenced = conn.execute(
-                "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1",
-                (relative,),
-            ).fetchone()
-            if referenced is None:
-                path.unlink(missing_ok=True)
-                _fsync_dir(path.parent)
+        # The filesystem guard orders catalog effects, while IMMEDIATE orders
+        # the metadata read against a producer's uncommitted attachment row.
+        # Without this second barrier cleanup could observe the row before it
+        # commits and unlink the blob that the producer is about to adopt.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for path in paths:
+                relative = str(path.relative_to(db_path.parent))
+                referenced = conn.execute(
+                    "SELECT 1 FROM task_attachments WHERE stored_path = ? LIMIT 1",
+                    (relative,),
+                ).fetchone()
+                if referenced is None:
+                    path.unlink(missing_ok=True)
+                    _fsync_dir(path.parent)
+            conn.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
+            raise
 
 
 def _discard_blob_paths(paths: list[Path]) -> None:
@@ -773,6 +918,46 @@ def _generation_id(path: Path) -> str:
         raise GenerationError("READY_INVALID") from exc
 
 
+def _mark_authenticated_import_journal(path: Path, marked: set[str]) -> None:
+    journal_path = path / "import-journal.json"
+    if not journal_path.exists():
+        return
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8-sig"))
+        if journal.get("state") not in {"incomplete", "prepared", "complete", "rolled-back"}:
+            raise ValueError("journal state")
+        ready = json.loads((path / "READY.json").read_text(encoding="utf-8-sig"))
+        if journal.get("generation_id") != ready.get("generation_id") or not isinstance(journal.get("import_id"), str) or not journal["import_id"]:
+            raise ValueError("journal identity")
+        with sqlite3.connect(f"file:{path / 'kanban.db'}?mode=ro", uri=True) as conn:
+            recovery = conn.execute(
+                "SELECT 1 FROM recovery_imports WHERE import_id = ? LIMIT 1",
+                (journal["import_id"],),
+            ).fetchone()
+            if recovery is None:
+                raise ValueError("journal import metadata")
+            blobs = conn.execute(
+                "SELECT target_path, source_sha256, size FROM recovery_attachment_blobs WHERE import_id = ?",
+                (journal["import_id"],),
+            ).fetchall()
+        root = path.resolve()
+        for target_path, digest, size in blobs:
+            relative = Path(str(target_path))
+            resolved = (root / relative).resolve()
+            if relative.is_absolute() or ".." in relative.parts or resolved != root / relative or resolved.is_symlink():
+                raise ValueError("journal blob path")
+            if not resolved.is_file() or resolved.stat().st_size != int(size) or sha256_file(resolved) != str(digest):
+                raise ValueError("journal blob identity")
+        if journal.get("state") in {"incomplete", "prepared"}:
+            marked.add(path.name)
+            for blob in journal.get("blobs", []):
+                blob_path = Path(blob)
+                if blob_path.is_absolute() or ".." in blob_path.parts:
+                    raise ValueError("journal blob")
+    except (OSError, ValueError, AttributeError, TypeError) as exc:
+        raise GenerationError(f"IMPORT_JOURNAL_INVALID:{path.name}") from exc
+
+
 def gc_generations(board_dir: Path, *, dry_run: bool = False, grace_seconds: int = 3600) -> dict[str, Any]:  # health: allow CC -- custody mark/sweep must remain one catalog-locked crash boundary
     with _lock(board_dir / "generation.catalog-lock", exclusive=True), _lock(board_dir / "generation.writer-lock", exclusive=True), _lock(board_dir / "generation.activation-lock", exclusive=True):
         root = board_dir / "generations"
@@ -821,13 +1006,7 @@ def gc_generations(board_dir: Path, *, dry_run: bool = False, grace_seconds: int
                     validate_generation(generation, activated=(generation / "ACTIVATED.json").is_file())
                 except GenerationError as exc:
                     raise GenerationError(f"READY_INVALID:{name}") from exc
-            if (generation / "import-journal.json").exists():
-                try:
-                    journal = json.loads((generation / "import-journal.json").read_text(encoding="utf-8-sig"))
-                    if journal.get("state") not in {"prepared", "complete", "rolled-back"}:
-                        raise ValueError("journal state")
-                except (OSError, ValueError, AttributeError) as exc:
-                    raise GenerationError(f"IMPORT_JOURNAL_INVALID:{name}") from exc
+            _mark_authenticated_import_journal(generation, marked)
             if time.time() - generation.stat().st_mtime < grace_seconds:
                 marked.add(name)
         trash = board_dir / "generation.trash"

@@ -281,9 +281,10 @@ class _Collector:
             seen_db_paths: set[str] = set()
             for board_meta in _list_boards(kb):
                 slug = board_meta.get("slug") or kb.DEFAULT_BOARD
-                db_path = board_meta.get("db_path")
                 try:
-                    resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
+                    from hermes_cli import kanban_db_connect as _kbc
+                    with _kbc.connect_closing(board=slug) as selected:
+                        resolved_db_path = str(Path(_kbc._main_db_file(selected)).resolve())
                 except Exception:
                     resolved_db_path = f"slug:{slug}"
                 if resolved_db_path in seen_db_paths:

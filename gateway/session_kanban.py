@@ -26,10 +26,11 @@ def build_kanban_policy(connection, params, config):
         raise RuntimeStoreError('invalid_params')
     try:
         board = kb._require_slug(params['board'])
-        path = Path(params['db']).resolve(strict=True) if 'db' in params else kb.kanban_db_path(board=board).resolve()
         from hermes_cli import kanban_db_connect as kbc
-        with kbc.connect_closing(board=board) as conn:
+        selected_db = Path(params['db']).resolve() if 'db' in params else None
+        with kbc.connect_closing(db_path=selected_db, board=board) as conn:
             conn.row_factory = sqlite3.Row
+            path = Path(kbc._main_db_file(conn)).resolve()
             task = kb.get_task(conn, params['task_id'])
             run = conn.execute('SELECT * FROM task_runs WHERE id=?', (params['run_id'],)).fetchone()
             if (task is None or run is None or task.status != 'running' or run['status'] != 'running'
@@ -63,7 +64,8 @@ def build_kanban_policy(connection, params, config):
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
         goal_text='\n\n'.join(p for p in (task.title, task.body) if p), context=context,
-        max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True)
+        max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True,
+        generation_id=getattr(conn, "_kanban_generation_id", None))
     context['db'] = str(path)
     request = json.loads(policy.request_json)
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
@@ -162,7 +164,8 @@ def bind_worker_context(frame):
     if frame['policy']['source'] != 'kanban':
         raise ValueError('invalid_kanban_policy')
     env = {'HERMES_KANBAN_TASK': context['task_id'], 'HERMES_KANBAN_BOARD': context['board'],
-        'HERMES_KANBAN_DB': context['db'], 'HERMES_KANBAN_RUN_ID': str(context['run_id']),
+        'HERMES_KANBAN_DB': context['db'],
+        'HERMES_KANBAN_RUN_ID': str(context['run_id']),
         'HERMES_KANBAN_CLAIM_LOCK': context['claim_lock'], 'HERMES_KANBAN_WORKSPACE': context['workspace'],
         'HERMES_KANBAN_WORKSPACES_ROOT': context['workspaces_root'], 'HERMES_PROFILE': context['profile'],
         'HERMES_SESSION_SOURCE': 'kanban'}

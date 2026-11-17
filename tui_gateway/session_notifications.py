@@ -452,9 +452,11 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
 def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
     """(slug, resolved DB identity) — multiple slugs can point at one DB when HERMES_KANBAN_DB pins it."""
     slug = (board_meta or {}).get("slug") or _kb.DEFAULT_BOARD
-    db_path = (board_meta or {}).get("db_path")
     try:
-        return slug, str(Path(db_path).expanduser().resolve() if db_path else _kb.kanban_db_path(slug).resolve())
+        # Machine readers must use the generation pointer, not board metadata
+        # or the legacy path.  _kb_poll_board opens this selected identity and
+        # owns its reader lease for the whole cursor claim.
+        return slug, str(_kb.selected_db_path(slug).resolve())
     except Exception:
         return slug, f"slug:{slug}"
 

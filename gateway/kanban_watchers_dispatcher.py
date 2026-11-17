@@ -137,9 +137,9 @@ class _KanbanDispatcher:
         return _board_slugs(self.kb)
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
-        from hermes_cli import kanban_db as _kb
-        with _kb.pin_first_board_resolution():
-            path = self.kb.kanban_db_path(slug)
+        from hermes_cli import kanban_db_connect as _kbc
+        with _kbc.connect_closing(board=slug) as selected:
+            path = Path(_kbc._main_db_file(selected))
         try:
             resolved = str(path.expanduser().resolve())
         except Exception:

@@ -1930,7 +1930,7 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     board to one file) yields 0. Fails open per board.
     """
     try:
-        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+        current_path = str(_kb.selected_db_path(board=board).expanduser().resolve())
     except Exception:
         current_path = None
     try:
@@ -1941,7 +1941,7 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     for meta in boards:
         slug = meta.get("slug") or _kb.DEFAULT_BOARD
         try:
-            path = _kb.kanban_db_path(board=slug).expanduser()
+            path = _kb.selected_db_path(board=slug).expanduser()
             resolved = str(path.resolve())
             if current_path is not None and resolved == current_path:
                 continue
@@ -2017,7 +2017,7 @@ def dispatch_once(
         )
 
     try:
-        db_path = _kb.kanban_db_path(board=board)
+        db_path = _kb.selected_db_path(board=board)
     except Exception:
         # Must not lose the tick — fall through to an unguarded dispatch.
         result = _locked_tick()
@@ -2825,7 +2825,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             env[var] = override
     # Pin the board DB + workspaces root so the worker's kanban paths still
     # match after `hermes -p` rewrites HERMES_HOME (symlink / Docker layouts).
-    env["HERMES_KANBAN_DB"] = str(_kb.kanban_db_path(board=board))
+    env["HERMES_KANBAN_DB"] = str(_kb.selected_db_path(board=board))
     env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(_kb.workspaces_root(board=board))
     # Board slug — defense-in-depth pin if a path is resolved without the
     # DB / workspaces env vars.

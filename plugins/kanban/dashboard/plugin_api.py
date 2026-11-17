@@ -15,7 +15,6 @@ import importlib
 import json
 import logging
 import re
-import secrets
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1381,7 +1380,8 @@ def _projects_by_id() -> dict[str, Any]:
 def _board_counts(slug: str) -> dict[str, int]:
     """``{status: count}`` for a board; ``{}`` on a missing/empty DB."""
     try:
-        if not kanban_db.kanban_db_path(board=slug).exists():
+        path = kanban_db.selected_db_path(board=slug)
+        if not path.exists() and not (kanban_db.board_dir(slug) / "generation.current").exists():
             return {}
         with closing(kbc.connect(board=slug)) as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
@@ -1758,20 +1758,11 @@ class _EventTail:
         self._board = board
         self._conn: Optional[sqlite3.Connection] = None
         self._executor: Optional[ThreadPoolExecutor] = None
-        self._lease: Optional[dict[str, Any]] = None
 
     def _latest(self) -> int:
         """The board's current tail: the cursor a client without one starts from."""
         if self._conn is None:
             self._conn = kbc.connect(board=self._board)
-            from hermes_cli import kanban_generation as generation
-            db_file = kbc._main_db_file(self._conn)
-            if db_file and (Path(db_file).parent / "ACTIVATED.json").is_file():
-                generation_dir = Path(db_file).parent
-                self._lease = generation.acquire_reader_lease(
-                    generation_dir.parents[1], consumer="dashboard-event-stream",
-                    operation_id=secrets.token_hex(12),
-                )
         rows = self._conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS m FROM task_events", ()
         ).fetchall()
@@ -1797,11 +1788,6 @@ class _EventTail:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
-        if self._lease is not None:
-            with contextlib.suppress(Exception):
-                from hermes_cli import kanban_generation as generation
-                generation.release_reader_lease(Path(self._lease["database_path"]).parent, self._lease["lease_id"])
-            self._lease = None
 
     def _run(self, fn, *args):
         if self._executor is None:

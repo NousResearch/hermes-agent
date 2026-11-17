@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import random
 import re
 import secrets
@@ -743,22 +744,26 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     # once before any initialization/migration path can touch the prepared file;
     # malformed pointers fail closed in the generation layer.
     generated_path = False
+    pinned_generation = False
     from hermes_cli import kanban_generation as _generation
     control = None
-    if db_path is None:
+    if (Path(path).parent / "READY.json").is_file():
+        generated_path = True
+        pinned_generation = True
+        control = Path(path).parent.parents[1]
+    elif db_path is None:
         control = _kb.board_dir(board)
         if _generation.pointer_path(control).exists():
             generated_path = True
-    elif (Path(db_path).parent / "READY.json").is_file():
-        generated_path = True
-        control = Path(db_path).parent.parents[1]
     if generated_path:
         # Selection, validation, lease, and open are one custody operation. A
         # public connection must never outlive the lease for the generation it
         # selected (or silently fall back to the legacy database).
         # Selection may yield a published prepared generation.  Public reads
         # can inspect it, and the first guarded write owns activation.
-        _generation.open_generation(control, require_activation=False)
+        selected_path, _selected_ready = _generation.open_generation(control, require_activation=False)
+        if pinned_generation and Path(selected_path).resolve() != Path(path).resolve():
+            raise _generation.GenerationError("GENERATION_POINTER_CHANGED")
         lease = _generation.acquire_reader_lease(
             control, consumer="kanban-reader", operation_id=secrets.token_hex(12),
             # A published prepared generation must be writable through this
@@ -769,7 +774,11 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
         )
         path = Path(lease["database_path"])
         try:
+            if path.resolve() != Path(selected_path).resolve():
+                raise _generation.GenerationError("GENERATION_POINTER_CHANGED")
             conn = _sqlite_connect(path, lease_release=lambda: _generation.release_reader_lease(path.parent, lease["lease_id"]))
+            conn._kanban_generation_id = lease["generation_id"]
+            conn._kanban_generation_board_dir = control
             conn.row_factory = sqlite3.Row
             conn.text_factory = _kb._lossy_text
             return conn
@@ -1367,15 +1376,25 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     if db_file:
         db_path = Path(db_file)
         if (db_path.parent / "READY.json").is_file():
-            if not (db_path.parent / "ACTIVATED.json").exists():
-                from hermes_cli.kanban_generation import activate_first_write
-                activate_first_write(db_path.parent, fence_epoch=0)
+            expected_generation = getattr(conn, "_kanban_generation_id", None)
+            if not expected_generation:
+                try:
+                    expected_generation = json.loads(
+                        (db_path.parent / "READY.json").read_text(encoding="utf-8-sig")
+                    )["generation_id"]
+                except (OSError, KeyError, TypeError, ValueError) as exc:
+                    from hermes_cli.kanban_generation import GenerationError
+                    raise GenerationError("GENERATION_ID_REQUIRED") from exc
             guard = board_write_guard(
                 db_path.parents[2],
                 owner="sqlite",
                 token=__import__("hermes_cli.kanban_generation", fromlist=["current_fence_token"]).current_fence_token(),
+                expected_generation=expected_generation,
             )
     with guard:
+        if db_file and (Path(db_file).parent / "READY.json").is_file() and not (Path(db_file).parent / "ACTIVATED.json").exists():
+            from hermes_cli.kanban_generation import activate_first_write
+            activate_first_write(Path(db_file).parent)
         with _write_txn_unfenced(conn, allow_nested=allow_nested):
             yield conn
 

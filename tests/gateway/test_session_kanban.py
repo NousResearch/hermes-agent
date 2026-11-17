@@ -1,5 +1,7 @@
 """Task claims, not caller-supplied launch policy, authorize Kanban execution."""
 import json
+import os
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +30,27 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
             goal_max_turns=3, model_override='loop-model', provider_override='custom')
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
+    # Publish the live claim as a selected generation, then remove the legacy
+    # physical file: policy construction and worker handoff must both keep the
+    # generated identity instead of silently reopening board/kanban.db.
+    from hermes_cli.kanban_generation import (
+        acquire_fence, activate_first_write, build_ready,
+        initialize_generation_db, publish_prepared, release_fence,
+    )
+    control = kb.board_dir('owned')
+    generation = control / 'generations' / 'claim-g1'
+    generation.mkdir(parents=True)
+    legacy = kb.selected_db_path('owned')
+    generated_db = generation / 'kanban.db'
+    with sqlite3.connect(legacy) as source, sqlite3.connect(generated_db) as target:
+        source.backup(target)
+    initialize_generation_db(generated_db, gid='claim-g1', nonce='claim-n1', control_root=control)
+    ready = build_ready(generation, gid='claim-g1', nonce='claim-n1')
+    fence = acquire_fence(control, generation='claim-g1', owner='test')
+    publish_prepared(generation, expected_manifest=ready['manifest_digest'], fence_token=fence['token'])
+    activate_first_write(generation, fence_epoch=fence['epoch'])
+    release_fence(control, token=fence['token'])
+    legacy.unlink()
     actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor, native_owner=True)
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
@@ -41,8 +64,23 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     assert {'kanban', 'terminal', 'file'} <= set(policy.toolsets)
     assert context['task_id'] == task.id and context['run_id'] == task.current_run_id
     assert context['board'] == 'owned' and context['claim_lock'] == task.claim_lock
+    assert context['db'] == str(generated_db.resolve()) and context['generation_id'] == 'claim-g1'
     assert context['skills'] == ['owned-skill'] and context['goal_mode'] and context['goal_max_turns'] == 3
     assert context['accept_hooks'] is True and 'Goal criteria' in context['goal_text']
+    from gateway import session_kanban
+    old_cwd = Path.cwd()
+    old_env = dict(os.environ)
+    monkeypatch.setattr(session_kanban, '_watch_submitter', lambda *_args: None)
+    try:
+        session_kanban.bind_worker_context({'policy': {'source': 'kanban', 'kanban_json': policy.kanban_json}})
+        assert os.environ['HERMES_KANBAN_DB'] == str(generated_db.resolve())
+        with closing(connect()) as bound:
+            assert getattr(bound, '_kanban_generation_id', None) == 'claim-g1'
+            assert bound.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='worker_bound'", (task.id,)).fetchone()[0] == 1
+    finally:
+        os.chdir(old_cwd)
+        os.environ.clear()
+        os.environ.update(old_env)
     for changed in ({'run_id': task.current_run_id + 1}, {'board': 'foreign'}, {'claim_lock': 'forged'}, {'cwd': '/tmp'}):
         with pytest.raises(RuntimeStoreError):
             build_kanban_policy(connection, params | changed, config)

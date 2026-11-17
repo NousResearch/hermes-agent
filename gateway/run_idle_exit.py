@@ -113,7 +113,7 @@ def _kanban_busy() -> str | None:
     marks = ",".join("?" * len(_KANBAN_DUE_STATUSES))
     for meta in kanban_db.list_boards(include_archived=False):
         slug = meta.get("slug")
-        path = kanban_db.kanban_db_path(board=slug)
+        path = kanban_db.selected_db_path(board=slug)
         if not path.exists() and not (kanban_db.board_dir(slug) / "generation.current").exists():
             continue
         from hermes_cli import kanban_db_connect as kbc

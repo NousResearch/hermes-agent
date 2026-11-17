@@ -1,6 +1,7 @@
 import json
 import io
 import multiprocessing
+import os
 import sys
 import sqlite3
 import subprocess
@@ -63,6 +64,46 @@ def test_target_wins_does_not_append_source_children(tmp_path):
     with sqlite3.connect(generation / "kanban.db") as conn:
         assert [r[0] for r in conn.execute("SELECT body FROM task_comments WHERE task_id='same'")] == ["target"]
         assert conn.execute("SELECT disposition FROM recovery_row_provenance WHERE table_name='task_comments'").fetchone()[0] == "target-wins"
+
+
+@pytest.mark.parametrize("shape", ["empty", "multiple", "unrelated"])
+def test_target_wins_leaves_ambiguous_child_provenance_unresolved(tmp_path, shape):
+    source, target = tmp_path / "source.db", tmp_path / "target.db"
+    _db(source, "same", child_body="same-content")
+    _db(target, "same", child_body="different-content")
+    with sqlite3.connect(target) as conn:
+        if shape == "multiple":
+            conn.execute("INSERT INTO task_comments(task_id, author, body, created_at) VALUES ('same', 'fixture', 'different-content', 2)")
+        elif shape == "unrelated":
+            conn.execute("INSERT INTO task_comments(task_id, author, body, created_at) VALUES ('same', 'other', 'same-content', 2)")
+    seeds = tmp_path / "seeds.json"
+    seeds.write_text(json.dumps({"task_ids": ["other"]}))
+    with sqlite3.connect(source) as conn:
+        conn.execute("INSERT INTO tasks(id, title, status, created_at, workspace_kind, block_kind, block_recurrences) VALUES ('other', 'other', 'blocked', 1, 'scratch', 'incident', 0)")
+        conn.execute("INSERT INTO task_links VALUES ('other', 'same')")
+    generation = tmp_path / "generation"
+    reconcile(source, target, seeds, generation, apply=True)
+    with sqlite3.connect(generation / "kanban.db") as conn:
+        assert conn.execute(
+            "SELECT target_pk FROM recovery_row_provenance WHERE table_name='task_comments'"
+        ).fetchone()[0] == ""
+
+
+def test_target_wins_records_only_content_grounded_child_match(tmp_path):
+    source, target = tmp_path / "source.db", tmp_path / "target.db"
+    _db(source, "same", child_body="same-content")
+    _db(target, "same", child_body="same-content")
+    seeds = tmp_path / "seeds.json"
+    seeds.write_text(json.dumps({"task_ids": ["other"]}))
+    with sqlite3.connect(source) as conn:
+        conn.execute("INSERT INTO tasks(id, title, status, created_at, workspace_kind, block_kind, block_recurrences) VALUES ('other', 'other', 'blocked', 1, 'scratch', 'incident', 0)")
+        conn.execute("INSERT INTO task_links VALUES ('other', 'same')")
+    generation = tmp_path / "generation"
+    reconcile(source, target, seeds, generation, apply=True)
+    with sqlite3.connect(generation / "kanban.db") as conn:
+        assert conn.execute(
+            "SELECT target_pk FROM recovery_row_provenance WHERE table_name='task_comments'"
+        ).fetchone()[0] == "1"
 
 
 def test_activated_generation_is_writable_and_survives_reopen(tmp_path):
@@ -220,22 +261,215 @@ def test_gc_keeps_generation_with_malformed_lease(tmp_path):
 def test_reader_command_uses_length_prefixed_capability_contract(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    legacy = tmp_path / "home" / "kanban.db"
+    legacy.parent.mkdir(parents=True)
+    sqlite3.connect(legacy).close()
     script = tmp_path / "child.py"
-    script.write_text("import json, os, struct, sys; print('started', flush=True); fd=int(os.environ['HERMES_READER_BOOTSTRAP_FD']); h=os.read(fd,4); cap=json.loads(os.read(fd, struct.unpack('!I', h)[0])); ack={'protocol_version':1,'type':'ack','operation_id':cap['operation_id'],'start_token':cap['start_token'],'lease_id':cap.get('lease_id')}; a=int(os.environ['HERMES_READER_ACK_FD']); raw=json.dumps(ack,separators=(',',':')).encode(); os.write(a, struct.pack('!I',len(raw))+raw); sys.stdin.buffer.read(); print('opened', flush=True)")
+    script.write_text("import json, os, struct, sys; print('started', flush=True); assert 'HERMES_READER_ACK_FD' not in os.environ; fd=int(os.environ['HERMES_READER_BOOTSTRAP_FD']); h=os.read(fd,4); cap=json.loads(os.read(fd, struct.unpack('!I', h)[0])); assert cap['protocol_version']==1 and cap['start_token']; sys.stdin.buffer.read(); print('opened', flush=True)")
     from hermes_cli.kanban_boards import _cmd_with_reader_lease
     from argparse import Namespace
     result = _cmd_with_reader_lease(Namespace(protocol_version=1, operation_id="op", board="default", consumer="hermes-office", json_status_dir=str(tmp_path / "status"), command=[sys.executable, str(script)]))
     assert result == 0
 
 
+def test_reader_session_uses_closed_newline_json_contract(tmp_path, monkeypatch, capsys):
+    board, _generation = _published(tmp_path)
+    monkeypatch.setattr("hermes_cli.kanban_boards.kb.board_dir", lambda _board: board)
+    from argparse import Namespace
+    from hermes_cli.kanban_boards import _cmd_reader_session
+    class _EmptyInput:
+        buffer = io.BytesIO()
+    monkeypatch.setattr(sys, "stdin", _EmptyInput())
+
+    result = _cmd_reader_session(Namespace(
+        protocol_version=1, operation_id="op", board="default",
+        consumer="hermes-office",
+    ))
+    assert result == 0
+    lines = capsys.readouterr().out.splitlines()
+    ready = json.loads(lines[0])
+    assert set(ready) == {
+        "protocol_version", "type", "operation_id", "board_slug", "generation_id",
+        "generation_nonce", "database_path", "storage_mode", "ready_sha256",
+        "activated_sha256", "lease_id", "lease_keeper_pid",
+        "lease_keeper_start_fingerprint", "consumer_pid", "consumer_start_fingerprint",
+        "selected_at",
+    }
+    released = json.loads(lines[-1])
+    assert released == {"protocol_version": 1, "type": "released",
+                        "lease_id": ready["lease_id"]}
+    assert all(not line.startswith("{") or not line.endswith("}") or b"\x00" not in line.encode() for line in lines)
+
+
+def test_reader_operations_close_missing_legacy_and_internal_errors(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+    from hermes_cli import kanban_boards
+
+    board = tmp_path / "missing"
+    board_dir = board
+    monkeypatch.setattr(kanban_boards.kb, "board_dir", lambda _board: board)
+    monkeypatch.setattr(kanban_boards.kb, "kanban_db_path", lambda board=None: board_dir / "kanban.db")
+    local = kanban_boards._cmd_reader_session(Namespace(
+        protocol_version=1, operation_id="missing-local", board="default",
+        consumer="hermes-office",
+    ))
+    assert local == 1
+    assert json.loads(capsys.readouterr().out)["code"] == "BOARD_NOT_FOUND"
+    bounded = kanban_boards._cmd_with_reader_lease(Namespace(
+        protocol_version=1, operation_id="missing-child", board="default",
+        consumer="hermes-office", json_status_dir=str(tmp_path / "status"),
+        command=[sys.executable, "-c", "raise SystemExit(99)"],
+    ))
+    assert bounded == 1
+    assert json.loads(capsys.readouterr().out)["code"] == "BOARD_NOT_FOUND"
+
+    board.mkdir()
+    (board / "generation.current").write_text("{}")
+    monkeypatch.setattr(
+        "hermes_cli.kanban_generation.acquire_reader_lease",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("internal path detail")),
+    )
+    local = kanban_boards._cmd_reader_session(Namespace(
+        protocol_version=1, operation_id="error-local", board="default",
+        consumer="hermes-office",
+    ))
+    assert local == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == "LEASE_CREATE_FAILED"
+    assert "internal path detail" not in payload["message"]
+
+
+def test_legacy_reader_helper_remains_live_until_release(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    sqlite3.connect(home / "kanban.db").close()
+    env = os.environ.copy()
+    env.update({"HERMES_HOME": str(home), "HERMES_KANBAN_HOME": str(home)})
+    env.pop("HERMES_KANBAN_DB", None)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "hermes_cli.main", "kanban", "boards", "reader-session",
+         "--board", "default", "--protocol-version", "1", "--consumer", "hermes-office",
+         "--operation-id", "legacy-live", "--json-lines"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env,
+    )
+    assert proc.stdout is not None and proc.stdin is not None
+    ready = json.loads(proc.stdout.readline())
+    assert ready["type"] == "ready" and ready["lease_id"] is None
+    assert proc.poll() is None
+    proc.stdin.write(json.dumps({"protocol_version": 1, "op": "release", "lease_id": None}) + "\n")
+    proc.stdin.flush()
+    assert json.loads(proc.stdout.readline()) == {
+        "protocol_version": 1, "type": "released", "lease_id": None,
+    }
+    assert proc.wait(timeout=10) == 0
+
+
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    [("GENERATION_NOT_ACTIVATED", True), ("ACTIVATION_BUSY", True),
+     ("CATALOG_BUSY", True), ("POINTER_INVALID", False),
+     ("READY_INVALID", False), ("ACTIVATION_INVALID", False),
+     ("GENERATION_META_INVALID", False)],
+)
+def test_reader_errors_have_closed_retry_semantics(tmp_path, monkeypatch, capsys, code, retryable):
+    from argparse import Namespace
+    from hermes_cli import kanban_boards
+    from hermes_cli.kanban_generation import GenerationError
+
+    board = tmp_path / "board"
+    board.mkdir()
+    (board / "generation.current").write_text("{}")
+    monkeypatch.setattr(kanban_boards.kb, "board_dir", lambda _board: board)
+    monkeypatch.setattr(
+        "hermes_cli.kanban_generation.acquire_reader_lease",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(GenerationError(code)),
+    )
+    result = kanban_boards._cmd_reader_session(Namespace(
+        protocol_version=1, operation_id=f"local-{code}", board="default",
+        consumer="hermes-office",
+    ))
+    assert result == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == code and payload["retryable"] is retryable
+    assert payload["message"] == code
+    bounded = kanban_boards._cmd_with_reader_lease(Namespace(
+        protocol_version=1, operation_id=f"bounded-{code}", board="default",
+        consumer="hermes-office", json_status_dir=str(tmp_path / f"status-{code}"),
+        command=[sys.executable, "-c", "raise SystemExit(99)"],
+    ))
+    assert bounded == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == code and payload["retryable"] is retryable
+    assert payload["message"] == code
+
+
+@pytest.mark.parametrize("consumer", ["gateway", "dashboard", "kanban-reader", "other"])
+def test_reader_v1_rejects_non_office_consumers(tmp_path, monkeypatch, capsys, consumer):
+    from argparse import Namespace
+    from hermes_cli import kanban_boards
+
+    monkeypatch.setattr(kanban_boards.kb, "board_dir", lambda _board: tmp_path)
+    result = kanban_boards._cmd_reader_session(Namespace(
+        protocol_version=1, operation_id="bad-consumer", board="default", consumer=consumer,
+    ))
+    assert result == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == "LEASE_CREATE_FAILED"
+    assert payload["retryable"] is False
+
+
+def test_bounded_reader_exclusively_claims_status_directory(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+    from hermes_cli import kanban_boards
+
+    status = tmp_path / "status-race"
+    original_mkdir = Path.mkdir
+
+    def competing_mkdir(path, *args, **kwargs):
+        if path == status:
+            original_mkdir(path, *args, **kwargs)
+            raise FileExistsError(path)
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", competing_mkdir)
+    result = kanban_boards._cmd_with_reader_lease(Namespace(
+        protocol_version=1, operation_id="status-race", board="default",
+        consumer="hermes-office", json_status_dir=str(status),
+        command=[sys.executable, "-c", "raise SystemExit(99)"],
+    ))
+    assert result == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["code"] == "STATUS_ID_CONFLICT"
+    assert list(status.iterdir()) == []
+
+
+def test_imported_attachment_resolution_authenticates_final_target_id(tmp_path):
+    source, target = tmp_path / "source.db", tmp_path / "target.db"
+    _db(source, "imported")
+    _db(target, "target")
+    attachment = tmp_path / "source.txt"
+    attachment.write_bytes(b"attachment")
+    with sqlite3.connect(source) as conn:
+        conn.execute("INSERT INTO task_attachments(task_id, filename, stored_path, size, created_at) VALUES ('imported', 'x', ?, 10, 1)", (str(attachment),))
+    seeds = tmp_path / "seeds.json"
+    seeds.write_text(json.dumps({"task_ids": ["imported"]}))
+    generation = tmp_path / "generation"
+    reconcile(source, target, seeds, generation, apply=True)
+    with sqlite3.connect(generation / "kanban.db") as conn:
+        resolution = conn.execute("SELECT source_row_sha256 FROM recovery_attachment_resolution").fetchone()[0]
+        row = conn.execute("SELECT * FROM task_attachments WHERE task_id='imported'").fetchone()
+        from hermes_cli.kanban_generation import manifest_digest
+        columns = [d[1] for d in conn.execute("PRAGMA table_info(task_attachments)")]
+        expected = manifest_digest(dict(zip(columns, row)))
+    assert resolution == expected
+
+
 @pytest.mark.parametrize(
     ("mode", "expected", "exit_code"),
     [
         ("handshake", "CHILD_HANDSHAKE_FAILED", 1),
-        ("malformed", "CHILD_ACK_MALFORMED", 1),
-        ("mismatch", "CHILD_ACK_MISMATCH", 1),
-        ("duplicate", "CHILD_ACK_DUPLICATE", 1),
-        ("timeout", "CHILD_ACK_TIMEOUT", 1),
         ("nonzero", "CHILD_FAILED", 1),
     ],
 )
@@ -250,18 +484,12 @@ def test_reader_failure_matrix_finalizes_process_and_lease_once(
         "mode = sys.argv[1]\n"
         "print('started' if mode != 'handshake' else 'wrong', flush=True)\n"
         "if mode == 'handshake': time.sleep(30)\n"
-        "elif mode == 'timeout': time.sleep(30)\n"
-        "elif mode == 'malformed': os.close(int(os.environ['HERMES_READER_ACK_FD'])); time.sleep(30)\n"
         "else:\n"
         "  capfd = int(os.environ['HERMES_READER_BOOTSTRAP_FD']); h=os.read(capfd,4); cap=json.loads(os.read(capfd, struct.unpack('!I', h)[0]))\n"
-        "  ack = {'protocol_version': 1, 'type': 'ack', 'operation_id': cap['operation_id'], 'start_token': ('wrong' if mode == 'mismatch' else cap['start_token']), 'lease_id': cap.get('lease_id')}\n"
-        "  raw=json.dumps(ack,separators=(',',':')).encode(); fd=int(os.environ['HERMES_READER_ACK_FD']); frame=struct.pack('!I',len(raw))+raw; os.write(fd, frame + (frame if mode == 'duplicate' else b''));\n"
-        "  os.close(fd)\n"
+        "  assert set(cap) == {'protocol_version','operation_id','board_slug','storage_mode','database_path','generation_id','generation_nonce','ready_sha256','activated_sha256','lease_id','start_token'}\n"
         "  if mode == 'nonzero': sys.stdin.buffer.read(); sys.exit(7)\n"
         "  sys.stdin.buffer.read()\n",
     )
-    if mode == "timeout":
-        monkeypatch.setattr("hermes_cli.kanban_boards.select.select", lambda *_args: ([], [], []))
     status = tmp_path / "status"
     from argparse import Namespace
     result = __import__("hermes_cli.kanban_boards", fromlist=["_cmd_with_reader_lease"])._cmd_with_reader_lease(
@@ -271,6 +499,7 @@ def test_reader_failure_matrix_finalizes_process_and_lease_once(
     )
     assert result == exit_code
     terminal = json.loads((status / "terminal.json").read_text())
+    assert terminal["type"] == "child_failed"
     assert terminal["code"] == expected
     assert len(list((generation / "leases").glob("*.json"))) == 0
 
@@ -289,31 +518,9 @@ def test_reader_silent_handshake_is_deadline_bounded_and_finalized(tmp_path, mon
                   command=[sys.executable, str(script)]),
     )
     assert result == 1
-    assert json.loads((status / "terminal.json").read_text())["code"] == "CHILD_HANDSHAKE_TIMEOUT"
-    assert not list((generation / "leases").glob("*.json"))
-
-
-def test_reader_partial_ack_is_deadline_bounded_and_finalized(tmp_path, monkeypatch):
-    board, generation = _published(tmp_path)
-    monkeypatch.setattr("hermes_cli.kanban_boards.kb.board_dir", lambda _board: board)
-    monkeypatch.setattr("hermes_cli.kanban_boards._READER_ACK_TIMEOUT_SECONDS", 0.1)
-    script = tmp_path / "partial-reader.py"
-    script.write_text(
-        "import os, struct, time\n"
-        "print('started', flush=True)\n"
-        "fd=int(os.environ['HERMES_READER_ACK_FD'])\n"
-        "os.write(fd, struct.pack('!I', 32) + b'{\\\"protocol_version\\\":1')\n"
-        "time.sleep(30)\n"
-    )
-    status = tmp_path / "status"
-    from argparse import Namespace
-    result = __import__("hermes_cli.kanban_boards", fromlist=["_cmd_with_reader_lease"])._cmd_with_reader_lease(
-        Namespace(protocol_version=1, operation_id="op-partial", board="default",
-                  consumer="hermes-office", json_status_dir=str(status),
-                  command=[sys.executable, str(script)]),
-    )
-    assert result == 1
-    assert json.loads((status / "terminal.json").read_text())["code"] == "CHILD_ACK_TIMEOUT"
+    terminal = json.loads((status / "terminal.json").read_text())
+    assert terminal["type"] == "child_failed"
+    assert terminal["code"] == "CHILD_HANDSHAKE_FAILED"
     assert not list((generation / "leases").glob("*.json"))
 
 
@@ -419,7 +626,7 @@ def test_public_producer_adoption_blocks_cleanup_and_preserves_blob(tmp_path):
     assert blob.exists()
 
 
-def test_reader_session_uses_golden_length_frames_and_exact_eof_terminal(monkeypatch, tmp_path, capsys):
+def test_reader_session_uses_golden_newline_json_and_exact_eof_terminal(monkeypatch, tmp_path, capsys):
     from hermes_cli import kanban_boards
 
     class _BinaryInput:
@@ -435,17 +642,41 @@ def test_reader_session_uses_golden_length_frames_and_exact_eof_terminal(monkeyp
     monkeypatch.setattr(sys, "stdout", output)
     monkeypatch.setattr(kanban_boards.kb, "board_dir", lambda board=None: tmp_path / "board")
     monkeypatch.setattr(kanban_boards.kb, "kanban_db_path", lambda board=None: tmp_path / "board" / "kanban.db")
+    monkeypatch.setattr(kanban_boards, "_reader_timestamp", lambda: "2026-11-17T00:00:00Z")
+    (tmp_path / "board").mkdir()
+    (tmp_path / "board" / "kanban.db").touch()
     result = kanban_boards._cmd_reader_session(__import__("argparse").Namespace(
-        protocol_version=1, consumer="gateway", operation_id="op", board="default"))
+        protocol_version=1, consumer="hermes-office", operation_id="op", board="default"))
     assert result == 0
     raw = output.buffer.getvalue()
-    expected = encode_reader_frame({
+    expected = (json.dumps({
         "protocol_version": 1, "type": "ready", "operation_id": "op", "board_slug": "default",
         "database_path": str(tmp_path / "board" / "kanban.db"), "storage_mode": "legacy",
-        "generation_id": None, "generation_nonce": None, "ready_sha256": None, "lease_id": None,
-    }) + encode_reader_frame({"protocol_version": 1, "type": "released", "operation_id": "op", "lease_id": None})
+        "generation_id": None, "generation_nonce": None, "ready_sha256": None,
+        "activated_sha256": None, "lease_id": None, "lease_keeper_pid": None,
+        "lease_keeper_start_fingerprint": None, "consumer_pid": None,
+        "consumer_start_fingerprint": None, "selected_at": "2026-11-17T00:00:00Z",
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n" +
+               json.dumps({"protocol_version": 1, "type": "released", "lease_id": None},
+                          sort_keys=True, separators=(",", ":")) + "\n").encode()
     assert raw == expected
-    assert decode_reader_frame(raw[:4 + int.from_bytes(raw[:4], "big")])
+    assert [json.loads(line) for line in raw.splitlines()] == [json.loads(line) for line in expected.splitlines()]
+
+
+def test_reader_session_distinguishes_wrong_well_formed_lease_id(tmp_path, monkeypatch, capsys):
+    board, generation = _published(tmp_path)
+    monkeypatch.setattr("hermes_cli.kanban_boards.kb.board_dir", lambda _board: board)
+    class _Input:
+        buffer = io.BytesIO(b'{"protocol_version":1,"op":"release","lease_id":"wrong"}\n')
+    monkeypatch.setattr(sys, "stdin", _Input())
+    from argparse import Namespace
+    result = __import__("hermes_cli.kanban_boards", fromlist=["_cmd_reader_session"])._cmd_reader_session(
+        Namespace(protocol_version=1, operation_id="op-mismatch", board="default", consumer="hermes-office"))
+    assert result == 1
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert lines[-1]["code"] == "LEASE_ID_MISMATCH"
+    assert lines[-1]["generation_id"] == lines[0]["generation_id"]
+    assert (generation / "leases" / f"{lines[0]['lease_id']}.json").is_file()
 
 
 def test_reconcile_clears_every_runtime_identity_and_rejects_unknown_schema(tmp_path):
@@ -467,14 +698,17 @@ def test_fence_custody_blocks_second_process_until_release(tmp_path):
     board = tmp_path / "board"
     board.mkdir()
     first = acquire_fence(board, generation="g1", owner="first")
-    probe = subprocess.run(
-        [sys.executable, "-c", "from pathlib import Path; from hermes_cli.kanban_generation import acquire_fence; acquire_fence(Path(__import__('sys').argv[1]), generation='g2', owner='second')", str(board)],
-        capture_output=True, text=True, check=False,
+    entered = board / "second-entered"
+    probe = subprocess.Popen(
+        [sys.executable, "-c", "from pathlib import Path; import sys; from hermes_cli.kanban_generation import acquire_fence, release_fence; board=Path(sys.argv[1]); fence=acquire_fence(board, generation='g2', owner='second'); Path(sys.argv[2]).write_text('entered'); release_fence(board, token=fence['token'])", str(board), str(entered)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    assert probe.returncode != 0
+    from tests.waiting import wait_until
+    with pytest.raises(AssertionError):
+        wait_until(lambda: entered.exists(), timeout=2.0, what="fence waiter before release")
     release_fence(board, token=first["token"])
-    second = acquire_fence(board, generation="g2", owner="second")
-    release_fence(board, token=second["token"])
+    assert probe.wait(timeout=10) == 0, probe.stderr.read()
+    assert entered.exists()
 
 
 def test_apply_reconcile_uses_one_snapshot_pair(tmp_path, monkeypatch):
@@ -566,13 +800,13 @@ def test_publication_recovery_finishes_acceptance_before_pointer(tmp_path):
     assert read_pointer(board)["generation_id"] == "g1"
 
 
-def test_activation_poison_is_sticky_until_repair(tmp_path):
+def test_activation_clean_failure_is_retryable_without_poison(tmp_path):
     board, generation, _ready = _prepared(tmp_path)
     fence = acquire_fence(board, generation="g1", owner="writer")
     with pytest.raises(OSError):
         activate_first_write(generation, fence_epoch=fence["epoch"], durability=DurabilityAdapter(failpoint="activation-before-rename"))
-    with pytest.raises(GenerationError, match="ACTIVATION_POISONED"):
-        activate_first_write(generation, fence_epoch=fence["epoch"])
+    assert not (generation / "ACTIVATION.poison.json").exists()
+    assert activate_first_write(generation, fence_epoch=fence["epoch"])["generation_id"] == "g1"
 
 
 def test_public_add_attachment_refuses_uncustodied_generated_metadata(tmp_path):

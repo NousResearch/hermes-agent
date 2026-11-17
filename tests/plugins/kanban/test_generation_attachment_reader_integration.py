@@ -1,4 +1,11 @@
+import json
+import os
 import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from hermes_cli.kanban_generation import resolve_attachment_blob
 
@@ -14,7 +21,8 @@ def test_dashboard_style_attachment_read_uses_generation_custody(tmp_path):
     _db(target, "target-task", old)
     seed = tmp_path / "seed.json"
     seed.write_text('["source-task"]')
-    generation = tmp_path / "generation"
+    generation = tmp_path / "board" / "generations" / "g1"
+    generation.parent.mkdir(parents=True)
     reconcile(source, target, seed, generation, apply=True)
     old.unlink()
     with sqlite3.connect(generation / "kanban.db") as conn:
@@ -23,3 +31,106 @@ def test_dashboard_style_attachment_read_uses_generation_custody(tmp_path):
         resolved = resolve_attachment_blob(conn, row, board=generation)
         assert resolved.read_bytes() == b"dashboard custody"
         assert resolved != old
+
+
+def _published_attachment_board(root: Path):
+    from tests.hermes_cli.test_kanban_recovery_round_trip import _db
+    from hermes_cli.kanban_generation import acquire_fence, publish_prepared, release_fence
+    from hermes_cli.kanban_reconcile import reconcile
+
+    root.mkdir(parents=True)
+    home = root / "home"
+    source, target = root / "source.db", root / "target.db"
+    source_blob = root / "imported.txt"
+    source_blob.write_bytes(b"imported custody")
+    _db(source, "imported", source_blob)
+    _db(target, "target")
+    seed = root / "seed.json"
+    seed.write_text(json.dumps(["imported"]))
+    board = home / "kanban" / "boards" / "default"
+    generation = board / "generations" / "g1"
+    generation.parent.mkdir(parents=True)
+    report = reconcile(source, target, seed, generation, apply=True)
+    fence = acquire_fence(board, generation=report["generation_id"], owner="reader-test")
+    publish_prepared(generation, expected_manifest=report["manifest_digest"], fence_token=fence["token"])
+    release_fence(board, token=fence["token"])
+    with sqlite3.connect(generation / "kanban.db") as conn:
+        attachment_id, custody_relpath = conn.execute(
+            "SELECT attachment_id, custody_relpath FROM recovery_attachment_resolution"
+        ).fetchone()
+    source_blob.unlink()
+    return home, generation, int(attachment_id), generation / custody_relpath, source_blob
+
+
+def _attachment_cli(home: Path):
+    env = os.environ.copy()
+    env.update(HERMES_HOME=str(home))
+    env.pop("HERMES_KANBAN_DB", None)
+    return subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "kanban", "attachments", "imported", "--json"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+
+
+def test_imported_attachment_public_readers_use_production_selection_and_fail_closed(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.kanban_db import build_worker_context
+    from tools.kanban_tools import _handle_attachments
+    from plugins.kanban.dashboard.plugin_api import (
+        download_attachment, get_task, list_task_attachments,
+    )
+
+    home, generation, attachment_id, _blob, _source_blob = _published_attachment_board(tmp_path / "clean")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+
+    cli = _attachment_cli(home)
+    assert cli.returncode == 0, cli.stderr
+    assert Path(json.loads(cli.stdout)[0]["stored_path"]).read_bytes() == b"imported custody"
+    tool = json.loads(_handle_attachments({"task_id": "imported", "board": "default"}))
+    assert Path(tool["attachments"][0]["stored_path"]).read_bytes() == b"imported custody"
+    listed = list_task_attachments("imported", board="default")
+    assert Path(listed["attachments"][0]["stored_path"]).read_bytes() == b"imported custody"
+    task = get_task("imported", board="default", run_state_type=None, run_state_name=None)
+    assert Path(task["attachments"][0]["stored_path"]).read_bytes() == b"imported custody"
+    downloaded = download_attachment(attachment_id, board="default")
+    assert Path(downloaded.path).read_bytes() == b"imported custody"
+    with kbc.connect_closing(board="default") as conn:
+        context = build_worker_context(conn, "imported")
+    assert "a.txt" in context and "imported custody" not in context
+    assert str(generation) in cli.stdout
+
+    for tamper in ("row", "blob", "generation"):
+        bad_home, bad_generation, bad_attachment_id, bad_blob, bad_source = _published_attachment_board(
+            tmp_path / tamper
+        )
+        if tamper == "row":
+            with sqlite3.connect(bad_generation / "kanban.db") as conn:
+                conn.execute("UPDATE task_attachments SET size = size + 1 WHERE task_id='imported'")
+        elif tamper == "blob":
+            bad_blob.write_bytes(b"tampered custody")
+        else:
+            with sqlite3.connect(bad_generation / "kanban.db") as conn:
+                conn.execute(
+                    "UPDATE recovery_attachment_resolution SET generation_id='other-generation'"
+                )
+        monkeypatch.setenv("HERMES_HOME", str(bad_home))
+
+        cli = _attachment_cli(bad_home)
+        assert cli.returncode != 0
+        assert str(bad_source) not in cli.stdout + cli.stderr
+        tool = _handle_attachments({"task_id": "imported", "board": "default"})
+        assert str(bad_source) not in tool
+        tool_payload = json.loads(tool)
+        assert "attachments" not in tool_payload
+        assert tool_payload.get("error")
+        with pytest.raises(Exception):
+            list_task_attachments("imported", board="default")
+        with pytest.raises(Exception):
+            get_task("imported", board="default", run_state_type=None, run_state_name=None)
+        with pytest.raises(Exception):
+            download_attachment(bad_attachment_id, board="default")
+        with pytest.raises(Exception):
+            with kbc.connect_closing(board="default") as conn:
+                build_worker_context(conn, "imported")
+        assert not bad_source.exists()

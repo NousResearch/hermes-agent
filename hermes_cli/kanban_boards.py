@@ -10,29 +10,64 @@ import json
 import sqlite3
 import os
 import subprocess
-import struct
-import select
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
-from hermes_cli.kanban_generation import GenerationError, canonical_json, encode_reader_frame, decode_reader_frame
+from hermes_cli.kanban_generation import GenerationError, canonical_json, encode_reader_frame
 from hermes_cli.kanban_output import _err, _fmt_counts, _json_out
 
-_READER_CONSUMERS = frozenset({"hermes-office", "gateway", "dashboard", "kanban-reader"})
+_READER_CONSUMERS = frozenset({"hermes-office"})
 _READER_PUBLIC_FIELDS = (
     "database_path", "storage_mode", "generation_id", "generation_nonce",
-    "ready_sha256", "lease_id",
+    "ready_sha256", "activated_sha256", "lease_id", "lease_keeper_pid",
+    "lease_keeper_start_fingerprint", "consumer_pid", "consumer_start_fingerprint",
+    "selected_at",
 )
+_READER_CAPABILITY_FIELDS = (
+    "database_path", "storage_mode", "generation_id", "generation_nonce",
+    "ready_sha256", "activated_sha256", "lease_id",
+)
+_READER_ERROR_CODES = frozenset({
+    "UNSUPPORTED_PROTOCOL", "STATUS_ID_CONFLICT", "BOARD_NOT_FOUND",
+    "POINTER_INVALID", "READY_INVALID", "ACTIVATION_INVALID",
+    "GENERATION_META_INVALID", "GENERATION_NOT_ACTIVATED",
+    "ACTIVATION_BUSY", "CATALOG_BUSY", "LEASE_CREATE_FAILED",
+    "LEASE_DURABILITY_FAILED", "LEASE_REVALIDATION_FAILED", "LEASE_LOST",
+    "LEASE_ID_MISMATCH", "LEASE_RELEASE_FAILED", "CHILD_START_FAILED",
+    "CHILD_HANDSHAKE_FAILED", "STATUS_PUBLICATION_FAILED",
+    "CHILD_CAPABILITY_FAILED", "CHILD_FAILED",
+})
+_READER_RETRYABLE_CODES = frozenset({
+    "GENERATION_NOT_ACTIVATED", "ACTIVATION_BUSY", "CATALOG_BUSY",
+})
+_READER_ERROR_ALIASES = {
+    "ACTIVATION_POISONED": "ACTIVATION_INVALID",
+    "PUBLICATION_POISONED": "POINTER_INVALID",
+    "BOARD_NOT_GENERATED": "BOARD_NOT_FOUND",
+}
 _READER_HANDSHAKE_TIMEOUT_SECONDS = 10.0
-_READER_ACK_TIMEOUT_SECONDS = 10.0
 _READER_MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 
 def _reader_public_result(result: dict) -> dict:
     return {key: result.get(key) for key in _READER_PUBLIC_FIELDS}
+
+
+def _reader_error_code(exc: BaseException, default: str) -> str:
+    code = _READER_ERROR_ALIASES.get(str(exc), str(exc))
+    return code if code in _READER_ERROR_CODES else default
+
+
+def _reader_is_retryable(code: str) -> bool:
+    return code in _READER_RETRYABLE_CODES
+
+
+def _reader_timestamp() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _dispatch_boards(args: argparse.Namespace) -> int:
@@ -113,34 +148,23 @@ def _cmd_rollback_generation(args: argparse.Namespace) -> int:
     return 0
 
 
-def _reader_error(operation_id: str, code: str, board: str, message: str | None = None) -> int:
-    del board
-    del message
-    frame = encode_reader_frame({"protocol_version": 1, "type": "error", "operation_id": operation_id, "code": code})
+def _reader_error(operation_id: str, code: str, board: str, message: str | None = None,
+                  *, generation_id: str | None = None, retryable: bool = False) -> int:
     import sys
-    sys.stdout.buffer.write(frame)
+    value = {"protocol_version": 1, "type": "error", "operation_id": operation_id,
+             "board_slug": board, "generation_id": generation_id, "code": code,
+             "retryable": retryable, "message": message or code}
+    payload = (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    sys.stdout.buffer.write(payload)
     sys.stdout.buffer.flush()
     return 1
 
 
-def _reader_read_frame() -> dict | None:
+def _reader_write_json(value: dict) -> None:
     import sys
-    stream = sys.stdin.buffer
-    header = stream.read(4)
-    if not header:
-        return None
-    if len(header) != 4:
-        raise GenerationError("READER_FRAME_MALFORMED")
-    size = struct.unpack("!I", header)[0]
-    if size > 16 * 1024 * 1024:
-        raise GenerationError("READER_FRAME_MALFORMED")
-    payload = bytearray()
-    while len(payload) < size:
-        chunk = stream.read(size - len(payload))
-        if not chunk:
-            raise GenerationError("READER_FRAME_MALFORMED")
-        payload.extend(chunk)
-    return decode_reader_frame(header + bytes(payload))
+    payload = (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    sys.stdout.buffer.write(payload)
+    sys.stdout.buffer.flush()
 
 
 def _read_pipe_line_deadline(stream, timeout: float) -> bytes:
@@ -163,38 +187,9 @@ def _read_pipe_line_deadline(stream, timeout: float) -> bytes:
                 return bytes(line)
 
 
-def _read_pipe_frame_deadline(fd: int, timeout: float) -> dict:
-    """Read a complete length-prefixed frame with one deadline for all bytes."""
-    deadline = time.monotonic() + timeout
-
-    def read_exact(size: int) -> bytes:
-        data = bytearray()
-        while len(data) < size:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
-                raise TimeoutError("reader frame timed out")
-            chunk = os.read(fd, size - len(data))
-            if not chunk:
-                raise GenerationError("READER_FRAME_MALFORMED")
-            data.extend(chunk)
-        return bytes(data)
-
-    header = read_exact(4)
-    size = struct.unpack("!I", header)[0]
-    if size > _READER_MAX_FRAME_BYTES:
-        raise GenerationError("READER_FRAME_MALFORMED")
-    return decode_reader_frame(header + read_exact(size))
-
-
-def _reader_write_frame(value: dict) -> None:
-    import sys
-    sys.stdout.buffer.write(encode_reader_frame(value))
-    sys.stdout.buffer.flush()
-
-
 def _publish_status(directory: Path, name: str, value: dict) -> None:
-    if not directory.exists():
-        directory.mkdir(mode=0o700)
+    if not directory.is_dir():
+        raise FileNotFoundError(directory)
     os.chmod(directory, 0o700)
     payload = canonical_json(value) + b"\n"
     destination = directory / name
@@ -215,54 +210,79 @@ def _cmd_reader_session(args: argparse.Namespace) -> int:
     if args.protocol_version != 1:
         return _reader_error(args.operation_id, "UNSUPPORTED_PROTOCOL", args.board)
     if args.consumer not in _READER_CONSUMERS:
-        return _reader_error(args.operation_id, "UNKNOWN_CONSUMER", args.board)
+        return _reader_error(args.operation_id, "LEASE_CREATE_FAILED", args.board,
+                             message="unsupported reader consumer")
     from hermes_cli.kanban_generation import acquire_reader_lease
     board_dir = kb.board_dir(args.board)
     try:
         if not (board_dir / "generation.current").exists():
-            result = {"database_path": str(kb.kanban_db_path(board=args.board)), "storage_mode": "legacy", "generation_id": None, "generation_nonce": None, "ready_sha256": None, "lease_id": None, "lease_keeper_pid": None, "lease_keeper_start_fingerprint": None, "consumer_pid": None, "consumer_start_fingerprint": None}
+            legacy_path = kb.kanban_db_path(board=args.board)
+            if not legacy_path.is_file():
+                return _reader_error(args.operation_id, "BOARD_NOT_FOUND", args.board)
+            result = {"database_path": str(legacy_path), "storage_mode": "legacy", "generation_id": None, "generation_nonce": None, "ready_sha256": None, "activated_sha256": None, "lease_id": None, "lease_keeper_pid": None, "lease_keeper_start_fingerprint": None, "consumer_pid": None, "consumer_start_fingerprint": None, "selected_at": _reader_timestamp()}
         else:
             result = acquire_reader_lease(board_dir, consumer=args.consumer, operation_id=args.operation_id, consumer_pid=os.getppid())
     except (OSError, ValueError, sqlite3.Error, GenerationError) as exc:
-        return _reader_error(args.operation_id, str(exc), args.board)
+        code = _reader_error_code(exc, "LEASE_CREATE_FAILED")
+        return _reader_error(
+            args.operation_id, code, args.board, retryable=_reader_is_retryable(code)
+        )
     ready = {"protocol_version": 1, "type": "ready", "operation_id": args.operation_id, "board_slug": args.board, **_reader_public_result(result)}
-    _reader_write_frame(ready)
-    if result["lease_id"] is None:
-        _reader_write_frame({"protocol_version": 1, "type": "released", "operation_id": args.operation_id, "lease_id": None})
-        return 0
+    _reader_write_json(ready)
     from hermes_cli.kanban_generation import release_reader_lease
-    lease_generation = Path(result["database_path"]).parent
+    lease_generation = Path(result["database_path"]).parent if result["lease_id"] else None
     try:
-        def release_before_error(code: str) -> int:
-            try:
+        def release() -> None:
+            if lease_generation is not None:
                 release_reader_lease(lease_generation, result["lease_id"])
+
+        def release_before_error(code: str, *, retryable: bool = False) -> int:
+            try:
+                release()
             except (OSError, GenerationError):
-                return _reader_error(args.operation_id, "LEASE_RELEASE_FAILED", args.board)
-            return _reader_error(args.operation_id, code, args.board)
+                return _reader_error(args.operation_id, "LEASE_RELEASE_FAILED", args.board,
+                                     generation_id=result["generation_id"])
+            return _reader_error(args.operation_id, code, args.board,
+                                 generation_id=result["generation_id"], retryable=retryable)
+        import sys
+        raw = sys.stdin.buffer.readline(_READER_MAX_FRAME_BYTES + 1)
+        if len(raw) > _READER_MAX_FRAME_BYTES:
+            raw = b""
         try:
-            message = _reader_read_frame()
-        except EOFError:
-            message = None
-        except (GenerationError, OSError):
-            return release_before_error("MALFORMED_RELEASE")
+            message = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            message = object()
+        if raw and (not isinstance(message, dict) or
+                    set(message) != {"protocol_version", "op", "lease_id"} or
+                    message.get("protocol_version") != 1 or message.get("op") != "release"):
+            return release_before_error("LEASE_RELEASE_FAILED")
         if message is None:
-            release_reader_lease(lease_generation, result["lease_id"])
-            _reader_write_frame({"protocol_version": 1, "type": "released", "operation_id": args.operation_id, "lease_id": result["lease_id"]})
+            release()
+            _reader_write_json({"protocol_version": 1, "type": "released",
+                                "lease_id": result["lease_id"]})
             return 0
-        if not isinstance(message, dict) or set(message) != {"op", "lease_id"} or message.get("op") != "release" or message.get("lease_id") != result["lease_id"]:
-            return release_before_error("LEASE_ID_MISMATCH")
-        release_reader_lease(lease_generation, result["lease_id"])
-        _reader_write_frame({"protocol_version": 1, "type": "released", "operation_id": args.operation_id, "lease_id": result["lease_id"]})
+        if message.get("lease_id") != result["lease_id"]:
+            return _reader_error(
+                args.operation_id, "LEASE_ID_MISMATCH", args.board,
+                generation_id=result["generation_id"],
+            )
+        release()
+        _reader_write_json({"protocol_version": 1, "type": "released",
+                            "lease_id": result["lease_id"]})
         return 0
     except (OSError, ValueError, sqlite3.Error, GenerationError) as exc:
-        return _reader_error(args.operation_id, str(exc), args.board)
+        return _reader_error(
+            args.operation_id, _reader_error_code(exc, "LEASE_RELEASE_FAILED"), args.board,
+            generation_id=result.get("generation_id"),
+        )
 
 
 def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC -- frozen reader protocol phases must remain linear for custody/order proof
     if args.protocol_version != 1:
         return _reader_error(args.operation_id, "UNSUPPORTED_PROTOCOL", args.board)
     if args.consumer not in _READER_CONSUMERS:
-        return _reader_error(args.operation_id, "UNKNOWN_CONSUMER", args.board)
+        return _reader_error(args.operation_id, "CHILD_START_FAILED", args.board,
+                             message="unsupported reader consumer")
     command = list(args.command or [])
     if command and command[0] == "--":
         command.pop(0)
@@ -270,28 +290,50 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
         return _reader_error(args.operation_id, "CHILD_START_FAILED", args.board)
     from hermes_cli.kanban_generation import acquire_reader_lease, bind_reader_consumer, release_reader_lease
     status_dir = Path(args.json_status_dir)
-    if status_dir.exists():
+    try:
+        status_dir.mkdir(mode=0o700)
+    except FileExistsError:
         return _reader_error(args.operation_id, "STATUS_ID_CONFLICT", args.board)
+    except OSError:
+        return _reader_error(args.operation_id, "STATUS_PUBLICATION_FAILED", args.board)
 
     child = None
     lease = None
-    bootstrap_r = bootstrap_w = ack_r = ack_w = None
+    legacy_result: dict = {}
+    bootstrap_r = bootstrap_w = None
     outcome = None
     exit_code = 1
     cleanup_error = None
+    terminal_lease_id = None
+    generated_board = kb.board_dir(args.board)
+    if (generated_board / "generation.current").exists():
+        try:
+            lease = acquire_reader_lease(
+                generated_board, consumer=args.consumer,
+                operation_id=args.operation_id, consumer_pid=os.getpid(),
+            )
+        except (OSError, ValueError, sqlite3.Error, GenerationError) as exc:
+            code = _reader_error_code(exc, "LEASE_CREATE_FAILED")
+            return _reader_error(
+                args.operation_id, code, args.board, retryable=_reader_is_retryable(code)
+            )
+    else:
+        legacy_path = kb.kanban_db_path(board=args.board)
+        if not legacy_path.is_file():
+            return _reader_error(args.operation_id, "BOARD_NOT_FOUND", args.board)
+        legacy_result = {
+            "database_path": str(legacy_path), "storage_mode": "legacy",
+            "generation_id": None, "generation_nonce": None,
+            "ready_sha256": None, "activated_sha256": None, "lease_id": None,
+            "lease_keeper_pid": None, "lease_keeper_start_fingerprint": None,
+            "consumer_pid": None, "consumer_start_fingerprint": None,
+            "selected_at": _reader_timestamp(),
+        }
     class _ReaderAbort(Exception):
         pass
     try:
         from hermes_cli.process_identity import spawn_owned, stop_owned_group_survivors
-        generated_board = kb.board_dir(args.board)
-        if (generated_board / "generation.current").exists():
-            # Reserve custody before creating the child.  The lease is rebound
-            # to the child PID/start fingerprint before ready is published.
-            lease = acquire_reader_lease(generated_board, consumer=args.consumer,
-                                         operation_id=args.operation_id,
-                                         consumer_pid=os.getpid())
         bootstrap_r, bootstrap_w = os.pipe()
-        ack_r, ack_w = os.pipe()
         spawn_options = {
             "stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "text": False,
             "env": {"HERMES_READER_PROTOCOL_VERSION": "1",
@@ -299,15 +341,14 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
                     "HERMES_READER_BOOTSTRAP_FD": str(bootstrap_r)},
         }
         if os.name == "posix":
-            spawn_options["env"]["HERMES_READER_ACK_FD"] = str(ack_w)
-            spawn_options["pass_fds"] = (bootstrap_r, ack_w)
+            spawn_options["pass_fds"] = (bootstrap_r,)
         child = spawn_owned(command, purpose="kanban-reader", **spawn_options)
         os.close(bootstrap_r)
         bootstrap_r = None
         try:
             line = _read_pipe_line_deadline(child.stdout, _READER_HANDSHAKE_TIMEOUT_SECONDS)
         except TimeoutError:
-            outcome = "CHILD_HANDSHAKE_TIMEOUT"
+            outcome = "CHILD_HANDSHAKE_FAILED"
             raise _ReaderAbort
         if line.strip() != b"started":
             outcome = "CHILD_HANDSHAKE_FAILED"
@@ -320,15 +361,12 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
                       "consumer_start_fingerprint": __import__("hermes_cli.kanban_generation", fromlist=["_start_fingerprint"])._start_fingerprint(child.pid),
                       "start_token": start_token}
         else:
-            result = {
-                "database_path": str(kb.kanban_db_path(board=args.board)),
-                "storage_mode": "legacy", "generation_id": None, "generation_nonce": None,
-                "ready_sha256": None, "lease_id": None, "lease_keeper_pid": None,
-                "lease_keeper_start_fingerprint": None, "consumer_pid": None,
-                "consumer_start_fingerprint": None,
-            }
-        capability = {"protocol_version": 1, "operation_id": args.operation_id, "board_slug": args.board, **_reader_public_result(result),
+            result = legacy_result
+        capability = {"protocol_version": 1, "operation_id": args.operation_id,
+                      "board_slug": args.board,
+                      **{key: result.get(key) for key in _READER_CAPABILITY_FIELDS},
                       "start_token": result.get("start_token") or os.urandom(16).hex()}
+        terminal_lease_id = result.get("lease_id")
         # The durable ready record is the publication boundary.  The child
         # receives exactly one capability, only after this record is fsynced;
         # the old stdin resend let consumers observe a second, differently
@@ -337,25 +375,7 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
         os.write(bootstrap_w, encode_reader_frame(capability))
         os.close(bootstrap_w)
         bootstrap_w = None
-        os.close(ack_w)
-        ack_w = None
-        try:
-            ack = _read_pipe_frame_deadline(ack_r, _READER_ACK_TIMEOUT_SECONDS)
-        except TimeoutError:
-            outcome = "CHILD_ACK_TIMEOUT"
-            raise _ReaderAbort
-        except GenerationError:
-            outcome = "CHILD_ACK_MALFORMED"
-            raise _ReaderAbort
-        extra, _, _ = select.select([ack_r], [], [], 0)
-        if extra and os.read(ack_r, 1):
-            outcome = "CHILD_ACK_DUPLICATE"
-            raise _ReaderAbort
-        if set(ack) != {"protocol_version", "type", "operation_id", "start_token", "lease_id"} or ack.get("type") != "ack" or ack.get("protocol_version") != 1 or ack.get("operation_id") != args.operation_id or ack.get("start_token") != capability["start_token"] or ack.get("lease_id") != capability.get("lease_id"):
-            outcome = "CHILD_ACK_MISMATCH"
-            raise _ReaderAbort
-        os.close(ack_r)
-        ack_r = None
+
         # Capability delivery is complete on the private bootstrap FD.  Close
         # stdin so a non-daemonizing child can enter its normal read loop and
         # observe EOF without a second protocol message.
@@ -363,15 +383,18 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
         try:
             rc = child.wait(timeout=86400)
         except subprocess.TimeoutExpired:
-            outcome = "CHILD_TIMEOUT"
+            outcome = "CHILD_FAILED"
             exit_code = 124
         else:
             exit_code = rc
             outcome = None if rc == 0 else "CHILD_FAILED"
     except _ReaderAbort:
         pass
-    except (OSError, ValueError, sqlite3.Error, GenerationError, subprocess.SubprocessError) as exc:
-        outcome = outcome or (str(exc) or "CHILD_START_FAILED")
+    except (OSError, ValueError, sqlite3.Error, GenerationError, subprocess.SubprocessError):
+        outcome = outcome or (
+            "CHILD_CAPABILITY_FAILED" if terminal_lease_id is not None
+            else "CHILD_START_FAILED"
+        )
     finally:
         # All terminal paths use this one order: reap the whole owned group,
         # close protocol descriptors, release custody, then publish one status.
@@ -382,7 +405,7 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
                     child.wait(timeout=10)
             except (OSError, ValueError, sqlite3.Error, GenerationError, subprocess.SubprocessError) as exc:
                 cleanup_error = cleanup_error or exc
-        for fd in (bootstrap_r, bootstrap_w, ack_r, ack_w):
+        for fd in (bootstrap_r, bootstrap_w):
             if fd is not None:
                 try:
                     os.close(fd)
@@ -401,19 +424,20 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
             except (OSError, ValueError, sqlite3.Error, GenerationError, subprocess.SubprocessError) as exc:
                 cleanup_error = cleanup_error or exc
         if cleanup_error is not None:
-            outcome = "READER_FINALIZATION_FAILED"
+            outcome = "LEASE_RELEASE_FAILED"
             exit_code = 1
         if outcome is None:
             terminal = {"protocol_version": 1, "operation_id": args.operation_id,
-                        "type": "released", "lease_id": result["lease_id"]}
+                        "type": "released", "lease_id": terminal_lease_id}
         else:
-            terminal = {"protocol_version": 1, "type": "error",
-                        "operation_id": args.operation_id, "code": outcome}
+            terminal = {"protocol_version": 1, "type": "child_failed",
+                        "operation_id": args.operation_id, "code": outcome,
+                        "lease_id": terminal_lease_id}
         try:
             if not (status_dir / "terminal.json").exists():
                 _publish_status(status_dir, "terminal.json", terminal)
         except OSError:
-            outcome = "STATUS_WRITE_FAILED"
+            outcome = "STATUS_PUBLICATION_FAILED"
             exit_code = 1
     if outcome is not None:
         return _reader_error(args.operation_id, outcome, args.board)
@@ -423,7 +447,8 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
 def _board_task_counts(slug: str) -> dict[str, int]:
     """``{status: count}`` for a board. Safe to call on an empty DB."""
     try:
-        if not kb.kanban_db_path(board=slug).exists():
+        path = kb.kanban_db_path(board=slug)
+        if not path.exists() and not (kb.board_dir(slug) / "generation.current").exists():
             return {}
         with kbc.connect_closing(board=slug) as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()

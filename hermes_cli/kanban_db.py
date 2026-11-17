@@ -580,6 +580,20 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def selected_db_path(board: Optional[str] = None) -> Path:
+    """Return the physical DB selected by the board pointer, if generated.
+
+    This is for machine-flow probes and child handoff metadata.  Actual DB
+    access still goes through ``kanban_db_connect.connect`` so the generation
+    lease remains attached to the connection lifetime.
+    """
+    control = board_dir(board)
+    if (control / "generation.current").exists():
+        from hermes_cli.kanban_generation import open_generation
+        return open_generation(control, require_activation=False)[0]
+    return kanban_db_path(board)
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""

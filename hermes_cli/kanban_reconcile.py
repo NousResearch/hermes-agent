@@ -79,6 +79,29 @@ def _child_ids(conn: sqlite3.Connection, table: str, tasks: list[str]) -> list[t
     return [(row[0], int(row[1])) for row in conn.execute(f"SELECT task_id, id FROM {table} WHERE task_id IN ({','.join('?' * len(tasks))}) ORDER BY task_id, id", tasks)]
 
 
+def _correspondence_key(table: str, row: sqlite3.Row) -> tuple:
+    """Return only content that survives a child-row remap.
+
+    A retained target row is provenance for a source row only when this key
+    identifies it.  Primary keys, task ownership, and foreign keys whose IDs
+    are regenerated are not evidence of correspondence; cardinality is never
+    evidence either.
+    """
+    ignored = {"id", "task_id"}
+    if table == "task_events":
+        ignored.add("run_id")
+    if table == "task_runs":
+        ignored.update(RUNTIME_FIELDS)
+    return tuple((column, row[column]) for column in row.keys() if column not in ignored)
+
+
+def _target_pk_for_content_match(table: str, source_row: sqlite3.Row,
+                                 target_rows: list[sqlite3.Row]) -> str:
+    matches = [row for row in target_rows
+               if _correspondence_key(table, source_row) == _correspondence_key(table, row)]
+    return str(matches[0]["id"]) if len(matches) == 1 else ""
+
+
 def _floor(conn: sqlite3.Connection, table: str) -> int:
     maximum = int(conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()[0] or 0)
     try:
@@ -389,6 +412,7 @@ def reconcile(source: Path, target: Path, seed_file: Path, output: Path, *, appl
             for row in rows:
                 old_id, new_id = int(row["id"]), maps[table][int(row["id"])]
                 values = [row[column] for column in row.keys()]
+                attachment_resolution = None
                 values[list(row.keys()).index("id")] = new_id
                 if table == "task_runs":
                     columns = list(row.keys())
@@ -412,20 +436,34 @@ def reconcile(source: Path, target: Path, seed_file: Path, output: Path, *, appl
                     _install_blob(destination, blob)
                     values[list(row.keys()).index("stored_path")] = str(relative)
                     rewritten = _row_dict(row)
+                    rewritten["id"] = new_id
                     rewritten["stored_path"] = str(relative)
                     # The resolver authenticates the rewritten target row.  The
                     # source absolute path remains in recovery_attachment_blobs
                     # as provenance and is never used as custody.
-                    dest.execute("INSERT INTO recovery_attachment_resolution VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (gid, new_id, str(relative), manifest_digest(rewritten), digest, len(blob), str(relative), "imported"))
+                    attachment_resolution = (gid, new_id, str(relative), digest, len(blob), str(relative), "imported")
                     source_key = old_id
                     if dest.execute("SELECT 1 FROM recovery_attachment_blobs WHERE import_id=? AND source_attachment_id=?", (import_id, source_key)).fetchone():
                         source_key = -old_id
                     dest.execute("INSERT INTO recovery_attachment_blobs VALUES (?, ?, ?, ?, ?, ?)", (import_id, source_key, str(source_path), digest, str(relative), len(blob)))
                 dest.execute(f"INSERT INTO {table} ({','.join(row.keys())}) VALUES ({','.join('?' * len(values))})", values)
+                if attachment_resolution is not None:
+                    final = dest.execute("SELECT * FROM task_attachments WHERE id = ?", (new_id,)).fetchone()
+                    dest.execute(
+                        "INSERT INTO recovery_attachment_resolution VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (attachment_resolution[0], attachment_resolution[1], attachment_resolution[2],
+                         manifest_digest(_row_dict(final)), attachment_resolution[3],
+                         attachment_resolution[4], attachment_resolution[5], attachment_resolution[6]),
+                    )
                 dest.execute("INSERT INTO recovery_row_provenance VALUES (?, ?, ?, ?, 'imported', ?, ?)", (import_id, table, str(old_id), str(new_id), manifest_digest(_row_dict(row)), _json_row(row)))
             for task_id in sorted(target_wins):
-                for row in src.execute(f"SELECT * FROM {table} WHERE task_id = ? ORDER BY id", (task_id,)).fetchall():
-                    dest.execute("INSERT INTO recovery_row_provenance VALUES (?, ?, ?, ?, 'target-wins', ?, ?)", (import_id, table, str(row["id"]), "", manifest_digest(_row_dict(row)), _json_row(row)))
+                source_rows = src.execute(f"SELECT * FROM {table} WHERE task_id = ? ORDER BY id", (task_id,)).fetchall()
+                target_rows = dest.execute(f"SELECT * FROM {table} WHERE task_id = ? ORDER BY id", (task_id,)).fetchall()
+                for row in source_rows:
+                    # Do not infer a match from row counts or list position.
+                    # A duplicate content match is intentionally unresolved.
+                    target_pk = _target_pk_for_content_match(table, row, target_rows)
+                    dest.execute("INSERT INTO recovery_row_provenance VALUES (?, ?, ?, ?, 'target-wins', ?, ?)", (import_id, table, str(row["id"]), target_pk, manifest_digest(_row_dict(row)), _json_row(row)))
             try:
                 dest.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = ?", (max([_floor(dest, table)] + list(maps[table].values())), table))
             except sqlite3.OperationalError:

@@ -837,6 +837,34 @@ def _cmd_attachments(args: argparse.Namespace) -> int:
 
 
 def _cmd_provenance(args: argparse.Namespace) -> int:
+    def task_scope(conn, task_id: str) -> set[str]:
+        scope = {task_id}
+        frontier = [task_id]
+        while frontier:
+            for child in kb.child_ids(conn, frontier.pop(0)):
+                if child not in scope:
+                    scope.add(child)
+                    frontier.append(child)
+        return scope
+
+    def enrich(conn, row):
+        value = dict(row)
+        target_pk = str(value.get("target_pk") or "")
+        target = None
+        if target_pk:
+            target = conn.execute(
+                f"SELECT * FROM {value['table_name']} WHERE id = ?", (target_pk,)
+            ).fetchone()
+        # An empty target_pk is intentionally unresolved.  The importer leaves
+        # it empty whenever it cannot prove a one-to-one retained row; lookup
+        # must not recreate proof from a list position.
+        value["target_row"] = dict(target) if target is not None else None
+        value["owning_task"] = (
+            target["task_id"] if target is not None and "task_id" in target.keys()
+            else (target["id"] if target is not None and value["table_name"] == "tasks" else None)
+        )
+        return value
+
     rows = []
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
@@ -855,26 +883,36 @@ def _cmd_provenance(args: argparse.Namespace) -> int:
                 ).fetchall()
                 if len(rows) == 1:
                     row = rows[0]
-                    target_pk = str(row["target_pk"] or "")
-                    target = None if not target_pk else conn.execute(
-                        f"SELECT * FROM {args.table} WHERE id = ?", (target_pk,)).fetchone()
-                    target_owner = target["task_id"] if target is not None and "task_id" in target.keys() else (target["id"] if target is not None else None)
-                    if target is not None and target_owner == args.task_id:
-                        enriched = dict(row)
-                        enriched["target_row"] = dict(zip(target.keys(), target))
-                        rows = [enriched]
+                    source = json.loads(row["source_row_json"])
+                    source_owner = source.get("task_id") if args.table != "tasks" else source.get("id")
+                    scope = task_scope(conn, args.task_id)
+                    if source_owner not in scope:
+                        rows = []
+                    else:
+                        enriched = enrich(conn, row)
+                        target_row = enriched.get("target_row")
+                        target_owner = (
+                            target_row.get("task_id") if target_row and args.table != "tasks"
+                            else target_row.get("id") if target_row else None
+                        )
+                        rows = [enriched] if target_owner in scope else []
             elif not args.table and args.source_snapshot is None and args.source_id is None:
-                rows = conn.execute(
-                    "SELECT * FROM recovery_row_provenance WHERE target_pk IN "
-                    "(SELECT id FROM task_comments WHERE task_id=? UNION SELECT id FROM task_events WHERE task_id=? UNION SELECT id FROM task_runs WHERE task_id=? UNION SELECT id FROM task_attachments WHERE task_id=?)",
-                    (args.task_id,) * 4,
-                ).fetchall()
-        except sqlite3.OperationalError:
+                task_ids = task_scope(conn, args.task_id)
+                rows = []
+                for row in conn.execute("SELECT * FROM recovery_row_provenance"):
+                    source = json.loads(row["source_row_json"])
+                    owner = source.get("task_id") if row["table_name"] != "tasks" else source.get("id")
+                    if owner in task_ids:
+                        rows.append(enrich(conn, row))
+        except (sqlite3.Error, TypeError, ValueError, IndexError, KeyError):
+            # Legacy/incomplete provenance schemas and malformed source rows
+            # cannot establish source-qualified ownership; fail closed rather
+            # than leaking an implementation traceback or inferring identity.
             rows = []
     result = [dict(row) for row in rows]
     if (args.table or args.source_snapshot is not None or args.source_id is not None) and not qualified:
         return _err("provenance lookup requires --source-snapshot, --table and --source-id")
-    if qualified and len(result) != 1:
+    if qualified and (len(result) != 1 or result[0].get("target_row") is None):
         return _err("provenance lookup is not uniquely source-qualified")
     if _json_out(args, result, ascii=True):
         return 0

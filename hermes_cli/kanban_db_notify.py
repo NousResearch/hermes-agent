@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import contextlib
 import sqlite3
 import time
 from pathlib import Path
@@ -221,8 +222,10 @@ def count_notify_subs(
     chat/thread exactly. Raises :class:`sqlite3.Error` if the DB exists but is
     unreadable — callers pick their own fallback.
     """
-    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
-    if not path.exists():
+    generated_board = board is not None and (_kb.board_dir(board) / "generation.current").exists()
+    path = _kb.selected_db_path(board=board) if db_path is None or generated_board else db_path
+    generated = (path.parent / "READY.json").is_file()
+    if not path.exists() and not generated:
         return 0
     owner_where, owner_params = _notify_profile_filter(
         notifier_profiles, include_unowned=include_unowned,
@@ -243,8 +246,12 @@ def count_notify_subs(
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
-    try:
+    if generated:
+        from hermes_cli.kanban_db_connect import connect_closing
+        conn_context = connect_closing(db_path=path, board=board)
+    else:
+        conn_context = contextlib.closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True))
+    with conn_context as conn:
         try:
             row = conn.execute(query, params).fetchone()
         except sqlite3.OperationalError as exc:
@@ -252,8 +259,6 @@ def count_notify_subs(
                 return 0
             raise
         return int(row[0]) if row else 0
-    finally:
-        conn.close()
 
 
 def remove_notify_sub(

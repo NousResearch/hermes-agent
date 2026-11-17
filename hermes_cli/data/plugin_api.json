@@ -83,6 +83,7 @@
         "agent.usage_pricing:CostResult",
         "hermes_cli.auth_constants:AuthError",
         "tools.environments.base:BaseEnvironment",
+        "tools.environments.local:LocalEnvironment",
         "tools.environments:BaseEnvironment",
         "utils:atomic_json_write",
         "utils:read_json_or_empty"

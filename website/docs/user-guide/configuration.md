@@ -1040,11 +1040,13 @@ without it never gains it mid-conversation.
 ```yaml
 artifacts:
   enabled: true     # set false to never attach the server
-  base_url: ""      # artifacts gateway origin; empty = the relay connector's origin when set
+  base_url: ""      # artifacts gateway origin; empty = the managed Nous gateway
 ```
 
-With `base_url` empty and no relay connector configured, the server stays off. A `base_url` must
-be `https://`, or `http://` to a loopback or `*.localhost` host. The connection sends your Nous
+With `base_url` empty, Hermes connects to `https://gateway-gateway.nousresearch.com`, built from the
+same `TOOL_GATEWAY_SCHEME` and `TOOL_GATEWAY_DOMAIN` environment variables as the managed tool
+gateways. A `base_url` replaces that origin and must be `https://`, or `http://` to a loopback or
+`*.localhost` host. The connection sends your Nous
 access token, refreshed as needed, to that server only. While the server is attached it replaces
 any `mcp_servers.hermes-artifacts` entry of your own.
 

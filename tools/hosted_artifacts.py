@@ -11,7 +11,7 @@ built its tool list, and the between-turns MCP refresh would then append the new
 session's first tool load (its definitions, or the Tool Search catalog of its own toolset selection),
 and :func:`late_attach_drops` keeps them out of that session for good when they were not.
 
-Every failure (config off, no base URL, signed out, account unreadable, not entitled) leaves the
+Every failure (config off, an insecure base URL, signed out, account unreadable, not entitled) leaves the
 server out; the gateway stays authoritative for entitlement on every call.
 
 ``HOSTED_ARTIFACTS_CLIENT_VERSION`` is the stable probe external end-to-end harnesses use to detect
@@ -40,6 +40,7 @@ MCP_PATH = "/v1/artifacts/mcp"
 VIEWER_RESOURCE_URI = "ui://hermes/artifact-viewer"
 AUTH_TYPE = "nous"
 TOOLSET_NAME = f"mcp-{SERVER_NAME}"
+GATEWAY_VENDOR = "gateway"  # default origin: the managed gateway named like every vendor gateway
 CONTRACT_TOOLS = ("artifact_create", "artifact_update", "artifact_get", "artifact_list",
                   "artifact_share", "artifact_show")
 
@@ -61,7 +62,6 @@ def contract_tool_names() -> frozenset[str]:
 class Reason(str, enum.Enum):
     attached = "attached"
     disabled = "disabled"
-    no_base_url = "no_base_url"
     insecure_base_url = "insecure_base_url"
     not_logged_in = "not_logged_in"
     account_unreadable = "account_unreadable"
@@ -81,8 +81,8 @@ class AttachDecision:
 
 @dataclass(frozen=True)
 class ArtifactsConfig:
-    """The ``artifacts`` config block: ``enabled`` (default on) and ``base_url`` (default: the relay
-    connector origin when one is configured, else unset, which leaves the server out)."""
+    """The ``artifacts`` config block: ``enabled`` (default on) and ``base_url`` (empty: the managed
+    gateway, :func:`default_base_url`)."""
 
     enabled: bool = True
     base_url: str = ""
@@ -99,13 +99,13 @@ class ArtifactsConfig:
                    base_url=base_url.strip() if isinstance(base_url, str) else "")
 
 
-def _relay_origin() -> str:
-    """The relay connector's ``http(s)`` origin when this profile has one configured, else ``""``."""
-    from gateway.relay import relay_url
-    from gateway.relay.media import media_base_url
+def default_base_url() -> str:
+    """The managed artifacts gateway: ``{scheme}://gateway-gateway.{domain}``, built by the same helper
+    and environment (``TOOL_GATEWAY_SCHEME``, ``TOOL_GATEWAY_DOMAIN``) as the managed tool gateways, so
+    a non-production domain follows them. ``artifacts.base_url`` overrides it."""
+    from tools.managed_tool_gateway import build_vendor_gateway_url
 
-    dial = relay_url()
-    return media_base_url(dial) if dial else ""
+    return build_vendor_gateway_url(GATEWAY_VENDOR)
 
 
 def _origin(url: str) -> Optional[str]:
@@ -123,11 +123,11 @@ def _origin(url: str) -> Optional[str]:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def resolve_mcp_url(config: ArtifactsConfig, relay_origin: Optional[Callable[[], str]] = None,
-                    ) -> tuple[Optional[str], Reason]:
-    raw = config.base_url or (relay_origin or _relay_origin)()
-    if not raw:
-        return None, Reason.no_base_url
+def resolve_mcp_url(config: ArtifactsConfig) -> tuple[Optional[str], Reason]:
+    try:
+        raw = config.base_url or default_base_url()
+    except ValueError:  # TOOL_GATEWAY_SCHEME is neither http nor https
+        return None, Reason.insecure_base_url
     origin = _origin(raw)
     if origin is None:
         return None, Reason.insecure_base_url
@@ -156,13 +156,12 @@ def entitlement(account: Any) -> Reason:
     return Reason.attached
 
 
-def decide(config: ArtifactsConfig, *, account_reader: Optional[Callable[[], Any]] = None,
-           relay_origin: Optional[Callable[[], str]] = None) -> AttachDecision:
+def decide(config: ArtifactsConfig, *, account_reader: Optional[Callable[[], Any]] = None) -> AttachDecision:
     """Whether this profile attaches the server, and why not. Never raises: any failure is a refusal."""
     if not config.enabled:
         return AttachDecision(Reason.disabled)
     try:
-        url, reason = resolve_mcp_url(config, relay_origin)
+        url, reason = resolve_mcp_url(config)
         if url is None:
             return AttachDecision(reason)
         reason = entitlement((account_reader or _read_account)())

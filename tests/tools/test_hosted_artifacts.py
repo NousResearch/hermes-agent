@@ -21,10 +21,9 @@ def _account(**payload):
     return _info_from_account_payload(body, state={"access_token": "t"}, portal_base_url=None)
 
 
-def _decide(config=None, account=None, relay=""):
+def _decide(config=None, account=None):
     return ha.decide(config or ha.ArtifactsConfig(base_url=BASE),
-                     account_reader=lambda: account if account is not None else _account(),
-                     relay_origin=lambda: relay)
+                     account_reader=lambda: account if account is not None else _account())
 
 
 @pytest.fixture(autouse=True)
@@ -65,7 +64,7 @@ def test_jwt_snapshot_is_not_an_account_read():
 def test_account_fetch_failure_fails_closed():
     def boom():
         raise OSError("portal unreachable")
-    decision = ha.decide(ha.ArtifactsConfig(base_url=BASE), account_reader=boom, relay_origin=lambda: "")
+    decision = ha.decide(ha.ArtifactsConfig(base_url=BASE), account_reader=boom)
     assert decision.reason is ha.Reason.account_unreadable and not decision.attach
 
 
@@ -81,13 +80,42 @@ def test_enabled_by_default():
     assert ha.ArtifactsConfig.from_raw(None).enabled and ha.ArtifactsConfig.from_raw({}).enabled
 
 
-def test_no_base_url_and_no_relay_is_not_attached():
-    assert _decide(ha.ArtifactsConfig(), relay="").reason is ha.Reason.no_base_url
+@pytest.fixture
+def _gateway_env(monkeypatch):
+    for name in ("TOOL_GATEWAY_DOMAIN", "TOOL_GATEWAY_SCHEME", "GATEWAY_GATEWAY_URL"):
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
 
 
-def test_relay_origin_is_the_default_base_url():
-    decision = _decide(ha.ArtifactsConfig(), relay="https://relay.example.test")
-    assert decision.url == "https://relay.example.test" + ha.MCP_PATH
+def test_default_base_url_is_the_managed_gateway(_gateway_env):
+    assert _decide(ha.ArtifactsConfig()).url == "https://gateway-gateway.nousresearch.com" + ha.MCP_PATH
+
+
+def test_default_base_url_follows_the_tool_gateway_domain_and_scheme(_gateway_env):
+    _gateway_env.setenv("TOOL_GATEWAY_DOMAIN", "staging-nousresearch.com")
+    assert _decide(ha.ArtifactsConfig()).url == "https://gateway-gateway.staging-nousresearch.com" + ha.MCP_PATH
+    _gateway_env.setenv("TOOL_GATEWAY_DOMAIN", "nous.localhost:8080")
+    _gateway_env.setenv("TOOL_GATEWAY_SCHEME", "http")
+    assert _decide(ha.ArtifactsConfig()).url == "http://gateway-gateway.nous.localhost:8080" + ha.MCP_PATH
+
+
+def test_configured_base_url_overrides_the_default(_gateway_env):
+    _gateway_env.setenv("TOOL_GATEWAY_DOMAIN", "staging-nousresearch.com")
+    assert _decide(ha.ArtifactsConfig(base_url=BASE)).url == URL
+
+
+def test_default_base_url_never_reads_the_relay_connector(_gateway_env):
+    from gateway import relay
+
+    def unread(*_a, **_k):
+        raise AssertionError("relay config read for the artifacts base URL")
+    _gateway_env.setattr(relay, "relay_url", unread)
+    assert _decide(ha.ArtifactsConfig()).attach
+
+
+def test_unusable_tool_gateway_scheme_is_refused(_gateway_env):
+    _gateway_env.setenv("TOOL_GATEWAY_SCHEME", "ftp")
+    assert _decide(ha.ArtifactsConfig()).reason is ha.Reason.insecure_base_url
 
 
 @pytest.mark.parametrize("base, url", [
@@ -113,11 +141,11 @@ def test_decision_is_cached_per_profile_until_the_ttl(monkeypatch):
         calls.append(1)
         return _account()
     config = ha.ArtifactsConfig(base_url=BASE)
-    first = ha.cached_decision(config, now=lambda: clock[0], account_reader=reader, relay_origin=lambda: "")
-    ha.cached_decision(config, now=lambda: clock[0], account_reader=reader, relay_origin=lambda: "")
+    first = ha.cached_decision(config, now=lambda: clock[0], account_reader=reader)
+    ha.cached_decision(config, now=lambda: clock[0], account_reader=reader)
     assert first.attach and len(calls) == 1
     clock[0] += ha.DECISION_TTL_SECONDS
-    ha.cached_decision(config, now=lambda: clock[0], account_reader=reader, relay_origin=lambda: "")
+    ha.cached_decision(config, now=lambda: clock[0], account_reader=reader)
     assert len(calls) == 2
 
 
@@ -305,8 +333,8 @@ def test_an_attached_server_is_an_enabled_mcp_server_for_sessions():
     config = {"artifacts": {"base_url": BASE}}
     artifacts = ha.ArtifactsConfig.from_raw(config["artifacts"])
     assert ha.SERVER_NAME not in enabled_mcp_server_names(config)  # nothing decided yet: no account read here
-    ha.cached_decision(artifacts, account_reader=_account, relay_origin=lambda: "")
+    ha.cached_decision(artifacts, account_reader=_account)
     assert ha.SERVER_NAME in enabled_mcp_server_names(config)
     ha.reset_decisions()
-    ha.cached_decision(artifacts, account_reader=lambda: _account(artifacts_access=False), relay_origin=lambda: "")
+    ha.cached_decision(artifacts, account_reader=lambda: _account(artifacts_access=False))
     assert ha.SERVER_NAME not in enabled_mcp_server_names(config)

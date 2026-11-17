@@ -79,6 +79,10 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         # Provider window closed for a known duration: park past it (cron/quota_hold.py, #89376).
         mark_kwargs["quota_hold_seconds"] = _hold_s
         mark_kwargs["recover_consumed_fire"] = bool(job.get("_scheduled_instant"))
+    _billing_provider = job.pop("_billing_hold_provider", None)
+    job.pop("_declined_local_fallback", None)
+    if not d.success and _billing_provider:
+        mark_kwargs["billing_hold_provider"] = _billing_provider
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
     if fire_owner is not None:

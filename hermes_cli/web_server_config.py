@@ -226,7 +226,7 @@ _CATEGORY_MERGE: dict[str, str] = {
     "nous": "agent",
     "connections": "agent",
     "auth": "security",
-    # `fallback.min_switch_reset_seconds` is the only schema-surfaced fallback field.
+    # `fallback.min_switch_reset_seconds` and `fallback.background_local_when_billing_blocked`.
     "fallback": "agent",
 }
 

@@ -104,6 +104,13 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   payload, and only then drops the marker: a source-update relaunch (`-I`, no `PYTHONPATH`) or a
   post-restore re-exec must replay the whole worker, never land after the ack with the payload
   gone and no dependency boot.
+- **A billing/credits refusal holds the job; it never grinds a local model.** For a background
+  run (delegation root platform `cron`, or a Kanban worker process) whose provider refused for
+  billing, `agent/fallback_local_billing.py` declines a fallback entry on a loopback/LAN endpoint
+  unless `fallback.background_local_when_billing_blocked`; `cron/billing_hold.py` then parks the
+  job on `quota_hold_until` + `billing_hold_provider` (re-probe at most hourly, one alert, cleared
+  by any run that reaches the model). Why: a spent xAI account ran every fire of a job on a 4B
+  LM Studio model for hours. The verdict rides the error as `turn_verdict`, never failure text.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

@@ -748,14 +748,22 @@ def scratch_prune_spawns(monkeypatch):
 # without this fixture.
 
 
+# Both modules that open state.db keep their own copy of the guard knobs.
+_STATE_DB_GUARD_MODULES = ("hermes_state", "persistence.sqlite._holder")
+
+
 @pytest.fixture(autouse=True)
 def _state_db_write_guard(request, monkeypatch):
-    _hs = sys.modules.get("hermes_state")
-    if _hs is None or not hasattr(_hs, "_STATE_DB_GUARD_BYPASS"):
+    guarded = [
+        module for module in (sys.modules.get(name) for name in _STATE_DB_GUARD_MODULES)
+        if module is not None and hasattr(module, "_STATE_DB_GUARD_BYPASS")
+    ]
+    if not guarded:
         yield
         return
     if request.node.get_closest_marker("live_system_guard_bypass") is not None:
-        monkeypatch.setattr(_hs, "_STATE_DB_GUARD_BYPASS", True)
+        for module in guarded:
+            monkeypatch.setattr(module, "_STATE_DB_GUARD_BYPASS", True)
         yield
         return
     extra_roots = []
@@ -765,9 +773,8 @@ def _state_db_write_guard(request, monkeypatch):
         extra_roots.append(
             Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve()
         )
-    monkeypatch.setattr(
-        _hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots)
-    )
+    for module in guarded:
+        monkeypatch.setattr(module, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots))
     yield
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_URGENT_HEADER = re.compile(r"^\[(?:NEEDS-KIM|UNRESOLVED|SECURITY-INCIDENT)\][ \t]+\S.*$")
+_URGENT_HEADER = re.compile(r"^\[(?:NEEDS-APPROVAL|UNRESOLVED|SECURITY-INCIDENT)\][ \t]+\S.*$")
 _NO_ACTION = frozenset({"none", "no action", "no action needed", "nothing", "n/a"})
 
 

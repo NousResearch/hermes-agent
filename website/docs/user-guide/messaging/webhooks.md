@@ -218,7 +218,7 @@ default (unset or `all`) preserves normal delivery. Direct `deliver_only` alerts
 are unaffected.
 
 The urgent-only gate accepts only a first nonblank line starting with
-`[NEEDS-KIM]`, `[UNRESOLVED]`, or `[SECURITY-INCIDENT]` followed by an incident
+`[NEEDS-APPROVAL]`, `[UNRESOLVED]`, or `[SECURITY-INCIDENT]` followed by an incident
 summary, plus a separate `Action required:` line with a nonempty action:
 
 ```yaml
@@ -226,7 +226,7 @@ response_policy: urgent_only
 prompt: |
   Investigate the incident. If immediate manual intervention is still needed,
   respond in this format; otherwise record the outcome and respond [SILENT]:
-  [NEEDS-KIM] <current unresolved incident>
+  [NEEDS-APPROVAL] <current unresolved incident>
   Action required: <specific action the owner must take now>
 ```
 

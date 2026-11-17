@@ -13,7 +13,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
-URGENT = "[NEEDS-KIM] Server remains offline after automated recovery\nAction required: Open the provider console and check the boot failure.\nEvidence: Two independent HTTP probes time out."
+URGENT = "[NEEDS-APPROVAL] Server remains offline after automated recovery\nAction required: Open the provider console and check the boot failure.\nEvidence: Two independent HTTP probes time out."
 
 
 def _adapter():
@@ -44,17 +44,17 @@ def _subscriptions(tmp_path, routes):
     ("GATE-PASS — docs.dilantimedia.com resolved on its own. No action needed.", None, False),
     ("VERDICT: staticSites episode #16 gate PASSED — self-drained. [SILENT]\nGate evidence: zero stalls.", None, False),
     ("VERDICT: Contabo VPS2 incident fully closed — monitors green. [SILENT]\nReboot verified.", None, False),
-    ("Successful reboot. A future tuning decision needs Kim. No current outage.", None, False),
-    ("Status: watcher pending\n[NEEDS-KIM] this tag is buried\nAction required: Check later.", None, False),
+    ("Successful reboot. A future tuning decision needs owner approval. No current outage.", None, False),
+    ("Status: watcher pending\n[NEEDS-APPROVAL] this tag is buried\nAction required: Check later.", None, False),
     (URGENT + "\nEvidence note: [SILENT] because this recovered.", None, False),
     (URGENT, {"_interim_send": True}, False),
-    ("[NEEDS-KIM] Offline\nAction required: none", None, False),
-    ("[NEEDS-KIM] Offline\nAction required: No action needed.", None, False),
-    ("[NEEDS-KIM]\nAction required: Inspect console.", None, False),
-    ("[NEEDS-KIM] Offline\nEvidence: Unreachable", None, False),
+    ("[NEEDS-APPROVAL] Offline\nAction required: none", None, False),
+    ("[NEEDS-APPROVAL] Offline\nAction required: No action needed.", None, False),
+    ("[NEEDS-APPROVAL]\nAction required: Inspect console.", None, False),
+    ("[NEEDS-APPROVAL] Offline\nEvidence: Unreachable", None, False),
     (URGENT, None, True),
-    (URGENT.replace("[NEEDS-KIM]", "[UNRESOLVED]"), None, True),
-    (URGENT.replace("[NEEDS-KIM]", "[SECURITY-INCIDENT]"), None, True),
+    (URGENT.replace("[NEEDS-APPROVAL]", "[UNRESOLVED]"), None, True),
+    (URGENT.replace("[NEEDS-APPROVAL]", "[SECURITY-INCIDENT]"), None, True),
 ])
 def test_current_policy_controls_existing_session_egress(tmp_path, monkeypatch, text, metadata, allowed):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -83,7 +83,7 @@ def test_current_policy_controls_existing_session_egress(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize("content,direct,expected", [
-    ("Recovered, nothing for Kim to do.", False, 0),
+    ("Recovered, nothing for the owner to do.", False, 0),
     (URGENT, False, 1),
     ("MONEY SITE DOWN: verified live alert", True, 1),
 ])

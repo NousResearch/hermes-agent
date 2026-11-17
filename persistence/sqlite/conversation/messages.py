@@ -281,7 +281,7 @@ class SQLiteMessageRepository:
 
     # ── writes ──
 
-    def append(self, session_id: SessionId, message: NewMessage, *, compression_lock_holder: Optional[str] = None,
+    def append(self, session_id: SessionId, message: NewMessage, *,
                turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> MessageId:
         holder = self._store.holder()
         msg = _message_dict(message)
@@ -295,12 +295,12 @@ class SQLiteMessageRepository:
                 platform_message_id=message.platform_message_id, observed=message.observed,
                 effect_disposition=message.effect_disposition, _compressed_summary=message.compressed_summary,
                 timestamp=message.timestamp, api_content=message.api_content, display_kind=message.display_kind,
-                display_metadata=msg.get("display_metadata"), compression_lock_holder=compression_lock_holder,
+                display_metadata=msg.get("display_metadata"),
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds,
                 message_uid=message.message_uid))
 
     def append_batch(self, session_id: SessionId, messages: Sequence[NewMessage], *,
-                     compression_lock_holder: Optional[str] = None, turn_lease_holder: Optional[str] = None,
+                     turn_lease_holder: Optional[str] = None,
                      chunk_rows: Optional[int] = None, turn_lease_ttl_seconds: float = 300.0) -> BatchAppendResult:
         holder = self._store.holder()
         dicts = [_message_dict(m) for m in messages]
@@ -315,7 +315,7 @@ class SQLiteMessageRepository:
             with _refusals(holder, session_id):
                 for chunk in chunks:  # one write transaction each
                     inserted = _append_chunk(holder,
-                        session_id, chunk, compression_lock_holder=compression_lock_holder,
+                        session_id, chunk,
                         turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
                     committed.extend(_row_outcomes(chunk, inserted))
         except BaseException as exc:

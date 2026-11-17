@@ -25,7 +25,8 @@ def _stub(prefix_enabled):
                 "model_aliases": {"fast": {"model": "fast/model", "provider": "openrouter"}}},
         _confirm_expensive_model_switch=lambda result: True)
     for name in ("_alias_prefix_for", "_take_alias_prefix", "_handle_model_switch",
-                 "_confirm_and_apply_cli_model_switch", "_stage_and_swap_model", "_snapshot_model_runtime"):
+                 "_confirm_and_apply_cli_model_switch", "_stage_and_swap_model", "_snapshot_model_runtime",
+                 "_expand_paste_references"):
         setattr(stub, name, getattr(cli_mod.HermesCLI, name).__get__(stub))
     return stub
 
@@ -59,3 +60,13 @@ def test_other_plus_text_and_the_default_leave_the_message_alone(monkeypatch):
     assert disabled._take_alias_prefix("+fast hi there") == "+fast hi there"
     assert (enabled.model, disabled.model) == ("old/model", "old/model")
     assert enabled._pending_one_turn_model_restore is None
+
+
+def test_a_collapsed_paste_is_classified_by_what_was_pasted(monkeypatch, tmp_path):
+    _no_io(monkeypatch)
+    stub = _stub(prefix_enabled=True)
+    pasted = tmp_path / "paste.txt"
+    pasted.write_text("+fast summarize this long log", encoding="utf-8")
+
+    assert stub._take_alias_prefix(f"[Pasted text #1: 30 lines \u2192 {pasted}]") == "summarize this long log"
+    assert stub.model == "fast/model"

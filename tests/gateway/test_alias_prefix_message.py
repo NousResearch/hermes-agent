@@ -85,3 +85,21 @@ async def test_alias_prefix_is_off_by_default(tmp_path, monkeypatch):
     await runner._handle_message(MessageEvent(text="+fast hi there", source=SOURCE, message_id="m1"))
 
     assert turns == [("+fast hi there", "base-model")]
+
+
+@pytest.mark.asyncio
+async def test_a_cost_confirmed_alias_keeps_its_question(tmp_path, monkeypatch):
+    """The switch waits on a confirmation: nothing runs yet, and approving sends the question."""
+    from tools import slash_confirm
+
+    runner, turns = _runner(tmp_path, monkeypatch, prefix_enabled=True)
+    monkeypatch.setattr("hermes_cli.model_selection_guards.combined_selection_warning",
+                        lambda *a, **k: SimpleNamespace(title="Expensive", message="costs more"))
+
+    await runner._handle_message(MessageEvent(text="+fast hi there", source=SOURCE, message_id="m1"))
+    assert turns == []
+
+    await slash_confirm.get_pending(KEY)["handler"]("once")
+    await runner._handle_message(MessageEvent(text="and again", source=SOURCE, message_id="m2"))
+
+    assert turns == [("hi there", "fast-model"), ("and again", "base-model")]

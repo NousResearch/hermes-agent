@@ -1122,7 +1122,9 @@ class CLIModelSwitchMixin:
     def _alias_prefix_for(self, text):
         """The ``+<alias>`` prefix of a typed message (``display.model_alias_prefix``), else None."""
         from hermes_cli.model_alias_prefix import split_alias_prefix
-        return split_alias_prefix(text, lambda: self.config if isinstance(self.config, dict) else {})
+        # A long paste is collapsed to a placeholder: classify what the user actually sent.
+        return split_alias_prefix(self._expand_paste_references(text),
+                                  lambda: self.config if isinstance(self.config, dict) else {})
 
     def _take_alias_prefix(self, text: str):
         """``+<alias> rest``: run ``/model <alias> --once``, then return ``rest`` as this turn's prompt.

@@ -938,7 +938,7 @@ _COMMAND_GATE = _GateSpec(
     ),
     cli_timeout="BLOCKED: Command timed out without user response." + _STOP_COMMAND
                 + " Silence is not consent.{breaker}",
-    cli_denied="BLOCKED: User denied this command." + _STOP_COMMAND + "{breaker}",
+    cli_denied="BLOCKED: User denied this command.{reason_addendum}" + _STOP_COMMAND + "{breaker}",
     smart_log="Smart approval: auto-approved '{command}' ({description})",
 )
 _EXECUTE_CODE_GATE = _GateSpec(
@@ -956,7 +956,8 @@ _EXECUTE_CODE_GATE = _GateSpec(
                 + " Silence is not consent.{breaker}",
     cli_denied=(
         "BLOCKED: User denied execute_code script execution (matched "
-        "'{description}'). Do NOT retry — the user has explicitly rejected it.{breaker}"
+        "'{description}').{reason_addendum} Do NOT retry — the user has "
+        "explicitly rejected it.{breaker}"
     ),
     smart_log="Smart approval: auto-approved execute_code for session {session_key}",
 )
@@ -972,7 +973,8 @@ _ACTION_GATE = _GateSpec(
                 + " Silence is not consent.",
     cli_denied=(
         "BLOCKED: User denied this potentially dangerous action (matched "
-        "'{description}'). Do NOT retry — the user has explicitly rejected it."
+        "'{description}').{reason_addendum} Do NOT retry — the user has "
+        "explicitly rejected it."
     ),
     smart_log="",
 )
@@ -1045,6 +1047,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if "{breaker}" in template:
             breaker = _denial_breaker_addendum(session_key)
         deny_reason = fmt.pop("deny_reason", None)
+        # cli_denied templates carry the {reason_addendum} slot; default it so a
+        # deny without a reason (every pre-existing call shape) formats cleanly.
+        fmt.setdefault("reason_addendum", "")
+        fmt.setdefault("timeout_addendum", "")
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
         return _denied(template.format(description=description, breaker=breaker, **fmt),
                        pattern_key=pattern_key, description=description,
@@ -1164,8 +1170,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=None)
     if choice == "deny":
         # No _record_denial(): the breaker counts consecutive guardian LLM
-        # DENY verdicts, not deliberate human denials.
-        return deny(spec.cli_denied, "denied")
+        # DENY verdicts, not deliberate human denials. A ``Denied`` choice
+        # (deny-with-reason) relays the user's free text verbatim so the
+        # agent can adapt — the same contract as the gateway's /deny <reason>.
+        deny_reason = getattr(choice, "reason", None)
+        return deny(spec.cli_denied, "denied", reason="denied by user",
+                    reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
+                    deny_reason=deny_reason)
     return grant(choice)
 
 

@@ -56,6 +56,7 @@ _APPROVAL_CHOICE_KEYS = {
     "session": "cli.tui.approval_session",
     "always": "cli.tui.approval_always",
     "deny": "cli.tui.approval_deny",
+    "deny_reason": "cli.tui.approval_deny_reason",
     "view": "cli.tui.approval_view"}
 
 
@@ -163,6 +164,29 @@ class CLITuiMixin:
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
         title = t("cli.tui.approval_title")
+
+        if state.get("reason_entry"):
+            # Deny-with-reason mode: the composer (bottom) collects the free text;
+            # this panel explains what typing does.
+            cmd_wrapped = wrap(command, 60)
+            if len(cmd_wrapped) > 3:
+                cmd_wrapped = cmd_wrapped[:3] + ["…"]
+            rows = [t("cli.tui.approval_reason_prompt"),
+                    t("cli.tui.approval_reason_hint")]
+            box_width = _panel_box_width(title, cmd_wrapped + rows, min_width=56, max_width=86)
+            inner_text_width = max(8, box_width - 2)
+            panel = _Panel('class:approval-border', box_width)
+            panel.row('class:approval-title', title)
+            panel.blank()
+            for wrapped in cmd_wrapped:
+                for line in wrap(wrapped, inner_text_width):
+                    panel.row('class:approval-desc', line)
+            panel.blank()
+            for row in rows:
+                for wrapped in wrap(row, inner_text_width):
+                    panel.row('class:approval-choice', wrapped)
+            panel.blank()
+            return panel.close()
 
         preview_lines = wrap(description, 60)
         preview_lines.extend(wrap(command, 60))
@@ -1371,6 +1395,11 @@ class CLITuiMixin:
             st["selected"] = max(0, st["selected"] - 1)
             event.app.invalidate()
 
+    def _tui_approval_reason_escape(self, event):
+        """Esc in deny-with-reason mode: back to the choice list (draft restored)."""
+        self._cancel_approval_reason_entry()
+        event.app.invalidate()
+
     def _tui_wake_startup(self):
         from cli import logger
         try:
@@ -1563,7 +1592,12 @@ class CLITuiMixin:
             event.app.invalidate()
             return True
         if self._approval_state:
-            self._handle_approval_selection()
+            if self._approval_state.get("reason_entry"):
+                value = buf.text
+                buf.reset()
+                self._submit_approval_reason(value)
+            else:
+                self._handle_approval_selection()
             event.app.invalidate()
             return True
         if self._slash_confirm_state:
@@ -1994,11 +2028,17 @@ class CLITuiMixin:
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=_clarify_nav)(self._tui_make_clarify_number_handler(_idx))
 
-        _approval = Condition(lambda: bool(self._approval_state))
+        # Reason-entry mode: digits/arrows must fall through to the composer (typing
+        # the reason), so the choice-list bindings filter on the choice mode only.
+        _approval_choices = Condition(
+            lambda: bool(self._approval_state) and not self._approval_state.get("reason_entry"))
+        _approval_reason = Condition(
+            lambda: bool(self._approval_state) and bool(self._approval_state.get("reason_entry")))
         _slash_confirm = Condition(lambda: bool(self._slash_confirm_state))
         _picker = Condition(lambda: bool(self._model_picker_state))
-        kb.add('up', filter=_approval)(self._tui_approval_up)
-        kb.add('down', filter=_approval)(self._tui_approval_down)
+        kb.add('up', filter=_approval_choices)(self._tui_approval_up)
+        kb.add('down', filter=_approval_choices)(self._tui_approval_down)
+        kb.add('escape', filter=_approval_reason, eager=True)(self._tui_approval_reason_escape)
         kb.add('up', filter=_slash_confirm)(self._tui_slash_confirm_up)
         kb.add('down', filter=_slash_confirm)(self._tui_slash_confirm_down)
         kb.add('up', filter=_picker)(self._tui_model_picker_up)
@@ -2031,7 +2071,7 @@ class CLITuiMixin:
 
         for _num in range(10):
             _idx = 9 if _num == 0 else _num - 1
-            kb.add(str(_num), filter=_approval)(self._tui_make_approval_number_handler(_idx))
+            kb.add(str(_num), filter=_approval_choices)(self._tui_make_approval_number_handler(_idx))
         for _num in range(10):
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=_slash_confirm)(self._tui_make_slash_confirm_number_handler(_idx))

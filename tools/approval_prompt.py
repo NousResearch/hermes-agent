@@ -34,11 +34,15 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     allow_permanent=True, allow_session=True, smart_denied=False) -> str``; legacy
     signatures keep working while both keywords hold their defaults.
 
-    Returns 'once', 'session', 'always', 'deny', 'timeout', or 'cancelled'. 'timeout'
-    means no user response — still blocked (fail-closed), but callers report "no
-    response" rather than an explicit denial. 'cancelled' is an :class:`Unanswered`
-    sentinel: the prompt never reached a human (callback raised, no callback under
-    prompt_toolkit, interrupted read) and ``.cause`` says why (#22992).
+    Returns 'once', 'session', 'always', 'deny', 'timeout', or 'cancelled'.
+    'timeout' means no user response — still blocked (fail-closed), but
+    callers report "no response" rather than an explicit denial. 'cancelled'
+    is an :class:`Unanswered` sentinel: the prompt never reached a human
+    (callback raised, no callback under prompt_toolkit, interrupted read)
+    and ``.cause`` says why (#22992). A deny chosen WITH a reason returns a
+    :class:`Denied` instance — equal to ``"deny"`` for every consumer,
+    carrying ``.reason`` for the approval gate to relay to the agent (CLI
+    parity with the gateway's ``/deny <reason>``).
 
     See #81887.
     """
@@ -66,6 +70,20 @@ class Unanswered(str):
         return self
 
 
+class Denied(str):
+    """Choice ``"deny"`` carrying the user's free-text reason (deny-with-reason).
+    Compares equal to plain ``"deny"`` — choice checks, outcome labels and
+    persistence summaries behave identically; only the approval gate reads
+    ``.reason`` to relay it to the agent (CLI parity with the gateway's
+    ``/deny <reason>``, whose free text is likewise relayed verbatim)."""
+    __slots__ = ("reason",)
+
+    def __new__(cls, reason: str):
+        self = super().__new__(cls, "deny")
+        self.reason = reason
+        return self
+
+
 _CLI_CHOICE_ALIASES = {
     "o": "once", "once": "once",
     "s": "session", "session": "session",
@@ -80,13 +98,15 @@ _CLI_CHOICE_I18N = {
 }
 
 
-def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
-    """Read one answer on a daemon thread; None when the user never answered."""
+def _read_choice(prompt: str, timeout_seconds: int, lower: bool = True) -> str | None:
+    """Read one answer on a daemon thread; None when the user never answered.
+    ``lower=False`` preserves case (the deny reason is relayed verbatim)."""
     result = {"choice": ""}
 
     def get_input():
         try:
-            result["choice"] = input(prompt).strip().lower()
+            answer = input(prompt).strip()
+            result["choice"] = answer.lower() if lower else answer
         except (EOFError, OSError):
             result["choice"] = ""
 
@@ -163,7 +183,16 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         if choice is None:
             print("\n" + t("approval.timeout", **_ctx.approval_timeout_notice_kwargs()))
             return "timeout"  # distinct from deny: the user never answered
-        if once_only:
+        if choice in [c.strip() for c in t("approval.reason_inputs").split(",") if c.strip()]:
+            # Deny with a reason: the free text is relayed verbatim so the agent can
+            # adapt rather than only hearing "denied" (parity with /deny <reason>).
+            reason = (_read_choice(t("approval.reason_prompt"), timeout_seconds,
+                                   lower=False) or "").strip()
+            if reason:
+                print(t("approval.denied_with_reason", reason=reason))
+                return Denied(reason)
+            decision = "deny"  # empty reason (or no second answer) = plain deny
+        elif once_only:
             decision = {**dict.fromkeys(t("approval.smart_deny_once_inputs").split(","), "once"),
                         **dict.fromkeys(t("approval.smart_deny_deny_inputs").split(","), "deny"),
                         }.get(choice, "deny")

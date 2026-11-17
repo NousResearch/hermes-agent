@@ -2,6 +2,7 @@
 
 import time
 import pytest
+from datetime import datetime, timezone, UTC
 
 from hermes_state import SessionDB
 from agent.insights import (
@@ -13,6 +14,7 @@ from agent.usage_pricing import (
     format_duration_compact as _format_duration,
     has_known_pricing as _has_known_pricing,
 )
+from agent import usage_pricing
 
 @pytest.fixture()
 def db(tmp_path):
@@ -150,6 +152,44 @@ class TestHasKnownPricing:
 
 class TestEstimateCost:
 
+    def test_session_dict_prices_by_started_at_not_report_time(self, monkeypatch):
+        """Historical re-estimation prices by the session's started_at, not the
+        report time: a pre-switchover session is never scaled by peak hours,
+        even when the report runs in one after the switchover."""
+        session = {
+            "model": "deepseek-v4-flash",
+            "input_tokens": 1_000_000,
+            "output_tokens": 1_000_000,
+            "billing_provider": "deepseek",
+            "started_at": datetime(2026, 8, 10, 2, 0, tzinfo=UTC).timestamp(),
+        }
+        monkeypatch.setattr(
+            usage_pricing,
+            "_UTC_NOW",
+            lambda: datetime(2026, 9, 14, 2, 0, tzinfo=UTC),
+        )
+        cost, status = _estimate_cost(session)
+        assert status == "estimated"
+        # 1M in + 1M out at the live snapshot's off-peak rates ($0.15 + $0.60):
+        # no peak tier applied to a pre-switchover instant.
+        assert cost == pytest.approx(0.75, abs=0.0001)
+        # Post-switchover session in a peak hour → 2x off-peak.
+        session["started_at"] = datetime(
+            2026, 9, 14, 2, 0, tzinfo=UTC
+        ).timestamp()
+        cost, status = _estimate_cost(session)
+        assert cost == pytest.approx(1.50, abs=0.0001)
+        # Session without started_at falls back to report time (mocked to a
+        # peak hour here, so 2x applies).
+        del session["started_at"]
+        cost, status = _estimate_cost(session)
+        assert cost == pytest.approx(1.50, abs=0.0001)
+
+    def test_zero_tokens(self):
+        cost, status = _estimate_cost("gpt-4o", 0, 0, provider="openai")
+        assert status == "estimated"
+        assert cost == 0.0
+
     def test_cache_aware_usage(self):
         cost, status = _estimate_cost(
             "anthropic/claude-sonnet-4-20250514",
@@ -162,6 +202,96 @@ class TestEstimateCost:
         assert status == "estimated"
         expected = (1000 * 3.0 + 500 * 15.0 + 2000 * 0.30 + 400 * 3.75) / 1_000_000
         assert cost == pytest.approx(expected, abs=0.0001)
+
+
+class TestDeepSeekPeakBillingTimeInvariance:
+    """Historical DeepSeek sessions must report the same cost regardless of
+    when the report is generated — the peak/off-peak rate must be selected
+    by the session's started_at, not _UTC_NOW at report time (#85388 review)."""
+
+    @staticmethod
+    def _seed_deepseek_session(db, started_at):
+        """Seed a session and return its ``started_at`` so callers can derive a
+        query window that contains it (the timestamp is a fixed instant, and a
+        hardcoded ``days=30`` window would drop it as wall-clock time advances)."""
+        db.create_session(
+            session_id="ds1", source="cli",
+            model="deepseek-v4-flash", user_id="user1",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 'ds1'", (started_at,)
+        )
+        db._conn.execute(
+            "UPDATE sessions SET billing_provider = 'deepseek' WHERE id = 'ds1'"
+        )
+        db.end_session("ds1", end_reason="user_exit")
+        db.update_token_counts(
+            "ds1", input_tokens=1_000_000, output_tokens=1_000_000
+        )
+        db._conn.commit()
+        return started_at
+
+    def test_overview_cost_invariant_to_report_time(self, db, monkeypatch):
+        """A pre-switchover session bills at 1x — no peak tier existed then — and
+        at the same amount whether the report runs in a post-switchover peak or
+        off-peak hour.  _compute_overview is called with models=None so the
+        per-session estimation loop is the path under test (generate() overrides
+        the overview total with the model-breakdown sum when models are given)."""
+        started_at = self._seed_deepseek_session(
+            db, datetime(2026, 8, 10, 2, 0, tzinfo=UTC).timestamp()
+        )
+        engine = InsightsEngine(db)
+        # Window derived from the seeded instant, not from "now": the fixture
+        # timestamp is fixed and 30 days would eventually exclude it.
+        cutoff = started_at - 86400
+        sessions = engine._get_sessions(cutoff)
+        assert sessions, "expected the seeded deepseek session"
+        message_stats = engine._get_message_stats(cutoff)
+        costs = []
+        for report_hour in (2, 12):  # peak and off-peak report times
+            monkeypatch.setattr(
+                usage_pricing,
+                "_UTC_NOW",
+                lambda: datetime(
+                    2026, 8, 17, report_hour, 0, tzinfo=UTC
+                ),
+            )
+            overview = engine._compute_overview(sessions, message_stats, None)
+            costs.append(overview["estimated_cost"])
+        assert costs[0] == pytest.approx(costs[1], abs=0.0001)
+        # 1M in + 1M out at the live snapshot's off-peak rates ($0.15 + $0.60).
+        assert costs[0] == pytest.approx(0.75, abs=0.0001)
+
+    def test_model_breakdown_cost_invariant_to_report_time(self, db, monkeypatch):
+        """session_model_usage rows (model breakdown) also price by the
+        session's started_at — exercises the s.started_at SELECT addition.
+        update_token_counts already writes the usage row, so no explicit
+        insert is needed."""
+        started_at = self._seed_deepseek_session(
+            db, datetime(2026, 8, 10, 2, 0, tzinfo=UTC).timestamp()
+        )
+        rows = db._conn.execute(
+            "SELECT session_id FROM session_model_usage WHERE session_id = 'ds1'"
+        ).fetchall()
+        assert rows, "expected update_token_counts to write a usage row"
+        # Span from the seeded instant to now so the fixed timestamp stays
+        # inside generate()'s window however much wall-clock time passes.
+        days = int((time.time() - started_at) / 86400) + 2
+        costs = []
+        for report_hour in (2, 12):
+            monkeypatch.setattr(
+                usage_pricing,
+                "_UTC_NOW",
+                lambda: datetime(
+                    2026, 8, 17, report_hour, 0, tzinfo=UTC
+                ),
+            )
+            report = InsightsEngine(db).generate(days=days)
+            costs.append(sum(m["cost"] for m in report["models"]))
+        assert costs[0] == pytest.approx(costs[1], abs=0.0001)
+        # 1M in + 1M out at the live snapshot's off-peak rates ($0.15 + $0.60).
+        assert costs[0] == pytest.approx(0.75, abs=0.0001)
+
 
 # =========================================================================
 # Format helpers

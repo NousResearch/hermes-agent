@@ -1,12 +1,12 @@
 name: hermes-unlimited
 repo: https://github.com/rrglab/hermes-unlimited
-sha: c64702e9a219a12928d9375e400fc616f3ac4cf6
+sha: 183cc5f6eb441bee0815cceb6250310025b2ea6b
 description: "Create and operate AI-native provider organizations with scoped services and Hermes tasks. Disclosure — Creates and reads Hermes Kanban tasks (run by your Hermes workers as the current profile) through the local `hermes kanban` CLI on a per-tenant board, and stores company, service and request records in a local SQLite file you configure; sends your JustYou session token only to a loopback JustYou validator you configure."
 maintainer: rrglab
 tier: community
 category: platform
 requires_hermes: ">=0.21.5"
-version: "0.2.0-beta.6"
+version: "0.2.0-beta.7"
 title: "Hermes Unlimited"
 readme: true
 known_issues:

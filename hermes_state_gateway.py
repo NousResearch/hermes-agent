@@ -929,6 +929,35 @@ class SessionGatewayMixin:
         return counts
 
     @staticmethod
+    def session_resume_model(session_meta: Optional[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+        """``(model, route_row)`` a resumed session runs: the model plus the row to read its route from
+        (``session_gateway_runtime``), so the pair always comes from one record.
+
+        The ``model`` column is the billing record: the first accounted call rewrites it to whatever
+        served it, a turn-scoped fallback included, and leaves ``model_config`` alone. So the pick in
+        ``model_config.model`` wins, except where the column was written together with its route: a
+        ``gateway_runtime`` with a provider (gateway route sync, CLI/gateway ``/model``), or a confirmed
+        Browser/API lock still naming the column. ``billing_provider`` served the column model, so it
+        never fills the provider of a different pick."""
+        row = session_meta or {}
+        raw = row.get("model_config")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = {}
+        config = raw if isinstance(raw, dict) else {}
+        column = str(row.get("model") or "").strip()
+        picked = str(config.get("model") or "").strip()
+        runtime, lock = config.get("gateway_runtime"), config.get("browser_model_lock")
+        locked = isinstance(lock, dict) and bool(lock.get("confirmed")) and str(lock.get("model") or "").strip() == column
+        if (isinstance(runtime, dict) and runtime.get("provider")) or locked:
+            model = column or picked
+        else:
+            model = picked or column
+        return model, (row if model == column else {**row, "billing_provider": None})
+
+    @staticmethod
     def session_gateway_runtime(session_meta: Optional[dict[str, Any]]) -> dict[str, Any]:
         """Read the persisted runtime route off a session row dict (``model_config`` as
         JSON string or parsed dict). Precedence: nested ``gateway_runtime`` (gateway sync /

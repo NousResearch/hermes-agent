@@ -74,11 +74,13 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
     shape: appearance.shape,
     color: appearance.color,
     image: appearance.image ?? null,
-    title: openingTitle
+    title: openingTitle,
+    circle: meta?.circle || ''
   }
 
   const [opened, setOpened] = useState(opening)
   const [title, setTitle] = useState(openingTitle)
+  const [circle, setCircle] = useState(opening.circle)
   const [description, setDescription] = useState(bot?.description || '')
   const [busy, setBusy] = useState(false)
   const [advanced, setAdvanced] = useState(false)
@@ -96,6 +98,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
       setColor(appearance.color)
       setImage(appearance.image ?? null)
       setTitle(openingTitle)
+      setCircle(opening.circle)
       setOpened(opening)
       setDescription(bot.description || '')
       setBusy(false)
@@ -116,7 +119,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
     setBusy(true)
     let advancedFailed = false
 
-    const look = editedLook(opened, { shape, color, image, title })
+    const look = editedLook(opened, { shape, color, image, title, circle })
     const persistence = look ? await saveBotMeta(bot, look) : null
 
     // Only an explicit remote failure is an error — 'unsupported' is the
@@ -225,6 +228,15 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
               onChange={event => setTitle(event.target.value)}
               placeholder={displayName(bot, null)}
               value={title}
+            />
+          )}
+          {labeled(
+            b.roster.circle,
+            <Input
+              maxLength={64}
+              onChange={event => setCircle(event.target.value)}
+              placeholder={b.roster.circleHint}
+              value={circle}
             />
           )}
           {labeled(

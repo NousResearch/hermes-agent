@@ -135,7 +135,7 @@ def _parse_expires(value: Any) -> Optional[float]:
 def _parse_scopes(value: Any) -> frozenset[Scope]:
     if not isinstance(value, list) or not value:
         raise ValueError("scopes must be a non-empty list")
-    unknown = [str(item) for item in value if item not in _SCOPE_VALUES]
+    unknown = [str(item) for item in value if not isinstance(item, str) or item not in _SCOPE_VALUES]
     if unknown:
         raise ValueError(f"unknown scope(s) {unknown}; valid: {sorted(_SCOPE_VALUES)}")
     return frozenset(Scope(item) for item in value)
@@ -208,10 +208,17 @@ def _route_path(request: web.Request) -> str:
     return path.removeprefix(_PROFILE_MIRROR_PREFIX)
 
 
+def _run_session_id(adapter: Any, request: web.Request) -> Optional[str]:
+    """The session a run belongs to: live status first, else the caller-scoped saved record the
+    route handler would hydrate next (so an allowed run stays reachable after a restart)."""
+    run_id = request.match_info.get("run_id", "")
+    status = adapter._run_statuses.get(run_id) or adapter._durable_run_status(request, run_id) or {}
+    return status.get("session_id")
+
+
 _REACH_TARGET = {
     Reach.SESSION_PATH: lambda adapter, request: request.match_info.get("session_id"),
-    Reach.RUN_PATH: lambda adapter, request: (
-        adapter._run_statuses.get(request.match_info.get("run_id", "")) or {}).get("session_id"),
+    Reach.RUN_PATH: lambda adapter, request: _run_session_id(adapter, request),
     Reach.UNBOUNDED: lambda adapter, request: None}
 
 

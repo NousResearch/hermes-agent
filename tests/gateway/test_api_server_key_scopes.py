@@ -21,7 +21,10 @@ def _adapter(monkeypatch) -> APIServerAdapter:
     return APIServerAdapter(PlatformConfig(enabled=True, extra={"key": FULL, "keys": [
         {"name": "reader", "key_env": "API_SERVER_KEY_READER", "scopes": ["sessions:read"]},
         {"name": "old", "key_env": "API_SERVER_KEY_OLD", "scopes": ["sessions:read", "runs"],
-         "expires": past}]}))
+         "expires": past},
+        # Malformed entries are skipped with a warning; they must not stop the listener.
+        {"name": "bad", "key_env": "API_SERVER_KEY_READER", "scopes": [{"sessions": "read"}]},
+        {"name": "literal", "key": "x" * 40, "scopes": ["runs"]}]}))
 
 
 def _app(adapter: APIServerAdapter) -> web.Application:

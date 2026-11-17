@@ -814,10 +814,12 @@ platforms:
         expires: "2027-01-31T00:00:00Z"
 ```
 
+Generate a distinct secret per key and append it to `.env` (the file is not shell-expanded, so
+never paste a literal `$(...)` into it):
+
 ```bash
-# ~/.hermes/.env
-API_SERVER_KEY_DASHBOARD=$(openssl rand -hex 32)
-API_SERVER_KEY_TICKET_BOT=$(openssl rand -hex 32)
+echo "API_SERVER_KEY_DASHBOARD=$(openssl rand -hex 32)" >> ~/.hermes/.env
+echo "API_SERVER_KEY_TICKET_BOT=$(openssl rand -hex 32)" >> ~/.hermes/.env
 ```
 
 | Scope | Routes |

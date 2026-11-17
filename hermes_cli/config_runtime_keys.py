@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 CORE_RUNTIME_KEYS: dict[str, str] = {
     "computer_use.backend": "plugins/computer_use/__init__.py configured_backend_name() (unset = cua)",
     "dashboard.kanban": "plugins/kanban/dashboard/plugin_api.py (bundled dashboard tab preferences)",
+    # The state.db connection loader reads these besides the two DEFAULT_CONFIG seeds
+    # (wal_autocheckpoint, journal_size_limit); unset = SQLite's own default for each.
+    "database.synchronous": "hermes_state_wal.py apply_database_pragmas() (OFF, NORMAL, FULL, EXTRA or 0-3)",
+    "database.cache_size": "hermes_state_wal.py apply_database_pragmas() (negative = KiB, positive = pages)",
+    "database.mmap_size": "hermes_state_wal.py apply_database_pragmas() (bytes, 0 = off)",
+    "database.temp_store": "hermes_state_wal.py apply_database_pragmas() (0-3)",
 }
 
 

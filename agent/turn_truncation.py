@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_repetition_dominated
 from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
@@ -130,6 +130,18 @@ _REPETITION_STREAM_CUT = repetition_copy(
     "the stream mid-loop",
     "so the stream was stopped instead of running on. The partial response was discarded.",
     " and the stream was cut mid-loop; discarding the",
+)
+# What a dispatcher-owned kanban worker is told after its streamed reply was cut mid-loop.
+# The abort copy below tells a READER to resend the message; a one-shot worker has nobody to
+# do that, so it exits rc=1 and the board books a crash over a transcript that is intact. The
+# discarded loop is named once, in the interrupt placeholder's own wording, because replaying
+# the looped bytes re-seeds the loop (#112764). One resume per turn.
+_REPETITION_RESUME_NOTE = (
+    "[System: your previous response was cut by the repetition guard. It degenerated into a "
+    "repeating loop, so the stream was stopped and the whole partial response was discarded. "
+    f"{REPETITION_LOOP_INTERRUPTED} Nothing in it ran. Continue this task from the transcript "
+    "above and do not reproduce that loop: take a different step, or hand the card off with a "
+    "terminal board tool if the work is done.]"
 )
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
@@ -252,6 +264,42 @@ class _Trunc(TruncationVerdict):
     @property
     def is_stub(self) -> bool:
         return getattr(self.response, "id", "") == PARTIAL_STREAM_STUB_ID
+
+
+def _repetition_cut_recovery(agent: Any, st: _Trunc) -> str:
+    """What a stream that cut a live repetition loop does next: ``"resume"``, ``"model_fault"``
+    or ``"abort"``.
+
+    ``"resume"`` is a dispatcher-owned kanban worker's first cut this turn: the partial is already
+    discarded, the transcript is intact, and the abort copy ("resend your message") is the one
+    thing a one-shot worker cannot do. The discarded loop becomes one short user note after the
+    hidden interrupt placeholder (never the looped bytes themselves), so the rebuilt next call
+    carries every earlier message and the model is told once that the reply degenerated.
+    ``"model_fault"`` is that same worker cutting again on the same transcript: the model's own
+    fault, booked so the dispatcher parks the card after one attempt instead of charging the card
+    for it. Everything else - an interactive turn, a delegated child, a cron run inside the worker
+    - keeps the abort it had.
+    """
+    from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
+    from agent.delegation_context import owned_kanban_task
+
+    if not owned_kanban_task():
+        return "abort"
+    if getattr(agent, "_repetition_resumes", 0) >= 1:
+        return "model_fault"
+    messages = st.messages
+    # The cut response never entered the transcript, so the tail is normally user or tool: an
+    # assistant placeholder keeps strict alternation and hides the gap from the reader.
+    if not (messages and messages[-1].get("role") == "assistant"):
+        append_message(messages, hidden_interrupt_placeholder_row())
+    append_message(messages, {"role": "user", "content": _REPETITION_RESUME_NOTE})
+    agent._repetition_resumes = getattr(agent, "_repetition_resumes", 0) + 1
+    agent._session_messages = messages
+    agent._vprint(
+        f"{agent.log_prefix}Kanban worker: resuming the same session after the cut loop.",
+        force=True, diagnostic=True,
+    )
+    return "resume"
 
 
 def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tuple]:
@@ -478,7 +526,17 @@ def recover_from_truncation(
         # whatever the partial or its tool calls look like.
         line, user_response, error = _REPETITION_STREAM_CUT
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        return st.end_turn(user_response, error)
+        recovery = _repetition_cut_recovery(agent, st)
+        if recovery == "resume":
+            # The note joined ``messages``: leave the retry loop so the outer loop rebuilds the
+            # request from the whole transcript (the same refunding restart a mid-turn
+            # correction takes), rather than re-issuing the payload this attempt assembled.
+            _retry.restart_with_rebuilt_messages = True
+            return st.done("break")
+        # A worker past its one resume books the model's own fault, which the dispatcher parks
+        # after one attempt; everyone else keeps the truncation abort they always had.
+        failure = ("model_repetition", False) if recovery == "model_fault" else ("truncated", True)
+        return st.end_turn(user_response, error, failure=failure)
     st.window_filled = _prompt_filled_window(agent, response)
     if st.is_stub and getattr(response, "_clean_eof", False):
         _banner = ("Response truncated — server ended the stream without ever sending finish_reason "

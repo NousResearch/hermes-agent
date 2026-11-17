@@ -467,7 +467,11 @@ def execute(frame, channel):
                 from agent.interrupt_compat import request_hard_interrupt
                 request_hard_interrupt(agent)
             channel.send('ready', pid=os.getpid())
-            history = store.get_messages_as_conversation(scope['session_id'])
+            # Row ids are the history's provenance: in-place compression names the rows it held by
+            # id (agent/conversation_compression_archive.py), and a dict without one travels to the
+            # owner whole, inside ONE compression.archive journal entry. A long or resumed attempt
+            # holds enough such rows for that entry to outgrow the journal's byte cap (outbox_full).
+            history = store.get_messages_as_conversation(scope['session_id'], include_row_ids=True)
             from gateway.session_kanban import run_worker_turns
             if 'attachments_v1' in frame:
                 from gateway.session_ingress_media import restore_attachments

@@ -57,7 +57,7 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
 
     class Store:
         def __init__(self, *args): pass
-        def get_messages_as_conversation(self, sid): return []
+        def get_messages_as_conversation(self, sid, **_kwargs): return []
         def flush_token_counts(self): pass
         def finish(self): pass
         def close(self): pass

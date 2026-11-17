@@ -490,7 +490,7 @@ def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
             def __init__(self):
                 self._session_db = self
 
-            def get_messages_as_conversation(self, _sid):
+            def get_messages_as_conversation(self, _sid, **_kwargs):
                 return [{"role": "user", "content": "from-store"}]
 
             def run_conversation(self, message, conversation_history=None, **_kwargs):

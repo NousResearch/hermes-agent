@@ -18,7 +18,7 @@ class _Agent:
         self.results, self.calls, self.authors = list(results), [], []
         self._session_db = self
 
-    def get_messages_as_conversation(self, _sid):
+    def get_messages_as_conversation(self, _sid, **_kwargs):
         return [{"role": "user", "content": "from-store"}]
 
     def run_conversation(self, message, conversation_history=None, turn_author=None):

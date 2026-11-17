@@ -6,7 +6,10 @@ from unittest.mock import Mock
 import pytest
 
 from agent.notification_presentation import notification_turn
+from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
 from tui_gateway import server
+
+NOTICE = {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND}  # every kanban wake is a self-injected turn
 
 
 @pytest.mark.parametrize("muted", [False, True])
@@ -44,13 +47,13 @@ def test_tui_kanban_splits_diagnostics_from_results_before_wake(tmp_path, monkey
     server._notif_poll_kanban("session", session)
     if not suppress:
         assert submitted[0][0][3] == "worker crash\nrequested result"
-        assert submitted[0][1] == {}
+        assert submitted[0][1] == NOTICE
         assert session["_kanban_pending"] == []
         return
     assert submitted[0][0][3] == "worker crash"
-    assert submitted[0][1]["display_metadata"]["notification_category"] == "diagnostic"
+    assert submitted[0][1] == {**NOTICE, "display_metadata": {"notification_category": "diagnostic"}}
     assert session["_kanban_pending"] == ["requested result"]
     session["running"] = False
     server._notif_poll_kanban("session", session)
     assert submitted[1][0][3] == "requested result"
-    assert submitted[1][1] == {}
+    assert submitted[1][1] == NOTICE

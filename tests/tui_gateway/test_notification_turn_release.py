@@ -103,6 +103,26 @@ def test_a_loop_wakeup_whose_send_cannot_start_hands_the_turn_back(monkeypatch):
     assert ticks == ["completed"]
 
 
+def test_a_loop_wakeup_send_is_marked_as_an_internal_notification(monkeypatch):
+    """A slash /loop tick that resolves to a prompt is the session's schedule speaking, not the
+    user typing now: its row is marked like every other turn this poller injects, as the
+    gateway's own loop wakeup (an internal event) already is."""
+    from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+
+    monkeypatch.setitem(server._methods, "command.dispatch",
+                        lambda rid, params: {"result": {"type": "send", "message": "run the skill"}})
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    submitted: list = []
+    monkeypatch.setattr(server, "_run_prompt_submit",
+                        lambda rid, sid, session, text, **kw: submitted.append((text, kw)) or True)
+    mgr = SimpleNamespace(abandon_tick=lambda: None, complete_tick=lambda text: {})
+    session = _claimed_session()
+
+    server._notif_slash_loop_tick("rid", "sid", session, mgr, "/skill go")
+
+    assert submitted == [("run the skill", {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND})]
+
+
 def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):
     """The poller is the session's only path to notifications, /loop, /heartbeat and its bot
     mailbox; an exception out of one event's dispatch used to end the thread for good."""

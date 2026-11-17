@@ -58,8 +58,13 @@ def build_kanban_policy(connection, params, config):
     if policy.model is None:
         from gateway.run import _resolve_gateway_model
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+    # The dispatcher resolves machine-owned board paths pin-first (that is where it made the
+    # card's scratch workspace); the worker must be told the same root or artifact staging
+    # reads its scratch directory as unmanaged.
+    with kb.pin_first_board_resolution():
+        workspaces_root = str(kb.workspaces_root(board=board).resolve())
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
-        profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
+        profile=task.assignee, workspaces_root=workspaces_root,
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
         goal_text='\n\n'.join(p for p in (task.title, task.body) if p), context=context,
         max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True)
@@ -73,34 +78,42 @@ def build_kanban_policy(connection, params, config):
 async def run_task(connection, params):
     if not connection.native_owner or 'session:create' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
+    from functools import partial
     from gateway.run import _load_gateway_config
-    from gateway.session_local import create_local_session
+    from gateway.session_local import stage_local_session
     from gateway.session_contract import Submission
-    from gateway.session_local_recovery import local_identity
-    from hermes_state_local import local_receipt
+    from gateway.session_local_recovery import local_identity, restore_local_session
+    from gateway.session_runtime_workers import tracked_write
+    from hermes_state_local import commit_local_session, local_receipt
     from gateway.session_policy import restore_policy
     authority = connection.authority
-    # Resolved off-loop up front: no await separates the saved-claim check from session
-    # creation. The Kanban claim check and its marker share one off-loop transaction; a
-    # concurrent retry of the same attempt meets that marker (same session) or a stale claim.
     owner_db = str(await asyncio.to_thread(Path(authority.db.db_path).resolve))
     # The dispatcher attempt is the durable request identity, including after the
     # task closes. Retry checks the saved claim, never reinterprets updated cards.
     request_id = 'kanban:' + json.dumps([params.get('board'), params.get('task_id'), params.get('run_id')], separators=(',', ':'))
     sid = local_identity(authority.profile_id, connection.actor.subject, request_id)
-    saved = local_receipt(authority.db, sid) if authority.db.get_session(sid) is not None else None
+    # The store's reads and the creation commit run off the event loop, as the create RPC's do: a
+    # read can fall back to the writer connection, and the writer lock is held across a commit, so
+    # one slow holder elsewhere must delay this admission, not every session on the loop. A
+    # concurrent retry of the same attempt converges: the commit returns the saved receipt of an
+    # exact retry, then the Kanban claim marker below names the same session (or a stale claim).
+    saved = await asyncio.to_thread(
+        lambda: local_receipt(authority.db, sid) if authority.db.get_session(sid) is not None else None)
     if saved:
         policy = restore_policy(saved['policy'])
         context = json.loads(policy.kanban_json or '{}')
         if (not connection.native_owner or set(params) not in ({'board', 'task_id', 'run_id', 'claim_lock'}, {'board', 'task_id', 'run_id', 'claim_lock', 'db'})
                 or any(params[k] != context.get(k) for k in params)):
             raise RuntimeStoreError('permission_denied')
-        from gateway.session_local_recovery import restore_local_session
         ref = restore_local_session(authority, sid)
     else:
-        policy, private = build_kanban_policy(connection, params, _load_gateway_config())
-        ref = create_local_session(authority, connection.actor, {'request_id': request_id},
-                                   trusted_policy=policy, trusted_secrets=private)
+        policy, private = await asyncio.to_thread(build_kanban_policy, connection, params, _load_gateway_config())
+        ref = stage_local_session(authority, connection.actor, {'request_id': request_id},
+                                  trusted_policy=policy, trusted_secrets=private)
+        if isinstance(ref, dict):
+            await tracked_write(authority, partial(
+                commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
+            ref = restore_local_session(authority, ref['session_id'])
     from hermes_cli.kanban_db_connect import connect_closing
     from hermes_cli import kanban_db as kb
     import os
@@ -128,7 +141,6 @@ async def run_task(connection, params):
                     {'db': owner_db, 'session_id': ref.session_id,
                      'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
                     run_id=task.current_run_id)
-    from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
     # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
@@ -397,7 +409,7 @@ def _run_task_turns(agent, frame, history, context):
         nonlocal result
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
-                                        agent._session_db.get_messages_as_conversation(agent.session_id),
+                                        agent._session_db.get_messages_as_conversation(agent.session_id, include_row_ids=True),
                                         turn_author=KANBAN_TURN_AUTHOR)
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
@@ -420,7 +432,10 @@ def _run_task_turns(agent, frame, history, context):
             kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
-        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
+        # With row ids, as the first turn loads it (agent/managed_worker.py): a held row compaction
+        # cannot name by id is sent whole in the archive, and a long session's archive outgrows the journal.
+        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(
+            agent.session_id, include_row_ids=True),
                                         turn_author=KANBAN_TURN_AUTHOR)
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,

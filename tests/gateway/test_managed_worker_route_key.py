@@ -43,7 +43,7 @@ def _execute(frame, monkeypatch, base=object, built=None, result=None, sent=None
 
     class Store:
         def __init__(self, *args): pass
-        def get_messages_as_conversation(self, sid): return []
+        def get_messages_as_conversation(self, sid, **_kwargs): return []
         def flush_token_counts(self): pass
         def finish(self): pass
         def close(self): pass

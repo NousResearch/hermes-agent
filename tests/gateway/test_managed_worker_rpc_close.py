@@ -29,7 +29,7 @@ def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=Non
 
     class Store:
         def __init__(self, *args): pass
-        def get_messages_as_conversation(self, sid): return []
+        def get_messages_as_conversation(self, sid, **_kwargs): return []
         def flush_token_counts(self): pass
         def finish(self): events.append('store.finish')
         def close(self): events.append('store.close')

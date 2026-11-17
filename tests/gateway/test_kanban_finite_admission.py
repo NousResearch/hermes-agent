@@ -33,11 +33,11 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
     ref = SessionRef(str(tmp_path), 'owner-session')
     policies = []
 
-    def create(authority, actor, params, *, trusted_policy, trusted_secrets):
+    def create(authority, actor, params, *, trusted_policy, trusted_secrets, **_kwargs):
         policies.append(trusted_policy)
         return ref
 
-    monkeypatch.setattr('gateway.session_local.create_local_session', create)
+    monkeypatch.setattr('gateway.session_local.stage_local_session', create)
     observed = []
 
     async def execute(authority, ref, row):

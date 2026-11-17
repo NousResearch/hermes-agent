@@ -103,3 +103,22 @@ def test_managed_credential_files_reject_master_store(managed_profile):
     assert [m["container_path"] for m in credential_files.get_credential_file_mounts()] == [
         "/root/.hermes/managed-creds.json",
     ]
+
+
+def test_profile_credential_files_reject_master_stores(managed_profile):
+    """The guard is the same for the profile's own list (no managed list): Hermes's stores are
+    skipped, a skill's service token and an ordinary file still mount."""
+    for name in ("auth.json", ".env", "google_token.json"):
+        (managed_profile / name).write_text("{}\n", encoding="utf-8")
+    (managed_profile / "config.yaml").write_text(
+        "terminal:\n  credential_files:\n    - auth.json\n    - .env\n"
+        "    - google_token.json\n    - managed-creds.json\n", encoding="utf-8")
+    managed_dir = managed_scope.get_managed_dir()
+    assert managed_dir is not None
+    (managed_dir / "config.yaml").write_text("security:\n  allow_private_urls: true\n", encoding="utf-8")
+    managed_scope.invalidate_managed_cache()
+    credential_files._config_files.clear()
+
+    assert [m["container_path"] for m in credential_files.get_credential_file_mounts()] == [
+        "/root/.hermes/google_token.json", "/root/.hermes/managed-creds.json",
+    ]

@@ -9,7 +9,6 @@ not vacuous.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +30,7 @@ from tests.fakes.fake_llm_provider import Text
 from tests.fakes.nous_portal_account import account_body
 
 pytestmark = [
-    pytest.mark.skipif(not sys.platform.startswith("linux"), reason="orphan sweep uses /proc"),
+    pytest.mark.platforms("linux"),  # the orphan sweep reads /proc
     pytest.mark.live_system_guard_bypass,  # reap_tagged signals only this run's tagged tree
 ]
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import sys
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -46,7 +45,7 @@ from tests.e2e.core.mcp_plugins._plugin_helpers import reap_tagged
 from tests.fakes.fake_llm_provider import Text
 
 pytestmark = [
-    pytest.mark.skipif(not sys.platform.startswith("linux"), reason="orphan sweep uses /proc"),
+    pytest.mark.platforms("linux"),  # the orphan sweep reads /proc
     pytest.mark.live_system_guard_bypass,  # reap_tagged signals only this run's tagged tree
 ]
 

@@ -1,7 +1,7 @@
 name: sol-pi
 title: SoL-Pi for Hermes
 repo: https://github.com/kvnloo/sol-pi-hermes
-sha: "6ee9dab731c1f4c719e93ae6f9ab7ad3a5f01dca"
+sha: "a2a3328cda3704a74846f2f646b70c50bad79b21"
 subdir: ""
 readme: true
 description: >-
@@ -15,13 +15,16 @@ description: >-
   Disclosure — rewrites only the per-call provider request copy through llm_request middleware (no
   context engine, no core patching). Writes archived tool results and an append-only ledger.jsonl
   under <hermes home>/sol-pi/<session>/ (0700/0600). Reads sol-pi.json in the Hermes home.
-  then_run executes the model's command through the terminal tool, so Hermes' approvals apply. No
-  network calls, telemetry or credentials.
+  sol_pi_write / sol_pi_patch are registered only when actionFusion is on. Fused edits and then_run
+  run through Hermes' write_file / patch / terminal in the calling task/session; dangerous-command
+  approval and the write denylist apply, but nested dispatch currently skips ACP/Zed edit approval,
+  /rollback checkpoints and other plugins' pre_tool_call guards. No host-side reads of edited files.
+  No network calls, telemetry or credentials.
 maintainer: kvnloo
 tier: community
 category: memory
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/kvnloo/sol-pi-hermes/blob/6ee9dab731c1f4c719e93ae6f9ab7ad3a5f01dca/README.md
+docs_url: https://github.com/kvnloo/sol-pi-hermes/blob/a2a3328cda3704a74846f2f646b70c50bad79b21/README.md
 version: "0.2.0"
 capabilities:
   provides_tools: [obs_recall, sol_pi_write, sol_pi_patch]

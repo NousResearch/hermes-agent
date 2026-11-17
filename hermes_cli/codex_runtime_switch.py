@@ -5,10 +5,9 @@ from __future__ import annotations
 import functools
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -79,16 +78,23 @@ def get_configured_codex_binary(config: dict) -> str:
 
 
 def get_configured_codex_home(config: dict) -> Optional[str]:
-    """``model.codex_home_scope``: ``profile`` → ``<HERMES_HOME>/codex-home`` (created on demand), so each
-    Hermes profile runs codex with its own auth, config.toml and plugins. ``shared`` (default) → None:
-    codex keeps the inherited ``CODEX_HOME`` or ``~/.codex``, the home a bare ``codex`` CLI uses."""
+    """``model.codex_home_scope``: ``profile`` → ``<HERMES_HOME>/codex-home``, so each Hermes profile runs
+    codex with its own auth, config.toml and plugins. ``shared`` (default) → None: codex keeps the
+    inherited ``CODEX_HOME`` or ``~/.codex``, the home a bare ``codex`` CLI uses. Read-only."""
     model_cfg = config.get("model") if isinstance(config, dict) else None
     scope = model_cfg.get("codex_home_scope") if isinstance(model_cfg, dict) else None
     if str(scope or "").strip().lower() != "profile":
         return None
-    codex_home = get_hermes_home() / PROFILE_CODEX_HOME_DIRNAME
-    codex_home.mkdir(parents=True, exist_ok=True)  # codex refuses to start on a missing CODEX_HOME
-    return str(codex_home)
+    return str(get_hermes_home() / PROFILE_CODEX_HOME_DIRNAME)
+
+
+def ensure_configured_codex_home(config: dict) -> Optional[str]:
+    """:func:`get_configured_codex_home`, creating a profile home before codex spawns on it (codex refuses
+    a missing ``CODEX_HOME``); never materializes a deleted named profile."""
+    codex_home = get_configured_codex_home(config)
+    if codex_home:
+        mkdir_under_hermes_home(codex_home)
+    return codex_home
 
 
 def set_runtime(config: dict, new_value: str) -> str:

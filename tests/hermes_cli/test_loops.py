@@ -678,3 +678,52 @@ class TestListMetaPrefix:
 
         db = SessionDB()
         assert db.list_meta_prefix("") == []
+
+    def test_prefix_is_literal_and_case_sensitive(self, hermes_home):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.set_meta("hb_x:1", "a")
+        db.set_meta("hbAx:2", "b")  # ``_`` must not act as a single-char wildcard
+        db.set_meta("HB_X:3", "c")  # LIKE folds case; a prefix probe must not
+        db.set_meta("hb_y:4", "d")
+        assert db.list_meta_prefix("hb_x:") == [("hb_x:1", "a")]
+
+    def test_probe_seeks_the_key_index(self, hermes_home):
+        """The gateway runs this probe every 5 s; a table scan grows with every row in state_meta."""
+        import sqlite3
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.set_meta("heartbeat:s1", "{}")
+        seen = []
+        real = db._read_all
+
+        def spy(sql, params=()):
+            seen.append((sql, params))
+            return real(sql, params)
+
+        db._read_all = spy
+        assert db.list_meta_prefix("heartbeat:") == [("heartbeat:s1", "{}")]
+        (sql, params), = seen
+        with sqlite3.connect(db.db_path) as conn:
+            plan = " ".join(row[-1] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params))
+        assert "SEARCH state_meta USING" in plan and "SCAN state_meta" not in plan, plan
+
+
+class TestKeyPrefixRange:
+    def test_range_brackets_exactly_the_prefix(self):
+        from hermes_state_common import key_prefix_range
+
+        low, high = key_prefix_range("heartbeat:")
+        assert (low, high) == ("heartbeat:", "heartbeat;")
+        assert low <= "heartbeat:" < high and low <= "heartbeat:\U0010ffff" < high
+        assert not (low <= "heartbeat" < high) and not (low <= "heartbeat;" < high)
+
+    def test_rejects_unbounded_prefixes(self):
+        from hermes_state_common import key_prefix_range
+
+        for bad in ("", "x\U0010ffff"):
+            with pytest.raises(ValueError):
+                key_prefix_range(bad)

@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -113,6 +114,44 @@ async def test_service_does_not_plan_or_run_historical_unowned_rooms(tmp_path, m
                     {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
                     {'member_id': 'two', 'profile': 'other', 'handle': 'two'}])
         assert [b.room_id for b in service.bindings()] == ['owned']
+
+
+@pytest.mark.asyncio
+async def test_owner_probe_is_case_sensitive_and_seeks_the_index(tmp_path, monkeypatch):
+    """The supervisor polls bindings() every few seconds with or without rooms: the owner probe
+    must read only owner keys (index seek) and only the exact-case prefix the writer produces."""
+    import sqlite3
+
+    from gateway.session_hosted_service import _OWNER, CanonicalHostedRoomService
+    from gateway.hosted_rooms import create_room, local_authority_gateway_id
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(db=db, profile_id=str(tmp_path), epoch=begin_runtime_epoch(db, instance_id='test'))
+        service = CanonicalHostedRoomService(authority, asyncio.get_running_loop())
+        create_room(db.db_path, room_id='ghost', name='ghost',
+            authority_gateway_id=local_authority_gateway_id(), members=[
+                {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
+                {'member_id': 'two', 'profile': 'other', 'handle': 'two'}])
+        db.set_meta(_OWNER.upper() + 'ghost', '{}')  # never written by the service; LIKE would match it
+        assert service.bindings() == ()
+        traced = []
+        real_read_ctx = db._read_ctx
+
+        @contextmanager
+        def traced_read_ctx(*args, **kwargs):
+            with real_read_ctx(*args, **kwargs) as conn:
+                conn.set_trace_callback(traced.append)
+                try:
+                    yield conn
+                finally:
+                    conn.set_trace_callback(None)
+
+        monkeypatch.setattr(db, '_read_ctx', traced_read_ctx)
+        service.bindings()
+        probe = next(sql for sql in traced if 'FROM state_meta' in sql)
+        with sqlite3.connect(db.db_path) as conn:
+            plan = ' '.join(row[-1] for row in conn.execute('EXPLAIN QUERY PLAN ' + probe))
+        assert 'SEARCH state_meta USING' in plan and 'SCAN state_meta' not in plan, plan
 
 
 

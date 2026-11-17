@@ -32,7 +32,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 from hermes_state_common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
     TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
-    escape_like as _escape_like, _placeholders,
+    escape_like as _escape_like, key_prefix_range as _key_prefix_range, _placeholders,
     stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
@@ -1722,12 +1722,13 @@ class SessionDB(
         return bool(rows)
 
     def list_meta_prefix(self, prefix: str) -> list[tuple[str, str]]:
-        """``[(key, value), ...]`` for state_meta keys starting with the literal
-        ``prefix`` (LIKE wildcards escaped) — e.g. ``loop:<session_id>`` rows."""
+        """``[(key, value), ...]`` for state_meta keys starting with the literal,
+        case-sensitive ``prefix`` — e.g. ``loop:<session_id>`` rows. An index seek, so the
+        gateway's 5 s heartbeat/loop probes stay cheap however large state_meta grows."""
         if not prefix:
             return []
         rows = self._read_all(
-            "SELECT key, value FROM state_meta WHERE key LIKE ? ESCAPE '\\'", (_escape_like(prefix) + "%",),
+            "SELECT key, value FROM state_meta WHERE key >= ? AND key < ?", _key_prefix_range(prefix),
         )
         return [(row[0], row[1]) for row in rows]
 

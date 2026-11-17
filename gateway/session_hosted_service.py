@@ -8,6 +8,7 @@ from gateway.session_contract import SessionActor
 from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
 from gateway.session_hosted_controls import HostedControls
 from gateway.owner_identity import same_owner
+from hermes_state_common import key_prefix_range
 from hermes_state_runtime import RuntimeStoreError, _epoch
 from tui_gateway.hosted_room_service import HostedRoomService
 
@@ -139,9 +140,10 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
 
     def bindings(self):
+        # Polled every few seconds by the hosted-room supervisor, rooms or not: seek the key index.
         with self.authority.db._read_ctx() as conn:
             owned = {r[0][len(_OWNER):] for r in conn.execute(
-                'SELECT key FROM state_meta WHERE key LIKE ?', (_OWNER + '%',))}
+                'SELECT key FROM state_meta WHERE key >= ? AND key < ?', key_prefix_range(_OWNER))}
         return tuple(b for b in super().bindings() if b.room_id in owned)
 
     def _turn_lock(self, profile):

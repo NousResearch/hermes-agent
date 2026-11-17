@@ -1,8 +1,9 @@
 """OpenAI image generation — ChatGPT/Codex OAuth variant.
 
-Same catalog/tiers as the ``openai`` plugin (``gpt-image-2`` low/medium/high), posted to the
-Codex backend's native ``images/generations`` and ``images/edits`` endpoints, the same route the
-official Codex client uses (``codex-rs/ext/image-generation``). No ``OPENAI_API_KEY`` is needed.
+The stock route offers the GPT Image 2 quality tiers. Custom Codex-compatible backends
+can receive explicitly configured image model IDs on their native generation endpoint.
+Requests use the same native ``images/generations`` and ``images/edits`` routes as the
+official Codex client (``codex-rs/ext/image-generation``). No ``OPENAI_API_KEY`` is needed.
 
 There is deliberately NO chat/host model here. An earlier version rode a Responses call with a
 hosted ``image_generation`` tool on a pinned chat model (``gpt-5.5``): when OpenAI withdrew that id
@@ -10,9 +11,9 @@ from an account cohort every image call 404'd while chat kept working (#105398, 
 host model was free to answer in text instead of calling the tool. The native route has neither
 failure mode.
 
-The backend does not enforce ``model``/``quality``/``size`` — it accepts unknown model ids and
-returns its own quality/size (#107233). We send the catalog values and report what came back
-(``reported_quality``/``reported_size``) so a request that was not honoured is diagnosable.
+The stock backend has accepted unknown model IDs and returned its own quality and size
+(#106708, #107233). Additional model IDs are restricted to custom backends. The result
+reports the configured model separately from any model, quality and size in the response.
 """
 
 from __future__ import annotations
@@ -25,11 +26,25 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, success_response
+from agent.codex_headers import is_official_codex_base_url
+from agent.image_gen_provider import (
+    DEFAULT_ASPECT_RATIO,
+    resolve_aspect_ratio,
+    success_response,
+)
+from agent.provider_media import GENERATED_SUBDIR, save_bytes
 from plugins.image_gen._common import (
-    GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
-    StaticImageGenProvider, collect_source_images, error_factory, prompt_required_error,
-    resolve_static_model, size_for)
+    GPT_IMAGE_2_API_MODEL as API_MODEL,
+    GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL,
+    GPT_IMAGE_2_TIERS,
+    StaticImageGenProvider,
+    collect_source_images,
+    error_factory,
+    load_image_gen_config,
+    prompt_required_error,
+    resolve_static_model,
+    size_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +52,23 @@ _MAX_ERROR_BODY_CHARS = 500
 
 _MAX_REFERENCE_IMAGES = 16
 _MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
-# The edit endpoint accepts raster only; the shared sniffer also knows SVG/TIFF/ICO, which it rejects.
-_ACCEPTED_INPUT_MIME = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+_RASTER_EXTENSIONS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+}
+
+_CUSTOM_GENERATION_MODELS = (
+    "gpt-image-1.5",
+    "gpt-image-2.5",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.6",
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst",
+)
+_LITERAL_MODELS = (API_MODEL, *_CUSTOM_GENERATION_MODELS)
 
 _NO_AUTH = (
     "No Codex/ChatGPT OAuth credentials available. Run "
@@ -60,8 +90,20 @@ def _summarize_error_body(body: str) -> str:
 
 
 def _resolve_model() -> tuple[str, dict[str, Any]]:
+    config = load_image_gen_config()
+    scoped = config.get("openai-codex")
+    model = scoped.get("model") if isinstance(scoped, dict) else None
+    # The shared settings can carry IDs meant for another image provider.
+    models = GPT_IMAGE_2_TIERS
+    if isinstance(model, str) and model in _LITERAL_MODELS:
+        models = {**models, model: {}}
     return resolve_static_model(
-        GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
+        models,
+        DEFAULT_MODEL,
+        env_var="OPENAI_IMAGE_MODEL",
+        config_key="openai-codex",
+        config=config,
+    )
 
 
 def _read_codex_credential() -> tuple[Optional[str], Optional[str]]:
@@ -93,7 +135,7 @@ def _sniff_image_mime(raw: bytes) -> Optional[str]:
     from agent.image_routing import _sniff_mime_from_bytes
 
     mime = _sniff_mime_from_bytes(raw)
-    return mime if mime in _ACCEPTED_INPUT_MIME else None
+    return mime if mime in _RASTER_EXTENSIONS else None
 
 
 def _encode_input_image(raw: bytes, too_big: str, unsupported: str) -> str:
@@ -166,23 +208,26 @@ def _to_input_image(value: str) -> dict[str, str]:
     return {"image_url": image_url}
 
 
-def _normalize_input_images(
-    image_url: Optional[str], reference_image_urls: Optional[list[str]]
-) -> list[dict[str, str]]:
-    values = collect_source_images(image_url, reference_image_urls, limit=_MAX_REFERENCE_IMAGES)
-    return [_to_input_image(value) for value in values]
-
-
 def _build_image_request(
-    *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None
+    *,
+    prompt: str,
+    model: str,
+    size: str,
+    quality: Optional[str],
+    input_images: Optional[list[dict[str, str]]] = None,
 ) -> tuple[str, dict[str, Any]]:
     """``(endpoint_path, json_body)`` — ``images/edits`` when sources are present, else
     ``images/generations``. Field set mirrors the official client's ``ImageGenerationRequest`` /
     ``ImageEditRequest``."""
     body: dict[str, Any] = {
-        "prompt": prompt, "model": API_MODEL, "n": 1, "quality": quality, "size": size,
+        "prompt": prompt,
+        "model": model,
+        "n": 1,
+        "size": size,
         "background": "opaque",
     }
+    if quality is not None:
+        body["quality"] = quality
     if input_images:
         body["images"] = input_images
         return "images/edits", body
@@ -190,7 +235,13 @@ def _build_image_request(
 
 
 def _post_image_request(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[list[dict[str, str]]] = None,
+    token: str,
+    *,
+    prompt: str,
+    model: str,
+    size: str,
+    quality: Optional[str],
+    input_images: Optional[list[dict[str, str]]] = None,
     base_url: str,
 ) -> dict[str, Any]:
     """POST to the native Codex images endpoint; return the decoded JSON body plus
@@ -207,7 +258,13 @@ def _post_image_request(
         "Content-Type": "application/json",
         "x-codex-image-turn-id": str(uuid.uuid4()),
     })
-    path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
+    path, body = _build_image_request(
+        prompt=prompt,
+        model=model,
+        size=size,
+        quality=quality,
+        input_images=input_images,
+    )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
     with httpx.Client(timeout=timeout, headers=headers) as http:
         response = http.post(f"{base_url}/{path}", json=body)
@@ -259,6 +316,9 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         }
 
     def capabilities(self) -> dict[str, Any]:
+        model_id, _ = _resolve_model()
+        if model_id in _CUSTOM_GENERATION_MODELS:
+            return {"modalities": ["text"], "max_reference_images": 0}
         return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
 
     def generate(
@@ -271,24 +331,53 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
         token, base_url = _read_codex_credential()
-        if not token:
+        if not token or not base_url:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():
             return error_factory("openai-codex", aspect)(
                 "httpx Python package not installed (pip install httpx)", "missing_dependency")
 
-        tier_id, meta = _resolve_model()
+        model_id, meta = _resolve_model()
+        model = API_MODEL if model_id in GPT_IMAGE_2_TIERS else model_id
+        quality = meta.get("quality")
         size = size_for(aspect)
-        fail = error_factory("openai-codex", aspect, model=tier_id, prompt=prompt)
+        fail = error_factory("openai-codex", aspect, model=model_id, prompt=prompt)
+        sources = collect_source_images(
+            image_url, reference_image_urls, limit=_MAX_REFERENCE_IMAGES
+        )
+        if model_id in _CUSTOM_GENERATION_MODELS:
+            if is_official_codex_base_url(base_url):
+                return fail(
+                    f"The ChatGPT Codex images endpoint has no confirmed support for selecting {model_id}. "
+                    f"Set image_gen.openai-codex.model to {DEFAULT_MODEL} or use a "
+                    f"Codex-compatible gateway that supports {model_id}.",
+                    "unsupported_model",
+                )
+            if sources:
+                return fail(
+                    f"Codex image editing is not enabled for {model_id}. "
+                    "Use a text-only prompt, or set "
+                    f"image_gen.openai-codex.model to {DEFAULT_MODEL} to edit an image.",
+                    "modality_unsupported",
+                )
         try:
-            input_images = _normalize_input_images(image_url, reference_image_urls)
+            input_images = [_to_input_image(source) for source in sources]
         except Exception as exc:
-            return fail(f"Invalid image input for Codex image editing: {exc}", "invalid_image_input")
+            return fail(
+                f"Invalid image input for Codex image editing: {exc}",
+                "invalid_image_input",
+            )
 
         try:
             payload = _post_image_request(
-                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None,
-                base_url=base_url)
+                token,
+                prompt=prompt,
+                model=model,
+                size=size,
+                quality=quality,
+                input_images=input_images,
+                base_url=base_url,
+            )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")
@@ -299,19 +388,47 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             return fail("Codex images API response contained no image data", "empty_response")
 
         try:
-            pixel_size = _png_pixel_size(base64.b64decode(b64))
-            saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")
-        except Exception as exc:
+            raw = base64.b64decode(b64, validate=True)
+        except ValueError:
+            return fail(
+                "Codex images API response contained invalid base64 image data",
+                "invalid_response",
+            )
+        extension = _RASTER_EXTENSIONS.get(_sniff_image_mime(raw))
+        if extension is None:
+            return fail(
+                "Codex images API response contained an unrecognized raster image",
+                "invalid_response",
+            )
+
+        try:
+            saved_path = save_bytes(
+                f"{GENERATED_SUBDIR}/images",
+                raw,
+                prefix=f"openai_codex_{model_id}",
+                extension=extension,
+            )
+        except OSError as exc:
             return fail(f"Could not save image to cache: {exc}", "io_error")
         return success_response(
-            image=str(saved_path), model=tier_id, prompt=prompt, aspect_ratio=aspect,
-            provider="openai-codex", modality="image" if input_images else "text",
+            image=str(saved_path),
+            model=model_id,
+            prompt=prompt,
+            aspect_ratio=aspect,
+            provider="openai-codex",
+            modality="image" if input_images else "text",
             extra={
-                "size": size, "quality": meta["quality"], "input_image_count": len(input_images),
-                "requested_size": size, "pixel_size": pixel_size,
-                "reported_quality": payload.get("quality"), "reported_size": payload.get("size"),
+                "size": size,
+                "quality": quality,
+                "input_image_count": len(input_images),
+                "requested_size": size,
+                "pixel_size": _png_pixel_size(raw),
+                "reported_model": payload.get("model"),
+                "reported_quality": payload.get("quality"),
+                "reported_size": payload.get("size"),
                 "imagegen_request_id": payload.get("imagegen_request_id"),
-            })
+            },
+        )
 
 
 def register(ctx) -> None:

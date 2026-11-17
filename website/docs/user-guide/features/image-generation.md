@@ -197,10 +197,37 @@ does not estimate 2.5 token consumption. See the official
 [Flare](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare) and
 [Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst) docs.
 
-The **OpenAI (Codex auth)** provider does not offer 2.5. The Codex backend
-accepts any `model` value (including nonexistent ids) and generates with its
-own server-managed engine, so a "selected" Flare or Sunburst tier would be a
-label with no effect. Pick the direct OpenAI API provider or FAL for 2.5.
+### Codex OAuth with a custom Images gateway
+
+The stock **OpenAI (Codex auth)** route defaults to `gpt-image-2-medium`.
+The Codex backend has returned images for unknown model IDs, so Hermes
+restricts additional model selection to custom Codex-compatible gateways.
+The stock picker continues to offer the GPT Image 2 quality tiers.
+
+If you already route Codex through a gateway you trust with your credential,
+you can configure the exact image model it should receive:
+
+```yaml
+image_gen:
+  provider: openai-codex
+  openai-codex:
+    model: gpt-image-2.6-sunburst
+```
+
+Hermes accepts `gpt-image-1.5`, `gpt-image-2`, `gpt-image-2.5`,
+`gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2.6`,
+`gpt-image-2.6-flare`, and `gpt-image-2.6-sunburst` as literal IDs.
+Use `image_gen.openai-codex.model` to select a literal ID. Shared settings
+`OPENAI_IMAGE_MODEL` and `image_gen.model` can also serve other providers
+and continue to select Codex's existing quality tiers. A quality tier set in
+`OPENAI_IMAGE_MODEL` takes precedence over the provider-scoped setting.
+Hermes submits the ID to the configured gateway's `images/generations`
+endpoint using the existing Codex credential. The gateway determines which
+IDs it supports. If the gateway reports a model, Hermes includes it as
+`reported_model`. A successful response alone does not verify the serving model.
+
+Editing through `images/edits` remains available for `gpt-image-2` and its
+quality tiers. The other IDs are available for text-to-image only.
 
 ### Custom OpenAI-compatible image endpoint
 

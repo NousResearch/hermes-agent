@@ -5,6 +5,7 @@ import logging
 from functools import partial
 
 from persistence.authority.bindings import api_generation_id
+from persistence.authority.admissions import raise_gate
 from persistence.core.errors import AuthorityRefusal
 
 from ._runtime import _epoch, _json
@@ -28,14 +29,13 @@ def bind_api(holder, *, epoch, session_id, route, storage_source, title, declare
              receipt, now, gate=None, walked_from=None):
     """Only the authenticated API edge may reserve an API source; never public RPC. *source* and *entry* are the
     routing origin and entry as dicts, *receipt* the binding receipt before the write stamps an adopted key,
-    *now* the epoch seconds a new row starts at and *gate* the admission gate the owner decided."""
+    *now* the epoch seconds a new row starts at and *gate* the admission gate (decided, or a callable answered inside the write)."""
     from ..conversation._store.local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
     receipt = dict(receipt)
 
     def write(conn):
         _epoch(conn, epoch)
-        if gate is not None:
-            raise AuthorityRefusal(gate.reason, field=gate.field, detail=gate.detail)
+        raise_gate(gate)
         from ..conversation._store.retirement import RETIRED_PREFIX
         from ._runtime_retirement import keep_passed_fences
         if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():

@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from typing import Optional
 
 from persistence.authority.runtime import HistoryActor
-from persistence.authority.admissions import GateRefusal
+from persistence.authority.admissions import AdmissionGate
 from persistence.authority.bindings import (
     ApiBinding,
     BindingMarks,
@@ -75,7 +75,7 @@ class SQLiteSessionBindingRepository:
             return _local.end_idle_local_session(self._store.holder(), epoch=epoch, session_id=session_id,
                                                  target_id=target_id, reason=reason)
 
-    def bind_api(self, *, epoch: int, binding: NewApiBinding, gate: GateRefusal | None = None, walked_from: SessionId | None = None) -> None:
+    def bind_api(self, *, epoch: int, binding: NewApiBinding, gate: AdmissionGate = None, walked_from: SessionId | None = None) -> None:
         with refused():
             _binding_api.bind_api(
                 self._store.holder(), epoch=epoch, session_id=binding.session_id, route=binding.route,

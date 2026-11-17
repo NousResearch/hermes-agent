@@ -15,8 +15,8 @@ from persistence.authority.admissions import (
     AnyHead,
     ApiTargetClaim,
     CapturedResult,
+    AdmissionGate,
     ClaimedAdmission,
-    GateRefusal,
     QueuedFold,
     QueuedReplacement,
     TranscriptRewrite,
@@ -59,7 +59,7 @@ class SQLiteAdmissionRepository:
     # Writes
 
     def admit(self, *, epoch: int, principal_id: str, session_id: str, request_id: str, payload: Mapping[str, Any],
-              intent: Literal["queue", "steer", "redirect"] = "queue", gate: GateRefusal | None = None,
+              intent: Literal["queue", "steer", "redirect"] = "queue", gate: AdmissionGate = None,
               replaces: QueuedReplacement | None = None, supersedes: str | None = None,
               api_target: ApiTargetClaim | None = None, rewrite: TranscriptRewrite | None = None,
               hosted: HostedMemberGuard | None = None, fold: QueuedFold | None = None) -> tuple[AdmissionRecord, bool]:
@@ -70,7 +70,7 @@ class SQLiteAdmissionRepository:
                 supersedes=supersedes, api_target=api_target, rewrite=rewrite, hosted=hosted, fold=fold)
         return _record(row), created
 
-    def claim(self, *, epoch: int, session_id: str, gate: GateRefusal | None = None,
+    def claim(self, *, epoch: int, session_id: str, gate: AdmissionGate = None,
               head: str | None | AnyHead = ANY_HEAD) -> ClaimedAdmission | Literal[False] | None:
         with refused():
             row = store.claim_session_input(self._store.holder(), epoch=epoch, session_id=session_id, gate=gate,

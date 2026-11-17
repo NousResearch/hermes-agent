@@ -189,13 +189,33 @@ def session_inventory(authority, policy, agent, cwd):
     return info
 
 
+def _read_session_info(authority, ref, live):
+    """An ancestor's delete can retire this mount while its stored fields are read."""
+    from gateway.session_local import local_session_info
+    from persistence.core.errors import AuthorityRefusal
+    try:
+        return local_session_info(authority, ref)
+    except KeyError:
+        if authority.sessions.get(ref.session_id) is not live:
+            raise AuthorityRefusal('not_found') from None
+        raise
+
+
 async def snapshot_info(authority, ref):
     """``local_session_info`` plus main's inventory, the builders run off the owner loop."""
-    from gateway.session_local import local_session_info
     from gateway.session_policy import policy_for_source
-    info = local_session_info(authority, ref)
-    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
-    agent = authority.agent(ref)
+    from persistence.core.errors import AuthorityRefusal
+    live = authority.sessions.get(ref.session_id)
+    if live is None:
+        raise AuthorityRefusal('not_found')
+    async with live.mutation_lock:
+        if authority.sessions.get(ref.session_id) is not live:
+            raise AuthorityRefusal('not_found')
+        info = await asyncio.to_thread(_read_session_info, authority, ref, live)
+        if authority.sessions.get(ref.session_id) is not live:
+            raise AuthorityRefusal('not_found')
+        policy = policy_for_source(authority.runner, live.source)
+        agent = authority.agent(ref)
     inventory = await asyncio.to_thread(session_inventory, authority, policy, agent, info.get("cwd"))
     if info.get('tool_count') is None:
         # A lazy session: the tools its first turn loads (the banner's own count).

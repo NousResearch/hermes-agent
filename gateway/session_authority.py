@@ -240,10 +240,13 @@ class SessionAuthority:
                     from gateway.session_api import restore_api_session
                     restore_api_session(self, ref.session_id)
         from gateway.session_history_mount import is_history_mount, require_history_access
-        if is_history_mount(self.sessions[ref.session_id]):
+        live = self.sessions.get(ref.session_id)
+        if live is None:
+            raise AuthorityRefusal('not_found')
+        if is_history_mount(live):
             require_history_access(self, actor, ref.session_id, capability)
         from gateway.config import Platform
-        source = self.sessions[ref.session_id].source
+        source = live.source
         from gateway.owner_identity import same_owner
         if (source is not None and source.platform == Platform.LOCAL
                 and not same_owner(source.user_id, actor.subject) and 'session:operator' not in actor.capabilities):
@@ -334,11 +337,12 @@ class SessionAuthority:
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
         return lookup(running_key(self.runner, live.route, ref.session_id))
 
-    def _pending_rows(self, ref):
+    def _pending_rows(self, ref, *, stored=None):
         """Pending admissions as the event stream presents them: a settlement committed but not yet
         published (``LiveSession.settling``) still reads as its started claim. Callers that pair the
         result with stream state hold ``event_stream.lock``, under which ``settling`` changes."""
-        rows = [admission_row(row) for row in authority_persistence(self).admissions.list(session_id=ref.session_id)]
+        rows = ([admission_row(row) for row in authority_persistence(self).admissions.list(session_id=ref.session_id)]
+                if stored is None else stored)
         live = self.sessions.get(ref.session_id)
         masked = dict(live.settling) if live is not None else {}
         if not masked:
@@ -376,50 +380,92 @@ class SessionAuthority:
         (``history == ()``), only the physical ``transcript_target``, so the display-row lineage read is
         skipped; for a viewer that pages the transcript itself (Desktop over REST).
         *replay_from*: ``(epoch, sequence)`` this connection's reconnect replay answered (SessionEvents.catch_up)."""
-        self.authorize(actor, ref, 'session:read')
-        from gateway.session_local_recovery import local_history, prepare_history, transcript_target
-        # The lineage read stays off the loop and the lock; without history the target is resolved under it.
-        prepared = await prepare_history(self, ref) if history else None
+        from gateway.session_local_recovery import prepare_history, read_attach
         from gateway.session_onboarding import keep_from_discard
-        # The last await before the viewer joins: a fresh launch's claim is taken back with no yield
-        # before the join, and a delete already past it answers not_found below.
-        await keep_from_discard(self, ref.session_id)
-        # A delete or eviction can land during those awaits: re-check, so it answers not_found, never a KeyError.
-        self.authorize(actor, ref, 'session:read')
-        live = self.sessions[ref.session_id]
-        from gateway.session_queued_controls import pending_rows
-        with live.event_stream.lock:
-            handle = self._handle(ref)  # before the viewer joins: a delete committed meanwhile is not_found
-            subscription = next((key for key, member in live.subscribers.items()
-                                 if member == actor), None) or uuid.uuid4().hex
-            live.subscribers[subscription] = actor
-            live.viewer_revision += 1
-            self.pending_closes.pop(ref.session_id, None)
-            from gateway.session_viewer_close import cancel_orphan_close
-            cancel_orphan_close(self, ref.session_id)
-            from tools.async_delegation import allow_for_session
-            allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
-            transport = self.events.get(actor.transport_id)
-            if transport is not None:
-                if replay_from is not None and not live.event_stream.fanout.contains(transport):
-                    live.event_stream.catch_up(transport, *replay_from)
-                live.event_stream.fanout.attach(transport)
-                live.event_stream.on_overflow = partial(self._retire_overflowed, ref.session_id)
-            active_generation = handle.execution_generation if handle.execution_state == "running" else None
-            prompts = live.controls.snapshot(ref.session_id, active_generation)
-            epoch, sequence = live.event_stream.watermark()
-            if history:
-                history, target = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared))), None
-            else:
-                history, target = (), self.unless_deleted(ref, lambda: transcript_target(self, ref))
-            snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
-                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts,
-                                        transcript_target=target)
+        from gateway.session_retirement import touch_restored
+        await asyncio.to_thread(self.authorize, actor, ref, 'session:read')
+        if history:
+            await prepare_history(self, ref)  # stays before mutation_lock: deletes/rewinds can finish
+        while True:
+            await asyncio.to_thread(self.authorize, actor, ref, 'session:read')
+            live = self.sessions.get(ref.session_id)
+            if live is None:
+                raise AuthorityRefusal('not_found')
+            async with live.mutation_lock:
+                if self.sessions.get(ref.session_id) is not live:
+                    continue
+                with live.event_stream.lock:
+                    watermark = live.event_stream.watermark()
+                    transfers = self._attach_transfers(ref)
+                read = await asyncio.to_thread(read_attach, self, ref, history=history,
+                                               transfer_ids=transfers[1] if transfers else ())
+                discards = getattr(self, '_onboarding_discards', None)
+                claimed = discards is not None and ref.session_id in discards.ids
+                # Last await before joining. A deletion this waited for invalidates the DB bundle,
+                # even if its retirement/publication has not run yet.
+                await keep_from_discard(self, ref.session_id)
+                if claimed:
+                    continue
+                with live.event_stream.lock:
+                    if (self.sessions.get(ref.session_id) is not live
+                            or live.event_stream.watermark() != watermark
+                            or self._attach_transfers(ref) != transfers):
+                        continue
+                    from gateway.session_authorities import require_serving
+                    from gateway.config import Platform
+                    from gateway.owner_identity import same_owner
+                    require_serving(self)
+                    source = live.source
+                    if (source is not None and source.platform == Platform.LOCAL
+                            and not same_owner(source.user_id, actor.subject)
+                            and 'session:operator' not in actor.capabilities):
+                        raise AuthorityRefusal('permission_denied')
+                    touch_restored(self, ref.session_id)  # worker authorize deliberately cannot arm timers
+                    self.launch_sources[ref.session_id] = read.row['source']
+                    snapshot = self._join(actor, ref, live, read, replay_from)
+                    break
         from gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach
         await reask_on_attach(self, ref, live)
         return snapshot
+
+    def _attach_transfers(self, ref):
+        """Stream-locked transfer identity: only these terminal rows belong to this execution."""
+        entry = self.steer_transfers.get(ref.session_id)
+        return (entry[0], tuple(entry[1])) if entry is not None else None
+
+    def _join(self, actor, ref, live, read, replay_from):
+        """Commit a worker's coherent read under the stream lock, with the latest settling overlay.
+        No storage work belongs here: a pooled read can fall back to the contended writer."""
+        pending = self._pending_rows(ref, stored=read.pending)
+        state = 'unknown' if any(r['status'] == 'unknown' for r in pending) else (
+            'running' if any(r['status'] == 'started' for r in pending) else 'idle')
+        handle = SessionHandle(ref, self.instance_id, self.epoch, read.row['runtime_revision'],
+                               read.row['runtime_generation'], state)
+        subscription = next((key for key, member in live.subscribers.items()
+                             if member == actor), None) or uuid.uuid4().hex
+        live.subscribers[subscription] = actor
+        live.viewer_revision += 1
+        self.pending_closes.pop(ref.session_id, None)
+        from gateway.session_viewer_close import cancel_orphan_close
+        cancel_orphan_close(self, ref.session_id)
+        from tools.async_delegation import allow_for_session
+        allow_for_session((self.profile_id, ref.session_id))
+        transport = self.events.get(actor.transport_id)
+        if transport is not None:
+            if replay_from is not None and not live.event_stream.fanout.contains(transport):
+                live.event_stream.catch_up(transport, *replay_from)
+            live.event_stream.fanout.attach(transport)
+            live.event_stream.on_overflow = partial(self._retire_overflowed, ref.session_id)
+        active_generation = handle.execution_generation if handle.execution_state == "running" else None
+        prompts = live.controls.snapshot(ref.session_id, active_generation)
+        epoch, sequence = live.event_stream.watermark()
+        from gateway.session_queued_controls import pending_rows
+        pending = pending_rows(self, ref, stored=read.pending, transfers=read.transfers)
+        return SubscriptionSnapshot(subscription, handle, epoch, sequence, read.history,
+                                    tuple(self._pending_receipt(row) for row in pending), prompts,
+                                    transcript_target=read.target)
 
     def _retire_overflowed(self, session_id, transport):
         """The fanout dropped this peer's backlog: its subscription is over even though the

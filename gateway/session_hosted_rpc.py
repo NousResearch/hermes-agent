@@ -200,7 +200,7 @@ class HostedRoomAuthorityRPC:
         # Authorize (restoring a cold room session) before the read names its live entry, and again after
         # the await (``_rows``): a delete in between answers not_found, never a KeyError.
         self.authority.authorize(self.principal, self.ref, 'session:read')
-        prepared = await prepare_history(self.authority, self.ref)
+        prepared = await prepare_history(self.authority, self.ref, include_display=True)
         rows = self._rows()
         history = self.authority.unless_deleted(
             self.ref, lambda: list(local_history(self.authority, self.ref, prepared)))

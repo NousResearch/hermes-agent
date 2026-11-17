@@ -154,6 +154,39 @@ async def _resume_transcript(authority, ref, snapshot, history, omit):
     return {'messages': [], 'messages_omitted': True, 'message_count': count, 'todo_state': todo_state}
 
 
+def _resume_target(authority, actor, ref):
+    """Resolve a stored id to its local receipt or messaging owner off the loop.
+
+    Even a single metadata read can wait on the writer when the WAL reader pool is full.
+    """
+    from gateway.session_local_migration import adopts_client_history, resolve_local_target
+    from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
+    store = authority_persistence(authority)
+    row = store.sessions.get(ref.session_id)
+    if row and (row.source in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
+                or adopts_client_history(authority, actor, row)):
+        return resolve_local_target(authority, actor, store.lineage.tip(ref.session_id))
+    if row:
+        from gateway.session_route_recovery import messaging_owner_ref
+        return messaging_owner_ref(authority, ref)
+    return ref
+
+
+def _authorize_resume(authority, actor, ref, params):
+    """Stored access checks and optional launch rebinding, before the viewer joins, off-loop."""
+    if params.get('editor') is not None:
+        authority.authorize(actor, ref, 'session:control')
+        from gateway.session_local_mcp import resume_editor_mcp
+        resume_editor_mcp(authority, ref, params['editor'])
+    if 'api_key' in params:
+        # A launch-only key re-supplied after a restart, held only in this authority's memory.
+        authority.authorize(actor, ref, 'session:control')
+        from gateway.session_policy import rebind_launch_key
+        rebind_launch_key(authority, ref, params['api_key'])
+    # Read-only mount: only the first admitted turn reopens an ended session (#85303).
+    authority.authorize(actor, ref, 'session:read')
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -662,55 +695,14 @@ class AuthorityConnection:
         reconnect = ref.session_id in self.reconnects
         self.reconnects.discard(ref.session_id)
         requested = ref.session_id
-        if 'latest' in params:
-            # Bare `-c` / `--resume latest`: the most recent session of that surface family the
-            # actor may read (workspace first), resolved by the owner like a title.
-            from gateway.session_local_title import resolve_latest_session
-            ref = resolve_latest_session(self.authority, self.actor, params['latest'], params.get('workspace'))
-        elif 'title' in params:
-            from gateway.session_local_title import resolve_titled_session
-            ref = resolve_titled_session(self.authority, self.actor, params['title'])
-        else:
-            # The TUI exit hint abbreviates canonical local IDs to ``local-`` plus 16 hex
-            # characters. Resolve only that family before authorization so a unique hint reaches
-            # the same durable local route as its full ID; ambiguous and missing prefixes retain
-            # the normal not_found result.
-            if re.fullmatch(r'local-[0-9a-f]{16}', ref.session_id):
-                resolved_id = authority_persistence(self.authority).sessions.resolve_id(ref.session_id)
-                if resolved_id is not None:
-                    ref = SessionRef(ref.profile_id, resolved_id)
-            from gateway.session_local_migration import adopts_client_history, resolve_local_target
-            from gateway.session_policy_refresh import refresh_settled
-            from persistence.authority.vocabulary import LEGACY_LOCAL_SOURCES
-            # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
-            await refresh_settled(self.authority, ref.session_id)
-            store = authority_persistence(self.authority)
-            row = store.sessions.get(ref.session_id)
-            # Canonical LOCAL compression/reset segments keep the receipt on their logical
-            # owner, not on the physical transcript ID the history picker / Desktop supplies
-            # after list_sessions projects the tip (#139306).
-            if row and (row.source in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}
-                        or adopts_client_history(self.authority, self.actor, row)):
-                ref = resolve_local_target(self.authority, self.actor, store.lineage.tip(ref.session_id))
-            elif row:
-                # A messaging compression continuation attaches to its lineage root, the session
-                # its lane's turns stream to; the reply names that root.
-                from gateway.session_route_recovery import messaging_owner_ref
-                ref = messaging_owner_ref(self.authority, ref)
-        if params.get('editor') is not None:
-            self.authority.authorize(self.actor, ref, 'session:control')
-            from gateway.session_local_mcp import resume_editor_mcp
-            resume_editor_mcp(self.authority, ref, params['editor'])
-        if 'api_key' in params:
-            # A launch-only key re-supplied after a restart (`--resume <id> --api-key`).
-            self.authority.authorize(self.actor, ref, 'session:control')
-            from gateway.session_policy import rebind_launch_key
-            rebind_launch_key(self.authority, ref, params['api_key'])
-        # Read-only mount (#85303): an ended row stays ended until the first admitted turn
-        # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
-        # never re-lights DB-derived liveness with no new activity.
-        self.authority.authorize(self.actor, ref, 'session:read')
-        mounted = self.authority.sessions[ref.session_id].source
+        ref = await self._resume_ref(ref, params)
+        await asyncio.to_thread(_authorize_resume, self.authority, self.actor, ref, params)
+        from gateway.session_retirement import touch_restored
+        touch_restored(self.authority, ref.session_id)
+        live = self.authority.sessions.get(ref.session_id)
+        if live is None:
+            raise AuthorityRefusal('not_found')
+        mounted = live.source
         # Only a local route has a stored creation policy to refresh; a platform lane's turns read the profile.
         if 'session:control' in self.actor.capabilities and getattr(mounted, 'platform', None) == Platform.LOCAL:
             # A client attaching (main's `hermes -c` was a new process) re-reads the config-derived settings
@@ -767,6 +759,35 @@ class AuthorityConnection:
                 # Still-waiting server→client requests: the event ring cannot say "still open".
                 'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
                                                snapshot.handle.ref.session_id)}
+
+    async def _resume_ref(self, ref, params):
+        """Resolve the selector off-loop, respecting a policy refresh already in flight."""
+        if 'latest' in params:
+            # Bare `-c` / `--resume latest`: the most recent session of that surface family the
+            # actor may read (workspace first), resolved by the owner like a title.
+            from gateway.session_local_title import resolve_latest_session
+            return await asyncio.to_thread(resolve_latest_session, self.authority, self.actor,
+                                           params['latest'], params.get('workspace'))
+        elif 'title' in params:
+            from gateway.session_local_title import resolve_titled_session
+            return await asyncio.to_thread(resolve_titled_session, self.authority, self.actor, params['title'])
+        else:
+            # The TUI exit hint abbreviates canonical local IDs to ``local-`` plus 16 hex
+            # characters. Resolve only that family before authorization so a unique hint reaches
+            # the same durable local route as its full ID; ambiguous and missing prefixes retain
+            # the normal not_found result.
+            if re.fullmatch(r'local-[0-9a-f]{16}', ref.session_id):
+                resolved_id = await asyncio.to_thread(
+                    authority_persistence(self.authority).sessions.resolve_id, ref.session_id)
+                if resolved_id is not None:
+                    ref = SessionRef(ref.profile_id, resolved_id)
+            from gateway.session_policy_refresh import refresh_settled
+            # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
+            await refresh_settled(self.authority, ref.session_id)
+            # Canonical LOCAL compression/reset segments keep the receipt on their logical
+            # owner, not on the physical transcript ID the history picker / Desktop supplies
+            # after list_sessions projects the tip (#139306).
+            return await asyncio.to_thread(_resume_target, self.authority, self.actor, ref)
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""

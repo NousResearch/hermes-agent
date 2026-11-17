@@ -1,6 +1,7 @@
 """Restore only private, profile-bound local policy into the existing authority."""
 import asyncio
 import contextlib
+from dataclasses import dataclass
 import json
 import logging
 
@@ -274,11 +275,14 @@ def _route_already_restored(store, route, target, lineage):
     return current is not None and current.session_id == target and target in lineage
 
 
-def transcript_target(authority, ref):
+def transcript_target(authority, ref, *, restore=True):
     """The current physical transcript of logical *ref* (a local receipt's entry, else the tip)."""
-    live = authority.sessions[ref.session_id]
+    live = authority.sessions.get(ref.session_id)
+    if live is None:
+        raise AuthorityRefusal('not_found')
     if live.source is not None and live.source.platform == Platform.LOCAL:
-        restore_local_session(authority, ref.session_id)
+        if restore:
+            restore_local_session(authority, ref.session_id)
         return authority_persistence(authority).bindings.receipt(ref.session_id).current_target
     return authority.physical_target(ref)
 
@@ -331,10 +335,47 @@ def _fit_archive(live_rows, display):
     return kept[::-1], truncated
 
 
-async def prepare_history(authority, ref):
-    """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
-    target = transcript_target(authority, ref)
-    return target, await asyncio.to_thread(display_rows, authority_persistence(authority), target)
+async def prepare_history(authority, ref, *, include_display=False):
+    """Restore/catch up the physical target off-loop, before attach takes its mutation lock.
+    Hosted history callers also prepare display rows; attach reads them once in its final snapshot."""
+    def read():
+        target = transcript_target(authority, ref)
+        store = authority_persistence(authority)
+        return target, display_rows(store, target) if include_display else None
+    return await asyncio.to_thread(read)
+
+
+@dataclass(frozen=True)
+class AttachRead:
+    row: dict
+    pending: list[dict]
+    transfers: list[dict]
+    history: tuple
+    target: str | None
+
+
+def read_attach(authority, ref, *, history, transfer_ids):
+    """One DB generation for attach, without holding the stream lock. The pool's writer fallback
+    can wait indefinitely, so this entire read (including receipt catch-up) belongs on a worker."""
+    from gateway.session_authority import admission_row
+    store = authority_persistence(authority)
+    transcript_target(authority, ref)  # a local receipt may need a compression catch-up write
+    for _ in range(4):
+        with store.messages.read_snapshot() as consistent:
+            session = store.sessions.get(ref.session_id)
+            if session is None:
+                raise AuthorityRefusal('not_found')
+            target = transcript_target(authority, ref, restore=False)
+            # Compaction can supersede the target catch-up preflight; display/live rows share this snapshot.
+            rows = tuple(local_history(authority, ref, target=target)) if history else ()
+            pending = [admission_row(row) for row in store.admissions.list(session_id=ref.session_id)]
+            transfers = [admission_row(row) for admission_id in transfer_ids
+                         if (row := store.admissions.get(admission_id=admission_id)) is not None]
+            result = AttachRead(session.as_session_row(), pending, transfers, rows,
+                               None if history else target)
+            if consistent():
+                return result
+    raise AuthorityRefusal('storage_unavailable', detail='the attach read kept changing')
 
 
 def omitted_history_state(store, target):
@@ -374,7 +415,7 @@ def _merge_live_in_stored_order(display, live):
     return rows + pending
 
 
-def local_history(authority, ref, prepared=None):
+def local_history(authority, ref, prepared=None, *, target=None):
     """Display history of logical *ref*: every stored row the user saw, in display order.
 
     A row outside the current physical transcript's active set (summarized away by a compression)
@@ -391,9 +432,9 @@ def local_history(authority, ref, prepared=None):
     (``display_rows``), the first row carries ``archived_truncated: true``.
     """
     store = authority_persistence(authority)
-    target = transcript_target(authority, ref)
-    read_live, display, truncated = (prepared[1] if prepared is not None and prepared[0] == target
-                                     else display_rows(store, target))
+    target = transcript_target(authority, ref) if target is None else target
+    cached = prepared[1] if prepared is not None and prepared[0] == target else None
+    read_live, display, truncated = cached if cached is not None else display_rows(store, target)
     live = _live_rows(store, target)
     live_ids = {row['_row_id'] for row in live}
     if not read_live <= live_ids:

@@ -312,13 +312,31 @@ def _surface_reader(db):
     return SurfaceLabelReader(db)
 
 
+def _metadata_filter_arg(raw: list[str] | None) -> dict[str, str] | None:
+    """``--metadata k=v`` (repeatable) -> the exact-match filter ``list_sessions_rich`` ANDs."""
+    from hermes_state_session_metadata import parse_metadata_filter
+    pairs = []
+    for item in raw or ():
+        key, sep, value = item.partition("=")
+        if not sep:
+            raise ValueError(f"expected KEY=VALUE, got {item!r}")
+        pairs.append((key, value))
+    return parse_metadata_filter(pairs) or None
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
     limit = args.limit
+    try:
+        metadata = _metadata_filter_arg(getattr(args, "metadata", None))
+    except ValueError as exc:
+        print(f"Invalid --metadata: {exc}", file=sys.stderr)
+        return 2
     sessions = _surface_reader(db).list_sessions_rich(
         source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+        metadata=metadata,
     )
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions

@@ -30,6 +30,7 @@ from hermes_cli.web_routers._common import (
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from hermes_state_session_metadata import SessionMetadataError, decode_metadata, parse_metadata_filter
 
 list_router = APIRouter()
 search_router = APIRouter()
@@ -177,15 +178,27 @@ def _resolve_session_id(db, session_id: str) -> Optional[str]:
             raise
 
 
+def _metadata_query_filter(request: Request) -> dict[str, str] | None:
+    """``metadata.<key>=<value>`` query params -> exact-match filter; a bad key/value is a 400."""
+    pairs = [(name[len("metadata."):], value) for name, value in request.query_params.multi_items()
+             if name.startswith("metadata.")]
+    try:
+        parsed = parse_metadata_filter(pairs)
+    except SessionMetadataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return parsed or None
+
+
 # ``le=100`` on limit: an unbounded limit lets one request drag every session
 # row (plus correlated-subquery preview work) out of SQLite in a single hit.
 @list_router.get("/api/sessions")
 def get_sessions(
-    limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
+    request: Request, limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "created", source: str | None = None, sources: str | None = None,
     exclude_sources: str | None = None, cwd_prefix: str | None = None, full: bool = False,
     profile: Optional[str] = None):
-    """List sessions.
+    """List sessions. Repeated ``metadata.<key>=<value>`` params keep only sessions carrying every
+    pair (``hermes_state_session_metadata``), applied before pagination and the total.
 
     ``order=recent`` sorts by latest activity across the compression chain, so
     a long-running chat stays on page one after it auto-compresses onto a fresh
@@ -196,6 +209,7 @@ def get_sessions(
             status_code=400, detail="archived must be one of: exclude, only, include")
     if order not in ("created", "recent"):
         raise HTTPException(status_code=400, detail="order must be one of: created, recent")
+    metadata = _metadata_query_filter(request)
     profile_name = _cron_profile_home(profile)[0] if profile else None
     try:
         db = _open_session_db_for_profile(profile, read_only=True)
@@ -213,7 +227,7 @@ def get_sessions(
                 source=source or None, sources=source_list or None,
                 exclude_sources=exclude_list or None, cwd_prefix=(cwd_prefix or None),
                 min_message_count=min_message_count, include_archived=include_archived,
-                archived_only=archived_only, include_subagents=include_subagents)
+                archived_only=archived_only, include_subagents=include_subagents, metadata=metadata)
             sessions = db.list_sessions_rich(
                 limit=limit,
                 offset=offset,
@@ -233,6 +247,7 @@ def get_sessions(
                 # SQLite stores the flags as 0/1; expose real JSON booleans.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
+                s["metadata"] = decode_metadata(s.get("metadata"))
             if not full:
                 _strip_session_list_rows(sessions)
             # ``storage`` tells an empty page apart from an unreadable store (#72046); same

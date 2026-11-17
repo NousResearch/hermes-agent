@@ -217,6 +217,8 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         ('32 2026-10-18T10:11Z 1fc1999769', (('+', 'transcript_revision', 'tool_names'),)),
         # Last prompt-cache event (agent/prompt_cache_clock.py), JSON; written with the token batch.
         ('33 2026-11-15T12:00Z feat/prompt-cache-clock', (('+', 'prompt_cache_clock', 'transcript_revision'),)),
+        # Client key/value metadata (hermes_state_session_metadata.py), JSON object of strings.
+        ('34 2026-11-17T12:00Z feat/api-session-metadata', (('+', 'metadata', 'prompt_cache_clock'),)),
         ),
     ),
     "messages": _TableHistory(

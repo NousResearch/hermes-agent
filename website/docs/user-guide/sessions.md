@@ -235,6 +235,17 @@ hermes sessions list --workspace my-project
 hermes sessions list --workspace ~/code/hermes-agent
 ```
 
+### Filtering Sessions by Metadata
+
+Sessions labelled through the API server (`PATCH /api/sessions/{id}` with `{"metadata": {...}}`, see
+[Session metadata](features/api-server.md#session-metadata)) can be listed by label. Repeat
+`--metadata` to require several pairs:
+
+```bash
+hermes sessions list --metadata ticket=ENG-123
+hermes sessions list --metadata ticket=ENG-123 --metadata ci.run=4812
+```
+
 ### Conversation Recap on Resume
 
 When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:

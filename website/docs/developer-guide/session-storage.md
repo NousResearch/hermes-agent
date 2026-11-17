@@ -215,6 +215,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     api_call_count INTEGER DEFAULT 0,
     -- ... additional gateway/workspace/handoff/compression columns ...
     prompt_cache_clock TEXT,  -- JSON of the latest prompt-cache event (agent/prompt_cache_clock.py)
+    metadata TEXT,            -- client key/value labels, JSON object (hermes_state_session_metadata.py)
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 

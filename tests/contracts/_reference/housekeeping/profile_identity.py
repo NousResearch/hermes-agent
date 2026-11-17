@@ -155,6 +155,11 @@ class InMemoryProfileIdentityRepository:
             return ProfileRekeyCounts()
         old_ns, new_ns = profile_namespace(old), profile_namespace(new)
         self._check_collisions(old, new, old_ns, new_ns)
+        # One write, as main's rename is one transaction: a failure anywhere (the receipts' publish included) restores every facet.
+        with authority_state(self._backend, self._backend.scope).guarded():
+            return self._rekey_all(old, new, old_ns, new_ns)
+
+    def _rekey_all(self, old: str, new: str, old_ns: str, new_ns: str) -> ProfileRekeyCounts:
         owners, keys, origins = self._rekey_sessions(old, new, old_ns, new_ns)
         heartbeats = [row for row in self._table("gateway_heartbeats").values() if row.get("profile") == old]
         for row in heartbeats:

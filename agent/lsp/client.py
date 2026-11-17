@@ -266,7 +266,7 @@ class LSPClient:
             cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
         try:
             # start_new_session=True gives the server its own process group; otherwise it inherits
-            # the gateway's pgid and mcp_tool's orphan sweeper can killpg() the TUI parent with it.
+            # the gateway's pgid and tools.mcp's orphan sweeper can killpg() the TUI parent with it.
             # windows_hide_flags() suppresses the console window a .cmd shim would flash from a
             # console-less host (CREATE_NO_WINDOW; 0 on POSIX).
             # Language servers are third-party binaries a write_file can start: they get the

@@ -10,7 +10,7 @@ source: https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-
 
 # Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
 # process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
-# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# Hermes's MCP client + tools.mcp.oauth_manager handle discovery, PKCE, token
 # exchange, and refresh.
 transport:
   type: http

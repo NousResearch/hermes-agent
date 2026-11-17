@@ -305,7 +305,7 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path, app_title:
         return
     from hermes_cli.agent_plugins import load_agent_plugin
     from hermes_platform.resolver.availability import availability
-    from tools.mcp_liveness import availability_problem, describe
+    from tools.mcp.liveness import availability_problem, describe
 
     try:
         package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")

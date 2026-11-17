@@ -125,7 +125,7 @@ def _requires_extended_tool_deadline(tool_name: str) -> bool:
 def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Whether an MCP tool's server opted into parallel calls; False if MCP is unavailable."""
     try:
-        from tools.mcp_tool_discovery import is_mcp_tool_parallel_safe
+        from tools.mcp.discovery import is_mcp_tool_parallel_safe
         return is_mcp_tool_parallel_safe(tool_name)
     except Exception:
         return False

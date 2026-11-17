@@ -9,8 +9,8 @@ import os
 import runpy
 from types import SimpleNamespace
 
-from tools import mcp_tool
-from tools.mcp_tool_loop import _ensure_mcp_loop
+from tools.mcp import client as mcp_tool
+from tools.mcp.loop import _ensure_mcp_loop
 
 
 class _Session:

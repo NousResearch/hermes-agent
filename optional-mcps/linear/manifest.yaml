@@ -8,7 +8,7 @@ description: Find, create, and update Linear issues, projects, and comments.
 source: https://linear.app/docs/mcp
 
 # Linear ships a remote MCP server with native OAuth 2.1 + Dynamic Client
-# Registration over Streamable HTTP. Hermes's MCP client + mcp_oauth_manager
+# Registration over Streamable HTTP. Hermes's MCP client + tools.mcp.oauth_manager
 # handle discovery, PKCE, token exchange, and refresh — nothing to install
 # locally.
 transport:

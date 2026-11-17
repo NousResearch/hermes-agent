@@ -654,7 +654,7 @@ def _migrate_to_46(results: dict[str, Any], quiet: bool) -> None:
     # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
     # `disabled: true` wins over an explicit `enabled: true`: `hermes mcp add` writes that, and the
     # old editor only added `disabled`, so letting `enabled` win would skip nearly every server.
-    from tools.mcp_tool_common import _parse_boolish
+    from tools.mcp.common import _parse_boolish
 
     config = read_raw_config()
     servers = config.get("mcp_servers")

@@ -131,6 +131,11 @@ REQUIRED_NAMES: dict[str, str] = {
     "tools.env_passthrough": "module",  # v0.22.7..v0.23.0: tools/environments/local.py:322@v0.23.0
     "tools.environments": "module",  # v0.22.7..v0.23.0: tools/environments/local_pythonpath.py:24@v0.23.0
     "tools.environments.local": "module",  # v0.21.6..v0.23.0: hermes_cli/update_cmd_posix_pause.py:527@v0.23.0
+    # A process that outlives the update and had no MCP server and no tool call before it (an editor's
+    # idle ACP server) imports these lazily on its next session and on its next tool call.
+    "tools.mcp_elicitation_form": "module",  # v0.23.2: agent/tool_executor.py:755@v0.23.2
+    "tools.mcp_oauth": "module",  # v0.21.6..v0.23.2: hermes_cli/mcp_startup.py:201@v0.23.2
+    "tools.mcp_tool_discovery": "module",  # v0.21.6..v0.23.2: acp_adapter/server.py:480@v0.23.2
     "tools.plugin_guard": "module",  # v0.21.6..v0.23.1: hermes_cli/plugins_cmd.py:209@v0.23.1
     "toolsets": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "hermes_cli/_launchers.py": "by-path",  # v0.21.6..v0.23.0: scripts/install.ps1:1393

@@ -95,7 +95,7 @@ EXCLUDED: tuple[tuple[str, str, str], ...] = (
     ("tests/hermes_cli/test_stale_root_module_bridge.py", "def pre_handoff_purge(", OLD_NAMES),
     ("tests/test_hermes_bootstrap.py", 'program = r"""\nimport importlib.util, os, sys\nfrom importlib.abc import MetaPathFinder', OLD_NAMES),
     ("tools/bot_desktop/runtime.py", 'Path(project_root_str()), module="tools.bot_desktop.idle_watch")),', SHIPPED),
-    ("tools/mcp_tool_lifecycle.py", '"tui_gateway.slash_worker", "tui_gateway.entry",', IDENTITY),
+    ("tools/mcp/lifecycle.py", '"tui_gateway.slash_worker", "tui_gateway.entry",', IDENTITY),
     ("tui_gateway/host_supervisor.py", 'return "tui_gateway.compute_host" in _pid_command(pid)', IDENTITY),
     ("scripts/build/launcher_wrapper.py", 'importlib.import_module("hermes_bootstrap")', PERSISTED),
 )

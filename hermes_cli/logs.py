@@ -49,7 +49,7 @@ LOG_FILES = {
     # posix.sh): stage log including the `desktop --force-build --build-only`
     # retry stderr.
     "handoff": "desktop-update-handoff.log",
-    # Every stdio MCP subprocess's stderr (tools/mcp_tool.py redirects it
+    # Every stdio MCP subprocess's stderr (tools/mcp/client.py redirects it
     # here, with per-server session markers) — the "MCP output channel".
     "mcp": "mcp-stderr.log",
 }

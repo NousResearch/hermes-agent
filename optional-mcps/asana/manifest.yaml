@@ -13,7 +13,7 @@ source: https://developers.asana.com/docs/integrating-with-asanas-mcp-server
 # Registration: every client must be a user-owned, pre-registered Asana
 # "MCP app" (developer console), so the OAuth block below pins that client
 # and a fixed callback URL that the app must register verbatim. Hermes's MCP
-# client + mcp_oauth_manager still handle discovery, PKCE, token exchange,
+# client + tools.mcp.oauth_manager still handle discovery, PKCE, token exchange,
 # and refresh with the configured credentials.
 transport:
   type: http

@@ -34,7 +34,7 @@ auth:
   type: oauth
   # Native MCP OAuth 2.1 (case 1) — the server publishes AS metadata with
   # Dynamic Client Registration at https://mcp.cloudflare.com/register.
-  # Hermes's MCP client + mcp_oauth_manager handle discovery, DCR, PKCE,
+  # Hermes's MCP client + tools.mcp.oauth_manager handle discovery, DCR, PKCE,
   # token exchange, and refresh. During authorization Cloudflare lets you
   # scope exactly which account permissions the agent gets.
 

@@ -475,7 +475,7 @@ def test_null_plus_const_union_ordering_with_nullable_strip():
     the remaining null branch by collapsing consts and keeping nullability as
     a hint.
     """
-    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    from tools.mcp.schema import _normalize_mcp_input_schema
 
     schema = {
         "type": "object",
@@ -498,7 +498,7 @@ def test_null_plus_const_union_ordering_with_nullable_strip():
 
 
 def test_normalize_mcp_input_schema_collapses_const_unions():
-    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    from tools.mcp.schema import _normalize_mcp_input_schema
 
     schema = {
         "type": "object",
@@ -535,7 +535,7 @@ def test_normalize_mcp_input_schema_preserves_constraint_fragments():
     failed client-side validation while the MCP server was healthy.
     """
     from jsonschema.validators import Draft202012Validator  # what tool_search_validation selects
-    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    from tools.mcp.schema import _normalize_mcp_input_schema
 
     out = _normalize_mcp_input_schema({
         "type": "object",
@@ -563,7 +563,7 @@ def test_normalize_mcp_input_schema_preserves_constraint_fragments():
 def test_normalize_mcp_input_schema_still_repairs_declared_objects():
     """The dangling-``required`` repair (PR #4651, Gemini 400s otherwise) still fires on the
     root and on nested nodes that declare ``properties``/``type`` — only bare fragments are exempt."""
-    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+    from tools.mcp.schema import _normalize_mcp_input_schema
 
     out = _normalize_mcp_input_schema({
         "type": "object",

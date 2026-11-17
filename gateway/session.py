@@ -231,7 +231,7 @@ def _slack_tools_loaded() -> bool:
     intentionally not per-session). False on any error so a bad config never promises tools.
     """
     try:
-        from tools.mcp_tool_discovery import get_registered_mcp_server_names
+        from tools.mcp.discovery import get_registered_mcp_server_names
         if any("slack" in name.lower() for name in get_registered_mcp_server_names()):
             return True
     except Exception:

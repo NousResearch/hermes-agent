@@ -1833,7 +1833,7 @@ def _init_cron_mcp_tools(job_id: str) -> None:
         # paths called discover_mcp_tools() at startup. Idempotent: subsequent ticks short-circuit on
         # already-connected servers inside register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
-        from tools.mcp_tool_discovery import discover_mcp_tools
+        from tools.mcp.discovery import discover_mcp_tools
         _mcp_tools = discover_mcp_tools()
         if _mcp_tools:
             logger.info("Job '%s': %d MCP tool(s) available", job_id, len(_mcp_tools))
@@ -2381,7 +2381,7 @@ class _CronRunScope:
         # concurrent jobs); copy_context() carries it into the agent thread.
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
         # Each run is its own MCP spend "chat" (its approval session key is "" for every job).
-        from tools.mcp_tool_costs import bind_run
+        from tools.mcp.costs import bind_run
         self._spend_token = bind_run(self.task_id)
 
     def exit(self) -> None:
@@ -2395,7 +2395,7 @@ class _CronRunScope:
         if self._non_dispatcher_token is not None:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
         if self._spend_token is not None:
-            from tools.mcp_tool_costs import unbind_run
+            from tools.mcp.costs import unbind_run
             unbind_run(self._spend_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
@@ -4209,10 +4209,10 @@ def _resolve_max_parallel_workers() -> Optional[int]:
 
 
 def _sweep_mcp_orphans() -> None:
-    """Reap MCP stdio orphans (only PIDs flagged by tools.mcp_tool._run_stdio's finally block);
+    """Reap MCP stdio orphans (only PIDs flagged by tools.mcp.client._run_stdio's finally block);
     run AFTER jobs finish so live sessions are never touched."""
     try:
-        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children
+        from tools.mcp.lifecycle import _kill_orphaned_mcp_children
         _kill_orphaned_mcp_children()
     except Exception as _e:
         logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)

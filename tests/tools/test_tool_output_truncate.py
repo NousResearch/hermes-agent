@@ -35,7 +35,7 @@ def test_terminal_result_truncation(monkeypatch):
 
 
 def test_mcp_result_truncation():
-    from tools.mcp_tool_content import _truncate_mcp_text_result
+    from tools.mcp.content import _truncate_mcp_text_result
     info = _assert_head_tail(_truncate_mcp_text_result(TEXT, max_chars=1000), budget=1000, total=10_000)
     assert info["label"] == "MCP RESULT"
 

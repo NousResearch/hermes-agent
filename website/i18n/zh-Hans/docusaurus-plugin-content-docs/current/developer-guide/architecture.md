@@ -102,7 +102,7 @@ hermes-agent/
 │   ├── browser_tool.py       # 10 个浏览器自动化工具
 │   ├── code_execution_tool.py # execute_code 沙箱
 │   ├── delegate_tool.py      # 子 agent 委托
-│   ├── mcp_tool.py           # MCP 客户端（大文件）
+│   ├── mcp/                  # MCP 客户端（包）
 │   ├── credential_files.py   # 基于文件的凭据透传
 │   ├── env_passthrough.py    # 沙箱环境变量透传
 │   ├── ansi_strip.py         # ANSI 转义字符剥离

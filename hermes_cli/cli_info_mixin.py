@@ -992,10 +992,10 @@ class CLIInfoMixin:
         if (connection := connection_for(self)) is not None:
             return self._reload_gateway_mcp(connection)
         try:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            from tools.mcp_tool_discovery import discover_mcp_tools
+            from tools.mcp.lifecycle import shutdown_mcp_servers
+            from tools.mcp.discovery import discover_mcp_tools
             from tools.mcp_tool_agent import reprobe_tool_availability
-            from tools.mcp_tool import _servers, _lock
+            from tools.mcp.client import _servers, _lock
             with _lock:
                 old_servers = set(_servers.keys())
             if not self._command_running:

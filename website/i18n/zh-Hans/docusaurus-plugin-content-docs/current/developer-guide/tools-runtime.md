@@ -53,7 +53,7 @@ registry.register(
 def discover_builtin_tools(tools_dir=None):
     tools_path = Path(tools_dir) if tools_dir else Path(__file__).parent
     for path in sorted(tools_path.glob("*.py")):
-        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+        if path.name in {"__init__.py", "registry.py"}:
             continue
         if _module_registers_tools(path):  # AST 检查顶层 registry.register()
             importlib.import_module(f"tools.{path.stem}")
@@ -65,7 +65,7 @@ def discover_builtin_tools(tools_dir=None):
 
 核心工具发现完成后，还会发现 MCP 工具和插件工具：
 
-1. **MCP 工具** — `tools.mcp_tool.discover_mcp_tools()` 读取 MCP 服务器配置，并注册来自外部服务器的工具。
+1. **MCP 工具** — `tools.mcp.client.discover_mcp_tools()` 读取 MCP 服务器配置，并注册来自外部服务器的工具。
 2. **插件工具** — `hermes_cli.plugins.discover_plugins()` 加载用户/项目/pip 插件，这些插件可能注册额外的工具。
 
 ## 工具可用性检查（`check_fn`）

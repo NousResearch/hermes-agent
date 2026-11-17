@@ -48,7 +48,7 @@ const parseBoolish = (value: unknown): boolean | undefined => {
 }
 
 /** Whether a server entry is on. Mirrors the backend's one reader
- *  (`tools/mcp_tool_common.py::mcp_server_enabled`): false/0 and the off words
+ *  (`tools/mcp/common.py::mcp_server_enabled`): false/0 and the off words
  *  (any case, trimmed) are off; absent, `null`, `""` and junk are on. A truthy
  *  legacy `disabled` wins over `enabled`.
  *  `mcp-enabled-cases.json` pins both sides to the same table, so the MCP page

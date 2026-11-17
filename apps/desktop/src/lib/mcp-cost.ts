@@ -45,13 +45,13 @@ export function estimateServerTokens(
   return sawSchema ? total : null
 }
 
-/** Mirror of `sanitize_mcp_name_component` in tools/mcp_tool.py: hyphens (and
+/** Mirror of `sanitize_mcp_name_component` in tools/mcp/client.py: hyphens (and
  *  anything else outside `[A-Za-z0-9_]`) become underscores. */
 export const sanitizeMcpNameComponent = (value: string): string => value.replace(/[^A-Za-z0-9_]/g, '_')
 
 /** Registry-name prefix for one server's tools. MCP tools register (and show
  *  up in usage analytics) as `mcp__<server>__<tool>` — the convention pinned
- *  by `mcp_prefixed_tool_name` in tools/mcp_tool.py. */
+ *  by `mcp_prefixed_tool_name` in tools/mcp/client.py. */
 export const mcpServerUsagePrefix = (serverName: string): string => `mcp__${sanitizeMcpNameComponent(serverName)}__`
 
 /**

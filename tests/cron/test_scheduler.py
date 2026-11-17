@@ -1120,7 +1120,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
-             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+             patch("tools.mcp.discovery.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1172,7 +1172,7 @@ class TestRunJobConfigEnvVarExpansion:
              patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
-             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+             patch("tools.mcp.discovery.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}

@@ -1869,8 +1869,8 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
     same gate the CLI's background discovery uses. An expired token then parks the server with an
     actionable ``hermes mcp login`` warning instead of opening an authorize tab.
     """
-    from tools.mcp_oauth import suppress_interactive_oauth
-    from tools.mcp_tool_discovery import discover_mcp_tools
+    from tools.mcp.oauth import suppress_interactive_oauth
+    from tools.mcp.discovery import discover_mcp_tools
     loop = asyncio.get_running_loop()
     with suppress_interactive_oauth():
         if not getattr(config, "multiplex_profiles", False):
@@ -4542,8 +4542,8 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
     pass_timeout = max(1.0, timeout / (len(profile_homes) + 1))
 
     def _do() -> None:
-        from tools.mcp_tool_common import _core
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        from tools.mcp.common import _core
+        from tools.mcp.lifecycle import shutdown_mcp_servers
         for profile_name, profile_home in profile_homes:
             try:
                 with _profile_runtime_scope(Path(profile_home), hydrate_secrets=False):

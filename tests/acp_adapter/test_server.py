@@ -661,7 +661,7 @@ class TestRegisterSessionMcpServers:
             pinned_cwd["value"] = resolve_context_cwd()  # the stdio default cwd reads this pin
             return ["mcp_test_server_tool1"]
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=capture_register), \
+        with patch("tools.mcp.discovery.register_mcp_servers", side_effect=capture_register), \
              patch("model_tools.get_tool_definitions", return_value=[]):
             await agent._register_session_mcp_servers(state, [server])
 
@@ -704,7 +704,7 @@ class TestRegisterSessionMcpServers:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp_srv_search"]), \
+        with patch("tools.mcp.discovery.register_mcp_servers", return_value=["mcp_srv_search"]), \
              patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
@@ -745,7 +745,7 @@ class TestRegisterSessionMcpServers:
             env=[],
         )
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
+        with patch("tools.mcp.discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
 

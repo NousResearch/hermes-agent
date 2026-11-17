@@ -7,9 +7,9 @@ import json
 import threading
 from collections import OrderedDict
 from typing import Optional
-from tools.mcp_tool_common import _core
+from tools.mcp.common import _core
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("tools.mcp.client")
 
 # Serializes in-place swaps of ``agent.tools`` / ``agent.valid_tool_names`` by
 # the reload RPC, gateway reload and late-binding refresh thread; the run loop

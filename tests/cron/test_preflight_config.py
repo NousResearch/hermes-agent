@@ -75,7 +75,7 @@ def _run_job_patched(job, tmp_path, *, resolve=None, skill_view=None):
         patch("cron.scheduler_delivery._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
-        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]),
+        patch("tools.mcp.discovery.discover_mcp_tools", return_value=[]),
     ]
     if resolve is None:
         patches.append(
@@ -142,7 +142,7 @@ class TestMissingProviderKeyBlocks:
                      patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                      patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                     patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+                     patch("tools.mcp.discovery.discover_mcp_tools", return_value=[]), \
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
                      patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
@@ -274,7 +274,7 @@ class TestOptOut:
                      patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                      patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                     patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+                     patch("tools.mcp.discovery.discover_mcp_tools", return_value=[]), \
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
                      patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \

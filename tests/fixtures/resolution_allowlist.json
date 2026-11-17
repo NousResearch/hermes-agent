@@ -499,22 +499,22 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/mcp_tool_config.py",
+    "path": "tools/mcp/config.py",
     "symbol": "_resolve_stdio_command",
     "kind": "bare_which"
   },
   {
-    "path": "tools/mcp_tool_config.py",
+    "path": "tools/mcp/config.py",
     "symbol": "_managed_launcher",
     "kind": "bare_which"
   },
   {
-    "path": "tools/mcp_tool_config.py",
+    "path": "tools/mcp/config.py",
     "symbol": "_outside_package",
     "kind": "bare_which"
   },
   {
-    "path": "tools/mcp_tool_config.py",
+    "path": "tools/mcp/config.py",
     "symbol": "_packaged_npx_entry",
     "kind": "bare_which"
   },

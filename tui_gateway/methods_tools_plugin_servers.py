@@ -22,9 +22,9 @@ def _plugin_server_rows(
     if not isinstance(declared, dict):
         return []
     server_name_for = _tools_mod("hermes_cli.plugins_manifest").portable_mcp_server_name
-    liveness = _tools_mod("tools.mcp_liveness")
-    core = _tools_mod("tools.mcp_tool_common")._core
-    resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
+    liveness = _tools_mod("tools.mcp.liveness")
+    core = _tools_mod("tools.mcp.common")._core
+    resolve_key = _tools_mod("tools.mcp.scope")._resolve_server_key
     # The server sentence's app name: the curated catalog title when the package is a catalog
     # install, else the manifest name, else the server slug the declaration carries — a raw
     # slug reads like an error code (#119975). *catalog_titles* is pre-resolved by the caller
@@ -63,7 +63,7 @@ def _server_identity(cfg: object) -> tuple:
     widening the package server's trust; anything else is the user's own, different server. Both
     sides compare after the connect-time ``${VAR}`` expansion (``load_config`` already expanded the
     native entry; the package's declaration keeps its placeholders until connect)."""
-    cfg = _tools_mod("tools.mcp_tool_config")._interpolate_env_vars(cfg if isinstance(cfg, dict) else {})
+    cfg = _tools_mod("tools.mcp.config")._interpolate_env_vars(cfg if isinstance(cfg, dict) else {})
     args = cfg.get("args") or ()
     return (str(cfg.get("command") or ""), tuple(str(a) for a in (args if isinstance(args, list) else [args])),
             str(cfg.get("url") or ""))
@@ -73,8 +73,8 @@ def _portable_server_tools(manager, native: dict) -> dict[str, set[str]]:
     """Tools each portable package's own MCP servers registered: live connections plus lazily
     cached (not yet connected) ones. A name the user's native config claims for a different server
     credits no package: the native entry is the one that runs (``_portable_mcp_servers``)."""
-    core = _tools_mod("tools.mcp_tool_common")._core
-    resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
+    core = _tools_mod("tools.mcp.common")._core
+    resolve_key = _tools_mod("tools.mcp.scope")._resolve_server_key
     declared = manager.get_portable_mcp_servers()
     listed: dict[str, set[str]] = {}
     for server_name, owner in manager.get_portable_mcp_server_plugins().items():

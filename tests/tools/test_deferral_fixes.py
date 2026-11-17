@@ -72,9 +72,9 @@ def mcp_pair(monkeypatch):
 
     Registers via the actual registry (so ``resolve_underlying_call``'s
     deferability check passes) and marks the server parallel-safe through
-    the real provenance maps in ``tools.mcp_tool``.
+    the real provenance maps in ``tools.mcp.client``.
     """
-    from tools import mcp_tool
+    from tools.mcp import client as mcp_tool
     from tools.registry import registry
 
     names = ["mcp__pytestsrv__alpha_read", "mcp__pytestsrv__beta_read"]
@@ -109,7 +109,7 @@ class TestBridgePeelInPlanner:
         assert _flatten_ids(segments) == ["a", "b"]
 
     def test_bridged_call_to_non_opted_in_tool_stays_sequential(self, mcp_pair):
-        from tools import mcp_tool
+        from tools.mcp import client as mcp_tool
 
         with mcp_tool._lock:
             mcp_tool._parallel_safe_servers.discard("pytestsrv")

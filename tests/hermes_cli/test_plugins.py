@@ -216,7 +216,7 @@ class TestPluginDiscovery:
         # fits the 64-char provider cap with the tool verb intact instead of being hash-clamped.
         [internal_name] = manager.get_portable_mcp_servers()
         assert internal_name == "worker"
-        from tools.mcp_tool_schema import mcp_prefixed_tool_name
+        from tools.mcp.schema import mcp_prefixed_tool_name
         wire = mcp_prefixed_tool_name(internal_name, "nvapp_client_get_driver_status")
         assert wire.endswith("__nvapp_client_get_driver_status") and len(wire) <= 64
         assert manager._plugins["portable.test"].enabled is True

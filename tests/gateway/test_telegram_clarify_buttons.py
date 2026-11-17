@@ -355,6 +355,80 @@ class TestTelegramClarifyPromptBinding:
 
 
 # ===========================================================================
+# Card prefix — rendered once from the locale key, never re-added by an edit
+# ===========================================================================
+
+class TestTelegramClarifyCardPrefix:
+    """Every card edit rebuilds from ``query.message.text``, which Telegram hands back with the
+    rendered prefix already in it, so an edit must not add the prefix a second time."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    async def _ask_and_render(self, adapter):
+        from tools import clarify_gateway as cm
+        cm.register("cid-prefix", "sk-prefix", "Proceed?", ["yes", "no"])
+        sent = MagicMock(message_id=100, chat_id=12345, message_thread_id=None)
+        adapter._bot.send_message = AsyncMock(return_value=sent)
+        await adapter.send_clarify(chat_id="12345", question="Proceed?", choices=["yes", "no"],
+                                   clarify_id="cid-prefix", session_key="sk-prefix")
+        return adapter._bot.send_message.call_args[1]["text"]
+
+    async def _tap(self, adapter, token, card_text):
+        query = AsyncMock()
+        query.data = f"cl:cid-prefix:{token}"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 100
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.message.text = card_text  # what Telegram returns on a tap: the card as rendered
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Owner"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+        return query.edit_message_text.call_args[1]["text"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("token, expire", [("0", False), ("other", False), ("0", True)],
+                             ids=["choice", "other", "expired"])
+    async def test_edit_keeps_a_single_prefix(self, token, expire):
+        adapter = _make_adapter()
+        card = await self._ask_and_render(adapter)
+        assert card.startswith("❓ Proceed?")
+        if expire:
+            _clear_clarify_state()  # the entry is gone (timeout, restart) between ask and tap
+        edited = await self._tap(adapter, token, card)
+        assert edited.startswith("❓ Proceed?")
+        assert edited.count("❓") == 1
+
+    @pytest.mark.asyncio
+    async def test_locale_override_restyles_the_card_and_its_edits(self, tmp_path, monkeypatch):
+        from agent import i18n
+
+        home = tmp_path / "home"
+        (home / "locales").mkdir(parents=True)
+        (home / "locales" / "en.yaml").write_text(
+            'gateway:\n  clarify:\n    question: "{question}"\n', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+        i18n.reset_language_cache()
+        try:
+            adapter = _make_adapter()
+            card = await self._ask_and_render(adapter)
+            edited = await self._tap(adapter, "0", card)
+        finally:
+            i18n.reset_language_cache()
+        assert card.startswith("Proceed?")
+        assert "❓" not in card + edited
+
+
+# ===========================================================================
 # Base adapter fallback render — text numbered list
 # ===========================================================================
 

@@ -78,7 +78,8 @@ class Fork:
 
 def fork_name(session_key: str) -> str:
     """Deterministic, filesystem- and ref-safe name for a chat thread's fork."""
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", session_key).strip("-._")[-24:].strip("-._")
+    route = re.sub(r"^agent:[^:]*:", "", session_key)  # the profile namespace is the same for every thread
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", route).strip("-._")[-40:].strip("-._")
     digest = hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:8]
     return f"thread-{slug}-{digest}" if slug else f"thread-{digest}"
 

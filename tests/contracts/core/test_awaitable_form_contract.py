@@ -95,6 +95,10 @@ class _Probe:
     def overloaded(self) -> None:
         raise StoreContention("write waited its whole patience")
 
+    def _private(self) -> str:
+        """A real private method: the awaitable view must refuse it by name, not because it is missing."""
+        return "private"
+
 
 def test_the_default_view_runs_off_the_loop_thread_with_the_callers_context():
     executor_store = ThreadPoolExecutor(max_workers=1)
@@ -114,6 +118,7 @@ def test_the_default_view_runs_off_the_loop_thread_with_the_callers_context():
         assert (refused.value.session_id, refused.value.message_count, refused.value.limit) == ("s", 9, 3)
         with pytest.raises(AttributeError):
             repository._private
+        assert _Probe()._private() == "private"
     finally:
         executor_store.shutdown(wait=True)
 

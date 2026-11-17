@@ -1386,20 +1386,29 @@ def _with_local_runtime_row(providers: list[dict], current_provider: str, curren
     return rows
 
 
-def _openrouter_row_is_pinned(row: dict) -> bool:
-    """Keep a ``providers.openrouter`` allowlist when ``discover_models`` is false.
+def _pinned_openrouter_models(user_providers: dict | None) -> list[str] | None:
+    """Return an explicit pinned OpenRouter list, regardless of the row's origin.
 
-    The curated OpenRouter snapshot otherwise replaces that row and puts models back
-    on the picker that this host's pin list already dropped.
+    A credentialed OpenRouter row is built-in (``is_user_defined`` false). Section 3
+    then skips the slug, so a pin keyed on that flag never fires and the curated
+    catalog replaces ``providers.openrouter.models``.
     """
-    if not row.get("is_user_defined"):
-        return False
-    try:
-        from hermes_cli.config import load_config
-        cfg = (load_config().get("providers") or {}).get("openrouter")
-    except Exception:
-        return False
-    return isinstance(cfg, dict) and cfg.get("discover_models") is False and bool(cfg.get("models"))
+    if user_providers is None:
+        try:
+            from hermes_cli.config import load_config
+            user_providers = load_config().get("providers")
+        except Exception:
+            return None
+    cfg = user_providers.get("openrouter") if isinstance(user_providers, dict) else None
+    if not isinstance(cfg, dict) or _discover_flag(cfg):
+        return None
+    from hermes_cli.model_switch import (
+        _declared_model_ids, _entry_models_discovered, _models_config_is_allowlist,
+    )
+    models = cfg.get("models")
+    if not _models_config_is_allowlist(models, _entry_models_discovered(cfg)):
+        return None
+    return _declared_model_ids(models)
 
 
 def list_picker_providers(
@@ -1430,11 +1439,15 @@ def list_picker_providers(
 
     filtered: list[dict] = []
     for p in providers:
-        if str(p.get("slug", "")).lower() == "openrouter" and not _openrouter_row_is_pinned(p):
-            try:
-                live_ids = [mid for mid, _ in fetch_openrouter_models(cache_only=non_blocking_catalogs)]
-            except Exception:
-                live_ids = list(p.get("models", []))
+        if str(p.get("slug", "")).lower() == "openrouter":
+            pinned_ids = _pinned_openrouter_models(user_providers)
+            if pinned_ids is not None:
+                live_ids = pinned_ids
+            else:
+                try:
+                    live_ids = [mid for mid, _ in fetch_openrouter_models(cache_only=non_blocking_catalogs)]
+                except Exception:
+                    live_ids = list(p.get("models", []))
             p = dict(p)
             p["models"] = _cap_models(live_ids, max_models, "openrouter")
             p["total_models"] = len(live_ids)

@@ -37,3 +37,17 @@ def test_pinned_allowlist_is_kept(monkeypatch):
 def test_discovery_on_still_uses_the_catalog(monkeypatch):
     _setup(monkeypatch, {"models": ["anthropic/claude-sonnet-5-5"]})
     assert "x-ai/grok-5" in _openrouter_models()
+
+
+def test_builtin_openrouter_row_honors_pinned_allowlist(monkeypatch):
+    """An authenticated built-in row is not marked is_user_defined by the lister."""
+    _setup(monkeypatch, {"discover_models": False, "models": ["anthropic/claude-sonnet-5-5"]})
+    # Sections 1/2 emit this row when OPENROUTER_API_KEY is present. Section 3
+    # skips the already-seen slug, so the guard must not require is_user_defined.
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_kw: [{
+        "slug": "openrouter", "name": "OpenRouter", "is_current": False,
+        "is_user_defined": False, "source": "built-in",
+        "models": ["anthropic/claude-sonnet-5-5", "openai/gpt-5.4"],
+        "total_models": 2,
+    }])
+    assert _openrouter_models() == ["anthropic/claude-sonnet-5-5"]

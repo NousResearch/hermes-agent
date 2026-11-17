@@ -22,9 +22,8 @@
  * per the windows-child-options.ts convention.
  */
 
-/** Values that turn the feature OFF when HERMES_DESKTOP_RENDERER_ACCESSIBILITY
- *  carries them (same words the launcher accepts for false). */
-const RENDERER_ACCESSIBILITY_OFF_WORDS = new Set(['0', 'false', 'no', 'off', 'disabled'])
+/** Only recognized positive values may force the renderer accessibility tree. */
+const RENDERER_ACCESSIBILITY_ON_WORDS = new Set(['1', 'true', 'yes', 'on', 'enabled'])
 
 /** Whether this boot must expose the renderer's accessibility tree to the OS.
  *
@@ -44,7 +43,7 @@ export function shouldEnableRendererAccessibility(
 
   const raw = (env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY ?? '').trim().toLowerCase()
 
-  return raw.length > 0 && !RENDERER_ACCESSIBILITY_OFF_WORDS.has(raw)
+  return RENDERER_ACCESSIBILITY_ON_WORDS.has(raw)
 }
 
 /** Bridge the packaged launch config without overriding an explicit environment value. */

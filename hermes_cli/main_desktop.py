@@ -1330,7 +1330,7 @@ def _detect_linux_password_store() -> str | None:
     return None
 
 
-_A11Y_OFF_WORDS = frozenset(("0", "false", "no", "off", "disabled"))
+_A11Y_ON_WORDS = frozenset(("1", "true", "yes", "on", "enabled"))
 
 
 def _desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
@@ -1371,9 +1371,9 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
         # YAML resolves a bare `0`/`0.0` to int/float, not str — the unquoted
         # off-switch a user actually writes must work too.
         # Checked after bool: bool is an int subclass in Python.
-        renderer_accessibility = bool(raw_a11y)
+        renderer_accessibility = raw_a11y == 1
     elif isinstance(raw_a11y, str):
-        renderer_accessibility = bool(raw_a11y.strip()) and raw_a11y.strip().lower() not in _A11Y_OFF_WORDS
+        renderer_accessibility = raw_a11y.strip().lower() in _A11Y_ON_WORDS
     return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
 
 

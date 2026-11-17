@@ -32,6 +32,21 @@ test('shouldEnableRendererAccessibility honors the opt-out env bridge', () => {
   assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: '1' }, 'darwin'), true)
 })
 
+test('unrecognized environment values never force accessibility', () => {
+  for (const platform of ['darwin', 'win32'] as const) {
+    for (const invalid of ['wibble', '2', '-1', 'auto']) {
+      assert.equal(
+        shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: invalid }, platform),
+        false,
+        `invalid value ${invalid} must not opt in on ${platform}`
+      )
+    }
+    for (const enabled of ['true', 'yes', 'ON', ' enabled ']) {
+      assert.equal(shouldEnableRendererAccessibility({ HERMES_DESKTOP_RENDERER_ACCESSIBILITY: enabled }, platform), true)
+    }
+  }
+})
+
 test('enableRendererAccessibility flips the injected Electron switch exactly when enabled', () => {
   const recorded: boolean[] = []
   const appApi = { setAccessibilitySupportEnabled: (enabled: boolean) => recorded.push(enabled) }

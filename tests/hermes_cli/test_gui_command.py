@@ -1195,9 +1195,10 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
         (0, False),
         (1, True),
         (0.0, False),
-        # Unknown strings don't disable the feature (fail-open, like the
-        # other desktop launch options fail to "auto").
-        ("wibble", True),
+        # Unknown values must not silently force OS accessibility APIs.
+        ("wibble", False),
+        (2, False),
+        (-1, False),
     ],
 )
 def test_desktop_launch_options_normalizes_renderer_accessibility(raw, expected):

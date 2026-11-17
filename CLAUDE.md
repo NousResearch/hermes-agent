@@ -701,11 +701,26 @@ Design: "The boundary" / "Autonomy levels" / "Dependencies → 5" in
 Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowers/plans/2026-11-17-boundary-enforcement.md).
 (5c, the self-modification guard, is multiplex fix 4e — `agent_write_guard`.)
 
+- **Strict config reader** — [agent/boundary_config.py](agent/boundary_config.py)
+  `read_boundary_config`. `read_raw_config` returns `{}` for a config.yaml
+  that fails to parse, which for a boundary means "every guard off" — one
+  YAML typo during an admin's level edit. Every boundary check (write guard,
+  posting policy in `slack_post_thread` / cron / gated ingress /
+  `send_message`, 4e `agent_write_guard`, autonomy levels, the Zendesk and
+  posting preconditions) reads through it instead: a parse error, empty file
+  or non-mapping returns the **last known good parse of that path** in this
+  process, and with none an `UnreadableConfig` deny sentinel (writes and
+  posts refused, write guard + 4e ON, autonomy `off`, inbound ignored). A
+  missing file is "not configured" only if no good parse was ever seen.
+  Logged at ERROR once per file version. Gated ingress also fails closed on
+  any exception.
 - **Notion write guard** — [tools/notion_write_guard.py](tools/notion_write_guard.py),
   enforced inside `notion_api` (before `ntn` runs) AND in the `model_tools`
   execution backstop, fail-closed. Config under the profile's
   `notion.write_guard` (`enabled`, `release_kits.data_sources` = Releases +
-  Release Assets, `prds.data_sources` = Detailed Bucket Features,
+  Release Assets (`prd_relation_property`, default `PRD`),
+  `prds.data_sources` = Detailed Bucket Features (`transitions`,
+  `back_relation_property`),
   `ideas.data_sources`, optional `writable_pages` = its home page; property
   names / status values overridable — the rules are data). It resolves the
   REAL target of each write: `pages/<id>`, `pages/<id>/markdown`,
@@ -715,15 +730,23 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   DELETE, no `archived`/`in_trash`/`is_archived` key, no schema/move/unknown
   endpoint; Release Kit rows only `Status=Draft` (explicit on create) and only
   while Draft — any other status is read-only; PRDs only `Release Comms
-  Status` → `In progress`/`Done`; Ideas created at `Proposed`, only its OWN
+  Status` along `Not started → In progress → Done` (never from Not needed /
+  A part of a bigger module); Ideas created at `Proposed`, only its OWN
   rows (`created_by` = the integration's bot user via `v1/users/me`) along
   `own_transitions`, never Accepted/Rejected/Parked or `Decision note`;
   `writable_pages` and descendants free; everything else refused.
   Properties referenced by id (URL-encoded or not) are mapped to names; a
-  status set by option id or `null` is refused. A **relation** write is
-  allowed only if every page added or removed is itself writable (Notion
-  updates the other side of a two-way relation — otherwise editing a Draft
-  row could rewrite an Approved row's links and the Jira keys 5b checks).
+  status set by option id or `null` is refused. A two-way (or unknown)
+  **relation** write is allowed only if every page added or removed is
+  itself writable (Notion updates the other side — otherwise editing a Draft
+  row could rewrite an Approved row's links); `single_property` relations
+  don't write the far side and aren't checked. The one way into a PRD: a
+  Draft Release Kit row's `prd_relation_property` may be **set once** (from
+  empty) to PRD pages — never removed or repointed, since that link decides
+  which tickets gate the release's posts; if two-way, its PRD side must be
+  exactly `prds.back_relation_property`. Create bodies need exactly one
+  parent id key (matching `parent.type`); `synced_from` / synced blocks are
+  refused.
   `allow_deleting_content` (markdown `replace_content`) and `child_database`
   anywhere in a body are refused. **The guard requires `agent_write_guard`**
   (4e) in the same config.yaml — without it the block is invalid (deny all
@@ -749,7 +772,8 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   for Slack targets; a job whose every target was refused gets the
   owner-DM failure alert (`_send_dm`, unaffected by the policy). The
   gateway also treats a profile's gated channels as **ignored inbound**
-  (`_slack_source_gated`), so the bot never answers there, even mentioned.
+  (`_slack_source_gated`), so the bot never answers there, even mentioned;
+  `send_message`'s Slack path checks the same policy.
 - **Gated release updates** — [tools/release_update_post.py](tools/release_update_post.py),
   reached via `slack_post_thread(chat_id=<gated>, release_asset_row_id=…)`
   (no `message`, no `thread_ts`). Fresh row read: parent = Release Assets
@@ -758,20 +782,29 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   Approved per `autonomy.actions.post_release_update` (built for off /
   signoff / veto / auto; `auto` skips only the Approved check, and veto/auto
   act on a not-yet-Approved row only from `pre_approval_statuses`, default
-  Draft / In review — a rejected row never posts). Every Jira
-  key on the row's `jira_key_properties` and on pages reached through
-  `jira_relation_properties` (two hops, e.g. row → Release → PRD) must be in
-  `jira_done_statuses` (default `Done`) — read with `get_secret` creds and
-  `jira_api_tool._jira_request`; no key found or a truncated relation
-  (`has_more`) refuses. The post is the row body as escaped mrkdwn
+  Draft / In review — a rejected row never posts). The gating Jira keys come
+  **only from the linked PRD** — `prd_relation_path` (default `[Release,
+  PRD]`) to pages in the PRD data source (`release_updates.prd_data_sources`,
+  else `notion.write_guard.prds.data_sources`), its `prd_jira_property`
+  (`JIRA`) — never from the agent-drafted row; each must be in
+  `jira_done_statuses` (default `Done`), read with `get_secret` creds and
+  `jira_api_tool._jira_request`. No PRD, no key, or a truncated relation
+  refuses; veto/auto also need the PRD's `Release Comms Status = In
+  progress`. The post is the row body as escaped mrkdwn
   (`notion_blocks_html.render_blocks_mrkdwn`; tables/unknown blocks refused,
   images refused unless `omit_images`; page/database/link **mentions** are
   refused in both renderers because their text is the target's live title). Then the **only 5a exception**:
   `release_asset_gate.update_page_properties` PATCHes a fixed body
   (`Published URL` = permalink, `Status` = Published) directly, never via
-  `notion_api`. One post per row (O_EXCL lock + ledger under `autonomy/`);
-  a failed writeback is recorded and retried by the next call, never
-  reposted. Veto: announced (with a preview) in `autonomy.announce_channel`,
+  `notion_api`. One post per row (O_EXCL lock + ledger under `autonomy/`):
+  an `in_flight` ledger entry is written BEFORE the Slack call, so a failure
+  after it starts (a timeout after Slack accepted it) blocks the row until an
+  operator checks Slack and removes
+  `autonomy/ledger/post_release_update/<row>.json`; a Slack `ok: false`
+  (`SlackRejected`) clears it. A failed writeback is recorded and retried by
+  the next call, never reposted. Veto: announced in
+  `autonomy.announce_channel` with the PRD(s), the ticket set and the FULL
+  text it will post (all three are in the veto sha, so a change is `stale`),
   posted after the window by `slack_post_thread(run_due=true)` or `python -m
   tools.release_update_post run-due`, unless ❌ / Hold / content change
   (`stale`) / expiry; a reopened Jira ticket keeps it pending; a row already

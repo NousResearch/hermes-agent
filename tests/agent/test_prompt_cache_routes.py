@@ -23,9 +23,9 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _obs(model, *, explicit=True, read=0, write=0, gap=10.0, tier=3600.0, at=_T0):
+def _obs(model, *, explicit=True, read=0, write=0, gap=10.0, tier=3600.0, at=_T0, replay=False):
     routes.observe(provider="nous", base_url=_NOUS, model=model, explicit=explicit, read=read, write=write,
-                   gap_s=gap, tier_s=tier, now=at)
+                   gap_s=gap, tier_s=tier, now=at, replay=replay)
 
 
 def _agent(model):
@@ -47,8 +47,11 @@ def test_a_a_route_that_never_reads_back_is_learned_no_cache_and_loses_its_marke
 
 def test_b_a_route_that_rewrites_on_every_hit_gets_no_keep_alives(home, monkeypatch):
     monkeypatch.setattr(routes.time, "time", lambda: _T0)
-    for _ in range(2):
-        _obs("google/gemini-3.5-flash", read=8582, write=8582)
+    for _ in range(2):  # ordinary tool rounds that read the prefix and appended as much: proves nothing
+        _obs("openai/gpt-6", read=8582, write=8582)
+    assert routes.rule_for("nous", _NOUS, "openai/gpt-6", True) is None
+    for _ in range(2):  # keep-alives re-sent the prefix unchanged and it was written again
+        _obs("google/gemini-3.5-flash", read=8582, write=8582, replay=True)
     assert learned_window(_agent("google/gemini-3.5-flash"), (_T0 + 3600, 3600.0), True) == (None, "write-on-hit")
     _obs("qwen/qwen3.7-max", read=30_597, write=14)  # a normal hit writes only the new tail
     _obs("qwen/qwen3.7-max", read=30_597, write=14)

@@ -53,13 +53,13 @@ def _spend_budget(agent, *, due_at=_SENT + 54 * 60):
 
     window = cache_window(agent)
     warmer = pcl.get_prompt_cache_warmer(agent)
-    warmer._spent = pcl._Spent(due_at, window.guaranteed_until or 0.0, TTL_SECONDS.get(window.tier or "", 0),
-                               context_witness(agent))
+    warmer._spent = pcl._Spent(due_at, TTL_SECONDS.get(window.tier or "", 0), context_witness(agent))
     return agent
 
 
 def cache_expiry_compaction_due(agent, *, now):
-    return pcl.compaction_due(agent, now=now)
+    reason = pcl.get_prompt_cache_warmer(agent).edge_decision(now=now).compact
+    return reason == "due", reason
 
 
 def test_a_spent_budget_compacts_once_per_idle_stretch(monkeypatch):
@@ -71,7 +71,7 @@ def test_a_spent_budget_compacts_once_per_idle_stretch(monkeypatch):
     # Past the deadline still due: the summary never replays the cached prefix.
     assert cache_expiry_compaction_due(agent, now=_SENT + 61 * 60) == (True, "due")
     # Claimed once: an attempt that committed nothing is not retried in the same idle stretch.
-    assert pcl.claim_compaction(agent, now=_SENT + 54 * 60) is True
+    assert pcl.get_prompt_cache_warmer(agent).claim_edge(now=_SENT + 54 * 60) == "compact"
     assert cache_expiry_compaction_due(agent, now=_SENT + 55 * 60) == (False, "compacted_this_stretch")
 
 

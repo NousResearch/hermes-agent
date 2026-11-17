@@ -13,7 +13,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import agent.prompt_cache_lifecycle as pcl
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionSource
 from tests.waiting import async_wait_until
@@ -42,13 +41,15 @@ class _Store:
 
 
 class _Warmer:
-    """The live warmer the release decision reads: a budget still running (keep-alives left)."""
+    """The live warmer the release decision reads: ``claim_edge(releasing=True)`` answers *action*."""
 
-    def __init__(self):
-        self.cancelled = []
+    def __init__(self, events, action):
+        self.events, self.action = events, action
 
-    def cancel(self, reason):
-        self.cancelled.append(reason)
+    def claim_edge(self, *, releasing=False, now=None):
+        self.events.append("claimed")
+        assert releasing
+        return self.action
 
 
 def _runner(monkeypatch, *, due):
@@ -64,17 +65,12 @@ def _runner(monkeypatch, *, due):
     runner.session_authority = None
     runner._running = True
     runner._gateway_loop = asyncio.get_running_loop()
-    agent = SimpleNamespace(session_id="s1", _prompt_cache_warmer=_Warmer(), _last_activity_ts=0.0)
+    events = []
+    agent = SimpleNamespace(session_id="s1", _prompt_cache_warmer=_Warmer(events, "compact" if due else None),
+                            _last_activity_ts=0.0)
     runner._agent_cache = {"k1": (agent, "sig")}
     runner._agent_cache_lock = threading.Lock()
     runner._agent_cache_bounds_cache = SimpleNamespace(idle_ttl_secs=60.0, max_size=None)
-    events = []
-
-    def claim(a, **_):
-        events.append("claimed")
-        return due
-
-    monkeypatch.setattr(pcl, "claim_compaction_at_release", claim)
 
     async def compress(src, ent, history, request, *, trigger=None):
         events.append(("compacted", ent.session_id, trigger))

@@ -132,12 +132,12 @@ def test_after_a_cache_edge_compaction_nothing_is_sent_until_the_next_user_messa
 
     assert _warm_until_spent(agent) == pcl.WARM_BUDGET
     due_at = warmer._spent.due_at
-    assert pcl.compaction_due(agent, now=due_at - 1) == (False, "not_yet")
-    assert pcl.claim_compaction(agent, now=due_at) is True
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=due_at - 1).compact == "not_yet"
+    assert pcl.get_prompt_cache_warmer(agent).claim_edge(now=due_at) == "compact"
     agent.context_compressor.compression_count = 1  # the surface committed the compaction
     assert warmer._run is None and not hasattr(warmer, "prime")
     assert len(agent._anthropic_client.calls) == pcl.WARM_BUDGET  # nothing after the compaction
-    assert pcl.compaction_due(agent, now=due_at + 60) == (False, "compacted_this_stretch")
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=due_at + 60).compact == "compacted_this_stretch"
 
     agent._user_turn_count = 2  # the next user message: a fresh budget on the compacted chat
     agent.session_api_calls += 1
@@ -176,7 +176,7 @@ def test_a_five_minute_window_warms_three_times_then_expires_without_compacting(
     assert _respond(agent, _request("5m"), _WRITE_5M) is None
     pcl.end_turn_prompt_cache_warming(agent)
     assert _warm_until_spent(agent) == pcl.WARM_BUDGET
-    assert pcl.compaction_due(agent, now=warmer._spent.due_at) == (False, "short_window:300s")
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "short_window:300s"
 
 
 def test_a_keep_alive_that_misses_ends_warming():
@@ -195,15 +195,15 @@ def test_a_miss_goes_straight_to_the_compact_or_offload_decision():
     _respond(agent, _request(), _WRITE_1H)
     _fire(warmer)
     assert warmer._spent is not None
-    assert pcl.compaction_due(agent, now=warmer._spent.due_at) == (True, "due")
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "due"
 
     small = _chat(client=_Client(read=0, write=119_950), tokens=50_000)
     w2 = pcl.get_prompt_cache_warmer(small)
     _respond(small, _request(), _WRITE_1H)
     _fire(w2)
-    assert pcl.compaction_due(small, now=w2._spent.due_at) == (False, "small_context")
+    assert pcl.get_prompt_cache_warmer(small).edge_decision(now=w2._spent.due_at).compact == "small_context"
     after_window = small._prompt_cache_clock.estimated_until + 1
-    assert pcl.offload_due(small, now=after_window) == (True, "due")
+    assert pcl.get_prompt_cache_warmer(small).edge_decision(now=after_window).offload == "due"
 
 
 def test_a_compaction_decision_needs_no_still_warm_cache():
@@ -213,8 +213,8 @@ def test_a_compaction_decision_needs_no_still_warm_cache():
     _respond(agent, _request(), _WRITE_1H)
     pcl.end_turn_prompt_cache_warming(agent)
     _warm_until_spent(agent)
-    late = warmer._spent.deadline_at + 300  # the gateway's 300 s housekeeping, past the window
-    assert pcl.compaction_due(agent, now=late) == (True, "due")
+    late = warmer._spent.due_at + warmer._spent.tier_s / 6 + 300  # the gateway's 300 s housekeeping, past the window
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=late).compact == "due"
 
 
 def test_an_idle_chat_past_its_window_is_offloaded_once_by_its_owner():
@@ -225,10 +225,10 @@ def test_an_idle_chat_past_its_window_is_offloaded_once_by_its_owner():
     pcl.end_turn_prompt_cache_warming(agent)
     _warm_until_spent(agent)
     now = agent._prompt_cache_clock.estimated_until - 1
-    assert pcl.offload_due(agent, now=now) == (False, "not_cold")
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=now).offload == "not_cold"
     now += 2
-    assert pcl.claim_offload(agent, now=now) is True
-    assert pcl.offload_due(agent, now=now) == (False, "offloaded_this_stretch")
+    assert pcl.get_prompt_cache_warmer(agent).claim_edge(now=now) == "offload"
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=now).offload == "offloaded_this_stretch"
     assert warmer._run is None
 
 
@@ -249,7 +249,7 @@ def test_an_unknown_clock_makes_nothing_act():
     agent = _chat()
     warmer = pcl.get_prompt_cache_warmer(agent)
     assert warmer.start(_request(), _WRITE_1H) == "cache window not guaranteed warm"  # nothing folded
-    assert pcl.compaction_due(agent) == (False, "budget_not_spent")
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision().compact == "budget_not_spent"
     assert prompt_cache_is_cold(agent) is False
     assert agent._anthropic_client.calls == []
 
@@ -263,15 +263,15 @@ def test_a_release_ends_a_live_budget_and_decides_step_two_then():
     assert _respond(agent, _request(), _WRITE_1H) is None
     pcl.end_turn_prompt_cache_warming(agent)
     assert warmer._run is not None and warmer._run.warm_count == 0  # three keep-alives still to go
-    assert pcl.compaction_due(agent) == (False, "budget_not_spent")  # the tick alone would wait ~3h
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision().compact == "budget_not_spent"  # the tick alone would wait ~3h
 
-    assert pcl.claim_compaction_at_release(agent) is True
+    assert pcl.get_prompt_cache_warmer(agent).claim_edge(releasing=True) == "compact"
     assert warmer._run is None and agent._anthropic_client.calls == []
-    assert pcl.release_compaction_due(agent) == (False, "compacted_this_stretch")
+    assert pcl.get_prompt_cache_warmer(agent).edge_decision(releasing=True).compact == "compacted_this_stretch"
 
     small = _chat(tokens=50_000)  # under half the threshold: released as before, nothing compacted
     assert _respond(small, _request(), _WRITE_1H) is None
-    assert pcl.release_compaction_due(small) == (False, "small_context")
+    assert pcl.get_prompt_cache_warmer(small).edge_decision(releasing=True).compact == "small_context"
 
 
 def test_cheap_routes_warm_with_no_dollar_floor_but_never_below_the_cacheable_minimum():

@@ -19,6 +19,9 @@ import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
 const CHAT = 'late-turn-end-chat'
+// Past gateway-event/turn-end-report.ts TURN_END_REPORT_WAIT_MS (30 s). A literal, so this file also loads on a
+// tree without that module and its cases fail there one by one.
+const REPORT_NO_LONGER_EXPECTED_MS = 60_000
 const RUNTIME = 'late-turn-end-runtime'
 
 let stream: MessageStreamHarness
@@ -215,6 +218,62 @@ describe("a turn that starts before the previous turn's end-of-turn report arriv
     submit('second')
     emit({ payload: {}, type: 'message.start' })
     await work('Second, cut off')
+    turnEndReport()
+
+    expectSettled()
+  })
+
+  // Two short turns can both complete before the first one's report arrives (core sends each after its own
+  // git and workspace probes): each completion owes its own report.
+  it('keeps the third turn running while the reports of two completed turns arrive', async () => {
+    mount()
+    await completedTurn('first')
+    await completedTurn('second')
+
+    submit('third')
+    emit({ payload: {}, type: 'message.start' })
+    turnEndReport()
+    expectRunning()
+    turnEndReport()
+    expectRunning()
+
+    await work('Third, cut off')
+    // Both are paid: the next report is this turn's own (its completion was lost).
+    turnEndReport()
+    expectSettled()
+  })
+
+  it("keeps the third turn running when the first of two owed reports came before it started", async () => {
+    mount()
+    await completedTurn('first')
+    await completedTurn('second')
+    turnEndReport()
+
+    submit('third')
+    emit({ payload: {}, type: 'message.start' })
+    turnEndReport()
+    expectRunning()
+  })
+
+  // A report that never comes (lost in a reconnect), or one that came ahead of a stopped turn's completion
+  // (Stop leaves the turn stopped here, so its completion still marks a report owed), leaves a mark nothing
+  // pays. It lapses, so a later turn still settles on its own report.
+  it("lets a stopped turn's unpaid mark lapse: a later turn settles on its own report", async () => {
+    mount()
+    submit('first')
+    emit({ payload: {}, type: 'message.start' })
+    await work('First, cut')
+    stop()
+    turnEndReport()
+    emit({ payload: { status: 'interrupted', text: 'First, cut' }, type: 'message.complete' })
+
+    submit('second')
+    emit({ payload: {}, type: 'message.start' })
+    await work('Second, cut off')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REPORT_NO_LONGER_EXPECTED_MS)
+    })
+    // message.complete lost: the report is this turn's own.
     turnEndReport()
 
     expectSettled()

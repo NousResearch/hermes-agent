@@ -332,7 +332,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // mutates the per-runtime cache entry, and syncSessionStateToView
     // guards the view publish to the active session, so this is safe.
     // A completed turn's end-of-turn report, delivered after the next turn's
-    // message.start (ClientSessionState.turnEndReportOwed): it says nothing about
+    // message.start (ClientSessionState.turnEndReportsOwed): it says nothing about
     // the turn now live, so it neither clears that turn's prompts nor settles it.
     if (runningEdge(ctx, knownState, runningChanged) && sessionId) {
       // The agent loop's finally block emits running=false even when a

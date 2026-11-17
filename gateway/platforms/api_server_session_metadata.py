@@ -12,7 +12,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from hermes_state_session_metadata import (
-    SessionMetadataError, decode_metadata, merge_session_metadata, parse_metadata_filter,
+    SessionMetadataError, decode_metadata, merge_session_metadata_in_transaction, parse_metadata_filter,
     parse_metadata_patch,
 )
 
@@ -66,29 +66,34 @@ def metadata_patch(body: dict[str, Any]) -> tuple[dict[str, str | None] | None, 
         return None, _invalid(exc)
 
 
-async def apply_metadata_patch(db, session_id: str, patch: dict[str, str | None] | None) -> web.Response | None:
-    """Merge *patch* off the event loop; a 400 when the merged object would exceed the key cap."""
+async def apply_metadata_patch(db, session_id: str, patch: dict[str, str | None] | None,
+                               body: dict[str, Any]) -> web.Response | None:
+    """Merge *patch* off the event loop. A ``title`` in the same body is written in the SAME
+    transaction, so a refused title (or a merge past the key cap) leaves neither change behind;
+    the handler skips its own title write when a patch is present."""
     if patch is None:
         return None
+
+    def _do(conn):
+        merge_session_metadata_in_transaction(db, conn, session_id, patch)
+        if "title" in body:
+            title = "" if body["title"] is None else str(body["title"])
+            db._set_session_title_in_transaction(conn, session_id, title, source=db.TITLE_SOURCE_USER)
     try:
-        await asyncio.to_thread(merge_session_metadata, db, session_id, patch)
+        await asyncio.to_thread(db._execute_write, _do)
     except SessionMetadataError as exc:
         return _invalid(exc)
+    except ValueError as exc:  # the title rules (uniqueness, canonical Bot Chat name)
+        from gateway.platforms.api_server import _error_response
+        return _error_response(str(exc), 400, code="invalid_title")
     return None
 
 
 def metadata_filter(query) -> tuple[dict[str, str] | None, web.Response | None]:
-    """Repeated ``metadata.<key>=<value>`` query params, ANDed. One key with two different values is
-    a 400: no row can match both, and keeping either one would silently widen the filter."""
+    """Repeated ``metadata.<key>=<value>`` query params, ANDed (``parse_metadata_filter``)."""
     pairs = [(name[len(_FILTER_PREFIX):], value) for name, value in query.items()
              if name.startswith(_FILTER_PREFIX)]
-    if not pairs:
-        return None, None
     try:
-        parsed = parse_metadata_filter(pairs)
+        return parse_metadata_filter(pairs) or None, None
     except SessionMetadataError as exc:
         return None, _invalid(exc)
-    if conflict := next((k for k, v in pairs if parsed[k] != v), None):
-        return None, _invalid(SessionMetadataError(
-            f"metadata.{conflict}", f"'metadata.{conflict}' was given more than one value"))
-    return parsed, None

@@ -2438,6 +2438,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _session_response(session: dict[str, Any]) -> dict[str, Any]:
         return _session_metadata.session_response(session)
+
     @staticmethod
     def _message_response(message: dict[str, Any]) -> dict[str, Any]:
         message = _project_client_message(message)
@@ -2513,7 +2514,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
             return rows
 
-        sessions = await _list() or (await reset_local_title_owner(db, title_filter, include_hidden, source))
+        sessions = await _list() or (await reset_local_title_owner(db, title_filter, include_hidden, source, metadata))
         if title_filter and not sessions:
             # A canonical Bot Chat auto-archived by the orphan reaper would make `hermes peer dm`
             # mint transient sessions: resurrect and re-list; deliberate archives stay put.
@@ -2641,9 +2642,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         db = await self._ensure_session_db_async()
         if err or db is None:
             return err or self._session_db_unavailable()
-        if err := await _session_metadata.apply_metadata_patch(db, session_id, metadata_patch):
+        if err := await _session_metadata.apply_metadata_patch(db, session_id, metadata_patch, body):
             return err
-        if "title" in body:
+        if "title" in body and metadata_patch is None:
             try:
                 await asyncio.to_thread(
                     db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))

@@ -1250,6 +1250,12 @@ async def test_patch_session_metadata_merges_and_list_filters_by_it(adapter, ses
         assert (await resp.json())["error"]["param"] == "metadata.ticket"
         resp = await cli.patch("/api/sessions/ticket-a", json={"metadata": {"bad key": "v"}})
         assert resp.status == 400
+        resp = await cli.get("/api/sessions?metadata.ticket=ENG-1&metadata.ticket=ENG-2")
+        assert resp.status == 400
+        # One request, one outcome: a refused title leaves the labels in the same body unwritten.
+        session_db.set_session_title("ticket-b", "Taken")
+        resp = await cli.patch("/api/sessions/ticket-a", json={"title": "Taken", "metadata": {"ticket": "ENG-9"}})
+        assert resp.status == 400
         assert session_db.get_session("ticket-a")["metadata"] == '{"ci.run": "7", "ticket": "ENG-1"}'
 
 

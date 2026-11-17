@@ -16,6 +16,7 @@ import uuid
 
 from gateway.session_contract import SessionActor
 from hermes_state_runtime import RuntimeStoreError
+from hermes_state_session_metadata import metadata_matches
 
 logger = logging.getLogger(__name__)
 
@@ -89,21 +90,23 @@ def _refusal(authority, tip, exc):
     return reason, f'Bot Chat admission refused: {reason}'
 
 
-async def reset_local_title_owner(db, title, include_hidden, source=None):
+async def reset_local_title_owner(db, title, include_hidden, source=None, metadata=None):
     """``[row]`` for the exact-title lookup of a LOCAL conversation that was reset (``/new``, the
     compression-exhaustion auto-reset), else ``[]``. The listing shows a reset lineage as its latest,
     untitled segment, so ``hermes peer dm`` stopped finding its Bot Chat and its create collided
     with the title. The titled creation id still owns the FIFO and is what the chat door admits.
     It applies the listing's own filters: hidden only with ``include_hidden``, never an archived
     row (a deliberate archive stays put; the reaper-archive resurrection is the caller's), and
-    ``source`` when one is given."""
-    return await asyncio.to_thread(_reset_local_title_owner, db, title, include_hidden, source) if title else []
+    ``source`` and the ``metadata.<key>`` list filter when given."""
+    return await asyncio.to_thread(
+        _reset_local_title_owner, db, title, include_hidden, source, metadata) if title else []
 
 
-def _reset_local_title_owner(db, title, include_hidden, source=None):
+def _reset_local_title_owner(db, title, include_hidden, source=None, metadata=None):
     row = db.get_session_by_title(title)
     if (row is None or row.get('end_reason') != 'session_reset' or row.get('archived')
-            or (row.get('hidden') and not include_hidden) or (source and row.get('source') != source)):
+            or (row.get('hidden') and not include_hidden) or (source and row.get('source') != source)
+            or (metadata and not metadata_matches(row.get('metadata'), metadata))):
         return []
     from hermes_state_local import local_receipt
     try:

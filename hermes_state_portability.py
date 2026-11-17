@@ -23,6 +23,7 @@ from hermes_state_keys import (
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+from hermes_state_session_metadata import normalize_imported_metadata
 import itertools
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -49,7 +50,8 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            cwd, git_branch, git_repo_root,
                            billing_provider, billing_base_url, billing_mode,
                            estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                           pricing_version, title, api_call_count, archived, auto_archived, pinned, hidden
+                           pricing_version, title, api_call_count, archived, auto_archived, pinned, hidden,
+                           metadata
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
@@ -60,7 +62,7 @@ _IMPORT_SESSION_INSERT_SQL = """INSERT INTO sessions (
                            :billing_provider, :billing_base_url, :billing_mode,
                            :estimated_cost_usd, :actual_cost_usd, :cost_status,
                            :cost_source, :pricing_version, :title,
-                           :api_call_count, :archived, :auto_archived, :pinned, :hidden
+                           :api_call_count, :archived, :auto_archived, :pinned, :hidden, :metadata
                        )"""
 # Columns copied verbatim from the payload; typed columns are converted below.
 _IMPORT_PASSTHROUGH_COLS = (
@@ -638,6 +640,7 @@ class SessionPortabilityMixin:
         clean_session = dict(raw)
         clean_session["id"] = session_id
         clean_session["model_config"] = self._import_json_object_or_none(clean_session.get("model_config"), "model_config")
+        clean_session["metadata"] = normalize_imported_metadata(clean_session.get("metadata"))
         for field in ("parent_session_id", *_IMPORT_SESSION_TEXT_FIELDS):
             clean_session[field] = self._import_text_or_none(clean_session.get(field), field)
         started_at = clean_session.get("started_at")
@@ -720,7 +723,7 @@ class SessionPortabilityMixin:
             "system_prompt_hash": self._store_system_prompt(conn, raw.get("system_prompt")),
             "started_at": time.time() if started_at is None else started_at,
             **{col: 1 if self._coerce_or(raw.get(col), int, 0) else 0 for col in _IMPORT_FLAG_COLS},
-            **{col: raw.get(col) for col in _IMPORT_PASSTHROUGH_COLS},
+            **{col: raw.get(col) for col in _IMPORT_PASSTHROUGH_COLS}, "metadata": raw.get("metadata"),
             **{col: self._import_float_or_finite(raw.get(col), col) for col in _IMPORT_FLOAT_COLS},
             **{col: self._import_int_or_bounded(raw.get(col), col, 0) for col in _IMPORT_INT_COLS},
         }

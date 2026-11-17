@@ -186,8 +186,6 @@ def _metadata_query_filter(request: Request) -> dict[str, str] | None:
         parsed = parse_metadata_filter(pairs)
     except SessionMetadataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if any(parsed[k] != v for k, v in pairs):
-        raise HTTPException(status_code=400, detail="a metadata key was given more than one value")
     return parsed or None
 
 

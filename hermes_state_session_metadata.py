@@ -56,8 +56,29 @@ def parse_metadata_patch(patch: Any) -> dict[str, str | None]:
 
 
 def parse_metadata_filter(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
-    """``(key, value)`` pairs (``metadata.k=v`` query params, ``--metadata k=v``) -> exact-match filter."""
-    return {_check_key(k, f"metadata.{k}"): _check_value(v, f"metadata.{k}") for k, v in pairs}
+    """``(key, value)`` pairs (``metadata.k=v`` query params, ``--metadata k=v``) -> exact-match filter.
+    One key given two different values is an error: no row matches both, and keeping either would
+    silently widen the filter."""
+    parsed: dict[str, str] = {}
+    for key, value in pairs:
+        field = f"metadata.{_check_key(key, f'metadata.{key}')}"
+        if parsed.setdefault(key, _check_value(value, field)) != value:
+            raise SessionMetadataError(field, f"'{field}' was given more than one value")
+    return parsed
+
+
+def metadata_matches(raw: Any, metadata: Mapping[str, str]) -> bool:
+    """Python twin of :func:`metadata_filter_clause` for a row already read."""
+    stored = decode_metadata(raw)
+    return all(stored.get(key) == value for key, value in metadata.items())
+
+
+def normalize_imported_metadata(raw: Any) -> str | None:
+    """An export's ``metadata`` (column text or object) -> column text, held to the write bounds."""
+    merged = {k: v for k, v in parse_metadata_patch(decode_metadata(raw) if raw else {}).items() if v is not None}
+    if len(merged) > MAX_KEYS:
+        raise SessionMetadataError("metadata", f"'metadata' may hold at most {MAX_KEYS} keys")
+    return json.dumps(merged, sort_keys=True) if merged else None
 
 
 def decode_metadata(raw: Any) -> dict[str, str]:
@@ -82,23 +103,28 @@ def metadata_filter_clause(metadata: Mapping[str, str]) -> tuple[str, list[str]]
 
 
 def merge_session_metadata(db, session_id: str, patch: Mapping[str, str | None]) -> dict[str, str] | None:
-    """Apply *patch* (already validated) to *session_id*'s metadata and write the result across its
-    compression lineage in one write transaction. Returns the merged metadata, or ``None`` when the
-    session does not exist. The key bound is checked after the merge, so it holds for the stored
-    value no matter how many patches built it."""
-    def _do(conn):
-        row = conn.execute("SELECT metadata FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        if row is None:
-            return None
-        merged = decode_metadata(row[0])
-        for key, value in patch.items():
-            if value is None:
-                merged.pop(key, None)
-            else:
-                merged[key] = value
-        if len(merged) > MAX_KEYS:
-            raise SessionMetadataError("metadata", f"'metadata' may hold at most {MAX_KEYS} keys")
-        db._set_lineage_column_in_transaction(
-            conn, "metadata", session_id, json.dumps(merged, sort_keys=True) if merged else None)
-        return merged
-    return db._execute_write(_do)
+    """Apply *patch* (already validated) to *session_id*'s metadata in one write transaction; see
+    :func:`merge_session_metadata_in_transaction`."""
+    return db._execute_write(lambda conn: merge_session_metadata_in_transaction(db, conn, session_id, patch))
+
+
+def merge_session_metadata_in_transaction(db, conn, session_id: str,
+                                          patch: Mapping[str, str | None]) -> dict[str, str] | None:
+    """Merge *patch* into *session_id*'s metadata and write it across the compression lineage on the
+    caller's write *conn*. Returns the merged metadata, or ``None`` when the session does not exist.
+    The key bound is checked after the merge, so it holds for the stored value no matter how many
+    patches built it; raising aborts the caller's whole transaction."""
+    row = conn.execute("SELECT metadata FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if row is None:
+        return None
+    merged = decode_metadata(row[0])
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
+    if len(merged) > MAX_KEYS:
+        raise SessionMetadataError("metadata", f"'metadata' may hold at most {MAX_KEYS} keys")
+    db._set_lineage_column_in_transaction(
+        conn, "metadata", session_id, json.dumps(merged, sort_keys=True) if merged else None)
+    return merged

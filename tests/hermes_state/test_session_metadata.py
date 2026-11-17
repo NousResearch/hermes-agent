@@ -32,3 +32,9 @@ def test_metadata_merge_patch_follows_the_chat_through_compression_and_filters_t
         with pytest.raises(SessionMetadataError):
             merge_session_metadata(db, "other", {f"k{i}": "v" for i in range(32)})
         assert merge_session_metadata(db, "missing", {"a": "b"}) is None
+        exported = db.export_session("other", include_inactive=True)
+
+    # A backup restored into a fresh store is still findable by its labels.
+    with closing(SessionDB(tmp_path / "restored.db")) as restored:
+        restored.import_sessions([exported])
+        assert [s["id"] for s in restored.list_sessions_rich(metadata={"ticket": "ENG-2"})] == ["other"]

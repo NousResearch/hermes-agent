@@ -150,6 +150,30 @@ def test_catalog_results_are_cached_per_profile_and_clear_reloads_each(
     assert len(skills_tool._SKILLS_CACHE) <= 2
 
 
+def test_catalog_capacity_keeps_recently_used_profiles(isolated_catalog, monkeypatch):
+    skills_tool, _skill_utils, tmp_path = isolated_catalog
+    monkeypatch.setattr(skills_tool, "_SKILLS_CACHE_MAX_ENTRIES", 2)
+    profiles = [tmp_path / "profiles" / name for name in ("a", "b", "c")]
+    for profile in profiles:
+        _write_skill(profile, "example", profile.name, "Example")
+    reads = []
+    real_read = skills_tool._read_skill_text
+
+    def count_read(path):
+        reads.append(path)
+        return real_read(path)
+
+    monkeypatch.setattr(skills_tool, "_read_skill_text", count_read)
+    for index in (0, 1, 0, 2, 0, 2):
+        assert _listed_skills(_dispatch_skills_list(profiles[index])) == {
+            profiles[index].name: "Example"
+        }
+    assert len(reads) == 3  # inserting C evicts B, preserving the recently used A
+    assert len(skills_tool._SKILLS_CACHE) == 2
+    _dispatch_skills_list(profiles[1])
+    assert len(reads) == 4  # B reloads after eviction
+
+
 def test_catalog_cache_tracks_context_dependent_kanban_visibility(
     isolated_catalog, monkeypatch
 ):

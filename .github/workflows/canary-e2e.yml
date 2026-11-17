@@ -27,10 +27,17 @@ on:
 permissions:
   contents: read
 
-# One set at a time (about 1,400 job-minutes each). A newer run waits, and
-# GitHub keeps only the newest pending one.
+# One automatic set at a time (about 1,400 job-minutes each). A newer one waits,
+# and GitHub keeps only the newest pending run per group. Concurrency applies
+# before resolve's if, so a run that will skip (a failed canary) or a dispatch
+# gets a group of its own: in the shared one it would replace a queued set.
 concurrency:
-  group: canary-e2e
+  group: >-
+    canary-e2e-${{ github.event_name == 'workflow_run' &&
+    github.repository == 'NousResearch/hermes-agent' &&
+    github.event.workflow_run.conclusion == 'success' &&
+    github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+    'auto' || github.run_id }}
   cancel-in-progress: false
 
 jobs:

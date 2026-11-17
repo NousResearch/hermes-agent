@@ -250,12 +250,9 @@ class StatusOutputMixin:
             return
         # Clear before emitting so a (swallowed) callback error can't leave a stale re-emit.
         self._pending_fallback_notice = None
+        from agent.fallback_notice import announce_fallback_switch
         for item in notice if isinstance(notice, list) else [notice]:
-            try:
-                self._emit_diagnostic_status(item)
-            except Exception:
-                # One surface failure must not hide later switches from the same chain.
-                continue
+            announce_fallback_switch(self, item)
 
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure so the user sees what was tried."""

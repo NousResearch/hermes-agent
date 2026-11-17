@@ -50,6 +50,15 @@ def fallback_reason_text(reason: FailoverReason | None) -> str:
     return label or str(getattr(reason, "value", None) or reason or "provider failure").replace("_", " ")
 
 
+def record_fallback_trigger(agent, reason: FailoverReason | None, error_text: str) -> None:
+    """Remember the provider's words for the switch this failure may cause. Masked here, while the
+    failing route's credentials are still on the agent: a provider echoing an opaque key back
+    (``Credential <key> rejected``) is caught by value, which pattern masking alone can miss."""
+    from agent.credential_pool_errors import redact_error_text
+    known = (getattr(agent, "api_key", None), getattr(agent, "_anthropic_api_key", None))
+    agent._fallback_trigger = (reason, redact_error_text(str(error_text or ""), known))
+
+
 def fallback_trigger_text(agent, reason: FailoverReason | None) -> str:
     """The reason label plus the provider's own error. The error handler that classified the failure
     stashes ``(reason, summary)`` on ``_fallback_trigger``; it is used once, and only by a switch for
@@ -72,8 +81,15 @@ def announce_fallback_switch(agent, notice: str) -> None:
     """Show the switch now, before the fallback model starts answering: the user must see which
     model this turn runs on while it runs, not after it ends. Display-only (status rail), so the
     cached prompt is untouched; it obeys the muted-warnings setting like every diagnostic. Not
-    buffered with the retry chatter, so a terminal-failure flush cannot repeat it."""
+    buffered with the retry chatter, so a terminal-failure flush cannot repeat it.
+
+    Its own ``fallback`` kind: messaging adapters edit one status message per kind in a turn, so on
+    the shared ``lifecycle`` kind the next retry or re-prompt line replaced it (Telegram)."""
+    from gateway.warning_notifications import DiagnosticText
     try:
-        agent._emit_diagnostic_status(notice)
+        agent._emit_status_kind(FALLBACK_STATUS_KIND, DiagnosticText(notice), origin="fallback_switch")
     except Exception:  # health: allow BLE001 -- a surface failure must never fail the switch itself
         logger.debug("fallback switch notice failed to emit", exc_info=True)
+
+
+FALLBACK_STATUS_KIND = "fallback"

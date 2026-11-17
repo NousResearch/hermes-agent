@@ -310,6 +310,8 @@ def cmd_slack(args):
              "subcommands:\n"
              "  manifest   Generate a Slack app manifest with every gateway\n"
              "             command registered as a native slash\n"
+             "  create     Create the Slack app from one App Configuration\n"
+             "             token, or re-sync its manifest\n"
              "\n"
              "Run `hermes slack manifest -h` for details.")
         return 1
@@ -317,6 +319,14 @@ def cmd_slack(args):
     if sub == "manifest":
         from hermes_cli.slack_cli import slack_manifest_command
         status = slack_manifest_command(args)
+        if status:
+            raise SystemExit(status)
+        return status
+    if sub == "create":
+        from hermes_cli.main import _require_tty
+        _require_tty("slack create")
+        from hermes_cli.slack_create import slack_create_command
+        status = slack_create_command(args)
         if status:
             raise SystemExit(status)
         return status

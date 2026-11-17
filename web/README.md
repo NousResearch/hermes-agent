@@ -2,6 +2,8 @@
 
 Browser-based dashboard for managing Hermes Agent configuration, API keys, and monitoring active sessions.
 
+In Chat, **Stop** interrupts the currently running response. It is disabled while the chat is disconnected, idle, or a stop request is pending; it does not submit or erase your draft.
+
 ## Stack
 
 - **Vite** + **React 19** + **TypeScript**

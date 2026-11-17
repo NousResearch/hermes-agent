@@ -119,6 +119,7 @@ import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { errorMessage } from "@/lib/api-error";
 import { SGR_MOUSE_RE } from "@/lib/pty-mouse-report";
+import { startPtyKeepalive, usePtyStop } from "@/lib/pty-stop";
 
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
@@ -358,6 +359,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [resumeParam, scopedProfile],
   );
   const titleScope = `${channel}\0${reconnectNonce}`;
+  const { stop: ptyStop, scopeRef: stopScopeRef, button: stopButton } = usePtyStop(titleScope, ptyState === "open", hostRef);
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
   const handleSessionTitleChange = useCallback(
@@ -543,6 +545,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       theme: terminalTheme,
     });
     termRef.current = term;
+    term.parser.registerOscHandler(6973, data => {
+      if (termRef.current !== term) return true;
+      return ptyStop.receive(data);
+    });
 
     // --- Clipboard integration ---------------------------------------
     //
@@ -1249,6 +1255,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }, PTY_CONNECTING_TIMEOUT_MS);
 
     ws.onopen = () => {
+      if (wsRef.current !== ws || unmounting) return;
+      ptyStop.open(ws, () => wsRef.current === ws && termRef.current === term && stopScopeRef.current === titleScope && !unmounting);
       clearReconnectTimer();
       clearConnectingTimer();
       connectInFlightRef.current = false;
@@ -1263,21 +1271,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
-      // Send the initial RESIZE immediately so Ink has *a* size to lay
-      // out against on its first paint.  The double-rAF block above will
-      // follow up with the authoritative measurement — at worst Ink
-      // reflows once after the PTY boots, which is imperceptible.
-      const sendTerminalResize = () => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
-        }
-      };
-      sendTerminalResize();
-      // Application-level keepalive: browsers cannot send WS ping frames, and a
-      // loopback-bound dashboard behind a reverse proxy gets no server pings
-      // either, so a quiet PTY socket is idle traffic to any proxy timeout.
-      // Runs whenever the socket is open — a hidden tab still owns its PTY.
-      keepaliveTimer = setInterval(sendTerminalResize, PTY_KEEPALIVE_INTERVAL_MS);
+      keepaliveTimer = startPtyKeepalive(ws, term, PTY_KEEPALIVE_INTERVAL_MS);
       // Resumed sessions replay scrollback over the socket. Start pinned to
       // the bottom so the latest output is in view; released once the user
       // scrolls up (#59591).
@@ -1330,6 +1324,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     ws.onmessage = (ev) => {
+      if (wsRef.current !== ws || unmounting) return;
       if (typeof ev.data === "string") {
         // The active-session fallback (no `?resume=` on the URL) tells us
         // via a one-off JSON control frame that a replay is starting (#93518,
@@ -1383,6 +1378,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onclose = (ev) => {
+      if (wsRef.current !== ws || unmounting) return;
+      ptyStop.close();
       clearKeepaliveTimer();
       // Drain buffered sanitizer state. A buffered partial escape is dropped
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
@@ -1545,6 +1542,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     return () => {
       unmounting = true;
+      ptyStop.close();
       imageUploadDisposed = true;
       syncMetricsRef.current = null;
       clearEraseSuppressionTimer();
@@ -1607,6 +1605,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     resumeParam,
     scopedProfile,
     reconnectNonce,
+    ptyStop,
+    stopScopeRef,
+    titleScope,
   ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
@@ -1898,12 +1899,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
-          <div
-            ref={hostRef}
-            role="region"
-            aria-label="Chat terminal"
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
-          />
+          {stopButton}
 
           {showReconnectOverlay && (
             <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">

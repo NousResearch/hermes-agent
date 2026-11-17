@@ -739,6 +739,7 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
     // input — route them to the querier to resolve pending promises.
     if (item.kind === 'response') {
       app.querier.onResponse(item.response)
+      app.inputEmitter.emit('terminalresponse', item.response)
 
       continue
     }

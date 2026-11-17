@@ -10,6 +10,7 @@ import { DISABLE_MOUSE_TRACKING } from './termio/dec.js'
 
 class FakeTty extends EventEmitter {
   chunks: string[] = []
+  input: string[] = []
   columns = 80
   rows = 24
   isTTY = true
@@ -17,8 +18,8 @@ class FakeTty extends EventEmitter {
 
   ref(): void {}
   unref(): void {}
-  read(): null {
-    return null
+  read(): string | null {
+    return this.input.shift() ?? null
   }
   setEncoding(): this {
     return this
@@ -57,6 +58,39 @@ function RawModeConsumer({ active }: { active: boolean }) {
 
   return React.createElement(Text, null, 'x')
 }
+
+describe('terminal response dispatch', () => {
+  it('delivers a fragmented OSC response to the mounted input consumer', async () => {
+    const stdout = new FakeTty()
+    const stdin = new FakeTty()
+    const responses: unknown[] = []
+
+    function Consumer() {
+      const { inputEmitter, setRawMode } = useContext(StdinContext)
+      useEffect(() => {
+        const onResponse = (response: unknown) => responses.push(response)
+        inputEmitter.on('terminalresponse', onResponse)
+        setRawMode(true)
+
+        return () => { inputEmitter.off('terminalresponse', onResponse); setRawMode(false) }
+      }, [inputEmitter, setRawMode])
+
+      return React.createElement(Text, null, 'x')
+    }
+
+    const ink = new Ink({ exitOnCtrlC: false, patchConsole: false,
+      stderr: new FakeTty() as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream })
+
+    ink.render(React.createElement(Consumer))
+    ink.onRender()
+    await tick()
+    stdin.input.push('\x1b]777;', 'stop;session;4\x07')
+    stdin.emit('readable')
+    expect(responses).toEqual([{ type: 'osc', code: 777, data: 'stop;session;4' }])
+    ink.unmount()
+  })
+})
 
 describe('App raw-mode teardown', () => {
   it('disables mouse tracking when the last raw-mode consumer detaches', async () => {

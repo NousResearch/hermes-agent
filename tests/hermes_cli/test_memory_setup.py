@@ -2,6 +2,8 @@ import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from hermes_cli import memory_setup
 from hermes_cli.memory_setup import _CANCELLED
 
@@ -122,3 +124,45 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert re.search(r"Memory tool:\s+enabled", captured)
     assert re.search(r"Memory injection:\s+enabled", captured)
     assert re.search(r"User profile:\s+disabled", captured)
+
+
+class _PluginStoreProvider:
+    """A provider shaped like the holographic catalog plugin: its settings live under
+    ``plugins.hermes-memory-store``, not ``memory.<name>``, with a choice and a number field."""
+
+    def get_config_schema(self):
+        return [{"key": "auto_extract", "description": "Auto-extract", "default": "false", "choices": ["true", "false"]},
+                {"key": "default_trust", "description": "Default trust", "default": "0.5"}]
+
+    def save_config(self, values, hermes_home):
+        from hermes_cli.config import save_config
+        save_config({"plugins": {"hermes-memory-store": dict(values)}}, merge_existing=True)
+
+
+@pytest.mark.parametrize("auto_extract, default_trust", [("true", "0.7"), (False, 0)])
+def test_rerunning_setup_keeps_plugin_store_settings(monkeypatch, auto_extract, default_trust):
+    """Re-running the wizard and accepting every offered value must leave the provider's stored
+    settings as they were, falsy ones included (a YAML ``false``, a trust of 0). Real config.yaml."""
+    import io
+    import sys
+
+    import hermes_yaml as _yaml
+    from hermes_cli.config import read_raw_config
+    from hermes_constants import get_hermes_home
+
+    stored = {"auto_extract": auto_extract, "default_trust": default_trust}
+    (get_hermes_home() / "config.yaml").write_text(_yaml.safe_dump(
+        {"memory": {"provider": "holographic"}, "plugins": {"hermes-memory-store": stored}}), encoding="utf-8")
+    monkeypatch.setattr(memory_setup, "_get_available_providers",
+                        lambda: [("holographic", "local facts", _PluginStoreProvider())])
+    monkeypatch.setattr(memory_setup, "_curses_select",
+                        lambda title, items, default=0, **_: 0 if title == "Memory provider setup" else default)
+    monkeypatch.setattr(memory_setup, "_install_dependencies", lambda name: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n" * 20))
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    after = read_raw_config()["plugins"]["hermes-memory-store"]
+    # save_config writes the prompt's answers as strings.
+    assert {key: str(after.get(key)).lower() for key in stored} == {
+        key: str(value).lower() for key, value in stored.items()}

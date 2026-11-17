@@ -33,6 +33,7 @@ Facts expire 7 days after their last update and are learned again. One small JSO
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -76,19 +77,24 @@ def _load(path: Path, now: float) -> dict[str, dict[str, Any]]:
     return {k: v for k, v in data.items() if _well_formed(v) and now - v["updated"] < EXPIRY_SECONDS}
 
 
+def _finite(value: Any) -> bool:
+    """A real number a reader can ``int()``: not a bool, and not the infinity / NaN valid JSON can decode to."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _numbers(value: Any) -> bool:
-    return isinstance(value, list) and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value)
+    return isinstance(value, list) and all(_finite(x) for x in value)
 
 
 def _well_formed(entry: Any) -> bool:
     """An entry every reader can trust: numeric timestamp, counters and gap lists, string session lists.
     A hand-edited or foreign file's bad entry is dropped (and rewritten away on the next save), never raised."""
-    if not isinstance(entry, dict) or not isinstance(entry.get("updated"), (int, float)):
+    if not isinstance(entry, dict) or not _finite(entry.get("updated")):
         return False
     counters = ("reads", "attempts", "write_on_hit", "samples", "longest_hit")
     gaps = ("hit_gaps", "miss_gaps", "write_on_hit_gaps")
     sessions = ("miss_gaps_sessions", "write_on_hit_gaps_sessions")
-    return (all(isinstance(entry.get(k, 0), (int, float)) and not isinstance(entry.get(k, 0), bool) for k in counters)
+    return (all(_finite(entry.get(k, 0)) for k in counters)
             and all(_numbers(entry.get(k, [])) for k in gaps)
             and all(isinstance(entry.get(k, []), list) and all(isinstance(s, str) for s in entry.get(k, []))
                     for k in sessions))

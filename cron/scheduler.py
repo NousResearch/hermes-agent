@@ -536,7 +536,7 @@ from cron.executions import (
 from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
 from cron.scheduler_bookkeeping import _classify_delivery_outcome
 from cron.cancellation import (CancelRequest, _CancelEventLike, _CombinedCancelEvent, cancel_reason,
-                               clear_cancel, finish_lost_execution,
+                               clear_cancel, finish_lost_execution, keep_lost_claim_output, lost_claim_error,
                                run_job_unless_cancelled as _run_job_unless_cancelled)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
@@ -2901,15 +2901,16 @@ _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completio
 
 
 def _record_fire_ownership_lost(
-    job: dict, fire_owner: Optional[str], execution_id: str,
+    job: dict, fire_owner: Optional[str], execution_id: str, produced: str = "",
 ) -> None:
     """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
     not a real loss — we still own the claim, so record the interruption via the owner-fenced
-    terminal write instead of leaving fire_claim/last_status stale; otherwise discard.
+    terminal write instead of leaving fire_claim/last_status stale; *produced* is kept on disk.
     An interrupted ladder re-run re-ran an occurrence that already counted, so its terminal
     write must not spend another repeat slot (same as every other terminal path)."""
     from cron.unreachable_retry import is_retry_run
     job_id = job["id"]
+    partial = keep_lost_claim_output(job_id, execution_id, produced)
     if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
         mark_job_run(
             job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner,
@@ -2917,8 +2918,7 @@ def _record_fire_ownership_lost(
         )
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
     else:
-        finish_lost_execution(
-            execution_id, "Fire claim ownership lost; stale result was discarded.")
+        finish_lost_execution(execution_id, lost_claim_error(partial))
 
 
 def _compose_run_delivery(
@@ -3356,7 +3356,7 @@ def _run_one_job_body(
 
         if _fire_claim_ownership_lost():
             _teardown_deferred()
-            _record_fire_ownership_lost(job, fire_owner, execution_id)
+            _record_fire_ownership_lost(job, fire_owner, execution_id, produced=output or final_response)
             return True
 
         success, error, agent_declared = _apply_agent_failure_marker(job, success, error, final_response)
@@ -3377,7 +3377,7 @@ def _run_one_job_body(
 
         if d.side_effect_ownership_lost:
             # The claim died inside a side-effect fence: the side effect did NOT complete.
-            _record_fire_ownership_lost(job, fire_owner, execution_id)
+            _record_fire_ownership_lost(job, fire_owner, execution_id, produced=output or final_response)
             return True
 
         from cron.scheduler_bookkeeping import fail_empty_response

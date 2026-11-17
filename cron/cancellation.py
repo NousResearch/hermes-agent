@@ -15,6 +15,7 @@ for can read it, so a cancel can never bleed into the job's next fire.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import tempfile
 import time
@@ -24,6 +25,8 @@ from typing import Any, Dict, Optional, Protocol
 from hermes_constants import get_hermes_home
 
 from cron.executions import cancellable_execution
+
+logger = logging.getLogger(__name__)
 
 # A marker whose run was SIGKILLed before it could clean up is unreadable garbage. Canceling a
 # job is rare, so the prune rides along with the write instead of needing its own sweep.
@@ -197,6 +200,43 @@ def finish_lost_execution(execution_id: str, error: str) -> Optional[dict[str, A
         return scheduler.finish_execution(
             execution_id, success=False, error=CancelRequest(execution_id).reason, cancelled=True)
     return scheduler.finish_execution(execution_id, success=False, error=error)
+
+
+def keep_lost_claim_output(job_id: str, execution_id: str, produced: str) -> Optional[Path]:
+    """Write what a run produced before it lost its fire claim, best effort; the file or None.
+
+    The normal save is fenced by the claim, so a run that lost it used to drop its whole result
+    (minutes of agent work and its tokens). The file is ``<stamp>-partial-<execution id>.md`` in
+    the job's output directory, a name a completed run's file cannot take, and it ages out with the
+    job's other output. Raising here would leave the ledger row non-terminal (the dead-owner sweep
+    then reports it ``unknown``), so a failed write is logged and the failure is recorded as before.
+    """
+    if not (produced or "").strip():
+        return None
+    from cron import jobs
+    from utils import atomic_write_text
+
+    try:
+        jobs.ensure_dirs()
+        out_dir = jobs._job_output_dir(job_id)
+        jobs._ensure_cron_dir(out_dir)
+        jobs._secure_dir(out_dir)
+        safe_id = "".join(ch for ch in str(execution_id or "") if ch.isalnum() or ch in "-_") or "unknown"
+        path = out_dir / f"{jobs._hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}-partial-{safe_id}.md"
+        atomic_write_text(path, produced, tmp_prefix=".output_", mode=0o600)
+        jobs._secure_file(path)
+        return path
+    except (OSError, ValueError):
+        logger.warning("Job '%s': could not keep the output of a run that lost its fire claim",
+                       job_id, exc_info=True)
+        return None
+
+
+def lost_claim_error(partial: Optional[Path]) -> str:
+    """Ledger error for a run whose fire claim another fire took over."""
+    if partial is None:
+        return "Fire claim ownership lost; stale result was discarded."
+    return f"Fire claim ownership lost; stale result was not delivered. The run's output was kept at {partial}."
 
 
 def run_job_unless_cancelled(run_job, job, run_kwargs, teardown, fence, execution_id, fire_owner):

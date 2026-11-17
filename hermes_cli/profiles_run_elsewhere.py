@@ -33,7 +33,11 @@ plugin supplies what its own host process needs.
 Nor does a host process start a command the profile's own files name: the host features that do
 (``tools.hosted_tool_policy.RUNS_PROFILE_COMMANDS``: shell hooks, MCP stdio servers, cron scripts,
 inline skill shell) are off for a marked home, so ``hermes hooks test`` runs no hook, and the MCP
-probe behind ``hermes mcp test`` / ``mcp add`` refuses before it starts or calls a server.
+probe behind ``hermes mcp test`` / ``mcp add`` refuses before it starts or calls a server. A
+``quick_commands`` entry of ``type: exec`` is such a command too: the classic CLI, the gateway and
+the TUI / dashboard backend ask :func:`run_elsewhere_refusal` before they start one, because a
+process that was already running when the profile was marked still answers slash commands, and a
+backend on another profile's home takes the profile with the request.
 ``config.yaml`` itself is still read (``hermes status`` and ``hermes config`` show it).
 
 The marker is the file ``<hermes root>/profiles_run_elsewhere/<profile>.json``. It lives under the
@@ -293,6 +297,17 @@ def require_home_runs_here(home: str | Path | None = None) -> None:
     entry = run_elsewhere_for_home(home)
     if entry is not None:
         raise ProfileRunsElsewhere(entry)
+
+
+def run_elsewhere_refusal(home: str | Path | None = None) -> str | None:
+    """:func:`require_home_runs_here` as a message, or None when the profile at *home* runs here.
+    For a process about to start a command the profile's own files name: it may have been running
+    since before the profile was marked."""
+    try:
+        require_home_runs_here(home)
+    except ProfileRunsElsewhere as exc:
+        return str(exc)
+    return None
 
 
 def exit_if_profile_runs_elsewhere(command: str | None, *, exit_code: int = 1) -> None:

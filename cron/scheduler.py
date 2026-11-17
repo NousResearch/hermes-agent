@@ -7711,13 +7711,18 @@ def _run_one_job_body(
         from agent import cost_budget as _cost_budget
 
         _budget_skip = _cost_budget.preflight_cron_job(job, adapters=adapters, loop=loop)
-        if _budget_skip:
-            _skip_kwargs = {"status": "skipped_budget"}
-            if fire_owner is not None:
-                _skip_kwargs["expected_fire_owner"] = fire_owner
-            mark_job_run(job["id"], True, None, **_skip_kwargs)
-            finish_execution(execution_id, success=True, note=_budget_skip,
-                             delivery_outcome="suppressed")
+        if _budget_skip is not None:
+            # Not a run: no failure streak, no repeat consumed (cron.jobs).
+            from cron.jobs import mark_job_skipped
+
+            if mark_job_skipped(job["id"], "skipped_budget", _budget_skip.reason,
+                                retry_at=_budget_skip.resets_at,
+                                expected_fire_owner=fire_owner):
+                finish_execution(execution_id, success=True, note=_budget_skip.reason,
+                                 delivery_outcome="suppressed")
+            else:
+                finish_execution(execution_id, success=False,
+                                 error="Fire claim ownership lost before terminal completion.")
             return True
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in

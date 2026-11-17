@@ -22,12 +22,15 @@ def home(tmp_path, monkeypatch):
     return h
 
 
-def _spend(monkeypatch, *, day=0.0, month=0.0, unpriced=0, runs=()):
-    snap = cost_budget.SpendSnapshot(
-        day_key="2026-11-16", month_key="2026-11", day_usd=day, month_usd=month,
-        day_unpriced_tokens=unpriced, month_unpriced_tokens=unpriced,
-        unpriced_models=("m1",) if unpriced else (), runs=tuple(runs), as_of=1_763_305_200.0)
-    monkeypatch.setattr(cost_budget, "compute_spend", lambda *_a, **_k: snap)
+def _spend(monkeypatch, *, day=0.0, month=0.0, unpriced=0, runs=(), upper=False):
+    def fake(home, now):
+        return cost_budget.SpendSnapshot(
+            day_key=now.strftime("%Y-%m-%d"), month_key=now.strftime("%Y-%m"), day_usd=day,
+            month_usd=month, day_unpriced_tokens=unpriced, month_unpriced_tokens=unpriced,
+            unpriced_models=("m1",) if unpriced else (), runs=tuple(runs), as_of=now.timestamp(),
+            day_upper_bound=upper)
+
+    monkeypatch.setattr(cost_budget, "compute_spend", fake)
 
 
 def _run():
@@ -56,17 +59,19 @@ def test_reports_spend_and_remaining(home, monkeypatch):
     assert out["discretionary_jobs"] == ["explore"]
     assert out["per_run_usd"] == 2.0
     assert out["spend_is_lower_bound"] is False
+    assert out["spend_is_upper_bound"] is False
+    assert out["config_warnings"] == []
     assert [r["job_id"] for r in out["costliest_runs_this_month"]] == ["b", "a"]
 
 
-def test_unconfigured_still_reports_spend(home, monkeypatch):
-    _spend(monkeypatch, day=1.5, month=7)
+def test_unconfigured_reads_nothing(home, monkeypatch):
+    monkeypatch.setattr(cost_budget, "compute_spend", lambda *a, **k: pytest.fail("scanned"))
 
     out = _run()
 
     assert out["configured"] is False
-    assert out["today"] == {"spent_usd": 1.5, "budget_usd": None, "remaining_usd": None, "fraction": None}
-    assert out["over_budget"] is False
+    assert "not tracked" in out["message"]
+    assert not (home / "cost_budget").exists()
 
 
 def test_lower_bound_flag_with_unpriced(home, monkeypatch):
@@ -76,11 +81,14 @@ def test_lower_bound_flag_with_unpriced(home, monkeypatch):
     out = _run()
 
     assert out["spend_is_lower_bound"] is True
+    assert out["today"]["remaining_usd"] is None
+    assert "no price" in out["today"]["remaining_note"]
     assert out["unpriced_tokens_today"] == 5000
     assert out["unpriced_models"] == ["m1"]
 
 
 def test_store_error_is_a_tool_error(home, monkeypatch):
+    (home / "config.yaml").write_text("cost_budget:\n  daily_usd: 10\n", encoding="utf-8")
     def boom(*a, **k):
         raise RuntimeError("locked")
 
@@ -94,3 +102,15 @@ def test_registered_in_own_toolset():
 
     assert registry.get_toolset_for_tool("cost_budget_status") == "cost_budget"
     assert TOOLSETS["cost_budget"]["tools"] == ["cost_budget_status"]
+
+
+def test_upper_bound_and_config_warnings_surfaced(home, monkeypatch):
+    (home / "config.yaml").write_text("cost_budget:\n  daily_usd: 10\n  alert_at: [80]\n",
+                                      encoding="utf-8")
+    _spend(monkeypatch, day=3, month=3, upper=True)
+
+    out = _run()
+
+    assert out["spend_is_upper_bound"] is True
+    assert out["today"]["remaining_usd"] == 7.0
+    assert any("fraction" in w for w in out["config_warnings"])

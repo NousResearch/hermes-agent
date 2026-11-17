@@ -137,3 +137,18 @@ Hook in `_run_one_job_body`, right after the secret scope is set and before `run
 
 - [ ] Add entries; run `scripts/run_tests.sh tests/test_fork_feature_inventory.py` → pass. Commit `docs: cost budget + alerts`.
 - [ ] Push branch, open PR against main.
+
+---
+
+## Review fixes (2026-11-17, PR #5 review)
+
+Supersedes the matching parts above; CLAUDE.md "Cost budget + alerts" is the current description.
+
+1. Spend is booked by delta of each usage row's cumulative cost, dated by `last_seen` (`cost_budget/spend.json`); cold start baselines pre-month rows and flags whole-session bookings as upper bound.
+2. One over-budget alert per period (`…:1` threshold key), shared by `watch` and every over-budget preflight, naming the triggering job.
+3. Per-run alerts only since tracking began, batched per check; keys claimed under the lock, sent on a context-carrying daemon thread, claim released on failure.
+4. `1.0` always a threshold; `alert_at` values > 5 rejected with a "did you mean" warning; skips always raise the deduped alert.
+5–7. Tool `remaining_usd: null` under a lower bound; failed scans cached 60s; `local`/`origin` alert channels rejected, unresolved targets not marked sent.
+8. `cron.jobs.mark_job_skipped`: no streak/repeat change, one-shot re-armed at budget reset, fire-claim loss honoured.
+9. `cronjob(discretionary=true)` (set-only); `discretionary_jobs` matches ids only.
+10. Two-profile test through `set_hermes_home_override`; stubs keyed on `now` so the cache path runs.

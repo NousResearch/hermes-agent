@@ -1,4 +1,4 @@
-"""scripts/move: a folder moved only when every file under it moved; files that leave a folder that stays move alone."""
+"""scripts/move: a folder moved only when every file under it moved and none moved in; files that leave a folder that stays move alone."""
 
 import importlib.util
 import sys
@@ -45,6 +45,29 @@ def test_path_strings_name_a_moved_folder_only_when_the_move_emptied_it():
     assert whole.find_path("tools/environments/") == ("tools/environments/", "hermes_agent/tools/environments/")
     assert whole.folders == {"tools"}
     assert whole.departed_files == frozenset()
+
+
+def test_a_folder_a_file_moved_into_stays():
+    renames = _load("renames")
+
+    # a/b/ keeps its only file under a new name: the folder still stands, so a string that names it names
+    # nothing that moved.
+    tree = ["a/keep.py", "a/b/c.py"]
+    within = [("a/b/c.py", "a/b/d.py")]
+    moved = renames.MovedPaths(tuple(within), renames.emptied_folders(tree, within))
+    assert moved.find_path("a/b/") is None
+    assert moved.find_path("a/b/c.py") == ("a/b/c.py", "a/b/d.py")
+    assert moved.folders == {"c.py"}
+    assert moved.departed_files == {"c.py"}
+
+    # b/ loses y.py but gains x.py in the same move: it still stands too.
+    tree = ["a/x.py", "b/y.py"]
+    swap = [("a/x.py", "b/x.py"), ("b/y.py", "c/y.py")]
+    moved = renames.MovedPaths(tuple(swap), renames.emptied_folders(tree, swap))
+    assert moved.find_path("b/") is None
+    assert moved.find_path("a/") == ("a/", "b/")
+    assert moved.folders == {"a", "y.py"}
+    assert moved.departed_files == {"y.py"}
 
 
 def test_docs_glob_follows_a_move_only_when_every_file_it_matches_moved_together():

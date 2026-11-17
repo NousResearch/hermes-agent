@@ -4,8 +4,9 @@ The route resolves and guards the folder exactly as it does a single-file downlo
 only walks it and writes the archive. The walk mirrors what the Files tree lists: it skips the
 noise directories the tree hides (``.git``, ``node_modules``, ...), every entry the route's
 *admit* check refuses (credential stores, ``.env``, paths outside a locked files root), and
-every symlink, so a link can never pull in a file outside the folder or loop the walk. A live
-SQLite database is skipped rather than read (a raw close would drop its locks).
+every symlink or Windows junction, so a link can never pull in a file outside the folder or loop
+the walk. A live SQLite database is skipped rather than read (a raw close would drop its locks);
+like the streamed download route, that is a point-in-time admission check, not a held lock.
 
 The archive is written to a spooled temp file while it is hashed, so the response can carry its
 SHA-256 (``X-Content-SHA256``) and length before the first body byte, and a saved copy can be
@@ -26,9 +27,10 @@ from urllib.parse import quote
 
 from fastapi import HTTPException
 
-from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+from hermes_cli.sqlite_safe_read import has_live_connection
+from pm.filesystem import is_junction
 
-#: Files one archive may hold, and their total uncompressed bytes. Over either: 413, nothing sent.
+#: Files one archive may hold, and the bytes actually copied into it. Over either: 413, nothing sent.
 MAX_FILES = 20_000
 MAX_BYTES = 1024 * 1024 * 1024
 _SPOOL_BYTES = 8 * 1024 * 1024
@@ -59,44 +61,71 @@ class PackedZip:
             self.body.close()
 
 
-def _walk(root: Path, hidden: frozenset[str], admit: Callable[[Path], bool]) -> Iterator[tuple[Path, int] | None]:
-    """``(file, size)`` for each regular file under *root* the archive takes, ``None`` per skip."""
+def _walk(root: Path, hidden: frozenset[str], admit: Callable[[Path], bool]) -> Iterator[Path | None]:
+    """Each regular file under *root* the archive takes, ``None`` per skip. Streams ``scandir``
+    (no per-directory list), so a huge folder costs no memory before the limits stop it."""
     stack = [root]
     while stack:
         current = stack.pop()
         try:
             with os.scandir(current) as scan:
-                entries = sorted(scan, key=lambda e: e.name)
+                for entry in scan:
+                    path = Path(entry.path)
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        yield None
+                        continue
+                    # A Windows junction is a folder link that S_ISLNK misses: never descend it.
+                    if stat.S_ISLNK(st.st_mode) or is_junction(path) or not admit(path):
+                        yield None
+                    elif stat.S_ISDIR(st.st_mode):
+                        if entry.name not in hidden:
+                            stack.append(path)
+                    else:
+                        yield path if stat.S_ISREG(st.st_mode) else None
         except OSError:
             yield None
-            continue
-        for entry in entries:
-            path = Path(entry.path)
-            try:
-                st = entry.stat(follow_symlinks=False)
-            except OSError:
-                yield None
-                continue
-            if stat.S_ISLNK(st.st_mode) or not admit(path):
-                yield None
-            elif stat.S_ISDIR(st.st_mode):
-                if entry.name not in hidden:
-                    stack.append(path)
-            elif stat.S_ISREG(st.st_mode):
-                yield path, st.st_size
-            else:
-                yield None
 
 
-def _add_file(archive: zipfile.ZipFile, path: Path, arcname: str) -> bool:
-    """Copy *path* into *archive*; False (skipped) when it cannot be read or is a live database."""
-    try:
-        with offline_file_access(path, what="zip"), path.open("rb") as src, archive.open(arcname, "w") as dst:
-            while chunk := src.read(_CHUNK):
-                dst.write(chunk)
-        return True
-    except (LiveConnectionError, OSError):
+class _Budget:
+    """The archive's file and byte limits, charged with what is actually copied."""
+
+    def __init__(self) -> None:
+        self.files = self.bytes = 0
+
+    def charge(self, *, files: int = 0, size: int = 0) -> None:
+        self.files += files
+        self.bytes += size
+        if self.files > MAX_FILES or self.bytes > MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Folder is too large to zip (limit {MAX_FILES} files / {MAX_BYTES // 2**20} MiB)",
+            )
+
+
+def _add_file(archive: zipfile.ZipFile, path: Path, arcname: str, budget: _Budget) -> bool:
+    """Copy *path* into *archive*; False (skipped, nothing written) when it is a live database or
+    cannot be opened. A failure after the member is started aborts the archive: a half-copied file
+    must never ship under a SHA-256 that vouches for it."""
+    # Point-in-time admission, as the streamed download route does: holding the process-wide
+    # SQLite lock across a whole compression would stall every session request meanwhile.
+    if has_live_connection(path):
         return False
+    try:
+        src = path.open("rb")
+    except OSError:
+        return False
+    with src:
+        budget.charge(files=1)
+        try:
+            with archive.open(arcname, "w") as dst:
+                while chunk := src.read(_CHUNK):
+                    budget.charge(size=len(chunk))
+                    dst.write(chunk)
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail=f"Could not read {arcname} while zipping") from exc
+    return True
 
 
 class _HashingWriter:
@@ -124,29 +153,19 @@ def pack_directory(root: Path, *, hidden: frozenset[str], admit: Callable[[Path]
     *root*. 413 past ``MAX_FILES`` / ``MAX_BYTES``."""
     spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_BYTES)
     writer = _HashingWriter(spool)
-    files = skipped = total = 0
+    budget, skipped = _Budget(), 0
     try:
         # A write-only stream: ZipFile emits data descriptors and never seeks back, so every
         # byte passes through the hash exactly once, in order.
         with zipfile.ZipFile(writer, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
-            for item in _walk(root, hidden, admit):
-                if item is None:
+            for path in _walk(root, hidden, admit):
+                if path is None or not _add_file(archive, path, path.relative_to(root.parent).as_posix(), budget):
                     skipped += 1
-                    continue
-                path, size = item
-                files, total = files + 1, total + size
-                if files > MAX_FILES or total > MAX_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"Folder is too large to zip (limit {MAX_FILES} files / {MAX_BYTES // 2**20} MiB)",
-                    )
-                if not _add_file(archive, path, path.relative_to(root.parent).as_posix()):
-                    files, total, skipped = files - 1, total - size, skipped + 1
         spool.seek(0)
     except BaseException:
         spool.close()
         raise
-    return PackedZip(spool, writer.digest.hexdigest(), writer.size, files, skipped)
+    return PackedZip(spool, writer.digest.hexdigest(), writer.size, budget.files, skipped)
 
 
 def zip_headers(packed: PackedZip, name: str) -> dict[str, str]:

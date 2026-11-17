@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli import web_server
 from hermes_cli import web_server_file_tickets as file_tickets
+from hermes_cli.web_routers import files_zip
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
@@ -61,6 +62,10 @@ def test_folder_zip_holds_the_tree_its_header_hash_names_and_stays_in_the_files_
 
     refused = client.get("/api/fs/download", params={"path": str(tmp_path / "outside"), "format": "zip"})
     assert refused.status_code == 403
+
+    monkeypatch.setattr(files_zip, "MAX_BYTES", len(b"# demo\n"))  # README fits, main.py does not
+    too_big = client.get("/api/fs/download", params={"path": str(project), "format": "zip"})
+    assert too_big.status_code == 413
 
 
 def test_folder_zip_rides_a_download_ticket(client, tmp_path, monkeypatch):

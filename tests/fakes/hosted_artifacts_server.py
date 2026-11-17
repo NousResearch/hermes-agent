@@ -87,14 +87,37 @@ class Store:
             version = len(item["versions"])
         return {"id": artifact_id, "version": version, **self._urls(artifact_id, version)}
 
+    def _version(self, item: dict, version: Optional[int]) -> Any:
+        """The chosen version number (``None`` = the head), or the contract error for a bad one."""
+        if version is None:
+            return len(item["versions"])
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            return {"error": "invalid_request", "message": "version must be a positive integer"}
+        if version > len(item["versions"]):
+            return {"error": "not_found", "message": "version not found"}
+        return version
+
     def show(self, artifact_id: str, version: Optional[int]) -> dict:
         item = self.get(artifact_id)
         if item is None:
             return {"error": "not_found", "message": "artifact not found"}
-        chosen = version or len(item["versions"])
-        if not 1 <= chosen <= len(item["versions"]):
-            return {"error": "not_found", "message": "version not found"}
+        chosen = self._version(item, version)
+        if isinstance(chosen, dict):
+            return chosen
         return {"id": artifact_id, "version": chosen, "title": item["title"], **self._urls(artifact_id, chosen)}
+
+    def read(self, artifact_id: str, version: Optional[int]) -> dict:
+        """``artifact_get``: one version's files, validated before any lookup."""
+        item = self.get(artifact_id)
+        if item is None:
+            return {"error": "not_found", "message": "artifact not found"}
+        chosen = self._version(item, version)
+        if isinstance(chosen, dict):
+            return chosen
+        files = [{**f, "size": len(f.get("content", ""))} for f in item["versions"][chosen - 1]]
+        return {"id": artifact_id, "title": item["title"], "kind": "html", "head_version": len(item["versions"]),
+                "version": chosen, "files": files, "share": item["share"],
+                "viewer_url": self._urls(artifact_id, chosen)["viewer_url"]}
 
     def listing(self) -> dict:
         with self._lock:
@@ -140,14 +163,7 @@ def build_server(store: Store):
     @server.tool()
     def artifact_get(id: str, version: int | None = None):
         """Read one version's files."""
-        item = store.get(id)
-        if item is None:
-            return result({"error": "not_found", "message": "artifact not found"})
-        chosen = version or len(item["versions"])
-        files = [{**f, "size": len(f.get("content", ""))} for f in item["versions"][chosen - 1]]
-        shown = store.show(id, chosen)
-        return result({"id": id, "title": item["title"], "kind": "html", "head_version": len(item["versions"]),
-                       "version": chosen, "files": files, "share": item["share"], "viewer_url": shown["viewer_url"]})
+        return result(store.read(id, version))
 
     @server.tool()
     def artifact_list(cursor: str | None = None):

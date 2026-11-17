@@ -9,7 +9,7 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     from gateway.session_policy import build_policy, policy_scope
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import terminal_env
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     cfg = {'platform_toolsets': {'cli': ['terminal']}}
     before = dict(os.environ)
@@ -36,7 +36,7 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     for params in ({'source': 'cron'}, {'toolsets': ['not-a-toolset']}, {'cwd': '.'},
                    {'provider': 12}, {'skills': 'x'}, {'skills': []}, {'pass_session_id': 1},
                    {'toolsets': ['desktop_ui'], 'source': 'cli'}):
-        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        with pytest.raises(AuthorityRefusal, match='invalid_params'):
             build_policy(params, {})
 
 
@@ -53,7 +53,6 @@ async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_pat
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
     from gateway.session_policy import restore_policy
-    from hermes_state_local import local_receipt
     from agent import shell_hooks
     from hermes_cli.plugins import get_plugin_manager
 
@@ -71,7 +70,7 @@ async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_pat
     monkeypatch.setattr(get_plugin_manager(), '_hooks', {})
     shell_hooks.reset_for_tests()
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id=str(home), instance_id='first')
@@ -85,7 +84,7 @@ async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_pat
     launch = dict(skills=['launch-fixture', 'missing-typo'], checkpoints=True, pass_session_id=True, accept_hooks=True)
     sid = await create('launch', **launch)
     def frozen(session_id):
-        return restore_policy(local_receipt(authority.db, session_id)['policy'])
+        return restore_policy(authority.persistence.bindings.receipt(session_id).policy)
     policy = frozen(sid)
     assert 'LAUNCH_SKILL_BODY' in policy.skills_prompt and policy.pass_session_id and policy.checkpoints_enabled
     assert str(hook) in (home / shell_hooks.ALLOWLIST_FILENAME).read_text()
@@ -126,7 +125,7 @@ def test_launch_policy_reaches_real_turn_runner(tmp_path):
 def test_launch_options_are_frozen_and_validated(tmp_path):
     from gateway.session_policy import build_policy
     from hermes_constants import parse_reasoning_effort
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     cfg = {'agent': {'max_turns': 8, 'reasoning_effort': 'low'}}
     params = dict(cwd=str(tmp_path), provider='custom', base_url='http://127.0.0.1:1234/v1',
                   model='fixture', reasoning='high', max_turns=3, ignore_rules=True)
@@ -139,7 +138,7 @@ def test_launch_options_are_frozen_and_validated(tmp_path):
     assert build_policy(dict(cwd=str(tmp_path), ignore_rules=False), cfg).ignore_rules is False
     for bad in ({'max_turns': True}, {'max_turns': 'garbage'}, {'max_turns': 2.5}, {'reasoning': 'garbage'},
                 {'ignore_rules': 'false'}, {'base_url': 'http://user:secret@localhost/v1'}):
-        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        with pytest.raises(AuthorityRefusal, match='invalid_params'):
             build_policy(dict(cwd=str(tmp_path), **bad), cfg)
 
 
@@ -303,7 +302,7 @@ def test_explicit_key_is_private_and_missing_after_restart_fails_closed(tmp_path
     from dataclasses import asdict
     from types import SimpleNamespace
     from gateway.session_policy import build_policy, bind_launch_key, launch_key
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     authority = SimpleNamespace(instance_id='owned', profile_id='profile', epoch=1)
     sibling = SimpleNamespace(instance_id='sibling', profile_id='profile', epoch=1)
     raw = 'UNIQUE-PRIVATE-LAUNCH-KEY'
@@ -319,11 +318,11 @@ def test_explicit_key_is_private_and_missing_after_restart_fails_closed(tmp_path
     retry = build_policy(params, {'model': {'api_key': raw}}, private_secrets=retry_private)
     assert bind_launch_key(authority, 'session-a', retry, raw, config_secrets=retry_private) == policy
     for other in (sibling, SimpleNamespace(instance_id='owned', profile_id='profile', epoch=2)):
-        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+        with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable'):
             launch_key(other, policy)
-        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+        with pytest.raises(AuthorityRefusal, match='launch_credentials_unavailable'):
             policy.config(other)
-    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+    with pytest.raises(AuthorityRefusal, match='admission_conflict'):
         bind_launch_key(authority, 'session-a', build_policy(params, {}), 'different')
     assert dict(os.environ) == before
 
@@ -491,13 +490,13 @@ def test_run_budget_is_a_frozen_launch_option(tmp_path):
     """`hermes chat --run-budget N` (main: AIAgent(run_budget_seconds=N)): frozen as the session's
     agent.run_budget_seconds; the profile's own value applies without the flag; junk is refused."""
     from gateway.session_policy import build_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     cfg = {'agent': {'run_budget_seconds': 300}}
     assert build_policy(dict(cwd=str(tmp_path), run_budget=120), cfg).run_budget_seconds == 120.0
     assert build_policy(dict(cwd=str(tmp_path)), cfg).run_budget_seconds == 300.0
     assert build_policy(dict(cwd=str(tmp_path)), {}).run_budget_seconds is None
     for bad in (0, -5, True, 'soon'):
-        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        with pytest.raises(AuthorityRefusal, match='invalid_params'):
             build_policy(dict(cwd=str(tmp_path), run_budget=bad), cfg)
 
 
@@ -514,8 +513,8 @@ def test_run_budget_passes_the_session_create_contract():
 def test_verbose_is_a_frozen_launch_option(tmp_path):
     """`hermes chat -v` (main: AIAgent(quiet_mode=False)): the session agent's status lines are not quieted."""
     from gateway.session_policy import build_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     assert build_policy(dict(cwd=str(tmp_path), verbose=True), {}).verbose is True
     assert build_policy(dict(cwd=str(tmp_path)), {}).verbose is False
-    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+    with pytest.raises(AuthorityRefusal, match='invalid_params'):
         build_policy(dict(cwd=str(tmp_path), verbose='yes'), {})

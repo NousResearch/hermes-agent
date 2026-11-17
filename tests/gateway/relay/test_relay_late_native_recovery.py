@@ -6,6 +6,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.relay.test_relay_native_recovery_and_passthrough import (
     _Connector, _rows, _stub_turns, _wired_relay, websockets,
 )
@@ -37,10 +38,10 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
                     await async_wait_until(lambda: any(f.get('type') == 'inbound_ack' for f in connector.outgoing),
                                            timeout=10, what='queued admission ACK')
                 if unknown:
-                    with authority.db._conn:
-                        authority.db._conn.execute("UPDATE session_admissions SET status='unknown'")
+                    raw_holder(authority.persistence)._execute_write(
+                        lambda conn: conn.execute("UPDATE session_admissions SET status='unknown'"))
             finally:
-                authority.db.close()
+                authority.persistence.close()
 
         runner = GatewayRunner(config)
         _stub_turns(runner, monkeypatch, turns)
@@ -59,7 +60,7 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
                 await runner._install_reconnected_adapter(Platform.RELAY, adapter)
                 assert runner.adapters.get(Platform.RELAY) is adapter
                 if unknown:
-                    sid = authority.db._read_one('SELECT target_session_id FROM session_admissions')['target_session_id']
+                    sid = authority.persistence.admissions.list_unknown()[0].target_session_id
                     assert sid in authority.sessions, 'late connection did not bind the paused session'
                     assert [row['status'] for row in _rows(authority)] == ['unknown']
                     assert turns == []
@@ -71,7 +72,7 @@ async def test_late_relay_connection_recovers_durable_queue(tmp_path, monkeypatc
                                            timeout=10, what='the recovered admission settles')
                     assert connector.replies('late-chat')[-1]['metadata']['user_id'] == 'late-owner'
         finally:
-            authority.db.close()
+            authority.persistence.close()
 
 
 def _fail_first_recovery(monkeypatch, run_runtime):

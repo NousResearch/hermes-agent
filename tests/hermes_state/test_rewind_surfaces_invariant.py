@@ -5,6 +5,7 @@ message set, and an out-of-range target changes nothing on every surface."""
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -44,11 +45,16 @@ def _active_rows(db: SessionDB, sid: str):
 def _rewind_via(surface: str, db: SessionDB, sid: str, n: int):
     """Back up ``n`` user turns through one surface; returns a truthy outcome or raises/None on refusal."""
     if surface == "gateway":
+        from persistence_assembly import open_persistence, profile_scope
         store = SessionStore.__new__(SessionStore)
-        store._db_for_session_id = lambda _sid: db
+        handle = open_persistence(profile_scope(home=Path(db.db_path).parent))
+        store._persistence_for_session_id = lambda _sid: handle
         store._lazy = lambda name, factory: factory()
         store._clear_dirty_transcript = lambda _sid: None
-        return store.rewind_session(sid, n)
+        try:
+            return store.rewind_session(sid, n)
+        finally:
+            handle.close()
     warm = db.get_resume_conversations(sid)[0]  # the live process holds the alternation-repaired projection
     user_turns = sum(1 for m in warm if m.get("role") == "user")
     ordinal = user_turns - n

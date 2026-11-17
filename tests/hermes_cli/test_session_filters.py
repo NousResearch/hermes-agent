@@ -8,6 +8,7 @@ import pytest
 
 from hermes_cli.session_filters import (
     build_prune_filters,
+    describe_filters,
     parse_duration_seconds,
     parse_point_in_time,
 )
@@ -49,6 +50,18 @@ class TestParsePointInTime:
     def test_invalid_raises_with_flag_name(self):
         with pytest.raises(ValueError, match="--older-than"):
             parse_point_in_time("nonsense", "--older-than")
+
+class TestArchivedOnlyFilter:
+    """`--archived-only` must select only archived rows and say so in the confirmation prompt."""
+
+    def test_archived_only_maps_to_archived_filter(self):
+        filters = build_prune_filters(_ns(archived_only=True))
+        assert filters["archived"] is True
+        assert "archived only" in describe_filters(filters)
+
+    def test_without_flag_leaves_archived_unset(self):
+        assert build_prune_filters(_ns())["archived"] is None
+
 
 class TestBuildPruneFilters:
 

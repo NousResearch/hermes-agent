@@ -113,7 +113,12 @@ def build_prune_filters(args: Any) -> dict[str, Any]:
 
     # older_than_days=None: the epoch bounds are the whole story; otherwise prune_sessions' default
     # 90-day cutoff would silently cap an --after/--newer-than-only window.
-    return {"older_than_days": None, **bounds, **{key: getattr(args, attr, None) for key, attr, _ in _ARG_FILTERS}}
+    return {
+        "older_than_days": None,
+        **bounds,
+        **{key: getattr(args, attr, None) for key, attr, _ in _ARG_FILTERS},
+        "archived": True if getattr(args, "archived_only", False) else None,
+    }
 
 
 def describe_filters(filters: dict[str, Any]) -> str:
@@ -125,4 +130,6 @@ def describe_filters(filters: dict[str, Any]) -> str:
         template.format(v=filters[key]) for key, _, template in _ARG_FILTERS
         if ((filters.get(key) is not None) if key.startswith(("min_", "max_")) else bool(filters.get(key)))
     ]
+    if filters.get("archived") is True:
+        parts.append("archived only")
     return ", ".join(parts) if parts else "no filters (all ended sessions)"

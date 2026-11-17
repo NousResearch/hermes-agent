@@ -387,6 +387,23 @@ TOOLSETS = {
         "includes": [],
     },
 
+    # Zendesk Help Center, draft-only. Reads and the draft create are separate
+    # toolsets: the shared service-account token can publish, so the write
+    # tool's allowlist + forced `draft: true` is the boundary, and granting
+    # reads must never imply it. Ticket reads, if ever wanted, get their own
+    # `zendesk_tickets` toolset.
+    "zendesk": {
+        "description": "Zendesk Help Center reads (categories, sections, articles, translations) — no tickets",
+        "tools": ["zendesk_api"],
+        "includes": [],
+    },
+
+    "zendesk_write": {
+        "description": "Create an UNPUBLISHED Zendesk Help Center draft article, gated by the profile's autonomy level",
+        "tools": ["zendesk_create_draft"],
+        "includes": [],
+    },
+
     # Separate from the MCP server's `mcp-webflow` toolset on purpose: the MCP
     # package has NO asset-creation tool, and publishing bytes to a public CDN
     # is a different privilege from reading collections, so it is granted on

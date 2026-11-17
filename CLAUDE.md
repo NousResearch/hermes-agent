@@ -147,7 +147,7 @@ demoting/deleting removes them.
 
 ### `hermes tools rbac` — lists tools by toolset with built-in role coverage.
 
-### Fork-added toolsets — Notion, Jira, Slack thread posting, Webflow assets, video frames
+### Fork-added toolsets — Notion, Jira, Zendesk, Slack thread posting, Webflow assets, video frames
 
 Five fork-only integrations, each registered as its **own** registry toolset so RBAC
 gates them independently. The four API-backed ones read credentials through
@@ -332,6 +332,106 @@ secret scope and never self-heal (see "Multiplex" below).
   `platform_toolsets.slack` (an explicit list shadows defaults) or the tools
   are silently missing. Plan:
   [docs/superpowers/plans/2026-11-16-github-pr-toolset.md](docs/superpowers/plans/2026-11-16-github-pr-toolset.md).
+- **`zendesk_api` (`zendesk` toolset) + `zendesk_create_draft` (`zendesk_write`
+  toolset)** — [tools/zendesk_tool.py](tools/zendesk_tool.py). Draft-only
+  Zendesk Help Center access for the Product Education teammate ("explore and
+  suggest, never deploy"). There is no official Zendesk MCP and community ones
+  expose publish/delete, hence a narrow fork tool. **Reads:** GET-only behind
+  `_READ_ALLOWLIST` — Help Center categories/sections/articles/translations/
+  attachments/search, `user_segments`, `locales`, `guide/permission_groups`;
+  query keys limited to `_READ_QUERY_KEYS` (pagination/search/filter — no
+  `include` side-loading, no `;`); a `links.next` URL on the configured host
+  passes, any other host, traversal or **tickets/users** path is refused
+  (ticket reads, if ever, get their own `zendesk_tickets` toolset).
+  **Write — content comes from the row, never the model.** The tool takes a
+  Release Assets row id plus placement (`section_id`, `locale`,
+  `revision_of_article_id`); the title is the row's title property and the
+  body is the row's own page content (Notion blocks →
+  [tools/notion_blocks_html.py](tools/notion_blocks_html.py), safe by
+  construction: escaped text, fixed tag set, `href` only for
+  https/http/mailto; unknown blocks refuse the draft). Images are refused
+  (Notion file URLs expire; attachment upload isn't built) unless
+  `omit_images=true`, which leaves them out and reports their captions for a
+  human. Visibility is not the model's choice either: permission group / user
+  segment are copied from the revised article, else
+  `zendesk.default_permission_group_id` (required) /
+  `default_user_segment_id` (unset = everyone). **One draft per row**: an
+  `O_EXCL` lock per row and a row→article ledger under
+  `$HERMES_HOME/autonomy/`; a repeat call returns the existing draft. A run
+  that dies mid-create leaves its lock behind on purpose — an operator checks
+  Zendesk, then removes `autonomy/locks/zendesk_create_draft/<row>.lock`.
+  Every write goes through `_zendesk_write`, which re-checks
+  `_WRITE_ALLOWLIST` (only `POST …/sections/<id>/articles.json`) and refuses
+  any body that isn't `draft: true` + `notify_subscribers: false` — the shared
+  service-account token *can* publish, so that chokepoint is the boundary.
+  **Decision: an edit to a published article is always a separate draft**
+  (`reconcile_required`): the classic API can't stage it, and Guide Team
+  Publishing's work-in-progress state has no public API (checked 2026-11-16).
+  **Autonomy levels** ([agent/autonomy.py](agent/autonomy.py)):
+  `autonomy.actions.zendesk_create_draft` (`off` / `signoff` default / `veto`
+  / `auto`; `autonomy.paused: true` caps at `signoff`), read per call from the
+  mtime-cached `config.yaml`; a level outside `BUILT_LEVELS` (e.g.
+  `zendesk_publish: auto`) is refused naming the built levels. `signoff`
+  re-reads the row ([tools/release_asset_gate.py](tools/release_asset_gate.py)):
+  `Status` in `zendesk.approved_statuses` (default `Approved`), `Asset type =
+  Help article`, `Destination = <subdomain>.zendesk.com`, parent =
+  `zendesk.release_assets_data_source_id` (required), not archived/trashed,
+  never `Published`. `veto` announces in `autonomy.announce_channel` (every
+  interpolated value Slack-escaped; links only to the Zendesk/Notion hosts)
+  and stores an **HMAC-signed** pending record (host-local key
+  `autonomy/.hmac_key`, 0600); it runs after `veto_wait_working_hours`
+  (default 4) of `working_hours` (default Mon–Fri 9–18 UTC), re-fetching the
+  row and refusing (`stale`) if its content differs from what was announced.
+  **Any ❌ reaction by anyone but the bot vetoes** (`x`/`no_entry`/
+  `no_entry_sign`; needs Slack `reactions:read`), as does a
+  `zendesk.hold_statuses` row status (default `Hold`) or a trashed row. It
+  expires unrun `veto_expiry_hours` (default 72) after `not_before`. Driver:
+  `zendesk_create_draft(run_due=true)` (release-watch calls it) or a cron
+  pre-run script `python -m tools.zendesk_tool run-due` — execution never
+  depends on the model remembering a `pending_id`. `auto` acts and reports.
+  Creates are written to `data_access_audit`. `autonomy/` is a **protected
+  path** for the file tools (read and write, [agent/file_safety.py](agent/file_safety.py)).
+  **Deploy-order dependency:** every level but `off` is refused unless the
+  profile sets `notion.write_guard.enabled: true` — until the Notion write
+  guard (education spec, 5a) ships, `notion_api` passes `PATCH` unchecked and
+  the agent could set its own row to Approved. That later PR owns enforcement
+  behind the same key; do not set the key before it is deployed.
+  **Auth is OAuth client credentials only** — Zendesk is retiring API tokens
+  (none can be created since 2026-10-27; all deactivated 2027-04-30), so there
+  is no API-token path and `ZENDESK_EMAIL`/`ZENDESK_API_TOKEN` are never read.
+  Credentials `ZENDESK_SUBDOMAIN`/`ZENDESK_OAUTH_CLIENT_ID`/
+  `ZENDESK_OAUTH_CLIENT_SECRET` (plus `NOTION_API_KEY` and `SLACK_BOT_TOKEN`
+  for the gate) come **only** from `agent.secret_scope.get_secret`;
+  `UnscopedSecretError` = not configured. `POST https://<sub>.zendesk.com/oauth/tokens`
+  (`grant_type=client_credentials`, `expires_in` 1800, `allow_redirects=False`)
+  → `Authorization: Bearer`. **Least privilege per call:** reads get an
+  `hc:read` token, only the draft create gets `hc:read hc:write`; never the
+  global `read`/`write` or ticket scopes. Tokens are cached in memory per
+  (profile home, base URL, client id, scope) — two profiles never share one —
+  refreshed 120 s before expiry, and a 401 drops the token and retries once.
+  Token and secret are scrubbed from every error. `hc:write` also covers
+  publish/delete, so `_zendesk_write` stays the boundary. **The token acts as
+  the user the OAuth client belongs to** — that user's rights are the real
+  ceiling. **Admin Center setup:** (1) create a dedicated service user (not a
+  person, not an account admin): an agent whose custom role grants **Manage
+  APIs** (Zendesk lets admins *or* agents with that permission create OAuth
+  clients) and as little ticket access as the plan allows, with Guide role
+  **Help Center manager**; (2) signed in as that user, Admin Center → Apps and
+  integrations → APIs → OAuth clients → add a **Confidential** client, and
+  restrict its allowed scopes to `hc:read hc:write` (the client's `scope`
+  field); copy the identifier and the secret (shown once); (3) put
+  `ZENDESK_SUBDOMAIN`, `ZENDESK_OAUTH_CLIENT_ID`, `ZENDESK_OAUTH_CLIENT_SECRET`
+  in the **profile's** `.env`; (4) verify with a read
+  (`zendesk_api api/v2/help_center/en-us/categories.json`). Unverified: whether
+  `hc:read` covers `guide/permission_groups`/`user_segments` (only used to look
+  ids up — drafts take visibility from config), and whether removing Manage
+  APIs from the user after creating the client keeps its tokens working
+  (keep it unless tested).
+  **Not in any built-in role.** **Deployment:** both `zendesk` and
+  `zendesk_write` must be listed in `platform_toolsets.slack` (an explicit
+  list shadows defaults) or the tools are silently missing. Plan:
+  [docs/superpowers/plans/2026-11-16-zendesk-toolset.md](docs/superpowers/plans/2026-11-16-zendesk-toolset.md);
+  design: the education-teammate spec, "Dependencies → 2. Zendesk tool".
 - **Google Drive per-user access check** — [plugins/google_drive_sa/access.py](plugins/google_drive_sa/access.py).
   The Drive/Sheets/Docs plugin acts as ONE service account, so "shared with the
   SA" would otherwise be "readable by every user whose role grants the toolset".

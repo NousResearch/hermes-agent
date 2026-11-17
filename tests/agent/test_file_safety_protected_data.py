@@ -70,3 +70,29 @@ def test_read_block_error_covers_protected_db():
     msg = get_read_block_error(str(p))
     assert msg is not None
     assert "security boundary" in msg.lower()
+
+
+def test_autonomy_state_is_protected():
+    for rel in ("autonomy/.hmac_key", "autonomy/pending/zendesk_create_draft/0123456789ab.json",
+                "autonomy/ledger/zendesk_create_draft/abc.json", "autonomy/locks/x/y.lock",
+                "autonomy"):
+        p = get_hermes_home() / rel
+        if rel != "autonomy":
+            _touch(p)
+        reason = is_protected_data_path(str(p))
+        assert reason is not None and "autonomy" in reason, rel
+
+
+def test_autonomy_dir_outside_hermes_is_not_protected(tmp_path):
+    p = _touch(tmp_path / "proj" / "autonomy" / "notes.md")
+    assert is_protected_data_path(str(p)) is None
+
+
+def test_file_tools_refuse_autonomy_state():
+    import json
+    from tools.file_tools import read_file_tool, write_file_tool
+    p = _touch(get_hermes_home() / "autonomy" / "pending" / "zendesk_create_draft" / "0123456789ab.json")
+    assert "autonomy" in json.loads(read_file_tool(str(p)))["error"]
+    out = json.loads(write_file_tool(str(p), "{}"))
+    assert "error" in out
+    assert p.read_text(encoding="utf-8") == "x"

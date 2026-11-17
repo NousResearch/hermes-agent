@@ -53,8 +53,6 @@ import {
   str
 } from './server-request-context'
 
-export type { ServerRequestContext } from './server-request-context'
-
 /** The preview engine, loaded on demand so ~25KB of page-injectable source stays
  *  off the boot path (dev: a fresh copy per action so edits reach the guest — see
  *  the previous home of this loader in desktop-bridge.ts for the full story). */

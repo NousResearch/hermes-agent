@@ -782,6 +782,7 @@ class CLIStreamMixin:
                 # "new" mode: skip consecutive repeats of the same tool
                 if self.tool_progress_mode == "new" and function_name == self._last_scrollback_tool:
                     self._print_tool_image(function_name, stored_args, kwargs.get("result"), kwargs.get("is_error"))
+                    self._print_artifact_link(function_name, kwargs.get("result"))
                     self._invalidate()
                     return
                 self._last_scrollback_tool = function_name
@@ -808,6 +809,8 @@ class CLIStreamMixin:
                             CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[TOOL_PROGRESS_FLAG] = True
                 except Exception:
                     pass
+            # Not gated on tool_progress: the link is how the user reaches what the call made.
+            self._print_artifact_link(function_name, kwargs.get("result"))
             self._invalidate()
             return
         if event_type != "tool.started":
@@ -861,6 +864,14 @@ class CLIStreamMixin:
         from hermes_cli.cli_inline_images import print_inline_images
         if path := tool_image_path(function_name, args, result, is_error=bool(is_error)):
             print_inline_images(self, [path])
+
+    def _print_artifact_link(self, function_name, result) -> None:
+        """A hosted artifact's viewer page after the call that made, changed or showed it. Plain text:
+        prompt_toolkit's printer drops OSC 8, and terminals link a bare URL themselves."""
+        from tools.hosted_artifacts import viewer_link
+        if link := viewer_link(function_name, result):
+            from cli import _DIM, _RST, _cprint
+            _cprint(f"  {_DIM}\u2197{_RST} {link.text()}")
 
     def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
         """Render file edits with inline diff after write-capable tools complete."""

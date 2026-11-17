@@ -154,7 +154,7 @@ class CompactionWindowMixin:
         inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the model can still
         open the exact output. Local backend only; a result whose write fails stays whole."""
         from agent.context_compressor import _PRUNE_MIN_CHARS, _rewritten, _tool_calls_by_id
-        from tools.tool_result_storage import _backend_reads_host_files, archive_pruned_originals
+        from tools.tool_result_storage import _backend_reads_host_files, archive_pruned_originals, has_archive_pointer
 
         if not _backend_reads_host_files():
             return plan, 0, []
@@ -163,11 +163,11 @@ class CompactionWindowMixin:
         for i in range(start, end):
             if self._demote_tool_result_at(demoted, i, calls, _PRUNE_MIN_CHARS):
                 changed += 1
-            elif (plan[i].get("role") == "tool" and isinstance(plan[i].get("content"), (list, dict))
-                  and plan[i]["content"]):
-                # Plain text-block/JSON tool results have no image to strip. They are still about to
-                # be replaced by the summary, so archive them just like string bodies.
-                demoted[i] = _rewritten(plan[i], "[Structured tool output archived]")
+            elif (plan[i].get("role") == "tool" and plan[i].get("content")
+                  and (isinstance(plan[i]["content"], (list, dict))
+                       or isinstance(plan[i]["content"], str) and not has_archive_pointer(plan[i]["content"]))):
+                # The summary replaces small strings too, even when the size prune left them alone.
+                demoted[i] = _rewritten(plan[i], "[Tool output archived]")
                 changed += 1
         if not changed:
             return plan, 0, []

@@ -391,6 +391,10 @@ class _SessionDB:
         return self._store.sessions.resolve_by_title(title)
 
     @_held
+    def resolve_session_id(self, session_id_or_prefix: "str") -> "Optional[str]":
+        return self._store.sessions.resolve_id(session_id_or_prefix)
+
+    @_held
     def get_next_title_in_lineage(self, base_title: "str") -> "str":
         return self._store.sessions.next_title_in_lineage(base_title)
 

@@ -335,6 +335,7 @@ Session storage sits behind a storage interface: typed contracts in `persistence
 | `get_session` | `store.sessions.get(session_id)`; `as_session_row()` gives the old dict |
 | `list_sessions_rich`, `session_count` | `store.sessions.list_sessions(SessionQuery(...), SessionWindow(...))`, `store.sessions.count_sessions()` |
 | `set_session_title`, `resolve_session_by_title`, `get_next_title_in_lineage` | `store.sessions.set_title`, `store.sessions.resolve_by_title`, `store.sessions.next_title_in_lineage` |
+| `resolve_session_id` | `store.sessions.resolve_id`: the exact id, else the one id the prefix matches |
 | `search_messages` | `store.search.search_messages`, which returns `SearchHit` records |
 | `export_session`, `export_all`, `prune_sessions` | `store.maintenance.export_session`, `store.maintenance.export_all`, `store.maintenance.prune_sessions` |
 | `delete_session`, `clear_messages` | `store.sessions.delete`, `store.messages.replace_transcript(session_id, [], ReplaceMode.DESTRUCTIVE)` |

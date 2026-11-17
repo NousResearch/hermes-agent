@@ -147,6 +147,18 @@ def test_writes_land_as_their_replacements_read_them(store, legacy):
     assert legacy.list_meta_prefix("") == []
 
 
+def test_the_plugin_guides_resume_lookup_resolves_a_short_id_as_written(quiet, store):
+    # website/docs/user-guide/features/plugins.md, _session_to_resume
+    seed_session(store, "abc123", "cli")
+    db = hermes_state.SessionDB(db_path=hermes_constants.get_hermes_home() / "state.db", read_only=True)
+    try:
+        assert db.resolve_session_id("abc") == store.sessions.resolve_id("abc") == "abc123"
+        assert db.resolve_session_id("s1") == "s1"
+        assert db.resolve_session_id("s") is None
+    finally:
+        db.close()
+
+
 def test_append_message_still_takes_the_old_compression_lock_holder_keyword(store, legacy):
     message_id = legacy.append_message("s1", "user", "kept", compression_lock_holder="holder-1")
     assert store.messages.read_transcript("s1")[-1].id == message_id

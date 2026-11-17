@@ -57,9 +57,10 @@ refusal reason (`desktop_screen_hold`) - the full hold notice lives
 in the screen log.
 
 Judge philosophy unchanged: the judge advises, it never replaces
-owner gates. The gate is one engine call, hard-capped (timeout + 1s
-deadline), fail-open, and can never raise past the control plane's
-error frame.
+owner gates. The gate is one engine call per 32k-char chunk, within a
+6s hard funding budget; every model-visible character is judged or
+the submit is held ("screening_incomplete_budget" - fail-closed for
+coverage; an unreachable ENGINE still fails open per Phase 2).
 
 ## Enablement (per deployment)
 

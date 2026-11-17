@@ -562,6 +562,43 @@ class TestAuthorityGate(unittest.TestCase):
             self._run({"text": "hello"})
         self.assertEqual(EngineStubHandler.screen_calls, 0)
 
+    def test_tail_beyond_the_old_cap_is_screened(self):
+        # Review r6-1 repro: 4050 benign chars then the attack - the
+        # old 4000-char truncation admitted this; segmentation does not.
+        EngineStubHandler.block_pattern = "ATTACK"
+        from hermes_state_runtime import RuntimeStoreError
+        with self.assertRaises(RuntimeStoreError) as raised:
+            self._run({"text": "B" * 4050 + "ATTACK outside the boundary"})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+
+    def test_tail_in_nested_api_text_is_screened(self):
+        # Review r6-1, api_text side: the committed payload can carry a
+        # 1M-char api_text - its tail must be judged too.
+        EngineStubHandler.block_pattern = "ATTACK"
+        from hermes_state_runtime import RuntimeStoreError
+        with self.assertRaises(RuntimeStoreError) as raised:
+            self._run({"text": "benign opener",
+                       "cli_turn_v1": {"api_text":
+                                       "C" * 5000 + "ATTACK api tail"}})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+
+    def test_all_chunks_judged(self):
+        # 70k benign chars = 3 chunks against MAX_TEXT_CHARS=32000;
+        # every chunk must reach the engine.
+        self._run({"text": "D" * 70000})
+        self.assertEqual(EngineStubHandler.screen_calls, 3)
+
+    def test_budget_expiry_holds_for_coverage(self):
+        # Coverage invariant: if the blocking budget runs out with
+        # chunks unjudged, the submit is HELD (fail-closed for
+        # coverage), never silently allowed.
+        from hermes_state_runtime import RuntimeStoreError
+        with mock.patch.object(desktop_screen, "_SCREEN_BUDGET_S", 0.0):
+            with self.assertRaises(RuntimeStoreError) as raised:
+                self._run({"text": "E" * 70000})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+        self.assertEqual(EngineStubHandler.screen_calls, 0)
+
 
 class TestAuthorityWiring(unittest.TestCase):
     """SessionAuthority._submit consults the gate BEFORE durable
@@ -647,7 +684,9 @@ class TestAuthorityWiring(unittest.TestCase):
         self.endpoint = f"http://127.0.0.1:{self.server.server_port}/v1/screen"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
+        EngineStubHandler.block_pattern = None
         EngineStubHandler.screen_calls = 0
+        EngineStubHandler.last_texts = []
         self.patcher = mock.patch.dict(os.environ, {
             "HERMES_DESKTOP_SCREEN": "1",
             "HERMES_DESKTOP_SCREEN_ENDPOINT": self.endpoint,

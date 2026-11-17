@@ -99,7 +99,10 @@ logger = logging.getLogger("hermes.gateway.desktop_screen")
 
 from hermes_state_runtime import RuntimeStoreError
 
-MAX_TEXT_CHARS = 4000
+MAX_TEXT_CHARS = 32000  # per-chunk cap (engine limit is 64 KiB)
+_MAX_CHUNKS = 40        # 1.28M chars - above the 1M api_text commit cap
+_SCREEN_BUDGET_S = 6.0  # hard cap for one submit's total screening
+
 _DEFAULT_ENDPOINT = "http://127.0.0.1:8201/v1/screen"
 _DEFAULT_HOLD_NOTICE = ("Held by the desktop intake screen (block tier): "
                         "your message was not delivered. It matched the "
@@ -280,6 +283,18 @@ def submit_texts(params) -> list:
     return texts
 
 
+def segments(text) -> list:
+    """Split one model-visible text into judgeable chunks (review r6-1:
+    the old 4000-char truncation let >4 KB tails ride in unscreened
+    while the model read the whole text). Every character is covered;
+    the last chunk may be short."""
+    value = (text or "").strip() if isinstance(text, str) else ""
+    if not value:
+        return []
+    return [value[i:i + MAX_TEXT_CHARS]
+            for i in range(0, len(value), MAX_TEXT_CHARS)][:_MAX_CHUNKS]
+
+
 async def authority_gate(authority, subject, session_id, payload, *,
                          kanban_card=False) -> None:
     """The SINGLE shared intake gate, called from
@@ -386,52 +401,80 @@ async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
     if not text:
         return False, []
     base = {"subject": str(subject or "unknown"),
-            "session": str(session_id or ""), "preview": text[:120]}
+            "session": str(session_id or ""), "preview": text[:120],
+            "chars": len(text)}
     endpoint = _effective_endpoint()
     timeout = _float_env("HERMES_DESKTOP_SCREEN_TIMEOUT_S", 4.0)
     headers = {"X-Judge-Caller": _caller(), "X-Judge-Purpose": _purpose()}
 
-    def call() -> dict:
-        return _post(endpoint, {"text": text[:MAX_TEXT_CHARS]},
-                     headers, timeout)
+    def call(chunk: str, spent: float) -> dict:
+        # Per-chunk socket budget is what remains of the submit's
+        # overall screening budget (review r6-1: coverage is the
+        # invariant - every model-visible character is judged within
+        # the blocking window, or the submit is held).
+        budget = max(0.5, min(timeout, _SCREEN_BUDGET_S - spent))
+        return _post(endpoint, {"text": chunk}, headers, budget)
 
-    try:
-        # Overall deadline: socket timeout + 1s guards drip-fed bodies.
-        result = await asyncio.wait_for(asyncio.to_thread(call),
-                                        timeout=timeout + 1.0)
-        if not isinstance(result, dict):
-            raise ValueError(f"non-dict engine response: {type(result)!r}")
-    except Exception as err:
-        _log(dict(base, tier="engine_unreachable_or_malformed",
-                  error=str(err)[:160]))
-        return False, []
-
-    tier = result.get("tier")
-    tier = tier if isinstance(tier, str) else None
-    raw_reasons = result.get("reasons")
-    if not isinstance(raw_reasons, list):
-        raw_reasons = []
-    reasons = [str(r) for r in raw_reasons
-               if isinstance(r, str) and r.strip()][:8]
-    served_by = result.get("served_by")
-    served_by = served_by.get("provider") if isinstance(served_by, dict) else None
-    scores = result.get("scores") if isinstance(result.get("scores"), dict) else {}
-    _log(dict(base, tier=tier, reasons=reasons,
-              served_by=served_by, scores=scores))
-    question_id = ("q_" + reasons[0]) if reasons else None
-    if tier == "block":
-        _spawn_outcome_report(result, "escalated",
-                              "block-tier held automatically (desktop screen)",
-                              question_id)
-        return True, reasons
-    if tier in ("review", "chain_down"):
-        _spawn_outcome_report(result, "escalated",
-                              f"{tier}-tier (desktop screen advisory pass)",
-                              question_id)
-        return False, reasons
-    _spawn_outcome_report(result, "accepted", "allow-tier (desktop screen)",
-                          question_id)
-    return False, []
+    chunks = segments(text)
+    deadline = time.monotonic() + _SCREEN_BUDGET_S
+    judged = 0
+    result = None
+    tail_reasons: list = []
+    for index, chunk in enumerate(chunks):
+        spent = _SCREEN_BUDGET_S - (deadline - time.monotonic())
+        if time.monotonic() >= deadline:
+            # Coverage invariant: a tail we could not judge in budget
+            # is HELD (fail-closed for coverage - unlike an
+            # unreachable engine, which stays fail-open per Phase 2).
+            _log(dict(base, tier="screening_incomplete_budget",
+                      chunk=index, judged=judged, chunks=len(chunks)))
+            return True, ["screening_incomplete_budget"]
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(call, chunk, spent),
+                timeout=max(0.5, min(timeout, _SCREEN_BUDGET_S - spent)) + 1.0)
+            if not isinstance(result, dict):
+                raise ValueError(f"non-dict engine response: {type(result)!r}")
+        except Exception as err:
+            # Engine unreachable/malformed mid-way: Phase 2 fail-open
+            # (a dead engine must not lock the owner out); the gap is
+            # the engine, not the input.
+            _log(dict(base, tier="engine_unreachable_or_malformed",
+                      chunk=index, judged=judged, chunks=len(chunks),
+                      error=str(err)[:160]))
+            return False, []
+        judged += 1
+        tier = result.get("tier")
+        tier = tier if isinstance(tier, str) else None
+        raw_reasons = result.get("reasons")
+        if not isinstance(raw_reasons, list):
+            raw_reasons = []
+        reasons = [str(r) for r in raw_reasons
+                   if isinstance(r, str) and r.strip()][:8]
+        served_by = result.get("served_by")
+        served_by = (served_by.get("provider")
+                     if isinstance(served_by, dict) else None)
+        scores = (result.get("scores")
+                  if isinstance(result.get("scores"), dict) else {})
+        _log(dict(base, tier=tier, reasons=reasons, chunk=index,
+                  judged=judged, chunks=len(chunks),
+                  served_by=served_by, scores=scores))
+        question_id = ("q_" + reasons[0]) if reasons else None
+        if tier == "block":
+            _spawn_outcome_report(
+                result, "escalated",
+                "block-tier held automatically (desktop screen)", question_id)
+            return True, reasons
+        if tier in ("review", "chain_down"):
+            _spawn_outcome_report(
+                result, "escalated",
+                f"{tier}-tier (desktop screen advisory pass)", question_id)
+            tail_reasons = reasons
+    if result is not None:
+        _spawn_outcome_report(
+            result, "accepted",
+            f"allow-tier (desktop screen; {judged} chunk)", None)
+    return False, tail_reasons
 
 
 def hold_error(reasons) -> Exception:

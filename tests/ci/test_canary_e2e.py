@@ -3,6 +3,7 @@
 The real workflow files are evaluated with the repo's Actions-expression evaluator
 for each way a run starts, and the commit step is replayed in Bash.
 """
+import os
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,40 @@ def test_the_commit_under_test_is_the_canarys_not_mains_tip(ctx, commit):
 def test_a_dispatched_commit_must_be_a_full_sha():
     with pytest.raises(AssertionError, match="full 40-hex SHA"):
         resolved_commit(dispatched("main"))
+
+
+def tested_step() -> dict:
+    return next(s for s in load("canary-e2e.yml")["jobs"]["resolve"]["steps"] if s.get("id") == "tested")
+
+
+@pytest.mark.parametrize(("passed_titles", "tested"), [
+    ([f"Canary E2E on {MAIN_TIP}", f"Canary E2E on {CANARY_COMMIT}"], "true"),
+    ([f"Canary E2E on {MAIN_TIP}"], None),
+    ([], None),
+])
+def test_a_commit_an_automatic_run_already_passed_is_not_run_again(tmp_path, monkeypatch, passed_titles, tested):
+    """A quiet day resumes the last canary, which succeeds again on the same commit."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (tmp_path / "titles").write_text("".join(f"{t}\n" for t in passed_titles), encoding="utf-8")
+    (fake / "gh").write_text(f'#!/bin/sh\necho "$*" > {tmp_path}/args\ncat {tmp_path}/titles\n', encoding="utf-8")
+    (fake / "gh").chmod(0o755)
+    monkeypatch.setattr(os, "defpath", f"{fake}{os.pathsep}{os.defpath}")
+    ctx = after_canary()
+    ctx["steps"] = {"commit": {"outputs": {"commit": CANARY_COMMIT}}}
+    out = workflow_steps.outputs(tested_step(), ctx).get("tested")
+    assert out == tested
+    # Only automatic successes count: a dispatched or red run of the commit is no reason to skip.
+    args = (tmp_path / "args").read_text(encoding="utf-8")
+    assert "canary-e2e.yml/runs?" in args and "event=workflow_run" in args and "status=success" in args
+    for name, job in load("canary-e2e.yml")["jobs"].items():
+        if "uses" in job:
+            needs = {"resolve": {"outputs": {"commit": CANARY_COMMIT, "tested": out or ""}}}
+            assert gha.condition(job["if"], {"needs": needs}) is (tested is None), name
+
+
+def test_a_dispatch_always_runs_the_set():
+    assert gha.condition(tested_step()["if"], dispatched(CANARY_COMMIT)) is False
 
 
 def test_every_call_is_the_claims_call_on_the_canary_commit():

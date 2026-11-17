@@ -414,7 +414,10 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
 - **Runs:** on `workflow_run` when **Canary Release** completes, or on
   `workflow_dispatch` (`commit`: a full SHA; empty tests the dispatched ref).
 - **Skipped:** `resolve` (and so every call) skips unless the canary run
-  succeeded, ran on the default branch and belongs to the upstream repo.
+  succeeded, ran on the default branch and belongs to the upstream repo. The
+  calls also skip when an automatic run already passed that commit: with no
+  new commits the canary resumes its last tag and succeeds again. A dispatch
+  always runs the set.
 - **Flow:** the same three calls `stable-release.yml` makes for its `ci`,
   `install-e2e` and `windows-live` lanes, with the same inputs, permissions
   and secrets (none), on the commit the canary tagged. A `workflow_run` run's

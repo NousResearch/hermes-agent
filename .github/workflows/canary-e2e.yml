@@ -50,8 +50,11 @@ jobs:
       github.event.workflow_run.head_branch == github.event.repository.default_branch)
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
+    permissions:
+      actions: read
     outputs:
       commit: ${{ steps.commit.outputs.commit }}
+      tested: ${{ steps.tested.outputs.tested }}
     steps:
       - id: commit
         env:
@@ -59,10 +62,27 @@ jobs:
         run: |
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full 40-hex SHA, got: $COMMIT"; exit 1; }
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+      # With no new commits the canary resumes its last tag and succeeds again,
+      # which would rerun the whole set on a commit that already passed. A
+      # dispatch always runs: it is the forced rerun.
+      - id: tested
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TITLE: Canary E2E on ${{ steps.commit.outputs.commit }}
+        run: |
+          passed="$(gh api "repos/$REPO/actions/workflows/canary-e2e.yml/runs?event=workflow_run&status=success&per_page=100" \
+            --jq '.workflow_runs[].display_title')"
+          if grep -qxF "$TITLE" <<<"$passed"; then
+            echo "::notice::$TITLE already passed; not running the set again."
+            echo "tested=true" >> "$GITHUB_OUTPUT"
+          fi
 
   ci:
     name: Full CI pipeline
     needs: resolve
+    if: needs.resolve.outputs.tested != 'true'
     permissions:
       contents: read
       pull-requests: write
@@ -76,6 +96,7 @@ jobs:
   install-e2e:
     name: Install and update E2E
     needs: resolve
+    if: needs.resolve.outputs.tested != 'true'
     permissions:
       contents: read
       actions: read
@@ -88,6 +109,7 @@ jobs:
 
   windows-live:
     needs: resolve
+    if: needs.resolve.outputs.tested != 'true'
     uses: ./.github/workflows/windows-venv-e2e.yml
     with:
       commit: ${{ needs.resolve.outputs.commit }}

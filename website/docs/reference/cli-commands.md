@@ -1308,6 +1308,7 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `--session <ID>` | Filter lines containing a session ID substring. |
 | `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
 | `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`. |
+| `--json` | Emit JSON Lines instead of text: one object per log record, `{"ts", "level", "session", "logger", "message", "file"}`. Traceback frames and other continuation lines are folded into the record's `message`. No banner line; works with `-f` and every filter. Lines that are not in the agent log format (e.g. `update.log`) keep the whole line in `message` with `logger`/`session` set to `null`. |
 
 A line without its own timestamp, such as a traceback frame or the rest of a multi-line message, is shown or hidden together with the timestamped line above it.
 
@@ -1328,6 +1329,9 @@ hermes logs --level WARNING --since 1h
 
 # Filter by a specific session
 hermes logs --session abc123
+
+# One session's errors as JSON Lines, e.g. for jq
+hermes logs --session abc123 --level ERROR --json | jq -r .message
 
 # Follow errors.log, starting from 30 minutes ago
 hermes logs errors --since 30m -f

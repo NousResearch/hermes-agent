@@ -174,6 +174,7 @@ export const zhHant: Translations = {
     selectedSessionsSkippedActive: "已刪除 {deleted} 個；{count} 個因仍有回合執行中而保留",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
+    viewLogs: "檢視日誌",
     newChat: "新對話",
     workspace: "工作區",
     workspaceDefault: "預設",
@@ -235,6 +236,8 @@ export const zhHant: Translations = {
     component: "元件",
     lines: "行數",
     noLogLines: "找不到日誌記錄",
+    session: "工作階段",
+    allSessions: "顯示所有工作階段",
   },
 
   cron: {

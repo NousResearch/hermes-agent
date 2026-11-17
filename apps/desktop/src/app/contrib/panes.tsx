@@ -11,7 +11,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { RightSidebarPane } from '@/app/right-sidebar'
 import { ReviewPane } from '@/app/right-sidebar/review'
@@ -23,9 +23,12 @@ import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { logLineSeverity, type LogSeverity } from '@/lib/log-search'
 import { cn } from '@/lib/utils'
 import { openPreview } from '@/store/preview'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 // ---------------------------------------------------------------------------
@@ -36,10 +39,25 @@ import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 const LOGS_BOTTOM_THRESHOLD = 48
 
+const SEVERITY_TEXT: Record<LogSeverity, string> = {
+  critical: 'text-destructive',
+  error: 'text-destructive',
+  warning: 'text-(--ui-yellow)'
+}
+
+type LogsScope = 'all' | 'session'
+
 export function LogsPane() {
+  const { t } = useI18n()
+  const sessionId = useStore($focusedStoredSessionId)
+  // All logs by default (the pane's long-standing view); "This session" narrows the
+  // tail to lines tagged with the focused session's id (`/api/logs?session=`).
+  const [scope, setScope] = useState<LogsScope>('all')
+  const session = scope === 'session' && sessionId ? sessionId : undefined
+
   const { data, error } = useQuery({
-    queryKey: ['contrib-logs-tail'],
-    queryFn: () => getLogs({ lines: 300 }),
+    queryKey: ['contrib-logs-tail', session ?? null],
+    queryFn: () => getLogs({ lines: 300, session }),
     refetchInterval: 5000
   })
 
@@ -83,17 +101,55 @@ export function LogsPane() {
     )
   }
 
-  // No chrome of its own — the zone header (when the user summons it) is the
-  // pane's only label. Just the tail.
+  const scopes: { id: LogsScope; label: string }[] = [
+    { id: 'all', label: t.sidebar.logsAllSessions },
+    { id: 'session', label: t.sidebar.logsThisSession }
+  ]
+
+  // The zone header (when the user summons it) is the pane's label; the only
+  // chrome is the session scope switch, shown while a session is focused.
   return (
-    <pre
-      className="h-full min-h-0 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)"
-      data-selectable-text="true"
-      onScroll={handleScroll}
-      ref={preRef}
-    >
-      {data.lines.join('\n')}
-    </pre>
+    <div className="flex h-full min-h-0 flex-col">
+      {sessionId && (
+        <div className="flex shrink-0 gap-1 px-2.5 pt-1.5" role="tablist">
+          {scopes.map(item => (
+            <button
+              aria-selected={scope === item.id}
+              className={cn(
+                'rounded-md px-1.5 py-0.5 text-[0.66rem] text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
+                scope === item.id && 'bg-(--ui-bg-quaternary) text-(--ui-text-secondary)'
+              )}
+              key={item.id}
+              onClick={() => setScope(item.id)}
+              role="tab"
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <pre
+        className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[0.66rem] leading-relaxed text-(--ui-text-secondary)"
+        data-selectable-text="true"
+        onScroll={handleScroll}
+        ref={preRef}
+      >
+        {session && data.lines.length === 0 ? (
+          <span className="text-(--ui-text-quaternary)">{t.sidebar.logsNoSessionLines}</span>
+        ) : (
+          data.lines.map((line, index) => {
+            const severity = logLineSeverity(line)
+
+            return (
+              <span className={severity ? SEVERITY_TEXT[severity] : undefined} key={index}>
+                {line.endsWith('\n') ? line : `${line}\n`}
+              </span>
+            )
+          })
+        )}
+      </pre>
+    </div>
   )
 }
 

@@ -174,6 +174,7 @@ export const hu: Translations = {
     selectedSessionsSkippedActive: "{deleted} törölve; {count} megtartva, mert egy kör még fut",
     failedToDeleteSelected: "Nem sikerült törölni a kijelölt munkameneteket",
     resumeInChat: "Folytatás a csevegésben",
+    viewLogs: "Naplók megtekintése",
     newChat: "Új csevegés",
     workspace: "munkaterület",
     workspaceDefault: "Alapértelmezett",
@@ -235,6 +236,8 @@ export const hu: Translations = {
     component: "Komponens",
     lines: "Sorok",
     noLogLines: "Nem található naplóbejegyzés",
+    session: "Munkamenet",
+    allSessions: "Összes munkamenet mutatása",
   },
 
   cron: {

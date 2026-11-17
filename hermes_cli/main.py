@@ -2538,10 +2538,8 @@ def cmd_logs(args):
     from hermes_cli.logs import tail_log, list_logs
 
     log_name = getattr(args, "log_name", "agent") or "agent"
-
     if log_name == "list":
-        list_logs()
-        return
+        return list_logs()
 
     tail_log(
         log_name,
@@ -2551,6 +2549,7 @@ def cmd_logs(args):
         session=getattr(args, "session", None),
         since=getattr(args, "since", None),
         component=getattr(args, "component", None),
+        as_json=getattr(args, "as_json", False),
     )
 
 

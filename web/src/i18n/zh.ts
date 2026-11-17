@@ -172,6 +172,7 @@ export const zh: Translations = {
     selectedSessionsSkippedActive: "已删除 {deleted} 个；{count} 个因仍有回合运行中而保留",
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
+    viewLogs: "查看日志",
     newChat: "新对话",
     workspace: "工作区",
     workspaceDefault: "默认",
@@ -233,6 +234,8 @@ export const zh: Translations = {
     component: "组件",
     lines: "行数",
     noLogLines: "未找到日志记录",
+    session: "会话",
+    allSessions: "显示所有会话",
   },
 
   cron: {

@@ -174,6 +174,7 @@ export const tr: Translations = {
     selectedSessionsSkippedActive: "{deleted} silindi; bir tur çalıştığı için {count} tutuldu",
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
+    viewLogs: "Günlükleri görüntüle",
     newChat: "Yeni sohbet",
     workspace: "çalışma alanı",
     workspaceDefault: "Varsayılan",
@@ -235,6 +236,8 @@ export const tr: Translations = {
     component: "Bileşen",
     lines: "Satırlar",
     noLogLines: "Günlük satırı bulunamadı",
+    session: "Oturum",
+    allSessions: "Tüm oturumları göster",
   },
 
   cron: {

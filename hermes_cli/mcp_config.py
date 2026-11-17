@@ -637,6 +637,10 @@ def _add_probe_timeout(server_config: dict) -> Optional[float]:
 
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
+    # A profile a plugin runs elsewhere: refused before a token is asked for and saved, and before the probe,
+    # whose refusal would read below as a failed connection that offers to save the entry anyway.
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
+    exit_if_profile_runs_elsewhere("mcp add")
     name = args.name
     url = getattr(args, "url", None)
     # --command uses dest="mcp_command" (see hermes_cli/main.py for why the dest is renamed).

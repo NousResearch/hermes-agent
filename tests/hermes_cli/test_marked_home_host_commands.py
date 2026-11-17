@@ -310,6 +310,31 @@ def test_mcp_login_clears_no_token_and_calls_no_server_for_a_marked_profile(home
     assert did == [] and capsys.readouterr().out.count("runs elsewhere") == 2
 
 
+@pytest.mark.parametrize("server", ["stdio", "http"])
+def test_mcp_add_asks_and_saves_nothing_for_a_marked_profile(home, tmp_path, monkeypatch, capsys, server):
+    """``mcp add`` is refused before its first question. Left to the probe, the refusal reads as a
+    failed connection and ``mcp add`` offers to save the entry anyway; for an HTTP server it has by
+    then asked for a token and written it to the home's ``.env``."""
+    pytest.importorskip("mcp")
+    from hermes_cli import cli_output, mcp_config
+
+    program, ran = _program(tmp_path, "mcp-server")
+    asked: list = []
+    monkeypatch.setattr(mcp_config, "_confirm", lambda question, default=True: asked.append(question) or True)
+    monkeypatch.setattr(cli_output, "prompt", lambda *args, **kwargs: asked.append(args[0]) or "a-token")
+    ops = home / "profiles" / "ops"
+    _mark(home)
+    before = {path.name: path.read_bytes() for path in ops.iterdir() if path.is_file()}
+    fields = {"mcp_command": str(program)} if server == "stdio" else {"url": "http://127.0.0.1:9/mcp", "auth": "header"}
+    args = argparse.Namespace(**{"name": "probe", "url": None, "mcp_command": None, "args": [], "auth": None,
+                                 "connect_timeout": None, "env": None, "preset": None, **fields})
+    with pytest.raises(SystemExit) as refused:
+        mcp_config.cmd_mcp_add(args)
+    assert refused.value.code == 1 and "runs elsewhere" in capsys.readouterr().err
+    assert asked == [] and not ran.exists()
+    assert {path.name: path.read_bytes() for path in ops.iterdir() if path.is_file()} == before
+
+
 def test_the_mcp_transport_itself_starts_no_stdio_command_for_a_marked_profile(home, tmp_path, monkeypatch):
     """Whoever asks for the connection: with the probe's own early check out of the way, the
     transport still starts nothing."""

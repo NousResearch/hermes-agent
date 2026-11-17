@@ -8,7 +8,7 @@ from typing import Any
 _ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")
 # Anchor Spanish intentions to a clause, excluding negations, questions and lists.
 _SPANISH_PLAN_PREFIX = (
-    r"(?:^|[.!…—–]\s+|\n\s*)(?:ahora\s+|primero[, :]\s*|luego[, :]\s*)?"
+    r"(?:^|(?<!\d)[.!…—–]\s+|\n\s*)(?:ahora\s+|primero[, :]\s*|luego[, :]\s*)?"
     r"(?:voy a|vamos a|d[eé]jame|d[eé]janos|necesito|tengo que)\s+"
 )
 _SPANISH_ACTION = (

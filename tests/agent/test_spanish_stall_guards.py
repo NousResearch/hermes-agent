@@ -91,3 +91,11 @@ def test_original_english_reproductions_are_unchanged():
     assert trailing_continue_intent("I will now check the files.")
     assert promoted_reasoning_announces_action("I will now check the files.")
     assert not ack("I already launched an agent.")
+
+def test_numbered_spanish_plan_is_not_a_pending_action():
+    """A numbered list item must not be treated as an announced next action."""
+    text = "1. Voy a revisar los archivos."
+    assert not ack(text)
+    assert not trailing_continue_intent(text)
+    assert not promoted_reasoning_announces_action(text)
+    assert trailing_continue_intent("Listo. Voy a revisar los archivos.")

@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import stat
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -139,3 +140,109 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"
     assert list(tmp_path.glob(".*.partial")) == []
+
+
+def test_vanished_file_keeps_the_pre_update_archive_complete(tmp_path, monkeypatch, caplog) -> None:
+    """A file rotated away between the scan and the write must not demote a complete archive.
+
+    Regression for the pre-update path: one ``cron/output`` file vanished while the archive was
+    written, ``errors`` became non-empty, the finished archive was published as
+    ``*.incomplete.zip`` and ``hermes update`` printed "Backup skipped" — so a 2 GB backup that
+    held ``state.db`` looked like a missing rollback anchor.
+    """
+    import logging
+
+    from hermes_cli import backup as backup_mod
+
+    caplog.set_level(logging.INFO, logger="hermes_cli.backup")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    kept = home / "config.yaml"
+    kept.write_text("model: {}\n", encoding="utf-8")
+    rotated = home / "cron" / "output" / "job" / "2026-11-16_07-48-15.md"
+    rotated.parent.mkdir(parents=True)
+    rotated.write_text("# run\n", encoding="utf-8")
+    publish = tmp_path / "pre-update-2026-11-17-083748.zip"
+
+    def scan(_root, _out_path, *_args, **_kwargs):
+        entries = [(kept, Path("config.yaml")),
+                   (rotated, Path("cron/output/job/2026-11-16_07-48-15.md"))]
+        rotated.unlink()  # the rotation happens after the walk, before the write
+        return entries
+
+    monkeypatch.setattr(backup_mod, "_iter_backup_files", scan)
+
+    assert backup_mod._write_full_zip_backup(publish, home) == publish
+    assert publish.is_file()
+    assert list(tmp_path.glob("*.incomplete.zip")) == []
+    with zipfile.ZipFile(publish) as zf:
+        assert zf.namelist() == ["config.yaml"]
+    assert "vanished=1" in caplog.text, "a skipped entry must still be visible in the log"
+
+
+def test_unreadable_member_still_publishes_an_incomplete_archive(tmp_path, monkeypatch) -> None:
+    """The vanished-file classification must not swallow real gaps.
+
+    A member that still exists but cannot be read keeps the archive out of retention, exactly as
+    before: only "the path is gone" is a race, "the path is unreadable" is damage.
+    """
+    from hermes_cli import backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    good = home / "config.yaml"
+    good.write_text("model: {}\n", encoding="utf-8")
+    broken = home / "notes.md"
+    broken.write_text("x", encoding="utf-8")
+    real_write = backup_mod._write_zip_file
+
+    def scan(_root, _out_path, *_args, **_kwargs):
+        return [(good, Path("config.yaml")), (broken, Path("notes.md"))]
+
+    def write(zf, path, arcname):
+        if Path(path).name == "notes.md":
+            raise PermissionError(13, "Permission denied")
+        return real_write(zf, path, arcname)
+
+    monkeypatch.setattr(backup_mod, "_iter_backup_files", scan)
+    monkeypatch.setattr(backup_mod, "_write_zip_file", write)
+
+    publish = tmp_path / "pre-update-2026-11-17-090000.zip"
+    assert backup_mod._write_full_zip_backup(publish, home) is None
+    assert not publish.exists()
+    salvage = tmp_path / "pre-update-2026-11-17-090000.incomplete.zip"
+    assert salvage.is_file()
+    with zipfile.ZipFile(salvage) as zf:
+        assert zf.namelist() == ["config.yaml"]
+
+
+def test_run_backup_reports_a_vanished_file_and_stays_complete(tmp_path, monkeypatch, capsys) -> None:
+    """``hermes backup`` keeps exit status 0 and says which file rotated away."""
+    from argparse import Namespace
+
+    from hermes_cli import backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    kept = home / "config.yaml"
+    kept.write_text("model: {}\n", encoding="utf-8")
+    rotated = home / "cron" / "output" / "job" / "2026-11-16_07-48-15.md"
+    rotated.parent.mkdir(parents=True)
+    rotated.write_text("# run\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def scan(_root, _out_path, *_args, **_kwargs):
+        entries = [(kept, Path("config.yaml")),
+                   (rotated, Path("cron/output/job/2026-11-16_07-48-15.md"))]
+        rotated.unlink()
+        return entries
+
+    monkeypatch.setattr(backup_mod, "_iter_backup_files", scan)
+    monkeypatch.setattr(backup_mod, "_collect_external_entries", lambda: ([], set()))
+
+    out = tmp_path / "run-backup.zip"
+    assert backup_mod.run_backup(Namespace(output=str(out))) is True
+    printed = capsys.readouterr().out
+    assert "Backup complete" in printed
+    assert "disappeared after the scan" in printed
+    assert "2026-11-16_07-48-15.md" in printed

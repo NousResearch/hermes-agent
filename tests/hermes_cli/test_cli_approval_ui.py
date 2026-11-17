@@ -88,7 +88,7 @@ class TestCliApprovalUi:
             time.sleep(0.01)
 
         assert cli._approval_state is not None
-        assert cli._approval_state["choices"] == ["once", "deny"]
+        assert cli._approval_state["choices"] == ["once", "deny", "deny_reason"]
 
         cli._approval_state["response_queue"].put("deny")
         thread.join(timeout=2)
@@ -120,11 +120,94 @@ class TestCliApprovalUi:
             time.sleep(0.01)
 
         assert cli._approval_state is not None
-        assert cli._approval_state["choices"] == ["once", "deny"]
+        assert cli._approval_state["choices"] == ["once", "deny", "deny_reason"]
 
         cli._approval_state["response_queue"].put("once")
         thread.join(timeout=2)
         assert result["value"] == "once"
+
+    def test_deny_with_reason_round_trip(self):
+        """Selecting 'Deny with reason' then typing free text returns a Denied
+        choice (== "deny", .reason set) through the real panel callback; the
+        composer draft is snapshotted away on entry and restored after."""
+        from tools.approval_prompt import Denied
+
+        cli = _make_cli_stub()
+        cli._app.current_buffer = _FakeBuffer("draft command", cursor_position=5)
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/example", "recursive delete")
+
+        with patch.object(cli_module, "_cprint"):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._approval_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            state = cli._approval_state
+            assert state is not None
+            assert "deny_reason" in state["choices"]
+
+            # select "Deny with reason": the panel switches to reason-entry
+            state["selected"] = state["choices"].index("deny_reason")
+            cli._handle_approval_selection()
+            assert cli._approval_state is not None  # panel stays up
+            assert state["reason_entry"] is True
+            assert cli._app.current_buffer.text == ""  # draft snapshotted away
+            assert cli._modal_input_snapshot["text"] == "draft command"
+
+            # the reason is typed into the composer, then Enter submits it
+            cli._app.current_buffer.text = "use the toolbox script instead"
+            cli._submit_approval_reason(cli._app.current_buffer.text)
+            thread.join(timeout=2)
+
+        value = result["value"]
+        assert value == "deny"
+        assert isinstance(value, Denied)
+        assert value.reason == "use the toolbox script instead"
+        assert cli._approval_state is None
+        assert cli._app.current_buffer.text == "draft command"  # draft restored
+
+    def test_empty_reason_submit_is_a_plain_deny(self):
+        """An empty reason submit puts a plain 'deny' on the queue, not a Denied."""
+        from tools.approval_prompt import Denied
+
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "rm -rf /tmp/example", "description": "recursive delete",
+            "choices": ["once", "session", "always", "deny", "deny_reason"],
+            "selected": 4, "response_queue": queue.Queue(),
+        }
+        response_queue = cli._approval_state["response_queue"]
+        cli._begin_approval_reason_entry(cli._approval_state)
+        cli._submit_approval_reason("   ")
+
+        assert cli._approval_state is None
+        value = response_queue.get_nowait()
+        assert value == "deny"
+        assert not isinstance(value, Denied)
+
+    def test_escape_from_reason_entry_returns_to_choices(self):
+        """Esc in reason-entry mode returns to the choice list without denying."""
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "rm -rf /tmp/example", "description": "recursive delete",
+            "choices": ["once", "session", "always", "deny", "deny_reason"],
+            "selected": 0, "response_queue": queue.Queue(),
+        }
+        state = cli._approval_state
+        state["selected"] = state["choices"].index("deny_reason")
+        cli._handle_approval_selection()
+        assert state["reason_entry"] is True
+
+        cli._cancel_approval_reason_entry()
+
+        assert "reason_entry" not in state
+        assert state["choices"][0] == "once"
+        assert state["response_queue"].empty()
+
 
 
     def test_sudo_prompt_restores_existing_draft_after_response(self):

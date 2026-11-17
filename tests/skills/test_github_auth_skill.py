@@ -81,15 +81,18 @@ def _cache_file(home: Path) -> Path:
     return home / "cache" / "github-app-token.json"
 
 
-def _write_cache(home: Path, token: str, expires_epoch: float) -> None:
+def _write_cache(home: Path, token: str, expires_epoch: float, scope: str = "*") -> None:
     import datetime as dt
 
     cache = _cache_file(home)
     cache.parent.mkdir(parents=True, exist_ok=True)
-    iso = dt.datetime.fromtimestamp(expires_epoch, tz=dt.timezone.utc).strftime(
+    iso = dt.datetime.fromtimestamp(expires_epoch, tz=dt.UTC).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
-    cache.write_text(json.dumps({"token": token, "expires_at": iso}), encoding="utf-8")
+    cache.write_text(
+        json.dumps({"entries": {scope: {"token": token, "expires_at": iso}}}),
+        encoding="utf-8",
+    )
 
 
 class _FakeResp:
@@ -183,7 +186,7 @@ def test_build_app_jwt_claims_and_alg(mod, rsa_keypair):
 def test_mint_posts_bearer_jwt_and_parses_201(mod, monkeypatch):
     calls = {}
 
-    def fake_post(url, headers=None, timeout=None):
+    def fake_post(url, headers=None, json=None, timeout=None):
         calls["url"] = url
         calls["auth"] = headers.get("Authorization", "")
         return _FakeResp(201, {"token": "ghs_minted", "expires_at": "2099-01-01T00:00:00Z"})
@@ -253,8 +256,8 @@ def test_remint_when_within_expiry_margin(mod, app_home: Path, monkeypatch):
     token = mod.get_installation_token(_env_file(app_home), _cache_file(app_home))
     assert token == "ghs_fresh"
     # Fresh token replaces the stale cache entry
-    cached = json.loads(_cache_file(app_home).read_text(encoding="utf-8"))
-    assert cached["token"] == "ghs_fresh"
+    cached = json.loads(_cache_file(app_home).read_text(encoding="utf-8-sig"))
+    assert cached["entries"]["*"]["token"] == "ghs_fresh"
 
 
 def test_remint_when_cache_corrupt(mod, app_home: Path, monkeypatch):
@@ -433,3 +436,56 @@ def test_credential_no_stdin_block_still_answers(mod, app_home: Path, monkeypatc
     rc = mod.main(_cli(mod, app_home, "credential", "get"))
     assert rc == 0
     assert "password=ghs_manual\n" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Per-repo narrowing + caller-required lifetime
+# ---------------------------------------------------------------------------
+
+
+def _iso_in(seconds: float) -> str:
+    import datetime as dt
+
+    return dt.datetime.fromtimestamp(time.time() + seconds, tz=dt.UTC).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def test_credential_with_http_path_mints_token_narrowed_to_that_repo(
+    mod, app_home: Path, monkeypatch, capsys
+):
+    """With credential.useHttpPath git sends path=owner/name.git; the token is
+    requested for that one repository and cached under it, apart from the
+    installation-wide token."""
+    _write_cache(app_home, "ghs_installation_wide", time.time() + 3600)
+    bodies = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        bodies.append(json)
+        return _FakeResp(201, {"token": f"ghs_repo{len(bodies)}", "expires_at": _iso_in(3600)})
+
+    monkeypatch.setattr(mod.httpx, "post", fake_post)
+    block = "protocol=https\nhost=github.com\npath=acme/widgets.git\n\n"
+    for _ in range(2):
+        _feed_stdin_for(monkeypatch, block)
+        assert mod.main(_cli(mod, app_home, "credential", "get")) == 0
+    out = capsys.readouterr().out
+    assert bodies == [{"repositories": ["widgets"]}]  # minted once, then cached
+    assert out.count("password=ghs_repo1\n") == 2
+    assert "ghs_installation_wide" not in out
+
+
+def test_min_ttl_remints_a_cached_token_that_would_expire_mid_command(
+    mod, app_home: Path, monkeypatch, capsys
+):
+    """A token valid for 20 more minutes is fine by default but not for a
+    caller that needs 30 minutes; that caller gets a fresh token."""
+    _write_cache(app_home, "ghs_20min_left", time.time() + 1200)
+    monkeypatch.setattr(
+        mod.httpx,
+        "post",
+        lambda *a, **k: _FakeResp(201, {"token": "ghs_full_hour", "expires_at": _iso_in(3600)}),
+    )
+    assert mod.main(_cli(mod, app_home, "mint")) == 0
+    assert mod.main(_cli(mod, app_home, "mint", "--min-ttl", "1800")) == 0
+    assert capsys.readouterr().out.splitlines() == ["ghs_20min_left", "ghs_full_hour"]

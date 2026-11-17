@@ -312,7 +312,14 @@ tokens transparently):
 # https remote, and a GitHub token should never be offered anywhere else.
 git config --global 'credential.https://github.com.helper' \
   '!python3 /absolute/path/to/skills/software-development/github/scripts/gh-app-token.py credential'
+# Send the repo path to the helper so each token is restricted to the one
+# repository being pushed/fetched instead of everything the App can reach.
+git config --global 'credential.https://github.com.useHttpPath' true
 ```
+
+With `useHttpPath`, git passes `path=owner/name.git` and the helper mints a
+token whose `repositories` list holds only that repo (cached per repo).
+Without it, the helper falls back to an installation-wide token.
 
 Git invokes the helper with a trailing operation argument (`get`, `store`, or
 `erase`); the script emits credentials only on `get` and is a silent no-op for
@@ -321,11 +328,31 @@ layer, the script itself refuses to answer for hosts other than `github.com` /
 `gist.github.com`, so even an unscoped wiring cannot leak the token to a
 different remote.
 
+Narrow a manual token too: `gh-app-token.py mint --repo owner/name`.
+
+### Long-running commands
+
+Installation tokens last about an hour. Before a command that may run long
+(a big push, a CI-watch loop), ask for a token that will outlive it:
+
+```bash
+GH_TOKEN=$(python3 .../gh-app-token.py mint --repo owner/name --min-ttl 2400) gh run watch ...
+```
+
+`--min-ttl SECONDS` (both subcommands) reuses a cached token only if it stays
+valid that long; otherwise it mints a fresh one.
+
 ### Token Cache
 
-Tokens are cached at `${HERMES_HOME:-~/.hermes}/cache/github-app-token.json`
-(owner-only permissions, atomic writes) and re-minted automatically when less
-than 10 minutes of validity remain. Delete the file to force a fresh mint.
+Tokens are never written to `config.yaml` or `.env`. The only on-disk copy is
+`<HERMES_HOME>/cache/github-app-token.json` (the active profile's home;
+owner-only permissions, atomic writes), one entry per scope (installation-wide
+or per repo). A cached token is re-minted when less than 5 minutes of validity
+remain (or less than `--min-ttl`). Delete the file to force a fresh mint.
+
+The helper only talks to `api.github.com` and only answers git for
+`https://github.com` / `https://gist.github.com`; GitHub Enterprise Server is
+not supported.
 
 ---
 

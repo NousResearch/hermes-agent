@@ -53,6 +53,22 @@ def routed_sessions_setting(key: str, env_var: str) -> Any:
     return os.environ.get(env_var)
 
 
+def key_prefix_range(prefix: str) -> tuple[str, str]:
+    """``(low, high)`` so ``key >= low AND key < high`` selects exactly the keys starting with ``prefix``.
+
+    ``LIKE 'p%'`` cannot use the ``state_meta`` primary-key index (LIKE is case-insensitive under
+    the default BINARY collation), so every LIKE prefix probe scans the whole table. A half-open
+    key range is literal, case-sensitive and seeks the index. Gateway pollers that run every few
+    seconds use this so an idle probe costs what the matching rows cost, not what the table costs.
+    """
+    if not prefix:
+        raise ValueError("key_prefix_range needs a non-empty prefix")
+    last = ord(prefix[-1])
+    if last >= 0x10FFFF:  # no successor code point; no real key prefix ends here
+        raise ValueError("key_prefix_range: prefix ends in U+10FFFF")
+    return prefix, prefix[:-1] + chr(last + 1)
+
+
 def escape_like(text: str) -> str:
     """Escape LIKE wildcards (``%``, ``_``) so derived text matches literally; pair with ``ESCAPE '\\'``.
     ``_`` is common in branch names/titles/paths and a substring match must not silently widen."""

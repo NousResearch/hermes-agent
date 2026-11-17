@@ -225,7 +225,7 @@ def restore_local_session(authority, sid):
             live.source, live.route = source, route
         adapter.register_source(source)
     elif (not adapter.authorize_source(live.source)
-          or live.source.to_dict() != source.to_dict()
+          or adapter._identity(live.source) != adapter._identity(source)  # not message_id: per turn
           or adapter.policies.get(chat_id) != policy):
         raise RuntimeStoreError('storage_unavailable')
     elif _route_already_restored(store, route, target, receipt.get('lineage', [sid])):

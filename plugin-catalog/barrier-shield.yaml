@@ -2,9 +2,7 @@ name: barrier-shield
 repo: https://github.com/arjunbagga-xyz/hermes-barrier-shield
 sha: 88c903a715586e0a1c39b775388a3da1903e8715
 title: Barrier Shield
-description: Control-Barrier Function (h(x) >= 0) and Lyapunov continuous safety shield
-  that solves a real-time Quadratic Program (QP) to smoothly dampen aggressive tool
-  actions.
+description: "Control-Barrier Function (h(x) >= 0) and Lyapunov continuous safety shield that solves a real-time Quadratic Program (QP) to smoothly dampen aggressive tool actions. Disclosure — when the owner turns it on in the plugin settings, barrier-shield lowers the batch, limit, worker and concurrency arguments of the tools listed in rewritable_tools and reduces the model's sampling temperature; both are off by default and terminal commands are never modified."
 maintainer: arjunbagga-xyz
 tier: community
 category: tools

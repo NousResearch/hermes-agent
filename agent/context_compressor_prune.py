@@ -182,7 +182,9 @@ class ProactivePruneMixin:
                 changes.append((original, replacement))
         try:
             if persistence is None:
-                return rewrite(session_id, changes, model_config_patch=model_config_patch)
+                from agent.conversation_compression_archive import session_db_conflicts
+                with session_db_conflicts(session_id):
+                    return rewrite(session_id, changes, model_config_patch=model_config_patch)
             from agent.conversation_compression_archive import held_message
             from persistence.conversation.messages import NewMessage, PrunedRowChange
             result = persistence.messages.rewrite_pruned_rows(session_id, [

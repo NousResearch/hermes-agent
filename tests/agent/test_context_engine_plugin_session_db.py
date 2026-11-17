@@ -123,3 +123,35 @@ def test_the_plugin_engines_session_db_closes_with_the_agent(monkeypatch, store)
     agent.close()
     assert closes == [None]
     assert store.sessions.get("s1") is not None
+
+
+def test_a_plugin_engine_reads_the_profiles_store_wherever_the_provider_keeps_it(monkeypatch):
+    import persistence_assembly
+    monkeypatch.setattr(persistence_assembly, "_state_db", lambda scope: scope.profile_dir / "store-elsewhere.db")
+    with open_persistence(profile_scope(), eager=True) as store:
+        seed_session(store, "s1", "cli", model="m1")
+        engine = _PluginEngine()
+        agent = _agent(store, "s1", engine)
+        try:
+            [(_session_db, row)] = engine.bound
+            assert row is not None and row["model"] == "m1"
+        finally:
+            agent.close()
+
+
+def test_a_plugin_engine_subclassing_the_built_in_compressor_binds_the_deprecated_session_db(store):
+    from agent.context_compressor import ContextCompressor
+
+    class _SubclassEngine(ContextCompressor):
+        def bind_session_state(self, session_db=None, session_id="", **kwargs):
+            self.bound = (session_db, session_db.get_session(session_id))
+            super().bind_session_state(session_db, session_id, **kwargs)
+
+    engine = _SubclassEngine(model="test-model", quiet_mode=True, config_context_length=40960, provider="test")
+    agent = _agent(store, "s1", engine)
+    try:
+        session_db, row = engine.bound
+        assert isinstance(session_db, hermes_state.SessionDB)
+        assert row["model"] == "m1"
+    finally:
+        agent.close()

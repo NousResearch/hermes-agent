@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
 from typing import Any, Dict
 from urllib.parse import urlparse
 
 
 CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+
+logger = logging.getLogger(__name__)
+_warned_opt_in_read = False
 
 
 def is_official_codex_base_url(base_url: str) -> bool:
@@ -81,17 +86,34 @@ def codex_account_headers(access_token: str) -> dict[str, str]:
     return headers
 
 
+def _codex_compression_opted_in() -> bool:
+    """``agent.codex_request_compression: true``, ignored under ``--ignore-user-config``.
+
+    An ordinary read failure means plain JSON, not a lost HTTP client: the caller builds the whole
+    keepalive client and drops it (proxy and keepalive policy with it) on any exception.
+    ``ConfigBackendUnavailable`` is a ``SystemExit`` and still propagates (fail-closed backend).
+    """
+    global _warned_opt_in_read
+    if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
+        return False
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        return cfg_get(load_config_readonly(), "agent", "codex_request_compression", default=False) is True
+    except Exception:
+        if not _warned_opt_in_read:
+            _warned_opt_in_read = True
+            logger.warning("Could not read agent.codex_request_compression; sending plain JSON", exc_info=True)
+        return False
+
+
 def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) -> dict[str, list] | None:
     """httpx ``event_hooks`` that zstd-compress Responses request bodies for the official Codex backend.
 
     Opt-in only: the official backend rejects some valid zstd bodies with an opaque HTTP 400
     (NousResearch/hermes-agent#148898). Use plain JSON by default so a turn needs no replay.
-    Compression requires the stdlib codec (Python 3.14+) and is never used for proxies.
+    Compression requires the stdlib codec (Python 3.14+) and never applies to custom endpoint URLs.
     """
-    if not is_official_codex_base_url(base_url):
-        return None
-    from hermes_cli.config import cfg_get, load_config_readonly
-    if cfg_get(load_config_readonly(), "agent", "codex_request_compression", default=False) is not True:
+    if not is_official_codex_base_url(base_url) or not _codex_compression_opted_in():
         return None
     try:
         from compression import zstd

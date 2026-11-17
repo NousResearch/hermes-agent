@@ -755,6 +755,8 @@ def publish_prepared(path: Path, *, expected_manifest: str | None = None,
       with custody:
         fence = validate_fence(board_dir, fence_token)
         ready = validate_generation(path)
+        if fence.get("generation_id") != ready["generation_id"]:
+            raise GenerationError("WRITER_FENCE_GENERATION_MISMATCH")
         current = read_pointer(board_dir)
         if expected_target_manifest is not None:
             if current is None:
@@ -788,8 +790,19 @@ def publish_prepared(path: Path, *, expected_manifest: str | None = None,
 def rollback_pre_activation(board_dir: Path, *, expected_active_manifest: str, fence_token: str) -> None:
     if (board_dir / "generation.publication.poison.json").exists():
         raise GenerationError("PUBLICATION_POISONED")
+    fence = validate_fence(board_dir, fence_token)
+    accepted_path = board_dir / "generation.accepted.json"
+    pointer = read_pointer(board_dir)
+    if accepted_path.is_file():
+        try:
+            accepted = json.loads(accepted_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            raise GenerationError("PUBLICATION_POISONED") from exc
+        if accepted.get("generation_id") != fence.get("generation_id"):
+            raise GenerationError("WRITER_FENCE_GENERATION_MISMATCH")
+    elif pointer is None or pointer.get("generation_id") != fence.get("generation_id"):
+        raise GenerationError("WRITER_FENCE_GENERATION_MISMATCH")
     recover_publication(board_dir)
-    validate_fence(board_dir, fence_token)
     custody = contextlib.nullcontext() if str(board_dir.resolve()) in _HELD_FENCE_HANDLES else _lock(board_dir / "generation.writer-lock", exclusive=True)
     held = str(board_dir.resolve()) in _HELD_FENCE_HANDLES
     catalog = contextlib.nullcontext() if held else _lock(board_dir / "generation.catalog-lock", exclusive=True)
@@ -1087,10 +1100,7 @@ def validate_generated_attachment_delete(conn: sqlite3.Connection, attachment_id
 
 
 def attachment_delete_is_custodied(conn: sqlite3.Connection, attachment_id: int) -> bool:
-    try:
-        return validate_generated_attachment_delete(conn, attachment_id)
-    except (ImportError, ValueError, OSError, sqlite3.Error):
-        return False
+    return validate_generated_attachment_delete(conn, attachment_id)
 
 
 def attachment_path(conn: sqlite3.Connection, attachment_id: int, *, generation: Path) -> Path:

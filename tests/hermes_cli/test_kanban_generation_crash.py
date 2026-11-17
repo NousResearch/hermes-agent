@@ -370,7 +370,7 @@ def test_pre_activation_rollback_restores_pointer_byte_for_byte(tmp_path):
     board, old, old_ready = _prepared(tmp_path)
     write_pointer(board, {"format_version": 1, "generation_id": "g1", "generation_nonce": "n1", "ready_sha256": __import__("hermes_cli.kanban_generation", fromlist=["sha256_file"]).sha256_file(old / "READY.json")})
     token = __import__("hermes_cli.kanban_generation", fromlist=["acquire_fence"]).acquire_fence(board, generation="g2", owner="writer")["token"]
-    with pytest.raises(GenerationError, match="ROLLBACK_NOT_AVAILABLE"):
+    with pytest.raises(GenerationError, match="WRITER_FENCE_GENERATION_MISMATCH"):
         rollback_pre_activation(board, expected_active_manifest=old_ready["manifest_digest"], fence_token=token)
 
 

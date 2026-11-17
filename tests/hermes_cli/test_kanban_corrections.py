@@ -580,6 +580,27 @@ def test_bounded_reader_exclusively_claims_status_directory(tmp_path, monkeypatc
     assert list(status.iterdir()) == []
 
 
+def test_reader_status_short_write_never_publishes_partial_final(tmp_path, monkeypatch):
+    from hermes_cli.kanban_boards import _publish_status
+    status = tmp_path / "status"
+    status.mkdir()
+    real_write = os.write
+    calls = 0
+
+    def short_then_stop(fd, payload):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(fd, payload[:2])
+        return 0
+
+    monkeypatch.setattr(os, "write", short_then_stop)
+    with pytest.raises(OSError, match="short status write"):
+        _publish_status(status, "ready.json", {"type": "ready"})
+    assert not (status / "ready.json").exists()
+    assert not list(status.iterdir())
+
+
 def test_imported_attachment_resolution_authenticates_final_target_id(tmp_path):
     source, target = tmp_path / "source.db", tmp_path / "target.db"
     _db(source, "imported")

@@ -124,3 +124,20 @@ def test_connection_writer_rejects_pointer_replacement_after_open(tmp_path):
         with write_txn(conn):
             conn.execute("INSERT INTO tasks VALUES ('stale', 'must not land')")
     conn.close()
+
+
+def test_publication_rejects_fence_for_different_generation(tmp_path):
+    from tests.hermes_cli.test_kanban_corrections import _prepared
+    from hermes_cli.kanban_generation import publish_prepared
+
+    board, generation, ready = _prepared(tmp_path)
+    fence = acquire_fence(board, generation="different-generation", owner="wrong")
+    with pytest.raises(GenerationError, match="WRITER_FENCE_GENERATION_MISMATCH"):
+        publish_prepared(
+            generation,
+            expected_manifest=ready["manifest_digest"],
+            fence_token=fence["token"],
+        )
+    assert not (board / "generation.accepted.json").exists()
+    assert not (board / "generation.current").exists()
+    release_fence(board, token=fence["token"])

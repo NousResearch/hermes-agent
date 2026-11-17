@@ -194,17 +194,27 @@ def _publish_status(directory: Path, name: str, value: dict) -> None:
     os.chmod(directory, 0o700)
     payload = canonical_json(value) + b"\n"
     destination = directory / name
-    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    temporary = directory / f".{name}.{os.urandom(8).hex()}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(fd, payload)
-        os.fsync(fd)
+        try:
+            offset = 0
+            while offset < len(payload):
+                written = os.write(fd, payload[offset:])
+                if written <= 0:
+                    raise OSError("short status write")
+                offset += written
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.link(temporary, destination, follow_symlinks=False)
+        fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
-    fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        temporary.unlink(missing_ok=True)
 
 
 def _cmd_reader_session(args: argparse.Namespace) -> int:
@@ -374,7 +384,7 @@ def _cmd_with_reader_lease(args: argparse.Namespace) -> int:  # health: allow CC
         # receives exactly one capability, only after this record is fsynced;
         # the old stdin resend let consumers observe a second, differently
         # framed capability.
-        _publish_status(status_dir, "ready.json", {"protocol_version": 1, "type": "ready", "operation_id": args.operation_id, "board_slug": args.board, **_reader_public_result(result), "start_token": capability["start_token"]})
+        _publish_status(status_dir, "ready.json", {"protocol_version": 1, "type": "ready", "operation_id": args.operation_id, "board_slug": args.board, **_reader_public_result(result)})
         os.write(bootstrap_w, encode_reader_frame(capability))
         os.close(bootstrap_w)
         bootstrap_w = None

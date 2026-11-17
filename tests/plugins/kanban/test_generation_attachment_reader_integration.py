@@ -183,3 +183,65 @@ def test_deleted_dynamic_attachment_blob_is_collected_after_last_reference_and_l
             "SELECT COUNT(*) FROM recovery_attachment_resolution "
             "WHERE attachment_id IN (?, ?)", (first, second)
         ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "tamper", ["missing-resolution", "row", "digest", "size", "missing-blob", "symlink", "escape"]
+)
+def test_generated_attachment_delete_refuses_invalid_custody_without_mutation(tmp_path, tamper):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.kanban_generation import GenerationError
+
+    _home, generation, attachment_id, blob, source = _published_attachment_board(
+        tmp_path / tamper
+    )
+    with kbc.connect_closing(db_path=generation / "kanban.db") as conn:
+        match tamper:
+            case "missing-resolution":
+                conn.execute(
+                    "DELETE FROM recovery_attachment_resolution WHERE attachment_id = ?",
+                    (attachment_id,),
+                )
+            case "row":
+                conn.execute(
+                    "UPDATE task_attachments SET size = size + 1 WHERE id = ?",
+                    (attachment_id,),
+                )
+            case "digest":
+                conn.execute(
+                    "UPDATE recovery_attachment_resolution SET blob_sha256 = ? WHERE attachment_id = ?",
+                    ("f" * 64, attachment_id),
+                )
+            case "size":
+                conn.execute(
+                    "UPDATE recovery_attachment_resolution SET size = size + 1 WHERE attachment_id = ?",
+                    (attachment_id,),
+                )
+            case "missing-blob":
+                blob.unlink()
+            case "symlink":
+                blob.unlink()
+                blob.symlink_to(source)
+            case "escape":
+                conn.execute(
+                    "UPDATE recovery_attachment_resolution SET custody_relpath = '../escape' WHERE attachment_id = ?",
+                    (attachment_id,),
+                )
+        conn.commit()
+        before_attachment = conn.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE id = ?", (attachment_id,)
+        ).fetchone()[0]
+        before_resolution = conn.execute(
+            "SELECT COUNT(*) FROM recovery_attachment_resolution WHERE attachment_id = ?",
+            (attachment_id,),
+        ).fetchone()[0]
+        with pytest.raises(GenerationError):
+            kb.delete_attachment(conn, attachment_id)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_attachments WHERE id = ?", (attachment_id,)
+        ).fetchone()[0] == before_attachment
+        assert conn.execute(
+            "SELECT COUNT(*) FROM recovery_attachment_resolution WHERE attachment_id = ?",
+            (attachment_id,),
+        ).fetchone()[0] == before_resolution

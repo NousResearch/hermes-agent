@@ -1051,6 +1051,16 @@ platform:
       ended: "This code request has ended; nothing was entered."
       not_author: "Only the person who started this request can enter the code."
       submitted_footer: "✓ Code submitted"
+    # skill secret card (Slack): button / modal title ≤ 24 chars.
+    secret_entry:
+      title: "🔑 This session needs {name}"
+      body: "A skill needs `{name}`. Press the button and paste the value in the form that opens: it is saved to this profile's .env and is never posted here or shown to the model."
+      skill: "Requested by the {skill} skill."
+      button: "Enter value"
+      input_label: "Secret value"
+      ended: "This request has ended; nothing was saved."
+      not_author: "Only the person who started this request can enter the value."
+      submitted_footer: "✓ Saved to .env"
     response_as_file: "📎 Long reply: the full text is attached."
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"

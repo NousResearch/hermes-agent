@@ -175,7 +175,7 @@ required_environment_variables:
     required_for: full functionality
 ```
 
-The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
+The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Messaging sessions show local setup guidance instead of collecting secrets in-band, except Slack with `platforms.slack.extra.secret_entry_modal: true`, which asks the requester through a private modal (see [Slack](../user-guide/messaging/slack.md#entering-a-skills-api-key-private-modal-opt-in)).
 
 :::tip Sandbox Passthrough
 When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes — including remote backends like Docker and Modal. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](../user-guide/security.md#environment-variable-passthrough) for details.

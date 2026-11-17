@@ -1006,6 +1006,16 @@ platform:
       ended: "이 코드 요청은 끝났어요. 아무것도 입력되지 않았어요."
       not_author: "이 요청을 시작한 사람만 코드를 입력할 수 있어요."
       submitted_footer: "✓ 코드 제출됨"
+    # skill secret card (Slack): button / modal title ≤ 24 chars.
+    secret_entry:
+      title: "🔑 이 세션에 {name}이(가) 필요합니다"
+      body: "스킬에 `{name}`이(가) 필요합니다. 버튼을 누르고 열리는 양식에 값을 붙여 넣으세요. 값은 이 프로필의 .env에 저장되며 여기에 게시되거나 모델에 표시되지 않습니다."
+      skill: "{skill} 스킬이 요청했습니다."
+      button: "값 입력"
+      input_label: "비밀 값"
+      ended: "이 요청은 종료되었습니다. 아무것도 저장되지 않았습니다."
+      not_author: "이 요청을 시작한 사람만 값을 입력할 수 있습니다."
+      submitted_footer: "✓ .env에 저장됨"
     response_as_file: "📎 긴 답변이라 전체 내용을 파일로 첨부했습니다."
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"

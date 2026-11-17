@@ -1006,6 +1006,16 @@ platform:
       ended: "Hierdie kodeversoek is verby; niks is ingevoer nie."
       not_author: "Slegs die persoon wat hierdie versoek begin het, kan die kode invoer."
       submitted_footer: "✓ Kode ingedien"
+    # skill secret card (Slack): button / modal title ≤ 24 chars.
+    secret_entry:
+      title: "🔑 Hierdie sessie benodig {name}"
+      body: "'n Vaardigheid benodig `{name}`. Druk die knoppie en plak die waarde in die vorm wat oopmaak: dit word in hierdie profiel se .env gestoor en word nooit hier geplaas of aan die model gewys nie."
+      skill: "Aangevra deur die {skill}-vaardigheid."
+      button: "Voer waarde in"
+      input_label: "Geheime waarde"
+      ended: "Hierdie versoek het geëindig; niks is gestoor nie."
+      not_author: "Slegs die persoon wat hierdie versoek begin het, kan die waarde invoer."
+      submitted_footer: "✓ In .env gestoor"
     response_as_file: "📎 Lang antwoord: die volledige teks is aangeheg."
     truncated_suffix: "\n...(afgekap)"
     unknown: "onbekend"

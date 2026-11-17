@@ -357,6 +357,37 @@ instead of silently eating the click. Open-ended clarify questions render as a p
 accept your next typed reply. No configuration needed — this works regardless
 of the `rich_blocks` setting.
 
+### Entering a skill's API key (private modal, opt-in)
+
+When a skill needs a key it declares in `required_environment_variables` and
+the key is missing, a messaging chat normally only gets a hint to add it to
+`.env` by hand. Set `platforms.slack.extra.secret_entry_modal: true` and Slack
+posts a card in the thread instead ("🔑 This session needs `FOO_API_KEY`") with
+an **Enter value** button:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      secret_entry_modal: true   # default: false (the "add it to .env" hint)
+```
+
+- Only the person whose message started the turn can open the form; anyone
+  else who presses the button gets a private "only the person who started this
+  request…" note.
+- The value is typed into a Slack modal. It is saved to the `.env` of the
+  profile that owns the session (on a multi-profile gateway, that profile's
+  `.env`, never the launch profile's) and is never posted to the channel,
+  echoed, written to the logs, or shown to the model. The card then shows
+  "✓ Saved to .env" with its button removed.
+- If nobody answers within 5 minutes, the turn is interrupted, or the turn
+  ends, the card shows "This request has ended; nothing was saved." and the
+  skill continues without the key.
+
+Other platforms keep the hint. The value still passes through Slack's servers
+on its way to Hermes, like anything typed into a Slack form, so turn this on
+only for a workspace you trust with the key.
+
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash
@@ -478,6 +509,7 @@ platforms:
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
 | `platforms.slack.extra.api_human_users` | `[]` | Slack user IDs whose **Web-API (user-token) posts count as human**. Such posts carry the posting `app_id` and no `client_msg_id`, so by default they are dropped as app traffic; allowlist your own front-end's users here instead of `allow_bots: all`. See [Treating your own app's user-token posts as human](#treating-your-own-apps-user-token-posts-as-human-api_human_users). |
+| `platforms.slack.extra.secret_entry_modal` | `false` | When `true`, a skill's missing `required_environment_variables` key is asked for through a card whose button opens a private modal for the turn's author only; the value goes to the owning profile's `.env`. See [Entering a skill's API key](#entering-a-skills-api-key-private-modal-opt-in). |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
 
 The equivalent environment variable is `SLACK_ALLOW_BOTS=none|mentions|all`.

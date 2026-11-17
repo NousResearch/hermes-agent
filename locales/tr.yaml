@@ -1006,6 +1006,16 @@ platform:
       ended: "Bu kod isteği sona erdi; hiçbir şey girilmedi."
       not_author: "Kodu yalnızca bu isteği başlatan kişi girebilir."
       submitted_footer: "✓ Kod gönderildi"
+    # skill secret card (Slack): button / modal title ≤ 24 chars.
+    secret_entry:
+      title: "🔑 Bu oturumun {name} değerine ihtiyacı var"
+      body: "Bir beceri `{name}` değerine ihtiyaç duyuyor. Düğmeye basın ve açılan forma değeri yapıştırın: bu profilin .env dosyasına kaydedilir, burada asla paylaşılmaz ve modele gösterilmez."
+      skill: "{skill} becerisi tarafından istendi."
+      button: "Değer gir"
+      input_label: "Gizli değer"
+      ended: "Bu istek sona erdi; hiçbir şey kaydedilmedi."
+      not_author: "Değeri yalnızca bu isteği başlatan kişi girebilir."
+      submitted_footer: "✓ .env dosyasına kaydedildi"
     response_as_file: "📎 Uzun yanıt: metnin tamamı ekte."
     truncated_suffix: "\n...(kısaltıldı)"
     unknown: "bilinmiyor"

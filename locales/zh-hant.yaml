@@ -1006,6 +1006,16 @@ platform:
       ended: "這個驗證碼請求已結束，沒有填入任何內容。"
       not_author: "只有發起這次請求的人可以輸入驗證碼。"
       submitted_footer: "✓ 驗證碼已送出"
+    # skill secret card (Slack): button / modal title ≤ 24 chars.
+    secret_entry:
+      title: "🔑 此工作階段需要 {name}"
+      body: "某個技能需要 `{name}`。按下按鈕並在開啟的表單中貼上該值：它會儲存到此設定檔的 .env 中，絕不會發佈在這裡，也不會顯示給模型。"
+      skill: "由 {skill} 技能請求。"
+      button: "輸入值"
+      input_label: "密鑰值"
+      ended: "此請求已結束；未儲存任何內容。"
+      not_author: "只有發起此請求的人才能輸入該值。"
+      submitted_footer: "✓ 已儲存到 .env"
     response_as_file: "📎 回覆較長：完整內容已附為檔案。"
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"

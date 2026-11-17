@@ -187,21 +187,21 @@ def _open_tail_start(text: str, end: int) -> int:
     return best
 
 
-def _registered_value_head(text: str) -> int:
-    """Start of the longest tail of ``text`` that begins one of the profile's exact secret values
-    (``.env`` / secret-source), else ``len(text)``. Such a value has no shape the probes above can
-    see, so its first characters would otherwise settle raw before the rest arrives."""
+def _registered_value_cut(text: str, end: int) -> int:
+    """``end`` moved back to the start of any of the profile's exact secret values (``.env`` /
+    secret-source) it would cut: one still arriving at the tail, or a complete one ``end`` falls
+    inside. Such a value has no shape the probes above can see, and either half alone no longer
+    matches it, so a cut through it would settle its head raw."""
     n = len(text)
-    best = n
     for form in registered_secret_forms():
-        lo = max(0, n - len(form) + 1)
-        start = text.find(form[0], lo, best)  # candidate starts only: one find per form per tick
+        lo = max(0, min(end, n) - len(form) + 1)
+        start = text.find(form[0], lo, end)  # candidate starts only: bounded by the value's length
         while start != -1:
-            if form.startswith(text[start:]):
-                best = start
+            if form.startswith(text[start:start + len(form)]) and start + len(form) > end:
+                end = start
                 break
-            start = text.find(form[0], start + 1, best)
-    return best
+            start = text.find(form[0], start + 1, end)
+    return end
 
 
 def settled_end(text: str) -> int:
@@ -209,7 +209,7 @@ def settled_end(text: str) -> int:
     n = len(text)
     if not n:
         return 0
-    end = _registered_value_head(text)
+    end = n
     token_start = max(text.rfind(c) for c in " \t\r\n") + 1
     if token_start < n:
         probe_start = _probe_start(text, token_start)
@@ -237,6 +237,7 @@ def settled_end(text: str) -> int:
             end = start
         if (begin := _open_key_block(text, block_lo, end)) >= 0:
             end = min(end, begin)
+        end = _registered_value_cut(text, end)
         if end == prev:
             return end
 

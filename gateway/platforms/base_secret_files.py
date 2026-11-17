@@ -27,7 +27,7 @@ from agent.file_safety import is_project_env_basename
 
 logger = logging.getLogger(__name__)
 
-_MAX_SCAN_BYTES = 64 * 1024 * 1024
+_MAX_SCAN_BYTES = 16 * 1024 * 1024  # ~40 ms worst case on the delivery path, once per (path, mtime, size)
 _CHUNK = 1024 * 1024
 # (path, mtime_ns, size, forms) -> verdict: one reply checks the same path several times.
 _VERDICTS: dict[tuple, bool] = {}

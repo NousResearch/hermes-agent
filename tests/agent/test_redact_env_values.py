@@ -90,3 +90,37 @@ def test_streamed_reply_never_shows_part_of_an_env_value(tmp_path):
             assert not any(OPAQUE[:k] in prefix for k in range(4, len(OPAQUE) + 1)), prefix
         final, _ = redact_settled(reply, prefix, done=True)
     assert final == f"the key is {MARKER} as configured"
+
+
+def test_streamed_passphrase_never_shows_a_word_before_it_completes(tmp_path):
+    from gateway.stream_consumer_redact import redact_settled
+
+    a = _home(tmp_path, "a", [f"DB_PASSWORD='{PASSPHRASE}'"])
+    reply = f"login with {PASSPHRASE} now"
+    with _in(a):
+        prefix = ""
+        for i in range(1, len(reply) + 1):
+            text, settled = redact_settled(reply[:i], prefix, done=False)
+            prefix = text[:settled]
+            assert "correct" not in prefix, prefix
+
+
+def test_values_are_masked_as_the_runtime_resolves_them(tmp_path, monkeypatch):
+    # ${VAR:-default} expands, a quoted multi-line value is one value, and a shorter secret-source
+    # value inside a longer .env value never splits it.
+    from agent import redact_secret_sources
+    from agent.tool_dispatch_helpers import make_tool_result_message
+
+    monkeypatch.delenv("ACME_UNSET", raising=False)
+    monkeypatch.setattr(redact_secret_sources, "_VALUES_BY_HOME", {})
+    pem_body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+    a = _home(tmp_path, "a", ['ACME_SERVICE_TOKEN="${ACME_UNSET:-' + OPAQUE + '}"',
+                              f'SVC_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n{pem_body}\n-----END PRIVATE KEY-----"'])
+    redact_secret_sources.publish_secret_source_values(a, {"VENDOR_TOKEN": OPAQUE[:11] + "Q"})
+    redact_secret_sources.publish_secret_source_values(a, {"VENDOR_TOKEN": OPAQUE[:12]})
+    with _in(a):
+        out = redact_sensitive_text(f"tok {OPAQUE} key line {pem_body}")
+        assert out == f"tok {MARKER} key line {MARKER}"
+        # MCP / plugin results never pass redact_sensitive_text: the tool-result boundary masks them.
+        msg = make_tool_result_message("mcp_srv_echo", [{"type": "text", "text": f"env {OPAQUE}"}], "c1")
+        assert msg["content"][0]["text"] == f"env {MARKER}"

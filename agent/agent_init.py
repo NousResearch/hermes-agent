@@ -1379,6 +1379,11 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
+    raw_prune_exempt_tools = cfg.get("prune_exempt_tools", [])
+    prune_exempt_tools = (
+        {name.strip().lower() for name in raw_prune_exempt_tools if isinstance(name, str) and name.strip()}
+        if isinstance(raw_prune_exempt_tools, list) else set()
+    )
     return CompressionSettings(
         threshold=threshold,
         autoraise_notice_enabled=autoraise_notice_enabled,
@@ -1399,6 +1404,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         proactive_prune_min_reclaim=max(
             0, _parse_config_int(cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096)
         ),
+        prune_exempt_tools=prune_exempt_tools,
         protect_first=protect_first,
         abort_on_summary_failure=_cfg_flag(cfg, "abort_on_summary_failure", False),
         # Per-model threshold overrides: keys substring-matched against the model name
@@ -1842,6 +1848,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
+            prune_exempt_tools=cs.prune_exempt_tools,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
         )

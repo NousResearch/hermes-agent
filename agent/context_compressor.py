@@ -2673,6 +2673,7 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        prune_exempt_tools: set[str] | list[str] | None = None,
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
@@ -2699,6 +2700,10 @@ class ContextCompressor(
         self.proactive_prune_min_result_chars = max(_PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000))
         # Every commit breaks the prompt-cache prefix; require a meaningful reclaim batch so fires are episodic.
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
+        self.prune_exempt_tools = {
+            name.strip().lower() for name in prune_exempt_tools
+            if isinstance(name, str) and name.strip()
+        } if isinstance(prune_exempt_tools, (set, list)) else set()
         # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
         self._proactive_prune_rearm_tokens: int = 0
         # Dedup key for the over-threshold "reclamation no-oped" warning
@@ -3043,9 +3048,11 @@ class ContextCompressor(
     def _demote_tool_result_at(
         result: list[dict[str, Any]], idx: int, call_id_to_tool: dict[str, tuple[str, str]],
         min_prune_chars: int, protected_skills: Optional[set[str]] = None,
+        exempt_tools: Optional[set[str]] = None,
     ) -> bool:
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
-        ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass) overrides the guard."""
+        ``protected_skills`` (lower-cased) spares recently used skill_view bodies; ``exempt_tools``
+        (lower-cased) spares configured tool names across ordinary and pressure demotion."""
         msg = result[idx]
         if msg.get("role") != "tool":
             return False
@@ -3063,6 +3070,8 @@ class ContextCompressor(
         ):
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
+        if exempt_tools and isinstance(tool_name, str) and tool_name.strip().lower() in exempt_tools:
+            return False
         if protected_skills and tool_name == "skill_view":
             _skill = _json_dict(tool_args).get("name", "")
             if isinstance(_skill, str) and _skill.lower() in protected_skills:
@@ -3101,7 +3110,9 @@ class ContextCompressor(
             nonlocal demoted
             if i in spared:
                 return
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
+            if self._demote_tool_result_at(
+                result, i, call_id_to_tool, min_prune_chars, exempt_tools=self.prune_exempt_tools,
+            ):
                 demoted += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
@@ -3120,7 +3131,10 @@ class ContextCompressor(
             if (
                 last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
                 and _protected_region_tokens() > soft_ceiling
-            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
+            ) and self._demote_tool_result_at(
+                result, last_tool_idx, call_id_to_tool, min_prune_chars,
+                exempt_tools=self.prune_exempt_tools,
+            ):
                 demoted += 1
         if demoted and not self.quiet_mode:
             logger.info(
@@ -3144,6 +3158,7 @@ class ContextCompressor(
     def _prune_old_tool_results(
         self, messages: list[dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None, min_prune_chars: int = _PRUNE_MIN_CHARS,
+        prune_exempt_tools: Optional[set[str]] = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Project old tool-result bodies to bounded summaries without rewriting tool-call arguments.
         Returns ``(messages, count)``; token budget (when given) takes priority over the
@@ -3168,7 +3183,9 @@ class ContextCompressor(
         # records and are never rewritten; summary input is bounded separately by
         # _render_tool_call_for_summary().
         pruned += sum(
-            self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
+            self._demote_tool_result_at(
+                result, i, call_id_to_tool, min_prune_chars, protected_skills, prune_exempt_tools,
+            )
             for i in range(max(0, prune_boundary))
         )
         # Pass 3: retire image payloads inside the protected tail; re-sent embeds otherwise make

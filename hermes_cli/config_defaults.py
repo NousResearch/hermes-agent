@@ -603,6 +603,9 @@ DEFAULT_CONFIG = {
         # Prune's summarize pass only touches tool results larger than this (chars); clamped >= 200
         # so a generated summary can't be re-summarized.
         "proactive_prune_min_result_chars": 8000,
+        # Tool names whose results carry instructions can be kept verbatim during pruning/demotion.
+        # Names are matched case-insensitively; global compaction still summarizes middle turns.
+        "prune_exempt_tools": [],
         # A prune only commits when it reclaims at least this many tokens, then waits for a
         # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
         "proactive_prune_min_reclaim_tokens": 4096,

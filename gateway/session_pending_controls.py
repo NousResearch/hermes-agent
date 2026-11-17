@@ -4,14 +4,19 @@ Ordinary approvals and clarify prompts share the existing native waiters.
 Secret/sudo prompts remain native; no response is published or journaled here.
 """
 from copy import deepcopy
+from functools import partial
 
+from gateway.session_asks import INTERRUPTED, Ask, AskLedger, approval_outcome, prompt_payload, question_outcome
 from hermes_state_runtime import RuntimeStoreError
-from tools.approval import list_gateway_approvals, resolve_gateway_approval
+from tools.approval import list_gateway_approvals, observe_gateway_outcome, resolve_gateway_approval
 
 
 class PendingControls:
-    def __init__(self, events):
+    def __init__(self, events, asks=None):
         self.events = events
+        # Where the prompts are recorded as asks: the live session shares its event stream's ledger,
+        # so its secret requests and these prompts list together; a standalone one keeps its own.
+        self.asks = asks if asks is not None else AskLedger()
         self.pending = {}
         self.remote_responders = {}
 
@@ -35,6 +40,7 @@ class PendingControls:
             if timeout_s is not None:
                 prompt['timeout_s'] = timeout_s
             self.pending[prompt_id] = (route, prompt)
+            self._open_ask(session_id, 'approval', prompt, route)
             self.events.publish(session_id, prompt, event_type='approval.request')
 
     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
@@ -48,7 +54,26 @@ class PendingControls:
             if timeout_s is not None:
                 prompt["timeout_s"] = timeout_s
             self.pending[entry.clarify_id] = (entry, prompt)
+            self._open_ask(session_id, 'question', prompt, entry)
             self.events.publish(session_id, prompt, event_type="clarify.request")
+
+    def _open_ask(self, session_id, kind, prompt, route):
+        """Record the prompt as an ask (gateway/session_asks.py) and how its native waiter reports its end."""
+        prompt_id = prompt['prompt_id']
+        ask = Ask(prompt_id, kind, session_id, prompt['execution_generation'], prompt_payload(prompt))
+        if prompt_id in self.remote_responders:
+            # A managed worker's prompt: its waiter lives in the worker. ``respond`` settles an answer;
+            # a prompt the worker withdrew leaves ``remote_responders`` unanswered.
+            ask.probe = lambda: None if prompt_id in self.remote_responders else INTERRUPTED
+        elif kind == 'question':
+            ask.probe = lambda: (question_outcome(getattr(route, 'response', None))
+                                 if route.event.is_set() else None)
+        self.asks.open(ask)
+        if kind == 'approval' and ask.probe is None:
+            settle = partial(self.asks.settle, prompt_id)
+            if not observe_gateway_outcome(route, prompt_id,
+                                           lambda reason, outcome: settle(*approval_outcome(reason, outcome))):
+                settle(*INTERRUPTED)
 
     def snapshot(self, session_id, generation):
         with self.events.lock:
@@ -79,6 +104,7 @@ class PendingControls:
                         or (kind == 'approval' and response[field] not in prompt['choices'])):
                     raise RuntimeStoreError('invalid_params')
                 self.remote_responders[prompt_id](kind, prompt_id, response[field])
+                self.asks.settle(prompt_id, 'answered', {'text' if kind == 'clarify' else 'choice': response[field]})
                 del self.remote_responders[prompt_id]
                 del self.pending[prompt_id]
                 self.events.publish(session_id, {'prompt_id': prompt_id, 'execution_generation': generation},

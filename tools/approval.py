@@ -286,6 +286,23 @@ def observe_gateway_settle(session_key: str, request_id: str, observer) -> bool:
         return True
 
 
+def observe_gateway_outcome(session_key: str, request_id: str, observer) -> bool:
+    """Observe how one pending approval ends: ``observer(reason, outcome)`` runs once when its wait
+    ends by any path, *outcome* carrying the committed ``choice`` (None when nobody answered), whether
+    it ``expired``, the withdrawal cause (``cancelled``) and whether the deny was a typed reply
+    (``replied``). False when the request is no longer pending."""
+    with _lock:
+        entry = _entry_for_request(session_key, request_id)
+        if entry is None:
+            return False
+
+        def _observe(reason):
+            observer(reason, {"choice": entry.result, "expired": entry.expired, "cancelled": entry.cancelled,
+                              "replied": bool(getattr(entry, "replied", False))})
+        entry.observers.append(_observe)
+        return True
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """A client's receipt of one approval request: True while that request is still pending."""
     with _lock:

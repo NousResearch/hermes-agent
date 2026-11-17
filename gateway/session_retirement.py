@@ -54,6 +54,7 @@ def retire_idle(authority, session_id, live, target):
     if _busy(authority, session_id, target):
         return False
     del authority.sessions[session_id]
+    authority.retired_asks.keep(session_id, live.event_stream.asks)
     authority.launch_sources.pop(session_id, None)  # a cache: re-read from the row on demand
     authority.retired_routes[session_id] = live.route
     if live.source.platform == Platform.LOCAL:

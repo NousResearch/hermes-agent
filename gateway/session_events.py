@@ -6,6 +6,7 @@ import time
 import uuid
 import weakref
 
+from gateway.session_asks import AskLedger
 from tui_gateway import event_replay
 from tui_gateway.transport import FanoutTransport
 
@@ -33,6 +34,8 @@ class SessionEvents:
         # The running execution's open tool calls and its last frame time; a hosted room's info
         # poll reports them so the room shows which tool a member is in (``progress_for``).
         self._progress = None
+        # The prompts this session's turns blocked on, as API objects (gateway/session_asks.py).
+        self.asks = AskLedger()
 
     def note_progress(self, generation, event_type, payload):
         """Record one execution frame (the caller holds ``lock`` and passed the generation fence)."""

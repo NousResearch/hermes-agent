@@ -15,10 +15,13 @@ import contextlib
 import threading
 import uuid
 
+from gateway.session_asks import Ask, secret_outcome
 from tools.clarify_batch import settle_batch
 
 REQUEST_TIMEOUT_S = 120  # main: ``_ask("sudo", ..., timeout=120)``
 _POLL_S = 0.25
+# Requests for a masked value: listed as ``secret`` asks.
+SECRET_METHODS = frozenset({"secret", "sudo"})
 
 
 class _Pending:
@@ -175,6 +178,10 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
     pending = _Pending(session_id, qids, events, method, {"session_id": session_id, **params}, replay)
     with _lock:
         _open[request_id] = pending
+    if method in SECRET_METHODS:
+        # The masked prompts are asks the API can list and dismiss (gateway/session_asks.py); the
+        # value is never recorded there.
+        events.asks.open(Ask(request_id, "secret", session_id, None, {"request": method, **params}))
     events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": pending.params})
     waited = 0.0
     reason = "timeout"
@@ -192,6 +199,7 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
             # answers survive a timeout"); sudo/secret have no question ids and stay unanswered.
             pending.result = settle_batch(pending.locked,
                                           ended="cancelled" if reason == "interrupted" else "timed_out")
+    events.asks.settle(request_id, *secret_outcome(settled=not still_open, value=pending.value, wait_reason=reason))
     if still_open:
         # The same teardown main's renderers key on (``request.cancel``): the card closes and a
         # timed-out password prompt says so.

@@ -1,5 +1,6 @@
 """API run controls resolve durable claims, never adapter agent/task ownership."""
 from dataclasses import asdict
+import uuid
 
 from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_results import admission_result
@@ -112,7 +113,6 @@ async def send_clarify(adapter, *, chat_id, **kwargs):
 
 
 async def respond_run(adapter, run_id, body, *, kind):
-    import uuid
     owned = run_admission(adapter, run_id)
     if owned is None:
         raise RuntimeStoreError('not_found')
@@ -124,14 +124,21 @@ async def respond_run(adapter, run_id, body, *, kind):
         raise RuntimeStoreError('invalid_params')
     if row['status'] != 'started' or type(generation) is not int or generation != row['generation']:
         raise RuntimeStoreError('stale_generation')
-    ref = SessionRef(authority.profile_id, row['target_session_id'])
-    actor = SessionActor('api', authority.profile_id,
-        frozenset({'session:read', 'session:approve', 'session:respond'}), 'api-control:' + uuid.uuid4().hex)
+    return await respond_prompt(authority, row['target_session_id'], generation, prompt_id, kind, {field: body[field]})
+
+
+async def respond_prompt(authority, session_id, generation, prompt_id, kind, response, *, operator=False):
+    """Answer one pending prompt of *session_id*'s running claim through the authority, as an attached
+    API control actor: the one path the run and session-ask routes share. *operator*: the profile's
+    API key answers for any of its sessions (a Desktop or TUI one too), as its session routes read them."""
+    ref = SessionRef(authority.profile_id, session_id)
+    capabilities = {'session:read', 'session:approve', 'session:respond'} | ({'session:operator'} if operator else set())
+    actor = SessionActor('api', authority.profile_id, frozenset(capabilities), 'api-control:' + uuid.uuid4().hex)
     snapshot = await authority.attach(actor, ref, history=False)  # prompts only
     try:
         if not any(p['prompt_id'] == prompt_id and p['kind'] == kind for p in snapshot.prompts):
             raise RuntimeStoreError('approval_not_pending')
-        return await authority.respond(actor, ref, generation, prompt_id, {field: body[field]}, kind=kind)
+        return await authority.respond(actor, ref, generation, prompt_id, response, kind=kind)
     finally:
         await authority.detach(actor, snapshot.subscription_id)
 

@@ -5,7 +5,8 @@ Each body of ``plane_patch_cases.cases()`` carries gateway-gateway's own verdict
 the file records the commit). ``validate_patch``'s first violation is the plane's error code, and it
 takes what the plane takes, except where it is deliberately stricter (:data:`STRICTER`): there the
 plane accepts the bytes but stores something else (null for a number beyond a double, U+FFFD for
-bytes that are not UTF-8 or a lone surrogate). With ``HERMES_TEST_GATEWAY_GATEWAY`` naming a
+bytes that are not UTF-8 or a lone surrogate), or would take a body nested deeper than Python's
+recursion reaches, which the import refuses as nested too deeply. With ``HERMES_TEST_GATEWAY_GATEWAY`` naming a
 gateway-gateway checkout (``node_modules`` installed) and node on PATH, the verdicts are also
 recomputed from that checkout and must equal the fixture's.
 """
@@ -18,13 +19,18 @@ from pathlib import Path
 
 import pytest
 
-from plugins.secret_store.remote import limits, plane_json
+from plugins.secret_store.remote import limits
 from tests.plugins.secret_store import plane_patch_cases
 
 FIXTURE = json.loads(plane_patch_cases.FIXTURE.read_text(encoding="utf-8-sig"))
 CASES = plane_patch_cases.cases()
 STRICTER = {"number_overflow", "number_negative_overflow", "number_int_beyond_double", "value_not_utf8",
-            "value_lone_surrogate_escape", "record_lone_surrogate_escape", "record_5000_digit_number"}
+            "value_lone_surrogate_escape", "record_lone_surrogate_escape", "record_5000_digit_number",
+            # nested past Python's recursion depth: refused as nested too deeply
+            "record_depth_999", "record_depth_1000", "record_depth_5000", "record_depth_32000",
+            "record_deep_objects"}
+TOO_DEEP = {"record_depth_999", "record_depth_1000", "record_depth_5000", "record_depth_32000",
+            "record_deep_objects", "record_depth_over_64k", "unset_deep"}
 
 
 def _verdict(data: bytes) -> str:
@@ -48,24 +54,12 @@ def test_the_import_check_agrees_with_the_plane(cid, data):
         assert ours == plane, (cid, ours, plane)
 
 
-@pytest.mark.parametrize(("cid", "data"), CASES, ids=[cid for cid, _b in CASES])
-def test_the_deep_reader_reads_as_json_loads_does(cid, data):
-    """The stackless reader (taken past the C scanner's depth) builds what json.loads builds."""
-    try:
-        text = data.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return
-    try:
-        expected = json.loads(text, parse_constant=plane_json._not_json, parse_float=plane_json._number,
-                              parse_int=plane_json._number)
-    except RecursionError:                        # these bodies are compact JSON: they write back as read
-        assert plane_json.stringify(plane_json._parse_deep(text)) == text
-        return
-    except ValueError:
-        with pytest.raises(ValueError):
-            plane_json._parse_deep(text)
-        return
-    assert plane_json._parse_deep(text) == expected
+def test_a_body_nested_too_deeply_is_refused_as_such_never_raised_on():
+    for cid, data in CASES:
+        found = limits.validate_patch(data)
+        assert any("nested too deeply" in v.text for v in found) == (cid in TOO_DEEP), cid
+    assert limits.validate_patch(b'{"set":%s}' % (b"[" * 1_000_000)) == \
+        [limits.Violation(None, None, "the import request is " + limits._TOO_DEEP, "secret_request_invalid")]
 
 
 def test_a_body_of_any_json_shape_is_refused_never_raised_on():
@@ -77,9 +71,10 @@ def test_a_body_of_any_json_shape_is_refused_never_raised_on():
     deep: list = []
     for depth in range(1, 32_001):
         deep = [deep]
-        if depth in (5000, 32_000):                # the plane takes both; json.dumps may not reach the second
+        if depth in (500, 5000, 32_000):           # the plane takes all three; the import, the first
             found = limits.check({"auth": {"codex": {"expectedVersion": 0, "record": {"n": deep}}}})
-            assert found == [] if depth == 5000 else isinstance(found, list)
+            assert (found == []) == (depth == 500), depth
+            assert all(v.code == "secret_value_invalid" for v in found), found
 
 
 def test_the_verdicts_are_the_checkouts():

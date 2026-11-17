@@ -136,10 +136,11 @@ def cases() -> list[tuple[str, bytes]]:
                     entry.encode()))
     out.append(("unset_deep", b'{"expectedProfileVersion":0,"set":{"RV_X":"v"},"unset":%s%s}' %
                 (b"[" * 100_000, b"]" * 100_000)))
-    # The plane reads the bytes as Request.text() and JSON.parse do: a BOM dropped, any depth.
+    # The plane reads the bytes as Request.text() and JSON.parse do: a BOM dropped, any depth (the
+    # import refuses a record nested past Python's recursion depth: stricter).
     out.append(("bom", b"\xef\xbb\xbf" + _body({"RV_A": "v"})))
     out.append(("two_boms", b"\xef\xbb\xbf\xef\xbb\xbf" + _body({"RV_A": "v"})))
-    for depth in (999, 1000, 5000, 32_000):
+    for depth in (500, 999, 1000, 5000, 32_000):
         out.append((f"record_depth_{depth}", _raw_record("[" * depth + "]" * depth)))
     out.append(("record_depth_over_64k", _raw_record("[" * 32_800 + "]" * 32_800)))
     out.append(("record_deep_objects", _raw_record('{"a":' * 5000 + "0" + "}" * 5000)))

@@ -15,7 +15,7 @@ import math
 import pytest
 
 import hermes_secret_routing as routing
-from plugins.secret_store.remote import limits, plane_json
+from plugins.secret_store.remote import limits
 from tests.plugins.secret_store import stub_secrets_plane as stub
 from tests.plugins.secret_store.stub_secrets_plane import CLIENT_ID, CLIENT_SECRET, TOKEN
 from tests.plugins.secret_store.test_remote_import_refusal import _files, _fresh, _write
@@ -101,7 +101,7 @@ def test_an_auth_record_over_64_kib_fails_closed_and_one_at_the_limit_imports(pl
     _start(monkeypatch)
     _boot(plane.home)
     stored = plane.profile("default")["auth"]["openai-codex"][0]
-    assert len(plane_json.stringify(stored).encode()) == KIB64
+    assert len(limits._js_json(stored).encode()) == KIB64
 
 
 def test_more_entries_than_a_profile_holds_fail_closed_and_the_limit_imports(plane, monkeypatch):
@@ -158,12 +158,12 @@ def test_a_value_that_cannot_be_sent_fails_closed(plane, monkeypatch):
     (0.1, "0.1"), (1e20, "100000000000000000000"), (12345678901234567890123, "1.2345678901234568e+22")])
 def test_numbers_measure_as_javascript_writes_them(number, js):
     """Expected strings are node's ``JSON.stringify`` of the same literals."""
-    assert plane_json.stringify(number) == js
+    assert limits._js_json(number) == js
 
 
 def test_strings_and_nesting_measure_as_javascript_writes_them():
     record = {"a": ["\u2028\n\"\\\x01", True, None, {"b": 2.0}], "\u00e9": ""}
-    assert plane_json.stringify(record) == '{"a":["\u2028\\n\\"\\\\\\u0001",true,null,{"b":2}],"\u00e9":""}'
+    assert limits._js_json(record) == '{"a":["\u2028\\n\\"\\\\\\u0001",true,null,{"b":2}],"\u00e9":""}'
 
 
 def _staging(plane, payload):

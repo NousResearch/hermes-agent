@@ -43,7 +43,7 @@ import { CAPABILITIES_ROUTE } from '../routes'
 
 import { PluginSettingsForm } from './plugin-settings-form'
 import { EmptyState, ListRowSkeleton, SectionHeading, SettingsContent } from './primitives'
-import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
+import { SettingsProfileScope, settingsScopeProfile, useSettingsOwner, useSettingsRequestScope } from './profile-scope'
 import { SettingsFooter, SettingsPageDescription } from './settings-card'
 import { useSettingsGatewayRequest } from './settings-owner-request'
 
@@ -99,7 +99,7 @@ const ownerKey = (scope: string | undefined): null | string => scope ?? null
  *  loaded a different profile). */
 function useOwnedAgentPlugins(requestedOwner: null | string) {
   const pinnedOwner = useSettingsOwner()
-  const owner = pinnedOwner?.profile ?? requestedOwner
+  const owner = settingsScopeProfile(useSettingsRequestScope(requestedOwner))
   const loadedOwnerKey = useStore($agentPluginsOwnerKey)
   const rows = useStore($agentPlugins)
   const loadedFor = useStore($agentPluginsProfile)
@@ -185,7 +185,7 @@ export function usePluginSettingsEntries(): PluginSettingsEntry[] {
   const records = useStore($pluginRecords)
   const selectedProfile = useStore($settingsRequestProfile)
   const pinnedOwner = useSettingsOwner()
-  const owner = pinnedOwner?.profile ?? ownerKey(selectedProfile)
+  const owner = settingsScopeProfile(useSettingsRequestScope(ownerKey(selectedProfile)))
   const { owned, rows, status } = useOwnedAgentPlugins(owner)
 
   // Cheap backend disk scan; the same loader Capabilities ▸ Plugins uses.
@@ -379,6 +379,7 @@ function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner
   const p = t.skills.plugins
   const requestGateway = useSettingsGatewayRequest()
   const pinnedOwner = useSettingsOwner()
+  const secretScope = useSettingsRequestScope(owner ?? undefined)
   const { rows } = useOwnedAgentPlugins(owner)
   const row = rows.find(candidate => candidate.key === agentKey)
   const busy = useStore($agentPluginBusy) === agentKey
@@ -415,7 +416,7 @@ function PluginSchemaSettingsPage({ agentKey, owner }: { agentKey: string; owner
             profile: owner,
             secrets: changes.secrets,
             values: changes.values,
-            writeSecret: (env, value) => setEnvVar(env, value, pinnedOwner ?? owner ?? undefined)
+            writeSecret: (env, value) => setEnvVar(env, value, secretScope)
           })
 
           if (ok) {
@@ -449,8 +450,7 @@ export function PluginSettingsPane({
   target: null | PluginSettingsTarget
 }) {
   const selectedProfile = useStore($settingsRequestProfile)
-  const pinnedOwner = useSettingsOwner()
-  const owner = pinnedOwner?.profile ?? ownerKey(selectedProfile)
+  const owner = settingsScopeProfile(useSettingsRequestScope(ownerKey(selectedProfile)))
 
   if (!target) {
     return pending ? (

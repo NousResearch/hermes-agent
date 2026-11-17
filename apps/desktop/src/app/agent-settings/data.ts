@@ -12,6 +12,9 @@ export interface AgentSettingsOwner {
   profile: string
 }
 
+/** An agent page's owner, its machine resolved ('local' for this one). */
+export type AgentRouteOwner = Required<AgentSettingsOwner>
+
 export const agentSettingsKey = (owner: AgentSettingsOwner) =>
   ['agent-settings', owner.connectionId ?? '', owner.profile] as const
 

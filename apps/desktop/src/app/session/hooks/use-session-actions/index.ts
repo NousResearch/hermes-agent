@@ -111,7 +111,6 @@ import {
   requestForSessionProfile,
   type SessionOwnerRoute,
   sessionOwnerRouteFromRow,
-  type SessionOwnerScope,
   type SessionProfileRoute
 } from '@/store/session-request-router'
 import {
@@ -150,12 +149,7 @@ import { branchThroughRowId } from './branch-boundary'
 import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
-import {
-  captureDeletionDraft,
-  clearNotificationsForDeletion,
-  sessionDeletionOwner,
-  sessionDeletionRow
-} from './deletion-owner'
+import { clearNotificationsForDeletion, sessionDeletionPolicy } from './deletion-owner'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
@@ -2996,6 +2990,7 @@ export function useSessionActions({
   const removeSession = useCallback(
     async (storedSessionId: string, ownerRow?: SessionInfo) => {
       clearNotificationsForDeletion()
+      const deletion = sessionDeletionPolicy()
 
       // The row may live in the main list, the messaging/cron sidebar slices,
       // OR the archived view's own store (archived rows are excluded from
@@ -3004,7 +2999,7 @@ export function useSessionActions({
       // instead of leaving a ghost that resumes into a dead id.
       const candidate = findListedSession(storedSessionId)
 
-      const removed = sessionDeletionRow(storedSessionId, ownerRow, candidate?.session)
+      const removed = deletion.row(storedSessionId, ownerRow, candidate?.session)
 
       // Messaging/cron rows frequently arrive without an inline profile; fall
       // back to the stored-session ownership lookup so their DELETE routes to
@@ -3025,9 +3020,9 @@ export function useSessionActions({
         return
       }
 
-      const removedOwner: SessionOwnerScope = sessionOwnerRouteFromRow(removed) ?? profile
+      const removedOwner = deletion.route(removed, profile)
 
-      const deletionOwner = sessionDeletionOwner(removedOwner, id => [
+      const deletionOwner = deletion.owner(removedOwner, profile, candidate, id => [
         selectedStoredSessionIdRef.current === id ? activeSessionIdRef.current : null,
         runtimeIdByStoredSessionIdRef.current.get(id)
       ])
@@ -3063,7 +3058,7 @@ export function useSessionActions({
         startFreshSessionDraft(true)
       }
 
-      const canRestoreDraft = captureDeletionDraft(getRouteToken, selectedStoredSessionIdRef, activeSessionIdRef)
+      const canRestoreDraft = deletion.captureDraft(getRouteToken, selectedStoredSessionIdRef, activeSessionIdRef)
 
       try {
         if (closingRuntimeId) {
@@ -3126,13 +3121,12 @@ export function useSessionActions({
           statesByRuntimeId: sessionStateByRuntimeIdRef.current
         })
       } catch (err) {
-        removal.rollback()
+        const stored = removal.rollback()
 
         if (wasSelected && canRestoreDraft()) {
           setFreshDraftReady(false)
           setSelectedStoredSessionId(storedSessionId)
           selectedStoredSessionIdRef.current = storedSessionId
-          const stored = removed
 
           if (stored) {
             applyStoredUsage(stored)

@@ -3,6 +3,8 @@ import { useEffect, useMemo } from 'react'
 
 import type { ArtifactRecord as IndexedItem } from '@/app/artifacts/artifact-utils'
 import type { IndexedChat } from '@/app/artifacts/item-index-snapshot'
+import { useAgentRoutines } from '@/app/routines/routines-by-agent'
+import type { CronJob } from '@/hermes'
 import { $artifactRegistry, type ArtifactRecord } from '@/store/artifacts'
 import { $activeConnectionId } from '@/store/connections'
 import { $itemIndex, ensureChatIndexed, ownerKeyOf, peekOwnerIndex } from '@/store/item-index'
@@ -16,19 +18,26 @@ export interface ChatItems {
   files: IndexedItem[]
   links: IndexedItem[]
   chat: IndexedChat | undefined
+  /** The routines of the chat's agent. */
+  routines: CronJob[]
+  /** Everything above: the one count the simple-mode button and the pane's head both show. */
   total: number
 }
 
-const NONE: ChatItems = { artifacts: [], files: [], links: [], chat: undefined, total: 0 }
+type ChatOwnItems = Omit<ChatItems, 'routines' | 'total'>
+
+const NONE: ChatOwnItems = { artifacts: [], files: [], links: [], chat: undefined }
 
 /** One chat's items: its artifacts from the transcript's registry, its images, files and links from
  *  the item index the Library shares (store/item-index.ts), read from the index of the machine that
- *  owns the chat and indexed on first sight when the index has not read it yet. */
+ *  owns the chat and indexed on first sight when the index has not read it yet; and its agent's
+ *  routines, which a draft has too. */
 export function useChatItems(sessionId: null | string, owner: ChatOwner): ChatItems {
   const active = useStore($activeConnectionId)
   const indexOwner = ownerKeyOf(owner.connectionId ?? active)
   const index = useStore($itemIndex)[indexOwner] ?? peekOwnerIndex(indexOwner)
   const registry = useStore($artifactRegistry)
+  const routines = useAgentRoutines(owner)
   const { row } = owner
 
   useEffect(() => {
@@ -37,15 +46,17 @@ export function useChatItems(sessionId: null | string, owner: ChatOwner): ChatIt
     }
   }, [indexOwner, row])
 
-  return useMemo(() => {
+  const own = useMemo(() => {
     if (!sessionId) {
       return NONE
     }
 
-    const profile = owner.profile ?? row?.profile
+    // Unknown (undefined) matches by id alone. A known owner is compared as the index stores it, where
+    // a row with no profile is the default's.
+    const profile = owner.profile ?? (row ? row.profile : undefined)
 
     const chat = Object.values(index.snapshot.chats).find(
-      entry => entry.sessionId === sessionId && (!profile || entry.profile === (profile || 'default'))
+      entry => entry.sessionId === sessionId && (profile === undefined || entry.profile === (profile || 'default'))
     )
 
     const items = chat?.items ?? []
@@ -53,6 +64,12 @@ export function useChatItems(sessionId: null | string, owner: ChatOwner): ChatIt
     const files = items.filter(item => item.kind !== 'link')
     const links = items.filter(item => item.kind === 'link')
 
-    return { artifacts, files, links, chat, total: artifacts.length + items.length }
-  }, [index.snapshot.chats, owner.profile, registry, row?.profile, sessionId])
+    return { artifacts, files, links, chat }
+  }, [index.snapshot.chats, owner.profile, registry, row, sessionId])
+
+  return {
+    ...own,
+    routines,
+    total: own.artifacts.length + own.files.length + own.links.length + routines.length
+  }
 }

@@ -9,7 +9,11 @@ import { $groupChats } from '@/plugins/hermes-bots/group-chat'
 import { openGroupChat } from '@/plugins/hermes-bots/group-chat-view'
 import type * as BotsI18n from '@/plugins/hermes-bots/i18n'
 
-import { PortalGroupChats } from './portal-group-chats'
+import { PortalGroupChats, useGroupChatMatches } from './portal-group-chats'
+
+function GroupChats() {
+  return <PortalGroupChats matches={useGroupChatMatches('')} searching={false} />
+}
 
 vi.mock('@/plugins/hermes-bots/canonical-group-registry', async original => ({
   ...await original<typeof GroupRegistry>(),
@@ -46,7 +50,7 @@ it('opens same-named rooms using their exact gateway authority and retains deskt
     { name: 'one', connectionId: 'alpha', sourceScoped: true },
     { name: 'two', connectionId: 'beta', sourceScoped: true }
   ] } })
-  render(<RootTooltipProvider><PortalGroupChats query="" /></RootTooltipProvider>)
+  render(<RootTooltipProvider><GroupChats /></RootTooltipProvider>)
   const groups = screen.getAllByRole('button', { name: 'Team' })
   fireEvent.click(groups[1])
   expect(openGroupChat).toHaveBeenLastCalledWith('canonical:beta:default:room', 'key')
@@ -63,14 +67,14 @@ it('counts members from the published roster', () => {
     { name: 'one', connectionId: 'local', sourceScoped: true },
     { name: 'two', connectionId: 'local', sourceScoped: true }
   ] } })
-  render(<RootTooltipProvider><PortalGroupChats query="" /></RootTooltipProvider>)
+  render(<RootTooltipProvider><GroupChats /></RootTooltipProvider>)
   expect(screen.getByRole('button', { name: /Pair/ }).textContent).toContain('2')
 })
 
 const nextFrame = () => act(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
 
 it('a dismissed group dialog hands focus back to its "+"; a created group chat keeps it', async () => {
-  render(<RootTooltipProvider><PortalGroupChats query="" /></RootTooltipProvider>)
+  render(<RootTooltipProvider><GroupChats /></RootTooltipProvider>)
   const plus = screen.getByRole('button', { name: 'New group chat' })
 
   fireEvent.click(plus)

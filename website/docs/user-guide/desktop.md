@@ -49,7 +49,7 @@ classic conversational setup flow.
 
 The redesigned workspace is the default for both new and existing installations, with a global
 navigation rail beside New session, pinned chats, and chats nested under their agents.
-No sidebar opt-in or Portal skin selection is required. Your saved skin, including custom skins,
+The layout does not require the Hermes Portal skin: your saved skin, including custom skins,
 and light/dark/system appearance continue to apply independently of the layout.
 The rail opens Chats, Agent settings (the existing Profiles view), Capabilities,
 Library (Artifacts), and Routines (Scheduled jobs). Capabilities opens the existing page
@@ -69,7 +69,7 @@ The sidebar replaces the Bots tab and gateway/profile selectors with gateway-gro
 Each agent includes its canonical **Bot Chat**. Changing the layout does not migrate, relabel or
 delete profiles, conversations or pins. For recovery, turn off **Settings → Appearance →
 Window layout → Redesigned interface** to return to the classic shell; turn it on to restore
-the redesigned workspace. The earlier experimental sidebar is no longer a separate layout.
+the redesigned workspace.
 
 Global **Capabilities** browses available and installed capabilities; agent
 settings controls which ones an agent can use. Agent **Tools** separates On and
@@ -81,55 +81,6 @@ The redesigned composer places model and reasoning controls above the input and
 attachments, microphone, and Send below. The gateway status menu reports connection
 and inference readiness separately. Simple mode keeps reconnect and recent
 activity; Advanced adds system details, restart, and logs.
-
-### Dogfood the public redesign against your gateway
-
-Use a public checkout of `feat/desktop-redesign`, not the preserved private checkout. From that
-checkout, prepare its pinned Python, Node and pnpm environment, then launch through the normal
-Desktop command so runtime and Electron preparation are not skipped:
-
-```bash
-git clone --branch feat/desktop-redesign https://github.com/NousResearch/hermes-agent.git hermes-redesign
-cd hermes-redesign
-source ./activate
-pnpm install --frozen-lockfile
-hermes desktop
-```
-
-Finish active gateway work before launching a different runtime revision. Keep your usual
-Hermes home/profile if you intend to see your real conversations; activation does not make an
-isolated test home for you. For a disposable test, select a separate `HERMES_HOME` and
-`HERMES_RUNTIME_DIR` before activation, as described in the developer setup guide.
-
-For renderer development after preparation, `cd apps/desktop && pnpm run dev` starts Vite
-and native Electron. The existing `HERMES_DESKTOP_HERMES_ROOT=/absolute/path/to/runtime-checkout`
-override can select a different prepared source runtime. Opening port 5174 in a browser or
-running `pnpm run dev:mock` does not connect that renderer to your real gateway. Without a
-runtime override, a development app prefers its own checkout; bundled release apps use their
-bundled runtime instead.
-
-For local dogfooding, keep the same Hermes home and profile as your usual CLI/gateway
-(including your existing `HERMES_HOME` override, if any), and select the local connection.
-Do not use `scripts/dev-sandbox.sh` for this check: it intentionally isolates user state.
-Native Desktop invokes `hermes gateway ensure --json`, attaching to the canonical gateway
-for that home or starting it when absent; it does not launch a parallel `serve` owner.
-A saved remote/Cloud connection instead connects to that selected gateway. A stale local
-gateway can be restarted by the existing startup policy; finish active work before testing
-against a different runtime revision.
-
-Before launch, run `hermes gateway status` from your usual runtime environment
-(`hermes -p <profile> gateway status` for a named profile). In the native app, verify the
-selected gateway/profile, open a known conversation and a pinned chat, and compare their
-history with the CLI. Switch light/dark and a custom skin, navigate away and back, then
-restart Desktop and check the same conversations and pins. Only send a dogfood message
-when you intend to create a real turn. A shell screenshot or mock session list cannot prove
-which gateway owns a conversation.
-
-If the app appears disconnected from your usual gateway, compare the selected connection,
-home, profile and runtime checkout first. This guide does not establish the cause of that
-symptom. Keep diagnostic logs outside any personal vault and redact private content before sharing.
-To recover, close the development app and reopen your usual native installation; do not
-delete session data, pins, profile directories or Electron storage.
 
 ## Use the Desktop workspace from a browser
 
@@ -560,7 +511,7 @@ The [setup guide](#setup-guide) can be skipped and resumed without creating a ch
 
 #### Where your display preferences live
 
-Display preferences (theme and light/dark mode, session-list density and sidebar layout, status-bar readouts, transcript and tool display, sounds, keybinds, saved layouts, model-picker favourites, and which tips and tours you already saw or skipped) are stored once per computer, in `ui-preferences.json` in the root Hermes home (`~/.hermes/ui-preferences.json` by default; with a custom `HERMES_HOME`, the root of that home, never a profile folder). The desktop app on that computer and every browser that opens the [Webapp](#use-the-desktop-workspace-from-a-browser) it serves read and write the same file. A change in one reaches the others: the desktop app's windows get it within a couple of seconds and Webapp tabs when they regain focus or within about ten seconds. Theme, mode, density and the other settings an open window already follows across windows repaint at once; the rest apply the next time a window or tab loads. This includes another device, a private window, and another address for the same Webapp (`127.0.0.1`, the LAN address, `webapp.public_url`).
+Display preferences (theme and light/dark mode, session-list density and sidebar layout, status-bar readouts, transcript and tool display, sounds, keybinds, saved layouts, model-picker favourites, and which tips, tours and first-run onboarding you already saw or skipped) are stored once per computer, in `ui-preferences.json` in the root Hermes home (`~/.hermes/ui-preferences.json` by default; with a custom `HERMES_HOME`, the root of that home, never a profile folder). The desktop app on that computer and every browser that opens the [Webapp](#use-the-desktop-workspace-from-a-browser) it serves read and write the same file. A change in one reaches the others: the desktop app's windows get it within a couple of seconds and Webapp tabs when they regain focus or within about ten seconds. Theme, mode, density and the other settings an open window already follows across windows repaint at once; the rest apply the next time a window or tab loads. This includes another device, a private window, and another address for the same Webapp (`127.0.0.1`, the LAN address, `webapp.public_url`).
 
 The file belongs to the computer, not to a gateway connection or a profile. A desktop app connected to a remote gateway, or to several gateways, keeps its own computer's preferences. Settings that are already per profile, such as the theme picked for one profile, stay per profile inside the file. Credentials, sign-ins, permission grants, drafts and per-window state (open tabs, pane layout, scroll position, zoom) are never written to it and stay in each window or browser. The first time an app or browser meets the file (or finds none), it copies in the settings it has that the file lacks, and adopts the values already there; it never overwrites them, and nothing it has is removed just because the file lacks it. A default an app or browser filled in for itself (for example read-aloud carried over from `voice.auto_tts`) is never copied in, so it cannot replace a setting you chose elsewhere. If the file is ever damaged, it is kept beside the new one as `ui-preferences.json.corrupt-<timestamp>`, and every open window and tab copies its settings back into the new file. If the file exists but cannot be read (for example, its permissions changed), changes wait in each window and are saved once it is readable again.
 
@@ -1113,12 +1064,6 @@ HERMES_DESKTOP_HERMES_ROOT=/path/to/clone pnpm run dev
 HERMES_HOME=$HOME/.hermes/cache/scratch/throwaway pnpm run dev
 pnpm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
-
-Before sharing a source commit, verify it in a separate clean checkout: install
-with `pnpm install --frozen-lockfile`, then run `pnpm run typecheck` and
-`pnpm run build` from `apps/desktop`. A build in a development working tree can
-succeed using untracked modules or unstaged companion changes that a pull will
-not contain.
 
 Build installers:
 

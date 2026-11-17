@@ -637,7 +637,7 @@ function RedesignBillingOverview({ accountRows, billing, view, onViewPlans }: Re
   const pages = useSettingsPagesCopy()
 
   const summary = view.summary.filter(
-    item => !(view.plan && item.label === b.summary.plan) && !(view.refillRow && item.label === b.summary.autoRefill)
+    item => !(view.plan && item.id === 'plan') && !(view.refillRow && item.id === 'autoRefill')
   )
 
   return (
@@ -649,7 +649,7 @@ function RedesignBillingOverview({ accountRows, billing, view, onViewPlans }: Re
           {summary.map(item => (
             <ListRow
               action={<span className={cn('billing-summary-value', item.tone && `is-${item.tone}`)}>{item.value}</span>}
-              key={item.label}
+              key={item.id}
               title={item.label}
             />
           ))}

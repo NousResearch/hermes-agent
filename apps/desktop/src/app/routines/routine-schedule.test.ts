@@ -35,6 +35,21 @@ describe('When to run: the picker composes what the scheduler accepts', () => {
     expect(composeSchedule(pick({ custom: '', frequency: 'custom' }))).toBe('')
   })
 
+  it('composes nothing, and reads nothing back, for a frequency whose time was cleared', () => {
+    const cleared = [
+      pick({ frequency: 'daily', time: '' }),
+      pick({ frequency: 'weekdays', time: '' }),
+      pick({ frequency: 'weekly', time: '' }),
+      pick({ frequency: 'monthly', time: '' }),
+      pick({ date: '2026-11-14', frequency: 'once', time: '' })
+    ]
+
+    for (const entry of cleared) {
+      expect(composeSchedule(entry)).toBe('')
+      expect(describePick(entry, words)).toBeNull()
+    }
+  })
+
   it('starts a new routine on every day at 09:00, with Once on tomorrow', () => {
     expect(defaultPick(NOW)).toMatchObject({ date: '2026-11-13', frequency: 'daily', time: '09:00' })
   })
@@ -118,6 +133,13 @@ describe('A schedule read on a machine in another time zone', () => {
     )
     expect(machineZoneNote('2026-11-13T07:00:00+05:30')).toBe(
       new Date('2026-11-13T07:00:00+05:30').getTimezoneOffset() === -330 ? null : 'UTC+5:30'
+    )
+  })
+
+  it('names the machine’s zone beside a Once time written in another zone, as for the presets', () => {
+    expect(describeSchedule({ kind: 'once', run_at: stamp(0) }, words)).toBe('Once, on Nov 13, 2026 at 7:00 AM')
+    expect(describeSchedule({ kind: 'once', run_at: stamp(-60) }, words)).toMatch(
+      /^Once, on Nov 13, 2026 at 6:00 AM \(UTC[+−]\d+(:\d\d)?\)$/
     )
   })
 

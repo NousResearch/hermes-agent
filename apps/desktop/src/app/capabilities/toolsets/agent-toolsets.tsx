@@ -42,9 +42,20 @@ export function AgentToolsets({ profile, toolsets, query, onQueryChange }: Agent
   const writing = useRef(false)
   const [busy, setBusy] = useState(false)
   const [showAll, setShowAll] = useState(false)
+  // Each toolset stays in the section it was first shown in while this list is mounted: a switch
+  // that moved its row would remount it (dropping focus and an open detail), and a row switched off
+  // could land past the Off preview and vanish under the pointer.
+  const [placed, setPlaced] = useState(() => sectionsOf(toolsets))
+  const unplaced = toolsets.filter(toolset => !(toolset.name in placed))
+
+  if (unplaced.length > 0) {
+    setPlaced({ ...placed, ...sectionsOf(unplaced) })
+  }
+
   const visible = filteredToolsets(toolsets, query, {}, true)
-  const on = visible.filter(toolset => toolset.enabled)
-  const off = visible.filter(toolset => !toolset.enabled)
+  const inOn = (toolset: ToolsetInfo) => placed[toolset.name] ?? toolset.enabled
+  const on = visible.filter(inOn)
+  const off = visible.filter(toolset => !inOn(toolset))
   const offShown = showAll || query ? off : off.slice(0, OFF_PREVIEW)
 
   const refresh = () => {
@@ -129,6 +140,9 @@ export function AgentToolsets({ profile, toolsets, query, onQueryChange }: Agent
     </div>
   )
 }
+
+const sectionsOf = (toolsets: ToolsetInfo[]): Record<string, boolean> =>
+  Object.fromEntries(toolsets.map(toolset => [toolset.name, toolset.enabled]))
 
 interface AgentToolsetRowProps {
   profile: ProfileScope

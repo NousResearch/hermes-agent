@@ -208,15 +208,26 @@ export function ScreenPortal({ bot }: { bot: RosterRow }) {
   )
 }
 
-/** Resolve the same owner for classic sidebar cards and the Screen tool action. */
-function screenBotForRoute({ connectionId, profile }: ProfileGroupRoute, roster: RosterRow[]): RosterRow {
+type BotRoute = NonNullable<ReturnType<typeof resolveBotConnectionRoute>['route']>
+
+/** A classic sidebar group names its profile as the roster does. */
+const namesProfile = (route: BotRoute, profile: string) => route.profile === profile
+
+/** The focused chat's owner may name the profile an alias serves from. */
+const servesProfile = (route: BotRoute, profile: string) => route.profile === profile || route.targetProfile === profile
+
+/** The roster row that owns a route's Screen, or a scoped row synthesized for it. */
+function screenBotForRoute(
+  { connectionId, profile }: ProfileGroupRoute,
+  roster: RosterRow[],
+  matches: (route: BotRoute, profile: string) => boolean
+): RosterRow {
   return (
     roster.find(row => {
       const resolved = resolveBotConnectionRoute(row)
 
       return resolved.route
-        ? (resolved.route.profile === profile || resolved.route.targetProfile === profile) &&
-          resolved.route.connectionId === (connectionId ?? 'local')
+        ? matches(resolved.route, profile) && resolved.route.connectionId === (connectionId ?? 'local')
         : row.name === profile && connectionId === null
     }) ??
     (connectionId
@@ -235,9 +246,16 @@ export function profileScreenCommand(route: ProfileGroupRoute): Omit<PaletteCont
   return {
     label: botsText().screen.menu,
     keywords: ['screen', 'computer', 'display', 'desktop'],
-    detail: () => `${route.profile} · ${route.connectionId ?? 'local'}`,
+    detail: () => {
+      const bot = screenBotForRoute(route, $lastRoster.get(), servesProfile)
+      const connectionId = route.connectionId ?? 'local'
+      // A cold roster has no label for another machine; its id is then the only name there is.
+      const machine = bot.connectionLabel || (connectionId === 'local' ? botsText().bot.thisDevice : connectionId)
+
+      return `${route.profile} · ${machine}`
+    },
     run: async () => {
-      const bot = screenBotForRoute(route, $lastRoster.get())
+      const bot = screenBotForRoute(route, $lastRoster.get(), servesProfile)
 
       const target = (await host.profileRoutes()).find(candidate =>
         candidate.connectionId === (route.connectionId ?? 'local') && candidate.profile === route.profile
@@ -252,8 +270,12 @@ export function profileScreenCommand(route: ProfileGroupRoute): Omit<PaletteCont
 export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }) {
   const roster = useValue($lastRoster)
   const { connectionId, profile } = route
+
   // Keep effects stable when a parent re-renders a synthesized, non-roster owner.
-  const bot = useMemo(() => screenBotForRoute({ connectionId, profile }, roster), [connectionId, profile, roster])
+  const bot = useMemo(
+    () => screenBotForRoute({ connectionId, profile }, roster, namesProfile),
+    [connectionId, profile, roster]
+  )
 
   return <ScreenPortal bot={bot} />
 }

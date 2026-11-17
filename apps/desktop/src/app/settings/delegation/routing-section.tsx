@@ -12,7 +12,7 @@ import { $settingsRequestProfile } from '@/store/settings-scope'
 
 import { useOwnerCatalog } from '../delegation-model-provider-field'
 import { Pill, SectionHeading, SettingsSection } from '../primitives'
-import { useSettingsOwner } from '../profile-scope'
+import { settingsScopeProfile, useSettingsRequestScope } from '../profile-scope'
 import { useSettingsGatewayRequest } from '../settings-owner-request'
 
 import { ModelRoutesEditor } from './model-routes'
@@ -259,7 +259,7 @@ function AdvancedDelegationStatus({ blocked, scope }: { blocked: boolean; scope:
   // profile or the classic "Applies to" pick.
   const requestGateway = useSettingsGatewayRequest()
   const selectedProfile = useStore($settingsRequestProfile)
-  const owner = useSettingsOwner()?.profile ?? selectedProfile ?? null
+  const owner = settingsScopeProfile(useSettingsRequestScope(selectedProfile ?? null))
   const { row, state } = useAdvancedDelegationPlugin(requestGateway, owner)
 
   if (state === 'loading') {

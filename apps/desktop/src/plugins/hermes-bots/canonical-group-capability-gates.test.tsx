@@ -336,7 +336,9 @@ it('canonical creation offers only the bots the authority says this caller can s
   expect(screen.getAllByRole('checkbox')).toHaveLength(2)
 })
 
-it('names the bots the authority will not seat instead of claiming there are none', async () => {
+it('the redesign names the bots the authority will not seat instead of claiming there are none', async () => {
+  $botsPaneHosted.set(false)
+
   const offline: RosterRow = {
     name: 'faraway',
     connectionId: 'other-box',
@@ -363,7 +365,11 @@ it('names the bots the authority will not seat instead of claiming there are non
 it('the redesign names the agents it leaves out beside the ones it offers, and a search finds them', async () => {
   // The redesign's Agents page hosts Bots: no pane. Only `default` is seated by this gateway here.
   $botsPaneHosted.set(false)
-  const agents: RosterRow[] = [{ name: 'default', connectionId: 'local' }, { name: 'ops', connectionId: 'local' }, { name: 'research', connectionId: 'local' }]
+  const agents: RosterRow[] = [
+    { name: 'default', connectionId: 'local' },
+    { name: 'ops', connectionId: 'local' },
+    { name: 'research', connectionId: 'local' }
+  ]
   answer({ driver: true, persistent_process: true, seatable_profiles: ['default'] })
   render(<CreateGroupChatDialog onClose={vi.fn()} open roster={agents} />)
 
@@ -377,12 +383,23 @@ it('the redesign names the agents it leaves out beside the ones it offers, and a
 
   // Searching for an agent the sidebar lists explains it rather than "No agents match".
   fireEvent.change(screen.getByRole('textbox', { name: b.group.searchToAdd }), { target: { value: 'res' } })
-  await waitFor(() => expect(screen.getByTestId('group-picker-unseated').textContent).toContain(`Research — ${b.group.unseatableHere}`))
+  await waitFor(() =>
+    expect(screen.getByTestId('group-picker-unseated').textContent).toContain(`Research — ${b.group.unseatableHere}`)
+  )
   expect(screen.getByTestId('group-picker-unseated').textContent).not.toContain('Ops')
   expect(screen.queryByText(b.group.noBotsMatch('res'))).toBeNull()
 })
 
-it('classic keeps its picker: unseatable bots are named only when none can be seated', async () => {
+it('classic keeps its one empty line when no bot can be seated', async () => {
+  answer({ driver: true, persistent_process: true, seatable_profiles: ['default'] })
+  render(<CreateGroupChatDialog onClose={vi.fn()} open roster={roster} />)
+
+  await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
+  expect(await screen.findByText(botsText().group.createBotFirst)).toBeTruthy()
+  expect(screen.queryByTestId('group-picker-unseated')).toBeNull()
+})
+
+it('classic keeps its picker: unseatable bots are never named beside the seatable ones', async () => {
   answer({ driver: true, persistent_process: true, seatable_profiles: ['alpha'] })
   render(<CreateGroupChatDialog onClose={vi.fn()} open roster={roster} />)
 

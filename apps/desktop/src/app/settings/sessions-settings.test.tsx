@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setSessionArchived } from '@/hermes'
@@ -76,6 +77,22 @@ describe('SessionsSettings unarchive', () => {
     expect($messagingSessions.get().map(session => session.id)).toEqual(['matrix-1'])
     expect($messagingSessions.get()[0]?.archived).toBe(false)
     expect($sessions.get()).toEqual([])
+  })
+})
+
+describe('SessionsSettings archive deep link', () => {
+  it('opens the archive once for a link to a chat it does not list, then lets Hide close it', async () => {
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=sessions&session=not-archived']}>
+        <SessionsSettings />
+      </MemoryRouter>
+    )
+    const copy = settingsPagesCopy('en').archiveChats
+
+    fireEvent.click(await screen.findByRole('button', { name: copy.hide }))
+
+    expect(await screen.findByRole('button', { name: copy.view })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.settings.sessions.unarchive })).toBeNull()
   })
 })
 

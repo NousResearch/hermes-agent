@@ -11,6 +11,7 @@ import { useSessionListActions } from '@/app/session/hooks/use-session-list-acti
 import { StableNavigateProvider } from '@/app/stable-navigate'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
+import { $pluginRecords } from '@/contrib/plugins-store'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import {
@@ -165,6 +166,7 @@ describe('Portal sidebar', () => {
     setTimeout(resolve, 0)
     await promise
     $simplifiedPinnedRows.set(new Map())
+    $pluginRecords.set({})
     vi.restoreAllMocks()
     setPortalPreferred(false)
     $sessions.set([])
@@ -326,6 +328,7 @@ describe('Portal sidebar', () => {
     expect(guidance()).toBeNull()
   })
   it('opens the agent canonical chat even while its side chats are collapsed', () => {
+    $pluginRecords.set({ 'hermes-bots': { id: 'hermes-bots', kind: 'bundled', name: 'Bot Mode', status: 'loaded' } })
     mount()
     fireEvent.click(screen.getByRole('button', { name: 'Collapse: Research' }))
     const agent = screen.getByRole('button', { name: 'Research' })
@@ -718,6 +721,62 @@ describe('Portal sidebar', () => {
         workspaceMode: 'sessions'
       }
     ])
+  })
+
+  it('answers a search with an agent named by it even when the agent has no chats', async () => {
+    vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({ results: [] })
+    $profiles.set([...$profiles.get(), { name: 'idle', display_name: 'Idle', is_default: false }] as typeof $profiles.value)
+    mount()
+    searchFor('Idle')
+
+    await waitFor(() => expect(screen.queryByText('Loading…', { selector: '[role=status]' })).toBeNull())
+    expect(screen.getByRole('group', { name: /^Idle ·/ })).toBeTruthy()
+    expect(screen.queryByText(/No sessions match/)).toBeNull()
+  })
+
+  it('holds disclosures open during a search without recording a fold', async () => {
+    vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({ results: [] })
+    mount()
+    searchFor('Pinned')
+
+    const research = screen.getByRole('group', { name: /^Research ·/ })
+    const fold = within(research).getByRole('button', { name: 'Collapse: Research' })
+    expect(fold.hasAttribute('disabled')).toBe(true)
+    fireEvent.click(fold)
+
+    const machine = screen.getAllByRole('button', { name: /^Collapse: / }).find(button => button !== fold)!
+    expect(machine.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(machine)
+    expect($sidebarAgentExpanded.get()).toEqual({})
+
+    searchFor('')
+    expect(within(screen.getByRole('group', { name: /^Research ·/ })).getByText('Pinned plan')).toBeTruthy()
+  })
+
+  it('files a roster agent’s chats, hide and fold under the profile its machine serves', async () => {
+    $profiles.set([])
+    $sessions.set([makeSessionInfo({ id: 'served', title: 'Served chat', profile: 'research', connection_id: 'alpha' })])
+    $fleetRoster.set({
+      sources: [{ connectionId: 'alpha', kind: 'ssh', label: 'Alpha', reachable: true }],
+      agents: [
+        {
+          connectionId: 'alpha',
+          connectionKind: 'ssh',
+          connectionLabel: 'Alpha',
+          profile: 'default',
+          targetProfile: 'research',
+          handle: 'default-alpha'
+        }
+      ]
+    })
+    mount()
+
+    const agent = screen.getByRole('group', { name: 'default · Alpha' })
+    expect(within(agent).getByText('Served chat')).toBeTruthy()
+    expect(screen.getAllByRole('group', { name: / · Alpha$/ })).toHaveLength(1)
+
+    fireEvent.click(within(agent).getByRole('button', { name: 'Collapse: default' }))
+    expect($sidebarAgentExpanded.get()).toEqual({ [agentSidebarKey({ connectionId: 'alpha', profile: 'research' })]: false })
   })
 
   it('shows loading rather than no matches while a search is pending', () => {

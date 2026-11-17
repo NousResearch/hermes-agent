@@ -125,7 +125,6 @@ import {
   WebhooksView
 } from '../page-views'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
-import { $widthClass } from '../redesign/breakpoints'
 import { PortalFreeTierSignIn } from '../redesign/portal-free-tier-sign-in'
 import { PortalStatusBar } from '../redesign/portal-status-bar'
 import { PortalStatusMenu } from '../redesign/portal-status-menu'
@@ -161,6 +160,7 @@ import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync'
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
+import { useBandHiddenTools } from '../shell/band-tools'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
@@ -1300,15 +1300,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
 
-  const wide = useStore($widthClass) === 'wide'
+  const bandHidden = useBandHiddenTools()
 
   const clusters = titlebarAppActionsClusterCounts(
     appActionsSide,
     leftExtraCount,
     0,
     interfaceMode,
-    usePortalShell(),
-    wide
+    usePortalShell() ? bandHidden : undefined
   )
 
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)

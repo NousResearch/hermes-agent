@@ -11,6 +11,7 @@ import type { SessionInfo } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { ChevronDown, Message as IconMessage } from '@/lib/icons'
+import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { recordAction } from '@/store/desktop-metrics'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
@@ -24,7 +25,7 @@ import { tileOwnerRoute } from '../session-tile-owner'
 
 import { useNewSessionCopy } from './simplified-new-session-copy'
 import { rankNewSessionAgents, startSimplifiedAgentSession } from './simplified-new-session-model'
-import { useSimplifiedAgents } from './use-simplified-agents'
+import { agentKey, useSimplifiedAgents } from './use-simplified-agents'
 
 /** Figma's three-letter agent chip ("DEF", "OPS"): identity without a saturated avatar. */
 function AgentTag({ label }: { label: string }) {
@@ -56,7 +57,9 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
     ? (tileOwnerRoute(tiles, sessions, focusedSessionId) ?? knownSessionOwner(sessions, focusedSessionId))
     : (draft ?? undefined)
 
-  const viewedRoute = typeof viewedOwner === 'string' ? { connectionId: owner, profile: viewedOwner } : viewedOwner
+  const viewedRoute: null | undefined | { connectionId: null | string; profile: string; targetProfile?: string } =
+    typeof viewedOwner === 'string' ? { connectionId: owner, profile: viewedOwner } : viewedOwner
+
   const viewedProfile = viewedRoute?.profile ?? profile
   const viewedConnection = viewedRoute?.connectionId ?? owner
   const bindings = useStore($bindings)
@@ -73,13 +76,18 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
 
   useResizeObserver(measure, splitButton)
   const picked = useRef(false)
-  const ranked = rankNewSessionAgents(agents, sessions, viewedConnection, viewedProfile)
+
+  const viewedAgent = agentSidebarKey({
+    connectionId: viewedConnection,
+    profile: viewedRoute?.targetProfile || viewedProfile
+  })
+
+  const ranked = rankNewSessionAgents(agents, sessions, owner, viewedAgent)
   const defaultProfile = profiles.find(item => item.is_default)?.name ?? 'default'
 
   // The button's own target: the agent of the chat being viewed (so, after a pick, the agent just
   // used), else the most recently used one.
-  const selected =
-    agents.find(agent => agent.connectionId === viewedConnection && agent.profile === viewedProfile) ?? ranked[0]
+  const selected = agents.find(agent => agentKey(agent) === viewedAgent) ?? ranked[0]
 
   const targetLabel = selected ? `${selected.label} · ${selected.gateway}` : c.newSessionIn
 

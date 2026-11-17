@@ -7,7 +7,11 @@ import { FadeScroll } from '@/components/ui/fade-scroll'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { Plus } from '@/lib/icons'
-import { bindGatewayGroupRoom, useGatewayGroupRooms } from '@/plugins/hermes-bots/canonical-group-registry'
+import {
+  bindGatewayGroupRoom,
+  type GatewayGroupRoom,
+  useGatewayGroupRooms
+} from '@/plugins/hermes-bots/canonical-group-registry'
 import { CanonicalGroupRow } from '@/plugins/hermes-bots/canonical-group-row'
 import { CreateGroupChatDialog } from '@/plugins/hermes-bots/create-dialog'
 import { $botMeta, $lastRoster } from '@/plugins/hermes-bots/data'
@@ -18,15 +22,33 @@ import { useBots } from '@/plugins/hermes-bots/i18n'
 
 import { PortalSectionHeader } from './portal-section-header'
 
+/** The group chats a search answers with: every one while nothing is typed. */
+export interface GroupChatMatches {
+  rooms: GatewayGroupRoom[]
+  names: string[]
+}
+
+/** Bot Mode's hooks (the gateway room list polls): call only while that plugin is loaded. */
+export function useGroupChatMatches(query: string): GroupChatMatches {
+  const meta = useStore($botMeta)
+  const rooms = useStore($groupChats)
+  const gatewayRooms = useGatewayGroupRooms()
+  const needle = query.trim().toLocaleLowerCase()
+
+  return {
+    rooms: gatewayRooms.filter(room => room.name.toLocaleLowerCase().includes(needle)),
+    names: groupChatNames(meta, rooms).filter(name => name.toLocaleLowerCase().includes(needle))
+  }
+}
+
 /** Group rooms sit outside gateway buckets: Desktop-driven rooms may span gateways. Bot Mode owns
  *  them, so the sidebar mounts this only while that plugin is loaded. */
-export function PortalGroupChats({ query }: { query: string }) {
+export function PortalGroupChats({ matches, searching }: { matches: GroupChatMatches; searching: boolean }) {
   const b = useBots()
   const roster = useStore($lastRoster)
   const meta = useStore($botMeta)
-  const rooms = useStore($groupChats)
   const active = useStore($groupChatWorkspace)
-  const gatewayRooms = useGatewayGroupRooms()
+  const { names, rooms: visibleGatewayRooms } = matches
   const [creating, setCreating] = useState(false)
   const trigger = useRef<HTMLButtonElement>(null)
   // The dialog unmounts as it closes, so nothing returns focus for it: a dismissal hands focus back
@@ -48,12 +70,8 @@ export function PortalGroupChats({ query }: { query: string }) {
     openGroupChat(...args)
   }
 
-  const needle = query.trim().toLocaleLowerCase()
-  const names = groupChatNames(meta, rooms).filter(name => name.toLocaleLowerCase().includes(needle))
-  const visibleGatewayRooms = gatewayRooms.filter(room => room.name.toLocaleLowerCase().includes(needle))
-
   // A search shows only sections that answer it.
-  if (needle && visibleGatewayRooms.length + names.length === 0) {
+  if (searching && visibleGatewayRooms.length + names.length === 0) {
     return null
   }
 

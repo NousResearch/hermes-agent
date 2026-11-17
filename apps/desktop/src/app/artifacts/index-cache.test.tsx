@@ -10,6 +10,8 @@ const listAllProfileSessions = vi.fn(async () => ({
   sessions: [{ id: 'library-cache', title: 'Research', profile: 'default' }]
 }))
 
+const INDEXING = { name: 'Indexing recent session artifacts' }
+
 vi.mock('@/hermes', async () => ({
   ...(await vi.importActual('@/hermes')),
   listAllProfileSessions: () => listAllProfileSessions(),
@@ -22,6 +24,7 @@ vi.mock('@/hermes', async () => ({
 afterEach(() => {
   cleanup()
   $shellChoice.set(null)
+  listAllProfileSessions.mockClear()
 })
 
 const mount = () =>
@@ -42,4 +45,27 @@ it('reopens the Library on its last index in the first paint, with no indexing s
   // Synchronous: the reopened page has its rows before any fetch settles.
   expect(screen.getByRole('button', { name: 'cached.md' })).toBeTruthy()
   expect(screen.queryByRole('status', { name: /index|loading/i })).toBeNull()
+})
+
+it('classic re-indexes on every visit, as on main', async () => {
+  $shellChoice.set(false)
+  mount()
+  await screen.findByRole('button', { name: 'cached.md' })
+  cleanup()
+
+  mount()
+
+  expect(screen.getByRole('status', INDEXING)).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'cached.md' })).toBeNull()
+  await screen.findByRole('button', { name: 'cached.md' })
+  expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
+})
+
+it('classic shows a failed index as an empty library at once, without retrying', async () => {
+  $shellChoice.set(false)
+  listAllProfileSessions.mockRejectedValueOnce(new Error('gateway down'))
+  mount()
+
+  expect(await screen.findByText('No artifacts found')).toBeTruthy()
+  expect(listAllProfileSessions).toHaveBeenCalledTimes(1)
 })

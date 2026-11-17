@@ -8,14 +8,13 @@ import { useI18n } from '@/i18n'
 import { $interfaceMode } from '@/store/interface-mode'
 
 import { jobIsScriptOnly } from '../cron/cron-job-model'
-import { jobState } from '../cron/job-state'
 import { catchUpChoice } from '../cron/run-control'
 import { renderPanelMenuItems } from '../overlays/panel'
 import { PageHeader } from '../redesign/page-header'
 import { ListRow } from '../settings/primitives'
 import { SettingsCard, SettingsDisclosure, SettingsOverview } from '../settings/settings-card'
 
-import { deliveryTargets, remembersLastRun, routineStatus, routineTitle, runLimit } from './routine-model'
+import { deliveryTargets, remembersLastRun, routinePaused, routineStatus, routineTitle, runLimit } from './routine-model'
 import { AgentTag, RoutineBanner, type RoutineEdit, routineMenuItems, StatusChip, useAgentLabel, useRoutineEdit } from './routine-parts'
 import { RoutineRuns } from './routine-runs'
 import { describeSchedule, formatMoment, scheduleText } from './routine-schedule'
@@ -151,7 +150,7 @@ function RoutineHeaderActions({ actions, edit, job }: { actions: RoutineActions;
   const c = t.cron
   const copy = useRoutinesCopy()
   const busy = actions.isBusy(job)
-  const paused = jobState(job) === 'paused'
+  const paused = routinePaused(job)
   const stopping = actions.isStopping(job)
 
   return (
@@ -191,7 +190,7 @@ function RoutineSummary({ edit, job }: { edit: RoutineEdit; job: CronJob }) {
   const copy = useRoutinesCopy()
   const deliveryLabel = useDeliveryLabel()
   const words = { copy, dayName: (day: string) => t.cron.days[day] ?? day, locale }
-  const next = job.next_run_at && jobState(job) !== 'paused' ? copy.nextRun(formatMoment(job.next_run_at, locale)) : ''
+  const next = job.next_run_at && !routinePaused(job) ? copy.nextRun(formatMoment(job.next_run_at, locale)) : ''
   const when = [describeSchedule(job.schedule, words, job.next_run_at), next].filter(Boolean).join(' · ')
 
   const change = edit.inPlace ? (

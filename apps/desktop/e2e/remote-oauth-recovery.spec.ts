@@ -21,13 +21,11 @@ for (const status of [401, 403]) {
     const sandbox = createSandbox(`oauth-recovery-${status}`)
     let mints = 0
     let signedIn = false
-
     const server = http.createServer((req, res) => {
       req.resume()
       req.on('end', () => {
         const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
         res.setHeader('Content-Type', 'application/json')
-
         if (pathname === '/api/status') {
           res.end(JSON.stringify({ auth_required: true, auth_flows: [], version: 'test' }))
         } else if (pathname === '/api/auth/providers') {
@@ -44,43 +42,30 @@ for (const status of [401, 403]) {
         } else {
           if (pathname === '/api/auth/ws-ticket') {
             mints += 1
-
             if (mints === 1) {
               // A NAS restart can truncate a response after headers. Exercise
               // Electron's real IncomingMessage error, then recover on retry.
               res.setHeader('Content-Length', '1024')
               res.write('{"partial":')
               setTimeout(() => res.destroy(), 20)
-
               return
             }
           }
-
           res.statusCode = status
           res.end(JSON.stringify({ error: 'unauthenticated', reason: 'no_cookie' }))
         }
       })
     })
-
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
-    fs.writeFileSync(
-      path.join(sandbox.userDataDir, 'connection.json'),
-      JSON.stringify({
-        mode: 'remote',
-        remote: { url, authMode: 'oauth' },
-        profiles: {}
-      })
-    )
+    fs.writeFileSync(path.join(sandbox.userDataDir, 'connection.json'), JSON.stringify({
+      mode: 'remote', remote: { url, authMode: 'oauth' }, profiles: {}
+    }))
     let app: Awaited<ReturnType<typeof launchDesktop>>['app'] | undefined
-
     try {
-      const launched = await launchDesktop(
-        buildAppEnv(sandbox, {
-          HERMES_DESKTOP_DEV_SERVER: ''
-        })
-      )
-
+      const launched = await launchDesktop(buildAppEnv(sandbox, {
+        HERMES_DESKTOP_DEV_SERVER: ''
+      }))
       app = launched.app
       const page = launched.page
       await expect(page.getByRole('button', { name: 'Machine settings' })).toBeVisible({ timeout: 60_000 })
@@ -97,9 +82,7 @@ for (const status of [401, 403]) {
       // Concurrent IPC readers must reuse the terminal failure, not republish
       // startup progress and unmount the settings form.
       await page.evaluate(async () => {
-        await Promise.allSettled(
-          Array.from({ length: 20 }, () => (window as unknown as DesktopWindow).hermesDesktop.getConnection())
-        )
+        await Promise.allSettled(Array.from({ length: 20 }, () => (window as unknown as DesktopWindow).hermesDesktop.getConnection()))
       })
       await expect(back).toBeVisible()
       await expect(gatewayUrl).toHaveValue(url)
@@ -110,15 +93,13 @@ for (const status of [401, 403]) {
       await expect(signIn).toBeEnabled()
       await signIn.click()
       await expect.poll(() => signedIn).toBe(true)
-      await expect
-        .poll(async () => {
-          try {
-            return await page.evaluate(() => (window as unknown as DesktopWindow).hermesDesktop.getConnection())
-          } catch {
-            return null
-          }
-        })
-        .toMatchObject({ mode: 'remote', baseUrl: url })
+      await expect.poll(async () => {
+        try {
+          return await page.evaluate(() => (window as unknown as DesktopWindow).hermesDesktop.getConnection())
+        } catch {
+          return null
+        }
+      }).toMatchObject({ mode: 'remote', baseUrl: url })
       expect(mints).toBeGreaterThan(settledMints)
     } finally {
       await app?.close()

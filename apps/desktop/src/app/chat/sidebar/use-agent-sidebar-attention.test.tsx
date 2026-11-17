@@ -20,9 +20,13 @@ import { $unreadWriteGuard } from '@/store/session-unread-remote'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { useAgentSidebarAttention } from './use-agent-sidebar-attention'
+import type * as SimplifiedAgents from './use-simplified-agents'
 import type { SimplifiedAgent } from './use-simplified-agents'
 
-vi.mock('./use-simplified-agents', () => ({ useSimplifiedOwner: () => 'gateway-a' }))
+vi.mock('./use-simplified-agents', async original => ({
+  ...(await original<typeof SimplifiedAgents>()),
+  useSimplifiedOwner: () => 'gateway-a'
+}))
 
 const agents: SimplifiedAgent[] = ['gateway-a', 'gateway-b'].map(connectionId => ({
   id: connectionId,
@@ -275,4 +279,34 @@ it('reports only the current failed turn and clears it when a new turn begins', 
     })
   )
   expect(result.current.size).toBe(0)
+})
+
+it('stays put while a running turn streams, and answers when the turn settles', () => {
+  const row = makeSessionInfo({ id: 'streaming', profile: 'research', connection_id: 'gateway-b' })
+  const running = { ...createClientSessionState('streaming'), busy: true, turnStartedAt: 10_000 }
+  recordSessionEventScope({ session_id: 'runtime', connectionId: 'gateway-b', profile: 'research' })
+  $sessionStates.set({ runtime: running })
+  let renders = 0
+
+  const { result } = renderHook(() => {
+    renders += 1
+
+    return useAgentSidebarAttention(agents, [row])
+  })
+
+  const settled = renders
+
+  for (const text of ['Hel', 'Hello', 'Hello there']) {
+    act(() =>
+      $sessionStates.set({
+        runtime: { ...running, messages: [{ id: 'reply', role: 'assistant', parts: [{ type: 'text', text }] }] }
+      })
+    )
+  }
+
+  expect(renders).toBe(settled)
+  expect(result.current.get('gateway-b')?.kind).toBe('running')
+
+  act(() => $sessionStates.set({ runtime: { ...running, busy: false, turnStartedAt: null } }))
+  expect(result.current.has('gateway-b')).toBe(false)
 })

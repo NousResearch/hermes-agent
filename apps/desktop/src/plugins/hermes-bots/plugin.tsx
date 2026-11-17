@@ -451,24 +451,33 @@ export default {
       })
 
     let disposeScreenCommand: (() => void) | undefined
+    let screenCommandOwner: string | undefined
 
     const syncScreenCommand = () => {
-      disposeScreenCommand?.()
-      disposeScreenCommand = undefined
-      const owner = $focusedBotOwner.get()
-
       // The palette is Screen's door only where the sidebar hosts no Screen portal (the redesign);
       // the classic shell keeps main's palette. Unresolved/ambiguous focus must never open another
       // connection's Screen.
-      if ($botsPaneHosted.get() || !owner?.connectionId) {return}
+      const owner = $botsPaneHosted.get() ? undefined : $focusedBotOwner.get()
+      const route = owner?.connectionId ? { connectionId: owner.connectionId, profile: owner.profile } : undefined
+      const next = route && JSON.stringify([route.connectionId, route.profile])
+
+      // The owner store emits on every focus change; the row is replaced only when its owner is.
+      if (next === screenCommandOwner) {
+        return
+      }
+
+      disposeScreenCommand?.()
+      disposeScreenCommand = undefined
+      screenCommandOwner = next
+
+      if (!route) {
+        return
+      }
 
       disposeScreenCommand = ctx.register({
         id: 'open-screen',
         area: PALETTE_AREA,
-        data: {
-          id: `${ID}.open-screen`,
-          ...profileScreenCommand({ connectionId: owner.connectionId, profile: owner.profile })
-        }
+        data: { id: `${ID}.open-screen`, ...profileScreenCommand(route) }
       })
     }
 

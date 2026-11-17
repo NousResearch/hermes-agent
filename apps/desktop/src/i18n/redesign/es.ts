@@ -751,7 +751,9 @@ export const esRedesign: RedesignOverlay = {
       gateway: 'Máquina',
       reconnectGateway: 'Reconectar máquina',
       machineSettings: 'Máquinas',
-      restartTitle: '¿Reiniciar Hermes en esta máquina?'
+      restartTitle: '¿Reiniciar Hermes en esta máquina?',
+      switchToMachine: 'Cambiar a esta máquina',
+      restartBody: 'Las respuestas en curso en esta máquina se detendrán. Vuelve en unos segundos y se reconecta sola.'
     },
     statusbar: {
       gateway: 'Máquina',
@@ -958,7 +960,6 @@ export const esRedesign: RedesignOverlay = {
     noArtifactsDesc: 'Las imágenes generadas y las salidas de archivo aparecerán aquí cuando los chats las produzcan.',
     failedLoad: 'No se pudo cargar la biblioteca',
     colSession: 'Chat',
-    partialIndex: (failed, total) => `Se omitieron ${failed} de ${total} chats recientes al indexar la biblioteca.`
   },
   artifactPreview: {
     missingTitle: 'Elemento no disponible',

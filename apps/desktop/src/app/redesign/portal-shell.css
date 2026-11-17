@@ -5,7 +5,7 @@
 /* A page or route overlay paints over the chat it covers (contrib/route-cover.tsx). The chat keeps
    its rendering state (scroll, draft) but is skipped by style, layout and paint, so covering and
    uncovering cost a flip and a translucent page never shows it through. */
-[data-route-covered] {
+:where(:root[data-shell='portal']) [data-route-covered] {
   content-visibility: hidden;
 }
 
@@ -307,17 +307,14 @@
   flex-direction: column;
   align-items: center;
   gap: 0.9375rem;
-}
-
-:root[data-shell='portal'] [data-slot='global-nav'] .portal-rail-group {
-  gap: var(--portal-rail-gap);
-}
-
-:root[data-shell='portal'] .portal-rail-group {
   /* Room for the focus outline inside the scroll box. */
   padding: 0.1875rem;
   margin: -0.1875rem;
   scrollbar-width: none;
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-rail-group {
+  gap: var(--portal-rail-gap);
 }
 
 /* Short (breakpoints.ts SHORT_QUERY: a landscape phone, a raised keyboard): the rail's rhythm
@@ -569,6 +566,8 @@
      pill (a drag handle itself) and "+" take it. */
   pointer-events: none;
   -webkit-app-region: drag;
+  /* The pill steps aside when the span is too narrow for a readable title (below). */
+  container: portal-session-tab / inline-size;
 }
 
 :root[data-shell='portal'] .portal-session-tab {
@@ -617,10 +616,6 @@
   }
 }
 
-:root[data-shell='portal'] .portal-session-tab-cluster {
-  container: portal-session-tab / inline-size;
-}
-
 /* A seam between window-top panels already has the panel hairline (below the band); the sash's
    own resting hairline would also cross the band. It keeps its hover band. */
 /* The trailing side is a window-top zone, or a split whose zones reach the window top. */
@@ -648,7 +643,7 @@
   anchor-name: --portal-toast-floor;
 }
 
-.hermes-toast-region {
+:where(:root[data-shell='portal']) .hermes-toast-region {
   /* Inside the stage, never across a seam: a narrow window's stage is narrower than a toast. */
   right: calc(var(--workspace-right, 0px) + 1rem + var(--portal-safe-end));
   bottom: calc(1rem + var(--portal-safe-bottom));
@@ -656,7 +651,7 @@
 }
 
 @supports (bottom: anchor(--a top, 0px)) {
-  .hermes-toast-region {
+  :where(:root[data-shell='portal']) .hermes-toast-region {
     /* The dock's own floor band is stage-coloured padding: rest on the card, not on that band. */
     bottom: calc(anchor(--portal-toast-floor top, 0.25rem) + 0.75rem);
   }
@@ -665,7 +660,7 @@
 /* A toast arrives with a short rise on the shared motion scale; it leaves at once (a dismissal is the
    user's own act, and a fading toast would linger over what they returned to). */
 @media (prefers-reduced-motion: no-preference) {
-  .hermes-toast-region .hermes-toast-surface {
+  :where(:root[data-shell='portal']) .hermes-toast-region .hermes-toast-surface {
     animation: portal-toast-in var(--portal-motion-base) var(--portal-ease) both;
   }
 }

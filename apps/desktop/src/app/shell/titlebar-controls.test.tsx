@@ -9,6 +9,7 @@ import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-st
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
+import { $chromiumAppWindow } from '@/lib/keybinds/app-window'
 import { $interfaceMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -506,5 +507,15 @@ describe('Back and Forward in the redesigned band', () => {
 
     expect(within(left).queryByRole('button', { name: 'Back' })).toBeNull()
     expect(within(left).queryByRole('button', { name: 'Forward' })).toBeNull()
+  })
+  it('stays in an installed Chromium app window, which has no browser toolbar', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    renderControls('/')
+    act(() => $chromiumAppWindow.set(true))
+    const left = screen.getByLabelText('Window controls')
+
+    expect(within(left).getByRole('button', { name: 'Back' })).toBeTruthy()
+    expect(within(left).getByRole('button', { name: 'Forward' })).toBeTruthy()
+    act(() => $chromiumAppWindow.set(false))
   })
 })

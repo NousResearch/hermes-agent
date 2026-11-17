@@ -2149,7 +2149,6 @@ export const jaOverrides = {
     tabFiles: 'ファイル',
     tabLinks: 'リンク',
     noArtifactsTitle: 'アーティファクトが見つかりません',
-    partialIndex: (failed: number, total: number) => `アーティファクトのインデックス作成中に、最近のセッション ${total} 件中 ${failed} 件をスキップしました。`,
     noArtifactsDesc: 'セッションで生成された画像やファイルの出力がここに表示されます。',
     failedLoad: 'アーティファクトの読み込みに失敗しました',
     openFailed: '開くことができませんでした',
@@ -3025,10 +3024,10 @@ export const jaOverrides = {
       messagingPlatforms: 'メッセージングプラットフォーム',
       machineStatus: (machine, status) => `${machine} の状態: ${status}`,
       checkAgain: '再確認',
-      switchToMachine: 'このマシンに切り替える',
-      machineSettings: 'ゲートウェイとマシン',
+      switchToMachine: 'このゲートウェイに切り替える',
+      machineSettings: 'ゲートウェイ',
       restartTitle: 'ゲートウェイを再起動しますか？',
-      restartBody: 'このマシンで実行中の応答は停止します。数秒で復帰し、自動で再接続します。'
+      restartBody: 'このゲートウェイで実行中の応答は停止します。数秒で復帰し、自動で再接続します。'
     },
     approvalMode: {
       title: '承認モード',
@@ -3279,6 +3278,7 @@ export const jaOverrides = {
     showStripTab: title => `${title} を表示`,
     hideStripTab: title => `${title} を隠す`,
     lastTabKeptTitle: '最後のタブは残ります',
+    resizePanes: 'ペインのサイズを変更',
     lastTabKeptBody:
       'このゾーンには少なくとも 1 つの表示タブが必要です。先に別のタブを表示するか、サイドバー全体を折りたたんでください。',
     toggleStripTab: title => `${title} タブを切り替え`,
@@ -3702,6 +3702,9 @@ export const jaOverrides = {
     audioReadFailed: '録音した音声を読み取れませんでした',
     sessionOpenFailed: 'このセッションを開けませんでした',
     sessionUnavailable: 'セッションが利用できません',
+    sessionOwnerConflictTitle: 'このチャットを開けませんでした',
+    sessionOwnerConflictBody:
+      '同じ ID の別のチャットがすでに開いています。先にそれを閉じるか、このチャットを新しいウィンドウで開いてください。',
     createSessionFailed: '新しいセッションを作成できませんでした',
     promptFailed: 'プロンプトに失敗しました',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',

@@ -46,6 +46,13 @@ export const $routinePendingDelete = atom<CronJob | null>(null)
 /** The routine a Rename (a rail quick action) is open for. */
 export const $routineRename = atom<CronJob | null>(null)
 
+/** Close the editor, Rename and Delete: they act through the source of the surface that hosts them. */
+export function closeRoutineDialogs(): void {
+  closeRoutineEditor()
+  $routinePendingDelete.set(null)
+  $routineRename.set(null)
+}
+
 /** A search the Routines overview opens with (the chat sidebar's per-agent chip names its agent), taken
  *  once so reopening Routines later starts unfiltered. */
 export const $routineOverviewQuery = atom('')

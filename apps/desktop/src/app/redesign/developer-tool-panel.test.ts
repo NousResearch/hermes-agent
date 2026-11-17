@@ -1,3 +1,4 @@
+import { atom } from 'nanostores'
 import { afterEach, expect, it } from 'vitest'
 
 import { DEFAULT_TREE } from '@/app/contrib/layout-presets'
@@ -8,8 +9,11 @@ import {
   $layoutTree,
   $narrowViewport,
   $userPlacedPanes,
+  bindPaneVisibility,
+  bindToolPaneCollapse,
   isPaneVisible,
   moveTreePane,
+  registerPaneCloser,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
@@ -124,4 +128,28 @@ it('folds a resize of whichever tool shows into the one width every tool panel s
   stop()
   setPaneWidthOverride('files', undefined)
   $developerToolPanelWidth.set(null)
+})
+
+it('hides store-bound tools through their stores, so a later Show brings them back', () => {
+  $shellChoice.set(true)
+  $layoutTree.set(DEFAULT_TREE)
+  const $files = atom(true)
+  const $terminal = atom(true)
+  bindPaneVisibility('files', $files, () => $files.set(false), () => $files.set(true))
+  bindToolPaneCollapse('terminal', $terminal, () => $terminal.set(false), () => $terminal.set(true), atom(false))
+  prepareDeveloperToolPanel('terminal')
+  revealTreePane('terminal')
+
+  expect(hideDeveloperToolPanel('terminal')).toBe(true)
+  expect($files.get()).toBe(false)
+  expect($terminal.get()).toBe(false)
+  expect(isPaneVisible('files')).toBe(false)
+  expect(isPaneVisible('terminal')).toBe(false)
+
+  // "Show files" (view.showFiles) writes the store.
+  $files.set(true)
+  expect(isPaneVisible('files')).toBe(true)
+
+  registerPaneCloser('files')
+  registerPaneCloser('terminal')
 })

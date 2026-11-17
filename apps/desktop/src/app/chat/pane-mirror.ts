@@ -54,6 +54,9 @@ export interface PaneMirror<T> {
    *  as `tabLead` — a name that moves faster than re-registration (see
    *  PaneChrome.tabTitle). Falls back to `title`. */
   tabTitle?: (key: string) => ReactNode
+  /** The plain-text twin of `tabTitle`, read when a menu lists the tab (see PaneChrome.tabTitleText).
+   *  Absent, those readers fall back to `title`. */
+  tabTitleText?: (key: string) => string
   /** Mint another tile of this kind — the strip's "+" (see PaneChrome.newTab).
    *  Per tile so a mirror can offer it for some of its tabs and not others. */
   newTab?: (key: string) => (() => void) | undefined
@@ -105,6 +108,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
       : undefined,
     tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
     tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
+    tabTitleText: cfg.tabTitleText ? () => cfg.tabTitleText!(key) : undefined,
     tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
   })
 

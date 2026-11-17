@@ -9,11 +9,11 @@ import {
 import { EmptyState } from '@/components/ui/empty-state'
 import type { DesktopConnectionKind, DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
+import { sameBackendPeerLabel } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Cloud, Globe, Loader2, Monitor, Pencil, RefreshCw, Terminal, Trash2 } from '@/lib/icons'
 import { usePortalShell } from '@/store/shell-variant'
 
-import { sameBackendPeerLabel } from './connections-registry'
 import { ListRow, Pill } from './primitives'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 
@@ -76,9 +76,10 @@ export function ConnectionRow({ isCurrent, kindMeta, peers, ...actions }: Connec
       action={redesign ? <ConnectionManageMenu {...actions} /> : <ClassicConnectionActions {...actions} />}
       description={sameBackendPeer ? `${description} · ${s.sameBackendHint(sameBackendPeer)}` : description}
       title={
-        <span className="flex min-w-0 flex-wrap items-center gap-2">
+        // The redesign wraps its pills under a long name; classic keeps main's single truncating line.
+        <span className={redesign ? 'flex min-w-0 flex-wrap items-center gap-2' : 'flex items-center gap-2'}>
           <Icon className="size-4 shrink-0 text-muted-foreground" />
-          <span className="max-w-full truncate">{conn.label}</span>
+          <span className={redesign ? 'max-w-full truncate' : 'truncate'}>{conn.label}</span>
           {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
           {isPrimary && <Pill>{s.primaryPill}</Pill>}
           {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}

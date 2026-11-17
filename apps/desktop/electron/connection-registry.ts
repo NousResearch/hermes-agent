@@ -39,7 +39,6 @@ import {
   normAuthMode
 } from './connection-config'
 import { matchingConnectionId, type StoredRoute } from './connection-route-identity'
-import { shellMessages } from './shell-wording'
 
 export const REGISTRY_VERSION = 2
 
@@ -1454,7 +1453,7 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
     }
 
     const label = uniqueLabel(
-      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : shellMessages.remoteMachineLabel()),
+      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
       connections.map(c => c.label)
     )
 
@@ -1669,9 +1668,7 @@ export function reconcileAppliedGlobalConnection(
 
   const kind: ConnectionKind = mode === 'cloud' ? 'cloud' : 'remote'
 
-  const hostLabel =
-    hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : shellMessages.remoteMachineLabel())
-
+  const hostLabel = hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway')
   const name = kind === 'cloud' ? String(block.name ?? existing?.name ?? '').trim() : ''
 
   const label =

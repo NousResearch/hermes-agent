@@ -1,7 +1,7 @@
 import { PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
-import { type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
 
 import { $apiRequestScope } from '@/api/client'
 import { openSession } from '@/app/open-session'
@@ -22,8 +22,9 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, knownSessionOwner, ownerLookupSessionRows, sessionPinId } from '@/store/session'
 import { $sessionDotStateById } from '@/store/session-dot-state'
 import { $focusedSessionIsTile } from '@/store/session-focus'
+import { canOpenSessionOwner } from '@/store/session-owner-open'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
-import { $sessionTiles, canOpenSessionOwner, runtimeSessionOwner } from '@/store/session-states'
+import { $sessionTiles, runtimeSessionOwner } from '@/store/session-states'
 
 import { SessionStatusDot } from '../session-status-dot'
 
@@ -311,12 +312,14 @@ export function SimplifiedSessionList({
   const dots = useStore($sessionDotStateById)
   const now = useMinuteClock(!props.showAgent)
   const surface: ListSurface = props.searching ? 'search' : props.showAgent ? 'pinned' : 'agent'
+  const isPinned = (row: SessionInfo) => props.pinnedIds.has(sessionRowKey(row))
 
-  const ordered = props.showAgent
-    ? sessions
-    : [...sessions].sort(
-        (a, b) => Number(props.pinnedIds.has(sessionRowKey(b))) - Number(props.pinnedIds.has(sessionRowKey(a)))
-      )
+  // An agent's pinned chats lead its list. They are a partition of their own: a row moves only among
+  // its partition, so no drag or Alt+arrow can land somewhere the pinned-first order undoes.
+  const partition = (rows: SessionInfo[]) =>
+    props.showAgent ? [rows] : [rows.filter(isPinned), rows.filter(row => !isPinned(row))]
+
+  const ordered = partition(sessions).flat()
 
   const metaFor = (row: SessionInfo) => {
     if (props.showAgent) {
@@ -329,7 +332,7 @@ export function SimplifiedSessionList({
     // for assistive tech.
     return (
       <>
-        {props.pinnedIds.has(sessionRowKey(row)) && (
+        {isPinned(row) && (
           <span aria-label={t.sidebar.pinned} className="sr-only" role="img" />
         )}
         <SessionAge now={now} row={row} />
@@ -340,14 +343,15 @@ export function SimplifiedSessionList({
   // A search lists every match; otherwise the cap keeps whatever needs attention in reach.
   const capped = cap && !cap.showAll && !props.searching
   const keep = (row: SessionInfo) => isSelected(row) || row.unread === true || (dots[row.id] ?? 'idle') !== 'idle'
-  const shown = capped ? capAgentChats(ordered, cap.limit, keep) : ordered
-  const foldable = cap && !props.searching && ordered.length > cap.limit
+  const folded = cap ? capAgentChats(ordered, cap.limit, keep) : ordered
+  const shown = capped ? folded : ordered
+  // The fold is offered only when folding hides something: kept rows may already be every row.
+  const foldable = cap && !props.searching && folded.length < ordered.length
 
   // A search is a result list, never an arrangement.
-  const reorder = props.searching || shown.length < 2 ? undefined : onReorder
-  const shownKeys = shown.map(row => sessionRowKey(row))
+  const reorder = props.searching ? undefined : onReorder
 
-  // Rows past the cap keep their places: only the shown ones trade slots.
+  // Rows past the cap and in the other partition keep their places: only the moved ones trade slots.
   const commit = (keys: string[]) => {
     const byKey = new Map(ordered.map(row => [sessionRowKey(row), row]))
 
@@ -359,41 +363,52 @@ export function SimplifiedSessionList({
     )
   }
 
-  const move = (index: number, step: -1 | 1, target: HTMLElement) => {
+  const move = (keys: string[], index: number, step: -1 | 1, target: HTMLElement) => {
     const to = index + step
 
-    if (to < 0 || to >= shownKeys.length) {
+    if (to < 0 || to >= keys.length) {
       return
     }
 
-    commit(arrayMove(shownKeys, index, to))
+    commit(arrayMove(keys, index, to))
     // The moved row keeps the focus it was moved with.
     requestAnimationFrame(() => target.focus())
   }
 
-  const Row = reorder ? SortableSessionRow : SessionRow
+  const lists = partition(shown).map((rows, part) => {
+    const keys = rows.map(row => sessionRowKey(row))
+    const sortable = reorder && rows.length > 1
+    const Row = sortable ? SortableSessionRow : SessionRow
 
-  const list = shown.map((row, index) => (
-    <Row
-      {...props}
-      key={sessionRowKey(row)}
-      meta={metaFor(row)}
-      onMove={reorder && (step => move(index, step, document.activeElement as HTMLElement))}
-      row={row}
-      selected={isSelected(row)}
-      surface={surface}
-    />
-  ))
+    const list = rows.map((row, index) => (
+      <Row
+        {...props}
+        key={keys[index]}
+        meta={metaFor(row)}
+        onMove={sortable ? step => move(keys, index, step, document.activeElement as HTMLElement) : undefined}
+        row={row}
+        selected={isSelected(row)}
+        surface={surface}
+      />
+    ))
+
+    // Each partition owns its drag context, so a drag cannot cross into the other.
+    return (
+      <Fragment key={part}>
+        {sortable ? (
+          <ReorderableList ids={keys} onReorder={commit} sensors={sensors}>
+            {list}
+          </ReorderableList>
+        ) : (
+          list
+        )}
+      </Fragment>
+    )
+  })
 
   return (
     <div className="portal-session-list">
-      {reorder ? (
-        <ReorderableList ids={shownKeys} onReorder={commit} sensors={sensors}>
-          {list}
-        </ReorderableList>
-      ) : (
-        list
-      )}
+      {lists}
       {foldable && (
         <RowButton aria-expanded={cap.showAll} className="portal-session-more" onClick={cap.onToggle}>
           {cap.showAll ? t.simplifiedAgents.showFewerChats : t.simplifiedAgents.showAllChats(ordered.length)}

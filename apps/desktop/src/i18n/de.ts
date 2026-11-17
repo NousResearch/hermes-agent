@@ -3605,7 +3605,6 @@ export const deOverrides = {
     tabFiles: 'Dateien',
     tabLinks: 'Links',
     noArtifactsTitle: 'Keine Artifacts gefunden',
-    partialIndex: (failed: number, total: number) => `${failed} von ${total} letzten Sessions beim Indizieren der Artefakte übersprungen.`,
     noArtifactsDesc: 'Generierte Bilder und Datei-Ausgaben erscheinen hier, sobald Sessions sie erstellen.',
     failedLoad: 'Artifacts konnten nicht geladen werden',
     openFailed: 'Öffnen fehlgeschlagen',
@@ -4610,11 +4609,11 @@ export const deOverrides = {
       messagingPlatforms: 'Messaging-Plattformen',
       machineStatus: (machine, status) => `Status von ${machine}: ${status}`,
       checkAgain: 'Erneut prüfen',
-      switchToMachine: 'Zu dieser Maschine wechseln',
-      machineSettings: 'Gateways & Maschinen',
+      switchToMachine: 'Zu diesem Gateway wechseln',
+      machineSettings: 'Gateways',
       restartTitle: 'Gateway neu starten?',
       restartBody:
-        'Laufende Antworten auf dieser Maschine werden abgebrochen. Sie ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
+        'Laufende Antworten auf diesem Gateway werden abgebrochen. Es ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
     },
     approvalMode: {
       title: 'Genehmigungsmodus',
@@ -4872,6 +4871,7 @@ export const deOverrides = {
     hideStripTab: title => `${title} ausblenden`,
     zoneMenuLabel: title => `Zonenoptionen für ${title}`,
     lastTabKeptTitle: 'Letzter Tab bleibt',
+    resizePanes: 'Bereiche anpassen',
     lastTabKeptBody:
       'Diese Zone braucht mindestens einen sichtbaren Tab. Zeigen Sie zuerst einen anderen Tab an oder klappen Sie die ganze Seitenleiste ein.',
     toggleStripTab: title => `${title}-Tab umschalten`,
@@ -5495,6 +5495,9 @@ export const deOverrides = {
     audioReadFailed: 'Aufgenommenes Audio konnte nicht gelesen werden',
     sessionOpenFailed: 'Diese Session konnte nicht geöffnet werden',
     sessionUnavailable: 'Session nicht verfügbar',
+    sessionOwnerConflictTitle: 'Chat konnte nicht geöffnet werden',
+    sessionOwnerConflictBody:
+      'Ein anderer Chat mit derselben ID ist bereits geöffnet. Schließe ihn zuerst oder öffne diesen Chat in einem neuen Fenster.',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
     providerCredentialRequired:

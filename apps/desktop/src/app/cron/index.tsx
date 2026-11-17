@@ -1,4 +1,3 @@
-import { createCronTriggerController, type CronTriggerController } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
@@ -48,7 +47,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
-import { $cronFocusJobId, $cronJobs, invalidateCronJobsRequests, setCronFocusJobId } from '@/store/cron'
+import { $cronJobs, invalidateCronJobsRequests } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
@@ -95,6 +94,8 @@ import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from './open-cron
 import { catchUpChoice, catchUpValue, jobLastCancelReason, jobRunLive } from './run-control'
 import { LastCancelledNote, RunStopAction } from './run-stop-action'
 import { useCronRunStop } from './use-cron-run-stop'
+import { useCronTriggerController } from './use-cron-trigger-controller'
+import { useJobFocus } from './use-job-focus'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -314,61 +315,6 @@ interface CronViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
-/** The Run-now controller for this view's lifetime, and which jobs it is triggering right now. */
-function useCronTriggerController() {
-  const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(() => new Set())
-  const triggerControllerRef = useRef<CronTriggerController | null>(null)
-
-  // eslint-disable-next-line no-restricted-syntax -- controller mount identity, not an atom mirror
-  useEffect(() => {
-    const controller = createCronTriggerController((key, running) => {
-      if (triggerControllerRef.current !== controller) {
-        return
-      }
-
-      setTriggeringJobKeys(current => {
-        const next = new Set(current)
-
-        if (running) {
-          next.add(key)
-        } else {
-          next.delete(key)
-        }
-
-        return next
-      })
-    })
-
-    triggerControllerRef.current = controller
-
-    return () => {
-      triggerControllerRef.current = null
-    }
-  }, [])
-
-  return { triggerControllerRef, triggeringJobKeys }
-}
-
-/** Sidebar → "open this job": resolve the one-shot focus id (or name) to a job, hand it to `open`,
- *  then clear the focus so re-opening Schedules normally does not re-trigger it. */
-function useSidebarJobFocus(jobs: readonly CronJob[], open: (jobId: string) => void) {
-  const focusJobId = useStore($cronFocusJobId)
-
-  useEffect(() => {
-    if (!focusJobId) {
-      return
-    }
-
-    const match = jobs.find(job => job.id === focusJobId || jobName(job) === focusJobId)
-
-    if (match) {
-      open(match.id)
-    }
-
-    setCronFocusJobId(null)
-  }, [focusJobId, jobs, open])
-}
-
 /** The /cron route: the redesign's Routines page, or classic's Scheduled jobs overlay. */
 export function CronView(props: CronViewProps) {
   return usePortalShell() ? (
@@ -439,9 +385,10 @@ function ClassicCronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     return () => invalidateCronJobsRequests()
   }, [refresh])
 
-  useSidebarJobFocus(jobs, jobId => {
-    setSelectedJobId(jobId)
-    pendingScrollRef.current = jobId
+  // Main clears an unmatched focus at once (`settled`), so classic keeps doing that.
+  useJobFocus(jobs, true, job => {
+    setSelectedJobId(job.id)
+    pendingScrollRef.current = job.id
   })
 
   const visibleJobs = useMemo(
@@ -991,9 +938,7 @@ function CronJobDetail({
       <header className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <h3 className="min-w-0 break-words text-[0.95rem] font-semibold tracking-tight text-foreground">
-              {jobTitle(job)}
-            </h3>
+            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{jobTitle(job)}</h3>
             {pills}
           </div>
           {actions}
@@ -1081,23 +1026,15 @@ function CronJobActions({
   runLive,
   stopping
 }: CronJobActionsProps) {
-  const size = 'sm'
   const pending = pendingRunAt !== undefined
 
   return (
     <div className="flex shrink-0 items-center gap-0.5">
-      <RunStopAction c={c} onStop={onStop} runLive={runLive} size={size} stopping={stopping} />
-      <PanelAction disabled={busy} icon={isPaused ? 'play' : 'debug-pause'} onClick={onPauseResume} size={size}>
+      <RunStopAction c={c} onStop={onStop} runLive={runLive} stopping={stopping} />
+      <PanelAction disabled={busy} icon={isPaused ? 'play' : 'debug-pause'} onClick={onPauseResume}>
         {isPaused ? c.resumeTitle : c.pauseTitle}
       </PanelAction>
-      <PanelAction
-        disabled={busy}
-        icon={pending ? 'loading' : 'zap'}
-        onClick={onTrigger}
-        primary
-        size={size}
-        spinning={pending}
-      >
+      <PanelAction disabled={busy} icon={pending ? 'loading' : 'zap'} onClick={onTrigger} primary spinning={pending}>
         {c.triggerNow}
       </PanelAction>
     </div>
@@ -1300,7 +1237,9 @@ function CronJobRuns({
   )
 }
 
-// Canonical agent-chat target IDs stay unchanged; only their display name is localized.
+// Label a cron delivery target: 'local' → localized "This desktop", known
+// platforms → their delivery label, anything else → the backend name. Configured
+// platforms without a cron home channel get a "set a home channel first" hint.
 function deliverTargetLabel(target: CronDeliveryTarget, c: Translations['cron']): string {
   const base = target.id === 'local' ? c.deliveryLabels.local : (c.deliveryLabels[target.id] ?? target.name)
 
@@ -1358,15 +1297,6 @@ export function DeliverCheckboxes({
       })}
     </div>
   )
-}
-
-function focusCronName(event: Event) {
-  const input = (event.target as HTMLElement).querySelector<HTMLInputElement>('#cron-name')
-
-  if (input) {
-    event.preventDefault()
-    input.focus()
-  }
 }
 
 function CronEditorDialog({
@@ -1566,7 +1496,7 @@ function CronEditorDialog({
 
   return (
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
-      <DialogContent className="max-w-lg" onOpenAutoFocus={focusCronName}>
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>{isEdit ? c.editTitle : c.createTitle}</DialogTitle>
           <DialogDescription>{isEdit ? c.editDesc : c.createDesc}</DialogDescription>
@@ -1650,6 +1580,7 @@ function CronEditorDialog({
 
             <Field htmlFor="cron-name" label={c.nameLabel} optional optionalLabel={c.optional}>
               <Input
+                autoFocus
                 id="cron-name"
                 onChange={event => setName(event.target.value)}
                 placeholder={c.namePlaceholder}

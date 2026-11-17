@@ -28,12 +28,10 @@
   --portal-panel-reveal-inset: 1rem;
   --portal-panel-reveal-glyph: 1.125rem;
 
-  /* The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below the
-     medium breakpoint, medium below the wide one, wide from there. A custom property cannot feed a
-     media query, so every redesign query repeats the literal (max-width: 639.98px / 1023.98px) with a
-     comment naming the class; these two document it. */
-  --portal-breakpoint-medium: 640px;
-  --portal-breakpoint-wide: 1024px;
+  /* The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below 640px,
+     medium below 1024px, wide from there. A custom property cannot feed a media query, so there is no
+     breakpoint token: every redesign query repeats the literal (max-width: 639.98px / 1023.98px) with
+     a comment naming the class. */
   /* Below wide the chat sidebar and page panels are sheets over the stage: the sidebar's width, leaving
      a 56px strip of scrim to tap. */
   --portal-sheet-width: min(var(--sessions-pane-width), 100vw - 3.5rem);

@@ -38,7 +38,8 @@ export interface SettingsPagesCopy {
   model: { fallbacks: string; fallbacksDesc: string }
   providers: { addKey: string }
   messaging: { channels: string; channelsDesc: string; addChannel: string; manage: string; reconnect: string }
-  vault: { credentials: string; credentialsDesc: string; managers: string; managersDesc: string }
+  /** `offline`: the vault is read over the gateway socket, so nothing loads until it reconnects. */
+  vault: { credentials: string; credentialsDesc: string; managers: string; managersDesc: string; offline: string }
   /** Export / import / reset of the profile's config, which classic keeps as rail-footer icons. */
   configuration: {
     title: string
@@ -133,7 +134,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: 'Saved credentials',
       credentialsDesc: 'Logins, cards and addresses, stored encrypted. The model never sees the password.',
       managers: 'Password managers',
-      managersDesc: 'Unlock once per session to let the agent use them.'
+      managersDesc: 'Unlock once per session to let the agent use them.',
+      offline: 'Hermes is offline. Saved credentials appear once it reconnects.'
     },
     configuration: {
       title: 'Configuration',
@@ -220,7 +222,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: 'Identifiants enregistrés',
       credentialsDesc: 'Identifiants, cartes et adresses, stockés chiffrés. Le modèle ne voit jamais le mot de passe.',
       managers: 'Gestionnaires de mots de passe',
-      managersDesc: 'Déverrouillez-les une fois par session pour que l’agent puisse les utiliser.'
+      managersDesc: 'Déverrouillez-les une fois par session pour que l’agent puisse les utiliser.',
+      offline: 'Hermes est hors ligne. Les identifiants enregistrés s’afficheront à la reconnexion.'
     },
     configuration: {
       title: 'Configuration',
@@ -303,7 +306,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: 'Gespeicherte Zugangsdaten',
       credentialsDesc: 'Logins, Karten und Adressen, verschlüsselt gespeichert. Das Modell sieht nie das Passwort.',
       managers: 'Passwortmanager',
-      managersDesc: 'Einmal pro Sitzung entsperren, damit der Agent sie nutzen kann.'
+      managersDesc: 'Einmal pro Sitzung entsperren, damit der Agent sie nutzen kann.',
+      offline: 'Hermes ist offline. Gespeicherte Zugangsdaten erscheinen, sobald die Verbindung wieder steht.'
     },
     configuration: {
       title: 'Konfiguration',
@@ -386,7 +390,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: 'Credenciales guardadas',
       credentialsDesc: 'Inicios de sesión, tarjetas y direcciones, cifrados. El modelo nunca ve la contraseña.',
       managers: 'Gestores de contraseñas',
-      managersDesc: 'Desbloquéalos una vez por sesión para que el agente pueda usarlos.'
+      managersDesc: 'Desbloquéalos una vez por sesión para que el agente pueda usarlos.',
+      offline: 'Hermes está sin conexión. Las credenciales guardadas aparecerán cuando se reconecte.'
     },
     configuration: {
       title: 'Configuración',
@@ -465,7 +470,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: '保存済みの認証情報',
       credentialsDesc: 'ログイン、カード、住所を暗号化して保存します。モデルがパスワードを見ることはありません。',
       managers: 'パスワードマネージャー',
-      managersDesc: 'セッションごとに一度ロックを解除すると、エージェントが利用できます。'
+      managersDesc: 'セッションごとに一度ロックを解除すると、エージェントが利用できます。',
+      offline: 'Hermes はオフラインです。再接続すると保存済みの認証情報が表示されます。'
     },
     configuration: {
       title: '構成',
@@ -543,7 +549,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: '已保存的凭据',
       credentialsDesc: '登录信息、卡片和地址，加密存储。模型永远看不到密码。',
       managers: '密码管理器',
-      managersDesc: '每个会话解锁一次，智能体即可使用。'
+      managersDesc: '每个会话解锁一次，智能体即可使用。',
+      offline: 'Hermes 当前离线。重新连接后将显示已保存的凭据。'
     },
     configuration: {
       title: '配置',
@@ -621,7 +628,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: '已儲存的憑證',
       credentialsDesc: '登入資訊、卡片和地址，加密儲存。模型永遠看不到密碼。',
       managers: '密碼管理工具',
-      managersDesc: '每個工作階段解鎖一次，智慧體即可使用。'
+      managersDesc: '每個工作階段解鎖一次，智慧體即可使用。',
+      offline: 'Hermes 目前離線。重新連線後將顯示已儲存的憑證。'
     },
     configuration: {
       title: '設定',
@@ -706,7 +714,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: 'Сохранённые данные входа',
       credentialsDesc: 'Логины, карты и адреса хранятся зашифрованными. Модель никогда не видит пароль.',
       managers: 'Менеджеры паролей',
-      managersDesc: 'Разблокируйте один раз за сеанс, чтобы агент мог ими пользоваться.'
+      managersDesc: 'Разблокируйте один раз за сеанс, чтобы агент мог ими пользоваться.',
+      offline: 'Hermes не в сети. Сохранённые данные входа появятся после переподключения.'
     },
     configuration: {
       title: 'Конфигурация',
@@ -788,7 +797,8 @@ const COPY: Record<BundledLocale, SettingsPagesCopy> = {
       credentials: 'بيانات الدخول المحفوظة',
       credentialsDesc: 'تسجيلات الدخول والبطاقات والعناوين مخزنة مشفرة. لا يرى النموذج كلمة المرور أبدًا.',
       managers: 'مديرو كلمات المرور',
-      managersDesc: 'افتحها مرة واحدة لكل جلسة ليستخدمها الوكيل.'
+      managersDesc: 'افتحها مرة واحدة لكل جلسة ليستخدمها الوكيل.',
+      offline: 'Hermes غير متصل الآن. ستظهر بيانات الدخول المحفوظة عند إعادة الاتصال.'
     },
     configuration: {
       title: 'الإعدادات',

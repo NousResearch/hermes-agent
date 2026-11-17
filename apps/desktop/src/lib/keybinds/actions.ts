@@ -37,11 +37,21 @@ interface BrowserChords {
   other: string
 }
 
+// A browser tab's own Back/Forward chords walk the same (hash) history, so it binds none; an installed
+// Chromium app window has no toolbar and keeps them, following a live move into or out of one.
 function historyAction(id: string, mac: string, other: string): KeybindActionMeta {
+  const combo = isMacPlatform() ? mac : other
+  const browserHost = hostHas('browserShortcutDefaults')
+
   return {
     id,
     category: 'navigation',
-    defaults: hostHas('browserShortcutDefaults') ? [] : [isMacPlatform() ? mac : other]
+    get defaults() {
+      return browserHost && !inChromiumAppWindow() ? [] : [combo]
+    },
+    // ⌘[ / ⌘] indent in a code editor and Alt+←/→ jump words: inside an editable target the chord
+    // is an edit, and navigating away there could drop unsaved changes.
+    editableTargetPolicy: 'never'
   }
 }
 
@@ -101,8 +111,9 @@ export interface KeybindActionMeta {
   /** `modified`: a combo carrying a non-Shift modifier may fire while an
    *  editable target (the composer) has focus, beyond the global combo-safety
    *  policy in `actionAllowedInInput`. Bare/shift-only rebinds never qualify,
-   *  so a text key stays typing-safe (#71627). */
-  editableTargetPolicy?: 'modified'
+   *  so a text key stays typing-safe (#71627). `never`: no combo fires while an
+   *  editable target has focus, not even a primary-modifier chord. */
+  editableTargetPolicy?: 'modified' | 'never'
 }
 
 // Positional switch slots for *named* profiles: ⌘1…⌘9 for profiles 1-9, then
@@ -225,8 +236,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'nav.artifacts', category: 'navigation', defaults: [] },
   { id: 'nav.cron', category: 'navigation', defaults: [] },
   { id: 'nav.agents', category: 'navigation', defaults: [] },
-  // The band's Back/Forward. A browser tab already walks the same (hash) history on its own
-  // Back/Forward chords and mouse buttons, so only an app window binds them.
+  // The band's Back/Forward (see historyAction for which windows bind them).
   historyAction('nav.back', 'mod+[', 'alt+left'),
   historyAction('nav.forward', 'mod+]', 'alt+right'),
 
@@ -451,6 +461,11 @@ function comboHasNonShiftModifier(combo: string): boolean {
  *  with the input so it can never hijack typing. */
 export function keybindActionAllowedInEditableTarget(id: string, combo: string): boolean {
   return keybindAction(id)?.editableTargetPolicy === 'modified' && comboHasNonShiftModifier(combo)
+}
+
+/** True when the action never fires while an editable target has focus. */
+export function keybindActionYieldsToEditableTarget(id: string): boolean {
+  return keybindAction(id)?.editableTargetPolicy === 'never'
 }
 
 /** The contributed handler for an action id (built-ins wire theirs in use-keybinds). */

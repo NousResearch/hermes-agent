@@ -671,7 +671,10 @@ export const ruRedesign: RedesignOverlay = {
       gateway: 'Компьютер',
       reconnectGateway: 'Переподключить компьютер',
       machineSettings: 'Компьютеры',
-      restartTitle: 'Перезапустить Hermes на этом компьютере?'
+      restartTitle: 'Перезапустить Hermes на этом компьютере?',
+      switchToMachine: 'Переключиться на этот компьютер',
+      restartBody:
+        'Выполняющиеся ответы на этом компьютере остановятся. Через несколько секунд Hermes вернётся и переподключится сам.'
     },
     statusbar: {
       gateway: 'Компьютер',
@@ -829,7 +832,6 @@ export const ruRedesign: RedesignOverlay = {
     noArtifactsDesc: 'Сгенерированные изображения и файловые результаты появятся здесь по мере их создания в чатах.',
     failedLoad: 'Не удалось загрузить библиотеку',
     colSession: 'Чат',
-    partialIndex: (failed, total) => `При индексации библиотеки пропущено недавних чатов: ${failed} из ${total}.`
   },
   artifactPreview: {
     missingTitle: 'Элемент недоступен',

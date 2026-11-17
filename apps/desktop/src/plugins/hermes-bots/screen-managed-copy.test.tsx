@@ -1,5 +1,10 @@
 /**
- * Missing screen packages on a managed backend are a property of its size, not
+ * A `display.*` method-not-found from a Portal-managed (Hermes Cloud) backend must not be
+ * rendered as "Update the bot's Hermes": the user cannot update a managed release, and the
+ * managed Cloud tab already reports it is on the latest release (#120852). A self-upgradable
+ * (git/remote) backend keeps the update instruction.
+ *
+ * Likewise, missing screen packages on a managed backend are a property of its size, not
  * something to install: only a self-managed host gets the install card.
  */
 import { act, render } from '@testing-library/react'
@@ -59,6 +64,29 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+const methodNotFound = () =>
+  Promise.reject(Object.assign(new Error('Method not found: display.status'), { code: -32601 }))
+
+it('a managed Cloud backend gets the managed-release copy, not a self-update instruction', async () => {
+  vi.mocked(host.requestProfile).mockImplementation(() => methodNotFound())
+  const view = render(<BotScreenPane bot={cloudBot} />)
+  await act(async () => {})
+
+  expect(view.getByText(text('screen.portalUnavailableManaged'))).toBeTruthy()
+  expect(view.queryByText(text('screen.portalUnavailable'))).toBeNull()
+  view.unmount()
+})
+
+it('a self-upgradable backend keeps the update instruction', async () => {
+  vi.mocked(host.requestProfile).mockImplementation(() => methodNotFound())
+  const view = render(<BotScreenPane bot={gitBot} />)
+  await act(async () => {})
+
+  expect(view.getByText(text('screen.portalUnavailable'))).toBeTruthy()
+  expect(view.queryByText(text('screen.portalUnavailableManaged'))).toBeNull()
+  view.unmount()
+})
+
 const packagesMissing: DisplayStatus = {
   profile: 'default',
   profile_key: '/home/hermes/.hermes',
@@ -74,11 +102,12 @@ const packagesMissing: DisplayStatus = {
   lease: { holder: 'agent', viewer_id: null, viewer_hash: null, since: 1, reason: '', epoch: 0 }
 }
 
-it('a managed Cloud backend without screen packages offers no install', async () => {
+it('a managed Cloud backend without screen packages says Screen is not included, with no install', async () => {
   vi.mocked(host.requestProfile).mockResolvedValue(packagesMissing)
   const view = render(<BotScreenPane bot={cloudBot} />)
   await act(async () => {})
 
+  expect(view.getByText(text('screen.managedNotIncludedTitle'))).toBeTruthy()
   expect(view.queryByRole('button', { name: text('screen.install') })).toBeNull()
   view.unmount()
 })
@@ -89,5 +118,6 @@ it('a self-managed host without screen packages keeps the install card', async (
   await act(async () => {})
 
   expect(view.getByRole('button', { name: text('screen.install') })).toBeTruthy()
+  expect(view.queryByText(text('screen.managedNotIncludedTitle'))).toBeNull()
   view.unmount()
 })

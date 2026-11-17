@@ -102,6 +102,14 @@ describe("an agent card's chats", () => {
     expect(screen.queryByRole('button', { name: en.simplifiedAgents.showAllChats(6) })).toBeNull()
   })
 
+  it('offers no Show all row when the chats it keeps in reach are already every chat', () => {
+    const rows = chats.slice(0, 4).map((row, index) => (index === 3 ? { ...row, unread: true } : row))
+
+    render(<AgentChats sessions={rows} />)
+    expect(titles()).toHaveLength(4)
+    expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()
+  })
+
   it('offers no Show all row when everything fits', () => {
     render(<AgentChats sessions={chats.slice(0, 3)} />)
     expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()

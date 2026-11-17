@@ -5,6 +5,7 @@ import { jobDeliveryFailed, jobLastRunFailed } from '@/app/cron/job-state'
 import { jobRunInFlight } from '@/app/cron/run-control'
 import type { ClientSessionState } from '@/app/types'
 import type { CronJob, SessionInfo } from '@/hermes'
+import { stableRecord } from '@/lib/stable-array'
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $clarifyRequests } from '@/store/clarify'
 import { $cronJobs, getCronJobsSnapshotScope } from '@/store/cron'
@@ -23,7 +24,7 @@ import { $sessionStates, knownOwnerForSession, runtimeSessionOwner } from '@/sto
 import { $unreadFinishedMarkers } from '@/store/session-unread'
 import { $unreadWriteGuard, UNREAD_WRITE_GUARD_MS } from '@/store/session-unread-remote'
 
-import { type SimplifiedAgent, useSimplifiedOwner } from './use-simplified-agents'
+import { agentKey, sessionAgentKey, type SimplifiedAgent, useSimplifiedOwner } from './use-simplified-agents'
 
 export interface AgentSidebarAttention {
   kind: 'approval' | 'input' | 'failed' | 'running' | 'unread'
@@ -33,22 +34,38 @@ export interface AgentSidebarAttention {
 
 type ClaimAttention = (owner: string, attention: AgentSidebarAttention) => void
 
+/** The part of a runtime's state attention reads. */
+interface RuntimeSignal {
+  storedSessionId: string | null
+  needsInput: boolean
+  running: boolean
+  turnStartedAt: number | null
+  failed: boolean
+  failedSince: number | undefined
+}
+
 interface SessionAttentionSources {
   connectionId: string | null
   rows: SessionInfo[]
   ownersById: Map<string, Set<string>>
-  states: Record<string, ClientSessionState>
+  signals: Readonly<Record<string, RuntimeSignal>>
   dots: Readonly<Record<string, SessionDotState>>
   approvals: Record<string, ApprovalRequest>
   inputs: Map<string, number | undefined>
 }
 
-const priority: Record<AgentSidebarAttention['kind'], number> = {
+/** Most urgent first: the order an agent's signals win in, and hidden agents sort in. */
+export const ATTENTION_PRIORITY: Record<AgentSidebarAttention['kind'], number> = {
   approval: 0,
   input: 1,
   failed: 2,
   running: 3,
   unread: 4
+}
+
+/** An agent's place in an attention-ordered list: by its most urgent signal, quiet agents last. */
+export function attentionRank(attention: AgentSidebarAttention | undefined): number {
+  return attention ? ATTENTION_PRIORITY[attention.kind] : Object.keys(ATTENTION_PRIORITY).length
 }
 
 const $pendingInputs = computed(
@@ -73,10 +90,6 @@ const $pendingInputs = computed(
     return inputs
   }
 )
-
-function rowOwnerKey(row: SessionInfo, connectionId: string | null): string {
-  return agentSidebarKey({ connectionId: row.connection_id || connectionId, profile: row.profile || 'default' })
-}
 
 function sessionAliases(row: SessionInfo): string[] {
   return [row.id, row._lineage_root_id, ...(row._lineage_ids ?? [])].filter((id): id is string => Boolean(id))
@@ -104,8 +117,8 @@ function runtimeOwnerKey(id: string, storedId: string, sources: SessionAttention
   return candidates?.size === 1 ? [...candidates][0] : undefined
 }
 
-function failedTurnAttention(state: ClientSessionState | undefined): AgentSidebarAttention | undefined {
-  if (!state || state.busy || state.turnLive) {
+function failedTurnAttention(state: ClientSessionState): AgentSidebarAttention | undefined {
+  if (state.busy || state.turnLive) {
     return
   }
 
@@ -122,8 +135,40 @@ function failedTurnAttention(state: ClientSessionState | undefined): AgentSideba
   return { kind: 'failed', ...(since === undefined ? {} : { since: since * 1000 }) }
 }
 
+function runtimeSignal(state: ClientSessionState): RuntimeSignal {
+  const failed = failedTurnAttention(state)
+
+  return {
+    storedSessionId: state.storedSessionId,
+    needsInput: state.needsInput,
+    running: state.busy || state.turnLive,
+    turnStartedAt: state.turnStartedAt,
+    failed: Boolean(failed),
+    failedSince: failed?.since
+  }
+}
+
+const sameSignal = (left: RuntimeSignal, right: RuntimeSignal) =>
+  (Object.keys(left) as (keyof RuntimeSignal)[]).every(key => left[key] === right[key])
+
+let signals: Readonly<Record<string, RuntimeSignal>> = {}
+
+// `$sessionStates` is republished on every streamed delta. Attention reads only these edges, so the
+// projection keeps its reference until one moves and the sidebar does not re-render per token.
+const $runtimeSignals = computed($sessionStates, states => {
+  const next: Record<string, RuntimeSignal> = {}
+
+  for (const [id, state] of Object.entries(states)) {
+    const signal = runtimeSignal(state)
+    const previous = signals[id]
+    next[id] = previous && sameSignal(previous, signal) ? previous : signal
+  }
+
+  return (signals = stableRecord(signals, next))
+})
+
 function runtimeAttention(
-  state: ClientSessionState | undefined,
+  signal: RuntimeSignal | undefined,
   dot: SessionDotState | undefined,
   approval: boolean,
   input: boolean,
@@ -133,18 +178,16 @@ function runtimeAttention(
     return { kind: 'approval' }
   }
 
-  if (input || state?.needsInput || dot === 'needs-input') {
+  if (input || signal?.needsInput || dot === 'needs-input') {
     return { kind: 'input', ...(inputSince === undefined ? {} : { since: inputSince }) }
   }
 
-  const failed = failedTurnAttention(state)
-
-  if (failed) {
-    return failed
+  if (signal?.failed) {
+    return { kind: 'failed', ...(signal.failedSince === undefined ? {} : { since: signal.failedSince }) }
   }
 
-  if (state?.busy || state?.turnLive || showsRunningArc(dot ?? 'idle')) {
-    return { kind: 'running', ...(state?.turnStartedAt ? { since: state.turnStartedAt } : {}) }
+  if (signal?.running || showsRunningArc(dot ?? 'idle')) {
+    return { kind: 'running', ...(signal?.turnStartedAt ? { since: signal.turnStartedAt } : {}) }
   }
 
   if (dot === 'unread') {
@@ -153,10 +196,10 @@ function runtimeAttention(
 }
 
 function collectRuntimeAttention(sources: SessionAttentionSources, claim: ClaimAttention): void {
-  const { states, approvals, inputs, dots, rows, connectionId, ownersById } = sources
+  const { signals, approvals, inputs, dots, rows, connectionId, ownersById } = sources
 
   const ids = new Set([
-    ...Object.keys(states),
+    ...Object.keys(signals),
     ...Object.keys(approvals),
     ...inputs.keys(),
     ...Object.keys(dots).filter(id => !ownersById.has(id))
@@ -170,7 +213,7 @@ function collectRuntimeAttention(sources: SessionAttentionSources, claim: ClaimA
       continue
     }
 
-    const storedId = states[id]?.storedSessionId || id
+    const storedId = signals[id]?.storedSessionId || id
     const key = runtimeOwnerKey(id, storedId, sources)
 
     if (key) {
@@ -181,10 +224,10 @@ function collectRuntimeAttention(sources: SessionAttentionSources, claim: ClaimA
 
   for (const { id, storedId, key } of owned) {
     const dot = ownersById.get(storedId)?.size === 1 ? dots[storedId] : undefined
-    const attention = runtimeAttention(states[id], dot, Boolean(approvals[id]), inputs.has(id), inputs.get(id))
+    const attention = runtimeAttention(signals[id], dot, Boolean(approvals[id]), inputs.has(id), inputs.get(id))
 
     if (attention) {
-      const session = rows.find(row => rowOwnerKey(row, connectionId) === key && sessionMatchesStoredId(row, storedId))
+      const session = rows.find(row => sessionAgentKey(row, connectionId) === key && sessionMatchesStoredId(row, storedId))
       claim(key, { ...attention, session })
     }
   }
@@ -224,9 +267,7 @@ function collectUnreadAttention(
   // Profile-only legacy markers are attributable only to a single machine.
   for (const [profile, ids] of Object.entries(markers)) {
     const owners = new Set(
-      agents
-        .filter(agent => (agent.targetProfile || agent.profile) === profile)
-        .map(agent => agentSidebarKey({ connectionId: agent.connectionId, profile }))
+      agents.filter(agent => (agent.targetProfile || agent.profile) === profile).map(agent => agentKey(agent))
     )
 
     if (ids.length && owners.size === 1 && ids.some(id => !rows.some(row => sessionMatchesStoredId(row, id)))) {
@@ -278,7 +319,7 @@ export function useAgentSidebarAttention(
   const cron = useStore($cronSessions)
   const messaging = useStore($messagingSessions)
   const unlisted = useStore($unlistedSessionOwnerRows)
-  const states = useStore($sessionStates)
+  const signals = useStore($runtimeSignals)
   const dots = useStore($sessionDotStateById)
   const approvals = useStore($approvalRequests)
   const inputs = useStore($pendingInputs)
@@ -289,7 +330,7 @@ export function useAgentSidebarAttention(
   const agentsByOwner = new Map<string, SimplifiedAgent[]>()
 
   for (const agent of agents) {
-    const key = agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile })
+    const key = agentKey(agent)
     const entries = agentsByOwner.get(key) ?? []
     entries.push(agent)
     agentsByOwner.set(key, entries)
@@ -300,7 +341,7 @@ export function useAgentSidebarAttention(
 
   for (const row of rows) {
     for (const id of sessionAliases(row)) {
-      noteOwner(ownersById, id, rowOwnerKey(row, connectionId))
+      noteOwner(ownersById, id, sessionAgentKey(row, connectionId))
     }
   }
 
@@ -310,7 +351,7 @@ export function useAgentSidebarAttention(
 
       if (
         !previous ||
-        priority[attention.kind] < priority[previous.kind] ||
+        ATTENTION_PRIORITY[attention.kind] < ATTENTION_PRIORITY[previous.kind] ||
         (attention.kind === previous.kind && !previous.session && attention.session)
       ) {
         result.set(agent.id, attention)
@@ -318,14 +359,14 @@ export function useAgentSidebarAttention(
     }
   }
 
-  const sources = { connectionId, rows, ownersById, states, dots, approvals, inputs }
+  const sources = { connectionId, rows, ownersById, signals, dots, approvals, inputs }
   collectRuntimeAttention(sources, claim)
 
   for (const row of rows) {
     const attention = rowAttention(row, sources, unreadGuard)
 
     if (attention) {
-      claim(rowOwnerKey(row, connectionId), attention)
+      claim(sessionAgentKey(row, connectionId), attention)
     }
   }
 

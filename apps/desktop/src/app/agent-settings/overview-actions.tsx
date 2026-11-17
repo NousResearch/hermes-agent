@@ -1,8 +1,5 @@
-import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
 
-import { $apiRequestScope } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -16,41 +13,35 @@ import { PathText } from '@/components/ui/path-text'
 import { useI18n } from '@/i18n'
 import { writeClipboardText } from '@/lib/clipboard'
 import { $hiddenSidebarAgents, agentSidebarKey, setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
-import { $activeConnectionId } from '@/store/connections'
-import { $fleetRoster, refreshFleetRoster } from '@/store/fleet-roster'
+import { $fleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
-import { $profiles, refreshProfiles } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { useHiddenAgentCopy } from '../chat/sidebar/hidden-agent-copy'
-import { CreateProfileDialog } from '../profiles/create-profile-dialog'
-import { DeleteProfileDialog } from '../profiles/delete-profile-dialog'
 
+import { useAgentDialogs } from './agent-dialogs'
 import { useAgentSettingsCopy } from './copy'
-import type { AgentSettingsOwner } from './data'
+import type { AgentRouteOwner } from './data'
 import { useDefaultAgent } from './default-agent'
 import { useOverviewActionsCopy } from './overview-actions-copy'
 import { useAgentSettingsEditorCopy } from './settings-copy'
 
 interface AgentOverviewActionsProps {
-  owner: AgentSettingsOwner
+  owner: AgentRouteOwner
   profile?: ProfileInfo
-  /** The agent this page shows is gone; the page leaves it. */
-  onDeleted?: () => void
 }
 
-export function AgentOverviewActions({ owner, profile, onDeleted }: AgentOverviewActionsProps) {
+export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsProps) {
   const { t } = useI18n()
   const c = useOverviewActionsCopy()
   const shared = useHiddenAgentCopy()
   const overview = useAgentSettingsCopy()
   const general = useAgentSettingsEditorCopy().generalPage
-  const [deleting, setDeleting] = useState(false)
+  const { open, dialogs } = useAgentDialogs()
   const hiddenAgents = useStore($hiddenSidebarAgents)
   const roster = useStore($fleetRoster)
-  const [duplicate, setDuplicate] = useState<{ owner: AgentSettingsOwner; profiles: ProfileInfo[] } | null>(null)
   const { canSetDefault, isDefault, makeDefault, saving: savingDefault } = useDefaultAgent(owner, profile)
-  const route = { connectionId: owner.connectionId ?? null, profile: owner.profile }
+  const route = { connectionId: owner.connectionId, profile: owner.profile }
 
   const sidebarOwner = {
     ...route,
@@ -89,7 +80,7 @@ export function AgentOverviewActions({ owner, profile, onDeleted }: AgentOvervie
         >
           <DropdownMenuItem
             disabled={!profile}
-            onSelect={() => setDuplicate({ owner: { ...owner }, profiles: $profiles.get() })}
+            onSelect={() => open({ kind: 'duplicate', owner })}
             title={!profile ? overview.unavailable : undefined}
           >
             <Codicon name="copy" />
@@ -114,43 +105,14 @@ export function AgentOverviewActions({ owner, profile, onDeleted }: AgentOvervie
             )}
           </DropdownMenuItem>
           {profile && !profile.is_default && owner.profile !== 'default' && (
-            <DropdownMenuItem onSelect={() => setDeleting(true)} variant="destructive">
+            <DropdownMenuItem onSelect={() => open({ kind: 'delete', owner, profile })} variant="destructive">
               <Codicon name="trash" />
               <span>{general.deleteTitle}…</span>
             </DropdownMenuItem>
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <DeleteProfileDialog
-        onClose={() => setDeleting(false)}
-        onDeleted={async () => {
-          await refreshFleetRoster({ force: true })
-          onDeleted?.()
-        }}
-        open={deleting}
-        profile={profile ?? null}
-        scope={owner}
-      />
-      {duplicate && (
-        <CreateProfileDialog
-          initialCloneFrom={duplicate.owner.profile}
-          onClose={() => setDuplicate(null)}
-          onCreated={async () => {
-            if (
-              ($apiRequestScope.get().connectionId ?? $activeConnectionId.get() ?? LOCAL_CONNECTION_ID) ===
-              duplicate.owner.connectionId
-            ) {
-              await refreshProfiles().catch(error => notifyError(error, t.profiles.failedLoad))
-            }
-
-            await refreshFleetRoster({ force: true })
-          }}
-          open
-          profiles={duplicate.profiles}
-          scope={duplicate.owner}
-          title={c.duplicate}
-        />
-      )}
+      {dialogs}
     </>
   )
 }

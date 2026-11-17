@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
+import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
 import * as metrics from '@/store/ia-metrics'
@@ -125,11 +126,33 @@ it('ranks the current owner first, then balances frequency and recency without m
     makeSessionInfo({ id: '5', connection_id: 'beta', profile: 'old', last_active: 10000001 })
   ]
 
-  expect(rankNewSessionAgents(agents, sessions, 'alpha', 'current', 10000001).map(a => a.profile)).toEqual([
+  const current = agentSidebarKey({ connectionId: 'alpha', profile: 'current' })
+
+  expect(rankNewSessionAgents(agents, sessions, 'alpha', current, 10000001).map(a => a.profile)).toEqual([
     'current',
     'frequent',
     'recent',
     'old'
+  ])
+})
+
+it("credits a chat with no machine to the serving owner's agent, not the viewed machine's namesake", () => {
+  const agent = (connectionId: string, profile: string) => ({
+    id: JSON.stringify([connectionId, profile]),
+    connectionId,
+    profile,
+    label: profile,
+    gateway: connectionId
+  })
+
+  const agents = [agent('beta', 'writer'), agent('alpha', 'writer'), agent('beta', 'viewed')]
+  const sessions = [makeSessionInfo({ id: 'local', profile: 'writer', last_active: 100 })]
+  const viewed = agentSidebarKey({ connectionId: 'beta', profile: 'viewed' })
+
+  expect(rankNewSessionAgents(agents, sessions, 'alpha', viewed, 100).map(a => a.id)).toEqual([
+    agent('beta', 'viewed').id,
+    agent('alpha', 'writer').id,
+    agent('beta', 'writer').id
   ])
 })
 

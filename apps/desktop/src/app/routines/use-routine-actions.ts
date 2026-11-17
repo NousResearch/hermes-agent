@@ -1,14 +1,14 @@
-import { createCronTriggerController } from '@hermes/shared'
 import { useEffect, useState } from 'react'
 
 import { cancelCronJobRun, type CronJob, deleteCronJob, pauseCronJob, resumeCronJob, triggerCronJob } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
-import { jobState, truncateText } from '../cron/job-state'
+import { truncateText } from '../cron/job-state'
 import { jobRunInFlight } from '../cron/run-control'
+import { useCronTriggerController } from '../cron/use-cron-trigger-controller'
 
-import { routineTitle } from './routine-model'
+import { routinePaused, routineTitle } from './routine-model'
 import type { RoutineSource } from './routine-source'
 import { routineKey } from './routines-store'
 
@@ -58,14 +58,19 @@ const title = (job: CronJob) => truncateText(routineTitle(job), 60)
 export function useRoutineActions(source: RoutineSource): RoutineActions {
   const { t } = useI18n()
   const c = t.cron
-  const [triggering, setTriggering] = useKeySet()
+  // One guard per mounted surface: a second click on a routine already starting is ignored.
+  const { triggerControllerRef, triggeringJobKeys: triggering } = useCronTriggerController()
   const [busy, setBusy] = useKeySet()
   const [stopping, setStopping] = useKeySet()
-  // One guard per mounted surface: a second click on a routine already starting is ignored.
-  const [controller] = useState(() => createCronTriggerController((key, on) => setTriggering(key, on)))
   const { mutate, refresh, scopeFor } = source
 
   async function runNow(job: CronJob) {
+    const controller = triggerControllerRef.current
+
+    if (!controller) {
+      return
+    }
+
     try {
       const run = await controller.run(
         routineKey(job),
@@ -73,16 +78,19 @@ export function useRoutineActions(source: RoutineSource): RoutineActions {
         () => notify({ kind: 'info', title: c.triggerNow, message: title(job) })
       )
 
-      if (run.started && run.value) {
+      // A surface that closed meanwhile says nothing more about it.
+      if (triggerControllerRef.current === controller && run.started && run.value) {
         notify({ kind: 'success', title: c.triggered, message: title(job) })
       }
     } catch (err) {
-      notifyError(err, c.failedTrigger)
+      if (triggerControllerRef.current === controller) {
+        notifyError(err, c.failedTrigger)
+      }
     }
   }
 
   async function pauseResume(job: CronJob) {
-    const paused = jobState(job) === 'paused'
+    const paused = routinePaused(job)
     const key = routineKey(job)
 
     setBusy(key, true)

@@ -9,8 +9,9 @@ import type { AutomationBlueprint, CronJob, ProfileInfo } from '@/hermes'
 import { en } from '@/i18n/en'
 import { queryClient } from '@/lib/query-client'
 import { agentSidebarKey } from '@/store/agent-sidebar-preferences'
-import { $cronJobs, setCronJobs } from '@/store/cron'
+import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs } from '@/store/cron'
 import { $interfaceMode } from '@/store/interface-mode'
+import { notify } from '@/store/notifications'
 import { $profiles } from '@/store/profile'
 import { $shellChoice } from '@/store/shell-variant'
 
@@ -20,7 +21,13 @@ import { AgentRoutines } from './agent-routines'
 import { routinesByAgent } from './routines-by-agent'
 import { routinesCopy } from './routines-copy'
 import { RoutinesPage } from './routines-page'
-import { $routineOverviewQuery, $routineRename, closeRoutineEditor, selectRoutine } from './routines-store'
+import {
+  $routineOverviewQuery,
+  $routineRename,
+  $routineSelection,
+  closeRoutineEditor,
+  selectRoutine
+} from './routines-store'
 
 const api = vi.hoisted(() => ({
   createCronJob: vi.fn(),
@@ -30,6 +37,9 @@ const api = vi.hoisted(() => ({
   getCronJobs: vi.fn(),
   getOwnerCronDeliveryTargets: vi.fn(),
   instantiateAutomationBlueprint: vi.fn(),
+  pauseCronJob: vi.fn(),
+  resumeCronJob: vi.fn(),
+  triggerCronJob: vi.fn(),
   updateCronJob: vi.fn()
 }))
 
@@ -128,6 +138,7 @@ afterEach(() => {
   selectRoutine(null)
   $routineRename.set(null)
   $routineOverviewQuery.set('')
+  setCronFocusJobId(null)
   setCronJobs([])
   $interfaceMode.set('advanced')
   $shellChoice.set(null)
@@ -235,6 +246,61 @@ describe('the Routines page', () => {
     expect(api.updateCronJob).toHaveBeenCalledWith('job-brief', { name: 'Morning brief' }, { profile: 'default' })
   })
 
+  it('renames a Bots routine under its bot tag, and starts an unnamed routine from an empty name', async () => {
+    const botJob = { ...brief, id: 'job-bot', name: '[bot:ops] Standup digest' } as CronJob
+    api.updateCronJob.mockResolvedValue({ ...botJob, name: '[bot:ops] Team digest' })
+    $routineRename.set(botJob)
+    const { unmount } = renderPage()
+    const name = (await screen.findByLabelText(copy.name)) as HTMLInputElement
+
+    expect(name.value).toBe('Standup digest')
+    fireEvent.change(name, { target: { value: 'Team digest' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: copy.rename })))
+
+    expect(api.updateCronJob).toHaveBeenCalledWith('job-bot', { name: '[bot:ops] Team digest' }, { profile: 'default' })
+    unmount()
+
+    $routineRename.set({ ...brief, id: 'job-unnamed', name: '' } as CronJob)
+    renderPage()
+
+    expect(((await screen.findByLabelText(copy.name)) as HTMLInputElement).value).toBe('')
+  })
+
+  it('opens the routine a sidebar link names, and drops a link that names none once routines loaded', async () => {
+    const spaced = { ...paused, name: 'Candidate follow-ups ' } as CronJob
+    setCronFocusJobId('Candidate follow-ups')
+    setCronJobs([brief, failing, spaced])
+    api.getCronJobs.mockResolvedValue([brief, failing, spaced])
+    const { unmount } = renderPage()
+
+    await waitFor(() => expect($routineSelection.get()).toEqual({ id: paused.id, profile: 'default' }))
+    expect($cronFocusJobId.get()).toBeNull()
+    unmount()
+    selectRoutine(null)
+
+    setCronFocusJobId('job-that-was-deleted')
+    renderPage()
+
+    await waitFor(() => expect($cronFocusJobId.get()).toBeNull())
+    expect($routineSelection.get()).toBeNull()
+  })
+
+  it('offers Resume, not Pause, on a routine that was switched off', async () => {
+    const off = { ...brief, enabled: false, id: 'job-off', name: 'Switched off', state: undefined } as CronJob
+    setCronJobs([brief, off])
+    api.getCronJobs.mockResolvedValue([brief, off])
+    api.resumeCronJob.mockResolvedValue({ ...off, enabled: true })
+    selectRoutine({ id: off.id, profile: 'default' })
+    renderPage()
+    await screen.findAllByText(copy.whatItDoes)
+
+    expect(screen.queryByRole('button', { name: en.cron.pauseTitle })).toBeNull()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: en.cron.resumeTitle })))
+
+    expect(api.resumeCronJob).toHaveBeenCalledWith('job-off', { profile: 'default' })
+    expect(api.pauseCronJob).not.toHaveBeenCalled()
+  })
+
   it('starts from a ready-made routine: its own fields, seeded, created by the backend', async () => {
     api.instantiateAutomationBlueprint.mockResolvedValue({ ...brief, id: 'job-bp', name: 'Morning briefing' })
     renderPage()
@@ -284,6 +350,34 @@ describe('Agent › Settings › Routines', () => {
       { connectionId: null, profile: 'ops' }
     )
     expect(api.updateCronJob.mock.calls[0][1]).not.toHaveProperty('repeat')
+  })
+
+  it('never reopens a dialog the rail page left open, bound to another machine', async () => {
+    api.getAgentRoutines.mockResolvedValue([failing])
+    $routineRename.set(brief)
+    const rail = renderPage()
+    await screen.findByLabelText(copy.name)
+    rail.unmount()
+
+    renderAgent('')
+    await screen.findAllByText('Flight price monitor')
+
+    expect(screen.queryByLabelText(copy.name)).toBeNull()
+  })
+
+  it('says nothing more about a Run now once the page that started it has closed', async () => {
+    let finish: (value: CronJob) => void = () => undefined
+    api.getAgentRoutines.mockResolvedValue([failing])
+    api.triggerCronJob.mockReturnValue(new Promise<CronJob>(resolve => (finish = resolve)))
+    const { unmount } = renderAgent('?routine=job-flights')
+    await screen.findAllByText(copy.whatItDoes)
+
+    fireEvent.click(screen.getByRole('button', { name: copy.actions.runNow }))
+    await waitFor(() => expect(api.triggerCronJob).toHaveBeenCalled())
+    unmount()
+    await act(async () => finish(failing))
+
+    expect(vi.mocked(notify)).not.toHaveBeenCalledWith(expect.objectContaining({ title: en.cron.triggered }))
   })
 
   it('shows the cron expression and routine id only in developer mode', async () => {

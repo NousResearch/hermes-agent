@@ -1,4 +1,6 @@
+import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -8,8 +10,9 @@ import { $artifactRegistry, upsertArtifact } from '@/store/artifacts'
 import { $chatItemsOpen } from '@/store/chat-items'
 import { beginCronJobsRequest, commitCronJobsRequest, invalidateCronJobsRequests } from '@/store/cron'
 import { setInterfaceMode } from '@/store/interface-mode'
-import { _resetItemIndexForTests } from '@/store/item-index'
+import { _resetItemIndexForTests, ensureChatIndexed } from '@/store/item-index'
 import { setSelectedStoredSessionId, setSessions } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $shellChoice } from '@/store/shell-variant'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -143,4 +146,64 @@ it('offers the items in simple mode only, with the count, and opens them on clic
   setInterfaceMode('advanced')
   render(<SimpleButton sessionId="busy" />)
   expect(screen.queryByRole('button', { name: /items/ })).toBeNull()
+})
+
+it('offers the items in simple mode when the chat has only its agent’s routines', async () => {
+  commitCronJobsRequest(beginCronJobsRequest('\u0000all'), [
+    { enabled: true, id: 'brief', name: 'Morning brief', profile: 'default', schedule: { kind: 'interval', minutes: 60 } } as CronJob
+  ])
+  setInterfaceMode('simple')
+  render(<SimpleButton sessionId="quiet" />)
+
+  await waitFor(() => expect(getSessionMessages).toHaveBeenCalledWith('quiet', 'default', expect.anything()))
+  expect(screen.getByRole('button', { name: '1 item' })).toBeTruthy()
+})
+
+it('shows another chat from its first frame, never the artifact open in the one before', async () => {
+  const frames: Array<[null | string, boolean]> = []
+
+  function Frames() {
+    const sessionId = useStore($focusedStoredSessionId)
+
+    useLayoutEffect(() => {
+      frames.push([sessionId, Boolean(screen.queryByText('Preview of Status page'))])
+    }, [sessionId])
+
+    return null
+  }
+
+  setSelectedStoredSessionId('busy')
+  render(
+    <>
+      <ChatItemsPane />
+      <Frames />
+    </>
+  )
+  fireEvent.click(await screen.findByRole('button', { name: /Status page/ }))
+  expect(screen.getByText('Preview of Status page')).toBeTruthy()
+
+  act(() => setSelectedStoredSessionId('quiet'))
+  expect(frames.at(-1)).toEqual(['quiet', false])
+  expect(await screen.findByRole('tablist', { name: 'Chat items' })).toBeTruthy()
+})
+
+it('reads a chat listed with no profile from the default agent’s index entry, not a namesake’s', async () => {
+  getSessionMessages.mockImplementation(async (id: string, scope: unknown) => ({
+    session_id: id,
+    messages: [
+      { role: 'assistant', timestamp: 10, content: scope === 'ops' ? 'See https://example.com/ops' : 'Hello there.' }
+    ]
+  }))
+  await act(() => ensureChatIndexed({ ...row('twin', 'Ops twin'), profile: 'ops' }))
+  setSessions([{ ...row('twin', 'Twin'), profile: '' }])
+  setSelectedStoredSessionId('twin')
+  render(<ChatItemsPane />)
+
+  await waitFor(() => expect(getSessionMessages).toHaveBeenCalledWith('twin', 'default', expect.anything()))
+  expect(await screen.findByText('Nothing here yet')).toBeTruthy()
+  expect(screen.queryByRole('link', { name: /example\.com/ })).toBeNull()
+
+  // The namesake is in the same index: the chat listed under its own profile reads it.
+  act(() => setSessions([{ ...row('twin', 'Ops twin'), profile: 'ops' }]))
+  expect(await screen.findByRole('link', { name: /example\.com/ })).toBeTruthy()
 })

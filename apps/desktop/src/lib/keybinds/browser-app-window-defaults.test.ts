@@ -191,3 +191,20 @@ it('factory defaults spelled ctrl and mod do not warn against each other', async
 
   expect(warned.map(action => action.id).filter(id => /^(profile\.switch|session\.slot)\./.test(id))).toEqual([])
 })
+
+it.each([
+  ['MacIntel', 'mod+[', 'mod+]'],
+  ['Win32', 'alt+left', 'alt+right']
+])('an app window (no browser toolbar) binds Back/Forward on %s; a tab leaves them to the browser', async (platform, back, forward) => {
+  setPlatform(platform)
+  const moveTo = stubDisplayMode('standalone')
+  const { bindingsFor } = await import('@/store/keybinds')
+
+  expect(bindingsFor('nav.back')).toEqual([back])
+  expect(bindingsFor('nav.forward')).toEqual([forward])
+
+  moveTo('browser')
+
+  expect(bindingsFor('nav.back')).toEqual([])
+  expect(bindingsFor('nav.forward')).toEqual([])
+})

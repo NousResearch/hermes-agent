@@ -60,8 +60,9 @@ import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
-import { useSettingsOwner } from './profile-scope'
+import { useSettingsRequestScope } from './profile-scope'
 import { SettingsDisclosure } from './settings-card'
+import { useSettingsEditsActiveAgent } from './settings-owner-request'
 import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -261,6 +262,15 @@ interface StaleAuxWarningProps {
 // existing one-click reset rather than auto-clearing legitimate pins.
 // Sized to be read at a glance (#66740) with the theme-aware amber text the
 // app's warn badges use, so light mode keeps its contrast.
+/** The warning a main-model switch leaves behind, spaced under the controls it follows. */
+function SwitchStaleAux(props: StaleAuxWarningProps) {
+  return props.slots.length > 0 ? (
+    <div className="mt-2">
+      <StaleAuxWarning {...props} />
+    </div>
+  ) : null
+}
+
 function StaleAuxWarning({ applying, onDismiss, onReset, slots, taskLabel }: StaleAuxWarningProps) {
   const { t } = useI18n()
   const m = t.settings.model
@@ -417,8 +427,8 @@ export function ModelSettings({
   advancedChildren,
   advancedOpen
 }: ModelSettingsProps) {
-  const owner = useSettingsOwner()
-  const scopeProfile = owner ?? requestedProfile
+  const scopeProfile = useSettingsRequestScope(requestedProfile)
+  const editsActiveAgent = useSettingsEditsActiveAgent(requestedProfile)
   const { t } = useI18n()
   const m = t.settings.model
   const showMain = subpage === undefined || subpage === 'main'
@@ -932,9 +942,9 @@ export function ModelSettings({
       setSwitchStaleAux(result.stale_aux ?? [])
       notify({ kind: 'success', title: m.mainAppliedTitle, message: m.mainAppliedMessage(model) })
 
-      // Live UI stores mirror the ACTIVE profile's model; a scoped apply
-      // changed a different profile and must not repaint them.
-      if (scopeProfile == null) {
+      // Live UI stores mirror the ACTIVE agent's model; an apply to any other
+      // profile or machine must not repaint them.
+      if (editsActiveAgent) {
         onMainModelChanged?.(provider, model)
       }
 
@@ -945,6 +955,7 @@ export function ModelSettings({
       setApplying(false)
     }
   }, [
+    editsActiveAgent,
     m,
     onMainModelChanged,
     refresh,
@@ -1099,6 +1110,15 @@ export function ModelSettings({
     </div>
   )
 
+  const staleAux = { applying, onReset: () => void resetAuxiliaryModels(), taskLabel: auxiliaryTaskLabel }
+
+  const mainNotices = (
+    <>
+      {errorNotice}
+      <SwitchStaleAux {...staleAux} slots={switchStaleAux} />
+    </>
+  )
+
   const mainDefaults = config && mainModel && (
     <MainModelDefaults config={config} mainModel={mainModel} onChange={writeAgentDefault} providers={providers} />
   )
@@ -1207,18 +1227,10 @@ export function ModelSettings({
               </p>
             )}
             {!agentLayout && mainDefaults}
-            {errorNotice}
-            {switchStaleAux.length > 0 && (
-              <div className="mt-2">
-                <StaleAuxWarning
-                  applying={applying}
-                  onReset={() => void resetAuxiliaryModels()}
-                  slots={switchStaleAux}
-                  taskLabel={auxiliaryTaskLabel}
-                />
-              </div>
-            )}
+            {!agentLayout && mainNotices}
           </MainModelControls>
+          {/* A closed picker popover must not hide a load or apply failure. */}
+          {agentLayout && mainNotices}
         </section>
       )}
       {mainFooter}

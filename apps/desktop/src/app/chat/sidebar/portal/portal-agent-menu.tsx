@@ -15,7 +15,7 @@ import { recordIaAction } from '@/store/ia-metrics'
 
 import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
-import type { SimplifiedAgent } from '../use-simplified-agents'
+import { agentOwner, type SimplifiedAgent } from '../use-simplified-agents'
 
 function HiddenAgentExplanation() {
   const c = useHiddenAgentCopy()
@@ -48,7 +48,7 @@ interface PortalAgentMenuProps {
 
 export function PortalAgentMenu({ agent, hidden, pending, onOpen }: PortalAgentMenuProps) {
   const c = useHiddenAgentCopy()
-  const owner = { connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile }
+  const owner = agentOwner(agent)
 
   return (
     <DropdownMenu>

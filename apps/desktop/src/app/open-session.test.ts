@@ -14,8 +14,9 @@ const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
 
+vi.mock('@/store/session-owner-open', () => ({ canOpenSessionOwner: () => true }))
+
 vi.mock('@/store/session-states', () => ({
-  canOpenSessionOwner: () => true,
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
     !focused || (focused === 'main' && workspaceIsPage),
   focusedSessionWorkspaceScope: () => focusedSessionWorkspaceScope(),

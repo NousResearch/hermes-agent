@@ -21,9 +21,10 @@ is never judged.
 
 Ratchet: ``scripts/desktop_design_tokens_baseline.json`` holds each file's finding count from the
 day the guard landed; a file may only go down. A higher count fails; a lower one is an advisory
-to refresh the baseline (``--write-baseline``). Two findings always fail, baseline or not:
+to refresh the baseline (``--write-baseline``). Three findings always fail, baseline or not:
 
-  undefined-token  ``var(--portal-…)`` naming a property defined nowhere (CSS or TS): a typo or a
+  undefined-token  ``var(--portal-…)`` naming a property defined nowhere (a CSS declaration, a TS
+                   style key or ``setProperty``; a comment neither defines nor reads): a typo or a
                    token deleted while still in use
   page-column      ``var(--portal-column-page)`` read outside tokens/ and the page stage contract
                    (``app/redesign/portal-pages.css``): a page sizing its own column instead of
@@ -63,6 +64,9 @@ BASELINE = REPO / "scripts" / "desktop_design_tokens_baseline.json"
 PAGE_COLUMN = "--portal-column-page"
 PAGE_STAGE_CONTRACT = "app/redesign/portal-pages.css"
 
+# Stylesheets whose rules only redesign markup can match: their classes and hooks
+# (``[data-page-surface]``, ``.onboarding-v2``, …) are emitted only on the redesign's branch of the
+# TSX. Which branch emits a class is not visible from the CSS, so the set is named, not derived.
 _REDESIGN_ONLY = (
     re.compile(r"^app/redesign/[^/]+\.css$"),
     re.compile(r"^app/chat/sidebar/portal/[^/]+\.css$"),
@@ -71,6 +75,10 @@ _REDESIGN_ONLY = (
     re.compile(r"^app/settings/(global-overviews|appearance-overview|portal-safety-fields|agent-config-fields)\.css$"),
     re.compile(r"^app/routines/[^/]+\.css$"),
     re.compile(r"^app/overlays/panel\.css$"),
+    re.compile(r"^app/(library/library|messaging/messaging|session-import/session-import|page-search-shell)\.css$"),
+    re.compile(r"^app/capabilities/ui/capability-search\.css$"),
+    re.compile(r"^app/chat/(stage|items/chat-items)\.css$"),
+    re.compile(r"^components/(onboarding/surface|ui/pixel-icon)\.css$"),
 )
 _GATE = re.compile(r"data-shell=['\"]?portal")
 # Token files in the order the cascade imports them (tokens/index.css); the docs follow it.
@@ -317,44 +325,111 @@ def file_findings(rel: str, text: str) -> list[Finding]:
 
 _CSS_DEF = re.compile(r"(?<![\w-])(--portal-[\w-]+)\s*:")
 _REF = re.compile(r"var\(\s*(--portal-[\w-]+)|\((?:[a-z-]+:)?(--portal-[\w-]+)\)")
-_TS_MENTION = re.compile(r"--portal-[\w-]+")
+# What publishes a token at runtime from TS/TSX: a style-object key (``'--portal-x': …``), CSS text in a
+# template (``--portal-x: …;``), a Tailwind arbitrary property (``[--portal-x:…]``) or setProperty.
+_TS_DEF = re.compile(
+    r"(?<![\w-])(--portal-[\w-]+)['\"`]?\s*:|setProperty\(\s*['\"`](--portal-[\w-]+)['\"`]"
+)
 
 
 def _script_files(src: Path) -> list[Path]:
     return sorted(p for p in src.rglob("*") if p.suffix in (".ts", ".tsx", ".mts") and "node_modules" not in p.parts)
 
 
+def strip_comments(text: str, script: bool) -> str:
+    """``text`` with every comment blanked to spaces (newlines kept, so line numbers hold): CSS block
+    comments, plus line comments in a script. Strings and template literals (with their ``${…}``)
+    are skipped whole, so a ``//`` in a URL is not a comment."""
+    out = list(text)
+    n = len(text)
+
+    def blank(start: int, end: int) -> None:
+        for k in range(start, end):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def string_end(i: int) -> int:
+        quote = text[i]
+        i += 1
+        while i < n and text[i] not in (quote, "\n"):
+            i += 2 if text[i] == "\\" else 1
+        return i + 1
+
+    def template_end(i: int) -> int:
+        i += 1
+        while i < n and text[i] != "`":
+            if text[i] == "\\":
+                i += 2
+            elif text.startswith("${", i):
+                i = code_end(i + 2, closing=True)
+            else:
+                i += 1
+        return i + 1
+
+    def code_end(i: int, closing: bool) -> int:
+        depth = 0
+        while i < n:
+            ch = text[i]
+            if text.startswith("/*", i):
+                end = text.find("*/", i + 2)
+                end = n if end < 0 else end + 2
+                blank(i, end)
+                i = end
+            elif script and text.startswith("//", i):
+                end = text.find("\n", i)
+                end = n if end < 0 else end
+                blank(i, end)
+                i = end
+            elif ch in "'\"":
+                i = string_end(i)
+            elif script and ch == "`":
+                i = template_end(i)
+            else:
+                if closing and ch == "{":
+                    depth += 1
+                elif closing and ch == "}":
+                    if depth == 0:
+                        return i + 1
+                    depth -= 1
+                i += 1
+        return n
+
+    code_end(0, closing=False)
+    return "".join(out)
+
+
 def references(src: Path) -> tuple[set[str], dict[str, list[tuple[str, int]]]]:
-    """(names defined anywhere, name → reference sites). TS/TSX mentions outside ``var(…)`` count as
-    definitions: style objects and setProperty publish tokens at runtime."""
+    """(names defined anywhere, name → reference sites), comments excluded. A TS/TSX definition is a
+    style-object key, CSS text, a Tailwind arbitrary property or a setProperty call, never a mere
+    mention."""
     defined: set[str] = set()
     refs: dict[str, list[tuple[str, int]]] = {}
     for path in [*css_files(src), *_script_files(src)]:
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-        if "--portal-" not in text:
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+        if "--portal-" not in raw:
             continue
+        script = path.suffix != ".css"
+        text = strip_comments(raw, script)
         rel = path.relative_to(src).as_posix()
-        ref_spans: list[tuple[int, int]] = []
         for m in _REF.finditer(text):
-            name = m.group(1) or m.group(2)
-            refs.setdefault(name, []).append((rel, text.count("\n", 0, m.start()) + 1))
-            ref_spans.append(m.span(1) if m.group(1) else m.span(2))
-        if path.suffix == ".css":
-            defined.update(_CSS_DEF.findall(text))
+            refs.setdefault(m.group(1) or m.group(2), []).append((rel, text.count("\n", 0, m.start()) + 1))
+        if script:
+            defined.update(m.group(1) or m.group(2) for m in _TS_DEF.finditer(text))
         else:
-            for m in _TS_MENTION.finditer(text):
-                if not any(a <= m.start() < b for a, b in ref_spans):
-                    defined.add(m.group(0))
+            defined.update(_CSS_DEF.findall(text))
     return defined, refs
 
 
 # ── Generated docs ───────────────────────────────────────────────────────────────────────────
 
+# A token file's root-level blocks: the base (both themes), the dark override and the light one.
 _MODE_SELECTORS = {
-    ":root[data-shell='portal']": "dark",
+    ":root[data-shell='portal']": "base",
     ":root.dark[data-shell='portal']": "dark",
     ":root[data-shell='portal']:not(.dark)": "light",
 }
+# The root element under extra conditions (a host, a pointer) inside an at-rule.
+_ROOT_VARIANT = re.compile(r"^(?:html|:root)(?:\[[^\]]+\]|\.[\w-]+|:not\([^)]*\))+$")
 _FILE_TITLES = {
     "raw": "Primitives (`raw.css`): the only colour literals",
     "color": "Colour roles (`color.css`)",
@@ -372,31 +447,66 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
+@dataclass
+class TokenRow:
+    values: dict[str, str] = field(default_factory=dict)  # mode → value
+    note: str = ""
+    overrides: list[str] = field(default_factory=list)  # "`(condition)`: `value`", in source order
+
+    def cells(self) -> tuple[str, str, str]:
+        dark = self.values.get("dark", self.values.get("base", ""))
+        light = self.values.get("light", self.values.get("base", ""))
+        light_cell = "″" if not light or light == dark else f"`{_cell(light)}`"
+        note = " ".join(filter(None, [self.note, "; ".join(self.overrides) + "." if self.overrides else ""]))
+        return f"`{_cell(dark)}`", light_cell, _cell(note)
+
+
+def _token_rows(css: str) -> dict[str, TokenRow]:
+    """A token file's custom properties: the theme values from its root-level mode blocks, then each
+    override an at-rule makes (a width class, a coarse pointer) noted with its condition. Only
+    root-level blocks set the base: a nested block's value applies under its condition alone."""
+    rows: dict[str, TokenRow] = {}
+    for block in parse_css(css).children:
+        mode = _MODE_SELECTORS.get(block.prelude)
+        if mode is not None:
+            for decl in block.decls:
+                if decl.prop.startswith("--"):
+                    row = rows.setdefault(decl.prop, TokenRow())
+                    row.values[mode] = decl.value
+                    row.note = row.note or decl.note
+        elif block.prelude.startswith("@"):
+            condition = block.prelude.split(None, 1)[-1]
+            for rule in block.children:
+                rule_mode = _MODE_SELECTORS.get(rule.prelude)
+                if rule_mode == "base":
+                    scope = ""
+                elif rule_mode is not None:
+                    scope = f" ({rule_mode})"
+                elif _ROOT_VARIANT.match(rule.prelude):
+                    scope = f" on `{rule.prelude}`"
+                else:
+                    continue
+                for decl in rule.decls:
+                    if decl.prop.startswith("--"):
+                        rows.setdefault(decl.prop, TokenRow()).overrides.append(
+                            f"`{condition}`{scope}: `{decl.value}`"
+                        )
+    return rows
+
+
 def render_docs(tokens_dir: Path) -> str:
     out = [DOCS_BEGIN, ""]
     for stem in TOKEN_FILES:
         path = tokens_dir / f"{stem}.css"
         if not path.exists():
             continue
-        rows: dict[str, dict[str, str]] = {}
-        for block in parse_css(path.read_text(encoding="utf-8-sig")).walk():
-            mode = _MODE_SELECTORS.get(block.prelude)
-            if mode is None:
-                continue
-            for decl in block.decls:
-                if not decl.prop.startswith("--"):
-                    continue
-                row = rows.setdefault(decl.prop, {"note": ""})
-                row[mode] = decl.value
-                row["note"] = row["note"] or decl.note
+        rows = _token_rows(path.read_text(encoding="utf-8-sig"))
         if not rows:
             continue
         out += [f"#### {_FILE_TITLES[stem]}", "", "| Token | Dark | Light | Note |", "|---|---|---|---|"]
         for name, row in rows.items():
-            dark = row.get("dark", "")
-            light = row.get("light", "")
-            light_cell = "″" if not light or light == dark else f"`{_cell(light)}`"
-            out.append(f"| `{name}` | `{_cell(dark)}` | {light_cell} | {_cell(row['note'])} |")
+            dark, light, note = row.cells()
+            out.append(f"| `{name}` | {dark} | {light} | {note} |")
         out.append("")
     out.append(DOCS_END)
     return "\n".join(out)

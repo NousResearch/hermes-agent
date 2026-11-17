@@ -9,12 +9,23 @@ export interface AgentRef {
   profile: string
 }
 
-// The app's own machine is spelled both `null` and 'local' depending on who resolved it.
-const machine = (agent: AgentRef) => agent.connectionId ?? 'local'
+/** The app's own machine is spelled both `null` and 'local' depending on who resolved it; compare
+ *  machines only through this. */
+export const agentMachine = (connectionId: null | string | undefined) => connectionId ?? 'local'
 
-const sameAgent = (a: AgentRef, b: AgentRef) => a.profile === b.profile && machine(a) === machine(b)
+const sameAgent = (a: AgentRef, b: AgentRef) =>
+  a.profile === b.profile && agentMachine(a.connectionId) === agentMachine(b.connectionId)
 
 export const $lastViewedAgent = atom<AgentRef | null>(null)
+
+/** A deleted agent is no longer where the Agents destination should land. */
+export function forgetViewedAgent(agent: AgentRef) {
+  const current = $lastViewedAgent.get()
+
+  if (current && sameAgent(current, agent)) {
+    $lastViewedAgent.set(null)
+  }
+}
 
 export function rememberViewedAgent(agent: AgentRef) {
   const current = $lastViewedAgent.get()

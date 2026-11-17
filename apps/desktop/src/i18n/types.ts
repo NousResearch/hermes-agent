@@ -2761,7 +2761,6 @@ export interface Translations extends NoticeTranslations {
     tabLinks: string
     noArtifactsTitle: string
     noArtifactsDesc: string
-    partialIndex: (failed: number, total: number) => string
     failedLoad: string
     openFailed: string
     itemsImage: string
@@ -3886,6 +3885,7 @@ export interface Translations extends NoticeTranslations {
     hideStripTab: (title: string) => string
     zoneMenuLabel: (title: string) => string
     lastTabKeptTitle: string
+    resizePanes: string
     lastTabKeptBody: string
     toggleStripTab: (title: string) => string
     minimize: string
@@ -4241,6 +4241,8 @@ export interface Translations extends NoticeTranslations {
   desktop: {
     audioReadFailed: string
     sessionUnavailable: string
+    sessionOwnerConflictTitle: string
+    sessionOwnerConflictBody: string
     sessionOpenFailed: string
     createSessionFailed: string
     promptFailed: string

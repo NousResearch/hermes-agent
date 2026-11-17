@@ -1,12 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type * as Nanostores from 'nanostores'
-import { MemoryRouter } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
 import { en } from '@/i18n/en'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
+import { $shellChoice } from '@/store/shell-variant'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { ProfilesView } from './index'
@@ -18,7 +18,12 @@ import { ProfilesView } from './index'
 // stranding it on a dead backend. The drift that motivated the fix got in
 // precisely because nothing rendered this view.
 
-afterEach(cleanup)
+// The classic shell's Profiles page; the redesign's Agents destination is agent-settings/directory.
+beforeEach(() => $shellChoice.set(false))
+afterEach(() => {
+  cleanup()
+  $shellChoice.set(null)
+})
 
 // Real i18n (useI18n falls back to English with no provider), so labels are the
 // actual strings — no brittle key snapshot to maintain here.
@@ -106,11 +111,7 @@ function realClick(el: HTMLElement) {
 // mount setState isn't left unwrapped.
 async function renderProfilesView() {
   await act(async () => {
-    render(
-      <MemoryRouter initialEntries={['/profiles?manage=true']}>
-        <ProfilesView onClose={vi.fn()} />
-      </MemoryRouter>
-    )
+    render(<ProfilesView onClose={vi.fn()} />)
   })
 }
 

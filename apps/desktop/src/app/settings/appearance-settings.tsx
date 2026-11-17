@@ -1353,7 +1353,7 @@ function AppearanceSettingsDetail({ subpage }: AppearanceSettingsProps) {
         <div className={subpage === undefined ? 'mt-2' : undefined}>
           {show('general') && (
             <ListRow
-              action={<LanguageSwitcher className="language-switcher-trigger" />}
+              action={<LanguageSwitcher />}
               description={isSavingLocale ? t.language.saving : t.language.description}
               id={settingElementId(ids.language)}
               title={t.language.label}

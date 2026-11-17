@@ -7,7 +7,7 @@ import type { GatewayRequester } from '@/lib/yolo-session'
 import { activeGateway, requestGatewayForAgent } from './gateway'
 import { $gatewayReadyAt } from './live-sync'
 import { clearFreeTierIntro, dismissFirstRunOnboarding } from './onboarding'
-import { $setupGuidePhase as $onboardingPhase } from './onboarding-phase'
+import { $setupGuidePhase } from './onboarding-phase'
 import { markOnboardingDecided, ONBOARDING_DECIDE_OFFER_MS, setOnboardingSurfaceActive } from './onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from './onboarding-scope'
 import { $setupGuideOnboarding } from './shell-policy'
@@ -23,7 +23,7 @@ export const $guideStep = atom<GuideStep>('preferences')
 export const $guideRequest = atom<OnboardingRequest | null>(null)
 export const $guideScope = atom<OnboardingScope | null>(null)
 export const $decideExit = atom<(() => void) | null>(null)
-export const $onboardingSettleFrom = atom<number | null>(null)
+export const $guideSettleFrom = atom<number | null>(null)
 export const $guideSuspended = atom(false)
 export const $guideRecovery = atom<{
   message: string
@@ -37,7 +37,7 @@ $setupGuideOnboarding.listen(() => {
 })
 
 computed(
-  [$onboardingPhase, $setupGuideOnboarding, $guideRecovery],
+  [$setupGuidePhase, $setupGuideOnboarding, $guideRecovery],
   (phase, redesign, recovery) => redesign && (phase === 'shown' || recovery !== null)
 ).subscribe(active => setOnboardingSurfaceActive('setup-guide', active))
 
@@ -52,7 +52,7 @@ function show(state: OnboardingRunStateResult, request: OnboardingRequest, scope
   $guideRequest.set(request)
   $guideScope.set(scope)
   $guideStep.set(state.step ?? 'preferences')
-  $onboardingPhase.set('shown')
+  $setupGuidePhase.set('shown')
 }
 
 function pinRequest(request: OnboardingRequest, scope: OnboardingScope): OnboardingRequest {
@@ -124,7 +124,7 @@ export async function startOnboarding(request: OnboardingRequest, scope = captur
 }
 
 export function suspendOnboarding(): void {
-  if ($setupGuideOnboarding.get() && $onboardingPhase.get() === 'shown') {
+  if ($setupGuideOnboarding.get() && $setupGuidePhase.get() === 'shown') {
     $guideSuspended.set(true)
   }
 }
@@ -161,8 +161,8 @@ function settleGuide(outcome: 'done' | 'skipped'): void {
   // Dismissing provider setup never claims readiness; a real credential wall still opens it.
   dismissFirstRunOnboarding()
   clearFreeTierIntro()
-  $onboardingPhase.set(outcome)
-  $onboardingSettleFrom.set(Date.now())
+  $setupGuidePhase.set(outcome)
+  $guideSettleFrom.set(Date.now())
 }
 
 export async function finishOnboarding(outcome: 'done' | 'skipped'): Promise<boolean> {
@@ -187,14 +187,14 @@ export async function finishOnboarding(outcome: 'done' | 'skipped'): Promise<boo
 export async function reconcileOnboarding(): Promise<void> {
   const request = $guideRequest.get()
 
-  if (!request || !$setupGuideOnboarding.get() || $onboardingPhase.get() !== 'shown') {
+  if (!request || !$setupGuideOnboarding.get() || $setupGuidePhase.get() !== 'shown') {
     return
   }
 
   const current = generation
   const state = await request<OnboardingRunStateResult>('onboarding.state')
 
-  if (current !== generation || $onboardingPhase.get() !== 'shown') {
+  if (current !== generation || $setupGuidePhase.get() !== 'shown') {
     return
   }
 
@@ -254,7 +254,7 @@ async function readAndStart(request: OnboardingRequest, scope = captureOnboardin
 
     if (!state.run) {
       // Only a persisted sessionless guide owns the welcome; run=false alone may predate it.
-      if (state.started || $onboardingPhase.get() === 'shown') {
+      if (state.started || $setupGuidePhase.get() === 'shown') {
         settleGuide('done')
       }
 

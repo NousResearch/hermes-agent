@@ -541,7 +541,9 @@ export const arRedesign: RedesignOverlay = {
       gateway: 'الجهاز',
       reconnectGateway: 'إعادة الاتصال بالجهاز',
       machineSettings: 'الأجهزة',
-      restartTitle: 'إعادة تشغيل Hermes على هذا الجهاز؟'
+      restartTitle: 'إعادة تشغيل Hermes على هذا الجهاز؟',
+      switchToMachine: 'التبديل إلى هذا الجهاز',
+      restartBody: 'ستتوقف الردود الجارية على هذا الجهاز. سيعود خلال ثوانٍ ويعيد الاتصال تلقائيًا.'
     },
     statusbar: {
       gateway: 'الجهاز',
@@ -724,7 +726,6 @@ export const arRedesign: RedesignOverlay = {
     noArtifactsTitle: 'لا يوجد شيء في مكتبتك بعد',
     failedLoad: 'فشل تحميل المكتبة',
     colSession: 'المحادثة',
-    partialIndex: (failed, total) => `تم تخطي ${failed} من ${total} محادثات حديثة أثناء فهرسة المكتبة.`
   },
   artifactPreview: {
     missingTitle: 'العنصر غير متاح',

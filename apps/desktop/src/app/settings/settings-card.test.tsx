@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { ListRow, ToggleRow } from './primitives'
-import { SettingsCard, SettingsDisclosure } from './settings-card'
+import { SettingsCard, SettingsDisclosure, SettingsOverview } from './settings-card'
 
 afterEach(() => {
   act(() => $shellChoice.set(null))
@@ -102,5 +102,24 @@ describe('SettingsCard', () => {
 
     expect(card.className).toBe('grid gap-3')
     expect(card.textContent).toBe('Row')
+  })
+})
+
+describe('classic page blocks', () => {
+  it('add no element of their own unless a call site names its classic wrapper', () => {
+    act(() => $shellChoice.set(false))
+
+    const { container } = render(
+      <SettingsOverview>
+        <SettingsCard>
+          <p>Row</p>
+        </SettingsCard>
+        <SettingsCard classicClassName="grid gap-1">
+          <p>Field</p>
+        </SettingsCard>
+      </SettingsOverview>
+    )
+
+    expect(container.innerHTML).toBe('<p>Row</p><div class="grid gap-1"><p>Field</p></div>')
   })
 })

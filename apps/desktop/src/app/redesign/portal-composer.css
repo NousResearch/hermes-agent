@@ -52,7 +52,7 @@
    strength (906:19872 paints it at .8) while the composer holds focus (its
    resting landing state), dimmed to half that once focus leaves, so no ring
    outlines the autofocused card. */
-.portal-composer-edge {
+:where(:root[data-shell='portal']) .portal-composer-edge {
   position: absolute;
   z-index: var(--portal-layer-dock);
   inset: auto 0 0;

@@ -29,7 +29,8 @@ interface SimplifiedGatewayHeaderProps {
   label: string
   selected: boolean
   open: boolean
-  onToggle: () => void
+  /** Absent while a search holds the machine open: the row then stands as a disabled disclosure. */
+  onToggle?: () => void
 }
 
 /** A machine row (Figma 147:7470): name with its organisation as a quiet inline tag, the status at
@@ -77,6 +78,8 @@ export function SimplifiedGatewayHeader({
       <Tip label={address ? `${label} · ${address}` : undefined}>
         <RowButton
           aria-describedby={statusId}
+          // aria-disabled, not disabled: the row stays on the arrow-key walk while it cannot fold.
+          aria-disabled={onToggle ? undefined : true}
           aria-expanded={open}
           aria-label={toggleLabel}
           className="portal-machine-row"

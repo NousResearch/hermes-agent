@@ -98,7 +98,7 @@ describe('hardcoded copy per shell', () => {
       cronAction: 'Routines · pause',
       cronList: { detail: '- Routine\n- Digest', subtitle: '2 routines' },
       cronNone: { detail: 'No routines yet', subtitle: 'No routines yet' },
-      jobFallback: '1 routine',
+      jobFallback: 'Routine',
       logEmpty: 'No recent Hermes service log lines',
       probe: 'Machine reconfiguration is unavailable in browser-hosted Desktop',
       remoteSignIn: 'Sign in to remote machine',

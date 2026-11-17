@@ -6,6 +6,7 @@ import type { DesktopConnectionKind } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBrowserHostedDesktop } from '@/lib/platform'
+import { agentSidebarKey, type AgentSidebarOwner } from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
 import { $fleetRoster } from '@/store/fleet-roster'
@@ -21,6 +22,23 @@ export interface SimplifiedAgent {
   gateway: string
   connectionKind?: DesktopConnectionKind
   targetProfile?: string
+}
+
+/** The backend owner an agent stands for: its machine and the profile that machine serves (a
+ *  roster agent may be listed under another name). */
+export function agentOwner(agent: Pick<SimplifiedAgent, 'connectionId' | 'profile' | 'targetProfile'>): AgentSidebarOwner {
+  return { connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile }
+}
+
+/** The one key everything per agent shares: its chats, hide, disclosure, order, Show all, attention. */
+export function agentKey(agent: Pick<SimplifiedAgent, 'connectionId' | 'profile' | 'targetProfile'>): string {
+  return agentSidebarKey(agentOwner(agent))
+}
+
+/** The key of the agent a chat belongs to. A row names the profile its backend serves; a row with no
+ *  machine is the serving owner's. */
+export function sessionAgentKey(row: SessionInfo, owner: string | null): string {
+  return agentSidebarKey({ connectionId: row.connection_id || owner, profile: row.profile || 'default' })
 }
 
 export function useSimplifiedOwner() {
@@ -102,25 +120,23 @@ export function useSimplifiedAgents(sessions: SessionInfo[]) {
     })
   }
 
+  // Keyed by `agentKey`: read with `sessionsByAgent.get(agentKey(agent))`.
   const sessionsByAgent = new Map<string, SessionInfo[]>()
+  const known = new Set([...agents.values()].map(agentKey))
 
   for (const session of sessions) {
-    const connectionId = session.connection_id || owner
-    const profile = session.profile || 'default'
-    const id = JSON.stringify([connectionId, profile])
-    const rows = sessionsByAgent.get(id) ?? []
+    const key = sessionAgentKey(session, owner)
+    const rows = sessionsByAgent.get(key) ?? []
     rows.push(session)
-    sessionsByAgent.set(id, rows)
+    sessionsByAgent.set(key, rows)
 
     // Keep chats reachable while the profile roster is loading or incomplete.
-    if (!agents.has(id)) {
-      agents.set(id, {
-        id,
-        profile,
-        label: profile,
-        connectionId,
-        gateway: machineLabel(connectionId)
-      })
+    if (!known.has(key)) {
+      const connectionId = session.connection_id || owner
+      const profile = session.profile || 'default'
+      const id = JSON.stringify([connectionId, profile])
+      known.add(key)
+      agents.set(id, { id, profile, label: profile, connectionId, gateway: machineLabel(connectionId) })
     }
   }
 

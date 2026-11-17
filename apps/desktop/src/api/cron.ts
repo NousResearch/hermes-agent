@@ -10,9 +10,9 @@ import type {
 import type { SessionInfo } from '@/types/hermes'
 
 import {
-  ambientOwnerConnectionId,
   capabilityScoped,
   connectionScoped,
+  getApiRequestConnection,
   hermesApi,
   profileScoped,
   STARTUP_REQUEST_TIMEOUT_MS
@@ -68,7 +68,10 @@ export function getCronJob(jobId: string): Promise<CronJob> {
 }
 
 export async function getCronJobRuns(jobId: string, limit = 20, scope?: CronOwnerScope): Promise<SessionInfo[]> {
-  const owner = scope?.connectionId || ambientOwnerConnectionId()
+  // Captured before awaiting: runs belong to the source the request is pinned
+  // to, `local` included. An unpinned request rides the profile door, which can
+  // resolve to a legacy per-profile remote override, so its runs stay untagged.
+  const owner = scope?.connectionId?.trim() || getApiRequestConnection()
 
   const { runs } = await hermesApi<{ runs: SessionInfo[] }>({
     ...cronScoped(scope),

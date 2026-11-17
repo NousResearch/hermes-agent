@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { keybindAction } from '@/lib/keybinds/actions'
 
-import { useMouseHistoryButtons } from './history-position'
+import { $workspaceIsPage, NEW_CHAT_ROUTE } from '../routes'
+
+import { $historyPosition, useMouseHistoryButtons } from './history-position'
 
 vi.mock('@/lib/host-capabilities', () => ({ hostHas: () => true }))
 
@@ -16,7 +18,7 @@ describe('mouse back/forward buttons', () => {
   it('walk the window history in the redesign', () => {
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined)
     const forward = vi.spyOn(window.history, 'forward').mockImplementation(() => undefined)
-    renderHook(() => useMouseHistoryButtons(true))
+    renderHook(() => useMouseHistoryButtons(true, vi.fn()))
 
     fireEvent.mouseDown(window.document.body, { button: 3 })
     fireEvent.mouseDown(window.document.body, { button: 4 })
@@ -28,7 +30,7 @@ describe('mouse back/forward buttons', () => {
 
   it('leave a press the preview pane already claimed for its own page', () => {
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined)
-    renderHook(() => useMouseHistoryButtons(true))
+    renderHook(() => useMouseHistoryButtons(true, vi.fn()))
     const { getByTestId } = render(<aside data-testid="preview" onMouseDown={event => event.preventDefault()} />)
 
     fireEvent.mouseDown(getByTestId('preview'), { button: 3 })
@@ -36,9 +38,23 @@ describe('mouse back/forward buttons', () => {
     expect(back).not.toHaveBeenCalled()
   })
 
+  it('take the band Back’s way out of a workspace page with nothing behind it', () => {
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined)
+    const navigate = vi.fn()
+    $historyPosition.set({ index: 0, last: 0 })
+    $workspaceIsPage.set(true)
+    renderHook(() => useMouseHistoryButtons(true, navigate))
+
+    fireEvent.mouseDown(window.document.body, { button: 3 })
+
+    expect(navigate).toHaveBeenCalledWith(NEW_CHAT_ROUTE)
+    expect(back).not.toHaveBeenCalled()
+    $workspaceIsPage.set(false)
+  })
+
   it('do nothing in the classic shell', () => {
     const back = vi.spyOn(window.history, 'back').mockImplementation(() => undefined)
-    renderHook(() => useMouseHistoryButtons(false))
+    renderHook(() => useMouseHistoryButtons(false, vi.fn()))
 
     fireEvent.mouseDown(window.document.body, { button: 3 })
 

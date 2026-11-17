@@ -49,18 +49,23 @@ export function routineIssue(job: CronJob, nowMs = Date.now()): null | RoutineIs
   return nextRunOverdueMs(job, nowMs) === null ? null : 'overdue'
 }
 
+/** Paused or switched off: filed under Paused, and offered Resume rather than Pause. */
+export function routinePaused(job: CronJob): boolean {
+  const state = jobState(job)
+
+  return state === 'paused' || state === 'disabled'
+}
+
 export function routineGroup(job: CronJob, nowMs = Date.now()): RoutineGroup {
   if (routineIssue(job, nowMs)) {
     return 'attention'
   }
 
-  const state = jobState(job)
-
-  if (state === 'completed') {
+  if (jobState(job) === 'completed') {
     return 'finished'
   }
 
-  return state === 'paused' || state === 'disabled' ? 'paused' : 'scheduled'
+  return routinePaused(job) ? 'paused' : 'scheduled'
 }
 
 export function routineNeedsAttention(job: CronJob, nowMs = Date.now()): boolean {
@@ -156,6 +161,20 @@ export function routineTitle(job: CronJob): string {
   const title = jobTitle(job)
 
   return title.replace(BOT_NAMESPACE, '') || title
+}
+
+/** A routine's stored name split into the Bots namespace tag (the plugin scopes its routines by it)
+ *  and the part the user named; both '' when absent. */
+export function routineNameParts(name: null | string | undefined): { label: string; tag: string } {
+  const stored = (name ?? '').trim()
+  const tag = BOT_NAMESPACE.exec(stored)?.[0] ?? ''
+
+  return { label: stored.slice(tag.length), tag: tag.trim() }
+}
+
+/** The stored name for `label`, keeping the routine's namespace tag. */
+export function withRoutineNameTag(tag: string, label: string): string {
+  return tag ? `${tag} ${label}` : label
 }
 
 // ── Delivery ──────────────────────────────────────────────────────────────────────────────────────

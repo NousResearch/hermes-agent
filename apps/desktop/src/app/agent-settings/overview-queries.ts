@@ -11,13 +11,14 @@ import { toolsetsQueryKey } from '../capabilities/toolsets/toolsets-data'
 import { hermesConfigKey } from '../hooks/use-config-record'
 
 import {
+  type AgentRouteOwner,
   agentSettingsKey,
   type AgentSettingsOwner,
   getAgentMessaging,
   getAgentRecentSessions,
   getAgentRoutines
 } from './data'
-import { $lastViewedAgent } from './landing'
+import { $lastViewedAgent, agentMachine } from './landing'
 
 /** The agent page's owner-scoped reads, shared by the page and the idle prefetch so both hit one
  *  cache row: a rail click then paints the Overview from cache in its first frame. */
@@ -40,13 +41,13 @@ export const agentOverviewQueries = {
   })
 }
 
-/** The owner an agent route pins on entry (entry.tsx): the route's machine, else the ambient one. */
-export function agentRouteOwner(connectionId: null | string | undefined, profile: string): AgentSettingsOwner {
+/** The owner an agent route pins on entry (entry.tsx): the route's machine, else the ambient one,
+ *  always named, so every read, write and cache key of the page agrees on one identity. */
+export function agentRouteOwner(connectionId: null | string | undefined, profile: string): AgentRouteOwner {
   return {
-    connectionId:
-      resolveOwnerNow({ connectionId: connectionId ?? undefined, profile }).connectionId ??
-      $activeConnectionId.get() ??
-      undefined,
+    connectionId: agentMachine(
+      resolveOwnerNow({ connectionId: connectionId ?? undefined, profile }).connectionId ?? $activeConnectionId.get()
+    ),
     profile
   }
 }

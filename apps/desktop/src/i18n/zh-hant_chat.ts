@@ -414,6 +414,9 @@ export const zhHantChat = {
     audioReadFailed: '無法讀取錄製的音訊',
     sessionOpenFailed: '無法開啟此工作階段',
     sessionUnavailable: '工作階段不可用',
+    sessionOwnerConflictTitle: '無法開啟此聊天',
+    sessionOwnerConflictBody:
+      '已開啟另一個具有相同 ID 的聊天。請先關閉它，或在新視窗中開啟此聊天。',
     createSessionFailed: '無法建立新工作階段',
     promptFailed: '提示詞傳送失敗',
     providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',

@@ -11,14 +11,15 @@ import { $hiddenSidebarAgentsExpanded, setSidebarAgentHidden } from '@/store/age
 
 import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { SimplifiedBotChatRow } from '../simplified-bot-chat-row'
-import type { AgentSidebarAttention } from '../use-agent-sidebar-attention'
-import type { SimplifiedAgent } from '../use-simplified-agents'
-
-const PRIORITY = { approval: 0, input: 1, failed: 2, running: 3, unread: 4 }
+import { type AgentSidebarAttention, attentionRank, useAgentSidebarAttention } from '../use-agent-sidebar-attention'
+import { agentOwner, type SimplifiedAgent } from '../use-simplified-agents'
 
 interface PortalHiddenAgentsProps {
+  /** The hidden agents; mount this only when there are some. */
   agents: SimplifiedAgent[]
-  attention: Map<string, AgentSidebarAttention>
+  /** Every agent and chat the sidebar knows, so a signal is claimed by its one owner. */
+  allAgents: SimplifiedAgent[]
+  allSessions: SessionInfo[]
   onResumeSession: (id: string, row?: SessionInfo) => void
 }
 
@@ -30,18 +31,14 @@ function AttentionDot({ attention }: { attention: AgentSidebarAttention }) {
   )
 }
 
-export function PortalHiddenAgents({ agents, attention, onResumeSession }: PortalHiddenAgentsProps) {
+export function PortalHiddenAgents({ agents, allAgents, allSessions, onResumeSession }: PortalHiddenAgentsProps) {
   const c = useHiddenAgentCopy()
   const { t } = useI18n()
   const expanded = useStore($hiddenSidebarAgentsExpanded)
+  const attention = useAgentSidebarAttention(allAgents, allSessions)
   const [now, setNow] = useState(Date.now)
 
-  const sorted = [...agents].sort(
-    (a, b) =>
-      PRIORITY[attention.get(a.id)?.kind ?? 'unread'] +
-      (attention.has(a.id) ? 0 : 1) -
-      (PRIORITY[attention.get(b.id)?.kind ?? 'unread'] + (attention.has(b.id) ? 0 : 1))
-  )
+  const sorted = [...agents].sort((a, b) => attentionRank(attention.get(a.id)) - attentionRank(attention.get(b.id)))
 
   const summary = sorted.length ? attention.get(sorted[0].id) : undefined
   const ticking = expanded && Boolean(summary)
@@ -67,10 +64,6 @@ export function PortalHiddenAgents({ agents, attention, onResumeSession }: Porta
     const age = unit === 'second' ? t.sidebar.row.ageNow : `${value}${units[unit]}`
 
     return `${c[status.kind]} · ${age}`
-  }
-
-  if (!agents.length) {
-    return null
   }
 
   return (
@@ -103,12 +96,7 @@ export function PortalHiddenAgents({ agents, attention, onResumeSession }: Porta
                 <Button
                   aria-label={`${c.show}: ${agent.label} · ${agent.gateway}`}
                   className="portal-hidden-show"
-                  onClick={() =>
-                    setSidebarAgentHidden(
-                      { connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile },
-                      false
-                    )
-                  }
+                  onClick={() => setSidebarAgentHidden(agentOwner(agent), false)}
                   size="sm"
                   variant="outline"
                 >

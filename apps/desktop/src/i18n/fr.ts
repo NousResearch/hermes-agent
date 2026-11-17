@@ -3612,7 +3612,6 @@ export const frOverrides = {
     tabFiles: 'Fichiers',
     tabLinks: 'Liens',
     noArtifactsTitle: 'Aucun artefact trouvé',
-    partialIndex: (failed: number, total: number) => `${failed} sessions récentes sur ${total} ignorées lors de l’indexation des artefacts.`,
     noArtifactsDesc:
       'Les images générées et les sorties de fichier apparaîtront ici au fur et à mesure que les sessions les produisent.',
     failedLoad: 'Échec du chargement des artefacts',
@@ -4619,11 +4618,11 @@ export const frOverrides = {
       messagingPlatforms: 'Plateformes de messagerie',
       machineStatus: (machine, status) => `État de ${machine} : ${status}`,
       checkAgain: 'Vérifier à nouveau',
-      switchToMachine: 'Passer à cette machine',
-      machineSettings: 'Passerelles et machines',
+      switchToMachine: 'Passer à cette passerelle',
+      machineSettings: 'Passerelles',
       restartTitle: 'Redémarrer la passerelle ?',
       restartBody:
-        'Les réponses en cours sur cette machine s’arrêtent. Elle revient en quelques secondes et se reconnecte seule.'
+        'Les réponses en cours sur cette passerelle s’arrêtent. Elle revient en quelques secondes et se reconnecte seule.'
     },
     approvalMode: {
       title: "Mode d'approbation",
@@ -4882,6 +4881,7 @@ export const frOverrides = {
     hideStripTab: title => `Masquer ${title}`,
     zoneMenuLabel: title => `Options de zone pour ${title}`,
     lastTabKeptTitle: 'Le dernier onglet reste affiché',
+    resizePanes: 'Redimensionner les panneaux',
     lastTabKeptBody:
       "Cette zone doit conserver au moins un onglet visible. Affichez d'abord un autre onglet ou repliez toute la barre latérale.",
     toggleStripTab: title => `Afficher ou masquer l'onglet ${title}`,
@@ -5503,6 +5503,9 @@ export const frOverrides = {
     audioReadFailed: "Impossible de lire l'audio enregistré",
     sessionOpenFailed: 'Impossible d’ouvrir cette session',
     sessionUnavailable: 'Session indisponible',
+    sessionOwnerConflictTitle: "Impossible d'ouvrir cette discussion",
+    sessionOwnerConflictBody:
+      "Une autre discussion avec le même identifiant est déjà ouverte. Fermez-la d'abord ou ouvrez cette discussion dans une nouvelle fenêtre.",
     createSessionFailed: 'Impossible de créer une nouvelle session',
     promptFailed: "Échec de l'invite",
     providerCredentialRequired: "Ajoutez un identifiant de fournisseur avant d'envoyer votre premier message.",

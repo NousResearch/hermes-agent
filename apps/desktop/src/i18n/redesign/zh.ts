@@ -757,7 +757,9 @@ export const zhRedesign: RedesignOverlay = {
       gateway: '机器',
       reconnectGateway: '重连机器',
       machineSettings: '机器',
-      restartTitle: '在这台机器上重启 Hermes？'
+      restartTitle: '在这台机器上重启 Hermes？',
+      switchToMachine: '切换到这台机器',
+      restartBody: '这台机器上正在运行的回复会停止。几秒后它会恢复并自动重新连接。'
     },
     statusbar: {
       gateway: '机器',
@@ -963,15 +965,6 @@ export const zhRedesign: RedesignOverlay = {
       ]
     }
   },
-  simplifiedAgents: {
-    description: '使用全新的导航、侧边栏和对话布局。关闭后恢复经典界面。',
-    chats: '对话',
-    hideChats: '隐藏对话',
-    showChats: '显示对话',
-    feedbackReasons: {
-      missing_chats: '找不到我的对话'
-    }
-  },
   firstRun: {
     guide: {
       upgradeRequired:
@@ -1019,7 +1012,6 @@ export const zhRedesign: RedesignOverlay = {
     noArtifactsDesc: '当对话生成图片和文件输出时，它们会显示在这里。',
     failedLoad: '资源库加载失败',
     colSession: '对话',
-    partialIndex: (failed, total) => `索引资源库时跳过了 ${total} 个最近对话中的 ${failed} 个。`
   },
   artifactPreview: {
     missingTitle: '项目不可用',

@@ -12,9 +12,25 @@ import {
 } from '@/store/settings-scope'
 import type { ProfileInfo } from '@/types/hermes'
 
+export interface SettingsOwner {
+  connectionId?: string
+  profile: string
+}
+
 /** An embedded agent editor cannot retarget its controls through the global scope chip. */
-export const SettingsOwnerContext = createContext<{ connectionId?: string; profile: string } | undefined>(undefined)
+export const SettingsOwnerContext = createContext<SettingsOwner | undefined>(undefined)
 export const useSettingsOwner = () => useContext(SettingsOwnerContext)
+
+/** The scope a settings control's requests carry: an embedded agent page's owner pins its
+ *  connection and profile; otherwise the profile the page was asked to edit (unset → active). */
+export function useSettingsRequestScope<T extends null | string | undefined>(requested: T): SettingsOwner | T {
+  return useSettingsOwner() ?? requested
+}
+
+/** The profile name a settings request scope edits. */
+export function settingsScopeProfile<T extends null | string | undefined>(scope: SettingsOwner | T): string | T {
+  return typeof scope === 'object' && scope ? scope.profile : (scope as T)
+}
 
 // Settings-chip label: the Bot Mode title the Bots roster shows when set
 // (ui_meta['hermes-bots'].title), else the app-wide profileLabel

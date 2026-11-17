@@ -11,7 +11,7 @@ beforeEach(async () => {
 
 it('resumes durable setup without inference, a session, or a turn; finish and rerun only write guide state', async () => {
   const run = await import('./setup-guide')
-  const { $setupGuidePhase: $onboardingPhase, $onboardingPhase: classicPhase } = await import('./onboarding-phase')
+  const { $setupGuidePhase, $onboardingPhase: classicPhase } = await import('./onboarding-phase')
   let state = { run: true, eligible: false, started: true, step: 'model' }
 
   const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -25,17 +25,17 @@ it('resumes durable setup without inference, a session, or a turn; finish and re
   })
 
   await run.decideOnboarding(request as never)
-  expect($onboardingPhase.get()).toBe('shown')
+  expect($setupGuidePhase.get()).toBe('shown')
   expect(run.$guideStep.get()).toBe('model')
   const classic = await import('./onboarding-run')
   const { $onboardingSession } = await import('./onboarding-session')
   classicPhase.set('shown')
   $onboardingSession.set({ connectionId: null, runId: 'old-run', runtimeId: 'old-chat', storedId: 'old-chat' })
   classic.noteOnboardingEnded({ outcome: 'done', run_id: 'old-run', stored_session_id: 'old-chat' })
-  expect($onboardingPhase.get()).toBe('shown')
+  expect($setupGuidePhase.get()).toBe('shown')
   await run.finishOnboarding('done')
   expect(state.run).toBe(false)
-  expect($onboardingPhase.get()).toBe('done')
+  expect($setupGuidePhase.get()).toBe('done')
   await run.startOnboarding(request as never)
   expect(state.run).toBe(true)
   expect(run.$guideStep.get()).toBe('preferences')
@@ -55,7 +55,7 @@ it('resumes durable setup without inference, a session, or a turn; finish and re
 
 it('keeps the guide open on a failed skip and ignores a stale peer read after newer progress', async () => {
   const run = await import('./setup-guide')
-  const { $setupGuidePhase: $onboardingPhase } = await import('./onboarding-phase')
+  const { $setupGuidePhase } = await import('./onboarding-phase')
   let refuse = false
   let deferState = false
   const reply = Promise.withResolvers<unknown>()
@@ -79,10 +79,10 @@ it('keeps the guide open on a failed skip and ignores a stale peer read after ne
   reply.resolve({ run: false, eligible: true, started: true, step: 'preferences' })
   await stale
   expect(run.$guideStep.get()).toBe('model')
-  expect($onboardingPhase.get()).toBe('shown')
+  expect($setupGuidePhase.get()).toBe('shown')
   refuse = true
   await expect(run.finishOnboarding('skipped')).rejects.toThrow('Disk is read-only')
-  expect($onboardingPhase.get()).toBe('shown')
+  expect($setupGuidePhase.get()).toBe('shown')
   refuse = false
   const pendingStep = Promise.withResolvers<unknown>()
   request.mockImplementationOnce(() => pendingStep.promise)

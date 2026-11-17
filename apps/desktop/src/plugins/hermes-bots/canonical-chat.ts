@@ -278,25 +278,49 @@ export interface BotOpenFailureNaming {
   explain?: boolean
 }
 
-/** One plain line for why the open failed, or null when the error names no cause we can word. */
+/** Refusal reasons (JSON-RPC `data.reason`) for an agent whose runtime is not taking work right now:
+ *  its gateway is restarting, or its profile is parked (gateway/parked_route_refusal.py). */
+const NOT_RUNNING_REASONS: ReadonlySet<unknown> = new Set(['runtime_draining'])
+
+/** The failure and the refusal it wraps (the registry lookup rethrows with its cause). */
+function errorAndCause(error: unknown): unknown[] {
+  const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined
+
+  return cause === undefined ? [error] : [error, cause]
+}
+
+function isNotRunningRefusal(error: unknown): boolean {
+  const refusal = error as { data?: { reason?: unknown }; name?: unknown } | null
+
+  // UnservedProfileError (lib/browser-served-profiles.ts): this tab's gateway does not serve the profile.
+  return refusal?.name === 'UnservedProfileError' || NOT_RUNNING_REASONS.has(refusal?.data?.reason)
+}
+
+/** One plain line for why the open failed, or null when the error names no cause we can word.
+ *  Classified on structured identity where the failure has one; the last three carry none. */
 export function botOpenReason(error: unknown, bot: RosterRow, botName: string, step: BotOpenStep): null | string {
   const b = botsText().bot
-  const text = `${String((error as { code?: unknown })?.code ?? '')} ${errorDetail(error) ?? ''}`
+  const errors = errorAndCause(error)
+  const text = errorDetail(error) ?? ''
 
-  if (/profile_parked|\bparked\b|runtime_draining|not served|does not serve/i.test(text)) {
+  if (errors.some(isNotRunningRefusal)) {
     return b.openReasonParked(botName)
   }
 
-  // Version skew: the backend refused what this Desktop sent.
-  if (/out of sync|different versions/i.test(text)) {
+  // Version skew on the params: the backend's contract check (tui_gateway/contracts/registry.py)
+  // answers code 4000, which other refusals share, so its own sentence is the only mark. A missing
+  // method never reaches here: notifyBotOpenFailure answers that first.
+  if (/out of sync \(different versions\)/i.test(text)) {
     return b.openNeedsUpdateMessage(bot.connectionLabel || bot.connectionId || 'Hermes')
   }
 
-  if (/timed? ?out|timeout/i.test(text)) {
+  // The RPC client's own deadline (`request timed out after Ns: method`) carries no code.
+  if (/\btimed out\b/i.test(text)) {
     return b.openReasonTimeout(botName)
   }
 
-  if (step === 'reach' || /ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|unreachable|socket (?:closed|hang up)|not connected|offline/i.test(text)) {
+  // The OS's socket errno, as the connection error spells it.
+  if (step === 'reach' || /\bE(?:CONNREFUSED|NOTFOUND|HOSTUNREACH)\b/.test(text)) {
     return b.openReasonUnreachable
   }
 
@@ -399,7 +423,8 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
     // message so update-required classification and diagnostics still work.
     const message = typeof (error as RpcErrorLike)?.message === 'string' ? (error as { message: string }).message : ''
     const detail = message ? ` (${message})` : ''
-    throw new Error(`Could not check ${name}'s Bot Chat registry${detail} — not starting a new chat`)
+    // The cause keeps the refusal's structured identity for the open-failure toast to classify.
+    throw new Error(`Could not check ${name}'s Bot Chat registry${detail} — not starting a new chat`, { cause: error })
   }
 
   const rows = res?.sessions ?? []

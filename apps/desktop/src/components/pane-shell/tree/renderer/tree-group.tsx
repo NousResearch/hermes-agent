@@ -45,6 +45,7 @@ import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -431,6 +432,7 @@ export function TreeGroup({
   const revealsHidden = useStore($layoutEditRevealsHidden)
   const wcOverlap = useWindowControlsOverlap(ref, !topEdge)
   const edges = { left: leftEdge, right: rightEdge, top: topEdge }
+  const portal = usePortalShell()
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
@@ -659,7 +661,7 @@ export function TreeGroup({
     <div
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background)"
       data-tree-group={node.id}
-      {...zoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty })}
+      {...zoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty, portal })}
       // The zone menu opens from the strip, the rail, the edit veil and the
       // body. Only the strip can name a chip, so resolve the target HERE for
       // every one of them — otherwise a right-click off the strip reused the
@@ -669,7 +671,7 @@ export function TreeGroup({
         setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
       }}
       ref={ref}
-      style={zoneFrameStyle({ titlebarHeight, topEdge, verticalCollapse, wcOverlap })}
+      style={zoneFrameStyle({ portal, titlebarHeight, topEdge, verticalCollapse, wcOverlap })}
     >
       {wcOverlap && (
         <div

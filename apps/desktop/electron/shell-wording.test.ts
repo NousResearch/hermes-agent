@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { makeNousCloudBackendDownError, makeReauthRequiredError, makeUnsignedOauthError } from './backend-health'
+import { migrateV1ToRegistry } from './connection-registry'
 import { encryptDesktopSecret } from './hardening'
 import { oauthTicketFailureAuthMessage } from './native-auth-decisions'
 import { adoptShellPreference, shellMessages } from './shell-wording'
@@ -10,6 +11,26 @@ const CLASSIC = { [SHELL_CHOICE_KEY]: 'false' }
 const REDESIGN = { [SHELL_CHOICE_KEY]: 'true' }
 
 const noKeyring = { isEncryptionAvailable: () => false }
+
+// DESIGN.md › Terminology: the classic nouns the redesign renames (Sessions → Chats, Artifacts →
+// Library, Profiles → Agents, Cron / scheduled jobs → Routines, Gateways → Machines).
+const CLASSIC_NOUNS = /\b(artifacts?|cron|gateways?|profiles?|scheduled jobs?)\b/i
+const SESSION = /\bsessions?\b/i
+
+/** Messages whose "session" is a sign-in session (or its token), not a conversation. */
+const SIGN_IN_SESSION = new Set([
+  'remoteSessionExpired',
+  'ticketSessionRejected',
+  'cloudSessionExpired',
+  'remoteTokenMissing'
+])
+
+/** Messages that keep a classic noun on purpose, with why. */
+const KEEPS: Record<string, string> = {
+  // The renderer recognises a reauth failure by this phrase (boot-failure-reauth.ts) and the health
+  // contract asserts it (backend-health.test.ts); it changes with both.
+  remoteSessionExpired: '"remote gateway session has expired" is matched as a reauth signal'
+}
 
 function cloudDownMessage(): string {
   const error = Object.assign(new Error('upstream unavailable'), { statusCode: 503 })
@@ -33,13 +54,13 @@ afterEach(() => {
 
 test('the redesign wording is on until the user rolls the shell back, and follows a later change', () => {
   expect(adoptShellPreference(null)).toBe(true)
-  expect(shellMessages.remoteMachineLabel()).toBe('Remote machine')
+  expect(shellMessages.oauthWindowTitle()).toBe('Sign in to Hermes')
 
   expect(adoptShellPreference(CLASSIC)).toBe(false)
-  expect(shellMessages.remoteMachineLabel()).toBe('Remote gateway')
+  expect(shellMessages.oauthWindowTitle()).toBe('Sign in to Hermes gateway')
 
   expect(adoptShellPreference(REDESIGN)).toBe(true)
-  expect(shellMessages.remoteMachineLabel()).toBe('Remote machine')
+  expect(shellMessages.oauthWindowTitle()).toBe('Sign in to Hermes')
 })
 
 describe('classic keeps the main-branch wording', () => {
@@ -71,7 +92,6 @@ describe('classic keeps the main-branch wording', () => {
         'Native sign-in timed out. The browser window may not have completed sign-in; open Settings → Gateway and try again.',
       oauthWindowTitle: 'Sign in to Hermes gateway',
       plainTextStoragePrompt: 'confirm the plain-text storage option when prompted in Settings → Gateway, ',
-      remoteMachineLabel: 'Remote gateway',
       remoteSessionExpired:
         'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
       remoteTokenMissing:
@@ -96,7 +116,7 @@ describe('the redesign points at Settings → Machines', () => {
       'Your remote gateway session has expired. Open Settings → Machines and click "Sign in" again.'
     )
     expect(oauthTicketFailureAuthMessage(false)).toBe(
-      'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+      'The remote Hermes machine uses OAuth, but you are not signed in. ' +
         'Open Settings → Machines and click "Sign in", or switch back to Local.'
     )
     expect(cloudDownMessage()).toContain('or switch to Local mode in Settings → Machines. ')
@@ -112,9 +132,40 @@ describe('the redesign points at Settings → Machines', () => {
     )
     expect(shellMessages.oauthWindowTitle()).toBe('Sign in to Hermes')
     expect(shellMessages.cloudNotSignedIn()).toContain('Open Settings → Machines, choose Hermes Cloud')
+  })
 
-    for (const message of Object.values(shellMessages)) {
-      expect(message()).not.toContain('Settings → Gateway')
+  test('with no classic noun in any message, beyond a sign-in session', () => {
+    adoptShellPreference(REDESIGN)
+
+    const offenders = Object.entries(shellMessages)
+      .map(([key, message]) => [key, message()] as const)
+      .filter(([key]) => !(key in KEEPS))
+      .filter(([key, text]) => CLASSIC_NOUNS.test(text) || (!SIGN_IN_SESSION.has(key) && SESSION.test(text)))
+
+    expect(offenders).toEqual([])
+  })
+
+  test('whose keeps are real messages that still carry what they keep', () => {
+    adoptShellPreference(REDESIGN)
+
+    const messages: Record<string, () => string> = shellMessages
+
+    for (const key of SIGN_IN_SESSION) {
+      expect(messages[key]?.()).toMatch(SESSION)
+    }
+
+    for (const key of Object.keys(KEEPS)) {
+      expect(messages[key]?.()).toMatch(CLASSIC_NOUNS)
     }
   })
+})
+
+test("persisted data never takes shell wording: a host-less remote stores main's default label", () => {
+  for (const shell of [CLASSIC, REDESIGN]) {
+    adoptShellPreference(shell)
+
+    const registry = migrateV1ToRegistry({ mode: 'remote', remote: { url: 'not a url', authMode: 'token' } })
+
+    expect(registry.connections.find(connection => connection.kind === 'remote')?.label).toBe('Remote gateway')
+  }
 })

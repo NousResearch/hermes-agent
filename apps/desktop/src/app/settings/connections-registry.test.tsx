@@ -12,7 +12,6 @@ import {
   ConnectionsRegistrySection,
   findDuplicateConnection,
   normalizeGatewayUrl,
-  sameBackendPeerLabel,
   sshCompositeKey
 } from './connections-registry'
 
@@ -181,6 +180,15 @@ describe('ConnectionsRegistrySection', () => {
       _resetFleetRosterForTests()
     }
   })
+  it('keeps a connection name and its pills on one truncating line', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    const label = await screen.findByText('Homelab')
+
+    expect(label.className).toBe('truncate')
+    expect(label.parentElement?.className).toBe('flex items-center gap-2')
+  })
+
   it('opens the add-connection editor and saves with a required label', async () => {
     render(<ConnectionsRegistrySection />)
 
@@ -579,20 +587,5 @@ describe('dedupe helpers', () => {
         connections
       )
     ).toBeNull()
-  })
-
-  it('hints "Same backend as" only on later rows sharing an install_id', () => {
-    const spark = { id: 'spark', installId: 'aaa', label: 'Spark' }
-    const sparkTs = { id: 'spark-ts', installId: 'aaa', label: 'Spark TS' }
-    const mini = { id: 'mini', installId: 'bbb', label: 'Mini' }
-    const legacy = { id: 'old', label: 'Old box' }
-    const connections = [spark, sparkTs, mini, legacy]
-
-    // The first occurrence carries no hint; the later duplicate points back.
-    expect(sameBackendPeerLabel(spark, connections)).toBeNull()
-    expect(sameBackendPeerLabel(sparkTs, connections)).toBe('Spark')
-    // Unique ids and id-less (older backend) rows never hint.
-    expect(sameBackendPeerLabel(mini, connections)).toBeNull()
-    expect(sameBackendPeerLabel(legacy, connections)).toBeNull()
   })
 })

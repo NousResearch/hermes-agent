@@ -391,6 +391,9 @@ export const arChat = {
     audioReadFailed: 'فشلت قراءة الصوت',
     sessionOpenFailed: 'تعذّر فتح هذه الجلسة',
     sessionUnavailable: 'الجلسة غير متاحة',
+    sessionOwnerConflictTitle: 'تعذّر فتح هذه المحادثة',
+    sessionOwnerConflictBody:
+      'محادثة أخرى بالمعرّف نفسه مفتوحة بالفعل. أغلقها أولًا، أو افتح هذه المحادثة في نافذة جديدة.',
     createSessionFailed: 'فشل إنشاء الجلسة',
     promptFailed: 'فشل إرسال الرسالة',
     providerCredentialRequired: 'مطلوب اعتماد المزود',

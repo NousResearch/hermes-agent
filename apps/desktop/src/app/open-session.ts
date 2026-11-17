@@ -17,9 +17,9 @@
 import type { WorkspaceMode } from '@/contrib/types'
 import { $activeSessionId, $selectedStoredSessionId, markSessionRead, requestSessionResume } from '@/store/session'
 import { noteUserSessionOpen } from '@/store/session-open-intent'
+import { canOpenSessionOwner } from '@/store/session-owner-open'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
-  canOpenSessionOwner,
   focusedSessionNeedsRoute,
   focusedSessionWorkspaceScope,
   focusOpenSession,

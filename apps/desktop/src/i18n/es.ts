@@ -3594,7 +3594,6 @@ export const esOverrides = {
     tabFiles: 'Archivos',
     tabLinks: 'Enlaces',
     noArtifactsTitle: 'No se encontraron artefactos',
-    partialIndex: (failed: number, total: number) => `Se omitieron ${failed} de ${total} sesiones recientes al indexar los artefactos.`,
     noArtifactsDesc:
       'Las imágenes generadas y las salidas de archivo aparecerán aquí cuando las sesiones las produzcan.',
     failedLoad: 'No se pudieron cargar los artefactos',
@@ -4595,10 +4594,10 @@ export const esOverrides = {
       messagingPlatforms: 'Plataformas de mensajería',
       machineStatus: (machine, status) => `Estado de ${machine}: ${status}`,
       checkAgain: 'Comprobar de nuevo',
-      switchToMachine: 'Cambiar a esta máquina',
-      machineSettings: 'Gateways y máquinas',
+      switchToMachine: 'Cambiar a este gateway',
+      machineSettings: 'Gateways',
       restartTitle: '¿Reiniciar el gateway?',
-      restartBody: 'Las respuestas en curso en esta máquina se detendrán. Vuelve en unos segundos y se reconecta sola.'
+      restartBody: 'Las respuestas en curso en este gateway se detendrán. Vuelve en unos segundos y se reconecta solo.'
     },
     approvalMode: {
       title: 'Modo de aprobación',
@@ -4857,6 +4856,7 @@ export const esOverrides = {
     hideStripTab: title => `Ocultar ${title}`,
     zoneMenuLabel: title => `Opciones de zona para ${title}`,
     lastTabKeptTitle: 'La última pestaña permanece',
+    resizePanes: 'Cambiar tamaño de los paneles',
     lastTabKeptBody:
       'Esta zona necesita al menos una pestaña visible. Muestra otra pestaña primero, o colapsa toda la barra lateral.',
     toggleStripTab: title => `Alternar pestaña ${title}`,
@@ -5478,6 +5478,9 @@ export const esOverrides = {
     audioReadFailed: 'No se pudo leer el audio grabado',
     sessionOpenFailed: 'No se pudo abrir esta sesión',
     sessionUnavailable: 'Sesión no disponible',
+    sessionOwnerConflictTitle: 'No se pudo abrir este chat',
+    sessionOwnerConflictBody:
+      'Ya hay otro chat abierto con el mismo ID. Ciérralo primero o abre este chat en una ventana nueva.',
     createSessionFailed: 'No se pudo crear una sesión nueva',
     promptFailed: 'Falló el prompt',
     providerCredentialRequired: 'Añade una credencial de proveedor antes de enviar tu primer mensaje.',

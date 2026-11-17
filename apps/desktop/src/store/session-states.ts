@@ -38,7 +38,6 @@ import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messa
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
-import { notifyError } from '@/store/notifications'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropAgentSidebarPreferences, migrateAgentSidebarPreferences } from './agent-sidebar-preferences'
@@ -1950,8 +1949,9 @@ export function isBotChatSession(sessionId: null | string | undefined): boolean 
 }
 
 /** Pane/runtime caches use bare stored IDs: never retarget an open surface to another gateway's
- * same-ID session. Only the redesign's cross-profile list asks; classic opens as main does. */
-export function canOpenSessionOwner(storedSessionId: string, owner?: SessionProfileRoute): boolean {
+ * same-ID session. Only the redesign's cross-profile list asks; classic opens as main does. A
+ * verdict only: the internal open paths refuse quietly, the user's open says why. */
+export function sessionOwnerOpenable(storedSessionId: string, owner?: SessionProfileRoute): boolean {
   if (!owner?.connectionId || !$sessionListSpansProfiles.get()) {
     return true
   }
@@ -1985,25 +1985,14 @@ export function canOpenSessionOwner(storedSessionId: string, owner?: SessionProf
       ? { connectionId: ambientOwnerConnectionId() === 'local' ? 'local' : undefined, profile: current }
       : current
 
-  if (
+  return (
     route?.connectionId === owner.connectionId &&
     normalizeProfileKey(route.profile) === normalizeProfileKey(owner.profile)
-  ) {
-    return true
-  }
-
-  notifyError(
-    new Error(
-      `Cannot open ${owner.connectionId}/${owner.profile}: session ${storedSessionId} is already open on ${route?.connectionId ?? 'an unresolved gateway'}/${route?.profile ?? 'unknown profile'}. Close that chat first, or open the requested chat in a new window.`
-    ),
-    'Could not open chat'
   )
-
-  return false
 }
 
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
-  if (!canOpenSessionOwner(storedSessionId, scope.ownerRoute)) {
+  if (!sessionOwnerOpenable(storedSessionId, scope.ownerRoute)) {
     return false
   }
 
@@ -2290,7 +2279,7 @@ export function openSessionTile(
   before?: null | string,
   explicitScope?: SessionTileWorkspaceScope
 ) {
-  if (!canOpenSessionOwner(storedSessionId, explicitScope?.ownerRoute)) {
+  if (!sessionOwnerOpenable(storedSessionId, explicitScope?.ownerRoute)) {
     return
   }
 
@@ -2395,7 +2384,7 @@ export function focusOpenSession(
   storedSessionId: string,
   workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ): 'main' | 'tile' | null {
-  if (!canOpenSessionOwner(storedSessionId, workspaceScope.ownerRoute)) {
+  if (!sessionOwnerOpenable(storedSessionId, workspaceScope.ownerRoute)) {
     return null
   }
 

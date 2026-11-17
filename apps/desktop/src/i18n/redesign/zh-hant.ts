@@ -704,7 +704,9 @@ export const zhHantRedesign: RedesignOverlay = {
       gateway: '機器',
       reconnectGateway: '重新連線機器',
       machineSettings: '機器',
-      restartTitle: '在這台機器上重新啟動 Hermes？'
+      restartTitle: '在這台機器上重新啟動 Hermes？',
+      switchToMachine: '切換到這台機器',
+      restartBody: '這台機器上正在執行的回覆會停止。幾秒後它會恢復並自動重新連線。'
     },
     statusbar: {
       gateway: '機器',
@@ -954,7 +956,6 @@ export const zhHantRedesign: RedesignOverlay = {
     failedLoad: '資源庫載入失敗',
     colSession: '對話',
     chat: '對話',
-    partialIndex: (failed, total) => `索引資源庫時略過了 ${total} 個最近對話中的 ${failed} 個。`
   },
   artifactPreview: {
     missingTitle: '項目無法使用',

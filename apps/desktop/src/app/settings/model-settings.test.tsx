@@ -6,8 +6,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import { I18nProvider, resolveTranslations } from '@/i18n'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { ModelSettings } from './model-settings'
+import { SettingsOwnerContext } from './profile-scope'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
@@ -42,7 +44,8 @@ vi.mock('@/hermes', async () => ({
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
   getApiRequestProfile: () => 'default',
   getMoaModels: (profile?: null | string) => getMoaModels(profile),
-  profileScopeKey: (scope?: null | string) => (scope ?? '').trim() || 'default',
+  profileScopeKey: (scope?: null | string | { connectionId?: string; profile: string }) =>
+    scope && typeof scope === 'object' ? `${scope.connectionId}::${scope.profile}` : (scope ?? '').trim() || 'default',
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
@@ -613,6 +616,30 @@ describe('ModelSettings', () => {
     )
   })
 
+  it.each([
+    ['repaints the live model for the active agent', 'default', 1],
+    ['leaves the live model alone for another agent', 'research', 0]
+  ])('%s after an owner-scoped main apply', async (_label, profile, repaints) => {
+    $activeGatewayProfile.set('default')
+    const onMainModelChanged = vi.fn()
+
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <SettingsOwnerContext.Provider value={{ connectionId: 'local', profile }}>
+            <ModelSettings onMainModelChanged={onMainModelChanged} />
+          </SettingsOwnerContext.Provider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(setModelAssignment).toHaveBeenCalled())
+    await waitFor(() => expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'success' })))
+    expect(onMainModelChanged).toHaveBeenCalledTimes(repaints)
+  })
+
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
     setModelAssignment.mockResolvedValueOnce({
       ok: true,
@@ -1062,6 +1089,23 @@ describe('ModelSettings stale-aux banner dismissal', () => {
 
     expect(await screen.findByText(/still run on/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: resolveTranslations('en').settings.model.staleAuxDismiss })).toBeNull()
+  })
+})
+
+describe('ModelSettings agent layout', () => {
+  it('shows a load failure without opening the closed model picker', async () => {
+    getGlobalModelOptions.mockRejectedValueOnce(new Error('catalog unreachable'))
+
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <ModelSettings agentLayout />
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByText(/catalog unreachable/)).toBeTruthy()
+    expect(screen.queryByRole('combobox', { name: 'Provider' })).toBeNull()
   })
 })
 

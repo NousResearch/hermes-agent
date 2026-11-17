@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
@@ -54,10 +55,12 @@ export function useCapabilityScope({
   fixedConnection?: string
   fixedProfile?: string
 }): CapabilityScope {
+  const redesign = usePortalShell()
   const activeProfile = useStore($activeGatewayProfile)
   const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(null)
 
-  const scopeProfile: ProfileScope = useMemo(
+  // The picked row, as the selector names it.
+  const selection: ProfileScope = useMemo(
     () =>
       fixedProfile
         ? fixedConnection
@@ -67,12 +70,11 @@ export function useCapabilityScope({
     [activeProfile, fixedConnection, fixedProfile, scopeOverride]
   )
 
-  const scopeKey = profileScopeKey(scopeProfile)
+  const selectionKey = profileScopeKey(selection)
 
   // The registry connection an explicit override pins — null for the ambient
   // active-profile path and for fixed-profile pins without a connection.
-  const scopeConnectionId =
-    scopeProfile && typeof scopeProfile === 'object' ? (scopeProfile.connectionId ?? '').trim() || 'local' : null
+  const scopeConnectionId = profileScopeConnectionId(selection)
 
   const { data: profilesData } = useQuery({
     queryKey: CAPABILITY_PROFILES_KEY,
@@ -105,6 +107,15 @@ export function useCapabilityScope({
     enabled: !fixedProfile && multiConnection
   })
 
+  // The redesign reads and writes a roster alias on the profile it serves from; classic keeps
+  // addressing the alias by its own name.
+  const scopeProfile: ProfileScope = useMemo(
+    () => (redesign ? servedProfile(selection, rosterData?.agents) : selection),
+    [redesign, rosterData, selection]
+  )
+
+  const scopeKey = profileScopeKey(scopeProfile)
+
   // An app-wide profile switch drops any scope override — the user just
   // changed what "here" means, and a stale override pointing at the previous
   // selection would be surprising.
@@ -123,7 +134,7 @@ export function useCapabilityScope({
           agent.connectionId === activeId
             ? `${agent.profile} — ${agent.connectionLabel} (current)`
             : `${agent.profile} — ${agent.connectionLabel}`,
-        value: `${agent.connectionId}::${agent.targetProfile || agent.profile}`
+        value: `${agent.connectionId}::${agent.profile}`
       }))
     }
 
@@ -138,16 +149,16 @@ export function useCapabilityScope({
   // roster path an ambient (non-override) scope is the active gateway's
   // profile, which lives at `activeConnectionId::profile`.
   const value = useMemo(() => {
-    if (scopeProfile && typeof scopeProfile === 'object') {
-      return `${(scopeProfile.connectionId ?? '').trim() || 'local'}::${scopeProfile.profile ?? ''}`
+    if (selection && typeof selection === 'object') {
+      return `${(selection.connectionId ?? '').trim() || 'local'}::${selection.profile ?? ''}`
     }
 
     if (multiConnection && rosterData?.agents?.length) {
-      return `${activeGatewayConnectionId() ?? 'local'}::${normalizeProfileKey(scopeProfile)}`
+      return `${activeGatewayConnectionId() ?? 'local'}::${normalizeProfileKey(selection)}`
     }
 
-    return scopeProfile ?? ''
-  }, [multiConnection, rosterData, scopeProfile])
+    return selection ?? ''
+  }, [multiConnection, rosterData, selection])
 
   // Selector option values are `connectionId::profile` on multi-connection
   // desktops (the roster path) and bare profile names otherwise, so one
@@ -161,7 +172,7 @@ export function useCapabilityScope({
     const next: ProfileScope =
       sep >= 0 ? { connectionId: picked.slice(0, sep), profile: picked.slice(sep + 2) } : picked
 
-    if (profileScopeKey(next) === scopeKey) {
+    if (profileScopeKey(next) === selectionKey) {
       return
     }
 
@@ -177,6 +188,26 @@ export function useCapabilityScope({
     profile: scopeProfile,
     value
   }
+}
+
+/** The registry connection a scope pins: null for a bare profile name, which follows the active
+ *  gateway. */
+export function profileScopeConnectionId(scope: ProfileScope): null | string {
+  return scope && typeof scope === 'object' ? (scope.connectionId ?? '').trim() || 'local' : null
+}
+
+/** A roster alias is listed under its own name but served from `targetProfile` on its backend. */
+function servedProfile(selection: ProfileScope, agents: DesktopRosterAgent[] | undefined): ProfileScope {
+  if (!selection || typeof selection !== 'object') {
+    return selection
+  }
+
+  const connectionId = profileScopeConnectionId(selection)
+  const agent = agents?.find(row => row.connectionId === connectionId && row.profile === selection.profile)
+
+  return agent?.targetProfile && agent.targetProfile !== agent.profile
+    ? { ...selection, profile: agent.targetProfile }
+    : selection
 }
 
 /**
@@ -203,12 +234,7 @@ export function CapabilityScopeSelector({
   }
 
   return (
-    <div
-      className={cn(
-        'flex min-w-0 items-center gap-2',
-        compact && 'flex-1'
-      )}
-    >
+    <div className={cn('flex min-w-0 items-center gap-2', compact && 'flex-1')}>
       {!compact && !quiet && (
         <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
       )}

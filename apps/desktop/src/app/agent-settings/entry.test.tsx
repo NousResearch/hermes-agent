@@ -14,7 +14,13 @@ import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $settingsScopeOverride } from '@/store/settings-scope'
 import { $shellChoice } from '@/store/shell-variant'
 
+import { routinesCopy } from '../routines/routines-copy'
+import { closeRoutineEditor } from '../routines/routines-store'
+
 import { SettingsView } from './entry'
+import { $lastViewedAgent } from './landing'
+
+const routines = routinesCopy('en')
 
 const plugin = {
   description: '',
@@ -128,6 +134,7 @@ const originalDesktop = window.hermesDesktop
 // Exercise the real lazy-route boundary after mocks are initialized, before the
 // interaction clock starts; a static import would bypass that loading boundary.
 beforeAll(async () => {
+  HTMLElement.prototype.scrollIntoView ??= () => undefined
   await import('./index')
 }, 60_000)
 
@@ -152,6 +159,7 @@ afterEach(() => {
   $apiRequestScope.set({ profile: null, connectionId: null })
   $settingsScopeOverride.set(null)
   $shellChoice.set(false)
+  closeRoutineEditor()
 })
 
 function mount(path: string) {
@@ -182,35 +190,30 @@ it.each(['', '&connection=beta'])(
       }
     })
     fireEvent.click(screen.getByRole('button', { name: en.cron.newCron }))
-    fireEvent.change(screen.getByPlaceholderText('0 9 * * *'), { target: { value: '0 9 * * *' } })
-    fireEvent.change(screen.getByLabelText(en.cron.promptLabel), { target: { value: 'Review notes' } })
-    fireEvent.click(screen.getByRole('button', { name: en.common.save }))
+    fireEvent.click(await screen.findByRole('button', { name: routines.startBlank }))
+    fireEvent.change(await screen.findByLabelText(routines.name), { target: { value: 'Review' } })
+    fireEvent.change(screen.getByLabelText(routines.instruction), { target: { value: 'Review notes' } })
+    fireEvent.click(screen.getByRole('button', { name: en.cron.createAction }))
     await waitFor(() => expect(api.mock.calls.some(([request]) => request.method === 'POST')).toBe(true))
     const write = api.mock.calls.find(([request]) => request.method === 'POST')![0]
 
     expect(write.connectionId).toBe('beta')
     expect(write.profile).toBe('default')
-    act(() => $shellChoice.set(false))
-    expect(await screen.findByLabelText(/Region/)).toBeTruthy()
-    expect(requestGatewayForAgent).toHaveBeenCalledWith(
-      'beta',
-      'default',
-      'plugins.manage',
-      { action: 'list', profile: 'default' },
-      undefined
-    )
-    expect(screen.queryByText('Owner instructions')).toBeNull()
-    act(() => $shellChoice.set(true))
-    expect(await screen.findByText('Owner instructions')).toBeTruthy()
     act(() => $apiRequestScope.setKey('connectionId', 'alpha'))
     expect(await screen.findByRole('button', { name: 'Open agent' })).toBeTruthy()
     expect(screen.queryByText('Owner instructions')).toBeNull()
-    act(() => $shellChoice.set(false))
-    expect(screen.getByRole('button', { name: 'Open agent' })).toBeTruthy()
-    act(() => $shellChoice.set(true))
-    expect(screen.getByRole('button', { name: 'Open agent' })).toBeTruthy()
   }
 )
+
+it('keeps Settings exactly as classic had it when the classic shell meets an agent route', async () => {
+  $shellChoice.set(false)
+  mount('/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:instructions')
+  // Classic Settings, not an agent page: its own navigation, and no agent editor or "Open agent" gate.
+  expect(await screen.findByRole('button', { name: en.settings.closeSettings })).toBeTruthy()
+  expect(screen.queryByRole('textbox', { name: 'Instructions editor' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Open agent' })).toBeNull()
+  expect(api.mock.calls.some(([request]) => request.path.endsWith('/soul'))).toBe(false)
+})
 
 it.each([false, true])('opens and saves the existing plugin route with redesign=%s', async redesigned => {
   $shellChoice.set(redesigned)
@@ -283,15 +286,18 @@ it('expands tool configuration in place without scrolling away from its disclosu
   expect(body.scrollTop).toBe(240)
 })
 
-it('keeps unsaved instructions on their owner across redesign and classic switches', async () => {
+/** Leave Instructions for General and come back: the editor unmounts in between. */
+async function revisitInstructions() {
+  fireEvent.click(screen.getByRole('button', { name: 'General' }))
+  await screen.findByRole('heading', { name: 'General' })
+  fireEvent.click(screen.getByRole('button', { name: 'Instructions' }))
+}
+
+it('keeps unsaved instructions on their owner across leaving the page and coming back', async () => {
   mount('/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:instructions')
   const editor = await screen.findByRole('textbox', { name: 'Instructions editor' })
   fireEvent.change(editor, { target: { value: 'Unsaved owner instructions' } })
-  act(() => $shellChoice.set(false))
-  expect(((await screen.findByRole('textbox', { name: 'Instructions editor' })) as HTMLTextAreaElement).value).toBe(
-    'Unsaved owner instructions'
-  )
-  act(() => $shellChoice.set(true))
+  await revisitInstructions()
   expect(((await screen.findByRole('textbox', { name: 'Instructions editor' })) as HTMLTextAreaElement).value).toBe(
     'Unsaved owner instructions'
   )
@@ -305,7 +311,7 @@ it('keeps unsaved instructions on their owner across redesign and classic switch
   expect(write.body).toEqual({ content: 'Unsaved owner instructions' })
 })
 
-it('retains an in-flight instructions save across switching and clears only its submitted revision', async () => {
+it('retains an in-flight instructions save across leaving and clears only its submitted revision', async () => {
   const pending = Promise.withResolvers<unknown>()
   api.mockImplementation(request =>
     request.method === 'PUT' && request.path.endsWith('/soul') ? pending.promise : defaultApi(request)
@@ -317,7 +323,7 @@ it('retains an in-flight instructions save across switching and clears only its 
   fireEvent.click(screen.getByRole('button', { name: en.profiles.saveSoul }))
   await waitFor(() => expect(api.mock.calls.filter(([request]) => request.method === 'PUT')).toHaveLength(1))
 
-  act(() => $shellChoice.set(false))
+  await revisitInstructions()
   const editor = await screen.findByRole('textbox', { name: 'Instructions editor' })
   expect((editor as HTMLTextAreaElement).disabled).toBe(true)
   const save = screen.getByRole('button', { name: en.profiles.saveSoul })
@@ -331,7 +337,7 @@ it('retains an in-flight instructions save across switching and clears only its 
     pending.resolve({ ok: true })
   })
   await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false))
-  act(() => $shellChoice.set(true))
+  await revisitInstructions()
   expect(((await screen.findByRole('textbox', { name: 'Instructions editor' })) as HTMLTextAreaElement).value).toBe(
     'Later instructions'
   )
@@ -381,4 +387,142 @@ it('keeps one settings menu, in the page panel, and Back to agents returns the p
   await waitFor(() => expect(new URLSearchParams(search).get('panel')).toBeNull())
   expect(screen.queryByRole('complementary', { name: en.commandCenter.settings })).toBeNull()
   expect(screen.queryByRole('navigation', { name: en.commandCenter.settings })).toBeNull()
+})
+
+function profileRow(name: string, extra: Record<string, unknown> = {}) {
+  return {
+    name,
+    is_default: name === 'default',
+    path: `/test/${name}`,
+    has_env: false,
+    model: null,
+    provider: null,
+    skill_count: 0,
+    ...extra
+  }
+}
+
+/** A backend whose profile list follows its renames and deletes. */
+function profilesBackend(initial: ReturnType<typeof profileRow>[]) {
+  let rows = initial
+
+  api.mockImplementation(async (request: Request) => {
+    const [pathname] = request.path.split('?')
+    const target = decodeURIComponent(pathname.replace('/api/profiles/', ''))
+
+    if (request.method === 'DELETE') {
+      rows = rows.filter(row => row.name !== target)
+
+      return { ok: true, path: `/test/${target}` }
+    }
+
+    if (request.method === 'PATCH') {
+      const { new_name } = request.body as { new_name: string }
+      rows = rows.map(row => (row.name === target ? profileRow(new_name) : row))
+
+      return { name: new_name, ok: true, path: `/test/${new_name}` }
+    }
+
+    return pathname === '/api/profiles' ? { current: 'default', profiles: rows } : defaultApi(request)
+  })
+}
+
+function mountWithRoute(path: string) {
+  let route = ''
+
+  function RouteProbe() {
+    const location = useLocation()
+    route = location.pathname + location.search
+
+    return null
+  }
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[path]}>
+        <SettingsView onClose={() => {}} />
+        <RouteProbe />
+      </MemoryRouter>
+    </QueryClientProvider>
+  )
+
+  return () => route
+}
+
+it('leaves a deleted agent from its General settings and drops it from every list', async () => {
+  profilesBackend([profileRow('default'), profileRow('research')])
+  const route = mountWithRoute('/settings?agentProfile=research&connection=beta&panel=settings&tab=agent:general')
+  fireEvent.click(await screen.findByRole('button', { name: 'Delete agent' }))
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: en.common.delete }))
+
+  // Not a "Deleted" notice on the gone agent's page, and the Agents destination must not land back on it.
+  await waitFor(() => expect(route()).toBe('/profiles'))
+  expect($lastViewedAgent.get()).toBeNull()
+  await waitFor(() => expect($profiles.get().map(row => row.name)).toEqual(['default']))
+})
+
+it('lists a renamed agent once, under its new name, as soon as the rename lands', async () => {
+  profilesBackend([profileRow('default'), profileRow('research')])
+  $profiles.set([profileRow('default'), profileRow('research')])
+  const route = mountWithRoute('/settings?agentProfile=research&connection=beta&panel=settings&tab=agent:general')
+  fireEvent.click(await screen.findByRole('button', { name: /^Rename: / }))
+  fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'scholar' } })
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: en.profiles.rename }))
+
+  await waitFor(() => expect(new URLSearchParams(route().split('?')[1]).get('agentProfile')).toBe('scholar'))
+  await waitFor(() => expect($profiles.get().map(row => row.name)).toEqual(['default', 'scholar']))
+})
+
+it('renames the default agent from the name it has, not the bot title that masks it', async () => {
+  profilesBackend([profileRow('default', { display_name: 'Home', bot_title: 'Concierge' })])
+  mountWithRoute('/settings?agentProfile=default&connection=beta&panel=settings&tab=agent:general')
+  fireEvent.click(await screen.findByRole('button', { name: /^Rename: / }))
+
+  expect((screen.getByLabelText(en.profiles.displayNameLabel) as HTMLInputElement).value).toBe('Home')
+})
+
+it('opens a link naming this machine as "local" in place, without the Open agent gate', async () => {
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  mount('/settings?agentProfile=default&connection=local')
+
+  expect(await screen.findByText('Owner instructions')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Open agent' })).toBeNull()
+})
+
+it('shows a routine created in Settings › Routines on the Overview it returns to', async () => {
+  // The window's own machine, named by nobody: the page and its editors must still agree on one owner.
+  $apiRequestScope.set({ connectionId: null, profile: 'default' })
+  let jobs: unknown[] = []
+  api.mockImplementation(async (request: Request) => {
+    if (request.path.split('?')[0] === '/api/cron/jobs') {
+      if (request.method === 'POST') {
+        const job = {
+          id: 'review',
+          name: 'Review',
+          prompt: 'Review notes',
+          enabled: true,
+          profile: 'default',
+          schedule: { expr: '0 9 * * *', kind: 'cron' }
+        }
+
+        jobs = [job]
+
+        return job
+      }
+
+      return jobs
+    }
+
+    return defaultApi(request)
+  })
+  mount('/settings?agentProfile=default&panel=settings&tab=agent:schedules')
+  fireEvent.click(await screen.findByRole('button', { name: en.cron.newCron }))
+  fireEvent.click(await screen.findByRole('button', { name: routines.startBlank }))
+  fireEvent.change(await screen.findByLabelText(routines.name), { target: { value: 'Review' } })
+  fireEvent.change(screen.getByLabelText(routines.instruction), { target: { value: 'Review notes' } })
+  fireEvent.click(screen.getByRole('button', { name: en.cron.createAction }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+
+  expect(await screen.findByRole('button', { name: /^Review/ })).toBeTruthy()
 })

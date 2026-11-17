@@ -27,6 +27,7 @@ export interface SchedulePick {
 const INT = /^\d+$/
 const STEP = /^\*\/(\d+)$/
 const ISO_LOCAL = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/
+const CLOCK = /^(\d{1,2}):(\d{2})$/
 
 const pad = (value: number | string) => String(value).padStart(2, '0')
 
@@ -53,15 +54,16 @@ const COMPOSE: Record<Frequency, (pick: SchedulePick) => string> = {
   daily: pick => cron(pick, '*', '*'),
   hourly: () => '0 * * * *',
   monthly: pick => cron(pick, pick.monthday || '1', '*'),
-  once: pick => (pick.date ? `${pick.date}T${pick.time || '09:00'}` : ''),
+  once: pick => (pick.date && CLOCK.test(pick.time) ? `${pick.date}T${pick.time}` : ''),
   weekdays: pick => cron(pick, '*', '1-5'),
   weekly: pick => cron(pick, '*', pick.weekday || '1')
 }
 
+/** '' without a time: a cleared time field must not save as midnight. */
 function cron(pick: SchedulePick, dayOfMonth: string, dayOfWeek: string): string {
-  const [hour, minute] = splitTime(pick.time)
+  const clock = CLOCK.exec(pick.time)
 
-  return `${minute} ${hour} ${dayOfMonth} * ${dayOfWeek}`
+  return clock ? `${Number(clock[2])} ${Number(clock[1])} ${dayOfMonth} * ${dayOfWeek}` : ''
 }
 
 /** The schedule string the backend stores for this pick ('' when it is not complete). */
@@ -223,17 +225,19 @@ const DESCRIBE: Record<Exclude<Frequency, 'custom'>, (pick: SchedulePick, words:
   weekly: (pick, { copy, dayName, locale }) => copy.schedule.weekly(dayName(pick.weekday), formatClock(pick.time, locale))
 }
 
-/** A picker state in plain words; null for Custom text the page cannot read (shown as typed). */
+/** A picker state in plain words; null for Custom text the page cannot read (shown as typed), and
+ *  for a pick that would not save (a cleared date or time), so the read-back never names a default. */
 export function describePick(pick: SchedulePick, words: ScheduleWords): null | string {
   if (pick.frequency !== 'custom') {
-    return pick.frequency === 'once' && !pick.date ? null : DESCRIBE[pick.frequency](pick, words)
+    return composeSchedule(pick) ? DESCRIBE[pick.frequency](pick, words) : null
   }
 
   return null
 }
 
-// Presets whose sentence names a wall-clock time on the machine. Once is an instant, hourly has no clock.
-const WALL_CLOCK: ReadonlySet<Frequency> = new Set(['daily', 'weekdays', 'weekly', 'monthly'])
+// Presets whose sentence names a wall-clock time on the machine (Once reads its run_at's own digits,
+// and saves a local time the machine reads in its zone). Hourly has no clock.
+const WALL_CLOCK: ReadonlySet<Frequency> = new Set(['daily', 'monthly', 'once', 'weekdays', 'weekly'])
 const STAMP_OFFSET = /(Z|[+-]\d{2}:?\d{2})$/
 
 /** "UTC−6" when a machine stamp's own offset is not the viewer's at that instant, else null. A
@@ -275,7 +279,9 @@ export function describeSchedule(
 
   if (pick.frequency !== 'custom') {
     const text = describePick(pick, words)
-    const zone = text && WALL_CLOCK.has(pick.frequency) ? machineZoneNote(machineStamp) : null
+    // A Once routine's own run_at carries the machine's offset, even after its run cleared the next one.
+    const stamp = schedule?.kind === 'once' ? schedule.run_at : machineStamp
+    const zone = text && WALL_CLOCK.has(pick.frequency) ? machineZoneNote(stamp) : null
 
     return text ? (zone ? `${text} (${zone})` : text) : words.copy.schedule.custom
   }

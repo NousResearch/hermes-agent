@@ -587,7 +587,9 @@ export const jaRedesign: RedesignOverlay = {
       gateway: 'マシン',
       reconnectGateway: 'マシンに再接続',
       machineSettings: 'マシン',
-      restartTitle: 'このマシンで Hermes を再起動しますか？'
+      restartTitle: 'このマシンで Hermes を再起動しますか？',
+      switchToMachine: 'このマシンに切り替える',
+      restartBody: 'このマシンで実行中の応答は停止します。数秒で復帰し、自動で再接続します。'
     },
     statusbar: {
       gateway: 'マシン',
@@ -786,8 +788,6 @@ export const jaRedesign: RedesignOverlay = {
     noArtifactsDesc: 'チャットで生成された画像やファイルの出力がここに表示されます。',
     failedLoad: 'ライブラリの読み込みに失敗しました',
     colSession: 'チャット',
-    partialIndex: (failed, total) =>
-      `ライブラリのインデックス作成中に、最近のチャット ${total} 件中 ${failed} 件をスキップしました。`
   },
   artifactPreview: {
     missingTitle: 'アイテムを利用できません',

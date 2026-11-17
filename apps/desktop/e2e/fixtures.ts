@@ -33,6 +33,7 @@ import { type MockServerOptions, startMockServer } from '../../../tests-js/scrip
 import { resolveElectronBinary } from './electron-binary'
 import { stopSandboxGatewayDaemons } from './run-tmp-reaper'
 import { installErrorBannerGuard } from './test'
+import { seedUiPreferences } from './ui-preferences-seed'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
@@ -48,7 +49,7 @@ const CREDENTIAL_SUFFIXES: string[] = [
   '_CREDENTIALS',
   '_ACCESS_KEY',
   '_PRIVATE_KEY',
-  '_OAUTH_TOKEN'
+  '_OAUTH_TOKEN',
 ]
 
 const CREDENTIAL_NAMES = new Set([
@@ -63,7 +64,7 @@ const CREDENTIAL_NAMES = new Set([
   'OPENROUTER_BASE_URL',
   'OLLAMA_BASE_URL',
   'GROQ_BASE_URL',
-  'XAI_BASE_URL'
+  'XAI_BASE_URL',
 ])
 
 function isCredentialEnvVar(name: string): boolean {
@@ -71,7 +72,7 @@ function isCredentialEnvVar(name: string): boolean {
     return true
   }
 
-  return CREDENTIAL_SUFFIXES.some(suffix => name.endsWith(suffix))
+  return CREDENTIAL_SUFFIXES.some((suffix) => name.endsWith(suffix))
 }
 
 // Runtime state of whatever Hermes launched this run. A spec driven from inside
@@ -128,15 +129,23 @@ export function createSandbox(prefix: string): Sandbox {
   // may resize after launch.
   fs.writeFileSync(
     path.join(userDataDir, 'window-state.json'),
-    JSON.stringify({ x: 0, y: 0, width: 1220, height: 800, isMaximized: false }, null, 2),
-    'utf8'
+    JSON.stringify(
+      { x: 0, y: 0, width: 1220, height: 800, isMaximized: false },
+      null,
+      2,
+    ),
+    'utf8',
   )
 
   // Pin Chromium actual-size zoom (level 0) for the suite. Playwright click
   // hit-testing and the committed visual baselines were calibrated at 100%,
   // so the suite must not drift if the product default (DEFAULT_ZOOM_LEVEL)
   // ever moves off 100% again.
-  fs.writeFileSync(path.join(userDataDir, 'zoom-state.json'), JSON.stringify({ zoomLevel: 0 }, null, 2), 'utf8')
+  fs.writeFileSync(
+    path.join(userDataDir, 'zoom-state.json'),
+    JSON.stringify({ zoomLevel: 0 }, null, 2),
+    'utf8',
+  )
 
   return {
     root,
@@ -152,11 +161,12 @@ export function createSandbox(prefix: string): Sandbox {
       } catch {
         // best-effort
       }
-    }
+    },
   }
 }
 
 // ─── Config writing ─────────────────────────────────────────────────────
+
 
 /**
  * Write an empty config (no providers). The desktop app should show the
@@ -223,7 +233,7 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
     // Clear dev-server override — we want the built dist/, not a vite server.
     // The dev-server check in main.ts looks for this env var; if it's set,
     // it loads from the vite URL instead of the local file.
-    ...extra
+    ...extra,
   }
 }
 
@@ -241,13 +251,15 @@ function assertDistBuilt(): void {
 
   if (!fs.existsSync(electronMain)) {
     throw new Error(
-      `Desktop dist not built. Run 'cd apps/desktop && pnpm run build' first.\n` + `Missing: ${electronMain}`
+      `Desktop dist not built. Run 'cd apps/desktop && pnpm run build' first.\n` +
+        `Missing: ${electronMain}`,
     )
   }
 
   if (!fs.existsSync(indexHtml)) {
     throw new Error(
-      `Desktop dist/index.html not found. Run 'cd apps/desktop && pnpm run build' first.\n` + `Missing: ${indexHtml}`
+      `Desktop dist/index.html not found. Run 'cd apps/desktop && pnpm run build' first.\n` +
+        `Missing: ${indexHtml}`,
     )
   }
 }
@@ -274,7 +286,9 @@ export function findElectron(): string {
  * @param env      - the process environment (already has HERMES_HOME etc.)
  * @returns the ElectronApplication + first Page
  */
-export async function launchDesktop(env: Record<string, string>): Promise<{ app: ElectronApplication; page: Page }> {
+export async function launchDesktop(
+  env: Record<string, string>,
+): Promise<{ app: ElectronApplication; page: Page }> {
   assertDistBuilt()
 
   const electronBin = findElectron()
@@ -286,10 +300,10 @@ export async function launchDesktop(env: Record<string, string>): Promise<{ app:
     args: [
       DESKTOP_ROOT, // `electron .` — the `.` is the desktop package dir
       '--disable-gpu',
-      '--no-sandbox'
+      '--no-sandbox',
     ],
     env,
-    cwd: DESKTOP_ROOT
+    cwd: DESKTOP_ROOT,
   })
 
   const page = await app.firstWindow()
@@ -348,7 +362,7 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
     mock.url,
     options.extraDisplayConfig,
     options.extraConfig,
-    options.modelContextLength
+    options.modelContextLength,
   )
   writeEnvFile(sandbox.hermesHome)
 
@@ -366,7 +380,7 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
       await app.close().catch(() => undefined)
       await mock.close()
       sandbox.cleanup()
-    }
+    },
   }
 }
 
@@ -381,9 +395,13 @@ export interface NoProviderFixture {
  * Launch the app with no provider configured. The onboarding overlay should
  * appear because there's no inference provider in config.yaml.
  */
-export async function setupNoProvider(): Promise<NoProviderFixture> {
+export async function setupNoProvider(uiPreferences?: Record<string, string>): Promise<NoProviderFixture> {
   const sandbox = createSandbox('noprovider')
   writeEmptyConfig(sandbox.hermesHome)
+
+  if (uiPreferences) {
+    seedUiPreferences(sandbox.hermesHome, uiPreferences)
+  }
 
   const env = buildAppEnv(sandbox)
   const { app, page } = await launchDesktop(env)
@@ -395,7 +413,7 @@ export async function setupNoProvider(): Promise<NoProviderFixture> {
     cleanup: async () => {
       await app.close().catch(() => undefined)
       sandbox.cleanup()
-    }
+    },
   }
 }
 
@@ -431,13 +449,7 @@ export async function setupDeadBackend(options: DeadBackendOptions = {}): Promis
   writeMockProviderConfig(sandbox.hermesHome, deadUrl)
   writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', deadUrl)
 
-  const env = buildAppEnv(
-    sandbox,
-    options.fakeError
-      ? { HERMES_DESKTOP_BOOT_FAKE_ERROR: 'Failed to connect to Hermes backend: connection refused' }
-      : {}
-  )
-
+  const env = buildAppEnv(sandbox, options.fakeError ? { HERMES_DESKTOP_BOOT_FAKE_ERROR: 'Failed to connect to Hermes backend: connection refused' } : {})
   const { app, page } = await launchDesktop(env)
 
   return {
@@ -447,7 +459,7 @@ export async function setupDeadBackend(options: DeadBackendOptions = {}): Promis
     cleanup: async () => {
       await app.close().catch(() => undefined)
       sandbox.cleanup()
-    }
+    },
   }
 }
 
@@ -496,7 +508,9 @@ export interface PackagedAppFixture {
  */
 export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   if (!packagedBinaryExists()) {
-    throw new Error(`Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'pnpm run pack' first.`)
+    throw new Error(
+      `Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'pnpm run pack' first.`,
+    )
   }
 
   const sandbox = createSandbox('packaged')
@@ -506,7 +520,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   const env = buildAppEnv(sandbox, {
     // Fake boot: simulates progress steps without spawning the real backend.
     HERMES_DESKTOP_BOOT_FAKE: '1',
-    HERMES_DESKTOP_BOOT_FAKE_STEP_MS: '120'
+    HERMES_DESKTOP_BOOT_FAKE_STEP_MS: '120',
   })
 
   // Clear dev-server + hermes-root overrides — the packaged binary
@@ -518,7 +532,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   const app = await _electron.launch({
     executablePath: PACKAGED_BINARY_PATH,
     args: ['--disable-gpu', '--no-sandbox'],
-    env
+    env,
   })
 
   const page = await app.firstWindow()
@@ -531,17 +545,14 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
     cleanup: async () => {
       await app.close().catch(() => undefined)
       sandbox.cleanup()
-    }
+    },
   }
 }
 
 // ─── Wait helpers ──────────────────────────────────────────────────────
 
 /** Composer readiness includes hit testing, so boot overlays cannot produce an early pass. */
-export async function waitForAppReady(
-  fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture,
-  timeoutMs = 60_000
-): Promise<void> {
+export async function waitForAppReady(fixture: MockBackendFixture | NoProviderFixture | DeadBackendFixture, timeoutMs = 60_000): Promise<void> {
   const { page, app } = fixture
 
   await waitForChatReady(page, timeoutMs)
@@ -556,18 +567,13 @@ export async function waitForAppReady(
     const deadline = Date.now() + timeoutMs
 
     while (Date.now() < deadline) {
-      const visible = await app
-        .evaluate(({ BrowserWindow }) => {
-          const w = BrowserWindow.getAllWindows()[0]
+      const visible = await app.evaluate(({ BrowserWindow }) => {
+        const w = BrowserWindow.getAllWindows()[0]
 
-          return w ? w.isVisible() : false
-        })
-        .catch(() => false)
+        return w ? w.isVisible() : false
+      }).catch(() => false)
 
-      if (visible) {
-        break
-      }
-
+      if (visible) {break}
       await page.waitForTimeout(500)
     }
   }
@@ -598,7 +604,7 @@ export async function waitForOnboarding(page: Page, timeoutMs = 60_000): Promise
       )
     },
     undefined,
-    { timeout: timeoutMs }
+    { timeout: timeoutMs },
   )
 }
 
@@ -629,6 +635,6 @@ export async function waitForBootFailure(page: Page, timeoutMs = 60_000): Promis
       return hasFailureUI || hasErrorToast
     },
     undefined,
-    { timeout: timeoutMs }
+    { timeout: timeoutMs },
   )
 }

@@ -1,6 +1,7 @@
 /* Routed pages in the redesign (Settings 856:*, Agents 877:*, Capabilities 919:*): the page heading
    and the page navigation column. Route overlays render outside the chat shell, so every rule gates
-   on the root and scopes to [data-page-surface]. */
+   on the root and scopes to [data-page-surface]; the page classes' own rules gate through :where(),
+   which adds no specificity, so they still yield to the page stylesheets that refine them. */
 
 /* ── The page stage contract ──
    The ONE rule that lays a rail page's column: --portal-column-page wide, centred in the stage, as
@@ -14,7 +15,7 @@
    one. Vertical padding stays the page's. The searchable pages (Capabilities, Messaging) and the
    plain panels (Webhooks, Spawn tree) reach the same column through --page-content-max-width,
    which is derived from the same token. */
-[data-page-surface] :is(.page-stage, .management-panel.page-stage) {
+:where(:root[data-shell='portal']) [data-page-surface] :is(.page-stage, .management-panel.page-stage) {
   --page-stage-nav: 0px;
   --page-stage-scrollbar: 0px;
   --page-stage-gutter: max(
@@ -29,7 +30,7 @@
     calc(var(--page-stage-gutter) - var(--page-stage-scrollbar));
 }
 
-[data-page-surface] .page-stage[data-scrolls] {
+:where(:root[data-shell='portal']) [data-page-surface] .page-stage[data-scrolls] {
   --page-stage-scrollbar: var(--portal-scrollbar-size);
 
   overflow-y: auto;
@@ -38,7 +39,7 @@
 
 @media (min-width: 1024px) {
   /* Wide (breakpoints.ts): below it the panel is a sheet over the page, not a column beside it. */
-  [data-page-surface] .page-stage:has(> .page-sidebar-panel) {
+  :where(:root[data-shell='portal']) [data-page-surface] .page-stage:has(> .page-sidebar-panel) {
     --page-stage-nav: var(--page-nav-width);
 
     position: relative;
@@ -47,20 +48,20 @@
 
 /* A page while its code loads (overlays/page-frame-fallback.tsx): the same stage, so the loaded
    page's header lands exactly where the placeholder's stood. */
-[data-page-surface] .management-panel.page-frame-fallback {
+:where(:root[data-shell='portal']) [data-page-surface] .management-panel.page-frame-fallback {
   padding-block: var(--portal-page-top) 0;
 }
 
 /* Loading placeholders, on every redesigned surface: the token block, never the classic accent. */
 :root[data-shell='portal'] [data-slot='skeleton'],
-.page-frame-skeleton-title,
-.page-frame-skeleton-line,
-.page-frame-skeleton-tile {
+:where(:root[data-shell='portal']) .page-frame-skeleton-title,
+:where(:root[data-shell='portal']) .page-frame-skeleton-line,
+:where(:root[data-shell='portal']) .page-frame-skeleton-tile {
   border-radius: var(--portal-radius-chip);
   background-color: var(--portal-surface-skeleton);
 }
 
-.page-frame-skeleton-title {
+:where(:root[data-shell='portal']) .page-frame-skeleton-title {
   width: 12rem;
   max-width: 100%;
   height: 1.75rem;
@@ -68,7 +69,7 @@
   vertical-align: middle;
 }
 
-.page-frame-skeleton-line {
+:where(:root[data-shell='portal']) .page-frame-skeleton-line {
   width: 20rem;
   max-width: 100%;
   height: 0.625rem;
@@ -76,14 +77,14 @@
 }
 
 /* The agent avatar's 56px tile (agent-management-avatar). */
-.page-frame-skeleton-tile {
+:where(:root[data-shell='portal']) .page-frame-skeleton-tile {
   width: 3.5rem;
   height: 3.5rem;
   border-radius: var(--portal-radius-card);
 }
 
 /* The tab bar's rail at its loaded height, tabs still to come. */
-.page-frame-skeleton-tabs {
+:where(:root[data-shell='portal']) .page-frame-skeleton-tabs {
   height: var(--portal-page-tab-height);
 }
 
@@ -108,29 +109,26 @@
 /* ── Page sidebar panel (856:2740 Settings, 895:8991 Agents) ──
    The chat sidebar's panel on every page that has secondary navigation: the same veil over the
    artwork (portal-artwork.css), the same 9px outer top corner, a hairline to the stage, and a title
-   row. It folds from its rail destination, as the chat sidebar does. */
+   row. It folds from its rail destination, as the chat sidebar does. Both page navs end in the same
+   light/5 hairline to the stage (895:17703 x 380). */
 :root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
   border-start-start-radius: var(--portal-panel-radius);
-}
-
-/* Both page navs end in the same light/5 hairline to the stage (895:17703 x 380). */
-:root[data-shell='portal'] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
   border-inline-end: 1px solid var(--portal-panel-divider);
 }
 
-.page-sidebar-head {
+:where(:root[data-shell='portal']) .page-sidebar-head {
   display: flex;
   align-items: center;
   margin-bottom: 1.875rem;
 }
 
-.page-sidebar-head .page-nav-title {
+:where(:root[data-shell='portal']) .page-sidebar-head .page-nav-title {
   min-width: 0;
   margin: 0;
 }
 
 /* A title with a status line under it, then the row's own control at the end (Library 1163:17697). */
-.page-sidebar-titles {
+:where(:root[data-shell='portal']) .page-sidebar-titles {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -138,12 +136,12 @@
   gap: 0.625rem;
 }
 
-.page-sidebar-head:has(> .page-sidebar-titles) {
+:where(:root[data-shell='portal']) .page-sidebar-head:has(> .page-sidebar-titles) {
   align-items: flex-start;
 }
 
 /* "// 799 ITEMS · UPDATED 2:24 PM": the caption voice, mono. */
-.page-sidebar-summary {
+:where(:root[data-shell='portal']) .page-sidebar-summary {
   margin: 0;
   color: var(--portal-text-quaternary);
   font-family: var(--portal-font-mono);
@@ -153,7 +151,7 @@
   text-transform: uppercase;
 }
 
-.page-sidebar-summary::before {
+:where(:root[data-shell='portal']) .page-sidebar-summary::before {
   content: '// ';
 }
 
@@ -162,7 +160,7 @@
    management panel, full width and positioned) starts its stage past it. Below wide the panel is a
    sheet (below) and a page that needs its list on screen shows it in the stage. */
 
-.page-sidebar-panel {
+:where(:root[data-shell='portal']) .page-sidebar-panel {
   position: absolute;
   inset-block: 0;
   inset-inline-start: 0;
@@ -175,19 +173,19 @@
 
 /* The chat sidebar's header: the title on its 30px inset and 36px line, the start row under it where
    New chat starts (--portal-panel-first-row). */
-.page-sidebar-panel .page-sidebar-head {
+:where(:root[data-shell='portal']) .page-sidebar-panel .page-sidebar-head {
   margin: 0 0 calc(var(--portal-panel-first-row) - var(--portal-panel-title-top) - var(--portal-panel-title-line) - 1.5rem)
     calc(var(--portal-panel-title-inset) - var(--page-panel-inset));
 }
 
-.page-sidebar-panel .page-sidebar-head .page-nav-title {
+:where(:root[data-shell='portal']) .page-sidebar-panel .page-sidebar-head .page-nav-title {
   line-height: var(--portal-panel-title-line);
 }
 
 /* The start row (New agent, New routine): New chat's slab (16292:15511), 40px, radius 3, no rim,
    12px sides, 10px gap, a 16px glyph, Medium label. A secondary button reads its fill and rim from
    the control tokens (portal-controls.css), so the row restyles it through them. */
-.page-sidebar-panel > button {
+:where(:root[data-shell='portal']) .page-sidebar-panel > button {
   --portal-control-fill: var(--portal-panel-action);
   --portal-control-fill-hover: var(--portal-panel-action-hover);
   --portal-control-stroke: transparent;
@@ -203,14 +201,14 @@
 }
 
 /* The 16px chrome glyph, as New chat's. */
-.page-sidebar-panel > button > :is(svg, .codicon) {
+:where(:root[data-shell='portal']) .page-sidebar-panel > button > :is(svg, .codicon) {
   width: var(--titlebar-icon-size);
   height: var(--titlebar-icon-size);
   font-size: var(--titlebar-icon-size);
 }
 
 /* The label grows so the row's shortcut keycaps sit at its end (895:9447: ⌘ N). */
-.page-sidebar-panel > .new-agent-row .new-agent-row-label {
+:where(:root[data-shell='portal']) .page-sidebar-panel > .new-agent-row .new-agent-row-label {
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -219,7 +217,7 @@
 }
 
 /* New chat's keycaps (16292:15520): rimless light/5, the mono font at 11px, 60% ink. */
-.new-agent-row .portal-kbd [data-slot='kbd'] {
+:where(:root[data-shell='portal']) .new-agent-row .portal-kbd [data-slot='kbd'] {
   min-width: 1.25rem;
   height: 1.25rem;
   padding-inline: 0.25rem;
@@ -234,14 +232,14 @@
   text-transform: uppercase;
 }
 
-.page-sidebar-scroll {
+:where(:root[data-shell='portal']) .page-sidebar-scroll {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
 }
 
 /* Group caption (895:9473): 10px uppercase, +0.6px tracking. */
-.page-sidebar-caption {
+:where(:root[data-shell='portal']) .page-sidebar-caption {
   margin: 0 0.625rem 0.5rem;
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-caption-size);
@@ -250,11 +248,11 @@
   text-transform: uppercase;
 }
 
-.page-sidebar-list + .page-sidebar-list {
+:where(:root[data-shell='portal']) .page-sidebar-list + .page-sidebar-list {
   margin-top: 1.25rem;
 }
 
-.page-sidebar-row {
+:where(:root[data-shell='portal']) .page-sidebar-row {
   display: flex;
   width: 100%;
   min-height: 2.5rem;
@@ -268,18 +266,18 @@
   color: var(--ui-text-secondary);
 }
 
-.page-sidebar-row:hover {
+:where(:root[data-shell='portal']) .page-sidebar-row:hover {
   background: var(--portal-surface-row-hover);
   color: var(--ui-text-primary);
 }
 
-.page-sidebar-row:focus-visible {
+:where(:root[data-shell='portal']) .page-sidebar-row:focus-visible {
   outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
   outline-offset: var(--portal-focus-ring-inset);
 }
 
 /* The open item: the Settings column's selection (16292:16373), a light/5 fill with no stroke. */
-.page-sidebar-row[aria-current] {
+:where(:root[data-shell='portal']) .page-sidebar-row[aria-current] {
   border-color: transparent;
   background: var(--portal-neutral-selection-background);
   box-shadow: none;
@@ -288,15 +286,15 @@
 }
 
 /* Rows with their own actions: the row keeps its full width and the end glyph sits over its end. */
-.page-sidebar-item {
+:where(:root[data-shell='portal']) .page-sidebar-item {
   position: relative;
 }
 
-.page-sidebar-item > .page-sidebar-row {
+:where(:root[data-shell='portal']) .page-sidebar-item > .page-sidebar-row {
   padding-inline-end: 2rem;
 }
 
-.page-sidebar-item-menu {
+:where(:root[data-shell='portal']) .page-sidebar-item-menu {
   position: absolute;
   inset-block: 0;
   inset-inline-end: 0.375rem;
@@ -305,13 +303,13 @@
 }
 
 @media (hover: none), (pointer: coarse) {
-  .page-sidebar-item-menu button {
+  :where(:root[data-shell='portal']) .page-sidebar-item-menu button {
     opacity: 1;
   }
 }
 
 /* The chat sidebar's 7px leading dot. */
-.page-sidebar-dot {
+:where(:root[data-shell='portal']) .page-sidebar-dot {
   width: 0.4375rem;
   height: 0.4375rem;
   flex-shrink: 0;
@@ -319,19 +317,19 @@
 }
 
 /* Trailing meta (a blueprint's plugin): the caption ink. */
-.page-sidebar-meta {
+:where(:root[data-shell='portal']) .page-sidebar-meta {
   flex-shrink: 0;
   color: var(--ui-text-tertiary);
   font-size: var(--portal-type-micro-size);
 }
 
 /* 16px leading glyphs at .4 (856:2764). */
-.page-sidebar-glyph {
+:where(:root[data-shell='portal']) .page-sidebar-glyph {
   flex-shrink: 0;
   opacity: 0.4;
 }
 
-.page-sidebar-search {
+:where(:root[data-shell='portal']) .page-sidebar-search {
   margin-bottom: 1.25rem;
 }
 

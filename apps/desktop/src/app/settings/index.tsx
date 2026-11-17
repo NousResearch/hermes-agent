@@ -115,12 +115,10 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
   notifications: NotificationsSettings
 }
 
-function SettingsSearchPill() {
-  const { t } = useI18n()
-
-  // Type-to-search: printable keystrokes on the Settings surface (outside any
-  // field) open the settings-scoped palette, seeded with the character — same
-  // reflex as the chat surface's type-to-focus, pointed at search instead.
+/** Type-to-search: printable keystrokes on the Settings surface (outside any
+ *  field) open the settings-scoped palette, seeded with the character — same
+ *  reflex as the chat surface's type-to-focus, pointed at search instead. */
+function useSettingsTypeToSearch() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ($commandPaletteOpen.get() || isEditableTarget(event.target)) {
@@ -141,6 +139,10 @@ function SettingsSearchPill() {
 
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
+}
+
+function SettingsSearchPill() {
+  const { t } = useI18n()
 
   // Fake search pill riding the card's top edge, dead-center and half off it.
   // Clicking (or just typing) opens the ⌘K palette scoped to settings; while
@@ -204,6 +206,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const redesignCopy = redesignNavigationCopy(locale)
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
+  useSettingsTypeToSearch()
 
   const openAgentSettings = () => {
     const query = new URLSearchParams({ agentProfile: scopeProfile, panel: 'settings' })

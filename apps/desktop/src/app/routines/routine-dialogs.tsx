@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -19,7 +19,7 @@ import { truncateText } from '../cron/job-state'
 import { RoutineBlueprintForm } from './routine-blueprint-form'
 import { blankDraft, draftFromJob } from './routine-draft'
 import { RoutineEditorForm } from './routine-editor-form'
-import { routineTitle } from './routine-model'
+import { routineNameParts, routineTitle, withRoutineNameTag } from './routine-model'
 import { RoutinePicker } from './routine-picker'
 import type { RoutineSource } from './routine-source'
 import { useRoutinesCopy } from './routines-copy'
@@ -27,6 +27,7 @@ import {
   $routineEditor,
   $routinePendingDelete,
   $routineRename,
+  closeRoutineDialogs,
   closeRoutineEditor,
   openRoutineEditor,
   type RoutineEditor
@@ -45,6 +46,10 @@ export function RoutineDialogs({ actions, onSaved, source }: RoutineDialogsProps
   const { t } = useI18n()
   const editor = useStore($routineEditor)
   const pendingDelete = useStore($routinePendingDelete)
+
+  // The rail page and an agent's Settings › Routines each host these with their own source (another
+  // machine, another scope): one left open must not reopen in the next host, acting through its source.
+  useEffect(() => closeRoutineDialogs, [])
 
   return (
     <>
@@ -254,7 +259,8 @@ function RenameDialog({ source }: { source: RoutineSource }) {
 function RenameForm({ job, source }: { job: CronJob; source: RoutineSource }) {
   const { t } = useI18n()
   const copy = useRoutinesCopy()
-  const [name, setName] = useState(routineTitle(job))
+  const { label, tag } = routineNameParts(job.name)
+  const [name, setName] = useState(label)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -264,7 +270,7 @@ function RenameForm({ job, source }: { job: CronJob; source: RoutineSource }) {
     setError(null)
 
     try {
-      const saved = await source.mutate(() => updateCronJob(job.id, { name: name.trim() }, source.scopeFor(job)))
+      const saved = await source.mutate(() => updateCronJob(job.id, { name: withRoutineNameTag(tag, name.trim()) }, source.scopeFor(job)))
 
       if (saved) {
         notify({ kind: 'success', title: t.cron.updated, message: routineTitle(saved) })

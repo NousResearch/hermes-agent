@@ -100,17 +100,47 @@ describe('notifyBotOpenFailure', () => {
   })
 
   it('a redesign agent row: names the agent as the row does and says why in one plain line', async () => {
-    const { notifyBotOpenFailure } = await load()
-    const raw = 'Could not check research\'s Bot Chat registry (This machine does not serve agent "research", so this tab cannot open it.) — not starting a new chat'
+    const { notifyBotOpenFailure, openBotCanonicalChat } = await load()
+    const { requestForBot } = await import('./routing')
+
+    // The tab's gateway refuses the profile before the registry lookup leaves it.
+    const unserved = Object.assign(new Error('This machine does not serve agent "research", so this tab cannot open it.'), {
+      name: 'UnservedProfileError'
+    })
+
+    vi.mocked(requestForBot).mockRejectedValueOnce(unserved)
+
+    const failure = await openBotCanonicalChat({ ...BOT, name: 'research' }).catch((error: unknown) => error)
 
     // The roster calls this profile "Hermes" (a cloned title); the row reads "research".
-    notifyBotOpenFailure(new Error(raw), { ...BOT, name: 'research' }, 'open', { botName: 'research', explain: true })
+    notifyBotOpenFailure(failure, { ...BOT, name: 'research' }, 'open', { botName: 'research', explain: true })
 
     const toast = lastToast()
     expect(toast.title).toBe('Could not open research’s chat')
     expect(toast.message).toBe('research isn’t running on this machine right now — try again in a moment.')
-    expect(toast.detail).toBe(raw)
+    expect(toast.detail).toBe((failure as Error).message)
     expect(`${toast.title} ${toast.message}`).not.toMatch(/gateway|backend|worker|registry|Bot Chat/i)
+  })
+
+  it('a refusal for a parked or restarting runtime says the agent is not running, by its reason', async () => {
+    const { notifyBotOpenFailure } = await load()
+    const refusal = Object.assign(new Error('the routed profile is parked'), { code: 4090, data: { reason: 'runtime_draining' } })
+
+    notifyBotOpenFailure(refusal, BOT, 'open', { botName: 'ops', explain: true })
+
+    expect(lastToast().message).toBe('ops isn’t running on this machine right now — try again in a moment.')
+  })
+
+  it('words that merely appear in an error never pick its reason', async () => {
+    const { notifyBotOpenFailure } = await load()
+
+    for (const raw of [
+      'RPC -32000: toolset "offline-notes" is not connected to a provider',
+      'RPC -32000: skill "parked-ideas" failed to load: socket closed by plugin'
+    ]) {
+      notifyBotOpenFailure(new Error(raw), BOT, 'open', { botName: 'ops', explain: true })
+      expect(lastToast()).toMatchObject({ message: 'Try again.', detail: raw })
+    }
   })
 
   it('a redesign agent row that cannot reach its machine keeps the agent in the title', async () => {

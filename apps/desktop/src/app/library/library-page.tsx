@@ -32,6 +32,8 @@ const TABLE_PAGE = 100
 /** The All view's strips (1163:17585): one row of images, a short table. */
 const ALL_IMAGES = 4
 const ALL_ROWS = 6
+/** All's table strips, each the head of its own tab. */
+const TABLE_KINDS = ['file', 'link'] as const
 
 const TAB_ICONS: Record<ArtifactFilter, PixelIconName> = {
   all: 'grid-2x2-2',
@@ -113,8 +115,8 @@ function LibraryBody({
 }: LibraryBodyProps) {
   const copy = useLibraryCopy()
 
-  const table = (items: ArtifactRecord[]) => (
-    <ItemTable chats={chats} filter={tab} items={items} onOpen={onOpenItem} onOpenChat={onOpenChat} />
+  const table = (items: ArtifactRecord[], filter: ArtifactFilter = tab) => (
+    <ItemTable chats={chats} filter={filter} items={items} onOpen={onOpenItem} onOpenChat={onOpenChat} />
   )
 
   if (tab === 'all') {
@@ -126,12 +128,18 @@ function LibraryBody({
             <ImageGrid chats={chats} items={images.slice(0, ALL_IMAGES)} onOpen={onOpenImage} />
           </section>
         )}
-        {rows.length > 0 && (
-          <section className="library-section">
-            <SectionHead count={rows.length} label={copy.sectionFilesLinks} onViewAll={() => onTab('file')} />
-            {table(rows.slice(0, ALL_ROWS))}
-          </section>
-        )}
+        {TABLE_KINDS.map(kind => {
+          const kept = rows.filter(item => item.kind === kind)
+
+          return (
+            kept.length > 0 && (
+              <section className="library-section" key={kind}>
+                <SectionHead count={kept.length} label={copy.tabs[kind]} onViewAll={() => onTab(kind)} />
+                {table(kept.slice(0, ALL_ROWS), kind)}
+              </section>
+            )
+          )
+        })}
       </>
     )
   }
@@ -236,12 +244,24 @@ export function LibraryPage(props: ComponentProps<'section'>) {
   const page = Math.min(pages[tab], pageCount)
   const previewIndex = preview ? images.findIndex(item => item.id === preview) : -1
 
+  // The full-window view lives inside a preview: closing the preview closes it too.
+  const closePreview = useCallback(() => {
+    setPreview(null)
+    setLightbox(false)
+  }, [])
+
+  // The previewed image left the list (a refresh dropped its chat): close it here, so neither view
+  // reopens by itself should the image come back.
+  if (preview !== null && previewIndex < 0) {
+    closePreview()
+  }
+
   const selectTab = useCallback(
     (next: ArtifactFilter) => {
-      setPreview(null)
+      closePreview()
       setTab(next)
     },
-    [setTab]
+    [closePreview, setTab]
   )
 
   const openChat = useCallback(
@@ -341,7 +361,7 @@ export function LibraryPage(props: ComponentProps<'section'>) {
             {...viewImage}
             backLabel={copy.tabs[tab]}
             enlargeRef={enlargeRef}
-            onBack={() => setPreview(null)}
+            onBack={closePreview}
             onEnlarge={() => setLightbox(true)}
             onIndex={next => setPreview(images[next]?.id ?? null)}
           />

@@ -162,37 +162,6 @@ export function findDuplicateConnection(
   )
 }
 
-/**
- * Display-only same-backend hint: when two registered connections report the
- * same /api/status install_id, they are one physical backend registered under
- * two addresses (hostname + Tailscale IP). Returns the label of the FIRST
- * earlier sibling sharing this connection's id, or null. Never blocks or
- * deletes — dual routes are legitimate failover config; the roster already
- * collapses the duplicate bot rows.
- */
-export function sameBackendPeerLabel(
-  conn: Pick<DesktopRegistryConnection, 'id' | 'installId'>,
-  connections: Pick<DesktopRegistryConnection, 'id' | 'installId' | 'label'>[]
-): null | string {
-  if (!conn.installId) {
-    return null
-  }
-
-  for (const other of connections) {
-    if (other.id === conn.id) {
-      // Only rows AFTER the first occurrence carry the hint, so exactly one
-      // of a same-backend pair is annotated (the later-listed one).
-      return null
-    }
-
-    if (other.installId === conn.installId) {
-      return other.label
-    }
-  }
-
-  return null
-}
-
 function scrollableAncestor(element: HTMLElement): HTMLElement | null {
   let parent = element.parentElement
 

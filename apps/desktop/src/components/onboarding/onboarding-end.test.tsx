@@ -8,7 +8,7 @@ import { $localSetupEligibility } from '@/store/local-setup-offer'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
 import { $connection } from '@/store/session'
-import { $onboardingSettleFrom as $guideSettleFrom } from '@/store/setup-guide'
+import { $guideSettleFrom } from '@/store/setup-guide'
 import { $shellChoice } from '@/store/shell-variant'
 import type { LocalCatalogModel } from '@/types/hermes'
 

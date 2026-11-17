@@ -2,7 +2,13 @@ import { afterEach, expect, it } from 'vitest'
 
 import { $notifications, clearNotifications } from './notifications'
 import { _resetSessionOwnerHintsForTests, setSelectedStoredSessionId, setSessionOwnerHint } from './session'
-import { canOpenSessionOwner } from './session-states'
+import { canOpenSessionOwner } from './session-owner-open'
+import {
+  $sessionTiles,
+  focusOpenSession,
+  openSessionTile,
+  setSessionTileWorkspaceScope
+} from './session-states'
 import { $shellChoice } from './shell-variant'
 
 const id = 'shared-session'
@@ -34,5 +40,21 @@ it('refuses to retarget an open chat to another owner in the redesign', () => {
   $shellChoice.set(true)
 
   expect(openSameIdFromAnotherGateway()).toBe(false)
-  expect($notifications.get().map(notification => notification.title)).toEqual(['Could not open chat'])
+  expect($notifications.get().map(notification => notification.title)).toEqual(["Couldn't open this chat"])
+  // Catalog copy, never the raw ids or gateway names.
+  expect(JSON.stringify($notifications.get())).not.toMatch(/remote|shared-session/)
+})
+
+it('refuses quietly on the internal open paths: only the user’s open explains', () => {
+  $shellChoice.set(true)
+  setSelectedStoredSessionId(id)
+  setSessionOwnerHint(id, { connectionId: 'local', profile: 'default' })
+  const ownerRoute = { connectionId: 'remote', profile: 'default' }
+
+  expect(focusOpenSession(id, { ownerRoute, workspaceMode: 'sessions' })).toBeNull()
+  expect(setSessionTileWorkspaceScope(id, { ownerRoute, workspaceMode: 'sessions' })).toBe(false)
+  openSessionTile(id, 'right', undefined, undefined, { ownerRoute, workspaceMode: 'sessions' })
+
+  expect($sessionTiles.get()).toEqual([])
+  expect($notifications.get()).toEqual([])
 })

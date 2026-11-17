@@ -182,8 +182,10 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
 # git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
-# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.state/set_run
-# retire legacy setup metadata and read/write the installation's sessionless guide progress.
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.start = session
+# creation + a prompt.submit; onboarding.state = a bounded wait on the boot-time due answer (classic);
+# sessionless onboarding.state/set_run retire legacy setup metadata and read/write the installation's
+# guide progress.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",

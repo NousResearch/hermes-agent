@@ -12,7 +12,7 @@ import { $customModels, withCustomModels } from '@/store/custom-models'
 
 import { CONTROL_TEXT } from './constants'
 import { ModelSelect } from './model-select'
-import { useSettingsOwner } from './profile-scope'
+import { useSettingsRequestScope } from './profile-scope'
 import { SettingsAddRow, SettingsCard, SettingsEmptyRow } from './settings-card'
 
 // An entry is `{provider, model}` plus whatever routing the user hand-wrote
@@ -83,11 +83,11 @@ export function FallbackModelsField({
 }) {
   const { t } = useI18n()
   const m = t.settings.model
-  const owner = useSettingsOwner()
+  const scope = useSettingsRequestScope(undefined)
 
   const modelOptions = useQuery({
-    queryKey: owner ? ['model-options', 'global', owner.connectionId, owner.profile] : ['model-options', 'global'],
-    queryFn: () => getGlobalModelOptions(undefined, owner)
+    queryKey: scope ? ['model-options', 'global', scope.connectionId, scope.profile] : ['model-options', 'global'],
+    queryFn: () => getGlobalModelOptions(undefined, scope)
   })
 
   const customModels = useStore($customModels)

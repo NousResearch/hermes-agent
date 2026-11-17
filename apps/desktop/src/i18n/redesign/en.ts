@@ -790,7 +790,9 @@ export const enRedesign: RedesignOverlay = {
       gateway: 'Machine',
       reconnectGateway: 'Reconnect machine',
       machineSettings: 'Machines',
-      restartTitle: 'Restart Hermes on this machine?'
+      restartTitle: 'Restart Hermes on this machine?',
+      switchToMachine: 'Switch to this machine',
+      restartBody: 'Turns running on this machine stop. It comes back in a few seconds and reconnects on its own.'
     },
     statusbar: {
       gateway: 'Machine',
@@ -974,7 +976,6 @@ export const enRedesign: RedesignOverlay = {
     noArtifactsDesc: 'Generated images and file outputs will appear here as chats produce them.',
     failedLoad: 'Library failed to load',
     colSession: 'Chat',
-    partialIndex: (failed, total) => `Skipped ${failed} of ${total} recent chats while indexing your library.`
   },
   artifactPreview: {
     missingTitle: 'Item unavailable',

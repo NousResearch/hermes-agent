@@ -1,5 +1,5 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteSession, type SessionInfo } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
@@ -444,4 +444,69 @@ it.each([
   expect($notifications.get()).toHaveLength(remaining)
   clearNotifications()
   $shellChoice.set(null)
+})
+
+describe('classic shell deletes by id, as main does', () => {
+  beforeEach(() => $shellChoice.set(false))
+  afterEach(() => $shellChoice.set(null))
+
+  it('drops the transcript tail in every scope on success (#94914)', async () => {
+    const removed = row(ownerA)
+    setSessions([removed])
+    const view = mountDeletion(ownerA)
+    saveTranscriptTail(id, messages, ownerA)
+    saveTranscriptTail(id, messages, ownerB)
+    saveTranscriptTail(id, messages)
+
+    await act(() => view.result.current.removeSession(id))
+
+    expect(deleteSession).toHaveBeenCalledWith(id, ownerA)
+    expect(loadTranscriptTail(id, ownerA)).toBeNull()
+    expect(loadTranscriptTail(id, ownerB)).toBeNull()
+    expect(loadTranscriptTail(id)).toBeNull()
+  })
+
+  it('evicts every listed row and id-keyed cache for the stored id', async () => {
+    setSessions([row(ownerA), row(ownerB)])
+    $archivedSessions.set([row(ownerA)])
+    const view = mountDeletion(ownerA)
+
+    await act(() => view.result.current.removeSession(id))
+
+    expect($sessions.get()).toEqual([])
+    expect($archivedSessions.get()).toEqual([])
+    expect(getQueuedPrompts(id)).toEqual([])
+    expect(getQueuedPrompts(runtimeId)).toEqual([])
+    expect($sessionTiles.get()).toEqual([])
+    expect($pinnedSessionIds.get()).toEqual([])
+    expect(view.navigate).toHaveBeenCalledWith(NEW_CHAT_ROUTE, { replace: true })
+  })
+
+  it('restores the listed row, pins and selection when the delete fails', async () => {
+    vi.mocked(deleteSession).mockRejectedValue(new Error('delete rejected'))
+    const removed = row(ownerA)
+    setSessions([removed])
+    const view = mountDeletion(ownerA)
+
+    await act(() => view.result.current.removeSession(id))
+
+    expect($sessions.get()).toEqual([removed])
+    expect($pinnedSessionIds.get()).toEqual([id])
+    expect($selectedStoredSessionId.get()).toBe(id)
+    expect($activeSessionId.get()).toBe(runtimeId)
+    expect($removedSessionIds.get().has(id)).toBe(false)
+  })
+})
+
+it('sweeps every tail scope in the redesign when no twin claims the id', async () => {
+  const removed = row(ownerA)
+  setSessions([removed])
+  const view = mountDeletion(ownerA)
+  saveTranscriptTail(id, messages, ownerA)
+  saveTranscriptTail(id, messages)
+
+  await act(() => view.result.current.removeSession(id, removed))
+
+  expect(loadTranscriptTail(id, ownerA)).toBeNull()
+  expect(loadTranscriptTail(id)).toBeNull()
 })

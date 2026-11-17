@@ -1,6 +1,6 @@
 import type { GatewayHostTranslations } from './types_gateway_host'
 
-// Settings → Machines copy where the connection cannot change, spread into de.ts.
+// Settings → Gateways copy where the connection cannot change, spread into de.ts.
 export const deGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Gateway-Einstellungen nicht verfügbar',
   unavailableDesc: 'Die Desktop-IPC-Brücke stellt keine Gateway-Einstellungen bereit.',

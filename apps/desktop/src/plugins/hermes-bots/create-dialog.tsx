@@ -1419,8 +1419,8 @@ function GroupPickerUnseated({
 }
 
 /** The picker with nothing to offer: no bots at all, no match for the search, or bots the group
- *  chat cannot seat. The redesign also names the unseatable bots a search matches, so a search for
- *  an agent the sidebar lists never reads as "no match". */
+ *  chat cannot seat. Only the redesign names the unseatable bots (a search's matches included, so a
+ *  search for an agent the sidebar lists never reads as "no match"); classic keeps its one line. */
 function GroupPickerEmpty({
   allMeta,
   connectionId,
@@ -1439,7 +1439,7 @@ function GroupPickerEmpty({
   const b = useBots()
   const unseated = unseatedGroupBots(roster, selectable, allMeta, portal ? query : '')
 
-  if ((query && !portal) || !unseated.length) {
+  if (!portal || !unseated.length) {
     return (
       <div className="px-1.5 py-3 text-center text-xs text-(--ui-text-tertiary)">
         {query ? b.group.noBotsMatch(query) : b.group.createBotFirst}

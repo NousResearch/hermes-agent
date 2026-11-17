@@ -44,32 +44,41 @@ export type TitlebarFixedToolId = keyof typeof TITLEBAR_FIXED_TOOLS
 const APP_ACTION_IDS: readonly TitlebarFixedToolId[] = ['settings', 'layout', 'hud']
 const RIGHT_FIXED_IDS: readonly TitlebarFixedToolId[] = ['flip-panes', 'right-sidebar']
 
-/** Button counts for the two titlebar clusters, for the mode that is rendering them. `wide` is the
- *  redesign's width class: a wide Simple window brings a folded sidebar back with a floating button
- *  instead of the band's (app/shell/panel-reveal.tsx), so its band holds only Back and Forward. */
+/** Every fixed control a redesigned band can draw: the fixed tools plus Back, Forward and the
+ *  chat's Agent settings at the trailing end. */
+export type BandToolId = TitlebarFixedToolId | 'agent-settings' | 'history-back' | 'history-forward'
+
+const BAND_TOOL_TIERS: Record<BandToolId, Tiered> = {
+  ...TITLEBAR_FIXED_TOOLS,
+  'agent-settings': {},
+  'history-back': {},
+  'history-forward': {}
+}
+
+const BAND_LEADING_IDS: readonly BandToolId[] = ['history-back', 'history-forward', 'sidebar']
+const BAND_TRAILING_IDS: readonly BandToolId[] = [...RIGHT_FIXED_IDS, 'agent-settings']
+
+/** Button counts for the two titlebar clusters, for the mode that is rendering them. The redesign
+ *  passes the tools its band hides right now (app/shell/band-tools.ts, the set TitlebarControls
+ *  renders from), so a hidden tool never reserves a slot; classic counts its fixed table. */
 export function titlebarAppActionsClusterCounts(
   side: TitlebarAppActionsSide,
   leftExtras = 0,
   rightExtras = 0,
   mode: InterfaceMode = DEFAULT_INTERFACE_MODE,
-  portal = false,
-  wide = true
+  bandHidden?: ReadonlySet<BandToolId>
 ): { left: number; right: number } {
   const shown = shownInMode(mode)
-  // The redesign's band leads with Back and Forward on every screen (titlebar-controls.tsx).
-  const sidebar = portal ? (mode === 'simple' && wide ? 2 : 3) : 1
 
-  const appActions = APP_ACTION_IDS.filter(
-    id => shown(TITLEBAR_FIXED_TOOLS[id]) && !(portal && (id === 'settings' || (id === 'layout' && mode === 'simple')))
-  ).length
+  const count = (ids: readonly BandToolId[]) => ids.filter(id => !bandHidden?.has(id) && shown(BAND_TOOL_TIERS[id])).length
 
-  // The redesign's band ends with the chat's Agent settings (PortalBandAgentSettings) in every mode.
-  // Uncounted, the session tab's window-drag span runs under it and macOS drags instead of clicking.
-  const rightFixed = RIGHT_FIXED_IDS.filter(id => shown(TITLEBAR_FIXED_TOOLS[id])).length + (portal ? 1 : 0)
+  const leading = bandHidden ? count(BAND_LEADING_IDS) : 1
+  const appActions = count(APP_ACTION_IDS)
+  const rightFixed = count(bandHidden ? BAND_TRAILING_IDS : RIGHT_FIXED_IDS)
 
   if (side === 'left') {
-    return { left: sidebar + appActions + leftExtras, right: rightFixed + rightExtras }
+    return { left: leading + appActions + leftExtras, right: rightFixed + rightExtras }
   }
 
-  return { left: sidebar + leftExtras, right: appActions + rightFixed + rightExtras }
+  return { left: leading + leftExtras, right: appActions + rightFixed + rightExtras }
 }

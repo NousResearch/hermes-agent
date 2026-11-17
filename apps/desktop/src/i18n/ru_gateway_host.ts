@@ -1,6 +1,6 @@
 import type { GatewayHostTranslations } from './types_gateway_host'
 
-// Settings → Machines copy where the connection cannot change, spread into ru.ts.
+// Settings → Gateways copy where the connection cannot change, spread into ru.ts.
 export const ruGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Настройки шлюза недоступны',
   unavailableDesc: 'IPC-мост приложения не предоставляет настройки шлюза.',

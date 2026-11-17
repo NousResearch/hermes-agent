@@ -32,14 +32,44 @@ def _(rid, params: dict) -> dict:
 
 def _sessionless_state(*, assume_fresh=False, retire=True):
     from hermes_cli.anon_auth import on_local_desktop_backend
-    from hermes_cli.onboarding_run import guide_progress, retire_conversational_runs, should_run
+    from hermes_cli.onboarding_run import guide_progress, should_run
     if retire:
-        with _profile_db({"profile": "default"}, writer=True) as db:
-            if db is not None:
-                for sid in _live_session_ids(retire_conversational_runs(db)):
-                    _cancel_session_requests(sid, "resolved", method="setup_beat")
+        _retire_conversational_runs()
     return {"run": should_run(assume_fresh=assume_fresh), "eligible": on_local_desktop_backend(),
             **guide_progress()}
+
+
+# Sessionless state retires the legacy conversational runs once per process, and again only after a
+# classic onboarding.start opens a new one (gateway/session_setup.py::_retire latches the same way):
+# Desktop polls onboarding.state, and the default store may be another profile's, whose write lock
+# must not be taken per RPC.
+_sessionless_setup_migrated = False
+
+
+def _retire_conversational_runs() -> None:
+    global _sessionless_setup_migrated
+    from hermes_cli.onboarding_run import retire_conversational_runs
+    with _onboarding_start_lock:
+        if _sessionless_setup_migrated:
+            return
+        with _profile_db(_ONBOARDING_PROFILE) as db:
+            if db is None:
+                return
+            pending = _has_conversational_runs(db)
+        if pending:
+            with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+                if db is None:
+                    return
+                _withdraw_setup_cards(retire_conversational_runs(db))
+        _sessionless_setup_migrated = True
+
+
+def _has_conversational_runs(db) -> bool:
+    """A run record ``retire_conversational_runs`` has not yet marked sessionless."""
+    from agent.onboarding_record import KEY, load
+    tips = {db.resolve_resume_session_id(sid) or sid for sid in db.session_ids_with_model_config_key(KEY)}
+    return any((record := load(db, tip)) is not None and not record.get("sessionless") for tip in tips)
+
 
 def _run_state(*, assume_fresh: bool = False) -> dict:
     """``run``: the root config says so, else this OS user never used Hermes (or the unpackaged
@@ -192,7 +222,10 @@ def _(rid, params: dict) -> dict:
     # and the run starts over. A second window or a reconnect sends no flag and gets the run back.
     fresh_launch = bool(params.get("fresh_launch"))
     # Held through the opening submit: two windows pressing start at once get one chat and one opening.
+    global _sessionless_setup_migrated
     with _onboarding_start_lock:
+        # A classic run opened here is legacy to the next sessionless state call.
+        _sessionless_setup_migrated = False
         claimed = None
         try:
             with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:

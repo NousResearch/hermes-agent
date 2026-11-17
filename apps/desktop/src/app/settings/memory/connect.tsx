@@ -7,7 +7,7 @@ import { refreshMemoryStatus } from '@/store/memory-status'
 import { notifyError } from '@/store/notifications'
 import type { MemoryProviderOAuthStatus } from '@/types/hermes'
 
-import { useSettingsOwner } from '../profile-scope'
+import { useSettingsRequestScope } from '../profile-scope'
 
 const POLL_MS = 1500
 const POLL_TIMEOUT_MS = 120_000
@@ -16,7 +16,7 @@ const POLL_TIMEOUT_MS = 120_000
 // backend-driven: the status route 404s for providers without an oauth_flow
 // module, so non-OAuth providers render nothing.
 export function MemoryConnect({ profile: requestedProfile, provider }: { profile?: string; provider: string }) {
-  const profile = useSettingsOwner() ?? requestedProfile
+  const profile = useSettingsRequestScope(requestedProfile)
   const [capable, setCapable] = useState<'no' | 'unknown' | 'yes'>('unknown')
   const [connected, setConnected] = useState(false)
   const [auth, setAuth] = useState<MemoryProviderOAuthStatus['auth']>(null)

@@ -31,13 +31,9 @@ const copy = {
     backToAgents: 'Back to agents',
     unavailable: 'Unavailable',
     retry: 'Retry',
-    schedule: 'Schedule',
-    enabled: 'Enabled',
     configured: 'Configured',
     connected: 'Connected',
-    disconnected: 'Disconnected',
-    scriptRoutine: 'This routine runs a script; its script is preserved.',
-    localDelivery: 'Results are saved locally.'
+    disconnected: 'Disconnected'
   },
   fr: {
     back: 'Retour à la discussion',
@@ -68,13 +64,9 @@ const copy = {
     backToAgents: 'Retour aux agents',
     unavailable: 'Indisponible',
     retry: 'Réessayer',
-    schedule: 'Planification',
-    enabled: 'Activé',
     configured: 'Configuré',
     connected: 'Connecté',
-    disconnected: 'Déconnecté',
-    scriptRoutine: 'Cette routine exécute un script ; son script est conservé.',
-    localDelivery: 'Les résultats sont enregistrés localement.'
+    disconnected: 'Déconnecté'
   },
   de: {
     back: 'Zurück zum Chat',
@@ -105,13 +97,9 @@ const copy = {
     backToAgents: 'Zurück zu den Agenten',
     unavailable: 'Nicht verfügbar',
     retry: 'Erneut versuchen',
-    schedule: 'Zeitplan',
-    enabled: 'Aktiviert',
     configured: 'Konfiguriert',
     connected: 'Verbunden',
-    disconnected: 'Getrennt',
-    scriptRoutine: 'Diese Routine führt ein Skript aus; das Skript bleibt erhalten.',
-    localDelivery: 'Ergebnisse werden lokal gespeichert.'
+    disconnected: 'Getrennt'
   },
   es: {
     back: 'Volver al chat',
@@ -142,13 +130,9 @@ const copy = {
     backToAgents: 'Volver a los agentes',
     unavailable: 'No disponible',
     retry: 'Reintentar',
-    schedule: 'Programación',
-    enabled: 'Activado',
     configured: 'Configurado',
     connected: 'Conectado',
-    disconnected: 'Desconectado',
-    scriptRoutine: 'Esta rutina ejecuta un script; el script se conserva.',
-    localDelivery: 'Los resultados se guardan localmente.'
+    disconnected: 'Desconectado'
   },
   ja: {
     back: 'チャットに戻る',
@@ -179,13 +163,9 @@ const copy = {
     backToAgents: 'エージェント一覧に戻る',
     unavailable: '利用不可',
     retry: '再試行',
-    schedule: 'スケジュール',
-    enabled: '有効',
     configured: '設定済み',
     connected: '接続済み',
-    disconnected: '未接続',
-    scriptRoutine: 'このルーティンはスクリプトを実行します。スクリプトは保持されます。',
-    localDelivery: '結果はローカルに保存されます。'
+    disconnected: '未接続'
   },
   zh: {
     back: '返回对话',
@@ -216,13 +196,9 @@ const copy = {
     backToAgents: '返回智能体',
     unavailable: '不可用',
     retry: '重试',
-    schedule: '计划',
-    enabled: '已启用',
     configured: '已配置',
     connected: '已连接',
-    disconnected: '未连接',
-    scriptRoutine: '此例行任务运行脚本，脚本将被保留。',
-    localDelivery: '结果保存在本地。'
+    disconnected: '未连接'
   },
   'zh-hant': {
     back: '返回對話',
@@ -253,13 +229,9 @@ const copy = {
     backToAgents: '返回智慧體',
     unavailable: '無法使用',
     retry: '重試',
-    schedule: '排程',
-    enabled: '已啟用',
     configured: '已設定',
     connected: '已連線',
-    disconnected: '未連線',
-    scriptRoutine: '此例行任務執行指令碼，指令碼將保留。',
-    localDelivery: '結果儲存在本機。'
+    disconnected: '未連線'
   },
   ru: {
     back: 'Назад к чату',
@@ -290,13 +262,9 @@ const copy = {
     backToAgents: 'Назад к агентам',
     unavailable: 'Недоступно',
     retry: 'Повторить',
-    schedule: 'Расписание',
-    enabled: 'Включено',
     configured: 'Настроено',
     connected: 'Подключено',
-    disconnected: 'Отключено',
-    scriptRoutine: 'Эта регулярная задача запускает скрипт; скрипт будет сохранён.',
-    localDelivery: 'Результаты сохраняются локально.'
+    disconnected: 'Отключено'
   },
   ar: {
     back: 'العودة إلى المحادثة',
@@ -327,13 +295,9 @@ const copy = {
     backToAgents: 'العودة إلى الوكلاء',
     unavailable: 'غير متاح',
     retry: 'إعادة المحاولة',
-    schedule: 'الجدول',
-    enabled: 'مفعّل',
     configured: 'تم الإعداد',
     connected: 'متصل',
-    disconnected: 'غير متصل',
-    scriptRoutine: 'تشغّل هذه المهمة الروتينية برنامجًا نصيًا؛ سيُحفظ البرنامج النصي.',
-    localDelivery: 'تُحفظ النتائج محليًا.'
+    disconnected: 'غير متصل'
   }
 } satisfies Record<BundledLocale, Record<string, string>>
 

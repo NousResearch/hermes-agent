@@ -42,7 +42,7 @@ export function jobTitle(job: CronJob): string {
     truncateText(pick(job.prompt), 60) ||
     truncateText(pick(job.script), 60) ||
     job.id ||
-    shellCopy({ classic: 'Cron job', redesign: translateNow('cron.count', 1) })
+    shellCopy({ classic: 'Cron job', redesign: translateNow('assistant.tool.titles.cronjob.done') })
   )
 }
 

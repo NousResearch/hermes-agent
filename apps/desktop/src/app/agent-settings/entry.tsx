@@ -1,7 +1,6 @@
 import { Suspense, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
-import { PageLoader } from '@/components/page-loader'
 import { lazyView } from '@/lib/lazy-view'
 import { usePortalShell } from '@/store/shell-variant'
 
@@ -18,7 +17,8 @@ const AgentSettingsView = lazyView(async () => (await import('./index')).AgentSe
 /** The rail warms this chunk too, so an agent page paints without a second Suspense wait. */
 export const preloadAgentSettingsView = AgentSettingsView.preload
 
-/** An explicit agent route always opens the owner-pinned settings surface. */
+/** An explicit agent route opens the redesign's owner-pinned agent page. Classic has no agent page,
+ *  so it keeps Settings exactly as it always was, whatever the route names. */
 export function SettingsView(props: SettingsPageProps) {
   const redesigned = usePortalShell()
   const { search } = useLocation()
@@ -26,14 +26,13 @@ export function SettingsView(props: SettingsPageProps) {
   const profile = params.get('agentProfile')
   const connectionId = params.get('connection') || undefined
 
-  if (!profile) {
+  if (!profile || !redesigned) {
     return <ClassicSettingsView {...props} />
   }
 
   return (
     <AgentSettingsRoute
       {...props}
-      classic={!redesigned}
       connectionId={connectionId}
       key={JSON.stringify([connectionId, profile])}
       profile={profile}
@@ -42,7 +41,6 @@ export function SettingsView(props: SettingsPageProps) {
 }
 
 interface AgentSettingsRouteProps extends SettingsPageProps {
-  classic: boolean
   connectionId?: string
   profile: string
 }
@@ -57,9 +55,7 @@ function AgentSettingsRoute({ connectionId, profile, ...props }: AgentSettingsRo
   return (
     <ConfigSettingsDraftContext.Provider value={configDraft}>
       <AgentInstructionsDraftContext.Provider value={instructionsDraft}>
-        <Suspense
-          fallback={props.classic ? <PageLoader /> : <PageFrameFallback frame="agent" onClose={props.onClose} />}
-        >
+        <Suspense fallback={<PageFrameFallback frame="agent" onClose={props.onClose} />}>
           <AgentSettingsView {...props} owner={owner} />
         </Suspense>
       </AgentInstructionsDraftContext.Provider>

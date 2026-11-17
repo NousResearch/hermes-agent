@@ -10,7 +10,7 @@ import { usePortalShell } from '@/store/shell-variant'
 
 // Layout blocks for the redesigned settings pages (Figma 856:*): a page stack, grouped-row cards and
 // collapsible "Advanced"-style disclosures. Classic renders the pre-redesign wrapper each call site
-// already had (a `contents` pass-through by default), so classic layout stays byte-identical.
+// already had — none by default — so classic layout stays byte-identical.
 
 interface SettingsOverviewProps {
   children: ReactNode
@@ -21,7 +21,7 @@ interface SettingsOverviewProps {
 export function SettingsOverview({ children, className }: SettingsOverviewProps) {
   const redesign = usePortalShell()
 
-  return <div className={redesign ? cn('global-settings-overview', className) : 'contents'}>{children}</div>
+  return redesign ? <div className={cn('global-settings-overview', className)}>{children}</div> : <>{children}</>
 }
 
 interface SettingsGroupProps {
@@ -80,15 +80,23 @@ export function SettingsAddRow({ children, icon = 'add', ...props }: SettingsAdd
 
 interface SettingsCardProps extends Omit<ComponentProps<'div'>, 'className'> {
   className?: string
-  /** Classic wrapper class; `contents` keeps the rows flowing into the parent, `''` is a plain div. */
+  /** Classic's own wrapper div and its class (`''` is a plain div); omitted, classic adds no element. */
   classicClassName?: string
 }
 
 /** Grouped rows on one r8 card with hairline dividers between them. */
-export function SettingsCard({ className, classicClassName = 'contents', ...props }: SettingsCardProps) {
+export function SettingsCard({ className, classicClassName, ...props }: SettingsCardProps) {
   const redesign = usePortalShell()
 
-  return <div className={redesign ? cn('global-settings-card', className) : classicClassName || undefined} {...props} />
+  if (redesign) {
+    return <div className={cn('global-settings-card', className)} {...props} />
+  }
+
+  return classicClassName === undefined ? (
+    <>{props.children}</>
+  ) : (
+    <div className={classicClassName || undefined} {...props} />
+  )
 }
 
 interface SettingsCardSkeletonProps {

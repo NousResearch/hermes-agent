@@ -26,7 +26,7 @@ import { $gatewayState } from '@/store/session'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
-import { useSettingsOwner } from './profile-scope'
+import { settingsScopeProfile, useSettingsOwner, useSettingsRequestScope } from './profile-scope'
 import { VaultCredentialRow, VaultLayout, VaultSourceRow } from './vault-rows'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
@@ -162,7 +162,7 @@ function useVaultOwnerRequest() {
   const settingsProfile = useStore($settingsScopeProfile)
   const activeConnection = useStore($activeConnectionId)
   const pinnedOwner = useSettingsOwner()
-  const scopeProfile = pinnedOwner?.profile ?? settingsProfile
+  const scopeProfile = settingsScopeProfile(useSettingsRequestScope(settingsProfile))
   const connectionId = pinnedOwner ? (pinnedOwner.connectionId ?? null) : activeConnection
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
@@ -698,6 +698,7 @@ export function VaultSettings({ after, subpage }: VaultSettingsProps = {}) {
       credentialRows={credentialRows}
       dialogs={dialogs}
       itemCount={isPending ? null : items.length}
+      offline={gatewayState !== 'open'}
       onAdd={() => openAdd()}
       sourceCount={sourcesPending ? null : externalSources.length}
       sourceRows={sourceRows}

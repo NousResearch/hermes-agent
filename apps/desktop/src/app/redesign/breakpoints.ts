@@ -9,8 +9,7 @@ import { atom } from 'nanostores'
  *  - wide (≥ 1024): the desktop layout.
  *
  *  CSS cannot read custom properties in a media query, so stylesheets repeat these two literals
- *  (`max-width: 639.98px` / `max-width: 1023.98px`) with a comment pointing here; tokens/space.css
- *  documents them as `--portal-breakpoint-medium` / `--portal-breakpoint-wide`. The classic shell's
+ *  (`max-width: 639.98px` / `max-width: 1023.98px`) with a comment pointing here. The classic shell's
  *  sidebar dock point (layout-constants.ts) is the medium breakpoint. */
 export const BREAKPOINT_MEDIUM_PX = 640
 export const BREAKPOINT_WIDE_PX = 1024

@@ -188,6 +188,8 @@ interface VaultLayoutProps {
   itemCount: null | number
   /** Null while the first read is in flight. */
   sourceCount: null | number
+  /** The gateway socket is not open, so a read that has not landed is not coming yet. */
+  offline: boolean
   /** `credentials` or `sources` shows just that section (a deep link); none shows both. */
   subpage?: string
   onAdd: () => void
@@ -257,6 +259,7 @@ function RedesignVault({
   sourceRows,
   dialogs,
   itemCount,
+  offline,
   sourceCount,
   subpage,
   onAdd
@@ -267,6 +270,8 @@ function RedesignVault({
   const showCredentials = subpage === undefined || subpage === 'credentials'
   const showSources = (subpage === undefined || subpage === 'sources') && Boolean(sourceCount)
   const loaded = itemCount !== null && sourceCount !== null
+  // An unread vault on a closed socket is offline, not loading: say so and keep `after` (REST) reachable.
+  const unreachable = offline && !loaded
 
   return (
     <SettingsContent>
@@ -278,7 +283,11 @@ function RedesignVault({
             meta={itemCount ? v.count(itemCount) : undefined}
             title={pages.vault.credentials}
           >
-            {itemCount === null ? (
+            {itemCount === null && unreachable ? (
+              <SettingsCard>
+                <SettingsEmptyRow title={pages.vault.offline} />
+              </SettingsCard>
+            ) : itemCount === null ? (
               <SettingsCardSkeleton addRow rows={1} />
             ) : (
               <SettingsCard>
@@ -294,7 +303,7 @@ function RedesignVault({
             <SettingsCard>{sourceRows}</SettingsCard>
           </SettingsGroup>
         )}
-        {loaded && after}
+        {(loaded || unreachable) && after}
       </SettingsOverview>
       {dialogs}
     </SettingsContent>

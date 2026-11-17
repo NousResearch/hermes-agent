@@ -520,8 +520,9 @@ profile's collection switch is on. With it off the app keeps no local record
 local record per gateway connection and profile, shared by that profile's
 windows; after a profile switch nothing is kept or sent until the new profile's
 switch has been read, and the switch is re-read whenever a window regains focus
-(so an opt-out from the CLI or another window takes effect there). Simplified sidebar users can optionally choose a fixed reason after switching
-back in settings; there is no required rating or free-text feedback.
+(so an opt-out from the CLI or another window takes effect there). After turning
+**Redesigned interface** off in Settings, users can optionally choose a fixed
+reason; there is no required rating or free-text feedback.
 Every value is a closed id defined in the app's code (area, action, notice, flow,
 toggle, step), a published config key, or a bucket. Message text, toast text,
 session/bot/profile names, paths and setting values never leave.
@@ -535,9 +536,11 @@ session/bot/profile names, paths and setting values never leave.
 | `hermes.desktop.dislike` | signal (`quick_close`, `cancelled`, `setting_off_default`, `rage_click`, `undo`, `feature_disabled`), target, setting, direction | Signals that a feature is unwanted: a pane closed within 5s of opening, a dialog/flow backed out of, a setting moved to or away from its default (the key only; the backend compares the saved value to the default itself), three clicks on one control within a second, an undo, a shipped feature switched off. Capped per signal per day. |
 | `hermes.desktop.onboarding` | step (first-run steps: provider picker, sign-in, API key, local endpoint, model pick, choose later, free-tier screen, guided setup cards, consent, first message), event (`reached`/`completed`/`abandoned`) | Where first run stops. Each step event once per profile (latched in a small per-profile file); `abandoned` is a step still open when the app next starts. First run happens before the consent question, so until it is answered the app holds the step events in memory only (never on disk, never sent) and records them if the user opts in during that app session; a "no" or quitting first discards them. Switching collection off in the Desktop deletes those latches with the app's own copy. |
 
-##### Simplified sidebar rollout
+##### Redesigned interface rollout
 
-These metrics use the existing consenting profile `install_id`, not an account
+The redesigned interface is on by default; **Settings → Appearance → Window
+layout → Redesigned interface** turns it off. Its metric ids keep the
+`simplified_sidebar` name. These metrics use the existing consenting profile `install_id`, not an account
 or person identifier. A person using several profiles can count several times;
 the sidebar preference itself is shared across profiles in the renderer.
 Restrict reports to releases where both the client and gateway support these
@@ -547,15 +550,14 @@ ids: older gateways normalize unknown ids to `other` or discard unknown signals.
   divided by profiles with either `classic_sidebar` or `simplified_sidebar`
   in the same window. These require a real app interaction and are recorded
   once per UTC day. This includes profiles inheriting an enabled preference.
-- **Offer acceptance:** profiles with action `sidebar.simplified.enable_offer`
-  divided by profiles shown `feature_use.area=simplified_sidebar_offer`.
-  Settings enables use `sidebar.simplified.enable_settings`; declining and
-  dismissing use `sidebar.simplified.decline` and `sidebar.simplified.dismiss`.
-- **D7/D30 retention:** among profiles first observed enabling in a cohort,
-  the fraction with simplified use on UTC day 7/30 after that enable. Include
-  only cohorts old enough to observe the entire day. This means used again,
-  not continuously enabled. Not returning is not a confirmed switch-off.
-  Report inherited-preference profiles separately using first observed use.
+- **Re-enables:** action `sidebar.simplified.enable_settings` records turning
+  the redesigned interface back on in Settings. There is no in-app offer or
+  prompt, so there is no offer acceptance or decline metric.
+- **D7/D30 retention:** among profiles first observed with
+  `feature_use.area=simplified_sidebar` in a cohort, the fraction with that
+  use again on UTC day 7/30 after it. Include only cohorts old enough to
+  observe the entire day. This means used again, not continuously enabled.
+  Not returning is not a confirmed switch-off.
 - **Switch-offs:** `sidebar.simplified.disable` and
   `dislike(signal=feature_disabled, target=simplified_sidebar)` record an
   enabled-to-disabled transition. Optional inline feedback emits
@@ -572,24 +574,24 @@ No profile names, gateway addresses, session content, or new identity fields are
 
 ##### IA redesign interaction counters
 
-With Simplified agent mode enabled, `hermes.desktop.action_use` also accepts
+With **Redesigned interface** enabled, `hermes.desktop.action_use` also accepts
 closed `ia.*` action codes. These reuse the same per-profile collection gate,
 finished-day aggregation, count buckets, retention and opt-in package sender.
 There is no new endpoint, account identifier, or analytics SDK. Collection
 requires `enabled`; outbound packages still require `send` as well. Switching
-the sidebar on does not grant either permission. Unknown codes collapse to
+the redesigned interface on does not grant either permission. Unknown codes collapse to
 `other` on both sides. No messages, search strings, chat titles, session IDs,
 profile names, gateway addresses, plugin names or free-text reasons are added.
-Async pin outcomes are discarded after consent, scope or sidebar-mode changes.
+Async pin outcomes are discarded after consent, scope or interface changes.
 
 | Action family | What it measures |
 | --- | --- |
-| `ia.rail.*`, `ia.drawer.*` | Rail destination clicks, settings drawer opens and menu-group selections. Plugin destinations share the single `plugin` code. Existing keybinding action counters retain shortcut/palette attribution. |
+| `ia.rail.*`, `ia.drawer.settings` | Rail destination clicks and the rail's Settings gear. Plugin destinations share the single `plugin` code. Existing keybinding action counters retain shortcut/palette attribution. |
 | `ia.view.*`, `ia.transition.*` | Visible visits and previous-to-current area transitions, including focused chat tiles. Settings and plugin pages are coarse categories, not individual routes. |
 | `ia.backtrack.*` | A→B→A with less than 5 seconds spent in B. This is a navigation pattern, not a dissatisfaction verdict. |
 | `ia.dwell.*` | Visible visit duration buckets: below 5s, 5–30s, 30s–5m, at least 5m. Recorded on area exit or document hide; hidden time is excluded. This is not active reading time or an exact sum of seconds. A crash can lose an unfinished visit. |
 | `ia.session.*` | Session-open requests from Pinned, agent lists, or search, including modifier-click opens. Not a guarantee that loading completed. |
-| `ia.section.*` | User-initiated Pinned/agent/gateway expand and collapse; automatic pinned-chat reveals do not count. |
+| `ia.section.*` | User-initiated Pinned and agent expand and collapse; automatic pinned-chat reveals do not count. |
 | `ia.search.*` | Focus, settled nonempty searches, results/empty/partial failure, result selection and clearing. Queries must settle for 500ms after requests complete. Local matches are included. `early` means a settled search within 10 seconds of sidebar mount, a discovery proxy rather than proof of confusion. |
 | `ia.pin.*` | Request source and confirmed pin/unpin or write failure. Repeated clicks while a write is in flight do not produce additional outcomes. Refresh failure after an acknowledged write is not a pin failure. |
 | `ia.pin_count.*`, `ia.profile_pin_count.*` | Successful sidebar-load snapshots in buckets `zero`, `one`, `two`, `three`, `overflow` (4+). The first counts the complete loaded sidebar response; the second counts only the consenting active profile on its gateway. Pinned rows are backfilled beyond recency limits and deduplicated across slices by gateway/profile/lineage. Hidden/archived chats are excluded. Partial failures suppress the total; failed profiles never become zero samples. No profile names are transmitted. |
@@ -619,7 +621,7 @@ session abandonment and subsequent agent switches (require draft/tile lifecycle
 correlation), and “dead end” classification (reading a page without clicking is
 not necessarily a failure). No cross-profile tracking is added to approximate
 these. There is no claim of per-section action coverage inside existing pages;
-rail and drawer counts measure navigation, not every control on the destination.
+rail and Settings-gear counts measure navigation, not every control on the destination.
 
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the

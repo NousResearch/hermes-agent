@@ -19,7 +19,7 @@ import { $localModelOfferPending, LOCAL_MODEL_OFFERED_KEY, LOCAL_MODEL_PENDING_K
 import { readConnectedLocalSetupEligibility, readLocalSetupEligibility } from '@/store/local-setup-offer'
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
 import { requestRoute } from '@/store/recovery-requests'
-import { $onboardingSettleFrom as $guideSettleFrom } from '@/store/setup-guide'
+import { $guideSettleFrom } from '@/store/setup-guide'
 import { $setupGuideOnboarding } from '@/store/shell-policy'
 import type { LocalCatalogModel } from '@/types/hermes'
 

@@ -196,6 +196,32 @@ describe('item index', () => {
     expect(Object.keys($itemIndex.get().local!.snapshot.chats)).toHaveLength(2)
   })
 
+  it('keeps a chat that left the list window out of the index across writes', async () => {
+    serveList([row('a'), row('b')])
+    await refreshItemIndex()
+    persistOwner('local')
+
+    serveList([row('a')])
+    await refreshItemIndex()
+    persistOwner('local')
+
+    expect(values()).toEqual(['/work/a.md'])
+    reopen()
+    expect(values()).toEqual(['/work/a.md'])
+  })
+
+  it('does not rewrite a chat on every refresh when its row carries no activity', async () => {
+    serveList([row('quiet', 100, { last_active: undefined })])
+    await refreshItemIndex()
+
+    const before = ownerIndex('local').snapshot.chats
+
+    await refreshItemIndex()
+
+    expect(ownerIndex('local').snapshot.chats).toEqual(before)
+    expect(Object.values(ownerIndex('local').snapshot.chats)[0]!.lastActive).toBe(0)
+  })
+
   it('keeps a chat whose profile could not be listed this time', async () => {
     serveList([row('a', 100, { profile: 'work' })])
     await refreshItemIndex()

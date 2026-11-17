@@ -131,13 +131,24 @@ it('does not match a legacy profile group to a same-named remote bot', () => {
   view.unmount()
 })
 
-it('opens Screen from the tool palette on its captured owner, including a roster alias', async () => {
+it('the classic sidebar group opens its own profile\'s Screen, never an alias serving from it', () => {
   const alias: RosterRow = { ...botB, name: 'shared-bot', targetProfile: 'default' }
+  $lastRoster.set([botA, alias])
+  vi.mocked(host.requestProfile).mockResolvedValue(status)
+  const view = render(<ProfileGroupScreenPortal route={{ connectionId: 'host-b', profile: 'default' }} />)
+
+  fireEvent.click(view.getByRole('button'))
+  expect(openBotScreen).toHaveBeenCalledWith(botB, null)
+  view.unmount()
+})
+
+it('opens Screen from the tool palette on its captured owner, including a roster alias', async () => {
+  const alias: RosterRow = { ...botB, name: 'shared-bot', targetProfile: 'default', connectionLabel: 'Host B' }
   $lastRoster.set([botA, alias])
   const command = profileScreenCommand({ connectionId: 'host-b', profile: 'default' })
 
   expect(command.label).toBe('Open Screen')
-  expect(command.detail?.()).toBe('default · host-b')
+  expect(command.detail?.()).toBe('default · Host B')
   await command.run()
   expect(openBotScreen).toHaveBeenCalledWith(alias, null)
 

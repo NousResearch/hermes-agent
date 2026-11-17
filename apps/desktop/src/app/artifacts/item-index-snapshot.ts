@@ -51,7 +51,7 @@ export interface ItemIndexSnapshot {
   /** When the owner's list was last checked (ms); null before the first refresh. */
   checkedAt: null | number
   chats: Record<string, IndexedChat>
-  /** Chat keys deleted here, with when (ms). */
+  /** Chat keys deleted here or dropped from the list window, with when (ms). */
   removed: Record<string, number>
 }
 

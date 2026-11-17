@@ -40,6 +40,7 @@
 }
 
 .library-refresh[data-busy] svg {
+  /* token-exempt: a spinner's turn is a loop period, not a transition; the motion scale has no loop */
   animation: library-spin 1s linear infinite;
 }
 

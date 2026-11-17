@@ -1,3 +1,4 @@
+import { isRecord } from '@hermes/shared/i18n'
 import { renderHook } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
@@ -19,8 +20,11 @@ import { settingsPagesCopy } from '@/app/settings/settings-pages-copy'
 
 import { TRANSLATIONS } from '../catalog'
 import { resolveTranslations } from '../registry'
+import type { BundledLocale } from '../types'
 
 import { enRedesign } from './en'
+
+import { REDESIGN_OVERLAYS } from './index'
 
 /** Every user-visible leaf as `dotted.key → text`; functions render with placeholder arguments. */
 function leaves(tree: unknown, prefix = '', out: Record<string, string> = {}): Record<string, string> {
@@ -37,6 +41,18 @@ function leaves(tree: unknown, prefix = '', out: Record<string, string> = {}): R
   }
 
   return out
+}
+
+/** Overlay keys whose value renders exactly as the base's. The merge replaces anything that is not a
+ *  record (a string, a function, a whole array), so that is the unit compared. */
+function restatedKeys(overlay: unknown, base: unknown, prefix = ''): string[] {
+  if (isRecord(overlay) && isRecord(base)) {
+    return Object.entries(overlay).flatMap(([key, value]) =>
+      restatedKeys(value, base[key], prefix ? `${prefix}.${key}` : key)
+    )
+  }
+
+  return JSON.stringify(leaves(overlay)) === JSON.stringify(leaves(base)) ? [prefix] : []
 }
 
 // The classic nouns the redesign renames: Sessions → Chats, Artifacts → Library, Profiles → Agents,
@@ -177,15 +193,57 @@ const REDESIGN_ONLY_BASE = [
   'simplifiedAgents.',
   'firstRun.guide.',
   'settings.appearance.redesign.',
-  'skills.openToolLibrary'
+  'skills.openToolLibrary',
+  'skills.inventoryScopeHint'
 ]
 
-// Words that exist only in the redesign: classic must not gain them anywhere `main` did not have them.
-const REDESIGN_TERMS = /\b(routines?|library)\b/i
+// Words that exist only in the redesign (Machines names a Hermes gateway there): classic must not gain
+// them anywhere `main` did not have them.
+const REDESIGN_TERMS = /\b(routines?|library|machines?)\b/i
 
 /** Classic keys whose `main` wording already used one of those words, in another sense. */
 const CLASSIC_KEEPS: Record<string, string> = {
-  'settings.localModels.sideloadAlreadyPresent': "a local model already downloaded ('in your library')"
+  'settings.localModels.sideloadAlreadyPresent': "a local model already downloaded ('in your library')",
+  // `main` says "machine" for a computer (this one, or the one a backend runs on), never for a gateway.
+  ...keep(
+    "a computer, in main's wording",
+    'externalOpenFailed.missing.message',
+    'sharedMetrics.collectedMachine',
+    'fileMenu.revealUnavailable',
+    'boot.failure.repairHint',
+    'promptNotices.desktopCommands.exportRemote',
+    'promptNotices.desktopCommands.importRemote',
+    'settings.vault.blurb',
+    'settings.vault.addDescription',
+    'settings.vault.sources.unlockDescription',
+    'settings.config.keepAwakeDesc',
+    'settings.gateway.webappHostDesc',
+    'settings.gateway.webappOauthPaste.description',
+    'settings.gateway.intro',
+    'settings.gateway.plainTextConfirmDesc',
+    'settings.gateway.plainTextStoredDesc',
+    'settings.mcp.deepLinkStdioWarning',
+    'settings.localModels.installDetail',
+    'settings.localModels.hardwareTitle',
+    'settings.localModels.recommendedReason.product-default',
+    'settings.localModels.recommendedReason.speed-gated-quality',
+    'settings.localModels.noRecommendationTitle',
+    'settings.localModels.quickstartTitle',
+    'settings.localModels.quickstartDetailReady',
+    'settings.localModels.quickstartDoneToast',
+    'settings.localModels.pillTooBig',
+    'settings.localModels.browseHint',
+    'settings.toolsets.postSetupHint',
+    'settings.toolsets.browserRealProfile.signinsRemote',
+    'skills.plugins.desktopHalfRemoteTip',
+    'updates.versionDetailsRuntimeExternal',
+    'install.activeDesc',
+    'onboarding.localModelsPitch',
+    'shell.modelMenu.localSetup.text',
+    'preview.web.remoteLoopback',
+    'prompts.vaultUnlockDesc',
+    'prompts.vaultSaveDesc'
+  )
 }
 
 describe('redesign terminology', () => {
@@ -221,5 +279,21 @@ describe('redesign terminology', () => {
     expect(offenders).toEqual([])
     expect(Object.values(leaves(enRedesign)).some(text => /\bRoutines\b/.test(text))).toBe(true)
     expect(Object.values(leaves(enRedesign)).some(text => /\bLibrary\b/.test(text))).toBe(true)
+    expect(Object.values(leaves(enRedesign)).some(text => /\bMachines\b/.test(text))).toBe(true)
+  })
+
+  it('keeps every classic keep real and still carrying its redesign word', () => {
+    const classic = leaves(TRANSLATIONS.en)
+    const stale = Object.keys(CLASSIC_KEEPS).filter(key => !REDESIGN_TERMS.test(classic[key] ?? ''))
+
+    expect(stale).toEqual([])
+  })
+
+  it('restates no base value in any locale overlay: an overlay holds only the wording that differs', () => {
+    const restated = Object.entries(REDESIGN_OVERLAYS).flatMap(([locale, overlay]) =>
+      restatedKeys(overlay, TRANSLATIONS[locale as BundledLocale]).map(key => `${locale}: ${key}`)
+    )
+
+    expect(restated).toEqual([])
   })
 })

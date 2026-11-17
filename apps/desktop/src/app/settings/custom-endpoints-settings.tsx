@@ -28,7 +28,7 @@ import type {
 
 import { ComboboxInput } from './combobox-input'
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
-import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
+import { SettingsProfileScope, useSettingsRequestScope } from './profile-scope'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -117,7 +117,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   // not whichever Bot is active in the left rail. Undefined follows the
   // active profile (request-shaped — never pass null, which retargets primary).
   const requestedProfile = useStore($settingsRequestProfile)
-  const scopeProfile = useSettingsOwner() ?? requestedProfile
+  const scopeProfile = useSettingsRequestScope(requestedProfile)
   const mounted = useRef(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { $pluginDecisions } from '@/contrib/plugins-store'
+import { $pluginRecords, type PluginStatus } from '@/contrib/plugins-store'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import { botWorkspaceOwnerKey } from '@/plugins/hermes-bots/routing'
@@ -23,6 +23,11 @@ const agent = {
   targetProfile: 'actual-alpha'
 }
 
+const botMode = (status: PluginStatus) =>
+  $pluginRecords.set({ 'hermes-bots': { id: 'hermes-bots', kind: 'bundled', name: 'Bot Mode', status } })
+
+beforeEach(() => botMode('loaded'))
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
@@ -30,7 +35,7 @@ afterEach(() => {
   $openBotChat.set(null)
   $pendingBotOpen.set(null)
   $selectedStoredSessionId.set(null)
-  $pluginDecisions.set({})
+  $pluginRecords.set({})
 })
 
 it('only opens on click and preserves the exact gateway and target profile', () => {
@@ -93,9 +98,9 @@ it('highlights a canonical tab after its temporary open claim is released', () =
   expect(screen.getByRole('button', { name: 'Alpha' }).getAttribute('aria-current')).toBe('page')
 })
 
-it('starts a normal chat with the agent when Bot Mode is switched off', () => {
+it.each(['disabled', 'error'] as const)('starts a normal chat with the agent when Bot Mode is %s', status => {
   const start = vi.spyOn(profile, 'newSessionInAgent').mockImplementation(() => {})
-  $pluginDecisions.set({ 'hermes-bots': false })
+  botMode(status)
   render(<SimplifiedBotChatRow agent={agent} />)
   fireEvent.click(screen.getByRole('button', { name: 'Alpha' }))
 

@@ -39,18 +39,28 @@ for (const shell of ['classic', 'redesign'] as const) {
       test.setTimeout(240_000)
       const { page } = fixture!
       await waitForAppReady(fixture!, 120_000)
+      // Both keys are machine-shared: the reload hydrates them from ui-preferences.json, so they go
+      // through the store (the write the app's own toggles make), not into localStorage alone. The
+      // local copy is set to match too: a window not yet joined to the store's generation keeps a
+      // local key the store deleted.
       await page.evaluate(
-        ([shellKey, modeKey, classic, simple]) => {
-          if (classic) {
-            localStorage.setItem(shellKey, 'false')
-          } else {
-            localStorage.removeItem(shellKey)
-          }
+        async ([shellKey, modeKey, classic, simple]) => {
+          const values = { [shellKey]: classic ? 'false' : null, [modeKey]: simple ? 'simple' : null }
 
-          if (simple) {
-            localStorage.setItem(modeKey, 'simple')
-          } else {
-            localStorage.removeItem(modeKey)
+          const { uiPreferences } = (
+            window as unknown as {
+              hermesDesktop: { uiPreferences: { write: (payload: { values: typeof values }) => Promise<unknown> } }
+            }
+          ).hermesDesktop
+
+          await uiPreferences.write({ values })
+
+          for (const [key, value] of Object.entries(values)) {
+            if (value === null) {
+              localStorage.removeItem(key)
+            } else {
+              localStorage.setItem(key, value)
+            }
           }
 
           location.hash = '#/'

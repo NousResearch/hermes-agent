@@ -24,17 +24,21 @@ export const shellMessages = {
       'Your remote gateway session has expired. Open Settings → Machines and click "Sign in" again.'
     ),
   remoteUnsignedOauth: () =>
-    'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
     pick(
-      'Open Settings → Gateway and click "Sign in", or switch back to Local.',
-      'Open Settings → Machines and click "Sign in", or switch back to Local.'
+      'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+        'Open Settings → Gateway and click "Sign in", or switch back to Local.',
+      'The remote Hermes machine uses OAuth, but you are not signed in. ' +
+        'Open Settings → Machines and click "Sign in", or switch back to Local.'
     ),
   switchToLocalMode: () =>
     pick('or switch to Local mode in Settings → Gateway. ', 'or switch to Local mode in Settings → Machines. '),
   ticketSessionRejected: () =>
-    'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
-    pick('Open Settings → Gateway and sign in again.', 'Open Settings → Machines and sign in again.'),
-  remoteMachineLabel: () => pick('Remote gateway', 'Remote machine'),
+    pick(
+      'Reached the gateway over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
+        'Open Settings → Gateway and sign in again.',
+      'Reached the machine over HTTP, but the OAuth session was rejected while minting a WebSocket ticket. ' +
+        'Open Settings → Machines and sign in again.'
+    ),
   plainTextStoragePrompt: () =>
     pick(
       'confirm the plain-text storage option when prompted in Settings → Gateway, ',

@@ -7,7 +7,7 @@ import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { appViewForPath, isOverlayView } from '@/app/routes'
-import { historyBack, historyForward } from '@/app/shell/history-position'
+import { goBack, historyForward } from '@/app/shell/history-position'
 import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
@@ -328,7 +328,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
-    'nav.back': historyBack,
+    'nav.back': () => goBack(navigate),
     'nav.forward': historyForward,
 
     'session.new': () => {

@@ -7,13 +7,11 @@ export function RunStopAction({
   c,
   onStop,
   runLive,
-  size,
   stopping
 }: {
   c: Translations['cron']
   onStop: () => void
   runLive: boolean
-  size?: 'lg' | 'sm'
   stopping: boolean
 }) {
   if (!runLive && !stopping) {
@@ -21,13 +19,7 @@ export function RunStopAction({
   }
 
   return (
-    <PanelAction
-      disabled={stopping}
-      icon={stopping ? 'loading' : 'debug-stop'}
-      onClick={onStop}
-      size={size}
-      spinning={stopping}
-    >
+    <PanelAction disabled={stopping} icon={stopping ? 'loading' : 'debug-stop'} onClick={onStop} spinning={stopping}>
       {stopping ? c.control.stopping : c.control.stop}
     </PanelAction>
   )

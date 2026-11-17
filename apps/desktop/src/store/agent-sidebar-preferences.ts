@@ -1,3 +1,5 @@
+import type { WritableAtom } from 'nanostores'
+
 import { Codecs, persistentAtom } from '@/lib/persisted'
 
 export interface AgentSidebarOwner {
@@ -13,14 +15,17 @@ export function agentSidebarKey(owner: AgentSidebarOwner): string {
 }
 
 export const $hiddenSidebarAgents = persistentAtom('hermes.desktop.hiddenSidebarAgents.v1', [], Codecs.stringArray)
+
+const booleanRecord = Codecs.json<Record<string, boolean>>(value =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).filter(([, flag]) => typeof flag === 'boolean'))
+    : {}
+)
+
 export const $sidebarAgentExpanded = persistentAtom<Record<string, boolean>>(
   'hermes.desktop.sidebarAgentExpanded.v1',
   {},
-  Codecs.json(value =>
-    value && typeof value === 'object' && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).filter(([, expanded]) => typeof expanded === 'boolean'))
-      : {}
-  )
+  booleanRecord
 )
 export const $sidebarAgentScroll = persistentAtom(
   'hermes.desktop.sidebarAgentScroll.v1',
@@ -77,6 +82,36 @@ export function setAgentChatOrder(owner: AgentSidebarOwner, order: AgentChatOrde
   $portalAgentChatOrder.set({ ...$portalAgentChatOrder.get(), [agentSidebarKey(owner)]: order })
 }
 
+/** Redesign-only: the agents whose card lists every chat past its cap, keyed by `agentSidebarKey`. */
+export const $portalAgentShowAll = persistentAtom<Record<string, boolean>>(
+  'hermes.desktop.portalSidebar.agentShowAll.v1',
+  {},
+  booleanRecord
+)
+
+export function setAgentShowAll(owner: AgentSidebarOwner, showAll: boolean): void {
+  $portalAgentShowAll.set({ ...$portalAgentShowAll.get(), [agentSidebarKey(owner)]: showAll })
+}
+
+/** Move one agent's entry of a keyed preference to `to`, or drop it when `to` is absent. */
+function rekeyAgentEntry<T>($record: WritableAtom<Record<string, T>>, from: string, to?: string): void {
+  const record = $record.get()
+
+  if (!Object.hasOwn(record, from)) {
+    return
+  }
+
+  const { [from]: value, ...rest } = record
+  $record.set(to === undefined ? rest : { ...rest, [to]: value })
+}
+
+// Every per-agent record: a rename carries each one, a deletion drops each one.
+function rekeyAgentEntries(from: string, to?: string): void {
+  rekeyAgentEntry($sidebarAgentExpanded, from, to)
+  rekeyAgentEntry($portalAgentChatOrder, from, to)
+  rekeyAgentEntry($portalAgentShowAll, from, to)
+}
+
 export function setSidebarAgentHidden(owner: AgentSidebarOwner, hidden: boolean): void {
   const key = agentSidebarKey(owner)
   const current = $hiddenSidebarAgents.get()
@@ -88,20 +123,7 @@ export function setSidebarAgentHidden(owner: AgentSidebarOwner, hidden: boolean)
 
 export function dropAgentSidebarPreferences(owner: AgentSidebarOwner): void {
   setSidebarAgentHidden(owner, false)
-  const key = agentSidebarKey(owner)
-  const expanded = $sidebarAgentExpanded.get()
-
-  if (Object.hasOwn(expanded, key)) {
-    const { [key]: _removed, ...rest } = expanded
-    $sidebarAgentExpanded.set(rest)
-  }
-
-  const orders = $portalAgentChatOrder.get()
-
-  if (Object.hasOwn(orders, key)) {
-    const { [key]: _removed, ...rest } = orders
-    $portalAgentChatOrder.set(rest)
-  }
+  rekeyAgentEntries(agentSidebarKey(owner))
 }
 
 export function migrateAgentSidebarPreferences(owner: AgentSidebarOwner, profile: string): void {
@@ -118,17 +140,5 @@ export function migrateAgentSidebarPreferences(owner: AgentSidebarOwner, profile
     $hiddenSidebarAgents.set([...new Set(hidden.map(key => (key === from ? to : key)))])
   }
 
-  const expanded = $sidebarAgentExpanded.get()
-
-  if (Object.hasOwn(expanded, from)) {
-    const { [from]: value, ...rest } = expanded
-    $sidebarAgentExpanded.set({ ...rest, [to]: value })
-  }
-
-  const orders = $portalAgentChatOrder.get()
-
-  if (Object.hasOwn(orders, from)) {
-    const { [from]: value, ...rest } = orders
-    $portalAgentChatOrder.set({ ...rest, [to]: value })
-  }
+  rekeyAgentEntries(from, to)
 }

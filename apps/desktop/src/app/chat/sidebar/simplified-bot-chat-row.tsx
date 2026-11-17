@@ -5,14 +5,16 @@ import { Codicon } from '@/components/ui/codicon'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
-import { $pluginDecisions, pluginActive } from '@/contrib/plugins-store'
+import { $pluginRecords } from '@/contrib/plugins-store'
 import { portalAgentSwatch } from '@/lib/portal-profile-color'
 import { resolveProfileColor } from '@/lib/profile-color'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { CANONICAL_CHAT_TITLE } from '@/plugins/hermes-bots/canonical-chat'
 import { $lastRoster, botRosterKey } from '@/plugins/hermes-bots/data'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import { botWorkspaceOwnerKey } from '@/plugins/hermes-bots/routing'
+import { ID as BOT_MODE_ID } from '@/plugins/hermes-bots/shared'
 import type { RosterRow } from '@/plugins/hermes-bots/types'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $profileColors } from '@/store/profile'
@@ -21,6 +23,12 @@ import { $sessionTiles } from '@/store/session-states'
 
 import { startSimplifiedAgentSession } from './simplified-new-session-model'
 import type { SimplifiedAgent } from './use-simplified-agents'
+
+/** Whether Bot Mode's code is running in this window: enabled and loaded. An enabled plugin that failed
+ *  (or has not finished) loading has nothing to route into, so the sidebar treats it as off. */
+export function useBotModeLoaded(): boolean {
+  return useStoreSelector($pluginRecords, records => records[BOT_MODE_ID]?.status === 'loaded')
+}
 
 interface SimplifiedBotChatRowProps {
   agent: SimplifiedAgent
@@ -46,7 +54,7 @@ export function SimplifiedBotChatRow({
   const roster = useStore($lastRoster)
   // An agent's own ongoing chat is Bot Mode's. With the plugin off the agent is still a profile:
   // its name starts a new chat with it, as New chat does.
-  const botMode = (useStore($pluginDecisions), pluginActive('hermes-bots'))
+  const botMode = useBotModeLoaded()
   const nameId = useId()
   const subtitleId = useId()
 

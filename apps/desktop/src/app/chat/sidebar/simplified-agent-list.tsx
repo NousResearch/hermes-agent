@@ -5,12 +5,7 @@ import { SETTINGS_ROUTE } from '@/app/routes'
 import { useStableNavigate } from '@/app/stable-navigate'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import {
-  $hiddenSidebarAgents,
-  $portalAgentsSectionOpen,
-  $sidebarAgentScroll,
-  agentSidebarKey
-} from '@/store/agent-sidebar-preferences'
+import { $hiddenSidebarAgents, $portalAgentsSectionOpen, $sidebarAgentScroll } from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { $fleetRoster } from '@/store/fleet-roster'
@@ -23,7 +18,7 @@ import { setSettingsScope } from '@/store/settings-scope'
 import { PortalAgentGroups } from './portal/portal-agent-groups'
 import { PortalSectionHeader } from './portal/portal-section-header'
 import { useFleetRoster } from './use-fleet-roster'
-import type { SimplifiedAgent, useSimplifiedAgents } from './use-simplified-agents'
+import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from './use-simplified-agents'
 
 interface SimplifiedAgentListProps {
   query: string
@@ -183,12 +178,7 @@ export function SimplifiedAgentList(props: SimplifiedAgentListProps) {
   useFleetRoster(true)
 
   // The badge counts what the section lists: hidden agents live in their own row below it.
-  const listed = props.agents.agents.filter(
-    agent =>
-      !hidden.includes(
-        agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile })
-      )
-  ).length
+  const listed = props.agents.agents.filter(agent => !hidden.includes(agentKey(agent))).length
 
   return (
     <section

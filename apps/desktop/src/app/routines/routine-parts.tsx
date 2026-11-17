@@ -7,12 +7,11 @@ import { type CronJob, getApiRequestConnection } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { $profiles, profileLabel } from '@/store/profile'
 
-import { jobState } from '../cron/job-state'
 import type { PanelMenuItem } from '../overlays/panel'
 import { SETTINGS_ROUTE } from '../routes'
 
 import { plainRunError, routineErrorText } from './routine-error'
-import { type RoutineIssue, routineIssue, type RoutineStatus, STATUS_TONE } from './routine-model'
+import { type RoutineIssue, routineIssue, routinePaused, type RoutineStatus, STATUS_TONE } from './routine-model'
 import { formatMoment } from './routine-schedule'
 import type { RoutineSource } from './routine-source'
 import { type RoutinesCopy, useRoutinesCopy } from './routines-copy'
@@ -81,7 +80,7 @@ export function RoutineBanner({ busy, job, onOpen, onRetry, title }: RoutineBann
   const next =
     issue === 'overdue'
       ? copy.banner.overdueHint
-      : job.next_run_at && jobState(job) !== 'paused'
+      : job.next_run_at && !routinePaused(job)
         ? copy.banner.retryAt(formatMoment(job.next_run_at, locale))
         : ''
 
@@ -178,7 +177,7 @@ export function routineMenuItems(
   c: Translations['cron'],
   copy: RoutinesCopy
 ): PanelMenuItem[] {
-  const paused = jobState(job) === 'paused'
+  const paused = routinePaused(job)
   const busy = actions.isBusy(job)
 
   return [

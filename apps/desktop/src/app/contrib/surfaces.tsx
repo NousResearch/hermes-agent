@@ -8,13 +8,13 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, memo, type ReactNode, Suspense, useCallback, useMemo, useState } from 'react'
+import { type ComponentProps, memo, type ReactNode, Suspense, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $activeConnectionId } from '@/store/connections'
-import { $gateway, requestGatewayForAgent } from '@/store/gateway'
+import { $gateway } from '@/store/gateway'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -43,6 +43,7 @@ import { StatusbarControls } from '../shell/statusbar-controls'
 import { latestChatActions, latestSidebarActions } from './latest-actions'
 import { setStatusbarItemGroup, useStatusbarContributions } from './panes'
 import { KeptChatRoutes } from './route-cover'
+import { useStatusRequester } from './status-requester'
 import type { SidebarActions, WiringActions } from './types'
 
 export function LegacySessionRedirect() {
@@ -122,12 +123,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
 
-  // Status describes the selected gateway/profile, not a focused chat on another owner.
-  const requestStatus = useCallback(
-    <T,>(method: string, params?: Record<string, unknown>) =>
-      requestGatewayForAgent<T>(activeConnectionId, activeGatewayProfile, method, params),
-    [activeConnectionId, activeGatewayProfile]
-  )
+  const requestStatus = useStatusRequester(actions.requestGateway)
 
   const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, requestStatus, gatewayScope)
   const extraLeftItems = useStatusbarContributions('left')

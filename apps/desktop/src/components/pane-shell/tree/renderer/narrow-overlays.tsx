@@ -89,8 +89,10 @@ export function overlayStyle({
     }
   }
 
-  // Global/developer rails take space outside this overlay's layout root.
-  return { maxWidth: '100%', paddingTop, width: `min(${overlayWidth ?? '18rem'}, 85vw)` }
+  const width = `min(${overlayWidth ?? '18rem'}, 85vw)`
+
+  // The redesign's global/developer rails take space outside this overlay's layout root.
+  return portal ? { maxWidth: '100%', paddingTop, width } : { paddingTop, width }
 }
 
 /** A touch screen has no hover to leave the overlay by, so the browser host closes it on a tap

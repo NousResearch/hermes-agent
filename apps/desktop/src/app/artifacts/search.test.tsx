@@ -50,7 +50,8 @@ it.each([false, true])('keeps an indexed library recoverable after a search has 
   const search = screen.getByRole('textbox', { name: words.search })
   fireEvent.change(search, { target: { value: 'unmatched-document' } })
   expect(await screen.findByText(words.none)).toBeTruthy()
-  expect(screen.queryByText(words.empty)).toBeNull()
+  // Classic keeps main's one empty state, its description included; the redesign says only "No matches".
+  expect(screen.queryByText(words.empty) !== null).toBe(!enabled)
 
   fireEvent.change(search, { target: { value: '' } })
   expect(await screen.findByRole('button', { name: 'report.md' })).toBeTruthy()

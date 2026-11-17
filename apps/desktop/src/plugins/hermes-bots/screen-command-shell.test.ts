@@ -9,13 +9,25 @@ import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 interface Contribution {
   area: string
   id: string
+  data?: { detail?: () => string }
 }
 
-const { hostMock } = vi.hoisted(() => {
-  const owner = { connectionId: 'local', profile: 'default' }
+interface Owner {
+  connectionId: string
+  profile: string
+}
+
+const { focusOwner, hostMock } = vi.hoisted(() => {
+  let owner: Owner = { connectionId: 'local', profile: 'default' }
+  const ownerListeners = new Set<(next: Owner) => void>()
   const idle = { get: () => null, listen: () => () => undefined }
 
   return {
+    // The focused chat's owner, as the shell publishes it: a fresh object on every focus change.
+    focusOwner: (next: Owner) => {
+      owner = next
+      ownerListeners.forEach(listener => listener(next))
+    },
     hostMock: {
       notify: vi.fn(),
       request: vi.fn(async () => ({})),
@@ -23,7 +35,14 @@ const { hostMock } = vi.hoisted(() => {
       agents: vi.fn(async () => ({ agents: [], sources: [] })),
       state: {
         connectionId: { get: () => 'local', listen: () => () => undefined },
-        focusedSessionOwner: { get: () => owner, listen: () => () => undefined },
+        focusedSessionOwner: {
+          get: () => owner,
+          listen: (listener: (next: Owner) => void) => {
+            ownerListeners.add(listener)
+
+            return () => ownerListeners.delete(listener)
+          }
+        },
         focusedSessionProfile: { get: () => 'default', listen: () => () => undefined },
         focusedStoredSessionId: idle,
         gateway: idle,
@@ -86,6 +105,9 @@ afterEach(async () => {
   live.splice(0)
   const { $botsPaneHosted } = await import('./bots-pane-host')
   $botsPaneHosted.set(true)
+  const { $lastRoster } = await import('./data')
+  $lastRoster.set([])
+  focusOwner({ connectionId: 'local', profile: 'default' })
 })
 
 it('offers no Screen row in the classic shell, which hosts the Bots pane and its Screen portal', async () => {
@@ -104,4 +126,22 @@ it('offers the Screen row where the Agents page hosts Bots, and follows a live s
 
   $botsPaneHosted.set(false)
   expect(screenRow()).toBeDefined()
+})
+
+it('keeps the Screen row while focus moves within one owner, replaces it for another, and names the machine', async () => {
+  const { $botsPaneHosted } = await import('./bots-pane-host')
+  const { $lastRoster } = await import('./data')
+  $botsPaneHosted.set(false)
+  await registerPlugin()
+  const first = screenRow()
+
+  focusOwner({ connectionId: 'local', profile: 'default' })
+  expect(screenRow()).toBe(first)
+
+  $lastRoster.set([
+    { name: 'ops', sourceScoped: true, connectionId: 'studio', connectionKind: 'remote', connectionLabel: 'Studio Mac' }
+  ])
+  focusOwner({ connectionId: 'studio', profile: 'ops' })
+  expect(screenRow()).not.toBe(first)
+  expect(screenRow()?.data?.detail?.()).toBe('ops · Studio Mac')
 })

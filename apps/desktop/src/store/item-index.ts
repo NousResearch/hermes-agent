@@ -11,7 +11,8 @@
  *   {@link MAX_STORED_OWNERS} owners are kept, least recently used dropped first.
  * - Incremental refresh: the session list (one cheap request) carries each chat's `last_active` and
  *   `message_count`; only chats whose pair changed since they were read have their transcript read.
- *   Chats that left the list window (deleted, archived, aged out) leave the index.
+ *   Chats that left the list window (deleted, archived, aged out) leave the index, remembered as
+ *   removed so the stored copy a write merges with cannot bring them back.
  * - Live: while a chat streams in this window, its new items enter the index from the gateway
  *   events (`recordChatMessages`), with no transcript read. The chat's marker is left as it was, so
  *   the next refresh still reads that one chat once and the transcript stays the authority.
@@ -274,12 +275,14 @@ async function readChat(row: SessionInfo) {
   )
 }
 
+const lastActiveMs = (row: SessionInfo) => (row.last_active ?? 0) * 1000
+
 function indexedFromRow(owner: string, row: SessionInfo, items: ArtifactRecord[], marker: null | string): IndexedChat {
   return {
     ...chatFromRow(owner, row),
     sessionId: row.id,
     title: artifactSessionTitle(row),
-    lastActive: (row.last_active ?? 0) * 1000,
+    lastActive: lastActiveMs(row),
     marker,
     updatedAt: Date.now(),
     items: capChatItems(items)
@@ -310,10 +313,14 @@ async function runRefresh(owner: string): Promise<void> {
     // Drop what left the window; carry each listed chat's title and activity; queue changed chats.
     setSnapshot(owner, current => {
       const chats: Record<string, IndexedChat> = {}
+      const removed = { ...current.removed }
+      const now = Date.now()
 
       for (const chat of Object.values(current.chats)) {
         if (listed.has(chat.key) || keep.has(chat.profile)) {
           chats[chat.key] = chat
+        } else {
+          removed[chat.key] = now
         }
       }
 
@@ -322,18 +329,18 @@ async function runRefresh(owner: string): Promise<void> {
         const held = chats[key]
         const title = artifactSessionTitle(row)
 
-        if (held && (held.title !== title || held.lastActive !== row.last_active * 1000)) {
+        if (held && (held.title !== title || held.lastActive !== lastActiveMs(row))) {
           chats[key] = {
             ...held,
             title,
-            lastActive: row.last_active * 1000,
+            lastActive: lastActiveMs(row),
             items: held.items.map(item => ({ ...item, sessionTitle: title })),
             updatedAt: Date.now()
           }
         }
       }
 
-      return { ...current, chats, checkedAt: Date.now() }
+      return { ...current, chats, removed, checkedAt: now }
     })
 
     const stale = rows.filter(
@@ -477,13 +484,6 @@ export function ownerItems(snapshot: ItemIndexSnapshot): ArtifactRecord[] {
   return Object.values(snapshot.chats)
     .flatMap(chat => chat.items)
     .sort((left, right) => right.timestamp - left.timestamp)
-}
-
-/** The chat a record belongs to, for its owner route. */
-export function indexedChatOf(snapshot: ItemIndexSnapshot, item: ArtifactRecord): IndexedChat | undefined {
-  return Object.values(snapshot.chats).find(
-    chat => chat.sessionId === item.sessionId && chat.profile === (item.profile || 'default')
-  )
 }
 
 export function _resetItemIndexForTests(): void {

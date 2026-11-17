@@ -33,8 +33,8 @@ vi.mock('@/store/session-states', () => ({
 }))
 
 it.each([undefined, { connectionId: 'local', profile: 'selena' }])(
-  'retires old local gateways before renaming and migrates ownership (scope: %j)',
-  async scope => {
+  'retires old local gateways before renaming and migrates ownership (owner: %j)',
+  async owner => {
     const order: string[] = []
 
     vi.mocked(retireLocalProfileGateways).mockImplementationOnce(() => {
@@ -46,12 +46,12 @@ it.each([undefined, { connectionId: 'local', profile: 'selena' }])(
       return { name: 'renamed', ok: true, path: '/x' }
     })
 
-    render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open scope={scope} />)
+    render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open owner={owner} />)
 
     fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
     fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
 
-    await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed', ...(scope ? [scope] : [])))
+    await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed', ...(owner ? [owner] : [])))
     expect(retireLocalProfileGateways).toHaveBeenCalledWith('selena')
     expect(order).toEqual(['retire', 'rename'])
     expect(migrateTilesForProfile).toHaveBeenCalledWith('selena', 'renamed')
@@ -74,7 +74,7 @@ it('moves a remote hidden preference without changing the same-named local agent
   const local = { connectionId: null, profile: 'selena' }
   setSidebarAgentHidden(remote, true)
   setSidebarAgentHidden(local, true)
-  render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open scope={remote} />)
+  render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open owner={remote} />)
   fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
   fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
   await waitFor(() =>
@@ -85,4 +85,16 @@ it('moves a remote hidden preference without changing the same-named local agent
   )
   expect(retireLocalProfileGateways).not.toHaveBeenCalled()
   expect(migrateTilesForProfile).not.toHaveBeenCalled()
+})
+
+it('treats any scope as another gateway: nothing local retired, migrated or moved', async () => {
+  const scope = { connectionId: 'local', profile: 'selena' }
+  setSidebarAgentHidden({ connectionId: 'local', profile: 'selena' }, true)
+  render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open scope={scope} />)
+  fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
+  fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+  await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed', scope))
+  expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+  expect(migrateTilesForProfile).not.toHaveBeenCalled()
+  expect($hiddenSidebarAgents.get()).toEqual([agentSidebarKey({ connectionId: 'local', profile: 'selena' })])
 })

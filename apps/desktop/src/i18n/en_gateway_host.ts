@@ -1,6 +1,6 @@
 import type { GatewayHostTranslations } from './types_gateway_host'
 
-// Settings → Machines copy where the connection cannot change, spread into en.ts.
+// Settings → Gateways copy where the connection cannot change, spread into en.ts.
 export const enGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Gateway settings unavailable',
   unavailableDesc: 'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',

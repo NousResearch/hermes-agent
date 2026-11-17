@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 import { Button } from '@/components/ui/button'
 import { type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { usePortalShell } from '@/store/shell-variant'
 import type { ToolsetInfo } from '@/types/hermes'
 
 import { ToolChip } from '../../master-detail'
@@ -31,6 +32,7 @@ export function ToolsetDetail({
 }) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const portal = usePortalShell()
   const tools = toolNames(toolset)
   const label = toolsetDisplayLabel(toolset)
 
@@ -68,7 +70,8 @@ export function ToolsetDetail({
               onClick={() => {
                 const query = new URLSearchParams({ tab: 'config:model', aux: 'vision' })
 
-                if (profile) {
+                // Classic has no per-agent settings page: its link is main's, to the app's Settings.
+                if (portal && profile) {
                   query.set('agentProfile', typeof profile === 'string' ? profile : (profile.profile ?? 'default'))
                   query.set('panel', 'settings')
 

@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { _resetItemIndexForTests } from '@/store/item-index'
+import { $removedSessionIds } from '@/store/session-removal'
 import { $shellChoice } from '@/store/shell-variant'
 
 import { LibraryPage } from './library-page'
@@ -53,6 +54,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   window.localStorage.clear()
   _resetItemIndexForTests()
+  $removedSessionIds.set(new Set())
 })
 
 const mount = (path = '/') =>
@@ -126,4 +128,36 @@ it('says when the library could not be checked, and Try again checks again', asy
   await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
   expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
   expect(await screen.findByRole('button', { name: 'brief.md' })).toBeTruthy()
+})
+
+it('heads All with a strip per kind, each counting what its View all opens', async () => {
+  mount('/')
+
+  const links = await screen.findByRole('button', { name: 'View all: Links' })
+  expect(screen.getByRole('heading', { name: 'Files 1' })).toBeTruthy()
+  expect(screen.getByRole('heading', { name: 'Links 1' })).toBeTruthy()
+
+  fireEvent.click(links)
+
+  await waitFor(() => expect(window.document.querySelector('a[href="https://example.com/guide"]')).toBeTruthy())
+  expect(screen.queryByRole('button', { name: 'brief.md' })).toBeNull()
+})
+
+it('closes a preview whose image went away, and opens the next image on the stage', async () => {
+  mount('/?tab=image')
+
+  fireEvent.click(await screen.findByRole('button', { name: /^shot-29\.png/ }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Open full size' }))
+  await screen.findByRole('dialog', { name: 'shot-29.png' })
+
+  act(() => $removedSessionIds.set(new Set(['art'])))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+  $removedSessionIds.set(new Set())
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh' })))
+  // The image is back in the list; its preview and full-window view do not reopen by themselves.
+  fireEvent.click(await screen.findByRole('button', { name: /^shot-28\.png/ }))
+
+  expect(screen.getByRole('heading', { name: 'shot-28.png' })).toBeTruthy()
+  expect(screen.queryByRole('dialog')).toBeNull()
 })

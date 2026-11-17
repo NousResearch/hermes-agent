@@ -8,6 +8,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import type * as Notifications from '@/store/notifications'
 import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
+import { scanAndRecordRepos } from '@/store/projects'
 import { $settingsRequestProfile } from '@/store/settings-scope'
 import { $shellChoice } from '@/store/shell-variant'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
@@ -64,9 +66,11 @@ vi.mock('@/store/settings-scope', () => ({
   $settingsScopeProfile: atom<string>('default')
 }))
 
+// The discovery policy follows the checkpoints toggle here so a saved edit
+// changes its signature and the page decides whether to rescan.
 vi.mock('@/store/projects', () => ({
   $worktreeRefreshToken: atom(0),
-  repoDiscoveryPolicyFromConfig: () => ({ enabled: true, roots: [], exclude_paths: [] }),
+  repoDiscoveryPolicyFromConfig: (config: { checkpoints?: unknown }) => ({ checkpoints: config.checkpoints }),
   repoDiscoveryPolicySignature: (policy: unknown) => JSON.stringify(policy),
   scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)
 }))
@@ -93,7 +97,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderConfigSettings(activeSectionId = 'safety') {
+function renderConfigSettings(activeSectionId = 'safety', onConfigSaved?: () => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
@@ -103,6 +107,7 @@ function renderConfigSettings(activeSectionId = 'safety') {
         <ConfigSettings
           activeSectionId={activeSectionId}
           importInputRef={importInputRef}
+          onConfigSaved={onConfigSaved}
           subpage={activeSectionId === 'safety' ? 'checkpoints' : undefined}
         />
       </QueryClientProvider>
@@ -155,6 +160,34 @@ describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simp
         [{ checkpoints: { enabled: true } }, 'research']
       ])
       expect(toggle.getAttribute('aria-checked')).toBe('true')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still sends a queued edit when the page closes while an earlier save is in flight', async () => {
+    const pending = Promise.withResolvers<{ ok: boolean }>()
+    const saved = vi.fn()
+    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+    saveHermesConfig.mockReturnValueOnce(pending.promise)
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings('safety', saved)
+      const toggle = await screen.findByRole('switch')
+      fireEvent.click(toggle)
+      await vi.advanceTimersByTimeAsync(700)
+      expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+
+      fireEvent.click(toggle)
+      await vi.advanceTimersByTimeAsync(700)
+      cleanup()
+      pending.resolve({ ok: true })
+
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
+      expect(saveHermesConfig.mock.calls[1][0]).toEqual({ checkpoints: { enabled: false } })
+      // The live stores still learn the final config, as before the page closed.
+      await vi.waitFor(() => expect(saved).toHaveBeenCalledTimes(1))
     } finally {
       vi.useRealTimers()
     }
@@ -262,6 +295,38 @@ it('keeps a pending agent edit pinned when the global settings scope changes', a
     await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
     expect(getHermesConfigRecord).toHaveBeenCalledWith(owner)
     expect(saveHermesConfig).toHaveBeenCalledWith({ checkpoints: { enabled: true } }, owner)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it.each([
+  ['the active agent', 'default', 1],
+  ['another agent', 'research', 0]
+])('rescans repositories after a workspace policy save only on %s', async (_label, profile, scans) => {
+  $activeGatewayProfile.set('default')
+  getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+
+  try {
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <SettingsOwnerContext.Provider value={{ connectionId: 'local', profile }}>
+            <ConfigSettings
+              activeSectionId="safety"
+              importInputRef={createRef<HTMLInputElement>()}
+              subpage="checkpoints"
+            />
+          </SettingsOwnerContext.Provider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+    fireEvent.click(await screen.findByRole('switch'))
+    await vi.advanceTimersByTimeAsync(700)
+    await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(scanAndRecordRepos).toHaveBeenCalledTimes(scans)
   } finally {
     vi.useRealTimers()
   }

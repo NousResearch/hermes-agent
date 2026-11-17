@@ -14,7 +14,7 @@ import { openRoutineEditor, type RoutineRef, sameRoutine } from './routines-stor
 import { useRoutineActions } from './use-routine-actions'
 
 /** Agent › Settings › Routines in the redesign: the rail page's list filtered to this agent, with the
- *  same detail and the same editor (agent fixed). Classic keeps AgentSchedulesSettings. */
+ *  same detail and the same editor (agent fixed). */
 export function AgentRoutines({ owner }: { owner: AgentSettingsOwner }) {
   const navigate = useNavigate()
   const location = useLocation()

@@ -429,10 +429,10 @@ export const arChrome = {
       messagingPlatforms: 'منصات المراسلة',
       machineStatus: (machine, status) => `حالة ${machine}: ${status}`,
       checkAgain: 'تحقّق مجددًا',
-      switchToMachine: 'التبديل إلى هذا الجهاز',
-      machineSettings: 'البوابات والأجهزة',
+      switchToMachine: 'التبديل إلى هذه البوابة',
+      machineSettings: 'البوابات',
       restartTitle: 'إعادة تشغيل البوابة؟',
-      restartBody: 'ستتوقف الردود الجارية على هذا الجهاز. سيعود خلال ثوانٍ ويعيد الاتصال تلقائيًا.'
+      restartBody: 'ستتوقف الردود الجارية على هذه البوابة. ستعود خلال ثوانٍ وتعيد الاتصال تلقائيًا.'
     },
     statusbar: {
       unknown: 'غير معروف',
@@ -556,6 +556,7 @@ export const arChrome = {
     hideStripTab: title => `إخفاء ${title}`,
     zoneMenuLabel: title => `خيارات المنطقة لـ ${title}`,
     lastTabKeptTitle: 'يبقى آخر تبويب',
+    resizePanes: 'تغيير حجم الأجزاء',
     lastTabKeptBody:
       'تحتاج هذه المنطقة إلى تبويب مرئي واحد على الأقل. أظهر تبويبا آخر أولا، أو اطو الشريط الجانبي بأكمله.',
     toggleStripTab: title => `تبديل تبويب ${title}`,

@@ -36,7 +36,7 @@ import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
-import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
+import { SettingsProfileScope, useSettingsRequestScope } from './profile-scope'
 import { SettingsAddRow, SettingsCard, SettingsCardSkeleton, SettingsEmptyRow, SettingsOverview } from './settings-card'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
@@ -458,7 +458,7 @@ export function ProvidersSettings({
   const { t } = useI18n()
   const redesign = usePortalShell()
   const scopeProfile = useStore($settingsRequestProfile)
-  const requestScope = useSettingsOwner() ?? scopeProfile
+  const requestScope = useSettingsRequestScope(scopeProfile)
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
   const [openProvider, setOpenProvider] = useState<null | string>(null)
   const [disconnecting, setDisconnecting] = useState<null | string>(null)

@@ -4,7 +4,10 @@ import {
   $hiddenTreePanes,
   $layoutTree,
   $narrowViewport,
+  $panesWithCloser,
   activateTreePane,
+  closeTreePane,
+  isCollapsePane,
   moveTreePane,
   moveTreePanes,
   setTreePaneHidden
@@ -31,9 +34,13 @@ export const $developerToolPanelWidth = persistentAtom<null | number>(
 /** The width every tool pane declares in the redesign. */
 export const DEVELOPER_TOOL_PANEL_WIDTH = `var(${WIDTH_PROPERTY}, var(--portal-tool-panel-width))`
 
+// Panes whose visibility an app store owns (bindPaneVisibility / bindToolPaneCollapse): bound, they
+// hide through their closer, so the store a later "Show" writes is not left claiming they are open.
+// A preview tile's closer closes its tab, so it only hides.
+const STORE_BOUND = [...TOOLS, CHAT_ITEMS_PANE_ID]
+
 // The chat's items ride the same panel and width as a tool, like a preview tile.
-const isTool = (paneId: string) =>
-  TOOLS.includes(paneId) || paneId === CHAT_ITEMS_PANE_ID || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
+const isTool = (paneId: string) => STORE_BOUND.includes(paneId) || paneId.startsWith(`${PREVIEW_TILE_PREFIX}:`)
 
 /** A tool pane's sizing in the redesign: the shared width, never under the tool's own minimum (the
  *  terminal and the browser need more room than the file tree). Classic keeps each pane's own. */
@@ -123,14 +130,21 @@ export function hideDeveloperToolPanel(paneId: string): boolean {
     return false
   }
 
-  for (const id of panel.panes.filter(isTool)) {
-    setTreePaneHidden(id, true)
+  const staying = panel.panes.find(id => !isTool(id) && !$hiddenTreePanes.get().has(id))
+  // A tool panel's closer folds its whole zone while its tab is in front; front a sibling first so the
+  // panel only hides, and a later Show unhides into a zone that is not folded.
+  const front = staying ?? panel.panes.find(id => isTool(id) && !isCollapsePane(id))
+
+  if (front && isTool(panel.active ?? '')) {
+    activateTreePane(panel.id, front)
   }
 
-  const staying = panel.panes.find(id => !isTool(id) && !$hiddenTreePanes.get().has(id))
-
-  if (staying && isTool(panel.active ?? '')) {
-    activateTreePane(panel.id, staying)
+  for (const id of panel.panes.filter(isTool)) {
+    if (STORE_BOUND.includes(id) && $panesWithCloser.get().has(id)) {
+      closeTreePane(id)
+    } else {
+      setTreePaneHidden(id, true)
+    }
   }
 
   return true

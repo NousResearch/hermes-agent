@@ -6,7 +6,7 @@ import { type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { MESSAGING_SESSION_SOURCE_IDS, normalizeSessionSource } from '@/lib/session-source'
-import { $hiddenSidebarAgents, $sidebarAgentExpanded, agentSidebarKey } from '@/store/agent-sidebar-preferences'
+import { $hiddenSidebarAgents, $sidebarAgentExpanded } from '@/store/agent-sidebar-preferences'
 import { $pinnedSessionIds } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $sessionListProfileScope, messagingTotalsKey, sidebarProfileForScope } from '@/store/profile'
@@ -28,7 +28,7 @@ import { $removedSessionIds } from '@/store/session-removal'
 import { sessionRowKey } from './simplified-session-identity'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
 import { useIaSearchMetrics } from './use-ia-search-metrics'
-import { useSimplifiedAgents, useSimplifiedOwner } from './use-simplified-agents'
+import { sessionAgentKey, useSimplifiedAgents, useSimplifiedOwner } from './use-simplified-agents'
 import { useSimplifiedPinWrites } from './use-simplified-pin-writes'
 import { useSimplifiedSessionSearch } from './use-simplified-session-search'
 
@@ -169,7 +169,7 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
       setExpanded(current => ({
         ...current,
         [JSON.stringify(['gateway', owner])]: true,
-        [agentSidebarKey({ connectionId: owner, profile: row.profile || 'default' })]: true
+        [sessionAgentKey(row, agents.owner)]: true
       }))
     }
 
@@ -193,17 +193,7 @@ export function useAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
     loadingMore,
     loadMore,
     resumePinned,
-    pinned: pinned.filter(
-      row =>
-        matches(row) &&
-        (query.trim() ||
-          !hiddenAgents.includes(
-            agentSidebarKey({
-              connectionId: row.connection_id || owner,
-              profile: row.profile || 'default'
-            })
-          ))
-    ),
+    pinned: pinned.filter(row => matches(row) && (query.trim() || !hiddenAgents.includes(sessionAgentKey(row, owner)))),
     hasMore: Object.values(truncated).some(Boolean) || Boolean(pageableMessaging.length && props.onLoadMoreMessaging)
   }
 }

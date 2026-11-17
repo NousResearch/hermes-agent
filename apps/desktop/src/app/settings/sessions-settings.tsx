@@ -158,8 +158,12 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
     ready: id => !loading && (archiveOpen || !redesign) && sessions.some(session => session.id === id)
   })
 
-  // A link to an archived chat opens the redesign's collapsed archive so the row can be shown.
-  if (linkedSession && redesign && !archiveOpen) {
+  // A link to an archived chat opens the redesign's collapsed archive so the row can be shown —
+  // once per link: the param outlives the open when the row never appears, and Hide must stick.
+  const [archiveOpenedFor, setArchiveOpenedFor] = useState<null | string>(null)
+
+  if (linkedSession && redesign && linkedSession !== archiveOpenedFor) {
+    setArchiveOpenedFor(linkedSession)
     setArchiveOpen(true)
   }
 

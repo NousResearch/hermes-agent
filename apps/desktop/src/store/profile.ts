@@ -976,9 +976,8 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 )
 
 // Browsing every agent must not change the owner of project or settings operations.
-export const $sessionListProfileScope = computed(
-  [$showAllProfiles, $activeGatewayProfile, $sessionListSpansProfiles],
-  (showAll, gateway, simplified) => (showAll || simplified ? ALL_PROFILES : normalizeProfileKey(gateway))
+export const $sessionListProfileScope = computed([$profileScope, $sessionListSpansProfiles], (scope, spans) =>
+  spans ? ALL_PROFILES : scope
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new

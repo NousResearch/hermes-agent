@@ -24,7 +24,7 @@
   }
 }
 
-.page-nav-title {
+:where(:root[data-shell='portal']) .page-nav-title {
   margin: 0 0 1.875rem;
   color: var(--ui-text-primary);
   font: 300 var(--portal-type-display-lg-size)/1.1 var(--portal-font-display);

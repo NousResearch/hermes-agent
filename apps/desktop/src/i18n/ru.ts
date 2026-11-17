@@ -1024,7 +1024,7 @@ export const ruOverrides = {
       set: 'Установить',
       clear: 'Очистить'
     },
-    // v2 multi-connection registry: Settings → Machines.
+    // v2 multi-connection registry: Settings → Gateways.
     connections: {
       title: 'Зарегистрированные шлюзы',
       intro:
@@ -2412,7 +2412,6 @@ export const ruOverrides = {
     tabFiles: 'Файлы',
     tabLinks: 'Ссылки',
     noArtifactsTitle: 'Артефакты не найдены',
-    partialIndex: (failed: number, total: number) => `При индексации артефактов пропущено недавних сеансов: ${failed} из ${total}.`,
     noArtifactsDesc: 'Сгенерированные изображения и файловые результаты появятся здесь по мере их создания в сеансах.',
     failedLoad: 'Не удалось загрузить артефакты',
     openFailed: 'Не удалось открыть',
@@ -3281,11 +3280,11 @@ export const ruOverrides = {
       messagingPlatforms: 'Платформы сообщений',
       machineStatus: (machine, status) => `Состояние ${machine}: ${status}`,
       checkAgain: 'Проверить снова',
-      switchToMachine: 'Переключиться на эту машину',
-      machineSettings: 'Шлюзы и машины',
+      switchToMachine: 'Переключиться на этот шлюз',
+      machineSettings: 'Шлюзы',
       restartTitle: 'Перезапустить шлюз?',
       restartBody:
-        'Выполняющиеся ответы на этой машине остановятся. Через несколько секунд он вернётся и переподключится сам.'
+        'Выполняющиеся ответы на этом шлюзе остановятся. Через несколько секунд он вернётся и переподключится сам.'
     },
     approvalMode: {
       title: 'Режим подтверждения',
@@ -3535,6 +3534,7 @@ export const ruOverrides = {
     hideStripTab: title => `Скрыть ${title}`,
     zoneMenuLabel: title => `Параметры зоны для ${title}`,
     lastTabKeptTitle: 'Последняя вкладка остаётся',
+    resizePanes: 'Изменить размер панелей',
     lastTabKeptBody:
       'В этой зоне нужна хотя бы одна видимая вкладка. Сначала покажите другую вкладку или сверните всю боковую панель.',
     toggleStripTab: title => `Переключить вкладку ${title}`,
@@ -3863,6 +3863,9 @@ export const ruOverrides = {
     audioReadFailed: 'Не удалось прочитать записанное аудио',
     sessionOpenFailed: 'Не удалось открыть этот сеанс',
     sessionUnavailable: 'Сеанс недоступен',
+    sessionOwnerConflictTitle: 'Не удалось открыть этот чат',
+    sessionOwnerConflictBody:
+      'Другой чат с тем же ID уже открыт. Сначала закройте его или откройте этот чат в новом окне.',
     createSessionFailed: 'Не удалось создать новый сеанс',
     promptFailed: 'Промпт не удался',
     providerCredentialRequired: 'Добавьте учётные данные провайдера перед отправкой первого сообщения.',

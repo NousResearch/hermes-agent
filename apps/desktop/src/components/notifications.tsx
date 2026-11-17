@@ -121,8 +121,7 @@ const REGION_BASE = 'pointer-events-none fixed z-(--z-over-modal) flex gap-2'
 // expander + clear-all — the noisy/important surface (errors, warnings,
 // action toasts). Without the portal it lives inside the React root subtree,
 // which any body-level dialog/overlay portal paints over — so a toast fired
-// while a dialog is open was invisible. It sits under the root band height;
-// no-drag keeps its buttons clickable over any drag strip it overlaps.
+// while a dialog is open was invisible.
 function TopCenterStack({
   copy,
   expanded,
@@ -141,7 +140,7 @@ function TopCenterStack({
       aria-label={copy.region}
       className={cn(
         REGION_BASE,
-        'left-1/2 top-[calc(var(--titlebar-band-height)+0.75rem)] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 flex-col p-1 [-webkit-app-region:no-drag]',
+        'left-1/2 top-[calc(var(--titlebar-band-height)+0.75rem)] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 flex-col p-1',
         expanded && 'max-h-[70vh] overflow-y-auto overscroll-contain'
       )}
       role="region"

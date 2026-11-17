@@ -12,7 +12,6 @@ export interface LibraryCopy {
   search: Record<ArtifactFilter, string>
   refresh: string
   refreshing: string
-  sectionFilesLinks: string
   viewAll: string
   columns: { name: string; location: string; path: string; url: string; chat: string }
   range: (start: number, end: number, total: number, tab: ArtifactFilter) => string
@@ -51,7 +50,6 @@ const en: LibraryCopy = {
   search: { all: 'Search library', image: 'Search images', file: 'Search files', link: 'Search links' },
   refresh: 'Refresh',
   refreshing: 'Refreshing',
-  sectionFilesLinks: 'Files & links',
   viewAll: 'View all',
   columns: { name: 'Name', location: 'Location', path: 'Path', url: 'URL', chat: 'Chat' },
   range: (start, end, total, tab) =>
@@ -96,7 +94,6 @@ const fr: LibraryCopy = {
   },
   refresh: 'Actualiser',
   refreshing: 'Actualisation',
-  sectionFilesLinks: 'Fichiers et liens',
   viewAll: 'Tout voir',
   columns: { name: 'Nom', location: 'Emplacement', path: 'Chemin', url: 'URL', chat: 'Discussion' },
   range: (start, end, total, tab) =>
@@ -141,7 +138,6 @@ const de: LibraryCopy = {
   },
   refresh: 'Aktualisieren',
   refreshing: 'Wird aktualisiert',
-  sectionFilesLinks: 'Dateien & Links',
   viewAll: 'Alle anzeigen',
   columns: { name: 'Name', location: 'Ort', path: 'Pfad', url: 'URL', chat: 'Chat' },
   range: (start, end, total, tab) =>
@@ -186,7 +182,6 @@ const es: LibraryCopy = {
   },
   refresh: 'Actualizar',
   refreshing: 'Actualizando',
-  sectionFilesLinks: 'Archivos y enlaces',
   viewAll: 'Ver todo',
   columns: { name: 'Nombre', location: 'Ubicación', path: 'Ruta', url: 'URL', chat: 'Chat' },
   range: (start, end, total, tab) =>
@@ -226,7 +221,6 @@ const ja: LibraryCopy = {
   search: { all: 'ライブラリを検索', image: '画像を検索', file: 'ファイルを検索', link: 'リンクを検索' },
   refresh: '更新',
   refreshing: '更新中',
-  sectionFilesLinks: 'ファイルとリンク',
   viewAll: 'すべて表示',
   columns: { name: '名前', location: '場所', path: 'パス', url: 'URL', chat: 'チャット' },
   range: (start, end, total) => `${total} 件中 ${start}–${end} 件`,
@@ -265,7 +259,6 @@ const zh: LibraryCopy = {
   search: { all: '搜索资料库', image: '搜索图片', file: '搜索文件', link: '搜索链接' },
   refresh: '刷新',
   refreshing: '正在刷新',
-  sectionFilesLinks: '文件和链接',
   viewAll: '查看全部',
   columns: { name: '名称', location: '位置', path: '路径', url: 'URL', chat: '对话' },
   range: (start, end, total) => `第 ${start}–${end} 项，共 ${total} 项`,
@@ -304,7 +297,6 @@ const zhHant: LibraryCopy = {
   search: { all: '搜尋資料庫', image: '搜尋圖片', file: '搜尋檔案', link: '搜尋連結' },
   refresh: '重新整理',
   refreshing: '正在重新整理',
-  sectionFilesLinks: '檔案和連結',
   viewAll: '查看全部',
   columns: { name: '名稱', location: '位置', path: '路徑', url: 'URL', chat: '對話' },
   range: (start, end, total) => `第 ${start}–${end} 項，共 ${total} 項`,
@@ -348,7 +340,6 @@ const ru: LibraryCopy = {
   },
   refresh: 'Обновить',
   refreshing: 'Обновление',
-  sectionFilesLinks: 'Файлы и ссылки',
   viewAll: 'Показать все',
   columns: { name: 'Название', location: 'Расположение', path: 'Путь', url: 'URL', chat: 'Чат' },
   range: (start, end, total) => `${start}–${end} из ${total}`,
@@ -387,7 +378,6 @@ const ar: LibraryCopy = {
   search: { all: 'البحث في المكتبة', image: 'البحث في الصور', file: 'البحث في الملفات', link: 'البحث في الروابط' },
   refresh: 'تحديث',
   refreshing: 'جارٍ التحديث',
-  sectionFilesLinks: 'الملفات والروابط',
   viewAll: 'عرض الكل',
   columns: { name: 'الاسم', location: 'الموقع', path: 'المسار', url: 'الرابط', chat: 'المحادثة' },
   range: (start, end, total) => `${start}–${end} من ${total}`,

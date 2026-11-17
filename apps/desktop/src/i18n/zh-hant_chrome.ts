@@ -328,10 +328,10 @@ export const zhHantChrome = {
       messagingPlatforms: '訊息平台',
       machineStatus: (machine, status) => `${machine} 狀態：${status}`,
       checkAgain: '重新檢查',
-      switchToMachine: '切換到這台機器',
-      machineSettings: '閘道與機器',
+      switchToMachine: '切換到這個閘道',
+      machineSettings: '閘道',
       restartTitle: '重新啟動閘道？',
-      restartBody: '這台機器上正在執行的回覆會停止。幾秒後它會恢復並自動重新連線。'
+      restartBody: '這個閘道上正在執行的回覆會停止。幾秒後它會恢復並自動重新連線。'
     },
     approvalMode: {
       title: '核准模式',
@@ -499,6 +499,7 @@ export const zhHantChrome = {
     showStripTab: title => `顯示 ${title}`,
     hideStripTab: title => `隱藏 ${title}`,
     lastTabKeptTitle: '保留最後一個分頁',
+    resizePanes: '調整窗格大小',
     lastTabKeptBody: '此區域至少需要一個可見分頁。請先顯示另一個分頁，或收合整個側邊欄。',
     toggleStripTab: title => `切換 ${title} 分頁`,
     minimize: '最小化',

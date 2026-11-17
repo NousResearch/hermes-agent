@@ -57,7 +57,7 @@ export type PluginTranslate = (key: string, ...args: unknown[]) => string
 
 /** Per-shell wording layers over a plugin's bundles: each holds only the keys
  *  whose words differ in that shell, per locale. `redesign` is the redesigned
- *  shell's vocabulary (Agents, Machines, Schedules, Chats, Library). */
+ *  shell's vocabulary (Agents, Machines, Routines, Chats, Library). */
 export interface PluginShellWording {
   redesign?: PluginLocaleBundles
 }

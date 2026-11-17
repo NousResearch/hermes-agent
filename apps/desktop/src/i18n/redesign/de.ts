@@ -776,7 +776,10 @@ export const deRedesign: RedesignOverlay = {
       gateway: 'Rechner',
       reconnectGateway: 'Rechner neu verbinden',
       machineSettings: 'Rechner',
-      restartTitle: 'Hermes auf diesem Rechner neu starten?'
+      restartTitle: 'Hermes auf diesem Rechner neu starten?',
+      switchToMachine: 'Zu diesem Rechner wechseln',
+      restartBody:
+        'Laufende Antworten auf diesem Rechner werden abgebrochen. Hermes ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
     },
     statusbar: {
       gateway: 'Rechner',
@@ -990,7 +993,6 @@ export const deRedesign: RedesignOverlay = {
     noArtifactsTitle: 'Noch nichts in Ihrer Bibliothek',
     noArtifactsDesc: 'Generierte Bilder und Datei-Ausgaben erscheinen hier, sobald Chats sie erstellen.',
     failedLoad: 'Bibliothek konnte nicht geladen werden',
-    partialIndex: (failed, total) => `${failed} von ${total} letzten Chats beim Indizieren der Bibliothek übersprungen.`
   },
   artifactPreview: {
     missingTitle: 'Eintrag nicht verfügbar',

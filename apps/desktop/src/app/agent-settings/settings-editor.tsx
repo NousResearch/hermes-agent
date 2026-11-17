@@ -24,20 +24,22 @@ import type { SettingsPageProps } from '../settings/types'
 import { VaultSettings } from '../settings/vault-settings'
 
 import { useAgentSettingsCopy } from './copy'
-import type { AgentSettingsOwner } from './data'
+import type { AgentRouteOwner, AgentSettingsOwner } from './data'
 import { useAgentSettingsEditorCopy } from './settings-copy'
 import type { AgentCapabilityCounts } from './settings-counts'
 import { AgentGeneralSettings, AgentInstructionsSettings } from './settings-general'
 import { useAgentSettingsLayoutCopy } from './settings-layout-copy'
 import {
   AGENT_SETTINGS_GROUPS,
+  AGENT_SETTINGS_PAGES,
+  type AgentSettingsPage,
   agentSettingsSearch,
   type AgentSettingsSection,
   resolveAgentSettingsSection
 } from './settings-routes'
 
 interface AgentSettingsEditorProps extends SettingsPageProps {
-  owner: AgentSettingsOwner
+  owner: AgentRouteOwner
   onProfileRenamed: (name: string) => Promise<void>
   /** Counts from data the agent page already holds; absent ones stay blank. */
   counts?: AgentCapabilityCounts
@@ -53,15 +55,10 @@ export type AgentSettingsLabels = Record<
 
 /** Mounted only by the redesign's owner gate. All embedded controls share that immutable owner. */
 export function AgentSettingsEditor(props: AgentSettingsEditorProps) {
-  const owner = useMemo(
-    () => ({ connectionId: props.owner.connectionId ?? 'local', profile: props.owner.profile }),
-    [props.owner.connectionId, props.owner.profile]
-  )
-
   return (
-    <SettingsOwnerContext.Provider value={owner}>
+    <SettingsOwnerContext.Provider value={props.owner}>
       <SettingsBreadcrumbContext.Provider value>
-        <AgentSettingsEditorContent {...props} key={JSON.stringify(owner)} owner={owner} />
+        <AgentSettingsEditorContent {...props} key={JSON.stringify(props.owner)} />
       </SettingsBreadcrumbContext.Provider>
     </SettingsOwnerContext.Provider>
   )
@@ -152,7 +149,7 @@ function AgentSettingsEditorContent({
     navigate({ pathname: location.pathname, search: `?${next}` }, { replace: true })
   }
 
-  const configSection = resolveConfigSection(section)
+  const { capability, config: configSection } = section ? AGENT_SETTINGS_PAGES[section] : {}
 
   return (
     <div className="agent-settings-editor" data-inline-navigation={inlineNavigation || undefined}>
@@ -183,8 +180,9 @@ function AgentSettingsEditorContent({
             subpage={section === 'model' ? page : undefined}
           />
         )}
-        {section && ['tools', 'tools-advanced', 'skills', 'connectors', 'plugins'].includes(section) && (
+        {section && capability && (
           <AgentCapabilitiesSettings
+            capability={capability}
             onOpenAdvanced={() => open(section === 'tools-advanced' ? 'tools' : 'tools-advanced')}
             owner={owner}
             params={params}
@@ -272,16 +270,9 @@ function AgentSettingsHeading({ labels, section, counts }: AgentSettingsHeadingP
   )
 }
 
-function resolveConfigSection(section: AgentSettingsSection | null) {
-  return section && ['model', 'chat', 'memory', 'voice', 'safety', 'workspace', 'limits'].includes(section)
-    ? section === 'limits'
-      ? 'advanced'
-      : section
-    : null
-}
-
 interface AgentCapabilitiesSettingsProps {
   owner: AgentSettingsOwner
+  capability: NonNullable<AgentSettingsPage['capability']>
   section: AgentSettingsSection
   params: URLSearchParams
   onOpenAdvanced: () => void
@@ -290,6 +281,7 @@ interface AgentCapabilitiesSettingsProps {
 
 function AgentCapabilitiesSettings({
   owner,
+  capability,
   section,
   params,
   onOpenAdvanced,
@@ -297,7 +289,7 @@ function AgentCapabilitiesSettings({
 }: AgentCapabilitiesSettingsProps) {
   const { t } = useI18n()
   const layout = useAgentSettingsLayoutCopy()
-  const tools = section === 'tools' || section === 'tools-advanced'
+  const tools = capability === 'toolsets'
 
   return (
     <>
@@ -305,7 +297,7 @@ function AgentCapabilitiesSettings({
         className="agent-settings-capabilities"
         embedded
         fixedConnection={owner.connectionId}
-        fixedMode={tools ? 'toolsets' : (section as 'skills' | 'connectors' | 'plugins')}
+        fixedMode={capability}
         fixedProfile={owner.profile}
       />
       {tools && (

@@ -502,7 +502,6 @@
        only ever applied to the windows that don't mount the backdrop. Pinned
        to the value the app actually renders at. */
     --radius-scalar: 0.2;
-    --global-nav-width: 2.75rem;
 
     /* Space under last message vs overlay composer — driven by the measured composer DOCK height (see
        composer/index.tsx), which covers the micro-action strip, the status stack, the composer, and the

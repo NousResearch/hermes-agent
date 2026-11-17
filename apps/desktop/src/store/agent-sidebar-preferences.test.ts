@@ -56,3 +56,22 @@ it('moves local preferences on profile rename and deletes only the exact target 
   prefs.migrateAgentSidebarPreferences({ connectionId: 'local', profile: 'renamed' }, 'final')
   expect(prefs.$hiddenSidebarAgents.get()).toEqual([prefs.agentSidebarKey({ connectionId: null, profile: 'final' })])
 })
+
+it("carries an agent's Show all through a rename and drops it with the agent, so a recreated agent starts folded", async () => {
+  const prefs = await import('./agent-sidebar-preferences')
+  const owner = { connectionId: null, profile: 'research' }
+  const renamed = { connectionId: null, profile: 'renamed' }
+  const remote = { connectionId: 'remote', profile: 'research' }
+  prefs.setAgentShowAll(owner, true)
+  prefs.setAgentShowAll(remote, true)
+
+  prefs.migrateAgentSidebarPreferences(owner, 'renamed')
+  expect(prefs.$portalAgentShowAll.get()).toEqual({
+    [prefs.agentSidebarKey(renamed)]: true,
+    [prefs.agentSidebarKey(remote)]: true
+  })
+
+  prefs.dropAgentSidebarPreferences(renamed)
+  prefs.migrateAgentSidebarPreferences(owner, 'renamed')
+  expect(prefs.$portalAgentShowAll.get()).toEqual({ [prefs.agentSidebarKey(remote)]: true })
+})

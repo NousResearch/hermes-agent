@@ -11,7 +11,6 @@ export const arArtifacts = {
     tabFiles: 'الملفات',
     tabLinks: 'الروابط',
     noArtifactsTitle: 'لا توجد عناصر',
-    partialIndex: (failed: number, total: number) => `تم تخطي ${failed} من ${total} جلسات حديثة أثناء فهرسة العناصر.`,
     noArtifactsDesc: 'ستظهر الصور والملفات والروابط من محادثاتك هنا.',
     failedLoad: 'فشل تحميل العناصر',
     openFailed: 'فشل الفتح',

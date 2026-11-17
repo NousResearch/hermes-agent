@@ -19,18 +19,28 @@ interface ZoneFrameAttrsInput {
   edges: ZoneEdges
   headerVisible: boolean
   isEmpty: boolean
+  /** Only the redesign's chrome reads the frame beyond the top edge and the header. */
+  portal: boolean
 }
 
 /** The zone root's data attributes: what shell chrome and panes read about this zone. */
-export function zoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty }: ZoneFrameAttrsInput) {
-  return {
-    // Window edges, so shell chrome can round only the outer corners of the panel row.
-    'data-window-end': edges.right || undefined,
-    'data-window-start': edges.left || undefined,
+export function zoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty, portal }: ZoneFrameAttrsInput) {
+  const shared = {
     'data-window-top': edges.top || undefined,
     // Advertises the visible tab strip so panes can drop their own
     // self-naming labels (see [data-pane-self-label] in styles.css).
-    'data-zone-header': headerVisible || undefined,
+    'data-zone-header': headerVisible || undefined
+  }
+
+  if (!portal) {
+    return shared
+  }
+
+  return {
+    ...shared,
+    // Window edges, so shell chrome can round only the outer corners of the panel row.
+    'data-window-end': edges.right || undefined,
+    'data-window-start': edges.left || undefined,
     // The active pane shows a full page (not a tab-able surface): shell chrome
     // frames it as a page rather than a chat panel.
     'data-zone-page': paneChrome(active).headerVeto || undefined,
@@ -39,6 +49,7 @@ export function zoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty
 }
 
 interface ZoneFrameStyleInput {
+  portal: boolean
   titlebarHeight: number
   topEdge: boolean
   verticalCollapse: boolean
@@ -47,6 +58,7 @@ interface ZoneFrameStyleInput {
 
 /** Clear the native window controls a zone sits under; a top zone's band height is exposed to its chrome. */
 export function zoneFrameStyle({
+  portal,
   titlebarHeight,
   topEdge,
   verticalCollapse,
@@ -60,7 +72,9 @@ export function zoneFrameStyle({
     return undefined
   }
 
-  return verticalCollapse
-    ? { paddingTop: titlebarHeight }
-    : ({ '--zone-band-height': `${titlebarHeight}px` } as CSSProperties)
+  if (verticalCollapse) {
+    return { paddingTop: titlebarHeight }
+  }
+
+  return portal ? ({ '--zone-band-height': `${titlebarHeight}px` } as CSSProperties) : undefined
 }

@@ -21,13 +21,12 @@ import { hostHas } from '@/lib/host-capabilities'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
-import { canUseHud, toggleHud } from '@/store/hud'
+import { toggleHud } from '@/store/hud'
 import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
   $leftSideOpen,
   $panesFlipped,
-  $sidebarOpen,
   CHAT_SIDEBAR_PANE_ID,
   FILE_BROWSER_PANE_ID,
   toggleLeftSide,
@@ -37,26 +36,23 @@ import {
 } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
-import { $focusedStoredSessionId } from '@/store/session-focus'
 import { usePortalShell } from '@/store/shell-variant'
-import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
+import { $titlebarAppActionsSide, type BandToolId, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
 import {
   $workspaceIsPage,
   type AppView,
   appViewForPath,
   hidesFixedTitlebarClusters,
-  isOverlayView,
-  NEW_CHAT_ROUTE,
-  sessionRoute
+  isOverlayView
 } from '../routes'
 
+import { $sidebarRevealSurface, useBandHiddenTools } from './band-tools'
 import {
   $historyPosition,
-  bandOffersHistory,
   canGoBack,
   canGoForward,
-  historyBack,
+  goBack,
   historyForward,
   useMouseHistoryButtons,
   useTrackHistoryPosition
@@ -211,50 +207,13 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   }
 }
 
-/** Where a wide redesigned window offers the way back to a hidden chat sidebar: Advanced in the band,
- *  Simple as the floating button at the stage's corner (PanelRevealButton). The open Chats rail button
- *  folds it (Figma 1054:20985); pages have no sidebar to bring back. */
-function useSidebarRevealSurface(portal: boolean, leftSideOpen: boolean): 'band' | 'floating' | null {
-  const workspacePage = useStore($workspaceIsPage)
-  const narrow = useStore($narrowViewport)
-  const simple = useStore($interfaceMode) === 'simple'
-  const sidebarOpen = useStore($sidebarOpen)
-
-  if (!portal || narrow || workspacePage) {
-    return null
-  }
-
-  // The floating button names the chats, so it follows the sidebar itself; the band's is positional.
-  if (simple) {
-    return sidebarOpen ? null : 'floating'
-  }
-
-  return leftSideOpen ? null : 'band'
-}
-
 /** Simple mode's floating way back to the hidden chat sidebar, when that is the reveal surface. */
-function FloatingSidebarReveal({ leftSideOpen, portal }: { leftSideOpen: boolean; portal: boolean }) {
+function FloatingSidebarReveal() {
   const { t } = useI18n()
 
-  return useSidebarRevealSurface(portal, leftSideOpen) === 'floating' ? (
+  return useStore($sidebarRevealSurface) === 'floating' ? (
     <PanelRevealButton label={t.simplifiedAgents.showChats} onReveal={toggleSidebarOpen} />
   ) : null
-}
-
-/** Below wide the band's sidebar button is its menu: it opens the chat sidebar as a sheet, and on a
- *  compact page (no rail) the rail as one; a medium page keeps its rail and needs none. A wide band
- *  carries it only where the reveal surface is the band. ⌘B works in every state. */
-function useBandSidebarToolHidden(portal: boolean, sidebarOpen: boolean): boolean {
-  const workspacePage = useStore($workspaceIsPage)
-  const narrow = useStore($narrowViewport)
-  const compact = useStore($widthClass) === 'compact'
-  const reveal = useSidebarRevealSurface(portal, sidebarOpen)
-
-  if (!portal) {
-    return false
-  }
-
-  return narrow ? workspacePage && !compact : reveal !== 'band'
 }
 
 /** The band's sidebar button: the docked toggle, below wide the menu that opens the chat sidebar
@@ -263,7 +222,7 @@ function useBandMenuTool(
   portal: boolean,
   leftEdge: SidebarEdge
 ): Pick<TitlebarTool, 'expanded' | 'hidden' | 'icon' | 'onSelect'> {
-  const hidden = useBandSidebarToolHidden(portal, leftEdge.open)
+  const hidden = useBandHiddenTools().has('sidebar')
   const compact = useStore($widthClass) === 'compact' && portal
   const workspacePage = useStore($workspaceIsPage)
   const openSheet = useStore($openSheet)
@@ -291,33 +250,27 @@ function useBandMenuTool(
 }
 
 /** The redesigned band leads with Back and Forward on every screen (Figma 906:19467, 856:2713):
- *  the window's own router history. A workspace page (Capabilities, Library, …) reached with nothing
- *  behind it (a deep link, a fresh window) still has a way back: the chat the Chats destination
- *  would open. A compact window drops them for room, and so does the browser-hosted app at any
- *  width: the browser's own Back and Forward walk the same history. */
-function usePortalHistoryTools(portal: boolean): TitlebarTool[] {
+ *  the window's own router history. A workspace page with nothing behind it still has a way back
+ *  (`goBack`'s fallback). `$bandHiddenTools` drops them where the band has no room or a browser
+ *  toolbar already carries them. */
+function usePortalHistoryTools(bandHidden: ReadonlySet<BandToolId>): TitlebarTool[] {
   const { t } = useI18n()
   const navigate = useNavigate()
   const position = useStore($historyPosition)
   const workspacePage = useStore($workspaceIsPage)
-  const sessionId = useStore($focusedStoredSessionId)
-  const compact = useStore($widthClass) === 'compact'
-  const back = canGoBack(position)
-  const fallback = workspacePage && !back ? (sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE) : null
-  const hidden = !portal || !bandOffersHistory(compact)
 
   return [
     {
-      disabled: !back && !fallback,
-      hidden,
+      disabled: !canGoBack(position) && !workspacePage,
+      hidden: bandHidden.has('history-back'),
       icon: <TitlebarIcon name="arrow-left" />,
       id: 'history-back',
       label: t.common.back,
-      onSelect: () => (fallback ? navigate(fallback) : historyBack())
+      onSelect: () => goBack(navigate)
     },
     {
       disabled: !canGoForward(position),
-      hidden,
+      hidden: bandHidden.has('history-forward'),
       icon: <TitlebarIcon name="arrow-right" />,
       id: 'history-forward',
       label: t.preview.web.goForward,
@@ -355,7 +308,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
-  const widthClass = useStore($widthClass)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
   // One filter for every cluster: a tool's own `hidden`, then the mode's tier.
@@ -373,10 +325,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const { left: leftEdge, right: rightEdge } = useSidebarEdges()
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
-  const historyTools = usePortalHistoryTools(portal)
-  const compact = portal && widthClass === 'compact'
+  const bandHidden = useBandHiddenTools()
+  const historyTools = usePortalHistoryTools(bandHidden)
   useTrackHistoryPosition()
-  useMouseHistoryButtons(portal)
+  useMouseHistoryButtons(portal, navigate)
 
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
@@ -391,7 +343,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     ...TITLEBAR_FIXED_TOOLS['flip-panes'],
     actionId: 'view.flipPanes',
     // A compact window has one column: nothing to swap.
-    hidden: compact,
+    hidden: bandHidden.has('flip-panes'),
     icon: <TitlebarIcon name="arrow-swap" />,
     id: 'flip-panes',
     label: t.titlebar.swapSidebarSides,
@@ -424,7 +376,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       actionId: 'nav.settings',
       icon: <TitlebarIcon name="settings-gear" />,
       id: 'settings',
-      hidden: portal,
+      hidden: bandHidden.has('settings'),
       label: t.titlebar.openSettings,
       onSelect: () => {
         triggerHaptic('open')
@@ -433,7 +385,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     },
     {
       ...TITLEBAR_FIXED_TOOLS.layout,
-      hidden: portal && (interfaceMode === 'simple' || compact),
+      hidden: bandHidden.has('layout'),
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.
@@ -460,7 +412,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
       // from the action registry, same as every other tool here.
       actionId: 'view.toggleHud',
-      hidden: !canUseHud(),
+      hidden: bandHidden.has('hud'),
       icon: <TitlebarIcon name="comment-discussion" />,
       id: 'hud',
       label: t.titlebar.enterHud,
@@ -555,7 +507,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       {!parked && (
         <BandOverlays
           clusterStyle={clusterStyle}
-          leftSideOpen={leftEdge.open}
           navigate={navigate}
           paneTools={visiblePaneTools}
           portal={portal}
@@ -632,7 +583,6 @@ const PARKED_CLUSTER = { hidden: true, inert: true } as const
 
 interface BandOverlaysProps {
   clusterStyle: CSSProperties | undefined
-  leftSideOpen: boolean
   navigate: ReturnType<typeof useNavigate>
   paneTools: TitlebarTool[]
   portal: boolean
@@ -641,13 +591,13 @@ interface BandOverlaysProps {
 /** The band's chrome besides its two clusters: the redesign's sheet scrim, the floating sidebar
  *  reveal, and the pane tools. None of it holds a plugin mount, so a parked band
  *  drops it outright. */
-function BandOverlays({ clusterStyle, leftSideOpen, navigate, paneTools, portal }: BandOverlaysProps) {
+function BandOverlays({ clusterStyle, navigate, paneTools, portal }: BandOverlaysProps) {
   const { t } = useI18n()
 
   return (
     <>
       {portal && <ShellSheetScrim />}
-      <FloatingSidebarReveal leftSideOpen={leftSideOpen} portal={portal} />
+      <FloatingSidebarReveal />
       {paneTools.length > 0 && (
         <div
           aria-label={t.shell.appControls}

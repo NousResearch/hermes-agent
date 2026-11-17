@@ -1,15 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import {
-  createContext,
-  type Dispatch,
-  type ReactNode,
-  type SetStateAction,
-  useContext,
-  useLayoutEffect,
-  useRef,
-  useState
-} from 'react'
+import { createContext, type Dispatch, type ReactNode, type SetStateAction, useContext, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -19,21 +10,18 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { ErrorState } from '@/components/ui/error-state'
 import { PathText } from '@/components/ui/path-text'
 import { Switch } from '@/components/ui/switch'
-import { getProfiles, getProfileSoul, updateProfileSoul } from '@/hermes'
+import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { PORTAL_AGENT_HUES, portalAgentSwatch } from '@/lib/portal-profile-color'
 import { PROFILE_SWATCHES, resolveProfileColor } from '@/lib/profile-color'
-import { refreshFleetRoster } from '@/store/fleet-roster'
 import { $profileColors, setProfileColor } from '@/store/profile'
 import { usePortalShell } from '@/store/shell-variant'
 
-import { CreateProfileDialog } from '../profiles/create-profile-dialog'
-import { DeleteProfileDialog } from '../profiles/delete-profile-dialog'
-import { RenameProfileDialog } from '../profiles/rename-profile-dialog'
 import { ListRow, ToggleRow } from '../settings/primitives'
 import { settingsScopeLabel } from '../settings/profile-scope'
 
-import { agentSettingsKey, type AgentSettingsOwner } from './data'
+import { agentProfilesQuery, useAgentDialogs } from './agent-dialogs'
+import { type AgentRouteOwner, agentSettingsKey, type AgentSettingsOwner } from './data'
 import { useDefaultAgent } from './default-agent'
 import { useOverviewActionsCopy } from './overview-actions-copy'
 import { useAgentSettingsEditorCopy } from './settings-copy'
@@ -61,7 +49,7 @@ export function AgentGeneralSettings({
   owner,
   onProfileRenamed
 }: {
-  owner: AgentSettingsOwner
+  owner: AgentRouteOwner
   onProfileRenamed: (name: string) => Promise<void>
 }) {
   const { t } = useI18n()
@@ -74,18 +62,9 @@ export function AgentGeneralSettings({
   const openKeys = () =>
     navigate({ pathname: location.pathname, search: agentSettingsSearch(location.search, 'providers') })
 
-  const [dialog, setDialog] = useState<'rename' | 'duplicate' | 'delete' | null>(null)
-  const [deleted, setDeleted] = useState(false)
-  const mounted = useRef(true)
-  useLayoutEffect(() => {
-    mounted.current = true
-
-    return () => {
-      mounted.current = false
-    }
-  }, [])
+  const { open, dialogs } = useAgentDialogs({ onRenamed: onProfileRenamed })
   const redesign = usePortalShell()
-  const profiles = useQuery({ queryKey: [...agentSettingsKey(owner), 'profiles'], queryFn: () => getProfiles(owner) })
+  const profiles = useQuery(agentProfilesQuery(owner))
   const profile = profiles.data?.profiles.find(item => item.name === owner.profile)
   const defaultAgent = useDefaultAgent(owner, profile)
 
@@ -103,8 +82,8 @@ export function AgentGeneralSettings({
     )
   }
 
-  if (deleted || !profile) {
-    return <p role="status">{deleted ? t.profiles.deleted : t.errors.genericFailure}</p>
+  if (!profile) {
+    return <p role="status">{t.errors.genericFailure}</p>
   }
 
   return (
@@ -118,7 +97,7 @@ export function AgentGeneralSettings({
               <button
                 aria-label={`${t.profiles.rename}: ${settingsScopeLabel(profile)}`}
                 className="agent-settings-name-field"
-                onClick={() => setDialog('rename')}
+                onClick={() => open({ kind: 'rename', owner, profile })}
                 type="button"
               >
                 {settingsScopeLabel(profile)}
@@ -126,7 +105,7 @@ export function AgentGeneralSettings({
             ) : (
               <>
                 <span className="agent-settings-value">{settingsScopeLabel(profile)}</span>
-                <Button onClick={() => setDialog('rename')} variant="secondary">
+                <Button onClick={() => open({ kind: 'rename', owner, profile })} variant="secondary">
                   {t.profiles.rename}
                 </Button>
               </>
@@ -197,7 +176,7 @@ export function AgentGeneralSettings({
       <AgentSettingsGroup title={g.manage}>
         <ListRow
           action={
-            <Button onClick={() => setDialog('duplicate')} variant="secondary">
+            <Button onClick={() => open({ kind: 'duplicate', owner })} variant="secondary">
               {c.duplicate}
             </Button>
           }
@@ -207,7 +186,7 @@ export function AgentGeneralSettings({
         {!profile.is_default && owner.profile !== 'default' && (
           <ListRow
             action={
-              <Button onClick={() => setDialog('delete')} variant="destructiveOutline">
+              <Button onClick={() => open({ kind: 'delete', owner, profile })} variant="destructiveOutline">
                 {g.deleteTitle}
               </Button>
             }
@@ -216,52 +195,7 @@ export function AgentGeneralSettings({
           />
         )}
       </AgentSettingsGroup>
-      <RenameProfileDialog
-        currentName={owner.profile}
-        displayName={settingsScopeLabel(profile)}
-        isDefault={profile.is_default}
-        onClose={() => setDialog(null)}
-        onRenamed={async name => {
-          await refreshFleetRoster({ force: true })
-
-          if (profile.is_default) {
-            if (mounted.current) {
-              void profiles.refetch()
-            }
-
-            return
-          }
-
-          await onProfileRenamed(name)
-        }}
-        open={dialog === 'rename'}
-        scope={owner}
-      />
-      <CreateProfileDialog
-        initialCloneFrom={owner.profile}
-        onClose={() => setDialog(null)}
-        onCreated={() => {
-          void profiles.refetch()
-          void refreshFleetRoster({ force: true })
-        }}
-        open={dialog === 'duplicate'}
-        profiles={profiles.data?.profiles}
-        scope={owner}
-        title={c.duplicate}
-      />
-      <DeleteProfileDialog
-        onClose={() => setDialog(null)}
-        onDeleted={() => {
-          if (mounted.current) {
-            setDeleted(true)
-          }
-
-          void refreshFleetRoster({ force: true })
-        }}
-        open={dialog === 'delete'}
-        profile={profile}
-        scope={owner}
-      />
+      {dialogs}
     </>
   )
 }

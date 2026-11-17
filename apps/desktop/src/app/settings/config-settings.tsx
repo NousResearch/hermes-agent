@@ -69,12 +69,14 @@ import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { OnboardingSettings } from './onboarding-settings'
 import { PortalSafetySettings } from './portal-safety-fields'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
-import { SettingsProfileScope, useSettingsOwner } from './profile-scope'
+import { SettingsProfileScope, useSettingsOwner, useSettingsRequestScope } from './profile-scope'
 import { QuickEntrySettings } from './quick-entry-settings'
 import { SettingsCard, SettingsGroup, SettingsOverview } from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { useSettingsEditsActiveAgent } from './settings-owner-request'
 import { useSettingsPagesCopy } from './settings-pages-copy'
 import { SharedMetricsSettings } from './shared-metrics-settings'
+import { openEnclosingDisclosures } from './use-deep-link-highlight'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
 const VOICE_MODE_LABELS = { chained: 'Chained', 'gpt-live': 'GPT-Live' }
@@ -221,7 +223,8 @@ function ConfigSettingsInner({
   const compactAgent = redesign && agentLayout
   const agentCopy = useAgentSettingsEditorCopy()
   const agentRows = useAgentSettingsLayoutCopy().rows
-  const requestScope = owner ?? scopeProfile
+  const requestScope = useSettingsRequestScope(scopeProfile)
+  const editsActiveAgent = useSettingsEditsActiveAgent(scopeProfile)
   const c = t.settings.config
   const retainedDraft = useContext(ConfigSettingsDraftContext)
   const localDraft = useRef<ConfigSettingsDraft | null>(null)
@@ -344,7 +347,9 @@ function ConfigSettingsInner({
       // baseline advance — each save's diff is computed once its predecessor
       // has fully resolved.
       pending.queue = pending.queue.then(async () => {
-        if (!mounted.current || pending.savedVersion >= v) {
+        // A queued save still runs after the page closes (Esc mid-save): only
+        // a newer save of the same draft supersedes it.
+        if (pending.savedVersion >= v) {
           return
         }
 
@@ -375,10 +380,10 @@ function ConfigSettingsInner({
             refreshMemoryStatus()
           }
 
-          if (mounted.current && pending.version === v) {
-            // The repo-discovery scan reads the ACTIVE profile's workspace
-            // policy; skip it when this page is editing another profile.
-            if (scopeProfile == null) {
+          if (pending.version === v) {
+            // The repo-discovery scan reads the ACTIVE agent's workspace
+            // policy; skip it when this page is editing another one.
+            if (editsActiveAgent) {
               const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(snapshot))
 
               if (savedDiscoverySignatureRef.current !== discoverySignature) {
@@ -387,10 +392,14 @@ function ConfigSettingsInner({
               }
             }
 
-            onConfigSaved?.()
+            // An agent page's callback belongs to that open page; the global page refreshes the
+            // live config and model stores even after it closed mid-save.
+            if (!owner || mounted.current) {
+              onConfigSaved?.()
+            }
           }
         } catch (err) {
-          if (mounted.current && pending.version === v) {
+          if (pending.version === v) {
             notifyError(err, c.autosaveFailed)
           }
         }
@@ -399,7 +408,7 @@ function ConfigSettingsInner({
 
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
-  }, [config, draft, onConfigSaved, saveVersion, scopeProfile])
+  }, [config, draft, editsActiveAgent, onConfigSaved, owner, saveVersion])
 
   const applyConfig = (next: HermesConfigRecord) => {
     if (!draft.current) {
@@ -471,13 +480,7 @@ function ConfigSettingsInner({
       return
     }
 
-    let disclosure = element.parentElement?.closest('details')
-
-    while (disclosure) {
-      disclosure.open = true
-      disclosure = disclosure.parentElement?.closest('details')
-    }
-
+    openEnclosingDisclosures(element)
     element.scrollIntoView({ behavior: 'smooth', block: 'center' })
 
     if (!element.hasAttribute('tabindex')) {

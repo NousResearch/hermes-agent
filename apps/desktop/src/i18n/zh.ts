@@ -3062,7 +3062,6 @@ export const zhOverrides = {
     tabFiles: '文件',
     tabLinks: '链接',
     noArtifactsTitle: '未找到产物',
-    partialIndex: (failed: number, total: number) => `索引产物时跳过了 ${total} 个最近会话中的 ${failed} 个。`,
     noArtifactsDesc: '当会话生成图片和文件输出时，它们会显示在这里。',
     failedLoad: '产物加载失败',
     openFailed: '打开失败',
@@ -4008,10 +4007,10 @@ export const zhOverrides = {
       messagingPlatforms: '消息平台',
       machineStatus: (machine, status) => `${machine} 状态：${status}`,
       checkAgain: '重新检查',
-      switchToMachine: '切换到这台机器',
-      machineSettings: '网关与机器',
+      switchToMachine: '切换到这个网关',
+      machineSettings: '网关',
       restartTitle: '重启网关？',
-      restartBody: '这台机器上正在运行的回复会停止。几秒后它会恢复并自动重新连接。'
+      restartBody: '这个网关上正在运行的回复会停止。几秒后它会恢复并自动重新连接。'
     },
     approvalMode: {
       title: '审批模式',
@@ -4276,6 +4275,7 @@ export const zhOverrides = {
     hideStripTab: title => `隐藏 ${title}`,
     zoneMenuLabel: title => `${title} 的区域选项`,
     lastTabKeptTitle: '保留最后一个标签',
+    resizePanes: '调整窗格大小',
     lastTabKeptBody: '该区域至少需要一个可见标签。请先显示另一个标签，或折叠整个侧边栏。',
     toggleStripTab: title => `切换 ${title} 标签`,
     minimize: '最小化',
@@ -4679,6 +4679,9 @@ export const zhOverrides = {
     audioReadFailed: '无法读取录制的音频',
     sessionOpenFailed: '无法打开此会话',
     sessionUnavailable: '会话不可用',
+    sessionOwnerConflictTitle: '无法打开此聊天',
+    sessionOwnerConflictBody:
+      '已打开另一个具有相同 ID 的聊天。请先关闭它，或在新窗口中打开此聊天。',
     createSessionFailed: '无法创建新会话',
     promptFailed: '提示词发送失败',
     providerCredentialRequired: '发送第一条消息前请先添加提供方凭据。',

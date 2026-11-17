@@ -7,7 +7,6 @@ import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
-import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -27,7 +26,6 @@ import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $activeGatewayProfile, $profileColors, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
-import { setSettingsScope } from '@/store/settings-scope'
 import type { HermesConfigRecord, ProfileInfo } from '@/types/hermes'
 
 import { useConnectorsCount, usePluginsCount } from '../capabilities/capability-counts'
@@ -37,37 +35,38 @@ import { gatewayLabel } from '../chat/sidebar/gateway-group-model'
 import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { openSession } from '../open-session'
-import { Panel, PanelHeader } from '../overlays/panel'
+import { Panel } from '../overlays/panel'
 import { PageHeader, PageTabs } from '../redesign/page-header'
-import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
+import { SETTINGS_ROUTE } from '../routes'
+import { RoutineDialogs } from '../routines/routine-dialogs'
+import { useAgentRoutineSource } from '../routines/routine-source'
+import { openRoutineEditor } from '../routines/routines-store'
+import { useRoutineActions } from '../routines/use-routine-actions'
 import { getNested } from '../settings/helpers'
 import { SettingsOwnerContext, settingsScopeLabel } from '../settings/profile-scope'
 import type { SettingsPageProps } from '../settings/types'
 
 import { AgentChannelWarnings } from './channel-warning'
-import { ClassicAgentSettings } from './classic-settings'
 import { useAgentSettingsCopy } from './copy'
-import type { AgentSettingsOwner } from './data'
+import type { AgentRouteOwner } from './data'
 import { AgentNavigation } from './directory'
 import { AgentHistory } from './history'
-import { rememberViewedAgent } from './landing'
+import { agentMachine, rememberViewedAgent } from './landing'
 import { AgentOverviewActions } from './overview-actions'
 import { agentOverviewQueries } from './overview-queries'
-import { RoutineDialog } from './routine-dialog'
 import { agentCapabilityCounts } from './settings-counts'
 import { AgentSettingsEditor } from './settings-editor'
 import { AgentSettingsPanel, useInlineAgentSettingsMenu } from './settings-panel'
 import { resolveAgentSettingsSection } from './settings-routes'
 
 interface AgentSettingsViewProps extends SettingsPageProps {
-  owner: AgentSettingsOwner
-  classic?: boolean
+  /** Resolved once, on entry (entry.tsx): every read, write and cache key below uses this identity. */
+  owner: AgentRouteOwner
 }
 
-/** The redesign's page pins every read and write to its owner (SettingsOwnerContext, owner-scoped
- *  helpers, requestGatewayForAgent), so any agent on this window's machine renders without being
- *  activated. Another machine, and the classic shell's editors (which still follow the active
- *  gateway), stay gated behind an explicit "Open agent": never silently retarget. */
+/** The page pins every read and write to its owner (SettingsOwnerContext, owner-scoped helpers,
+ *  requestGatewayForAgent), so any agent on this window's machine renders without being activated.
+ *  Another machine stays gated behind an explicit "Open agent": never silently retarget. */
 export function AgentSettingsView(props: AgentSettingsViewProps) {
   const c = useAgentSettingsCopy()
   const { t } = useI18n()
@@ -89,39 +88,19 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
   const registry = useStore($connectionsRegistry)
   const [error, setError] = useState('')
   const [opening, setOpening] = useState(false)
-  const [scopeReady, setScopeReady] = useState(false)
+  const { owner } = props
 
-  const sameConnection = (props.owner.connectionId ?? null) === (apiScope.connectionId ?? active)
-  const ownerActive = sameConnection && profile === props.owner.profile
-  const matches = props.classic ? ownerActive : sameConnection
-  const ownerConnectionId = props.owner.connectionId ?? apiScope.connectionId ?? active ?? 'local'
+  const sameConnection = owner.connectionId === agentMachine(apiScope.connectionId ?? active)
+  const ownerActive = sameConnection && profile === owner.profile
 
-  // The whole page, not just the editor, sits in the owner's context: its counts (plugins,
-  // connectors) dial the owner's socket instead of the window's.
-  const pageOwner = useMemo(
-    () => ({ connectionId: ownerConnectionId, profile: props.owner.profile }),
-    [ownerConnectionId, props.owner.profile]
-  )
-
-  // The classic editors read the shared "Applies to" scope, so they wait for it to name the owner.
-  // The redesign's never read it and never write it: an override left behind would retarget the
-  // classic Settings pages after the user leaves this one.
-  useEffect(() => {
-    if (props.classic && matches) {
-      setSettingsScope(props.owner.profile)
-    }
-
-    setScopeReady(matches)
-  }, [matches, props.classic, props.owner.profile])
-
-  async function activate(targetProfile = props.owner.profile) {
+  async function activate(targetProfile = owner.profile) {
     setOpening(true)
     setError('')
 
     try {
-      if (props.owner.connectionId && registry?.connections.some(item => item.id === props.owner.connectionId)) {
-        await selectConnection(props.owner.connectionId, { profile: targetProfile, preserveRoute: true })
-      } else if ((props.owner.connectionId ?? null) === (apiScope.connectionId ?? active)) {
+      if (registry?.connections.some(item => item.id === owner.connectionId)) {
+        await selectConnection(owner.connectionId, { profile: targetProfile, preserveRoute: true })
+      } else if (sameConnection) {
         await ensureGatewayProfile(targetProfile)
       } else {
         throw new Error(c.unavailable)
@@ -137,12 +116,12 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     }
   }
 
-  if (!matches && !props.classic) {
+  if (!sameConnection) {
     // Opening another agent swaps this window's gateway profile, so it waits for a click; the page
     // keeps its frame (the Agents panel, the agent's name) around that one action.
     return (
       <Panel contentClassName="agent-management page-stage" onClose={props.onClose}>
-        <AgentNavigation connectionId={props.owner.connectionId ?? active ?? 'local'} profile={props.owner.profile} />
+        <AgentNavigation connectionId={owner.connectionId} profile={owner.profile} />
         <EmptyState
           action={
             <Button disabled={opening} onClick={() => void activate()}>
@@ -151,32 +130,16 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
           }
           className="mt-6"
           description={error ? <span role="alert">{error}</span> : c.openAgentDescription}
-          title={props.owner.profile}
+          title={owner.profile}
         />
       </Panel>
     )
   }
 
-  if (!matches) {
-    return (
-      <Panel onClose={props.onClose}>
-        <PanelHeader subtitle={props.owner.profile} title={t.simplifiedAgents.settings} />
-        <Button disabled={opening} onClick={() => void activate()}>
-          {c.openAgent}
-        </Button>
-        {error && <p role="alert">{error}</p>}
-      </Panel>
-    )
-  }
-
-  if (props.classic && !scopeReady) {
-    return <PageLoader />
-  }
-
   // Captured when the rename starts (the dialog holds this render's callback): a local rename
   // retires the old name's gateway, so a window that was ON this agent reopens it under the new
   // name. An agent the window was only viewing is followed by route alone, never activated.
-  const reopenAfterRename = props.classic || ownerActive
+  const reopenAfterRename = ownerActive
 
   async function onProfileRenamed(name: string) {
     // Only the route that initiated the rename may follow the new owner.
@@ -193,10 +156,8 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     navigate({ pathname: location.pathname, search: `?${params}` }, { replace: true })
   }
 
-  return props.classic ? (
-    <ClassicAgentSettings {...props} onProfileRenamed={onProfileRenamed} />
-  ) : (
-    <SettingsOwnerContext.Provider value={pageOwner}>
+  return (
+    <SettingsOwnerContext.Provider value={owner}>
       <AgentSettingsContent
         {...props}
         // The composer shows the ACTIVE agent's model: another agent's model change must not repaint it.
@@ -276,14 +237,13 @@ function SettingRow({
 
 interface AgentManagementHeaderProps {
   gateway: string
-  onDeleted: () => void
   onOpenChat: () => void
-  owner: AgentSettingsOwner
+  owner: AgentRouteOwner
   profile?: ProfileInfo
   tabs: ReactNode
 }
 
-function AgentManagementHeader({ gateway, onDeleted, onOpenChat, owner, profile, tabs }: AgentManagementHeaderProps) {
+function AgentManagementHeader({ gateway, onOpenChat, owner, profile, tabs }: AgentManagementHeaderProps) {
   const { t } = useI18n()
   const c = useAgentSettingsCopy()
   const colors = useStore($profileColors)
@@ -296,7 +256,7 @@ function AgentManagementHeader({ gateway, onDeleted, onOpenChat, owner, profile,
           <Button onClick={onOpenChat} size="lg">
             {c.openChat}
           </Button>
-          <AgentOverviewActions onDeleted={onDeleted} owner={owner} profile={profile} />
+          <AgentOverviewActions owner={owner} profile={profile} />
         </>
       }
       description={
@@ -328,7 +288,7 @@ function AgentManagementHeader({ gateway, onDeleted, onOpenChat, owner, profile,
 
 /** The agent's machine: the roster's label (what the chat opener records) and the label the chat
  *  sidebar shows ("Hermes host"), never the raw serving address. */
-function useAgentMachine(owner: AgentSettingsOwner, connectionId: string) {
+function useAgentMachine(owner: AgentRouteOwner) {
   const { t } = useI18n()
   const roster = useStore($fleetRoster)
   const registry = useStore($connectionsRegistry)
@@ -336,10 +296,10 @@ function useAgentMachine(owner: AgentSettingsOwner, connectionId: string) {
 
   const gateway =
     roster?.sources.find(source => source.connectionId === owner.connectionId)?.label ??
-    gatewayLabel(owner.connectionId ?? 'local', registry, t.settings.gateway.webappHostTitle)
+    gatewayLabel(owner.connectionId, registry, t.settings.gateway.webappHostTitle)
 
   const machine =
-    agents.find(agent => agent.profile === owner.profile && (agent.connectionId ?? 'local') === connectionId)
+    agents.find(agent => agent.profile === owner.profile && agentMachine(agent.connectionId) === owner.connectionId)
       ?.gateway ?? gateway
 
   return { gateway, machine }
@@ -358,7 +318,7 @@ function RecentPlaceholder({ recent }: { recent: UseQueryResult<unknown> }) {
 }
 
 /** The agent page's URL for a tab (`panel`) and settings page; unset parts are left out. */
-function agentPanelHref(owner: AgentSettingsOwner, parts: Record<'page' | 'panel' | 'tab', null | string | undefined>) {
+function agentPanelHref(owner: AgentRouteOwner, parts: Record<'page' | 'panel' | 'tab', null | string | undefined>) {
   const query = new URLSearchParams({ agentProfile: owner.profile })
   const entries = Object.entries({ connection: owner.connectionId, ...parts })
 
@@ -373,7 +333,7 @@ function agentPanelHref(owner: AgentSettingsOwner, parts: Record<'page' | 'panel
 
 /** Everything the agent page reads about its agent, each read enabled only for the tabs that
  *  show it (the settings menu counts routines and channels; History needs neither). */
-function useAgentPageData(owner: AgentSettingsOwner, panel: null | string) {
+function useAgentPageData(owner: AgentRouteOwner, panel: null | string) {
   const config = useHermesConfigRecord(owner)
   const skills = useSkillsQuery(owner)
   const tools = useToolsetsQuery(owner)
@@ -421,10 +381,6 @@ function AgentSettingsContent({
   const { config, connectors, jobs, messaging, plugins, recent, skills, soul, tools } = useAgentPageData(owner, panel)
   const history = panel === 'history'
 
-  const apiScope = useStore($apiRequestScope)
-  const activeConnectionId = useStore($activeConnectionId)
-
-  const [routine, setRoutine] = useState<CronJob | 'new' | null>(null)
   const configText = (path: string) => asText(getNested(config.data ?? {}, path))
 
   const pending = (failed: boolean, loading: boolean, detail: ReactNode) =>
@@ -439,13 +395,11 @@ function AgentSettingsContent({
   const settings = (tab: string, page?: string) => openPanel('settings', `config:${tab}`, page)
   const back = () => openPanel(null)
 
-  const connectionId = owner.connectionId ?? apiScope.connectionId ?? activeConnectionId ?? 'local'
+  const { connectionId } = owner
+  const { gateway, machine } = useAgentMachine(owner)
 
-  const { gateway, machine } = useAgentMachine(owner, connectionId)
-
-  const editorOwner = useMemo(() => ({ connectionId, profile: owner.profile }), [connectionId, owner.profile])
   // The Agents destination reopens the agent this window last showed.
-  useEffect(() => rememberViewedAgent({ connectionId, profile: owner.profile }), [connectionId, owner.profile])
+  useEffect(() => rememberViewedAgent(owner), [owner])
 
   const failed =
     [config, skills, tools, jobs, messaging, recent, soul].some(query => query.isError) ||
@@ -522,10 +476,8 @@ function AgentSettingsContent({
       )}
       <AgentManagementHeader
         gateway={machine}
-        // The agent is gone: the Agents destination lands on the next one.
-        onDeleted={() => navigate(PROFILES_ROUTE, { replace: true })}
         onOpenChat={openChat}
-        owner={editorOwner}
+        owner={owner}
         profile={profile}
         tabs={
           <PageTabs
@@ -541,16 +493,10 @@ function AgentSettingsContent({
         }
       />
       {history ? (
-        <AgentHistory key={JSON.stringify(editorOwner)} onClose={props.onClose} owner={editorOwner} />
+        <AgentHistory key={JSON.stringify(owner)} onClose={props.onClose} owner={owner} />
       ) : panel === 'settings' || panel === 'capabilities' || panel === 'messaging' ? (
         <div className="agent-management-editor">
-          <AgentSettingsEditor
-            {...props}
-            counts={counts}
-            inlineNavigation={inlineMenu}
-            onClose={back}
-            owner={editorOwner}
-          />
+          <AgentSettingsEditor {...props} counts={counts} inlineNavigation={inlineMenu} onClose={back} owner={owner} />
         </div>
       ) : (
         <div className="agent-management-scroll scroll-fade-y">
@@ -621,7 +567,7 @@ function AgentSettingsContent({
                   title={t.cron.title}
                 />
               </Section>
-              <AgentRoutines jobs={jobs} onEdit={setRoutine} />
+              <AgentRoutines jobs={jobs} owner={owner} />
             </div>
             <div className="agent-overview-column">
               <AgentChannels messaging={messaging} onOpen={() => openPanel('messaging')}>
@@ -645,16 +591,6 @@ function AgentSettingsContent({
             </div>
           </div>
         </div>
-      )}
-      {routine && (
-        <RoutineDialog
-          job={routine === 'new' ? undefined : routine}
-          onClose={() => setRoutine(null)}
-          onSaved={() => {
-            void jobs.refetch()
-          }}
-          owner={owner}
-        />
       )}
     </Panel>
   )
@@ -700,13 +636,15 @@ function AgentInstructions({ content, loading, path, status, onOpen }: AgentInst
 
 interface AgentRoutinesProps {
   jobs: UseQueryResult<CronJob[]>
-  onEdit: (job: CronJob | 'new') => void
+  owner: AgentRouteOwner
 }
 
-/** The overview owns fetching and the dialog; this section only selects a routine to edit. */
-function AgentRoutines({ jobs, onEdit }: AgentRoutinesProps) {
+/** The overview's routines open the one routine editor Settings › Routines uses, on this agent. */
+function AgentRoutines({ jobs, owner }: AgentRoutinesProps) {
   const { t } = useI18n()
   const c = useAgentSettingsCopy()
+  const source = useAgentRoutineSource(owner)
+  const actions = useRoutineActions(source)
 
   return (
     <div id="agent-routines">
@@ -715,7 +653,7 @@ function AgentRoutines({ jobs, onEdit }: AgentRoutinesProps) {
           <SettingRow
             detail={job.schedule_display || job.schedule?.display || job.schedule?.expr}
             key={job.id}
-            onClick={() => onEdit(job)}
+            onClick={() => openRoutineEditor({ job, mode: 'edit' })}
             title={job.name || job.id}
           />
         ))}
@@ -727,12 +665,16 @@ function AgentRoutines({ jobs, onEdit }: AgentRoutinesProps) {
           )
         )}
         <div className="agent-overview-footer">
-          <Button onClick={() => onEdit('new')} variant="textStrong">
+          <Button
+            onClick={() => openRoutineEditor({ lockProfile: true, mode: 'pick', profile: owner.profile })}
+            variant="textStrong"
+          >
             <Codicon name="add" />
             {t.cron.newCron}
           </Button>
         </div>
       </Section>
+      <RoutineDialogs actions={actions} source={source} />
     </div>
   )
 }

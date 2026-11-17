@@ -55,8 +55,10 @@ const profileName = (scope: ProfileScope): null | string =>
 /** Plugins turned on for this agent, counted over the rows its Plugins page lists (bundled
  *  providers, platforms and the like are enabled by default and listed nowhere, so they never
  *  count). The plugin list is one owner-scoped store the Plugins page also loads; concurrent loads
- *  for the same owner share one request. */
-export function usePluginsCount(scope: ProfileScope): CapabilityCount {
+ *  for the same owner share one request. `reachable` is false where this window's request does not
+ *  reach the scope's backend (another machine, outside that agent's own settings): there is no
+ *  count to read, so nothing is loaded. */
+export function usePluginsCount(scope: ProfileScope, reachable = true): CapabilityCount {
   const request = useSettingsGatewayRequest()
   const gatewayState = useStore($gatewayState)
   const rows = useStore($agentPlugins)
@@ -64,7 +66,7 @@ export function usePluginsCount(scope: ProfileScope): CapabilityCount {
   const loadedProfile = useStore($agentPluginsProfile)
   const status = useStore($agentPluginsStatus)
   const profile = profileName(scope)
-  const owned = status === 'ready' && ownerKey === request.ownerKey && loadedProfile === profile
+  const owned = reachable && status === 'ready' && ownerKey === request.ownerKey && loadedProfile === profile
   // The load this count last asked for that failed; cleared by a retry or an owner change.
   const attempt = JSON.stringify([request.ownerKey ?? '', profile])
   const [failedAttempt, setFailedAttempt] = useState<null | string>(null)
@@ -80,12 +82,12 @@ export function usePluginsCount(scope: ProfileScope): CapabilityCount {
   }, [attempt, profile, request])
 
   useEffect(() => {
-    if (gatewayState === 'open' && !owned && failedAttempt !== attempt) {
+    if (reachable && gatewayState === 'open' && !owned && failedAttempt !== attempt) {
       load()
     }
     // A failure is settled until the person retries; it is not re-asked on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attempt, gatewayState, owned])
+  }, [attempt, gatewayState, owned, reachable])
 
   return {
     value: owned ? rows.filter(row => isDesktopRelevantPlugin(row) && row.status === 'enabled').length : undefined,

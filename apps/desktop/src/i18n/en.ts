@@ -1293,7 +1293,7 @@ export const en: Translations = {
       set: 'Set',
       clear: 'Clear'
     },
-    // v2 multi-connection registry: Settings → Machines.
+    // v2 multi-connection registry: Settings → Gateways.
     connections: {
       title: 'Registered gateways',
       intro:
@@ -3166,7 +3166,6 @@ export const en: Translations = {
     tabFiles: 'Files',
     tabLinks: 'Links',
     noArtifactsTitle: 'No artifacts found',
-    partialIndex: (failed: number, total: number) => `Skipped ${failed} of ${total} recent sessions while indexing artifacts.`,
     noArtifactsDesc: 'Generated images and file outputs will appear here as sessions produce them.',
     failedLoad: 'Artifacts failed to load',
     openFailed: 'Open failed',
@@ -4166,10 +4165,10 @@ export const en: Translations = {
       messagingPlatforms: 'Messaging platforms',
       machineStatus: (machine, status) => `${machine} status: ${status}`,
       checkAgain: 'Check again',
-      switchToMachine: 'Switch to this machine',
-      machineSettings: 'Gateways & Machines',
+      switchToMachine: 'Switch to this gateway',
+      machineSettings: 'Gateways',
       restartTitle: 'Restart the gateway?',
-      restartBody: 'Turns running on this machine stop. It comes back in a few seconds and reconnects on its own.'
+      restartBody: 'Turns running on this gateway stop. It comes back in a few seconds and reconnects on its own.'
     },
     approvalMode: {
       title: 'Approval mode',
@@ -4445,6 +4444,7 @@ export const en: Translations = {
     hideStripTab: title => `Hide ${title}`,
     zoneMenuLabel: title => `Zone options for ${title}`,
     lastTabKeptTitle: 'Last tab stays',
+    resizePanes: 'Resize panes',
     lastTabKeptBody: 'This zone needs at least one visible tab. Show another tab first, or collapse the whole sidebar.',
     toggleStripTab: title => `Toggle ${title} tab`,
     minimize: 'Minimize',
@@ -4809,6 +4809,9 @@ export const en: Translations = {
     audioReadFailed: 'Could not read recorded audio',
     sessionOpenFailed: "Couldn't open this session",
     sessionUnavailable: 'Session unavailable',
+    sessionOwnerConflictTitle: "Couldn't open this chat",
+    sessionOwnerConflictBody:
+      'Another chat with the same ID is already open. Close it first, or open this chat in a new window.',
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',

@@ -78,15 +78,22 @@ function sessionScopeQuery(scope?: ProfileScope): string {
   return profile ? `?profile=${encodeURIComponent(profile)}` : ''
 }
 
-/** Capture provenance before awaiting a list. Native local is an explicit
- * owner; a connectionless legacy remote primary keeps its profile-only route.
- * Responses may already contain other owners from the multi-source splice. */
-function captureListOwner(): string | undefined {
-  // Backfill and ownership both use the source that STARTED the request, never
-  // the gateway selected while its response was in flight.
+/**
+ * The registry source a list request is pinned to, captured before it is
+ * awaited: a response must never inherit the gateway selected while it was in
+ * flight. An explicit `local` pin names this machine and is stamped like any
+ * other source; an unpinned list rides the legacy profile door, which Electron
+ * may resolve to a per-profile remote override, so its rows stay untagged —
+ * the ambient `local` would misname the machine that served them.
+ */
+function captureListOwner(): null | string {
+  // Durable half of the same ownership contract (#94724): enumeration under
+  // registry topology triggers the one-shot server-side owner backfill for
+  // the serving store when its owner is a single match. Fire-and-forget;
+  // idempotent server-side; never blocks or fails the list that triggered it.
   maybeBackfillLegacySessionOwners()
 
-  return ambientOwnerConnectionId()
+  return getApiRequestConnection()
 }
 
 /**
@@ -323,11 +330,12 @@ export function scanSessionPullRequests(
 
 export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
   const capabilityKey = getApiRequestConnection() ?? ''
-  const owner = captureListOwner()
 
   if (sidebarBatchEndpointMissing.has(capabilityKey)) {
     return listSidebarSessionsLegacy(req)
   }
+
+  const owner = captureListOwner()
 
   const params = new URLSearchParams({
     recents_profile: req.recentsProfile,

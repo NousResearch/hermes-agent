@@ -1,6 +1,6 @@
 import type { GatewayHostTranslations } from './types_gateway_host'
 
-// Settings → Machines copy where the connection cannot change, spread into es.ts.
+// Settings → Gateways copy where the connection cannot change, spread into es.ts.
 export const esGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Ajustes del gateway no disponibles',
   unavailableDesc:

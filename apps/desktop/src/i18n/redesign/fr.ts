@@ -810,7 +810,10 @@ export const frRedesign: RedesignOverlay = {
       gateway: 'Ordinateur',
       reconnectGateway: 'Reconnecter la machine',
       machineSettings: 'Machines',
-      restartTitle: 'Redémarrer Hermes sur cette machine ?'
+      restartTitle: 'Redémarrer Hermes sur cette machine ?',
+      switchToMachine: 'Passer à cette machine',
+      restartBody:
+        'Les réponses en cours sur cette machine s’arrêtent. Hermes revient en quelques secondes et se reconnecte seul.'
     },
     statusbar: {
       gateway: 'Ordinateur',
@@ -1020,8 +1023,6 @@ export const frRedesign: RedesignOverlay = {
     noArtifactsDesc:
       'Les images générées et les sorties de fichier apparaîtront ici au fur et à mesure que les discussions les produisent.',
     failedLoad: 'Échec du chargement de la bibliothèque',
-    partialIndex: (failed, total) =>
-      `${failed} discussions récentes sur ${total} ignorées lors de l’indexation de la bibliothèque.`
   },
   artifactPreview: {
     missingTitle: 'Élément indisponible',

@@ -1,5 +1,14 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
-import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
+import {
+  downloadGatewayMediaFile,
+  type GatewayFileOrigin,
+  isArtifactFilePath,
+  isRemoteGateway,
+  mediaExternalUrl,
+  mediaPathFromMarkdownHref,
+  resolveMediaDisplaySrc
+} from '@/lib/media'
+import { notifyError } from '@/store/notifications'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -612,4 +621,33 @@ export function paginationItems(page: number, pageCount: number): Array<number |
   pages.push(pageCount)
 
   return pages
+}
+
+/** Open a file or link record (classic's Artifacts page and the redesign's Library). */
+export async function openArtifactRecord(
+  artifact: ArtifactRecord,
+  origin: GatewayFileOrigin,
+  failedLabel: string
+): Promise<void> {
+  try {
+    // A gateway-local file resolves to file:// in remote mode (the file
+    // lives on the gateway, not this disk). Opening that locally fails —
+    // and an OAuth remote connection has no query token to build a download
+    // URL. Fetch the bytes over the authenticated fs bridge instead.
+    // Tilde/relative hrefs have no file URL form. Keep them gateway-owned:
+    // expanding them on the client would target the wrong home or cwd.
+    if (isRemoteGateway() && isArtifactFilePath(artifact.value)) {
+      await downloadGatewayMediaFile(artifact.value, origin)
+
+      return
+    }
+
+    if (window.hermesDesktop?.openExternal) {
+      await window.hermesDesktop.openExternal(artifact.href)
+    } else {
+      window.open(artifact.href, '_blank', 'noopener,noreferrer')
+    }
+  } catch (err) {
+    notifyError(err, failedLabel)
+  }
 }

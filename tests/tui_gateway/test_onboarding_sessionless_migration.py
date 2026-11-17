@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from pathlib import Path
 
@@ -23,6 +24,8 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_db", None)
+    # Each test is a fresh backend process: the migration latch starts open.
+    monkeypatch.setattr(server, "_sessionless_setup_migrated", False)
     db = server._get_db()
     db.create_session("onb", "desktop")
     db.patch_session_model_config("onb", {
@@ -158,3 +161,26 @@ def test_initial_latch_keeps_peer_progress_and_completion(db):
     assert completed["run"] is False and completed["step"] == "model"
     restarted = _call("onboarding.set_run", {"run": True, "step": "preferences", "restart": True})
     assert restarted["run"] is True and restarted["step"] == "preferences"
+
+
+def test_state_takes_the_store_writer_only_while_legacy_runs_remain(db, monkeypatch):
+    writers = []
+    real = server._profile_db
+
+    @contextlib.contextmanager
+    def recording(params=None, *, writer=False):
+        writers.append(writer)
+        with real(params, writer=writer) as handle:
+            yield handle
+
+    monkeypatch.setattr(server, "_profile_db", recording)
+    for _ in range(3):
+        assert _call("onboarding.state")["run"] is True
+    assert writers.count(True) == 1
+    assert onboarding_record.active_session_id(db) is None
+
+    # A new backend process finds the legacy run already retired and stays a reader.
+    monkeypatch.setattr(server, "_sessionless_setup_migrated", False)
+    writers.clear()
+    assert _call("onboarding.state")["run"] is True
+    assert True not in writers

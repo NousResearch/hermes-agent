@@ -20,6 +20,7 @@ import {
 
 import { beginSashDrag, endSashDrag } from '@/components/pane-shell/geometry'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { useI18n } from '@/i18n'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -42,7 +43,6 @@ import {
 } from '../store'
 import { $routeCollapsedPanes } from '../store-route-collapse'
 
-import { useSashLabel } from './sash-copy'
 import {
   allFixedAbsorberIndex,
   COLLAPSED_ZONE_PX,
@@ -1030,13 +1030,13 @@ function Sash({
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const label = useSashLabel()
+  const { t } = useI18n()
   const keyboard = keyboardSeam && !disabled
   const share = useLeadingShare(ref, leadingIndex, horizontal, keyboard)
 
   const splitter = keyboard
     ? {
-        'aria-label': label,
+        'aria-label': t.zones.resizePanes,
         // The seam between side-by-side panes is a vertical line, and the other way round.
         'aria-orientation': horizontal ? ('vertical' as const) : ('horizontal' as const),
         'aria-valuemax': 100,

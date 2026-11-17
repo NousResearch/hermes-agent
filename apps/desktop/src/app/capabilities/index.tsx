@@ -9,7 +9,8 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
+import type { ProfileScope } from '@/hermes'
+import { type Translations, useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -34,7 +35,12 @@ import { CatalogSkeleton } from './catalog/catalog-skeleton'
 import { ConnectorsTab } from './connectors/connectors-tab'
 import { useCapabilitiesPageDescription } from './page-copy'
 import { PluginsTab } from './plugins/plugins-tab'
-import { type CapabilityScope, CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
+import {
+  type CapabilityScope,
+  CapabilityScopeSelector,
+  profileScopeConnectionId,
+  useCapabilityScope
+} from './scope-selector'
 import { SKILLS_QUERY_KEY, useSkillsQuery } from './skills/skills-data'
 import { SkillsTab } from './skills/skills-tab'
 import { AgentToolsets } from './toolsets/agent-toolsets'
@@ -84,7 +90,8 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
-  const presentation = capabilitiesPresentation(usePortalShell(), embedded, Boolean(fixedProfile))
+  const redesign = usePortalShell()
+  const presentation = capabilitiesPresentation(redesign, embedded, Boolean(fixedProfile))
   const pageDescription = useCapabilitiesPageDescription()
   const agentControls = !useStore($capabilitiesManagedPerAgent) || Boolean(fixedProfile)
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
@@ -94,15 +101,13 @@ export function CapabilitiesView({
   const [selectedMode, setMode] = embedded ? localTab : routeTab
   const mode = fixedMode ?? selectedMode
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
-  // `reload.mcp` reloads the window's chat, which is the ACTIVE agent's: an agent page showing
-  // another agent leaves its MCP edits to that agent's next session instead.
-  const owner = useSettingsOwner()
-  const activeProfile = useStore($activeGatewayProfile)
-  const reloadsOwnerChat = !owner || normalizeProfileKey(owner.profile) === normalizeProfileKey(activeProfile)
+  const reloadsOwnerChat = useReloadsOwnerChat()
 
   const [query, setQuery] = useState('')
 
   const scope = useCapabilityScope({ fixedConnection, fixedProfile })
+
+  const pluginsReachable = usePluginsReachable(scope)
 
   const { openAgentSettings } = useCapabilityAgentSettings(scope, mode)
 
@@ -110,7 +115,6 @@ export function CapabilitiesView({
   // pair, because the counts stay live for the tab the user is NOT on.
   const { data: skills, isError: skillsFailed, error: skillsError } = useSkillsQuery(scope.profile)
   const { data: toolsets, isError: toolsetsFailed } = useToolsetsQuery(scope.profile)
-  const tabs = useCapabilityTabs({ pageFrame: presentation.pageFrame, scope, skills, toolsets })
 
   const refreshCapabilities = useCallback(async () => {
     await Promise.all([
@@ -155,13 +159,9 @@ export function CapabilitiesView({
         profile={scope.profile}
       />
     ),
-    // Agent plugins for the scoped profile and app-level desktop plugins.
     plugins: () =>
-      scope.crossBackend ? (
-        <div className="grid justify-items-start gap-3 p-5">
-          <p>{t.skills.remotePluginHint}</p>
-          <Button onClick={openAgentSettings}>{t.skills.openAgentSettings}</Button>
-        </div>
+      redesign && !pluginsReachable ? (
+        <PluginsElsewhere onOpenAgentSettings={openAgentSettings} />
       ) : (
         <PluginsTab
           agentControls={agentControls}
@@ -171,10 +171,7 @@ export function CapabilitiesView({
           profile={scope.profile}
           query={query}
           scopeLabel={scope.label}
-          // The inventory's header owns the scope; an agent's own Plugins column names it.
-          scopeSelector={
-            agentControls && scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined
-          }
+          scopeSelector={pluginsScopeSelector(agentControls, scope)}
         />
       ),
     skills: () => (
@@ -212,25 +209,22 @@ export function CapabilitiesView({
       )
   } satisfies Record<CapabilityMode, () => React.ReactNode>
 
-  return (
-    <PageSearchShell
-      {...props}
-      activeTab={mode}
-      data-capabilities-v2={presentation.pageFrame || undefined}
-      onTabChange={id => setMode(id as CapabilityMode)}
-      pageDescription={presentation.pageTitle ? pageDescription : undefined}
-      pageTitle={presentation.pageTitle ? t.sidebar.nav.capabilities : undefined}
-      // Every tab renders the shared CapabilitySearch beside its own results.
-      searchHidden
-      searchTrailingAction={
-        presentation.headerScope
-          ? mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />
-          : !agentControls && <CapabilityInventoryScope onOpenAgentSettings={openAgentSettings} scope={scope} />
-      }
-      tabs={fixedMode ? [] : tabs}
-      tabsAlign="start"
-    >
-      {/* An agent editor scrolls as one page, so its capability list sizes to content. */}
+  const shellProps: React.ComponentProps<typeof PageSearchShell> & { 'data-capabilities-v2'?: true } = {
+    ...props,
+    activeTab: mode,
+    'data-capabilities-v2': presentation.pageFrame || undefined,
+    onTabChange: id => setMode(id as CapabilityMode),
+    pageDescription: presentation.pageTitle ? pageDescription : undefined,
+    pageTitle: presentation.pageTitle ? t.sidebar.nav.capabilities : undefined,
+    // Every tab renders the shared CapabilitySearch beside its own results.
+    searchHidden: true,
+    searchTrailingAction: presentation.headerScope
+      ? mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />
+      : !agentControls && <CapabilityInventoryScope onOpenAgentSettings={openAgentSettings} scope={scope} />,
+    tabs: fixedMode ? [] : capabilityTabs(t, skills, toolsets),
+    tabsAlign: 'start',
+    children: (
+      // An agent editor scrolls as one page, so its capability list sizes to content.
       <div className={presentation.agentLayout ? 'grid' : 'flex h-full flex-col'}>
         <div className={presentation.agentLayout ? 'grid' : 'flex min-h-0 flex-1 flex-col'}>
           <CapabilityLoadGate
@@ -248,32 +242,37 @@ export function CapabilitiesView({
           </CapabilityLoadGate>
         </div>
       </div>
-    </PageSearchShell>
+    )
+  }
+
+  return presentation.pageFrame ? (
+    <CountedCapabilitiesShell {...shellProps} pluginsReachable={pluginsReachable} scope={scope.profile} />
+  ) : (
+    <PageSearchShell {...shellProps} />
   )
 }
 
-interface CapabilityTabsInput {
-  pageFrame: boolean
-  scope: CapabilityScope
-  skills?: unknown[]
-  toolsets?: Parameters<typeof visibleToolsetCount>[0]
+interface CountedCapabilitiesShellProps extends React.ComponentProps<typeof PageSearchShell> {
+  scope: ProfileScope
+  pluginsReachable: boolean
 }
 
-/** The four tabs with their counts: `null` reserves a count still loading. Plugins and Connectors
- *  count only in the redesign, whose tabs carry a count each (919:9095). */
-function useCapabilityTabs({ pageFrame, scope, skills, toolsets }: CapabilityTabsInput): PageShellTab[] {
-  const { t } = useI18n()
-  const plugins = usePluginsCount(scope.profile)
-  const connectors = useConnectorsCount(scope.profile)
-  // A count the agent's backend could not answer drops its slot rather than reserving it forever.
-  const redesignCount = (count: CapabilityCount) => (pageFrame && !count.failed ? (count.value ?? null) : undefined)
+/** The redesigned page also counts Plugins and Connectors on their tabs (919:9095); `null` reserves a
+ *  count still loading. Their reads mount with this frame only, so classic and embedded views,
+ *  which show no such counts, never fetch them. */
+function CountedCapabilitiesShell({ pluginsReachable, scope, tabs, ...props }: CountedCapabilitiesShellProps) {
+  const plugins = usePluginsCount(scope, pluginsReachable)
+  const connectors = useConnectorsCount(scope)
+  const counts: Partial<Record<string, CapabilityCount>> = { connectors, ...(pluginsReachable && { plugins }) }
 
-  return [
-    { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
-    { id: 'plugins', label: t.skills.tabPlugins, meta: redesignCount(plugins) },
-    { id: 'connectors', label: t.connectorsPage.title, meta: redesignCount(connectors) },
-    { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
-  ]
+  // A count the agent's backend could not answer drops its slot rather than reserving it forever.
+  const counted = tabs?.map((tab): PageShellTab => {
+    const count = counts[tab.id]
+
+    return count ? { ...tab, meta: count.failed ? undefined : (count.value ?? null) } : tab
+  })
+
+  return <PageSearchShell {...props} tabs={counted} />
 }
 
 interface ToolsetsSkeletonProps {
@@ -371,6 +370,54 @@ function CapabilityLoadGate({ pending, failed, error, onRefresh, skeleton, child
 }
 
 /** Keep the inventory's hand-off pinned to the same owner as its queries. */
+/** The redesign's stand-in for a scope whose plugins this window cannot reach. Classic always
+ *  lists them, as it always has. */
+function PluginsElsewhere({ onOpenAgentSettings }: { onOpenAgentSettings: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="grid justify-items-start gap-3 p-5">
+      <p>{t.skills.remotePluginHint}</p>
+      <Button onClick={onOpenAgentSettings}>{t.skills.openAgentSettings}</Button>
+    </div>
+  )
+}
+
+/** The inventory's header owns the scope; an agent's own Plugins column names it. */
+function pluginsScopeSelector(agentControls: boolean, scope: CapabilityScope) {
+  return agentControls && scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined
+}
+
+/** `reload.mcp` reloads the window's chat, which is the ACTIVE agent's: an agent page showing
+ *  another agent leaves its MCP edits to that agent's next session instead. */
+function useReloadsOwnerChat(): boolean {
+  const owner = useSettingsOwner()
+  const activeProfile = useStore($activeGatewayProfile)
+
+  return !owner || normalizeProfileKey(owner.profile) === normalizeProfileKey(activeProfile)
+}
+
+/** The page's tabs; the two installed lists count on theirs (`null` reserves a count still loading). */
+function capabilityTabs(t: Translations, skills?: unknown[], toolsets?: Parameters<typeof visibleToolsetCount>[0]): PageShellTab[] {
+  return [
+    { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
+    { id: 'plugins', label: t.skills.tabPlugins },
+    { id: 'connectors', label: t.connectorsPage.title },
+    { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null }
+  ]
+}
+
+/** Plugins rides the settings request: the active gateway, or inside an agent's own settings that
+ *  agent's backend. A scope on any other machine is out of its reach. */
+function usePluginsReachable(scope: CapabilityScope): boolean {
+  const owner = useSettingsOwner()
+
+  return (
+    !scope.crossBackend ||
+    (owner !== undefined && (owner.connectionId ?? 'local') === profileScopeConnectionId(scope.profile))
+  )
+}
+
 function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode) {
   const navigate = useNavigate()
 
@@ -382,11 +429,12 @@ function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode
     activeGatewayConnectionId() ??
     'local'
 
-  const ownerQuery = new URLSearchParams({ agentProfile: ownerProfile, panel: 'capabilities', tab: mode })
-
-  if (ownerConnection) {
-    ownerQuery.set('connection', ownerConnection)
-  }
+  const ownerQuery = new URLSearchParams({
+    agentProfile: ownerProfile,
+    panel: 'capabilities',
+    tab: mode,
+    connection: ownerConnection
+  })
 
   return {
     openAgentSettings: () => navigate(`${SETTINGS_ROUTE}?${ownerQuery}`)

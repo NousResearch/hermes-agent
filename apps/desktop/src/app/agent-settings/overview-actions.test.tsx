@@ -1,4 +1,7 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, fireEvent, render, type RenderOptions, screen } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
@@ -7,6 +10,7 @@ import { createProfile } from '@/hermes'
 import type * as Hermes from '@/hermes'
 import { en } from '@/i18n/en'
 import { writeClipboardText } from '@/lib/clipboard'
+import { queryClient } from '@/lib/query-client'
 import { $hiddenSidebarAgents, agentSidebarKey, setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
 import { $defaultProfileRoute } from '@/store/default-profile'
 import type * as FleetRoster from '@/store/fleet-roster'
@@ -48,6 +52,12 @@ const profile: ProfileInfo = {
 
 const setDefault = vi.fn(async (route: DesktopProfileRoute) => route)
 
+const page: RenderOptions['wrapper'] = ({ children }: { children: ReactNode }) => (
+  <QueryClientProvider client={queryClient}>
+    <MemoryRouter>{children}</MemoryRouter>
+  </QueryClientProvider>
+)
+
 function openMenu() {
   const trigger = screen.getByRole('button', { name: 'Agent actions' })
   fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
@@ -68,6 +78,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  queryClient.clear()
   vi.clearAllMocks()
   $apiRequestScope.set({ profile: null, connectionId: null })
   $profiles.set([])
@@ -94,7 +105,7 @@ it('reflects sidebar visibility live and changes only the actual profile on its 
   const target = { connectionId: 'alpha', profile: 'default' }
   const other = { connectionId: 'beta', profile: 'default' }
   setSidebarAgentHidden(other, true)
-  render(<AgentOverviewActions owner={owner} profile={profile} />)
+  render(<AgentOverviewActions owner={owner} profile={profile} />, { wrapper: page })
   openMenu()
   expect(screen.getByRole('menuitem', { name: 'Hide from chat list' })).toBeTruthy()
   act(() => setSidebarAgentHidden(target, true))
@@ -109,7 +120,7 @@ it('reflects sidebar visibility live and changes only the actual profile on its 
 })
 
 it('shows and copies the real profile path, and starts deleting from the menu itself', async () => {
-  render(<AgentOverviewActions owner={owner} profile={profile} />)
+  render(<AgentOverviewActions owner={owner} profile={profile} />, { wrapper: page })
   openMenu()
   const copy = screen.getByRole('menuitem', { name: /Copy agent folder path/ })
   // One line: the label, then the path as a trailing hint.
@@ -127,7 +138,7 @@ it('shows and copies the real profile path, and starts deleting from the menu it
 })
 
 it('duplicates the captured profile on the captured gateway even after the active gateway changes', async () => {
-  render(<AgentOverviewActions owner={owner} profile={profile} />)
+  render(<AgentOverviewActions owner={owner} profile={profile} />, { wrapper: page })
   openMenu()
   await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate agent' })))
   act(() => $apiRequestScope.set({ connectionId: 'beta', profile: 'other' }))
@@ -141,7 +152,7 @@ it('duplicates the captured profile on the captured gateway even after the activ
 })
 
 it('titles the duplicate dialog by the action that opened it, not "New agent"', async () => {
-  render(<AgentOverviewActions owner={owner} profile={profile} />)
+  render(<AgentOverviewActions owner={owner} profile={profile} />, { wrapper: page })
   openMenu()
   await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate agent' })))
 
@@ -152,7 +163,7 @@ it('titles the duplicate dialog by the action that opened it, not "New agent"', 
 it('sets the owner route as default, not a same-named agent on the active gateway', async () => {
   $defaultProfileRoute.set({ connectionId: 'beta', profile: 'research' })
   $apiRequestScope.set({ connectionId: 'beta', profile: 'research' })
-  render(<AgentOverviewActions owner={owner} profile={profile} />)
+  render(<AgentOverviewActions owner={owner} profile={profile} />, { wrapper: page })
   openMenu()
   await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Set as default agent' })))
   expect(setDefault).toHaveBeenCalledWith(owner)
@@ -163,7 +174,7 @@ it('sets the owner route as default, not a same-named agent on the active gatewa
 
 it('explicitly disables unsupported default and missing profile capabilities', () => {
   window.document.documentElement.dataset.hermesDesktopHost = 'browser'
-  render(<AgentOverviewActions owner={owner} />)
+  render(<AgentOverviewActions owner={owner} />, { wrapper: page })
   openMenu()
   expect(screen.getByRole('menuitem', { name: 'Set as default agent' }).getAttribute('aria-disabled')).toBe('true')
   expect(screen.getByText('Setting a default agent is unavailable for this machine in this app.')).toBeTruthy()

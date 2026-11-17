@@ -13,11 +13,18 @@ import type { SessionInfo } from '@/types/hermes'
  * an active NON-local source get stamped: the gateway's HTTP APIs correctly
  * know nothing about Desktop-local registry ids, and an untagged remote row
  * would let a later resume fall back to a same-named local profile
- * ("session not found" on turn two). Legacy primary-pool callers leave
- * `local` untagged by default. Session list requests opt into `stampLocal`
- * only after capturing an actual native-local owner: cached local rows must
- * remain local when the foreground changes. A connectionless legacy remote
- * primary stays untagged; it must not be mistaken for this machine.
+ * ("session not found" on turn two). `local` is not stamped by default — a
+ * bare local row already routes correctly while local is the primary, and a
+ * `local` tag would only pin it against the fail-closed owner resolution: an
+ * explicit `local` route bypasses Electron's legacy per-profile remote
+ * overrides, so rows the profile door fetched from an override would be sent
+ * back to this machine. Pass `stampLocal` only with the connection the rows
+ * were actually fetched through — an explicit `local` request pin (a session
+ * or cron-run list pinned to this machine, or `local` serving as a registry
+ * SECONDARY, where a bare row would route to the remote primary), never the
+ * ambient owner of an unpinned request. A gateway-served Webapp tab's REST door
+ * (`installBrowserDesktopBridge`) tags its rows with `local` itself, the tab's
+ * only source.
  */
 export function stampRowsWithOwningConnection(
   sessions: SessionInfo[],

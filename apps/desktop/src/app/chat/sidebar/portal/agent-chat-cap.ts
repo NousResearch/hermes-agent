@@ -6,7 +6,3 @@ export const AGENT_CHAT_CAP = 3
 export function capAgentChats<T>(rows: readonly T[], limit: number, keep: (row: T) => boolean): T[] {
   return rows.filter((row, index) => index < limit || keep(row))
 }
-
-/** The `$sidebarAgentExpanded` entry that holds an agent's "Show all" choice: its own key, scoped by
- *  the agent's machine and profile like the disclosure beside it. */
-export const agentShowAllKey = (agentKey: string) => `all:${agentKey}`

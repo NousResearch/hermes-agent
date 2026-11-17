@@ -2,7 +2,7 @@ import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import type { SessionInfo } from '@/hermes'
 import { newSessionInAgent, newSessionInProfile } from '@/store/profile'
 
-import type { SimplifiedAgent } from './use-simplified-agents'
+import { agentKey, sessionAgentKey, type SimplifiedAgent } from './use-simplified-agents'
 
 export function startSimplifiedAgentSession(
   agent: Pick<SimplifiedAgent, 'connectionId' | 'profile' | 'targetProfile'>
@@ -20,28 +20,29 @@ export function startSimplifiedAgentSession(
   }
 }
 
-/** Rank the current agent first, then frequency weighted by recency in available chat history. */
+/** Rank the current agent (`active`, an `agentKey`) first, then frequency weighted by recency in
+ *  available chat history. A chat with no machine is `owner`'s, as the sidebar files it. */
 export function rankNewSessionAgents(
   agents: SimplifiedAgent[],
   sessions: SessionInfo[],
-  connectionId: string | null,
-  profile: string,
+  owner: string | null,
+  active: string,
   now = Date.now() / 1000
 ): SimplifiedAgent[] {
   const scores = new Map<string, number>()
 
   for (const session of sessions) {
-    const id = JSON.stringify([session.connection_id || connectionId, session.profile || 'default'])
+    const key = sessionAgentKey(session, owner)
     const ageWeeks = Math.max(0, now - (session.last_active ?? session.started_at)) / (7 * 86400)
-    scores.set(id, (scores.get(id) ?? 0) + 1 / (1 + ageWeeks))
+    scores.set(key, (scores.get(key) ?? 0) + 1 / (1 + ageWeeks))
   }
 
-  const active = JSON.stringify([connectionId, profile])
+  const score = (agent: SimplifiedAgent) => scores.get(agentKey(agent)) ?? 0
 
   return [...agents].sort(
     (a, b) =>
-      Number(b.id === active) - Number(a.id === active) ||
-      (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0) ||
+      Number(agentKey(b) === active) - Number(agentKey(a) === active) ||
+      score(b) - score(a) ||
       a.label.localeCompare(b.label) ||
       a.id.localeCompare(b.id)
   )

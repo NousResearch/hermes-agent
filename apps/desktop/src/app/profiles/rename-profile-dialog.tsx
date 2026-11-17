@@ -23,9 +23,15 @@ import { migrateTilesForProfile } from '@/store/session-states'
 import { usePortalShell } from '@/store/shell-variant'
 
 import { isValidProfileName } from './create-profile-dialog'
+import type { ProfileOwnerRoute } from './delete-profile-dialog'
 
 // Display names are free text (Unicode fine) — no slug sanitizing.
 const identity = (raw: string) => raw
+
+/** Who the rename belongs to, as for DeleteProfileDialog. `scope` is a profile on a gateway other than
+ *  this window's: nothing local is retired or migrated. `owner` is an agent page's resolved route: a
+ *  local owner retires and migrates like an unscoped rename, a remote one moves its sidebar state. */
+type RenameProfileOwnership = { owner: ProfileOwnerRoute; scope?: never } | { owner?: never; scope?: ProfileScope }
 
 // Self-contained rename (owns the renameProfile call) so every caller just
 // reacts via onRenamed. Unchanged name is a no-op close.
@@ -36,10 +42,12 @@ export function RenameProfileDialog({
   onClose,
   onRenamed,
   open,
+  owner,
   scope
 }: {
   currentName: string
-  /** The name the app shows for this agent today (its display name, else its id). */
+  /** The default agent's display name, else its id: the value this dialog rewrites. Never its bot
+   *  title, which masks the display name wherever it is set. */
   displayName?: string
   /** Default profile: sets a presentation-only display name (Unicode ok);
    *  the canonical id stays "default" and no backend teardown is needed. */
@@ -47,10 +55,7 @@ export function RenameProfileDialog({
   onClose: () => void
   onRenamed?: (name: string) => Promise<void> | void
   open: boolean
-  /** Explicit (connection, profile) owner. Only a local rename retires local
-   *  gateways and migrates local ownership state. */
-  scope?: ProfileScope
-}) {
+} & RenameProfileOwnership) {
   const { t } = useI18n()
   const p = t.profiles
   const redesign = usePortalShell()
@@ -105,7 +110,7 @@ export function RenameProfileDialog({
 
     setStatus('saving')
     setError(null)
-    const local = scope == null || (typeof scope === 'object' && scope.connectionId === 'local')
+    const local = owner ? owner.connectionId === 'local' : scope == null
 
     try {
       // A retained renderer socket for the old name would treat the rename's
@@ -116,15 +121,17 @@ export function RenameProfileDialog({
         retireLocalProfileGateways(currentName)
       }
 
-      await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+      const target = owner ?? scope
+
+      await (target == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, target))
 
       // The sessions moved with the directory; the tabs, cached tails and
       // remembered ids keyed by the old name must follow, or every open
       // dials a backend that no longer exists (#111868).
       if (!isDefault && local) {
         migrateTilesForProfile(currentName, trimmed)
-      } else if (!isDefault && scope && typeof scope === 'object') {
-        migrateAgentSidebarPreferences({ connectionId: scope.connectionId ?? null, profile: currentName }, trimmed)
+      } else if (!isDefault && owner) {
+        migrateAgentSidebarPreferences({ connectionId: owner.connectionId, profile: currentName }, trimmed)
       }
 
       await onRenamed?.(trimmed)

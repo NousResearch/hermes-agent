@@ -40,16 +40,22 @@ import {
 } from '@/store/session-states'
 import { sameSessionOwner } from '@/store/session-tile-identity'
 import { forgetSessionUnread } from '@/store/session-unread'
-import { $deleteKeepsNotifications } from '@/store/shell-policy'
+import { $deleteKeepsNotifications, $sessionListSpansProfiles } from '@/store/shell-policy'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
-import { dropTranscriptTail } from '@/store/transcript-tail-cache'
+import { dropTranscriptTail, dropTranscriptTailEverywhere } from '@/store/transcript-tail-cache'
 import type { SessionInfo } from '@/types/hermes'
 
 import { resumeRouteStillCurrent } from '../session-context-drift'
 
-import { listedSliceTarget } from './utils'
+import {
+  dropListedSession,
+  findListedSession,
+  type ListedSessionSlice,
+  listedSliceTarget,
+  restoreListedSession
+} from './utils'
 
 const listedStores = { sessions: $sessions, messaging: $messagingSessions, cron: $cronSessions }
 
@@ -60,8 +66,50 @@ export function clearNotificationsForDeletion(): void {
   }
 }
 
+type ListedSession = { session: SessionInfo; slice: ListedSessionSlice } | undefined
+
+interface DeletionCleanup {
+  storedSessionId: string
+  removedIds: Array<string | null | undefined>
+  mutationIds: Array<string | null | undefined>
+  closingRuntimeId: string | null
+  mappedRuntimeId: string | undefined
+  runtimeByStoredId: Map<string, string>
+  statesByRuntimeId: Map<string, ClientSessionState>
+}
+
+interface SessionRemoval {
+  removedIds: Array<string | null | undefined>
+  mutationIds: Array<string | null | undefined>
+  /** Puts the evicted rows back; returns the row whose usage a restored selection re-applies. */
+  rollback: () => SessionInfo | undefined
+}
+
+export interface SessionDeletion {
+  canClearId: (id: string) => boolean
+  ownsRuntime: (runtimeId: string | null | undefined, storedId: string) => boolean
+  removeRows: (storedSessionId: string, removed: SessionInfo | undefined) => SessionRemoval
+  cleanup: (args: DeletionCleanup) => void
+}
+
+interface SessionDeletionPolicy {
+  row: (storedId: string, explicit: SessionInfo | undefined, listed: SessionInfo | undefined) => SessionInfo | undefined
+  route: (removed: SessionInfo | undefined, profile: string | undefined) => SessionOwnerScope
+  owner: (
+    owner: SessionOwnerScope,
+    profile: string | undefined,
+    listed: ListedSession,
+    runtimeIdsForStoredId: (id: string) => Array<string | null | undefined>
+  ) => SessionDeletion
+  captureDraft: (
+    getRouteToken: () => string,
+    selectedId: MutableRefObject<string | null>,
+    activeId: MutableRefObject<string | null>
+  ) => () => boolean
+}
+
 /** A failed deletion may restore only the draft it opened, not newer navigation. */
-export function captureDeletionDraft(
+function captureDeletionDraft(
   getRouteToken: () => string,
   selectedId: MutableRefObject<string | null>,
   activeId: MutableRefObject<string | null>
@@ -93,8 +141,8 @@ function projectRows(): SessionInfo[] {
     ])
 }
 
-/** Classic project rows retain profile-door shape; deletion needs their captured source. */
-export function sessionDeletionRow(
+/** Project rows retain profile-door shape; deletion needs their captured source. */
+function ownerScopedDeletionRow(
   storedId: string,
   explicit: SessionInfo | undefined,
   listed: SessionInfo | undefined
@@ -125,10 +173,10 @@ function ownerRows(): SessionInfo[] {
 /** ID-only caches cannot distinguish twins. Preserve their shared slot whenever
  * another owner claims it; owner-tagged rows and transcript tails can be evicted
  * exactly. Re-read claims after awaits so a newly selected twin survives too. */
-export function sessionDeletionOwner(
+function ownerScopedDeletion(
   owner: SessionOwnerScope,
   runtimeIdsForStoredId: (id: string) => Array<string | null | undefined>
-) {
+): SessionDeletion {
   const rowsAtStart = ownerRows()
   const tilesAtStart = $sessionTiles.get()
   const conflicts = (candidate: SessionOwnerScope) => Boolean(candidate && !sameSessionOwner(owner, candidate))
@@ -182,7 +230,7 @@ export function sessionDeletionOwner(
     return candidate ? sameSessionOwner(owner, candidate) : canClearId(storedId)
   }
 
-  const removeRows = (storedSessionId: string, removed: SessionInfo | undefined) => {
+  const removeRows = (storedSessionId: string, removed: SessionInfo | undefined): SessionRemoval => {
     const matchesRemoved = (row: SessionInfo) => sessionMatchesStoredId(row, storedSessionId) && ownsRow(row)
     const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
     const mutationIds = removedIds.filter((id): id is string => Boolean(id && canClearId(id)))
@@ -224,6 +272,9 @@ export function sessionDeletionOwner(
 
       untombstoneSessions(mutationIds)
       $pinnedSessionIds.set([...new Set([...$pinnedSessionIds.get(), ...removedPins.filter(canClearId)])])
+
+      // The listed lookup may now resolve a surviving twin; usage belongs to the deleted row.
+      return removed
     }
 
     return { removedIds, mutationIds, rollback }
@@ -237,16 +288,12 @@ export function sessionDeletionOwner(
     mappedRuntimeId,
     runtimeByStoredId,
     statesByRuntimeId
-  }: {
-    storedSessionId: string
-    removedIds: Array<string | null | undefined>
-    mutationIds: string[]
-    closingRuntimeId: string | null
-    mappedRuntimeId: string | undefined
-    runtimeByStoredId: Map<string, string>
-    statesByRuntimeId: Map<string, ClientSessionState>
-  }): void => {
-    if (owner || canClearId(storedSessionId)) {
+  }: DeletionCleanup): void => {
+    // With no twin claiming the id, sweep every scope (#94914: the save-path and delete-path
+    // scopes derive from different sources); a twin keeps its own tail.
+    if (canClearId(storedSessionId)) {
+      dropTranscriptTailEverywhere(storedSessionId)
+    } else if (owner) {
       dropTranscriptTail(storedSessionId, profileScopeForSessionOwner(owner))
     }
 
@@ -256,7 +303,7 @@ export function sessionDeletionOwner(
       Boolean(id && ownsRuntime(id, storedSessionId) && canClearId(id))
     )
 
-    untombstoneSessions(mutationIds.filter(id => !canClearId(id)))
+    untombstoneSessions(mutationIds.filter(id => id && !canClearId(id)))
 
     if (cleanupIds.length !== removedIds.filter(Boolean).length) {
       // A global tombstone would hide the surviving twin. Refresh the tree
@@ -307,4 +354,126 @@ export function sessionDeletionOwner(
   }
 
   return { canClearId, cleanup, ownsRuntime, removeRows }
+}
+
+/** Main's delete: the list shows one profile, so a stored id names one session and every
+ *  id-keyed cache for it goes. */
+function idScopedDeletion(profile: string | undefined, listed: ListedSession): SessionDeletion {
+  const removeRows = (storedSessionId: string, removed: SessionInfo | undefined): SessionRemoval => {
+    const previousPinned = $pinnedSessionIds.get()
+    const previousArchived = $archivedSessions.get()
+    // Pins are keyed on the durable lineage-root id; the stored id may be the
+    // live tip after compression. Drop both so the pin can't linger.
+    const removedPinId = removed ? sessionPinId(removed) : storedSessionId
+    const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
+
+    dropListedSession(storedSessionId)
+    $archivedSessions.set(previousArchived.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+    // Evict from the project tree's optimistic layer too (the backend snapshot
+    // still lists it until its next refresh), so grouped + flat views drop the
+    // row in lockstep. Pin the tombstone against the projects.tree prune while
+    // the delete RPC is in flight, so a racing refresh can't flash it back.
+    tombstoneSessions(removedIds)
+    beginSessionMutation(removedIds)
+    $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
+
+    const rollback = () => {
+      if (listed) {
+        restoreListedSession(listed.session, listed.slice)
+      }
+
+      // Restore the archived-view row too (no-op when it wasn't archived).
+      $archivedSessions.set(previousArchived)
+
+      untombstoneSessions(removedIds)
+      $pinnedSessionIds.set(previousPinned)
+
+      return findListedSession(storedSessionId)?.session
+    }
+
+    return { removedIds, mutationIds: removedIds, rollback }
+  }
+
+  const cleanup = ({
+    storedSessionId,
+    removedIds,
+    closingRuntimeId,
+    runtimeByStoredId,
+    statesByRuntimeId
+  }: DeletionCleanup): void => {
+    dropTranscriptTailEverywhere(storedSessionId)
+    // Only after the RPC lands — the optimistic eviction above can roll
+    // back, and a rolled-back row must keep its watermark/marker.
+    forgetSessionUnread(removedIds, profile)
+    clearQueuedPrompts(storedSessionId)
+    // The journaled in-flight tail holds this session's prompt and tool
+    // calls in localStorage; a deleted session must not leave that copy
+    // behind to age out on its own. Purge after the RPC lands (same
+    // rollback argument as the unread watermark above), passing every id
+    // the delete holds: the stored tip, the row id, the lineage root, and
+    // the closing runtime id — the journal keys on the stored id.
+    purgeInFlightTurnJournals([...removedIds, closingRuntimeId])
+
+    // Preview tabs are session-owned: drop them with the session (pinned
+    // tabs survive — they belong to the workspace, not the session).
+    for (const id of removedIds) {
+      if (id) {
+        prunePreviewTabsForSession(id)
+      }
+    }
+
+    if (closingRuntimeId) {
+      clearQueuedPrompts(closingRuntimeId)
+      clearSessionControl(closingRuntimeId)
+    }
+
+    // A tiled copy of this session must not outlive it: collapse the pane
+    // and evict its mirrored runtime state so nothing submits to (or renders)
+    // a deleted session.
+    const tiledRuntimeId = runtimeByStoredId.get(storedSessionId)
+    closeSessionTile(storedSessionId)
+
+    if (tiledRuntimeId) {
+      runtimeByStoredId.delete(storedSessionId)
+      statesByRuntimeId.delete(tiledRuntimeId)
+      dropSessionState(tiledRuntimeId)
+    }
+
+    // Live per-session stores (the same four the stop paths clear) key on
+    // the gateway event's session_id, i.e. the runtime id. When the deleted
+    // row is selected, closingRuntimeId is the foreground runtime, which can
+    // differ from the stored→runtime mapping (cached/tiled runtime), so
+    // clear the stored id and both runtime ids — once per distinct id.
+    for (const sid of new Set([storedSessionId, closingRuntimeId, tiledRuntimeId].filter(Boolean) as string[])) {
+      clearSessionSubagents(sid)
+      clearSessionTodos(sid)
+      clearSessionGoal(sid)
+      resetSessionBackground(sid)
+    }
+  }
+
+  return { canClearId: () => true, cleanup, ownsRuntime: () => true, removeRows }
+}
+
+const idScopedPolicy: SessionDeletionPolicy = {
+  row: (storedId, _explicit, listed) =>
+    listed ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedId)),
+  route: (removed, profile) =>
+    removed?.connection_id ? { connectionId: removed.connection_id, profile: removed.profile || 'default' } : profile,
+  owner: (_owner, profile, listed) => idScopedDeletion(profile, listed),
+  captureDraft: () => () => true
+}
+
+const ownerScopedPolicy: SessionDeletionPolicy = {
+  row: ownerScopedDeletionRow,
+  route: (removed, profile) => sessionOwnerRouteFromRow(removed) ?? profile,
+  owner: (owner, _profile, _listed, runtimeIdsForStoredId) => ownerScopedDeletion(owner, runtimeIdsForStoredId),
+  captureDraft: captureDeletionDraft
+}
+
+/** Read once per delete so a mid-delete shell flip cannot mix the two strategies. When the list
+ *  spans profiles the same stored id can be twins in two owners, so only the deleted owner's
+ *  rows and caches go; classic deletes by id exactly as main does. */
+export function sessionDeletionPolicy(): SessionDeletionPolicy {
+  return $sessionListSpansProfiles.get() ? ownerScopedPolicy : idScopedPolicy
 }

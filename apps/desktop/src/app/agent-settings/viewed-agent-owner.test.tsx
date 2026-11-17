@@ -14,7 +14,12 @@ import { $settingsScopeOverride } from '@/store/settings-scope'
 import { $shellChoice } from '@/store/shell-variant'
 import type { ProfileInfo } from '@/types/hermes'
 
+import { routinesCopy } from '../routines/routines-copy'
+import { closeRoutineEditor } from '../routines/routines-store'
+
 import { SettingsView } from './entry'
+
+const routines = routinesCopy('en')
 
 // The window is on `default`; the page shows `research`, another agent on the SAME machine. Every
 // request below must name research, and nothing the window is on may move.
@@ -186,6 +191,7 @@ afterEach(() => {
   $settingsScopeOverride.set(null)
   $shellChoice.set(false)
   setGatewayState('idle')
+  closeRoutineEditor()
 })
 
 function mount(search: string, connection = OWNER.connectionId) {
@@ -226,7 +232,12 @@ const write = (method: string, path: string) =>
   waitFor(() => {
     const found = restCalls().find(request => request.method === method && request.path.split('?')[0] === path)
 
-    expect(found, restCalls().map(request => `${request.method ?? 'GET'} ${request.path}`).join(', ')).toBeDefined()
+    expect(
+      found,
+      restCalls()
+        .map(request => `${request.method ?? 'GET'} ${request.path}`)
+        .join(', ')
+    ).toBeDefined()
 
     return found!
   })
@@ -236,18 +247,24 @@ it('shows another agent on this machine without opening it, and saves a routine 
   await screen.findByText('Owner instructions')
   expect(await screen.findByText('Research notes')).toBeTruthy()
 
-  fireEvent.click(screen.getByRole('button', { name: en.cron.newCron }))
-  fireEvent.change(screen.getByPlaceholderText('0 9 * * *'), { target: { value: '0 9 * * *' } })
-  fireEvent.change(screen.getByLabelText(en.cron.promptLabel), { target: { value: 'Review notes' } })
-  fireEvent.click(screen.getByRole('button', { name: en.common.save }))
-  await write('POST', '/api/cron/jobs')
-
   for (const path of ['/api/config', '/api/skills', '/api/tools/toolsets', '/api/profiles/research/soul']) {
     expect(restCalls().some(request => request.path === path)).toBe(true)
   }
 
   expect(vi.mocked(requestGatewayForAgent).mock.calls.some(([, , method]) => method === 'connectors.list')).toBe(true)
   expectOwnerOnly()
+
+  // The Overview's New routine is the one routine editor Settings › Routines opens, writing to the owner.
+  fireEvent.click(screen.getByRole('button', { name: en.cron.newCron }))
+  fireEvent.click(await screen.findByRole('button', { name: routines.startBlank }))
+  fireEvent.change(await screen.findByLabelText(routines.name), { target: { value: 'Review' } })
+  fireEvent.change(screen.getByLabelText(routines.instruction), { target: { value: 'Review notes' } })
+  fireEvent.click(screen.getByRole('button', { name: en.cron.createAction }))
+  const created = await write('POST', '/api/cron/jobs')
+
+  expect({ connectionId: created.connectionId, profile: created.profile }).toEqual(OWNER)
+  expect(created.body).toMatchObject({ name: 'Review', prompt: 'Review notes' })
+  expect($activeGatewayProfile.get()).toBe(AMBIENT.profile)
 })
 
 it('reads and edits the viewed agent history while another agent is active', async () => {

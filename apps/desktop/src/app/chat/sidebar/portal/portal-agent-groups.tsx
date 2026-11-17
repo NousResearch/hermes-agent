@@ -24,8 +24,7 @@ import { useHiddenAgentCopy } from '../hidden-agent-copy'
 import { SimplifiedBotChatRow } from '../simplified-bot-chat-row'
 import { SimplifiedGatewayHeader } from '../simplified-gateway-header'
 import { startSimplifiedAgentSession } from '../simplified-new-session-model'
-import { useAgentSidebarAttention } from '../use-agent-sidebar-attention'
-import type { SimplifiedAgent, useSimplifiedAgents } from '../use-simplified-agents'
+import { agentKey, type SimplifiedAgent, type useSimplifiedAgents } from '../use-simplified-agents'
 
 import { PortalAgentMenu } from './portal-agent-menu'
 import { PortalHiddenAgents } from './portal-hidden-agents'
@@ -47,14 +46,13 @@ interface AgentCardProps extends Pick<PortalAgentGroupsProps, 'onToggle' | 'onOp
   agent: SimplifiedAgent
   selected: boolean
   open: boolean
+  /** A search holds the card open: its disclosure stands down and records nothing. */
+  forcedOpen: boolean
   hidden: boolean
   /** How many of the agent's chats the list holds: the card's second line when no description. */
   chatCount: number
   children: ReactNode
 }
-
-const agentKey = (agent: SimplifiedAgent) =>
-  agentSidebarKey({ connectionId: agent.connectionId, profile: agent.targetProfile || agent.profile })
 
 /** An agent block inside its machine (1250:37611): colour tile, name over a second line, then the
  *  menu and a new chat (hover/focus affordances) and the disclosure, with its chats underneath. */
@@ -62,6 +60,7 @@ function AgentCard({
   agent,
   selected,
   open,
+  forcedOpen,
   hidden,
   chatCount,
   onToggle,
@@ -108,6 +107,7 @@ function AgentCard({
               aria-expanded={open}
               aria-label={toggleLabel}
               className="portal-agent-collapse"
+              disabled={forcedOpen}
               onClick={() => {
                 recordIaAction(open ? 'ia.section.agent_collapsed' : 'ia.section.agent_expanded')
                 onToggle(agentKey(agent), open)
@@ -139,8 +139,8 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
   const focused = useStore($focusedStoredSessionId)
   const tiles = useStore($sessionTiles)
   const { agents, sessionsByAgent, owner } = props.agents
-  const attention = useAgentSidebarAttention(agents, props.allSessions)
   const query = props.query.trim().toLowerCase()
+  const chatsOf = (agent: SimplifiedAgent) => sessionsByAgent.get(agentKey(agent)) ?? []
 
   const viewedOwner = focused
     ? (tileOwnerRoute(tiles, props.allSessions, focused) ?? knownSessionOwner(props.allSessions, focused))
@@ -161,7 +161,7 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
 
   for (const agent of agents) {
     const group = groups.get(agent.connectionId) ?? []
-    const matches = (sessionsByAgent.get(agent.id)?.length ?? 0) > 0 || agent.label.toLowerCase().includes(query)
+    const matches = chatsOf(agent).length > 0 || agent.label.toLowerCase().includes(query)
 
     if (query ? matches : !isHidden(agent)) {
       group.push(agent)
@@ -188,7 +188,7 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
               <SimplifiedGatewayHeader
                 connectionId={connectionId}
                 label={label}
-                onToggle={() => props.onToggle(gatewayId, open)}
+                onToggle={query ? undefined : () => props.onToggle(gatewayId, open)}
                 open={open}
                 selected={selected}
               />
@@ -197,7 +197,8 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                   {group.map(agent => (
                     <AgentCard
                       agent={agent}
-                      chatCount={sessionsByAgent.get(agent.id)?.length ?? 0}
+                      chatCount={chatsOf(agent).length}
+                      forcedOpen={Boolean(query)}
                       hidden={isHidden(agent)}
                       key={agent.id}
                       onOpenAgent={props.onOpenAgent}
@@ -206,7 +207,7 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
                       pending={props.pending}
                       selected={agentKey(agent) === activeAgentKey}
                     >
-                      {props.renderSessions(sessionsByAgent.get(agent.id) ?? [], agent)}
+                      {props.renderSessions(chatsOf(agent), agent)}
                     </AgentCard>
                   ))}
                 </div>
@@ -215,8 +216,14 @@ export function PortalAgentGroups(props: PortalAgentGroupsProps) {
           )
         })}
       </FadeScroll>
-      {!query && (
-        <PortalHiddenAgents agents={hiddenAgents} attention={attention} onResumeSession={props.onResumeSession} />
+      {/* Attention is read only here, and only while some agent is hidden. */}
+      {!query && hiddenAgents.length > 0 && (
+        <PortalHiddenAgents
+          agents={hiddenAgents}
+          allAgents={agents}
+          allSessions={props.allSessions}
+          onResumeSession={props.onResumeSession}
+        />
       )}
     </>
   )

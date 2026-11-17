@@ -1,7 +1,7 @@
 import './chat-items.css'
 
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import type { ArtifactRecord as IndexedItem } from '@/app/artifacts/artifact-utils'
@@ -25,7 +25,6 @@ import { PageTabs } from '../../redesign/page-header'
 import { CRON_ROUTE } from '../../routes'
 import { routineNeedsAttention, routineTitle } from '../../routines/routine-model'
 import { describeSchedule } from '../../routines/routine-schedule'
-import { useAgentRoutines } from '../../routines/routines-by-agent'
 import { useRoutinesCopy } from '../../routines/routines-copy'
 import { selectRoutine } from '../../routines/routines-store'
 import { useChatOwner } from '../use-chat-owner'
@@ -189,7 +188,6 @@ function Section({ children, count, label, onSeeAll }: SectionProps) {
 
 interface ListProps {
   items: ChatItems
-  routines: readonly CronJob[]
   tab: ChatItemsTab
   simple: boolean
   copy: ChatItemsCopy
@@ -198,8 +196,9 @@ interface ListProps {
 }
 
 /** The sections a tab shows: All's short ones (or simple mode's whole list), or one kind. */
-function ItemSections({ copy, items, onOpenArtifact, onTab, routines, simple, tab }: ListProps) {
+function ItemSections({ copy, items, onOpenArtifact, onTab, simple, tab }: ListProps) {
   const { t } = useI18n()
+  const { routines } = items
   const cap = (rows: number) => (tab === 'all' && !simple ? SECTION_ROWS : rows)
   const seeAll = (next: ChatItemsTab) => (tab === 'all' && !simple ? () => onTab(next) : undefined)
 
@@ -266,20 +265,20 @@ function EmptyItems({ copy, sessionId }: { copy: ChatItemsCopy; sessionId: null 
  *  inside the pane (05 "Item from list"); a file opens in the preview, a link through the app's link
  *  rules. Only what the transcript and the item index really hold is shown. */
 export function ChatItemsPane() {
+  const sessionId = useStore($focusedStoredSessionId)
+
+  // Keyed by the chat: another chat starts on All with nothing open, from its first frame.
+  return <ChatItemsPaneBody key={sessionId ?? ''} sessionId={sessionId} />
+}
+
+function ChatItemsPaneBody({ sessionId }: { sessionId: null | string }) {
   const copy = useChatItemsCopy()
   const advanced = useStore($showsAdvancedChrome)
-  const sessionId = useStore($focusedStoredSessionId)
   const owner = useChatOwner(sessionId)
   const items = useChatItems(sessionId, owner)
-  const routines = useAgentRoutines(owner)
   const { t } = useI18n()
   const [tab, setTab] = useState<ChatItemsTab>('all')
   const [opened, setOpened] = useState<ArtifactRecord | null>(null)
-
-  useEffect(() => {
-    setOpened(null)
-    setTab('all')
-  }, [sessionId])
 
   const title = items.chat?.title || owner.row?.title || ''
 
@@ -298,8 +297,8 @@ export function ChatItemsPane() {
   }
 
   const counts: Record<ChatItemsTab, number> = {
-    all: items.total + routines.length,
-    routines: routines.length,
+    all: items.total,
+    routines: items.routines.length,
     artifacts: items.artifacts.length,
     files: items.files.length,
     web: items.links.length
@@ -342,7 +341,6 @@ export function ChatItemsPane() {
             items={items}
             onOpenArtifact={setOpened}
             onTab={setTab}
-            routines={routines}
             simple={!advanced}
             tab={tab}
           />

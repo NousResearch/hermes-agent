@@ -22,7 +22,7 @@ GUARD = _load()
 GATED = ":root[data-shell='portal'] .x {{ {} }}"
 
 
-def _kinds(css: str, rel: str = "app/chat/stage.css") -> list[str]:
+def _kinds(css: str, rel: str = "components/chat/status-stack.css") -> list[str]:
     return [f.kind for f in GUARD.file_findings(rel, css)]
 
 
@@ -74,9 +74,17 @@ def test_token_reads_and_neutral_keywords_pass(decl):
 
 def test_classic_rules_are_not_judged_but_redesign_only_files_are_judged_whole():
     classic = ".card { border-radius: 6px; color: #fff; }"
-    assert _kinds(classic, "app/chat/stage.css") == []
+    assert _kinds(classic, "components/chat/status-stack.css") == []
     assert _kinds(":root.dark .card { border-radius: 6px; }", "components/ui/button.css") == []
     assert sorted(_kinds(classic, "app/chat/sidebar/portal/portal-sidebar.css")) == ["radius", "raw-color"]
+
+
+@pytest.mark.parametrize(
+    "rel",
+    ["app/messaging/messaging.css", "app/library/library.css", "app/page-search-shell.css", "app/chat/items/chat-items.css"],
+)
+def test_stylesheets_only_the_redesign_renders_are_judged_whole(rel):
+    assert _kinds(".row { font-size: 0.8125rem; }", rel) == ["font-size"]
 
 
 def test_the_tokens_folder_is_where_values_live():
@@ -101,7 +109,7 @@ def test_token_exempt_marks_one_declaration_or_a_whole_rule():
 
 def test_nested_at_rules_keep_the_gate_and_report_their_line():
     css = "@media (min-width: 40rem) {\n  :root[data-shell='portal'] .x {\n    color: #000;\n  }\n}\n"
-    [finding] = GUARD.file_findings("app/chat/stage.css", css)
+    [finding] = GUARD.file_findings("components/chat/status-stack.css", css)
     assert (finding.kind, finding.line) == ("raw-color", 3)
 
 
@@ -121,6 +129,37 @@ def test_undefined_portal_references_are_found_across_css_and_tsx(tmp_path):
     defined, refs = GUARD.references(tmp_path)
     missing = sorted(name for name in refs if name not in defined)
     assert missing == ["--portal-nope", "--portal-radius-crad"]
+
+
+def test_comments_neither_define_nor_read_a_token(tmp_path):
+    (tmp_path / "a.css").write_text(
+        "/* var(--portal-gone) was renamed */\n.x { width: var(--portal-sheet-width); height: var(--portal-tile); }"
+    )
+    (tmp_path / "b.ts").write_text(
+        "// Writes --portal-sheet-width for the sheet (see `--portal-tile`).\n"
+        "/* --portal-tile: 2rem */\n"
+        "const url = 'https://example.com//--portal-x'\n"
+        "root.style.setProperty('--portal-band-start', `${start}px`)\n"
+    )
+    (tmp_path / "c.tsx").write_text(
+        "export const C = () => <div style={{ '--portal-tile': '2rem' }} className='[--portal-pane:1px]' />\n"
+        "const css = `:root { --portal-skin: ${x}; }` // --portal-sheet-width: 1px\n"
+    )
+    defined, refs = GUARD.references(tmp_path)
+    assert {"--portal-band-start", "--portal-tile", "--portal-pane", "--portal-skin"} <= defined
+    assert "--portal-sheet-width" not in defined
+    assert sorted(refs) == ["--portal-sheet-width", "--portal-tile"]
+
+
+def test_strip_comments_keeps_line_numbers_and_strings():
+    ts = "a('//x') // gone\nb(`${c /* gone */}//y`)\n/* gone\n */ d"
+    blank = " " * len("/* gone */")
+    assert GUARD.strip_comments(ts, script=True).split("\n") == [
+        "a('//x') " + " " * len("// gone"),
+        "b(`${c " + blank + "}//y`)",
+        " " * len("/* gone"),
+        "    d",
+    ]
 
 
 def test_only_the_page_stage_contract_lays_the_page_column(tmp_path):
@@ -147,6 +186,23 @@ def test_docs_tables_list_dark_and_light_values_per_token(tmp_path):
     assert "| `--portal-radius-card` | `4px` | ″ | Cards, tables, menus. |" in docs
     assert "| `--portal-shadow-floating` | `0 8px 24px var(--portal-raw-shadow-50)` | `none` |" in docs
     assert GUARD.docs_block(f"intro\n{docs}\noutro") == docs
+
+
+def test_docs_read_base_values_from_root_blocks_and_note_conditional_overrides(tmp_path):
+    (tmp_path / "space.css").write_text(
+        ":root[data-shell='portal'] {\n  /* Page inset. */\n  --page-content-inset: 1.5rem;\n"
+        "  --portal-sidebar-action: var(--portal-raw-ink-2);\n}\n"
+        "@media (max-width: 639.98px) {\n  :root[data-shell='portal'] {\n    --page-content-inset: 1rem;\n  }\n}\n"
+        "@media (hover: none) {\n  html[data-host='browser'][data-shell='portal'] {\n"
+        "    --page-content-inset: 2.75rem;\n  }\n}\n"
+        ":root.dark[data-shell='portal'] {\n  --portal-sidebar-action: var(--portal-raw-ink-5);\n}\n"
+    )
+    docs = GUARD.render_docs(tmp_path)
+    assert (
+        "| `--page-content-inset` | `1.5rem` | ″ | Page inset. `(max-width: 639.98px)`: `1rem`; "
+        "`(hover: none)` on `html[data-host='browser'][data-shell='portal']`: `2.75rem`. |"
+    ) in docs
+    assert "| `--portal-sidebar-action` | `var(--portal-raw-ink-5)` | `var(--portal-raw-ink-2)` |  |" in docs
 
 
 def test_a_tree_without_the_tokens_folder_has_nothing_to_judge(tmp_path, monkeypatch, capsys):

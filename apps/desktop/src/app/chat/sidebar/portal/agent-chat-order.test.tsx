@@ -18,6 +18,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId, $sessions } from '@/store/session'
 import { makeSessionInfo } from '@/test/session-info'
 
+import { sessionRowKey } from '../simplified-session-identity'
 import { SimplifiedSessionList } from '../simplified-session-list'
 
 import { arrangeAgentChats, orderAgentChats } from './agent-chat-order'
@@ -37,7 +38,15 @@ const chat = (index: number, lastActive: number) =>
 const chats: SessionInfo[] = [chat(0, 400), chat(1, 300), chat(2, 200), chat(3, 100)]
 const ids = (rows: SessionInfo[]) => rows.map(row => row.id)
 
-function List({ onReorder, searching = false }: { onReorder: (rows: SessionInfo[]) => void; searching?: boolean }) {
+function List({
+  onReorder,
+  pinnedIds = new Set(),
+  searching = false
+}: {
+  onReorder: (rows: SessionInfo[]) => void
+  pinnedIds?: ReadonlySet<string>
+  searching?: boolean
+}) {
   return (
     <MemoryRouter>
       <StableNavigateProvider>
@@ -52,7 +61,7 @@ function List({ onReorder, searching = false }: { onReorder: (rows: SessionInfo[
             onReorder={onReorder}
             onResumeSession={noop}
             onUpdate={noop}
-            pinnedIds={new Set()}
+            pinnedIds={pinnedIds}
             searching={searching}
             sessions={chats}
           />
@@ -117,6 +126,19 @@ describe('reordering a chat list', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Chat 0' }), { key: 'ArrowDown' })
 
     expect(onReorder).not.toHaveBeenCalled()
+  })
+
+  it('keeps a move inside its pinned or unpinned run, so the pinned-first order never undoes it', () => {
+    const onReorder = vi.fn()
+
+    // chat-2 is pinned: it leads the list, then chat-0 and chat-1 (chat-3 is past the cap).
+    render(<List onReorder={onReorder} pinnedIds={new Set([sessionRowKey(chats[2])])} />)
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Chat 0' }), { altKey: true, key: 'ArrowUp' })
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Chat 2' }), { altKey: true, key: 'ArrowDown' })
+    expect(onReorder).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Chat 1' }), { altKey: true, key: 'ArrowUp' })
+    expect(ids(onReorder.mock.calls[0][0])).toEqual(['chat-2', 'chat-1', 'chat-0', 'chat-3'])
   })
 
   it('never rearranges a search result', () => {

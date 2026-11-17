@@ -7,16 +7,13 @@ import { Codicon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
 import { $activeConnectionId } from '@/store/connections'
-import { refreshFleetRoster } from '@/store/fleet-roster'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $newAgentRequest, hostNewAgentRequests } from '@/store/new-agent-request'
-import { notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, $profiles, refreshProfiles } from '@/store/profile'
-import type { ProfileInfo } from '@/types/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
 
-import { CreateProfileDialog } from '../profiles/create-profile-dialog'
-
+import { useAgentDialogs } from './agent-dialogs'
 import type { AgentSettingsOwner } from './data'
+import { agentMachine } from './landing'
 
 interface NewAgentButtonProps {
   owner?: AgentSettingsOwner
@@ -26,19 +23,20 @@ interface NewAgentButtonProps {
 
 export function NewAgentButton({ owner, row = false }: NewAgentButtonProps) {
   const { t } = useI18n()
-  const [target, setTarget] = useState<{ owner: AgentSettingsOwner; profiles: ProfileInfo[] } | null>(null)
+  const { open: openDialog, dialogs } = useAgentDialogs()
   const [host] = useState(() => Symbol('new-agent'))
   const request = useStore($newAgentRequest)
   const shortcut = bindingsFor('agents.new', useStore($bindings))[0]
 
   const open = () =>
-    setTarget({
+    openDialog({
+      kind: 'create',
       owner: {
-        connectionId:
-          owner?.connectionId ?? $apiRequestScope.get().connectionId ?? $activeConnectionId.get() ?? 'local',
+        connectionId: agentMachine(
+          owner?.connectionId ?? $apiRequestScope.get().connectionId ?? $activeConnectionId.get()
+        ),
         profile: owner?.profile ?? $activeGatewayProfile.get()
-      },
-      profiles: $profiles.get()
+      }
     })
 
   useEffect(() => hostNewAgentRequests(host), [host])
@@ -66,24 +64,7 @@ export function NewAgentButton({ owner, row = false }: NewAgentButtonProps) {
         {row ? <span className="new-agent-row-label">{t.profiles.newProfile}</span> : t.profiles.newProfile}
         {row && shortcut && <KbdCombo aria-hidden className="portal-kbd" combo={shortcut} size="sm" />}
       </Button>
-      {target && (
-        <CreateProfileDialog
-          onClose={() => setTarget(null)}
-          onCreated={async () => {
-            if (
-              ($apiRequestScope.get().connectionId ?? $activeConnectionId.get() ?? 'local') ===
-              target.owner.connectionId
-            ) {
-              await refreshProfiles().catch(error => notifyError(error, t.profiles.failedLoad))
-            }
-
-            await refreshFleetRoster({ force: true })
-          }}
-          open
-          profiles={target.profiles}
-          scope={target.owner}
-        />
-      )}
+      {dialogs}
     </>
   )
 }

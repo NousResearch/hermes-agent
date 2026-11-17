@@ -3,8 +3,8 @@ delivery) is admitted into the OWNER's durable FIFO and runs after that turn, ex
 refused ``SESSION_NOT_OWNED``, nothing runs in the legacy backend, and the Desktop gets a queued
 receipt, then the owner's start and completion for that admission.
 
-Real: the SessionDB, the gateway turn's started admission (``admit_session_input`` +
-``claim_session_input``), the legacy ``prompt.submit`` and its ledger gate, and the owner
+Real: the store, the gateway turn's started admission (``admissions.admit`` +
+``admissions.claim``), the legacy ``prompt.submit`` and its ledger gate, and the owner
 (``SessionAuthority`` + ``AuthorityConnection``: attach, admission, claim stamp, settlement and
 publication). Replaced: only the owner's discovery and socket dial (``owner_forward.discover_owner`` /
 ``connect_owner``), by an in-process client speaking to the same ``AuthorityConnection``."""
@@ -14,12 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_state_runtime import (
-    admit_session_input, begin_runtime_epoch, claim_session_input, list_session_admissions,
-    recover_session_inputs, settle_session_input,
-)
+from persistence_assembly import open_persistence, profile_scope
 from tui_gateway import server
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.waiting import wait_until
 
 
@@ -62,7 +61,7 @@ def _legacy(monkeypatch, db):
 def _owner(monkeypatch, db, key, epoch):
     from gateway.session_authority import LiveSession, SessionAuthority
     authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="owned", instance_id="gateway",
-                                 db=db, epoch=epoch)
+                                 epoch=epoch, persistence=storage_handle(db.scope.profile_dir))
     authority.sessions[key] = LiveSession(SimpleNamespace(platform=None, user_id="desktop"), "route")
     monkeypatch.setattr(authority, "_schedule", lambda ref: None)  # the test drives the FIFO
     try:
@@ -80,16 +79,16 @@ def _owner(monkeypatch, db, key, epoch):
 
 
 def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(monkeypatch, tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, turns, emitted = _legacy(monkeypatch, db)
     try:
-        db.create_session(key, "test")
-        epoch = begin_runtime_epoch(db, instance_id="gateway")
+        seed_session(db, key, "test")
+        epoch = db.runtime.begin_epoch(instance_id="gateway")
         # The gateway is running a Bot Chat delivery on this session.
-        bot = admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
-                                  payload={"text": "a message_agent DM"})
-        claimed = claim_session_input(db, epoch=epoch, session_id=key)
-        assert claimed["admission_id"] == bot["admission_id"]
+        bot, _ = db.admissions.admit(epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+                                     payload={"text": "a message_agent DM"})
+        claimed = db.admissions.claim(epoch=epoch, session_id=key)
+        assert claimed.admission_id == bot.admission_id
         authority = _owner(monkeypatch, db, key, epoch)
 
         reply = server.handle_request({"id": "p", "method": "prompt.submit",
@@ -97,25 +96,26 @@ def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(mo
 
         assert "error" not in reply, reply  # main: 4090 SESSION_NOT_OWNED
         assert reply["result"]["status"] == "queued" and reply["result"]["forwarded"] is True
-        assert turns == [] and db.get_messages_as_conversation(key) == []  # nothing ran here
-        rows = list_session_admissions(db, session_id=key)
-        assert [(r["principal_id"], r["status"]) for r in rows] == [("bot", "started"), (rows[1]["principal_id"], "queued")]
+        assert turns == [] and conversation(db, key) == []  # nothing ran here
+        rows = db.admissions.list(session_id=key)
+        assert [(r.principal_id, r.status) for r in rows] == [("bot", "started"), (rows[1].principal_id, "queued")]
         mine = rows[1]
-        assert mine["admission_id"] == reply["result"]["admission_id"] and mine["payload"]["text"] == "my own question"
+        assert mine.admission_id == reply["result"]["admission_id"] and mine.payload["text"] == "my own question"
         # Queued, not a failed turn: the Desktop's pending-submission card, never an ``error``.
         wait_until(lambda: any(e == "session.info" for e, *_ in emitted), timeout=10)
         pending = next(p for e, _s, p in emitted if e == "session.info")["pending_submissions"]
-        assert pending == [{"admission_id": mine["admission_id"], "status": "queued", "user": "my own question",
-                            "input_id": mine["request_id"]}]
+        assert pending == [{"admission_id": mine.admission_id, "status": "queued", "user": "my own question",
+                            "input_id": mine.request_id}]
         assert not any(e == "error" for e, *_ in emitted)
 
         # The gateway turn ends; the owner's FIFO runs the prompt next, exactly once.
-        assert claim_session_input(db, epoch=epoch, session_id=key) is None  # behind the running turn
-        settle_session_input(db, epoch=epoch, admission_id=bot["admission_id"], generation=claimed["generation"],
+        assert db.admissions.claim(epoch=epoch, session_id=key) is None  # behind the running turn
+        db.admissions.settle(epoch=epoch, admission_id=bot.admission_id, generation=claimed.generation,
                              outcome="completed")
-        row = claim_session_input(db, epoch=epoch, session_id=key)
-        assert row["admission_id"] == mine["admission_id"]
-        assert claim_session_input(db, epoch=epoch, session_id=key) is None
+        from gateway.session_authority import admission_row
+        row = admission_row(db.admissions.claim(epoch=epoch, session_id=key))
+        assert row["admission_id"] == mine.admission_id
+        assert db.admissions.claim(epoch=epoch, session_id=key) is None
         from gateway.session_contract import SessionRef
         from gateway.session_settlement_recovery import commit_and_publish
         ref, live = SessionRef("owned", key), authority.sessions[key]
@@ -129,7 +129,7 @@ def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(mo
         assert relayed[0][0] == "message.start"
         assert relayed[-1] == ("message.complete", {"text": "THE ANSWER", "status": "complete"})
         assert [p["pending_submissions"] for e, _s, p in emitted if e == "session.info"][-1] == []
-        assert [r["status"] for r in list_session_admissions(db, session_id=key, pending_only=False)] == [
+        assert [r.status for r in db.admissions.list(session_id=key, pending_only=False)] == [
             "terminal", "terminal"]
     finally:
         server._sessions.pop(sid, None)
@@ -138,21 +138,21 @@ def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(mo
 
 def test_outcome_unknown_work_is_still_refused_and_never_forwarded(monkeypatch, tmp_path):
     """Only Discard resolves an ``unknown`` admission: a prompt is never queued past it."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, turns, _emitted = _legacy(monkeypatch, db)
     try:
-        db.create_session(key, "test")
-        first = begin_runtime_epoch(db, instance_id="gateway-1")
-        admit_session_input(db, epoch=first, principal_id="bot", session_id=key, request_id="dm-1",
+        seed_session(db, key, "test")
+        first = db.runtime.begin_epoch(instance_id="gateway-1")
+        db.admissions.admit(epoch=first, principal_id="bot", session_id=key, request_id="dm-1",
                             payload={"text": "lost?"})
-        claim_session_input(db, epoch=first, session_id=key)
-        epoch = begin_runtime_epoch(db, instance_id="gateway-2")
-        recover_session_inputs(db, epoch=epoch)
+        db.admissions.claim(epoch=first, session_id=key)
+        epoch = db.runtime.begin_epoch(instance_id="gateway-2")
+        db.admissions.recover(epoch=epoch)
         _owner(monkeypatch, db, key, epoch)
         reply = server.handle_request({"id": "p", "method": "prompt.submit",
                                        "params": {"session_id": sid, "text": "hi"}})
         assert reply["error"]["code"] == 4090 and reply["error"]["data"] == {"reason": "SESSION_NOT_OWNED"}
-        assert len(list_session_admissions(db, session_id=key)) == 1 and turns == []
+        assert len(db.admissions.list(session_id=key)) == 1 and turns == []
     finally:
         server._sessions.pop(sid, None)
         db.close()
@@ -183,14 +183,14 @@ def test_an_unconfirmed_forward_is_never_reported_as_not_sent(monkeypatch, tmp_p
     """The owner's receipt timed out but the relay keeps going, so the prompt may already sit in the
     owner's FIFO: the refusal says to check the chat, with a reason the client never offers Retry for
     (a retry would admit a second copy under a fresh submission id)."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, turns, _emitted = _legacy(monkeypatch, db)
     try:
-        db.create_session(key, "test")
-        epoch = begin_runtime_epoch(db, instance_id="gateway")
-        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+        seed_session(db, key, "test")
+        epoch = db.runtime.begin_epoch(instance_id="gateway")
+        db.admissions.admit(epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
                             payload={"text": "a DM"})
-        claim_session_input(db, epoch=epoch, session_id=key)
+        db.admissions.claim(epoch=epoch, session_id=key)
         _owner(monkeypatch, db, key, epoch)
         from tui_gateway import owner_forward
         monkeypatch.setattr(owner_forward, "ADMIT_TIMEOUT_S", 0)
@@ -226,14 +226,14 @@ def test_a_receipt_lost_after_the_owner_queued_it_is_unconfirmed_not_resendable(
     from websockets.asyncio.server import serve
     from tui_gateway import owner_forward
 
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, turns, _emitted = _legacy(monkeypatch, db)
     try:
-        db.create_session(key, "test")
-        epoch = begin_runtime_epoch(db, instance_id="gateway")
-        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+        seed_session(db, key, "test")
+        epoch = db.runtime.begin_epoch(instance_id="gateway")
+        db.admissions.admit(epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
                             payload={"text": "a DM"})
-        claim_session_input(db, epoch=epoch, session_id=key)
+        db.admissions.claim(epoch=epoch, session_id=key)
         authority = _owner(monkeypatch, db, key, epoch)
         seen = []
 
@@ -267,12 +267,12 @@ def test_a_receipt_lost_after_the_owner_queued_it_is_unconfirmed_not_resendable(
 
         reply = server.handle_request({"id": "p", "method": "prompt.submit",
                                        "params": {"session_id": sid, "text": "my question"}})
-        mine = [row for row in list_session_admissions(db, session_id=key)
-                if row["payload"].get("text") == "my question"]
+        mine = [row for row in db.admissions.list(session_id=key)
+                if row.payload.get("text") == "my question"]
         assert seen == ["session.resume", "prompt.submit"] and len(mine) == 1  # the owner holds it
-        recover_session_inputs(db, epoch=begin_runtime_epoch(db, instance_id="gateway-2"))
-        after = {row["admission_id"]: row["status"] for row in list_session_admissions(db, session_id=key)}
-        assert after[mine[0]["admission_id"]] == "queued"  # it survives the restart and will run
+        db.admissions.recover(epoch=db.runtime.begin_epoch(instance_id="gateway-2"))
+        after = {row.admission_id: row.status for row in db.admissions.list(session_id=key)}
+        assert after[mine[0].admission_id] == "queued"  # it survives the restart and will run
         assert reply["error"]["code"] == 4090
         assert reply["error"]["data"] == {"reason": "SESSION_OWNER_UNCONFIRMED"}
         message = reply["error"]["message"]
@@ -289,14 +289,14 @@ def test_an_owner_error_after_its_commit_is_unconfirmed_not_resendable(monkeypat
     in the owner's FIFO and survives a restart, so "Nothing was sent. Send it again" would queue a
     second copy under a fresh submission id: only a refusal raised before the write may say so."""
     import sqlite3
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, turns, _emitted = _legacy(monkeypatch, db)
     try:
-        db.create_session(key, "test")
-        epoch = begin_runtime_epoch(db, instance_id="gateway")
-        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+        seed_session(db, key, "test")
+        epoch = db.runtime.begin_epoch(instance_id="gateway")
+        db.admissions.admit(epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
                             payload={"text": "a DM"})
-        claim_session_input(db, epoch=epoch, session_id=key)
+        db.admissions.claim(epoch=epoch, session_id=key)
         authority = _owner(monkeypatch, db, key, epoch)
         publish, failed = authority._publish_pending, []
 
@@ -309,12 +309,12 @@ def test_an_owner_error_after_its_commit_is_unconfirmed_not_resendable(monkeypat
 
         reply = server.handle_request({"id": "p", "method": "prompt.submit",
                                        "params": {"session_id": sid, "text": "my question"}})
-        mine = [row for row in list_session_admissions(db, session_id=key)
-                if row["payload"].get("text") == "my question"]
+        mine = [row for row in db.admissions.list(session_id=key)
+                if row.payload.get("text") == "my question"]
         assert failed and len(mine) == 1  # the owner holds it
-        recover_session_inputs(db, epoch=begin_runtime_epoch(db, instance_id="gateway-2"))
-        after = {row["admission_id"]: row["status"] for row in list_session_admissions(db, session_id=key)}
-        assert after[mine[0]["admission_id"]] == "queued"  # it survives the restart and will run
+        db.admissions.recover(epoch=db.runtime.begin_epoch(instance_id="gateway-2"))
+        after = {row.admission_id: row.status for row in db.admissions.list(session_id=key)}
+        assert after[mine[0].admission_id] == "queued"  # it survives the restart and will run
         assert reply["error"]["code"] == 4090
         assert reply["error"]["data"] == {"reason": "SESSION_OWNER_UNCONFIRMED"}
         message = reply["error"]["message"]
@@ -329,14 +329,14 @@ def test_an_owner_error_after_its_commit_is_unconfirmed_not_resendable(monkeypat
 def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatch, tmp_path, case):
     """Where admission is impossible the refusal names why and says to send when the turn ends,
     with a transient reason (not SESSION_NOT_OWNED, whose card offers a new chat)."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, turns, _emitted = _legacy(monkeypatch, db)
     try:
-        db.create_session(key, "test")
-        epoch = begin_runtime_epoch(db, instance_id="gateway")
-        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+        seed_session(db, key, "test")
+        epoch = db.runtime.begin_epoch(instance_id="gateway")
+        db.admissions.admit(epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
                             payload={"text": "a DM"})
-        claim_session_input(db, epoch=epoch, session_id=key)
+        db.admissions.claim(epoch=epoch, session_id=key)
         params = {"session_id": sid, "text": "hi"}
         _owner(monkeypatch, db, key, epoch)
         if case == "owner_refused":
@@ -349,8 +349,8 @@ def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatc
             monkeypatch.setattr(owner_forward, "connect_owner", refused)
         elif case == "owner_queue_full":
             # Sent, and refused by the owner's ledger inside its write: nothing was queued.
-            import hermes_state_runtime
-            monkeypatch.setattr(hermes_state_runtime, "ADMISSION_QUEUE_MAX", 0)
+            from persistence.sqlite.authority import _admission_store
+            monkeypatch.setattr(_admission_store, "ADMISSION_QUEUE_MAX", 0)
         else:
             params.update(truncate_before_user_ordinal=0, confirm_truncate=True)
         reply = server.handle_request({"id": "p", "method": "prompt.submit", "params": params})
@@ -359,7 +359,7 @@ def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatc
         assert "when the current turn ends" in message and "Nothing was sent" in message
         assert {"owner_refused": "another protocol", "owner_queue_full": "the gateway refused it",
                 "rewind": "rewind"}[case] in message
-        assert len(list_session_admissions(db, session_id=key)) == 1 and turns == []
+        assert len(db.admissions.list(session_id=key)) == 1 and turns == []
     finally:
         server._sessions.pop(sid, None)
         db.close()
@@ -368,14 +368,14 @@ def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatc
 def test_a_refused_image_send_does_not_wedge_later_text_sends(monkeypatch, tmp_path):
     """RT-37c live finding: an image send refused during a gateway turn left the image staged in the
     legacy session, so every later text-only send was refused as "a rewind or attachment" too."""
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = open_persistence(profile_scope(home=tmp_path))
     sid, key, turns, _emitted = _legacy(monkeypatch, db)
     try:
-        db.create_session(key, "test")
-        epoch = begin_runtime_epoch(db, instance_id="gateway")
-        first = admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
-                                    payload={"text": "a DM"})
-        claimed = claim_session_input(db, epoch=epoch, session_id=key)
+        seed_session(db, key, "test")
+        epoch = db.runtime.begin_epoch(instance_id="gateway")
+        first, _ = db.admissions.admit(epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+                                       payload={"text": "a DM"})
+        claimed = db.admissions.claim(epoch=epoch, session_id=key)
         _owner(monkeypatch, db, key, epoch)
         image = tmp_path / "red.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -388,11 +388,11 @@ def test_a_refused_image_send_does_not_wedge_later_text_sends(monkeypatch, tmp_p
         assert server._sessions[sid]["attached_images"] == []
 
         # The bot turn ends and the next one starts; the user types a plain follow-up.
-        settle_session_input(db, epoch=epoch, admission_id=first["admission_id"], generation=claimed["generation"],
+        db.admissions.settle(epoch=epoch, admission_id=first.admission_id, generation=claimed.generation,
                              outcome="completed")
-        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-2",
+        db.admissions.admit(epoch=epoch, principal_id="bot", session_id=key, request_id="dm-2",
                             payload={"text": "another DM"})
-        claim_session_input(db, epoch=epoch, session_id=key)
+        db.admissions.claim(epoch=epoch, session_id=key)
         reply = server.handle_request({"id": "t", "method": "prompt.submit",
                                        "params": {"session_id": sid, "text": "just text"}})
 

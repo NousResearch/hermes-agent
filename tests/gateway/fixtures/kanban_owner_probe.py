@@ -79,7 +79,8 @@ def main():
     hook = home / 'hook.py'
     hook.write_text('from pathlib import Path\nPath(' + repr(str(home / 'hook-effect')) + ').write_text("accepted")\n', encoding='utf-8')
     cfg = {'gateway': {'multiplex_profiles': False}, 'model': {'provider': 'custom', 'default': 'loop-model', 'base_url': url},
-        'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': ['terminal', 'file']},
+        'auxiliary': {'title_generation': {'enabled': False}}, 'updates': {'check': False},
+        'platform_toolsets': {'cli': ['terminal', 'file']},
         'terminal': {'backend': 'local'}, 'agent': {'api_max_retries': 1}, 'kanban': {'dispatch_in_gateway': False},
         'hooks': {'post_tool_call': [{'command': f'{sys.executable} {hook}'}]}}
     (home / 'config.yaml').write_text(json.dumps(cfg), encoding='utf-8')

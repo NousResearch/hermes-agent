@@ -28,7 +28,7 @@ def test_a_model_route_that_changes_the_backups_account_drops_the_primary_login(
         "provider": "openrouter", "api_key": "sk-global", "base_url": "https://openrouter.ai/api/v1",
         "api_mode": "chat_completions", RUNTIME_KEY: failure})
     adapter = _make_routing_adapter({"alias": {"model": "global/model", **route_extra}})  # same model: no re-resolve
-    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+    monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
     monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
 
     adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))

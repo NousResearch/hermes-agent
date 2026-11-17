@@ -33,6 +33,7 @@ from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque
 from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
     _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
 )
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -2471,9 +2472,6 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
 
 def _count_parts(parts: Any, types: set) -> int:
     return sum(1 for part in parts if isinstance(part, dict) and part.get("type") in types) if isinstance(parts, list) else 0
-
-
-_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
 
 
 def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:

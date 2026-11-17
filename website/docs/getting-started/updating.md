@@ -472,7 +472,7 @@ updates:
 `updates.pre_update_backup` has three modes:
 
 - `quick` saves the selected state files described above. This is the default.
-- `full` adds a zip archive with the [backup exclusions](../reference/faq.md#hermes-backup-vs-hermes-profile-export). Large data directories can take several minutes.
+- `full` adds a zip archive with the [backup exclusions](../reference/faq.md#hermes-backup-vs-hermes-profile-export). Large data directories can take several minutes. Files that are rotated away while the archive is written (cron output, session transcripts) are skipped and counted in the `automatic backup phase=archive status=complete … vanished=N` log line; one such file no longer downgrades the archive to `*.incomplete.zip`.
 - `off` disables pre-update backups. `--no-backup` selects this mode for one run.
 
 Legacy boolean values remain supported: `true` means `full`, and `false` means `off`.

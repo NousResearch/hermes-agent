@@ -9,12 +9,15 @@ Only the transport differs (Docker mounts + host-gateway vs. SSH reverse forward
 from __future__ import annotations
 
 import logging
+import shlex
 from typing import Callable
 
 logger = logging.getLogger("tools.environments.egress")
 
 _NODE_OPTIONS_SENTINEL = "_HERMES_EGRESS_NODE_OPTIONS_APPEND"
 _CA_MODE_FLAGS = {"--use-openssl-ca", "--use-bundled-ca"}
+# A CA path starting with this is resolved by the remote shell (the home is not known yet).
+HOME_PREFIX = "$HOME/"
 
 # Env names whose override would weaken or bypass enforced egress.
 _PROXY_CONTROL_ENV = frozenset({
@@ -105,3 +108,18 @@ def critical_egress_env_names(env_overrides: dict[str, str]) -> set[str]:
     heuristic would silently unprotect any mapped credential not ending in
     ``_API_KEY``/``_TOKEN`` (e.g. ``AWS_SECRET_ACCESS_KEY``)."""
     return set(_PROXY_CONTROL_ENV) | {"NODE_OPTIONS"} | set(env_overrides)
+
+
+def export_lines(env_overrides: dict[str, str]) -> str:
+    """``export`` lines a remote shell sources before each command, for backends that cannot set a
+    container env (SSH, cloud sandboxes). Values never enter the remote ``bash -c`` argv."""
+    lines = []
+    for name, value in sorted(env_overrides.items()):
+        if name == _NODE_OPTIONS_SENTINEL:
+            # Append to whatever NODE_OPTIONS the remote login shell set, never clobber it.
+            lines.append(f'export NODE_OPTIONS="${{NODE_OPTIONS:+$NODE_OPTIONS }}{value}"')
+        elif value.startswith(HOME_PREFIX):
+            lines.append(f'export {name}="$HOME/{shlex.quote(value[len(HOME_PREFIX):])}"')
+        else:
+            lines.append(f"export {name}={shlex.quote(value)}")
+    return "\n".join(lines) + "\n"

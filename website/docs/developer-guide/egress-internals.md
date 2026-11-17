@@ -60,6 +60,23 @@ tools/environments/ssh_egress.py
                                        passthrough-collision guard. Always
                                        fails closed.
 
+tools/environments/egress_relay.py
+  AGENT_SOURCE / RelayHub              Line-framed TCP relay for sandboxes with
+                                       no route to the host: a stdlib agent in
+                                       the sandbox listens where the SSH forward
+                                       would bind; RelayHub dials iron-proxy on
+                                       the host. Frames: `R|O|D|C <id> <b64>`.
+
+tools/environments/cloud_egress.py
+  cloud_egress_for_env()               Opt-in (`proxy.cloud_relay`) posture for
+                                       Modal (direct) and Daytona; uploads CA,
+                                       0600 env file and agent outside
+                                       `~/.hermes`. Always fails closed.
+  start_modal_relay()                  Relay over a `Sandbox.exec` stdin/stdout.
+  start_daytona_relay()                Relay over a raw, no-echo PTY session.
+  refuse_unrelayable()                 Managed Modal (request/poll HTTP, no
+                                       stream) refuses while the relay is on.
+
   DockerEnvironment.__init__          Docker-side merge logic: collision
                                        detection against critical egress vars,
                                        NODE_OPTIONS append-merge via the
@@ -307,7 +324,7 @@ _NON_BEARER_PROVIDERS: Tuple[str, ...] = (
 5. Distributes the CA cert into the sandbox at a path the runtime will trust (typically `/etc/ssl/certs/hermes-egress-ca.crt`).
 6. Implements collision detection against the user's backend-specific env config.
 
-The Docker implementation is ~150 lines; expect similar volume for Modal / Daytona / SSH.
+The Docker implementation is ~150 lines. SSH (`ssh_egress.py`) and the cloud relay (`cloud_egress.py`) reuse `egress_common` and only add the transport.
 
 ### Subscribing to per-request audit events
 

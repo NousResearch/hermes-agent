@@ -2548,8 +2548,8 @@ DEFAULT_CONFIG = {
         "credential_source": "env",
         # True: Docker refuses a sandbox while the proxy is enabled but down; False: direct + real keys.
         "enforce_on_docker": True,
-        # True: SSH sandboxes reach the proxy over a reverse forward (fail closed when it is down).
-        "ssh_tunnel": False,
+        # ssh_tunnel / cloud_relay: SSH (reverse forward) / Modal+Daytona (exec stream); fail closed.
+        "ssh_tunnel": False, "cloud_relay": False,
         # credential_source bitwarden: a missing BWS token/project_id or empty fetch raises; True
         # falls back to host env (mid-migration). A leftover fail_on_uncovered_providers is ignored.
         "allow_env_fallback": False,

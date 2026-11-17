@@ -4,7 +4,7 @@ When Hermes runs your agent inside a Docker terminal sandbox, that sandbox norma
 
 The egress proxy fixes this: the sandbox holds opaque **proxy tokens**, never the real keys. All outbound traffic from the sandbox routes through a local [iron-proxy](https://github.com/ironsh/iron-proxy) daemon (Apache-2.0, Go) on the host, which terminates TLS and swaps the proxy token for the real credential before forwarding the request upstream. Compromise the sandbox and the attacker walks away with tokens that only work behind the **configured trusted proxy boundary** — the CA private key and the proxy endpoint integrity are part of that boundary. If traffic can be redirected to attacker-controlled proxy infrastructure (e.g. a stolen CA private key or a hijacked proxy endpoint), the token guarantee no longer holds.
 
-The proxy is wired into the Docker backend by default and into the SSH backend when you opt in with `proxy.ssh_tunnel: true` (see [SSH backend](#ssh-backend)). Modal, Daytona, and Singularity do **not** receive proxy env vars or CA mounts yet.
+The proxy is wired into the Docker backend by default, into the SSH backend when you opt in with `proxy.ssh_tunnel: true` (see [SSH backend](#ssh-backend)), and into Modal and Daytona sandboxes when you opt in with `proxy.cloud_relay: true` (see [Modal and Daytona](#modal-and-daytona)). Managed Modal and Singularity do **not** receive proxy env vars or CA mounts.
 
 ## What it is
 
@@ -86,6 +86,13 @@ proxy:
   # closed when the proxy is enabled but not running. Requires
   # `AllowTcpForwarding yes` on the remote sshd (the OpenSSH default).
   ssh_tunnel: false
+
+  # Opt-in: route Modal (terminal.modal_mode: direct) and Daytona sandboxes
+  # through the proxy. A small relay agent inside the sandbox carries proxy
+  # connections back over the provider's own exec stream, so no public
+  # endpoint is opened. Needs python3 in the sandbox image. Fails closed;
+  # managed Modal refuses to start while this is on.
+  cloud_relay: false
 
   # When `credential_source: bitwarden` but the BWS access token /
   # project_id is missing OR the bws fetch returns no values for mapped
@@ -427,6 +434,19 @@ With `proxy.ssh_tunnel: true`, the SSH terminal backend (`terminal.backend: ssh`
 
 Design note: Perplexity's SPACE sandbox platform keeps credentials outside the sandbox on every backend it runs on, injecting them at the network layer; `ssh_tunnel` brings hermes's SSH backend to that posture.
 
+## Modal and Daytona
+
+A cloud sandbox has no network route back to iron-proxy on your machine, and opening one (a public tunnel or exposed port) would let anyone with a token reach the proxy. With `proxy.cloud_relay: true` Hermes instead uses the one channel the provider already authenticates:
+
+- After the sandbox starts, Hermes uploads the CA to `~/.hermes-egress-ca.crt`, the token env file to `~/.hermes-egress.env` and a small stdlib relay agent to `~/.hermes-egress-relay.py`, all mode `0600` and outside the synced `~/.hermes` tree.
+- The agent listens on the sandbox loopback at `127.0.0.1:<tunnel_port>` (CONNECT) and `<tunnel_port+1>` (plain HTTP), the same addresses the SSH tunnel uses. Each connection travels as base64 text frames over a long-lived exec stream: `Sandbox.exec` stdin/stdout on Modal, a raw no-echo PTY session on Daytona. Hermes dials iron-proxy on the host side.
+- Every command sources the env file first, so the sandbox sees `HTTPS_PROXY=http://127.0.0.1:<port>`, the CA bundle vars and proxy tokens under the real provider names. Real keys never enter the sandbox.
+- The relay restarts before the next command when the stream ends (a stopped or restarted sandbox).
+- It fails closed. A half-configured proxy refuses before the sandbox is created. An agent that does not answer within 30 s (no `python3` in the image) refuses too. If the relay drops mid-command, requests hit a dead loopback port instead of going direct.
+- **Managed Modal** (`modal_mode: managed`) runs commands through the tool gateway's request/poll HTTP API, which has no stream to carry the relay, so it refuses to start while `cloud_relay` is on. Use `modal_mode: direct`.
+
+Throughput is bounded by the exec stream (base64 adds about a third). That is fine for model API calls, but large downloads through the proxy are slower than on Docker.
+
 ## Security model
 
 **What this protects against:**
@@ -579,7 +599,7 @@ When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-reque
 
 ## Limitations (v1)
 
-- Docker by default, SSH via `proxy.ssh_tunnel`. Modal, Daytona, and Singularity wiring will follow in separate PRs.
+- Docker by default, SSH via `proxy.ssh_tunnel`, Modal (direct) and Daytona via `proxy.cloud_relay`. Managed Modal and Singularity are not wired.
 - Providers with signature-based auth (AWS SigV4, GCP service-account OAuth) bypass the proxy entirely — see [Uncovered providers](#uncovered-providers). Header-token providers (bearer, `x-api-key`, `api-key`, `x-goog-api-key`) are all covered.
 - No native Windows binary upstream. Run on Linux / macOS / WSL.
 - The CA is a 10-year self-signed cert on first generation. Rotation requires `openssl genrsa ...` by hand (or wait for a follow-up that adds `hermes egress rotate-ca`).

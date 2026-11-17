@@ -20,13 +20,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tools.environments.egress_common import (
-    _NODE_OPTIONS_SENTINEL, critical_egress_env_names, egress_env_overrides, ready_egress)
+    HOME_PREFIX, critical_egress_env_names, egress_env_overrides, export_lines, ready_egress)
 
 logger = logging.getLogger("tools.environments.ssh")
 
 REMOTE_CA_NAME = ".hermes-egress-ca.crt"
 REMOTE_ENV_NAME = ".hermes-egress.env"
-_HOME_PREFIX = "$HOME/"
 
 
 @dataclass(frozen=True)
@@ -44,18 +43,7 @@ class SSHEgress:
                 for arg in ("-R", f"127.0.0.1:{port}:{self.bind_host}:{port}")]
 
     def env_file_text(self) -> str:
-        lines = []
-        for name, value in sorted(self.env_overrides.items()):
-            if name == _NODE_OPTIONS_SENTINEL:
-                # Append to whatever NODE_OPTIONS the remote login shell set, never clobber it.
-                lines.append(f'export NODE_OPTIONS="${{NODE_OPTIONS:+$NODE_OPTIONS }}{value}"')
-            elif value.startswith(_HOME_PREFIX):
-                # CA path is resolved by the remote shell: the posture is built before the remote
-                # home is known (the forward must ride the very first master connection).
-                lines.append(f'export {name}="$HOME/{shlex.quote(value[len(_HOME_PREFIX):])}"')
-            else:
-                lines.append(f"export {name}={shlex.quote(value)}")
-        return "\n".join(lines) + "\n"
+        return export_lines(self.env_overrides)
 
     def critical_names(self) -> set[str]:
         return critical_egress_env_names(self.env_overrides)
@@ -87,7 +75,7 @@ def ssh_egress_for_env() -> SSHEgress | None:
     return SSHEgress(
         tunnel_port=status.tunnel_port, bind_host=bind_host, ca_host_path=status.ca_cert_path,
         env_overrides=egress_env_overrides(
-            "127.0.0.1", status.tunnel_port, f"{_HOME_PREFIX}{REMOTE_CA_NAME}", mappings))
+            "127.0.0.1", status.tunnel_port, f"{HOME_PREFIX}{REMOTE_CA_NAME}", mappings))
 
 
 def check_passthrough_collisions(passthrough_names, egress: SSHEgress) -> None:

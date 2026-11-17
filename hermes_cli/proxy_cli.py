@@ -640,4 +640,5 @@ def _status_rows(proxy_cfg: dict, status, *, yn, dim) -> list[tuple[str, str]]:
         ("Credential src", str(proxy_cfg.get("credential_source", "env"))),
         ("Docker enforce", yn(bool(proxy_cfg.get("enforce_on_docker", True)))),
         ("SSH tunnel", yn(bool(proxy_cfg.get("ssh_tunnel", False)))),
+        ("Cloud relay", yn(bool(proxy_cfg.get("cloud_relay", False)))),
     ]

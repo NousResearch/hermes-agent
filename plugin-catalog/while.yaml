@@ -1,15 +1,15 @@
 name: while
 title: while.sh
 repo: https://github.com/while-sh/while
-sha: 511702d64fc598b97ea728aa8c257469f8ad3601
+sha: 27fc03e58b4d6d8cecfcc7f2ebb788df0a8f23f5
 description: >-
-  Deploy apps on while.sh, a French PaaS built for AI agents, through its hosted MCP server (Streamable
-  HTTP, OAuth 2.1 with dynamic client registration and PKCE): web services and workers, PostgreSQL
+  Deploy the apps an agent builds on while.sh, for the user's team only or for everyone, through its
+  hosted MCP server (Streamable HTTP, OAuth 2.1 with dynamic client registration and PKCE): web services and workers, PostgreSQL
   databases, caches, S3 storage, scheduled jobs, preview environments and private access, plus logs,
   metrics, read-only SQL, backups and rollbacks. Portable Agent Plugins v1 package (plugin.json +
   mcp.json + one skill), configuration only. Disclosure: hosted-only connector with no local code; every
-  tool call goes to while's MCP server at app.while.sh, signed in as the user through while's OAuth
-  sign-in, and acts on that user's organizations with the scopes they consented to. Tool results enter
+  tool call goes to while's MCP server at app.while.sh. Without an account it is a free trial; tools
+  that need the user's account sign them in through while's OAuth, and then act on that user's organizations with the scopes they consented to. Tool results enter
   the session context and so reach the user's model provider. Write-capable tools: deploy, apply a plan,
   roll back, set environment variables and secrets, create previews and projects, back up and restore
   databases, run scheduled jobs, write files to the project's branch, invite members, grant and revoke
@@ -19,9 +19,8 @@ description: >-
   external services. Hermes stores and refreshes the OAuth tokens. The tool list comes from while's
   server at run time, so the pinned commit doesn't cover it. The repository's README also documents an
   optional install script (curl | sh) for other agents, and examples/ holds sample apps; the plugin runs
-  neither. OAuth must be enabled with
-  `hermes mcp add while --url https://app.while.sh/mcp --auth oauth --connect-timeout 300`;
-  the bundled mcp.json alone yields 401.
+  neither. The bundled mcp.json works without an account (the free trial); for the tools of an account,
+  enable OAuth with `hermes mcp add while --url https://app.while.sh/mcp --auth oauth --connect-timeout 300`.
 maintainer: Nextmap
 tier: community
 category: tools

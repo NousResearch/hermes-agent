@@ -1712,6 +1712,27 @@ def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
     return _csv_or_list_to_set(raw)
 
 
+_DENY_ALL_ADMIN_ID = "__multiplex_profile_config_unavailable__"
+
+
+def _deny_all_slash_config(platform: Any) -> "GatewayConfig":
+    """A gateway config whose slash policy admits nobody (multiplex fail-closed)."""
+    from gateway.config import GatewayConfig, PlatformConfig
+
+    cfg = GatewayConfig(multiplex_profiles=True)
+    if platform is not None:
+        cfg.platforms[platform] = PlatformConfig(
+            enabled=True,
+            extra={
+                "allow_admin_from": [_DENY_ALL_ADMIN_ID],
+                "group_allow_admin_from": [_DENY_ALL_ADMIN_ID],
+                "user_allowed_commands": [],
+                "group_user_allowed_commands": [],
+            },
+        )
+    return cfg
+
+
 def _multiplex_is_active() -> bool:
     try:
         from agent.secret_scope import is_multiplex_active
@@ -30116,23 +30137,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         config, loaded inside its ``_profile_runtime_scope`` through the
         path-keyed RBAC cache, so slash-admin lists and similar per-platform
         policy come from that profile's ``config.yaml`` — never the default's.
-        A load failure returns ``None`` (callers treat it as "no policy")
-        rather than borrowing the default profile's config.
+        A load failure never borrows the default profile's config and never
+        reads as "no policy" (which would open every admin command): it
+        returns a DENY-ALL config — slash admin gating enabled with an admin
+        id no user can have, and no user-allowed commands.
         """
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return config
+        loaded = None
         try:
             from gateway.tool_access import _load_config_cached
 
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return _load_config_cached()
+                loaded = _load_config_cached()
         except Exception:
             logger.warning(
                 "multiplex: could not load the source profile's gateway config",
                 exc_info=True,
             )
-            return None
+        if loaded is None:
+            logger.warning(
+                "multiplex: no gateway config for %s/%s; slash commands fail closed",
+                getattr(getattr(source, "platform", None), "value", "?"),
+                getattr(source, "profile", None) or "default",
+            )
+            return _deny_all_slash_config(getattr(source, "platform", None))
+        return loaded
 
     def _slack_source_ignored(self, source: SessionSource) -> bool:
         """``_is_slack_ignored_channel`` against the source profile's config."""

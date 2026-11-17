@@ -542,10 +542,29 @@ class GatewayAuthorizationMixin:
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            bot_admitted = bool(
-                allow_bots_var
-                and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}
-            )
+            if source.platform == Platform.SLACK and _multiplex_active():
+                # Fork (multiplex): slack.allow_bots lives in the profile's
+                # config.yaml (no os.environ bridge under multiplex), so ask
+                # the adapter that received the post — it reads its own
+                # profile's slack: block / .env and folds in
+                # allow_bots_channels. No adapter → not admitted.
+                bot_admitted = False
+                try:
+                    _bot_adapter = self._adapter_for_source(source)
+                    _reader = getattr(_bot_adapter, "_slack_allow_bots", None)
+                    if callable(_reader):
+                        bot_admitted = _reader(str(getattr(source, "chat_id", "") or "")) in {
+                            "mentions",
+                            "all",
+                        }
+                except Exception:
+                    logger.debug("multiplex allow_bots lookup failed", exc_info=True)
+                    bot_admitted = False
+            else:
+                bot_admitted = bool(
+                    allow_bots_var
+                    and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}
+                )
             # Fork: a Slack channel listed in ``slack.allow_bots_channels``
             # admits app posts without the workspace-wide switch (the adapter
             # applies the same list to decide whether to process the event).

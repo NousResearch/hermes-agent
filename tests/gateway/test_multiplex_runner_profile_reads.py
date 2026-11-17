@@ -202,3 +202,70 @@ class TestMultiplexOff:
         runner, _, _ = _runner(False)
         assert runner._check_slash_access(_dm(user="UDEF"), "restart") is None
         assert runner._check_slash_access(_dm(user="UEDU"), "restart") is not None
+
+
+# ── Review fixes: slash fail-closed, allow_bots per bot ────────────────────
+
+
+@pytest.mark.parametrize("failure", ["none", "raise"])
+def test_slash_gate_denies_all_when_profile_config_unavailable(homes, monkeypatch, failure):
+    runner, _, _ = _runner(True)
+
+    def broken():
+        if failure == "raise":
+            raise RuntimeError("injected")
+        return None
+
+    monkeypatch.setattr(tool_access, "_load_config_cached", broken)
+    for src in (_dm("educator", user="UEDU"), _dm(user="UDEF"), _src("educator", user="UEDU")):
+        assert runner._check_slash_access(src, "restart") is not None
+    from gateway.slash_access import policy_for_source
+
+    policy = policy_for_source(runner._gateway_config_for_source(_dm("educator", user="UEDU")), _dm("educator"))
+    assert policy.enabled and not policy.is_admin("UEDU")
+
+
+def test_slash_gate_off_is_unchanged_without_config(homes, monkeypatch):
+    runner, _, _ = _runner(False)
+    monkeypatch.setattr(tool_access, "_load_config_cached", lambda: None)
+    assert runner._check_slash_access(_dm(user="UDEF"), "restart") is None
+
+
+def _bot_src(profile, chat):
+    source = _src(profile, user=None, chat=chat)
+    source.is_bot = True
+    return source
+
+
+def _allow_bots_runner(multiplex):
+    from gateway.run import GatewayRunner
+
+    ss.set_multiplex_active(multiplex)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=multiplex)
+    default = _adapter({"allow_bots": "all"}, {"SLACK_BOT_TOKEN": "xoxb-default"})
+    edu = _adapter({"allow_bots": "none", "allow_bots_channels": ["CEDUFEED"]}, {"SLACK_BOT_TOKEN": "xoxb-edu"})
+    runner.adapters = {Platform.SLACK: default}
+    runner._profile_adapters = {"educator": {Platform.SLACK: edu}}
+    return runner
+
+
+def test_allow_bots_admission_per_bot(homes, monkeypatch):
+    # The default's YAML once leaked into os.environ: it must not admit for
+    # the educator, and the educator's 'none' must not block the default.
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+    runner = _allow_bots_runner(True)
+    assert runner._is_user_authorized(_bot_src(None, "C1")) is True
+    assert runner._is_user_authorized(_bot_src("educator", "C1")) is False
+    assert runner._is_user_authorized(_bot_src("educator", "CEDUFEED")) is True
+
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "none")
+    assert runner._is_user_authorized(_bot_src(None, "C1")) is True  # its own config says all
+
+
+def test_allow_bots_admission_off_reads_env(homes, monkeypatch):
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "none")
+    runner = _allow_bots_runner(False)
+    assert runner._is_user_authorized(_bot_src(None, "C1")) is False
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+    assert runner._is_user_authorized(_bot_src(None, "C1")) is True

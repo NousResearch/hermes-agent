@@ -387,6 +387,7 @@ gateway:
     kept_oversize: "↷ 유지됨 (체크포인트에 저장하기엔 너무 커서 되돌릴 저장본이 없습니다): {files}"
     failed_deletes: "⚠️ 제거할 수 없었습니다 (그대로 남아 있음): {files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "체크포인트가 활성화되지 않아 세션 기준선이 없습니다.\nconfig.yaml에서 활성화하세요:\n```\ncheckpoints:\n  enabled: true\n```\n일반 /diff는 여전히 작동합니다 — git을 직접 사용합니다."
     no_changes: "변경 사항이 없습니다."

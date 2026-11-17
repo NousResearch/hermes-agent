@@ -387,6 +387,7 @@ gateway:
     kept_oversize: "↷ 已保留（檔案過大無法納入檢查點，沒有可還原的儲存副本）：{files}"
     failed_deletes: "⚠️ 無法移除（保留原檔）：{files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "檢查點未啟用，因此沒有工作階段基準線。\n在 config.yaml 中啟用:\n```\ncheckpoints:\n  enabled: true\n```\n一般 /diff 仍然可用 — 它直接使用 git。"
     no_changes: "沒有變更。"

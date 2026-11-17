@@ -387,6 +387,7 @@ gateway:
     kept_oversize: "↷ Збережено (завеликий для контрольних точок, немає збереженої копії для відкату): {files}"
     failed_deletes: "⚠️ Не вдалося видалити (залишено на місці): {files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "Контрольні точки не ввімкнено, тому базової лінії сесії немає.\nУвімкніть у config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nЗвичайний /diff все одно працює — він використовує git напряму."
     no_changes: "Змін немає."

@@ -10,10 +10,12 @@ threads editing the same project never share a checkout:
   and carries an ``AGENTS.md`` "Repositories in this workspace" index.
 
 Trees live where the stale-worktree sweep looks (``<repo>/.worktrees``, the repo recorded in
-``worktree_registry``), are locked by the serving gateway's pid, and branch from the freshly fetched
-remote base (``worktree_ops._resolve_worktree_base``; the fetch is skipped while ``FETCH_HEAD`` is
-younger than ``fetch_fresh_seconds``). A fork never waits on a clone: a configured repository that is
-not cloned yet is listed in the index with the partial-clone command the agent runs when it needs it.
+``worktree_registry``), are locked by the serving gateway's pid only while a turn runs in them
+(``lock_trees`` / ``unlock_trees``), so an idle thread's trees age out like any other, and branch from
+the freshly fetched remote default branch (``worktree_ops.remote_default_ref``; the fetch is skipped
+while ``FETCH_HEAD`` is younger than ``fetch_fresh_seconds``). A fork never waits on a clone: a
+configured repository that is not cloned yet is listed in the index with the partial-clone command the
+agent runs when it needs it, which puts its worktree in the same layout.
 Worktree operations on one repository are serialized, so two threads forking it at once cannot race.
 """
 from __future__ import annotations
@@ -22,6 +24,7 @@ import hashlib
 import logging
 import os
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -102,15 +105,36 @@ def _lock_tree(repo: Path, tree: Path) -> None:
     _git_quiet(["worktree", "lock", "--reason", f"hermes pid={os.getpid()}", str(tree)], repo, log="fork lock")
 
 
+def lock_trees(fork: Fork) -> None:
+    """Hold the fork's trees for the turn about to run in them (the sweep skips a live lock)."""
+    for repo, tree in fork.trees:
+        if Path(tree).is_dir():
+            with _repo_lock(Path(repo)):
+                _lock_tree(Path(repo), Path(tree))
+
+
+def unlock_trees(fork: Fork) -> None:
+    """Release the fork's trees when the turn ends: an idle thread ages out on the sweep's tiers, and
+    its next turn rebuilds whatever the sweep removed."""
+    from hermes_cli.worktree_ops import _git_quiet
+    for repo, tree in fork.trees:
+        if Path(tree).is_dir():
+            with _repo_lock(Path(repo)):
+                _git_quiet(["worktree", "unlock", tree], repo, log="fork unlock")
+
+
 def fresh_base(repo: Path, fresh_seconds: float) -> tuple[str, str]:
     """``(ref, label)`` of the remote default branch, fetched unless ``FETCH_HEAD`` is younger than
     *fresh_seconds*; a failed fetch keeps the cached ref (forking must not wait on a slow remote)."""
     from hermes_cli._subprocess_compat import noninteractive_git_env
     from hermes_cli.update_cmd_check import tracking_refspec
-    from hermes_cli.worktree_ops import _git, _git_out
-    head = _git_out(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], repo) or next(
-        (ref for ref in ("origin/main", "origin/master")
-         if _git(["rev-parse", "--verify", "--quiet", ref], repo).returncode == 0), None)
+    from hermes_cli.worktree_ops import _git, _git_out, remote_default_ref
+    try:
+        head = remote_default_ref(str(repo))
+    except subprocess.TimeoutExpired:
+        head = ""
+    head = head or next((ref for ref in ("origin/main", "origin/master")
+                         if _git(["rev-parse", "--verify", "--quiet", ref], repo).returncode == 0), None)
     if not head:
         return "HEAD", "local HEAD (no origin default branch)"
     fetch_head = Path(_git_out(["rev-parse", "--absolute-git-dir"], repo) or repo / ".git") / "FETCH_HEAD"
@@ -130,6 +154,7 @@ def _add_tree(repo: Path, tree: Path, branch: str, fresh_seconds: float) -> str 
     from hermes_cli.worktree_ops import _ensure_worktrees_gitignored, _git, _worktree_add
     _ensure_worktrees_gitignored(str(repo))
     tree.parent.mkdir(parents=True, exist_ok=True)
+    _git(["worktree", "prune"], repo, timeout=30, stdin=subprocess.DEVNULL)  # a tree deleted by hand stays registered
     if _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], repo).returncode == 0:
         # The thread's branch outlived its tree (the sweep removed it): check the branch out again.
         env = noninteractive_repo_git_env(repo)
@@ -157,17 +182,24 @@ def ensure_tree(repo: Path, name: str, fresh_seconds: float) -> tuple[Path, str]
                 return None
             _copy_worktree_includes(str(repo), tree)
             state = f"worktree on `{branch}` from {label}"
-        _lock_tree(repo, tree)
     record_worktree_repo(str(repo))
     return tree, state
 
 
-def relock(fork: Fork) -> None:
-    """Re-take the trees' locks for this gateway process (after a restart the old pid is dead)."""
-    for repo, tree in fork.trees:
-        if Path(tree).is_dir():
-            with _repo_lock(Path(repo)):
-                _lock_tree(Path(repo), Path(tree))
+def local_repos(directory: str) -> list[str]:
+    """The repositories a fork of *directory* covers now (one, or its direct children with ``.git``)."""
+    path = Path(directory)
+    return [str(repo) for repo in _local_repos(path)] if path.is_dir() else []
+
+
+def clone_command(source: Path, root: Path, name: str, spec: RepoSpec) -> str:
+    """The shell command an agent runs to bring a configured repository into this fork: a partial clone,
+    its thread worktree under the clone's own ``.worktrees`` (where the sweep looks), and the link."""
+    clone, tree = source / spec.path, source / spec.path / ".worktrees" / name
+    return " && ".join((
+        shlex.join(["git", "clone", "--filter=blob:none", spec.url, str(clone)]),
+        shlex.join(["git", "-C", str(clone), "worktree", "add", str(tree), "-b", f"hermes/{name}"]),
+        shlex.join(["ln", "-s", str(tree), str(root / spec.path)])))
 
 
 def _index(directory: Path, root: Path, name: str, rows: list[str]) -> str:
@@ -177,8 +209,8 @@ def _index(directory: Path, root: Path, name: str, rows: list[str]) -> str:
         f"on branch `hermes/{name}`, shared with no other chat. Work and commit there.\n\n"
         + "\n".join(rows) + "\n\n"
         "A repository marked *not cloned* has no local copy yet. Clone it only when the task needs it, "
-        "with the command shown (a partial clone: history now, file contents on demand), then add its "
-        f"worktree into this fork:\n`git -C {directory}/<path> worktree add {root}/<path> -b hermes/{name}`\n")
+        "with the command shown: a partial clone (history now, file contents on demand), its worktree on "
+        f"`hermes/{name}`, and its link in `{root}`. The next turn records it with the others.\n")
 
 
 def _link(root: Path, label: str, tree: Path) -> None:
@@ -211,7 +243,7 @@ def fork_workspace(directory: str, session_key: str, settings: WorkspaceSettings
     cloned = {repo.name for repo in repos}
     for spec in settings.repos:
         if spec.path not in cloned:
-            rows.append(f"- `{spec.path}`: not cloned: `git clone --filter=blob:none {spec.url} {source / spec.path}`")
+            rows.append(f"- `{spec.path}`: not cloned: `{clone_command(source, root, name, spec)}`")
     if not rows:
         return None
     root.mkdir(parents=True, exist_ok=True)

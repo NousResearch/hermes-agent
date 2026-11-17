@@ -387,6 +387,7 @@ gateway:
     kept_oversize: "↷ احتُفظ به (أكبر من أن يُحفظ في نقاط التفتيش، لا توجد نسخة مخزنة للرجوع إليها): {files}"
     failed_deletes: "⚠️ تعذّرت الإزالة (تُرك الملف في مكانه): {files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "نقاط التحقق غير مفعّلة، لذا لا يوجد خط أساس للجلسة.\nفعّلها في config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nلا يزال /diff العادي يعمل — فهو يستخدم git مباشرة."
     no_changes: "لا توجد تغييرات."

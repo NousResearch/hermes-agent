@@ -387,6 +387,7 @@ gateway:
     kept_oversize: "↷ Behou (te groot vir kontrolepunte, geen gestoorde kopie om na terug te keer nie): {files}"
     failed_deletes: "⚠️ Kon nie verwyder nie (in plek gelaat): {files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "Kontrolepunte is nie geaktiveer nie, dus is daar geen sessie-basislyn nie.\nAktiveer in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nGewone /diff werk steeds — dit gebruik git direk."
     no_changes: "Geen veranderinge nie."

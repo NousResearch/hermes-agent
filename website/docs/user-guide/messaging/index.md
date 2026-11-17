@@ -272,7 +272,7 @@ a margin. A large multi-profile boot can therefore run past systemd's default
 
 ## Chat workspaces
 
-By default every chat works in `terminal.cwd`. `/workspace /abs/path` binds the current chat (DM, channel or thread) to a directory instead: the terminal, file tools, `@` references, context files (`AGENTS.md`), `/rollback` and `/diff` all use it. The binding is saved on the chat, survives gateway restarts and `/new`, and `/workspace clear` returns the chat to `terminal.cwd`. `/workspace` alone shows where the chat works now.
+By default every chat works in `terminal.cwd`. `/workspace /abs/path` binds the current chat (DM, channel or thread) to a directory instead: the terminal, file tools, `@` references, context files (`AGENTS.md`), `/rollback` and `/diff` all use it. The binding is saved on the chat, survives gateway restarts and `/new`, and `/workspace clear` returns the chat to `terminal.cwd` (even when `gateway.workspaces.dir` is set). `/workspace` alone shows where the chat works now.
 
 ### Per-thread worktrees (opt-in)
 
@@ -281,7 +281,7 @@ With `gateway.workspaces.per_thread: worktree`, every chat thread works on its o
 - a git repository gets one worktree, `<repo>/.worktrees/<thread>`, on branch `hermes/<thread>`;
 - a folder of repositories gets one worktree per repository, linked by name under `<folder>/.worktrees/<thread>/`, with an `AGENTS.md` there titled "Repositories in this workspace" listing each one.
 
-Each fork branches from the freshly fetched remote default branch; the fetch is skipped when the repository was fetched less than `fetch_fresh_seconds` ago. A thread never waits on a clone: repositories listed in `gateway.workspaces.repos` that are not cloned yet show up in the index as `not cloned`, with the `git clone --filter=blob:none` command the agent runs when it needs one. Two threads forking the same repository at once are serialized. The forks are ordinary Hermes worktrees, so the stale-worktree sweep (`worktrees.*`) archives and removes idle ones.
+Each fork branches from the freshly fetched remote default branch; the fetch is skipped when the repository was fetched less than `fetch_fresh_seconds` ago. A thread never waits on a clone: repositories listed in `gateway.workspaces.repos` that are not cloned yet show up in the index as `not cloned`, with the command the agent runs when it needs one (a `git clone --filter=blob:none`, then the thread's worktree in the clone's own `.worktrees/`); the next turn adds it to the fork. Two threads forking the same repository at once are serialized. The forks are ordinary Hermes worktrees, locked only while a turn runs in them, so the stale-worktree sweep (`worktrees.*`) archives and removes idle ones; the thread's next turn recreates a removed tree from its branch. In a folder-of-repositories fork `/diff` and the `/undo` hint report each repository, and `/rollback <repo> [N]` picks the repository to restore.
 
 ```yaml
 gateway:

@@ -5,6 +5,7 @@ model-switch and skills notes) and managed workers (``--safe-mode`` / ``--ignore
 which never pass the inbound step) all expand here. A local session's refusal is the turn's reply:
 its adapter delivers through settlement, so a side ``send`` would never reach the viewer.
 """
+import asyncio
 import logging
 import os
 from contextlib import suppress
@@ -15,13 +16,14 @@ from gateway.config import Platform
 logger = logging.getLogger(__name__)
 
 
-async def expand_references(text, *, cwd, context_length, plugins=True):
+async def expand_references(text, *, cwd, context_length, plugins=True, allowed_root=None):
     """``(text, refusal)``: the expanded text, or the refusal when the injection was refused. A failed
-    expansion leaves the text as typed."""
+    expansion leaves the text as typed. *allowed_root* defaults to *cwd*."""
     from agent.i18n import t
     try:
         from agent.context_references import preprocess_context_references_async
-        expand = partial(preprocess_context_references_async, cwd=cwd, context_length=context_length, allowed_root=cwd)
+        expand = partial(preprocess_context_references_async, cwd=cwd, context_length=context_length,
+                         allowed_root=allowed_root or cwd)
         result = await (expand(text) if plugins else expand(text, plugins=False))
     except Exception as exc:
         logger.warning("@ context reference expansion failed: %s", exc, exc_info=True)
@@ -31,7 +33,8 @@ async def expand_references(text, *, cwd, context_length, plugins=True):
     return (result.message if result.expanded else text), None
 
 
-def _inbound_cwd(runner, source):
+def _inbound_cwd(runner, source, session_key):
+    """``(cwd, allowed_root)`` the turn's references read in."""
     from gateway.session_policy import policy_for_source
     try:
         from tools.terminal_scope import terminal_env
@@ -40,21 +43,27 @@ def _inbound_cwd(runner, source):
     # A local session's references resolve in ITS workspace: this runs before the turn binds
     # the policy scope, so TERMINAL_CWD is still the daemon's own.
     if (policy := policy_for_source(runner, source)) is not None:
-        return policy.cwd
-    from gateway.session_workspace import bound_root
-    return (bound_root(runner, runner._session_key_for_source(source))
-            or terminal_env("TERMINAL_CWD", os.path.expanduser("~")))
+        return policy.cwd, None
+    # A chat's /workspace root (or thread fork) is resolved here, before the turn binds it, so the
+    # first message's references read the checkout the turn then edits.
+    from gateway.run import _load_gateway_config
+    from gateway.session_workspace import ensure_binding, reference_root
+    stored = ensure_binding(runner, session_key or runner._session_key_for_source(source), _load_gateway_config())
+    if root := str(stored.get("root") or ""):
+        return root, reference_root(stored) or None
+    return terminal_env("TERMINAL_CWD", os.path.expanduser("~")), None
 
 
 async def inbound_references(runner, source, session_key, text):
-    """``expand_references`` for an inbound turn: a local session's policy cwd, else the terminal cwd."""
+    """``expand_references`` for an inbound turn: a local session's policy cwd, else the chat's
+    workspace root, else the terminal cwd."""
     try:
-        cwd = _inbound_cwd(runner, source)
+        cwd, allowed_root = await asyncio.to_thread(_inbound_cwd, runner, source, session_key)
         context_length = await runner._inbound_model_context_length(source, session_key)
     except Exception as exc:
         logger.warning("@ context reference expansion failed: %s", exc, exc_info=True)
         return text, None
-    return await expand_references(text, cwd=cwd, context_length=context_length)
+    return await expand_references(text, cwd=cwd, context_length=context_length, allowed_root=allowed_root)
 
 
 async def turn_references(runner, event, source, session_key, text):

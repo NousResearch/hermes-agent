@@ -47,6 +47,13 @@ def _runner(tmp_path, monkeypatch):
     return runner
 
 
+def _turn(runner, entry, config):
+    """Run one turn's workspace binding the way the turn runner does; the bound root."""
+    from gateway.session_workspace import workspace_turn
+    with workspace_turn(runner, entry.session_key, entry.session_id, config) as root:
+        return root
+
+
 def _thread(thread_id):
     return SessionSource(platform=Platform.SLACK, chat_id="C1", chat_type="group", thread_id=thread_id,
                          user_id="U1", user_name="tester")
@@ -55,7 +62,7 @@ def _thread(thread_id):
 @pytest.mark.asyncio
 async def test_workspace_command_binds_the_chat_and_its_turns_run_there(tmp_path, monkeypatch):
     from agent.runtime_cwd import resolve_agent_cwd
-    from gateway.session_workspace import bind_turn, bound_root, handle_workspace_command
+    from gateway.session_workspace import bound_root, handle_workspace_command
     from tools.terminal_tool import resolve_task_overrides
     project = tmp_path / "project"
     project.mkdir()
@@ -65,7 +72,7 @@ async def test_workspace_command_binds_the_chat_and_its_turns_run_there(tmp_path
     entry = runner.session_store.get_or_create_session(source)
     assert str(project) in reply and bound_root(runner, entry.session_key) == str(project)
 
-    assert bind_turn(runner, entry.session_key, entry.session_id, {}) == str(project)
+    assert _turn(runner, entry, {}) == str(project)
     assert resolve_agent_cwd() == project
     assert resolve_task_overrides(entry.session_id)["cwd"] == str(project)
 
@@ -74,11 +81,17 @@ async def test_workspace_command_binds_the_chat_and_its_turns_run_there(tmp_path
     assert bound_root(runner, fresh.session_key) == str(project)
     await handle_workspace_command(runner, MessageEvent(text="/workspace clear", source=source))
     assert bound_root(runner, entry.session_key) == ""
+    # A configured default directory does not come back after an explicit clear, nor after /new.
+    other = tmp_path / "default"
+    other.mkdir()
+    assert _turn(runner, entry, {"gateway": {"workspaces": {"dir": str(other)}}}) == ""
+    runner.session_store.reset_session(entry.session_key)
+    assert _turn(runner, entry, {"gateway": {"workspaces": {"dir": str(other)}}}) == ""
 
 
 @pytest.mark.asyncio
 async def test_two_threads_get_their_own_worktrees_and_a_repo_index(tmp_path, monkeypatch):
-    from gateway.session_workspace import bind_turn, handle_workspace_command
+    from gateway.session_workspace import handle_workspace_command
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     _git(tmp_path, "clone", "-q", str(_clone(tmp_path, "api")), str(workspace / "api"))
@@ -91,7 +104,7 @@ async def test_two_threads_get_their_own_worktrees_and_a_repo_index(tmp_path, mo
         source = _thread(thread)
         await handle_workspace_command(runner, MessageEvent(text=f"/workspace {workspace}", source=source))
         entry = runner.session_store.get_or_create_session(source)
-        roots.append(bind_turn(runner, entry.session_key, entry.session_id, config))
+        roots.append(_turn(runner, entry, config))
 
     assert roots[0] != roots[1]
     for root in roots:
@@ -100,8 +113,59 @@ async def test_two_threads_get_their_own_worktrees_and_a_repo_index(tmp_path, mo
         assert _git(tree, "branch", "--show-current").startswith("hermes/thread-")
         index = Path(root, "AGENTS.md").read_text(encoding="utf-8-sig")
         assert "Repositories in this workspace" in index
-        assert f"not cloned: `git clone --filter=blob:none {web_url} {workspace / 'web'}`" in index
+        assert f"not cloned: `git clone --filter=blob:none {web_url} {workspace / 'web'} && " in index
     assert not (workspace / "web").exists()  # never cloned synchronously
     # The second fork reused the first one's fetch (within fetch_fresh_seconds).
     assert "s ago)" in Path(roots[1], "AGENTS.md").read_text(encoding="utf-8-sig")
     assert _git(workspace / "api", "worktree", "list").count(".worktrees/thread-") == 2
+
+
+@pytest.mark.asyncio
+async def test_a_thread_fork_heals_and_its_repos_answer_references_and_diff(tmp_path, monkeypatch):
+    """A tree the sweep removed is rebuilt, ``@file:`` reads a repository's worktree through the fork's
+    link, ``/diff`` reports each repository, and an idle fork holds no live lock."""
+    from gateway.session_context_refs import expand_references
+    from gateway.session_workspace import binding, handle_workspace_command, reference_root
+    from hermes_cli.worktree_ops import _worktree_lock_is_live
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for name in ("api", "web"):
+        _git(tmp_path, "clone", "-q", str(_clone(tmp_path, name)), str(workspace / name))
+    runner = _runner(tmp_path, monkeypatch)
+    config = {"gateway": {"workspaces": {"per_thread": "worktree", "fetch_fresh_seconds": 3600}}}
+    source = _thread("1.0")
+    await handle_workspace_command(runner, MessageEvent(text=f"/workspace {workspace}", source=source))
+    entry = runner.session_store.get_or_create_session(source)
+    root = _turn(runner, entry, config)
+    api_tree = os.path.realpath(os.path.join(root, "api"))
+    assert _worktree_lock_is_live(str(workspace / "api"), api_tree) is None  # unlocked between turns
+
+    _git(workspace / "api", "worktree", "remove", "--force", api_tree)
+    assert _turn(runner, entry, config) == root and os.path.isdir(api_tree)  # rebuilt at its saved path
+
+    stored = binding(runner, entry.session_key)
+    text, refusal = await expand_references("see @file:api/README.md", cwd=root, context_length=100_000,
+                                            plugins=False, allowed_root=reference_root(stored))
+    assert refusal is None and "api" in text.split("see", 1)[1]
+
+    Path(api_tree, "README.md").write_text("changed", encoding="utf-8")
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+    runner._checkouts = lambda src: GatewaySlashCommandsMixin._checkouts(runner, src)
+    runner._terminal_cwd = lambda src=None: GatewaySlashCommandsMixin._terminal_cwd(runner, src)
+    runner._render_diff_result = lambda result, stat: GatewaySlashCommandsMixin._render_diff_result(runner, result, stat)
+    runner._fenced_truncated_diff = GatewaySlashCommandsMixin._fenced_truncated_diff
+    reply = await GatewaySlashCommandsMixin._handle_diff_command(runner, MessageEvent(text="/diff", source=source))
+    assert "**api**" in reply and "README.md" in reply and "**web**" in reply and "Not a git repository" not in reply
+
+
+def test_gateway_workspaces_settings_load_from_config_yaml(tmp_path):
+    """``gateway.workspaces`` read through the gateway's config loader."""
+    from gateway.run import _load_gateway_config
+    from gateway.session_workspace_fork import WorkspaceSettings
+    path = tmp_path / "config.yaml"
+    path.write_text("gateway:\n  workspaces:\n    per_thread: worktree\n    fetch_fresh_seconds: 5\n"
+                    f"    dir: {tmp_path}\n    repos:\n      - path: web\n        url: https://example.invalid/web.git\n",
+                    encoding="utf-8")
+    settings = WorkspaceSettings.from_config(_load_gateway_config(path))
+    assert (settings.per_thread, settings.fetch_fresh_seconds, settings.dir) == ("worktree", 5.0, str(tmp_path))
+    assert [(r.path, r.url) for r in settings.repos] == [("web", "https://example.invalid/web.git")]

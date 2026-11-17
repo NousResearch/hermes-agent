@@ -387,6 +387,7 @@ gateway:
     kept_oversize: "↷ Conservado (demasiado grande para los checkpoints, no hay copia guardada a la que revertir): {files}"
     failed_deletes: "⚠️ No se pudo eliminar (se dejó en su lugar): {files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "Los checkpoints no están activados, así que no hay línea base de sesión.\nActívalos en config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nEl /diff normal sigue funcionando — usa git directamente."
     no_changes: "Sin cambios."

@@ -619,7 +619,6 @@ def test_transport_round_trip_drops_foreign_reasoning():
         tools=None,
         is_codex_backend=True,
         is_xai_responses=False,
-        is_github_responses=False,
         base_url="https://chatgpt.com/backend-api/codex",
         instructions="you are hermes",
     )

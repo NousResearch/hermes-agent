@@ -502,6 +502,9 @@ class TestLoginNousSkipKeepsCurrent:
             lambda ids, p, free_tier=False: (ids, []),
         )
         monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)
+        # Not a usage-window account, and no live portal read of the fake token.
+        import hermes_cli.model_picker_usage as mpu
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
         return free_tier_calls
 
     def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):
@@ -916,7 +919,7 @@ def test_shared_store_write_and_read_roundtrip(shared_store_env):
     )
 
     state = _full_state_fixture()
-    _write_shared_nous_state(state)
+    _write_shared_nous_state(state, renewal=False)
 
     path = _nous_shared_store_path()
     assert path.is_file()
@@ -978,7 +981,7 @@ def test_try_import_shared_rehydrates_on_success(shared_store_env, monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import auth_nous
 
-    auth_mod._write_shared_nous_state(_full_state_fixture())
+    auth_mod._write_shared_nous_state(_full_state_fixture(), renewal=False)
     fresh_jwt = _invoke_jwt(seconds=7200)
 
     def _fake_refresh(state, **kwargs):
@@ -1110,3 +1113,43 @@ def test_poll_for_token_timeout_raises_actionable_message():
             expires_in=1,
             poll_interval=1,
         )
+
+
+# =============================================================================
+# Device-code login: the portal-provided inference URL passes the same allowlist as refresh
+# =============================================================================
+
+
+def _run_device_login_with_portal_inference_url(monkeypatch, portal_inference_url):
+    from hermes_cli import auth
+
+    monkeypatch.delenv("NOUS_INFERENCE_BASE_URL", raising=False)
+    monkeypatch.setattr(auth, "_request_device_code", lambda **kw: {
+        "verification_uri_complete": "https://portal.example/device?code=ABCD",
+        "user_code": "ABCD-1234", "device_code": "dev", "expires_in": 600, "interval": 5})
+    monkeypatch.setattr(auth, "_poll_for_token", lambda **kw: {
+        "access_token": "t", "scope": "inference:invoke", "expires_in": 3600,
+        "inference_base_url": portal_inference_url})
+    monkeypatch.setattr(auth, "refresh_nous_oauth_from_state", lambda state, **kw: state)
+    return auth._nous_device_code_login(open_browser=False, on_verification=lambda url, code: None)
+
+
+def test_device_login_refuses_portal_inference_url_outside_allowlist(monkeypatch):
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    state = _run_device_login_with_portal_inference_url(monkeypatch, "https://attacker.example.com/v1")
+    assert state["inference_base_url"] == PROVIDER_REGISTRY["nous"].inference_base_url.rstrip("/")
+
+
+def test_device_login_refuses_non_https_portal_inference_url(monkeypatch):
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    state = _run_device_login_with_portal_inference_url(
+        monkeypatch, "http://inference-api.nousresearch.com/v1")
+    assert state["inference_base_url"] == PROVIDER_REGISTRY["nous"].inference_base_url.rstrip("/")
+
+
+def test_device_login_keeps_allowlisted_portal_inference_url(monkeypatch):
+    state = _run_device_login_with_portal_inference_url(
+        monkeypatch, "https://inference-api.nousresearch.com/v2/")
+    assert state["inference_base_url"] == "https://inference-api.nousresearch.com/v2"

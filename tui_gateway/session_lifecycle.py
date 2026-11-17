@@ -217,6 +217,85 @@ def _canonical_ledger_refusal(session: dict):
 def _attach_lease(session: dict, lease) -> None:
     session["active_session_lease"] = lease
     session.pop("_lease_taken_over", None)  # owning again: its finalize ends the row like any owner
+    session.pop("_lease_idle_released", None)
+
+
+def _reclaim_idle_released_lease(session: dict):
+    """Re-claim a lease the idle reaper released; None when this record owns the chat again, else the refusal.
+
+    Caller holds ``history_lock``, which the reaper's release also takes, so a rewind cannot interleave with a
+    release. Claim-only: a detached-runtime takeover takes the resume lock, which nests outside history_lock."""
+    if not (sid := session.get("_lease_idle_released")) or session.get("active_session_lease") is not None:
+        return None
+    if (refusal := _canonical_ledger_refusal(session)) is not None:
+        return refusal
+    lease, refusal = _claim_active_session_slot(
+        str(session.get("session_key") or ""), live_session_id=sid, surface=_session_source(session),
+        profile_home=session.get("profile_home"))
+    if refusal is None:
+        _attach_lease(session, lease)
+    return refusal
+
+
+class SessionNotOwned(RuntimeError):
+    """An off-turn transcript writer found its idle-released lease taken: nothing was written.
+    Handlers let it through their catch-alls; dispatch answers it ``4090`` like a refused submit."""
+
+    def __init__(self, refusal):
+        super().__init__(str(refusal))
+        self.refusal = refusal
+        self.reason = getattr(refusal, "reason", None) or "SESSION_NOT_OWNED"
+
+
+def _require_transcript_owner(session: dict) -> None:
+    """Gate for every off-turn writer of this record's transcript (rewind, model-switch marker, manual compress),
+    under ``history_lock``: re-claim an idle-released lease or raise ``SessionNotOwned``. A write counts as activity,
+    so the idle reaper cannot release the lease again before the writer finishes."""
+    if (refusal := _reclaim_idle_released_lease(session)) is not None:
+        raise SessionNotOwned(refusal)
+    session["last_active"] = time.time()
+
+
+# Upper bound on one held claim: the compute-host supervisor drops an unanswered late-ack handler after its
+# _LATE_CONTROL_TTL_SECS (1800s), so a claim whose release can never fire stops pinning the lease then.
+_TRANSCRIPT_CLAIM_MAX_S = 1800.0
+
+
+def _hold_transcript_claim(session: dict):
+    """``_require_transcript_owner`` plus a busy claim the idle reaper honours until the returned (idempotent)
+    release runs. For off-turn writers that leave ``running`` False while they work — a model switch, a
+    compute-host ``/compress`` or ``/model`` whose host may outlast the idle window — so the reaper cannot free
+    the lease between the ownership check and the write."""
+    token = object()
+    with session.get("history_lock") or contextlib.nullcontext():
+        _require_transcript_owner(session)
+        claims = session.setdefault("_transcript_claims", {})
+        now = time.time()
+        for stale in [t for t, deadline in claims.items() if deadline <= now]:
+            claims.pop(stale, None)
+        claims[token] = now + _TRANSCRIPT_CLAIM_MAX_S
+
+    def release() -> None:
+        with session.get("history_lock") or contextlib.nullcontext():
+            session.get("_transcript_claims", {}).pop(token, None)
+    return release
+
+
+@contextlib.contextmanager
+def _transcript_claim(session: dict):
+    release = _hold_transcript_claim(session)
+    try:
+        yield
+    finally:
+        release()
+
+
+def _session_holds_transcript_claim(session: dict, now: float) -> bool:
+    return any(deadline > now for deadline in list((session.get("_transcript_claims") or {}).values()))
+
+
+def _session_not_owned_err(rid, exc: SessionNotOwned) -> dict:
+    return _err(rid, 4090, str(exc), {"reason": exc.reason})
 
 
 def _detached_lease_holder(session: dict, key: str) -> tuple[str, dict] | None:
@@ -660,7 +739,12 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
             logger.debug("failed waiting for session turn thread", exc_info=True)
     if end_reason != "tui_shutdown":
         _settle_isolated_turn_before_close(session)
-    _teardown_session(session, end_reason=end_reason)
+    try:
+        _teardown_session(session, end_reason=end_reason)
+    finally:
+        # finally: a raising finalize (callers log and move on) must still free the ring.
+        from tui_gateway.event_replay import forget_session
+        forget_session(session.get("_sid") or "")
     return True
 
 
@@ -810,14 +894,6 @@ def _interrupt_session_turn(
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(session.get("agent"))
-        # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
-        # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
-        # interrupted completion with its partial output.
-        with contextlib.suppress(Exception):
-            from tools.async_delegation import interrupt_for_session
-            interrupt_for_session(
-                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
-                parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
         if not run_thread_alive and not compressing:
             with session["history_lock"]:
                 if session.get("running"):
@@ -1016,9 +1092,11 @@ def _schedule_ws_orphan_reap(
             if _session_has_active_delegations(sid, current) or (
                     not current.get("running")
                     and not current.get("_client_gone_interrupt_requested")
-                    and _session_owns_live_wakeup_schedule(current)):
-                # Live background work, or an active /loop or /heartbeat only this process's poller can fire. A
-                # settled client-gone interrupt wins over the schedule: its latches block every tick and reattach.
+                    and (_session_owns_live_wakeup_schedule(current)
+                         or _session_owns_pending_process_notification(current))):
+                # Live background work, or a wake-up only this process's poller can deliver: an active /loop or
+                # /heartbeat, or a running process that will notify this session. A settled client-gone interrupt
+                # wins over both: its latches block every tick and reattach.
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)

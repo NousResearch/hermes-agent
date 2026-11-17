@@ -11,9 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from hermes_cli._startup_fast import project_root_str
 from tools.approval_detection import (
     _bash_exec_payload, _deobfuscate_shell_word_for_detection, _iter_shell_command_starts,
-    _is_shell_comment_start, _read_shell_word, _scan_shell)
+    _is_shell_comment_start, _read_shell_word)
+from tools.approval_parser_budget import _scan_shell
 
 # bisect drives repeated checkouts of the running root — the exact skew hazard guarded here.
 _WORKTREE_MUTATIONS = frozenset({
@@ -70,10 +72,7 @@ class _ShellContext:  # one `(` / `$(` / backtick nesting level and its live quo
 
 def get_running_source_root() -> Path | None:
     """The source checkout backing this process, if there is one."""
-    try:
-        root = Path(__file__).resolve().parent.parent
-    except (OSError, RuntimeError):
-        return None
+    root = Path(project_root_str())
     return root if (root / ".git").exists() else None
 
 
@@ -554,8 +553,9 @@ def detect_self_repo_git_mutation(
 
 
 def _block_message(operation: str, root: Path) -> str:
-    hermes_home = os.environ.get("HERMES_HOME", "").strip()
-    scratch = (Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes") / "scratch"
+    from hermes_constants import get_scratch_dir
+
+    scratch = get_scratch_dir()
     return (
         f"Blocked: `{operation}` would rewrite Hermes's live source checkout "
         f"({root}) and can mix module versions in this running process. "

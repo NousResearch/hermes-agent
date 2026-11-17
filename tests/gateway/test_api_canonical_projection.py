@@ -12,6 +12,7 @@ from gateway.platforms.api_server_runs import _RunLaunch, _execute_run
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_ingress import execute_admission
 from tests.waiting import async_wait_until
+from tests.gateway.session_claims import claim
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 64).decode()
 
@@ -29,8 +30,7 @@ def _launch(api, admitted, run_id='run_test'):
     api._run_streams[run_id] = queue
     api._run_statuses[run_id] = {}
     launch = _RunLaunch(api, run_id, queue, admitted[1].session_id, None, False, 'hello', [], False,
-                        agent_kwargs={}, request_profile=None, browser_control_principal=None,
-                        browser_control_transport_family=None, admission=admitted)
+                        agent_kwargs={}, request_profile=None, admission=admitted)
     return launch, queue
 
 
@@ -63,7 +63,7 @@ async def test_api_images_are_committed_media_in_canonical_history(api, owner):
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'
     owner.runner._handle_message = handle
-    await execute_admission(owner, ref, row)
+    await execute_admission(owner, ref, claim(owner, ref, row))
     committed = media[0]['path']
     assert f'[Image attached at: {committed}]' in seen['text']
     assert seen['content'][0]['text'].endswith(f'[Image attached at: {committed}]')
@@ -77,7 +77,7 @@ async def test_initialization_failure_is_a_failed_receipt_not_completed(api, own
     async def handle(event):
         return 'Sorry, I encountered an unexpected error.'  # handler apology, no TurnRunner result
     owner.runner._handle_message = handle
-    await execute_admission(owner, ref, row)
+    await execute_admission(owner, ref, claim(owner, ref, row))
     result = owner.pending_results[row['admission_id']]['result']
     assert result['failed'] is True and result['completed'] is False
     assert result['final_response'] == '' and 'unexpected error' in result['error']
@@ -402,54 +402,3 @@ async def test_canonical_sse_projects_the_turn_reasoning(api, owner, path, body,
         text = await response.text()
     assert response.status == 200, text
     assert marker in text and 'THINKING' in text, text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('path', ['legacy', 'canonical'])
-async def test_api_turn_selects_the_requests_registered_browser_controller(api, owner, monkeypatch, path):
-    """The extension controller registered for the API session's server-derived principal is the
-    one the turn selects, on the legacy executor and under the authority alike."""
-    from gateway import browser_control_broker as broker_mod
-    from gateway.config import PlatformConfig
-    from gateway.run import GatewayRunner
-    from gateway.session import SessionContext
-    from gateway.session_context import clear_session_vars
-    from tools.browser_extension_router import extension_controller_available
-    monkeypatch.setattr(broker_mod, 'browser_control_enabled', lambda *a: True)
-    adapter = api if path == 'canonical' else _api_server.APIServerAdapter(PlatformConfig(enabled=True))
-    adapter._api_key = 'controller-selection-key'
-    broker = broker_mod.get_browser_control_broker()
-    broker.attach(broker_mod.ControllerScope(
-        principal_id=adapter._derive_browser_control_principal('default'), profile_id='default',
-        session_id='browser-sel', controller_id='ext-1', transport_family='local-api',
-        capabilities=frozenset({'browser_navigate'})), lambda frame: None)
-    selected = []
-    if path == 'canonical':
-        async def handle(event):
-            from gateway.session_results import execution_result
-            context = SessionContext(source=event.source, connected_platforms=[], home_channels={},
-                                     session_key='k', session_id=event.source.chat_id)
-            tokens = GatewayRunner._set_session_env(owner.runner, context)
-            try:
-                selected.append(extension_controller_available('browser_navigate'))
-            finally:
-                clear_session_vars(tokens)
-            execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
-            return 'ok'
-        owner.runner._handle_message = handle
-    else:
-        def run_conversation(**kwargs):
-            selected.append(extension_controller_available('browser_navigate'))
-            return {'final_response': 'ok', 'messages': []}
-        monkeypatch.setattr(adapter, '_create_agent', lambda **kw: SimpleNamespace(run_conversation=run_conversation))
-    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
-    app.router.add_post('/v1/chat/completions', adapter._handle_chat_completions)
-    try:
-        async with TestClient(TestServer(app)) as client:
-            response = await client.post('/v1/chat/completions', json={'messages': [{'role': 'user', 'content': 'hi'}]},
-                                         headers={'Authorization': 'Bearer controller-selection-key',
-                                                  'X-Hermes-Session-Id': 'browser-sel'})
-            assert response.status == 200, await response.text()
-    finally:
-        broker.reset()
-    assert selected == [True]

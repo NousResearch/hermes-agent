@@ -262,7 +262,7 @@ class TestMultiplexProfileScope:
         monkeypatch.setattr(raft_mod.shutil, "which", lambda name: "/usr/bin/raft")
         spawned = []
         monkeypatch.setattr(
-            raft_mod.subprocess, "Popen",
+            raft_mod, "spawn_owned",
             lambda cmd, **kwargs: spawned.append(cmd) or SimpleNamespace(pid=1),
         )
 

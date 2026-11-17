@@ -71,7 +71,7 @@ def _baseline_gaps(root: Path) -> list[str]:
     image's environment with one missing everything the image ships.
     """
     from pm.environments import runtime_facts_path
-    from pm.install import _extra_key, _facts, _still_declared
+    from pm.install import _carried, _extra_key, _facts
     from pm.lock import Facts
     from pm.packages import Venv
 
@@ -86,7 +86,7 @@ def _baseline_gaps(root: Path) -> list[str]:
         raise ValueError("invalid recorded dependency state")
     shipped = (_facts().get("venv") or {}).get("extras") or []
     have = {_extra_key(extra) for extra in recorded}
-    return sorted({extra for extra in _still_declared(Venv(root), shipped) if _extra_key(extra) not in have})
+    return sorted({extra for extra in _carried(Venv(root), shipped) if _extra_key(extra) not in have})
 
 
 def refresh_dependencies(project_root: Path) -> str:
@@ -115,7 +115,8 @@ def refresh_dependencies(project_root: Path) -> str:
         return "current"
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            sync_venv(missing or None, explicit=True)
+            # The image's baseline, not a user request: it never undoes a `--without`.
+            sync_venv(missing or None, explicit=True, automatic=missing)
         return f"restored {', '.join(missing)}" if missing else "rebuilt"
     except Exception as exc:
         print(f"dependency refresh failed: {exc}", file=sys.stderr)

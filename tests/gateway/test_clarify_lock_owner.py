@@ -95,6 +95,39 @@ async def test_clarify_lock_answers_the_owner_batch_request(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_a_reattaching_viewer_gets_the_open_batch_back_and_answers_it(tmp_path, monkeypatch):
+    """The batch frame goes out once, to the transports attached then: a viewer that drops and resumes
+    gets it back as ``open_requests`` (request id, questions, its locked answers), the reconnect replay
+    its channel re-delivers, and answers the restored form."""
+    from gateway.session_controls import AuthorityConnection
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    first = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    await first.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+    peer, worker, out = _start_batch(authority)
+    await _wait_for(lambda: any(f.get('method') == 'clarify' for f in peer.frames))
+    rid = next(f['id'] for f in peer.frames if f.get('method') == 'clarify')
+    assert (await _lock(first, rid, 'q0', 'red', 2))['result']['remaining'] == ['q1']
+    await first.close()
+    second = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        resumed = (await second.dispatch({'id': 3, 'method': 'session.resume', 'params': {'session_id': 's'}}))['result']
+        assert resumed['open_requests'] == [{'id': rid, 'method': 'clarify', 'params': {
+            'session_id': 's', 'answers': {'q0': 'red'}, 'questions': [
+                {'qid': 'q0', 'question': 'colour?', 'choices': ['red', 'blue'], 'multi_select': False},
+                {'qid': 'q1', 'question': 'size?', 'multi_select': False}]}}]
+        await second.dispatch({'jsonrpc': '2.0', 'id': rid, 'result': {'answers': {'q0': 'red', 'q1': 'big'}}})
+        await asyncio.to_thread(worker.join, 5)
+        assert out == {'answers': {'q0': 'red', 'q1': 'big'}, 'outcome': 'submitted'}, out
+        again = (await second.dispatch({'id': 4, 'method': 'session.resume', 'params': {'session_id': 's'}}))['result']
+        assert not again['open_requests']
+    finally:
+        await second.close()
+
+
+@pytest.mark.asyncio
 async def test_a_viewer_without_the_session_cannot_lock_its_answers(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
     from gateway.session_server_requests import resolve

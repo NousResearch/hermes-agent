@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
+from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import bash_argv, ensure_lazy_dep
+from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def _snapshot_store() -> Path:
 
 
 def _load_snapshots() -> dict:
-    return _load_json_store(_snapshot_store())
+    return read_json_or_empty(_snapshot_store())
 
 
 def _update_snapshots(update: Callable[[dict], None]) -> None:
@@ -133,6 +134,9 @@ class ModalEnvironment(BaseEnvironment):
     wrapping async SDK calls, cancel_fn wired to sandbox.terminate for interrupt support."""
 
     _stdin_mode = "payload"
+    # The askpass prologue checks sudo ``-A`` support inside each command, so no capability probe
+    # runs here (a timed-out probe could only be cancelled by stopping the sandbox).
+    _sudo_askpass_runtime_checked = True
     _snapshot_timeout = 60  # Modal cold starts can be slow
     # Modal SDK stdin buffer limit: the command-router path allows 16 MB but the legacy server
     # path caps at 2 MB, so chunks stay under 2 MB and each is flushed individually via drain().
@@ -278,5 +282,10 @@ class ModalEnvironment(BaseEnvironment):
         except Exception:
             pass
         finally:
-            self._worker.stop()
-            self._sandbox = self._app = None
+            # Drop the handle before stopping the worker: a racing loop shutdown inside stop()
+            # must not leave a terminated sandbox looking live (or raise out of cleanup).
+            worker, self._sandbox, self._app = self._worker, None, None
+            try:
+                worker.stop()
+            except Exception as e:
+                logger.debug("Modal: worker stop after terminate failed: %s", e, exc_info=True)

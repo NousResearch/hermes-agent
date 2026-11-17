@@ -4,7 +4,7 @@ One ``CDPSupervisor`` per Hermes ``task_id`` with a reachable CDP endpoint: one
 persistent WebSocket, ``Page`` / ``Runtime`` / ``Target`` events on every attached
 session (top page + auto-attached OOPIF / worker targets), pending dialogs + frame
 tree exposed via a thread-safe snapshot. Not in the tool schema — output reaches the
-agent via ``browser_snapshot`` / ``browser_dialog``. Dialog capture and frame tracking
+agent via ``browser_dialog``. Dialog capture and frame tracking
 are mixins (``browser_supervisor_dialogs`` / ``browser_supervisor_frames``).
 Design spec: ``website/docs/developer-guide/browser-supervisor.md``.
 """
@@ -88,7 +88,7 @@ class SupervisorSnapshot:
     task_id: str
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize for inclusion in ``browser_snapshot`` output."""
+        """Serialize for inclusion in tool output."""
         out: dict[str, Any] = {"pending_dialogs": [d.to_dict() for d in self.pending_dialogs], "frame_tree": self.frame_tree}
         if self.recent_dialogs:
             out["recent_dialogs"] = [d.to_dict() for d in self.recent_dialogs]
@@ -127,6 +127,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._pending_calls: dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        # The tab the task's browser_exec daemon last drove (``set_driven_target``); ``focus_page`` prefers it.
+        self._driven_target_id: Optional[str] = None
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: dict[str, asyncio.TimerHandle] = {}
         self._dialog_seq = 0
@@ -265,12 +267,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
+    def set_driven_target(self, target_id: Optional[str]) -> None:
+        """Record the CDP target the task's browser_exec session drives (None: unknown)."""
+        with self._state_lock:
+            self._driven_target_id = target_id
+
     def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> dict[str, Any]:
         """Re-attach the supervisor's page session to an open page target on ``origin``
         (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
         ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
-        so a login and a checkout tab on one site resolve to the right one. Returns
+        so a login and a checkout tab on one site resolve to the right one. When the tab browser_exec
+        drives (``set_driven_target``) is on ``origin`` it is the only candidate, probe or not: on a shared
+        CDP browser the first same-origin tab can be another session's or a stale one. Returns
         ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
         loop = self._loop
         if loop is None or not loop.is_running():
@@ -296,12 +305,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         candidates.append((t["targetId"], url))
                 except Exception:
                     continue
+            with self._state_lock:
+                driven = self._driven_target_id
+            probe = accept
+            if own := [c for c in candidates if c[0] == driven]:
+                # Focus our own tab even before its form renders (the fill then finds no field) rather
+                # than let the probe fall through to another session's tab on the same origin.
+                candidates, probe = own, None
             for target_id, url in candidates:
                 sid = await _attach(target_id)
-                if accept:
-                    probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
-                                            session_id=sid, timeout=timeout)
-                    if not probe.get("result", {}).get("result", {}).get("value"):
+                if probe:
+                    probed = await self._cdp("Runtime.evaluate", {"expression": probe, "returnByValue": True},
+                                             session_id=sid, timeout=timeout)
+                    if not probed.get("result", {}).get("result", {}).get("value"):
                         await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
                         continue
                 with self._state_lock:
@@ -369,7 +385,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
     async def _run(self) -> None:
         """Top-level reconnecting supervisor coroutine. Browserbase tears down the CDP
-        socket whenever a short-lived client (agent-browser's per-command CDP client)
+        socket whenever a short-lived client (a per-call browser_cdp or harness CDP connection)
         disconnects, so on drop we reset per-session ids, re-attach, and keep going.
         A failure before the first successful attach is fatal for ``start()``."""
         reconnect_failures, last_success_at, backoff = 0, 0.0, 0.5
@@ -504,6 +520,7 @@ class _SupervisorRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_task: dict[str, CDPSupervisor] = {}
+        self._home_by_task: dict[str, str] = {}  # profile home that started it (``stop_home``)
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
@@ -511,6 +528,7 @@ class _SupervisorRegistry:
 
     def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
+            self._home_by_task.pop(task_id, None)
             return self._by_task.pop(task_id, None)
 
     def capture(self, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
@@ -524,6 +542,8 @@ class _SupervisorRegistry:
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
         different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+        from hermes_constants import hermes_home_key
+        home = hermes_home_key()
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:
@@ -545,6 +565,7 @@ class _SupervisorRegistry:
                 supervisor.stop()
                 return already
             self._by_task[task_id] = supervisor
+            self._home_by_task[task_id] = home
         return supervisor
 
     def stop(self, task_id: str) -> None:
@@ -552,11 +573,19 @@ class _SupervisorRegistry:
         if supervisor is not None:
             supervisor.stop()
 
+    def stop_home(self, home_key: str) -> None:
+        """Stop the supervisors one profile home started (``/browser connect`` on a multiplexed gateway)."""
+        with self._lock:
+            tasks = [task for task, home in self._home_by_task.items() if home == home_key]
+        for task_id in tasks:
+            self.stop(task_id)
+
     def stop_all(self) -> None:
         """Stop every running supervisor. For shutdown / test teardown."""
         with self._lock:
             items = list(self._by_task.values())
             self._by_task.clear()
+            self._home_by_task.clear()
         for supervisor in items:
             supervisor.stop()
 

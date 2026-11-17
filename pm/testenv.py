@@ -18,6 +18,13 @@ NAME = "test-environment"
 # CI lanes pass their wider provider matrix explicitly.
 DEFAULT_TEST_EXTRAS = ("all",)
 GROUPS = ("dev", "test")
+# Optional pm packages a checkout's developers run; user installs never request them.
+DEVELOPER_TOOLS = ("just",)
+
+
+def developer_tools(pinned: Sequence[str]) -> list[str]:
+    """The developer tools this lockfile pins; an older lockfile without one still installs."""
+    return [name for name in DEVELOPER_TOOLS if name in pinned]
 
 
 def testenv_root(project_root: Path) -> Path:

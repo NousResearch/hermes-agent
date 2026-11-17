@@ -1,5 +1,14 @@
 // A profile rename keeps its sessions: every localStorage family keyed by the old profile name must move
 // to the new one, or the restored tabs dial a backend that no longer exists and 404 forever (#111868).
+
+// Loaded once at collection, outside every test's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. Without this the first
+// test pays the cold transform of the whole graph and times out on a loaded runner.
+import '@/lib/storage'
+import '@/store/session'
+import '@/store/session-states'
+import '@/store/transcript-tail-cache'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('migrateTilesForProfile', () => {

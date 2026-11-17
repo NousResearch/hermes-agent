@@ -177,6 +177,8 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert model_supports_fast_mode("claude-opus-5-5") is True
         assert model_supports_fast_mode("claude-opus-5.5") is True
         assert model_supports_fast_mode("anthropic/claude-opus-5.5") is True
+        assert model_supports_fast_mode("claude-mythos-5-2") is True
+        assert model_supports_fast_mode("anthropic/claude-mythos-5.2") is True
         # Dated snapshot ids resolve to their family
         assert model_supports_fast_mode("claude-opus-4-8-20260601") is True
 
@@ -203,6 +205,7 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert model_supports_fast_mode("anthropic/claude-opus-5-fast") is False
         assert model_supports_fast_mode("claude-opus-5-6") is False
         assert model_supports_fast_mode("claude-fable-5") is False
+        assert model_supports_fast_mode("claude-mythos-5-1") is False
         assert model_supports_fast_mode("anthropic/claude-sonnet-4.6") is False
         assert model_supports_fast_mode("anthropic/claude-opus-4-7") is False
 

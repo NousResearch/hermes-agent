@@ -118,14 +118,15 @@ class Installed:
     # -- edges -----------------------------------------------------------------
     def edge(self, *, assets: N.App | None = None, git: N.App | None = None,
              extra: dict[str, N.App] | None = None, sites: Iterable[N.HttpSite] = (),
-             eof_hosts: Iterable[str] = (), auth: tuple[str, str] | None = None) -> Edge:
+             eof_hosts: Iterable[str] = (), auth: tuple[str, str] | None = None,
+             tunnel_unrouted: bool = False) -> Edge:
         """Proxy routes: the release-channel host (default: no records published, so ``main``
         follows the branch), github.com (default: the git server over the bare origin)."""
         routes = {ASSETS: assets or N.static_app({}), "github.com": git or N.git_app(self.gitroot)}
         routes.update(extra or {})
         for host in eof_hosts:
             routes.pop(host, None)
-        proxy = N.EdgeProxy(self.ca, routes, eof_hosts=eof_hosts, auth=auth)
+        proxy = N.EdgeProxy(self.ca, routes, eof_hosts=eof_hosts, auth=auth, tunnel_unrouted=tunnel_unrouted)
         return Edge(self, proxy, list(sites), use_auth=auth is not None)
 
     # -- running -----------------------------------------------------------------
@@ -185,19 +186,25 @@ class Installed:
         return self.hermes("--version", edge=None, timeout=120)
 
 
-def seed_install(root: Path) -> Installed:
+def seed_install(root: Path, release: str | None = None) -> Installed:
+    """HEAD by HEAD's installer, or ``release`` (a commit) by that release's own installer."""
     root.mkdir(parents=True, exist_ok=True)
-    origin = I.make_origin(root, I.head_sha())
+    origin = I.make_origin(root, release or I.head_sha())
     I.git("config", "uploadpack.allowFilter", "true", cwd=origin)
     sb = I.new_sandbox(root / "sb", origin)
     # The host's SSL_CERT_FILE (allowlisted by _helpers) would replace the sandbox's trust store
     # and hide the corporate root the cells install; the cells control trust explicitly.
     sb.env.pop("SSL_CERT_FILE", None)
     script = sb.root / "install.sh"
-    shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
+    if release is None:
+        shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
+    else:
+        script.write_text(I.git("show", f"{release}:scripts/install.sh", cwd=H.WORKTREE) + "\n", encoding="utf-8")
     cp = sb.run(["bash", str(script), "--non-interactive", "--skip-browser"], timeout=1800, input="",
                 env=I.fresh_install_env(sb))
     assert cp.returncode == 0, "seed install failed:\n" + I.describe(cp)
+    if release is not None:
+        assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == release, f"the installer did not install {release[:12]}"
     I.pin_main_channel(sb)  # cells publish commits, not releases (test_release_channel_records opts back into stable)
     # From here on the checkout talks to the official URL, which only the proxy can serve.
     (sb.home / ".gitconfig").write_text("", encoding="utf-8")

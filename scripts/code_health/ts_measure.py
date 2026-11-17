@@ -14,8 +14,9 @@ _SCRIPT = Path(__file__).with_name("ts_units.mjs")
 
 
 def pinned_typescript(repo: Path) -> str:
-    lock = json.loads((repo / "package-lock.json").read_text(encoding="utf-8-sig"))
-    return lock["packages"]["node_modules/typescript"]["version"]
+    # The root manifest pins typescript exactly; pnpm-lock.yaml records the same version.
+    manifest = json.loads((repo / "package.json").read_text(encoding="utf-8-sig"))
+    return manifest["devDependencies"]["typescript"]
 
 
 def _version_at(pkg_dir: Path) -> str | None:
@@ -35,8 +36,9 @@ def _install(repo: Path, prefix: Path, pin: str) -> None:
     if not npm:
         raise RuntimeError("code health needs node + npm to measure TypeScript files")
     prefix.mkdir(parents=True, exist_ok=True)
-    # With --prefix, npm reads <prefix>/.npmrc as the project config and never the repo's, so
-    # the repo's install policy (min-release-age, registry) is copied in to apply here too.
+    # With --prefix, npm reads <prefix>/.npmrc as the project config and never the repo's, so a
+    # repo .npmrc (registry, auth) is copied in to apply here too. The pin itself already cleared
+    # pnpm's release-age gate when the lockfile took it.
     npmrc = repo / ".npmrc"
     if npmrc.is_file():
         shutil.copyfile(npmrc, prefix / ".npmrc")

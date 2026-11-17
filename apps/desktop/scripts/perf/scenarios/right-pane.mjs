@@ -11,7 +11,7 @@
 //   - ProjectTree + per-path row renders
 //   - frame pacing / slow frames
 //
-//   npm run perf -- right-pane --spawn --prod --runs 3
+//   pnpm run perf right-pane --spawn --prod --runs 3
 
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'

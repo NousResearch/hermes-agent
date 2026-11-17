@@ -1,0 +1,19 @@
+name: munin
+repo: https://github.com/Munin-Labs-AI/munin-hermes-plug-in
+sha: 5fbcc6905b19ab1bd92a3c407f7175287fd61ce4
+description: "Munin meeting notes for Hermes Agent: ask what was decided in your last meeting, get a follow-up with every action item checked against the transcript and cited by meeting id, line id and clock time, and search who said what across meetings, through the hosted Munin MCP server (Streamable HTTP, OAuth 2.1 with PKCE and DCR) with two workflow skills bundled (munin-followup, munin-recall). Portable Agent Plugins v1 package (mcp.json + skills/), no plugin code. Disclosure — hosted-only connector: every tool call goes to the vendor's remote MCP server at app.muninlabs.ai; meeting notes, transcript lines, titles and people's names from the user's Munin account are pulled into the session context. On Munin's consent page the user picks a read-only or an editable connection; an editable one lists the server's two write tools (set_speaker renames a speaker in one meeting, import_meeting saves a meeting from another app). The package declares the server untrusted so Hermes asks before any write-capable call, but the `hermes mcp add munin --url https://app.muninlabs.ai/mcp --auth oauth` config entry that OAuth requires replaces that setting unless the user adds `trust: untrusted` to it (the README shows how); then `hermes mcp login munin`, since the bundled mcp.json alone yields 401. No local code, no hooks, no env vars, no telemetry, no self-update."
+maintainer: Munin Labs
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Munin-Labs-AI/munin-hermes-plug-in#readme
+version: "0.1.0"
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/Munin-Labs-AI/munin-hermes-plug-in/5fbcc6905b19ab1bd92a3c407f7175287fd61ce4/assets/recall.png
+  - https://raw.githubusercontent.com/Munin-Labs-AI/munin-hermes-plug-in/5fbcc6905b19ab1bd92a3c407f7175287fd61ce4/assets/followup.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

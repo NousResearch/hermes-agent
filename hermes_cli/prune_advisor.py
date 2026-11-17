@@ -203,11 +203,8 @@ def advise(home: Optional[Path] = None) -> Optional[Advice]:
 
 
 def _read_estimate(home: Optional[Path]) -> dict:
-    try:
-        data = json.loads((_home(home) / _ESTIMATE_FILE).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    from utils import read_json_or_empty
+    return read_json_or_empty(_home(home) / _ESTIMATE_FILE)
 
 
 def _store_estimate(home: Optional[Path], **fields) -> None:
@@ -346,15 +343,15 @@ def decide(enable: bool, home: Optional[Path] = None) -> bool:
     """Persist the user's answer as an explicit ``sessions.auto_prune``; ends the prompt for good.
     False when the save failed or did not take effect (an administrator-managed value wins)."""
     import hermes_yaml as yaml
+    from hermes_cli.config_backend import ConfigWriteError, write_config_key
     from hermes_constants import mkdir_under_hermes_home
-    from utils import atomic_roundtrip_yaml_update
     if managed():
         return False
     path = _home(home) / "config.yaml"
     try:
         mkdir_under_hermes_home(path.parent)
-        atomic_roundtrip_yaml_update(path, "sessions.auto_prune", bool(enable))
-    except (OSError, ValueError, yaml.YAMLError) as exc:
+        write_config_key(path, "sessions.auto_prune", bool(enable))
+    except (OSError, ValueError, yaml.YAMLError, ConfigWriteError) as exc:
         logger.warning("Could not save sessions.auto_prune: %s", exc)
         return False
     try:

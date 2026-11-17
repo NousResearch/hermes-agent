@@ -139,25 +139,25 @@ class TestTierInvariants:
 
 class TestBrowserPassthroughPattern:
     def test_browser_keys_recoverable_after_strip(self):
-        """Browser tool pattern: strip everything, then re-add the browser
-        backend keys agent-browser actually needs."""
-        from tools.browser_tool import _BROWSER_PASSTHROUGH_KEYS
+        """browser_exec pattern: strip everything, then re-add only the key
+        the browser harness itself reads."""
+        from tools.browser_use_cli import _HARNESS_PASSTHROUGH_KEYS
 
         leaked = {
+            "BROWSER_USE_API_KEY": "bu-key",
             "BROWSERBASE_API_KEY": "bb-key",
-            "BROWSERBASE_PROJECT_ID": "bb-proj",
-            "FIRECRAWL_API_KEY": "fc-key",
             "ANTHROPIC_API_KEY": "ant-should-go",
             "TELEGRAM_BOT_TOKEN": "bot-should-go",
         }
         with patch.dict(os.environ, {**_SAFE_SAMPLE, **leaked}, clear=True):
             env = hermes_subprocess_env(inherit_credentials=False)
-            for key in _BROWSER_PASSTHROUGH_KEYS:
+            for key in _HARNESS_PASSTHROUGH_KEYS:
                 if key in os.environ:
                     env[key] = os.environ[key]
 
-        assert env["BROWSERBASE_API_KEY"] == "bb-key"
-        assert env["FIRECRAWL_API_KEY"] == "fc-key"
+        assert env["BROWSER_USE_API_KEY"] == "bu-key"
+        # Cloud-provider keys stay in-process (sessions are created over HTTP), never in the child.
+        assert "BROWSERBASE_API_KEY" not in env
         # Provider + gateway secrets must NOT come back.
         assert "ANTHROPIC_API_KEY" not in env
         assert "TELEGRAM_BOT_TOKEN" not in env

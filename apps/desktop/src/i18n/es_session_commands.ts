@@ -6,6 +6,10 @@ export const esSessionCommands = {
   undidOther: (count: string) => `se deshicieron ${count} mensajes — el mensaje eliminado está en el compositor`,
   retryNothing: 'nada que reintentar',
   retryUnsupported: '/retry: no se pueden reintentar contenidos multimedia o partes desconocidas',
+  busy: (command: string) =>
+    `sesión ocupada — Hermes sigue respondiendo. Detén primero la respuesta actual (botón Detener o Ctrl+C en una terminal) y luego ejecuta /${command}.`,
+  busyCompressing: (command: string) =>
+    `sesión ocupada — se está ejecutando un /compress; ejecuta /${command} cuando termine.`,
   steerUsage: 'uso: /steer <prompt>',
   steerQueued: (preview: string) => `indicación en cola — llega tras la próxima llamada a herramienta: "${preview}"`,
   steerNoActiveTurn: (preview: string) => `no hay turno activo — en cola para el siguiente: "${preview}"`,

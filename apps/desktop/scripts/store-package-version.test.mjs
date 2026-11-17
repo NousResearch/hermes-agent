@@ -1,13 +1,16 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { AppInfo } from 'app-builder-lib'
 import { afterEach, expect, test, vi } from 'vitest'
 import { appIdentity, storeManifestTemplate, storePackageVersion, storePackageVersionAt } from '../../../scripts/msix-shared.mjs'
 import { stageReleaseManifest, stageStoreManifest } from './before-build.mjs'
-import { AppInfo } from '../../../node_modules/app-builder-lib/dist/appInfo.js'
-import { substituteManifestMacros } from '../../../node_modules/app-builder-lib/dist/targets/win/winAppUtil.js'
+
+const require = createRequire(import.meta.url)
+const { substituteManifestMacros } = require(path.join(path.dirname(require.resolve('app-builder-lib')), 'targets', 'win', 'winAppUtil.js'))
 
 const roots = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })

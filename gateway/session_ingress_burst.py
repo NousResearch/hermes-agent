@@ -19,6 +19,7 @@ import logging
 import time
 
 from gateway.platforms.event import MessageEvent, MessageType
+from hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +58,12 @@ async def burst_gate(adapter, event, session_key):
     """``handle_message``'s entry check. True: a held or committing burst owns the route, so this
     shared-runtime input must queue behind it. A command on a serial reader first waits for every
     input that reader already returned on, as main's reader reached it only after their commits:
-    /stop, /new and /reset drop their own chat's held burst (main dropped the debounce buffer),
-    every other held burst commits now, and every pending commit lands before the command runs."""
+    every held burst commits now, and every pending commit lands before the command runs. That
+    includes the chat's own burst under /stop, /new and /reset: the sender is not authorized yet,
+    so an accepted command cancels the queued row (``_hm_stop_owner_turn``), a refused one keeps it."""
     if adapter._shared_runtime_owns_input(event):
         return holds_busy_burst(adapter, session_key)
-    if (cmd := event.get_command()) and _serial(adapter):
-        from hermes_cli.commands import is_interrupt_then_dispatch
-        if is_interrupt_then_dispatch(cmd):
-            discard_busy_burst(adapter, session_key)
+    if event.get_command() and _serial(adapter):
         for key, burst in list(adapter.__dict__.get('_shared_bursts', {}).items()):
             _flush(adapter, key, burst)
         if pending := list(adapter.__dict__.get('_shared_burst_commits', {}).values()):
@@ -79,12 +78,14 @@ async def dispatch_busy_burst(adapter, event, session_key):
     queue-mode TEXT+TEXT burst first."""
     from gateway.platforms.base import merge_pending_message_event
     from gateway.session_ingress import dispatch_shared_busy
+    stamp_busy_arrival(adapter, event)
     kind, bursts = _kind(adapter, event), _state(adapter, '_shared_bursts')
     while (burst := bursts.get(session_key)) is not None:
         if kind is not None and kind == _kind(adapter, burst.head) and adapter._can_merge_text_debounce_events(
                 burst.head, event):
             merge_pending_message_event({session_key: burst.head}, session_key, event, merge_text=kind == 'text')
             burst.absorbed.append(event)
+            note_busy_merged(burst.head, event)
             burst.last_ts = time.monotonic()
             _arm(adapter, session_key, burst)
             return await _accepted(adapter, burst, event)
@@ -170,9 +171,45 @@ def _settle(burst, task):
         burst.done.set_result(None)
 
 
+def _undurable(adapter):
+    """Inputs the reader already returned on that are not committed yet: held bursts, burst commits
+    and busy inputs released before their commit (``session_ingress._hold_until_committed``)."""
+    pending = [burst.done for burst in adapter.__dict__.get('_shared_bursts', {}).values()]
+    pending += [*adapter.__dict__.get('_shared_burst_commits', {}).values(),
+                *adapter.__dict__.get('_uncommitted_inputs', ())]
+    return [future for future in pending if not future.done()]
+
+
+async def when_returned_inputs_durable(adapter, persist):
+    """Run ``persist()`` once every input a serial reader returned on is committed: a reader that
+    saves its own receive cursor after the call returns (Buzz) must not advance it past a held burst,
+    or a restart in the hold window loses it. Inline when nothing is pending; otherwise one tracked
+    task per adapter, so the reader reads on (a lost cursor write only replays inputs admission
+    already holds). ``persist`` carries the cursor as of this call; while that task waits, a newer
+    call replaces it, and the task picks the newest in the same step that saw nothing pending, so
+    an input that arrives during the write's I/O is never in it."""
+    if getattr(adapter, '_durable_persist', None) is not None:
+        adapter._durable_persist = persist
+        return
+    if not _undurable(adapter):
+        await persist()
+        return
+    adapter._durable_persist = persist
+
+    async def later():
+        try:
+            while pending := _undurable(adapter):
+                await asyncio.wait(pending)
+        finally:
+            latest = adapter.__dict__.pop('_durable_persist', None)
+        await latest()
+    _track(adapter, asyncio.create_task(later()))
+
+
 def discard_busy_burst(adapter, session_key):
     """``/stop`` / ``/new`` drop a held burst as main dropped its debounce buffer; nothing was ACKed."""
     burst = adapter.__dict__.get('_shared_bursts', {}).pop(session_key, None)
     if burst is not None:
         burst.timer.cancel()
+        settle_busy_arrival(burst.head, discarded=True)
         burst.done.done() or burst.done.set_result(None)

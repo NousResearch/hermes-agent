@@ -90,6 +90,8 @@ class CLIProcessNotificationsMixin:
             user_input = user_input.text
         is_seeded_query = isinstance(user_input, _SeededQueryMessage)
         if is_seeded_query:
+            from hermes_cli.gateway_tools_notify import arm_adopted
+            arm_adopted(self, user_input)
             user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
         return user_input, is_voice_input, is_seeded_query
 

@@ -67,19 +67,27 @@ export function useClarifyKeys({
     [formRef, onOtherFocus]
   )
 
+  // A multi-select is never "open": zero picks is a valid answer ("pick any"). Counting it
+  // open would let plain Enter jump onto its first row, where Enter only toggles a choice,
+  // so mashing Enter would flip that choice on and off forever and never send the set.
+  const isOpen = useCallback(
+    (question: ClarifyQuestion | undefined) => Boolean(question && !question.multiSelect && !isStaged(question)),
+    [isStaged]
+  )
+
   const nextUnstaged = useCallback(
     (index: number): null | number => {
       for (let offset = 1; offset < questions.length; offset += 1) {
         const candidate = (index + offset) % questions.length
 
-        if (!isStaged(questions[candidate])) {
+        if (isOpen(questions[candidate])) {
           return candidate
         }
       }
 
       return null
     },
-    [isStaged, questions]
+    [isOpen, questions]
   )
 
   const pick = useCallback(
@@ -137,7 +145,18 @@ export function useClarifyKeys({
     }
 
     if (isStaged(active, row)) {
-      onConfirm()
+      // Plain Enter submits the set only once no question is open, from any question (the
+      // last one included); otherwise it moves to the first open one, so a set is never sent
+      // half answered by accident (Cmd/Ctrl+Enter still submits from anywhere).
+      const next = questions.findIndex(isOpen)
+
+      if (next < 0) {
+        onConfirm()
+      } else if (questions[next]?.choices?.length) {
+        setCursor({ question: next, row: 0 })
+      } else {
+        focusOther(next)
+      }
 
       return
     }
@@ -149,7 +168,7 @@ export function useClarifyKeys({
     }
 
     focusOther(questionIndex)
-  }, [active, focusOther, isStaged, onConfirm, pick, questionIndex, row])
+  }, [active, focusOther, isOpen, isStaged, onConfirm, pick, questionIndex, questions, row])
 
   useEffect(() => {
     if (!enabled || !active) {

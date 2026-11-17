@@ -22,6 +22,8 @@ _REASON_HARD_STOP = "explicit stop requested"
 _REASON_NEW_MESSAGE = "user sent a new message"
 _REASON_USER_INTERRUPT = "user interrupt"
 USER_INTERRUPT_REASONS = frozenset({_REASON_HARD_STOP, _REASON_NEW_MESSAGE, _REASON_USER_INTERRUPT})
+# ``tool_reason`` the gateway's restart/shutdown stop passes (gateway.run._INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN).
+_REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
 
 
 def interrupt_issuer(agent) -> Optional[str]:
@@ -188,9 +190,14 @@ class InterruptControlMixin:
         )
 
         def _publish_interrupt_state() -> None:
+            # A shutdown stop never relabels a user Stop already pending (the user's Stop wins): the turn
+            # records the first cause, so it is not announced as interrupted by the restart. A pending
+            # redirect (a mid-request correction) is not a Stop: the restart drops it and is the cause.
+            if not (tool_reason == _REASON_GATEWAY_SHUTDOWN and getattr(self, "_interrupt_requested", False)
+                    and getattr(self, "_tool_interrupt_reason", None) in USER_INTERRUPT_REASONS):
+                self._interrupt_message = message
+                self._tool_interrupt_reason = tool_interrupt_reason
             self._interrupt_requested = True
-            self._interrupt_message = message
-            self._tool_interrupt_reason = tool_interrupt_reason
             self._turn_user_intervened = True
             # The turn record and the log must agree on WHO asked for the stop (#112647).
             logger.info("Interrupt requested (%s): %s", "hard" if hard_cancel else "soft", tool_interrupt_reason)

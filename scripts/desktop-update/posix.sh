@@ -130,6 +130,19 @@ owed_followup_steps() { # $OUT -> the distinct owed steps, space-separated, in p
     | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ *$//'
 }
 
+update_output_tail() { # $OUT -> the updater's last non-empty output lines, one line each
+  # The shim window and the next-boot result dialog are the only surfaces a
+  # user can reach when the update failed; the exit code alone never names
+  # the failing layer (#137327). $OUT is the run's slice of the hand-off log,
+  # which interleaves our own log() lines (a leading ISO timestamp) with the
+  # updater's output — keep only the updater's, strip progress escapes (ANSI;
+  # of a CR-overwritten progress line only the final state the terminal
+  # showed), and bound it: three lines of at most 120 characters each.
+  printf '%s' "$OUT" | awk '{ sub(/\r+$/, ""); n = split($0, seg, "\r"); print seg[n] }' | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" \
+    | grep -v -e '^[[:space:]]*$' -e '^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}T' | tail -n 3 \
+    | while IFS= read -r _tail_line; do printf '%s\n' "${_tail_line:0:120}"; done
+}
+
 # The marker (contract C1/C2 + the A7 lock): parsing, identity, claim, delegate,
 # release and the Desktop's helper ops live in marker.sh.
 MY_PID=$$ MY_CT=""
@@ -670,6 +683,20 @@ deliver_outcome() { # the truth-determining half: swap bundles / gate the relaun
   fi
 }
 
+restore_user_proxy_env() { # port of restoreUserProxyEnv (electron/updater/system-proxy-env.ts):
+  # the Desktop gave its system proxy to the update only; the relaunched app gets the user's own env.
+  local key saved keys
+  IFS=, read -r -a keys <<< "${HERMES_UPDATE_SYSTEM_PROXY:-}"
+  for key in ${keys[@]+"${keys[@]}"}; do
+    case "$key" in HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|no_proxy) unset "$key" ;; esac
+  done
+  for key in NO_PROXY no_proxy; do
+    saved="HERMES_UPDATE_USER_$key"
+    if printenv "$saved" >/dev/null; then export "$key=$(printenv "$saved")"; unset "$saved"; fi
+  done
+  unset HERMES_UPDATE_SYSTEM_PROXY
+}
+
 launch_app() { # attempted BEFORE the terminal event (launch acceptance is
   # part of the outcome — gille's review). Returns nonzero when a launch
   # was due but did not verifiably happen; caller downgrades to manual.
@@ -687,7 +714,7 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     /usr/bin/xattr -dr com.apple.quarantine "$RELAUNCH_TARGET" 2>/dev/null || true
     # `open` talks to launchd and FAILS LOUDLY on a broken/unlaunchable
     # bundle — its exit code IS launch acceptance here.
-    /usr/bin/open "$RELAUNCH_TARGET" || { log "WARNING: open rejected the app"; return 1; }
+    ( restore_user_proxy_env; /usr/bin/open "$RELAUNCH_TARGET" ) || { log "WARNING: open rejected the app"; return 1; }
   elif [ "$GATE" = "relaunch" ]; then
     # setsid only proves the wrapper shell started, so verify acceptance:
     # spawn, then confirm the child is still alive shortly after — an
@@ -695,6 +722,7 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     # within the window and downgrades to manual instead of lying.
     (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
      # The relaunched app must not inherit the hand-off's update env.
+     restore_user_proxy_env
      env -u HERMES_UPDATE_STATUS_FILE -u HERMES_UPDATE_STARTED_AT -u HERMES_UPDATE_HANDOFF_PID -u PYTHONUNBUFFERED \
        setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
      echo $! > "$STATUS.launchpid") || { log "WARNING: relaunch spawn failed"; return 1; }
@@ -1303,6 +1331,11 @@ elif [ "$CODE" -ne 2 ] && update_committed_after_exit; then
   add_warning "update" "hermes update exited $CODE after the commit point (receipt outcome: $RECEIPT_OUTCOME)"
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
+  # Name the failing layer where the user can see it: the updater's own tail
+  # rides the result file and the shim message (empty output keeps the
+  # original generic copy, byte-identical).
+  FAIL_EXCERPT="$(update_output_tail | tr '\n' ' ' | sed 's/ *$//')"
+  [ -z "$FAIL_EXCERPT" ] || FINAL_MSG="$FINAL_MSG Last output: $FAIL_EXCERPT"
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).

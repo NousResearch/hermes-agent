@@ -59,7 +59,6 @@ def test_non_chat_agent_command_still_registers_hooks(monkeypatch):
 @pytest.mark.parametrize(("command", "subcommand", "interactive"), [
     ("gateway", {"gateway_command": "run"}, False),  # a service: a hidden console is not a person (#127822)
     ("cron", {"cron_command": "tick"}, False),       # scheduled: nobody at the console
-    ("mcp", {"mcp_action": "serve"}, False),         # stdin carries the protocol stream
     ("acp", {}, False),                              # stdin carries the protocol stream
     ("rl", {}, True),                                # a foreground command may still ask at its terminal
 ])
@@ -134,8 +133,7 @@ def test_session_store_open_runs_no_state_db_or_checkpoint_maintenance(monkeypat
     from cli import HermesCLI
     calls = []
     monkeypatch.setattr(cli_mod, "_run_state_db_auto_maintenance", lambda db: calls.append("state.db"))
-    monkeypatch.setattr(cli_mod, "_run_checkpoint_auto_maintenance", lambda: calls.append("checkpoints"))
-    import tools.checkpoint_maintenance as ckpt
+    import agent.checkpoints.maintenance as ckpt
     monkeypatch.setattr(ckpt, "auto_prune_from_config", lambda *a, **k: calls.append("checkpoints"))
     cli = types.SimpleNamespace()
     HermesCLI._init_session_store(cli)

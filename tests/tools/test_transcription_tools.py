@@ -282,17 +282,21 @@ class TestTranscribeLocalCommand:
 
         class Proc:
             returncode = 0
+            pid = 4242
             stdout = _Stream()
             stderr = _Stream()
 
             def wait(self, timeout=None):
                 return 0
 
+            def poll(self):
+                return 0
+
         def fake_popen(command, **kwargs):
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
 
         from tools.transcription_command import _run_command_stt
 

@@ -109,7 +109,8 @@ def _spawn_worker(env: dict[str, str]) -> subprocess.Popen:
     if path_entry and path_entry not in child_pythonpath.split(os.pathsep):
         env["PYTHONPATH"] = path_entry + os.pathsep + child_pythonpath if child_pythonpath else path_entry
     worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_search_worker.py")
-    # Own process group/session so terminate/kill also reach a hung primp grandchild.
+    # Own process group/session. The 30 s cap terminates then kills the worker's pid only, not its group.
+    # detached-spawn: ok — awaited under a 30 s cap that kills the worker; an owner killed mid-search leaves it running until that search returns (unbounded if primp hangs)
     extra_kwargs: dict[str, Any] = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
     # stdin/stdout/stderr stay explicit keyword args so scripts/check_subprocess_stdin.py sees them
     # (TUI gateway inherits stdin). stderr=DEVNULL: a chatty child would deadlock a stdout-only drain.

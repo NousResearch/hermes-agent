@@ -138,6 +138,15 @@ def _ledger_busy(runner) -> str | None:
     return None
 
 
+def _profile_start_busy(runner) -> str | None:
+    """A profile hot-serve is still building has no authority to walk yet, but its queued admissions
+    are recovered once it starts; exiting now would cancel that start. A filled or failed start
+    leaves the registry's starting set, so the hold ends with it."""
+    registry = getattr(runner, "session_authorities", None)
+    starting = registry.starting_homes() if registry is not None else ()
+    return f"profile starting in {starting[0]}" if starting else None
+
+
 def _store_gates_busy(homes) -> str | None:
     from gateway.run_idle_gates import (
         profile_has_active_heartbeat, profile_has_active_loop, profile_has_pending_handoff)
@@ -149,18 +158,36 @@ def _store_gates_busy(homes) -> str | None:
     return None
 
 
-def busy_reason(runner, *, window: float) -> str | None:
-    """Why the gateway must stay up, or None when it may exit. Fails closed on any error."""
+def _attaching(runner) -> bool:
+    tickets = getattr(runner, "session_ticket_store", None)
+    return tickets is not None and tickets.outstanding()
+
+
+def _client_busy(runner, window: float) -> str | None:
+    clients = getattr(runner, "_idle_exit_clients", 0)
+    if clients:
+        return f"{clients} client(s) attached"
+    if _attaching(runner):
+        return "client attaching"
+    quiet = time.monotonic() - getattr(runner, "_idle_exit_last_activity", 0.0)
+    if quiet < window:
+        return f"client activity {quiet:.0f}s ago"
+    return None
+
+
+def busy_reason(runner, *, window: float, count_clients: bool = True) -> str | None:
+    """Why the gateway must stay up, or None when it may exit. Fails closed on any error.
+
+    ``count_clients=False``: a restart is pending, and an attached or returning client is exactly who
+    needs the fresh gateway; every duty nothing would restart (adapters, cron, admissions) still counts.
+    A client mid-attach (unredeemed ticket) still holds it: its first connect would be refused with
+    no rediscovery, while an attached client waits out the drain and starts the fresh gateway.
+    """
     try:
-        clients = getattr(runner, "_idle_exit_clients", 0)
-        if clients:
-            return f"{clients} client(s) attached"
-        tickets = getattr(runner, "session_ticket_store", None)
-        if tickets is not None and tickets.outstanding():
+        if count_clients and (reason := _client_busy(runner, window)):
+            return reason
+        if not count_clients and _attaching(runner):
             return "client attaching"
-        quiet = time.monotonic() - getattr(runner, "_idle_exit_last_activity", 0.0)
-        if quiet < window:
-            return f"client activity {quiet:.0f}s ago"
         if runner._draining or not runner._running:
             return "already stopping"
         if runner._active_work_count():
@@ -168,20 +195,48 @@ def busy_reason(runner, *, window: float) -> str | None:
         if runner._scale_to_zero_has_live_background_work():
             return "background work in flight"
         homes = _served_homes(runner)
-        return (_messaging_busy(runner) or _ledger_busy(runner) or _cron_busy(homes) or _kanban_busy()
-                or _store_gates_busy(homes))
+        return (_messaging_busy(runner) or _ledger_busy(runner) or _profile_start_busy(runner)
+                or _cron_busy(homes) or _kanban_busy() or _store_gates_busy(homes))
     except Exception as exc:
         logger.debug("idle-exit probe failed; staying up", exc_info=True)
         return f"idle probe failed ({type(exc).__name__})"
 
 
-def _begin_idle_exit(runner, window: float) -> None:
+def _begin_idle_exit(runner, window: float, restart: str | None = None) -> None:
     """Withdraw admission synchronously (no await between the last idle check and here), then stop."""
     runner._draining = True
     runner.session_runtime_descriptor.update(state="draining", capabilities=[], drain_reason=IDLE_EXIT_REASON)
-    runner._exit_reason = f"{IDLE_EXIT_STOP_PREFIX} for {window:.0f}s (gateway.unmanaged_idle_exit_seconds)"
+    runner._exit_reason = (f"{IDLE_EXIT_STOP_PREFIX}; restarting to load {restart}" if restart else
+                           f"{IDLE_EXIT_STOP_PREFIX} for {window:.0f}s (gateway.unmanaged_idle_exit_seconds)")
     logger.info("Exiting: %s; the next client starts a fresh gateway", runner._exit_reason)
     runner._idle_exit_stop_task = asyncio.ensure_future(runner.stop())
+
+
+async def _sleep_unless_restart_pending(interval: float) -> None:
+    """Sleep ``interval``, waking within a second of a pending restart: a user retrying right after
+    the failed turn must reach a fresh gateway, not this one. Always sleeps at least one slice, so a
+    pending restart held up by other work is re-probed once a second, never in a spin."""
+    from pm.environments_adopt import restart_pending
+    deadline = time.monotonic() + interval
+    while True:
+        await asyncio.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+        if restart_pending() or time.monotonic() >= deadline:
+            return
+
+
+async def _retired_for_restart(runner, window: float) -> bool:
+    """Retire as soon as nothing but clients holds the gateway when a dependency install this process
+    ran can only load in a new one (``pm.environments_adopt.restart_pending``). Its clients wait out the
+    ``idle_exit`` drain and start a fresh gateway, which boots the new generation."""
+    from pm.environments_adopt import restart_pending
+    if not (restart := restart_pending()):
+        return False
+    if await asyncio.to_thread(busy_reason, runner, window=window, count_clients=False) is not None:
+        return False
+    if busy_reason(runner, window=window, count_clients=False) is not None:
+        return False
+    _begin_idle_exit(runner, window, restart=restart)
+    return True
 
 
 async def unmanaged_idle_exit_watcher(runner) -> None:
@@ -194,11 +249,13 @@ async def unmanaged_idle_exit_watcher(runner) -> None:
     interval = min(30.0, max(0.5, window / 4))
     idle_since = None
     while runner._running and not runner._draining:
-        await asyncio.sleep(interval)
+        await _sleep_unless_restart_pending(interval)
         window = idle_exit_seconds(runner)
         if window <= 0:
             idle_since = None
             continue
+        if await _retired_for_restart(runner, window):
+            return
         # The store/cron/kanban reads touch disk; keep them off the loop, then re-check the
         # loop-only facts (clients, tickets, draining) synchronously right before acting.
         reason = await asyncio.to_thread(busy_reason, runner, window=window)

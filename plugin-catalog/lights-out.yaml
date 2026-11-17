@@ -1,0 +1,17 @@
+name: lights-out
+repo: https://github.com/JannetEkka/lights-out
+sha: "9f12e5ebd5a80a12a8ea4d6d801c9c009ebea11c"
+description: "Nothing billable starts without your yes and its price: every AWS CLI create Hermes runs (EC2, EBS, Elastic IP, NAT gateway, ELBv2, RDS, S3) goes to Hermes's own approval gate from pre_tool_call with a dated us-east-1 price, a local ledger records what was created and how to delete it, and a receipt after the turn shows what is still running and its $/month; /lights out turns off everything not kept (asks first), /lights keep <id> <date> keeps one on purpose until a date, /lights check compares the ledger with the cloud; tools lights_status (read-only) and lights_keep (a proposal the user must approve). Disclosure: runs only through Hermes's terminal tool and your own aws CLI and credentials: read-only describe/list calls for /lights check and once after a create whose output has no ID, and the shown delete commands for /lights out after you say yes; stores a JSON-lines ledger (resource IDs, sizes, prices, times, the creating command lines) in <HERMES_HOME>/plugin-data/lights-out/; one optional ctx.llm call per end-of-session receipt through your own provider (off with summary_sentence: false); never answers or bypasses approvals (YOLO / approvals off auto-approve as configured; cron and non-interactive runs block); no network of its own, no credentials read, no telemetry, no self-updater."
+maintainer: JannetEkka
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.1"
+platforms: [linux]
+docs_url: https://github.com/JannetEkka/lights-out
+image: "https://raw.githubusercontent.com/JannetEkka/lights-out/9f12e5ebd5a80a12a8ea4d6d801c9c009ebea11c/docs/banner.png"
+capabilities:
+  provides_tools: [lights_status, lights_keep]
+  provides_hooks: [pre_tool_call, post_tool_call, on_session_start, pre_llm_call, on_session_finalize, on_session_end]
+  provides_middleware: []
+  requires_env: []

@@ -50,6 +50,7 @@ def _disabled():
 
 async def _wait_for_head(log, session_id, past, deadline):
     """Wait until the log's committed head for *session_id* passes *past*, or *deadline*."""
+    await asyncio.to_thread(log.head, session_id)  # a first read of the file stays off the loop
     while log.head(session_id) <= past and time.monotonic() < deadline:
         await asyncio.sleep(_POLL_S)
     return log.head(session_id)

@@ -223,7 +223,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
 
     def _probe():
         tools = _probe_single_server(name, servers[name], details=details)
-        return tools, (_oauth_tokens_present(name) if needs_oauth_token else True)
+        return tools, (_oauth_tokens_present(name, servers[name].get("url")) if needs_oauth_token else True)
 
     try:  # probe blocks on a dedicated MCP event loop — keep it off the FastAPI loop
         tools, token_present = await asyncio.to_thread(_secret_scoped(profile, _probe))

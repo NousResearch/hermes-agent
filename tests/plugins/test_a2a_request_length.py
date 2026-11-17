@@ -45,3 +45,31 @@ def test_negative_content_length_is_rejected(monkeypatch, oversized):
             await adapter.disconnect()
 
     assert asyncio.run(run()) == 400
+
+
+def test_negative_content_length_rejected_before_body_eof(monkeypatch):
+    """A malformed length must get HTTP 400 without reading body bytes or waiting for EOF."""
+    monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+    monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+    adapter, _ = _make_live_adapter(monkeypatch)
+
+    def headers_only() -> int:
+        headers = (
+            "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer topsecret\r\n"
+            "Content-Type: application/json\r\nContent-Length: -1\r\nConnection: close\r\n\r\n"
+        ).encode("ascii")
+        with socket.create_connection(("127.0.0.1", adapter.port), timeout=10) as sock:
+            sock.settimeout(5)
+            sock.sendall(headers)
+            # Keep the write side open: rfile.read(-1) would wait for EOF.
+            with sock.makefile("rb") as response:
+                return int(response.readline().split(b" ", 2)[1])
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return await asyncio.to_thread(headers_only)
+        finally:
+            await adapter.disconnect()
+
+    assert asyncio.run(run()) == 400

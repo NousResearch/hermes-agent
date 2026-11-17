@@ -30,8 +30,8 @@ def env_group_kill_command(pgid: int, grace: float) -> str:
     matching ``terminal.daemon_term_grace_seconds``). Prints ``ENV_GONE_MARKER`` once
     ``kill -0`` fails with ESRCH; any other failure (EPERM: the member belongs to
     another user) still counts as alive. When the group outlives every signal,
-    prints ``ENV_SURVIVORS_MARKER`` and the member PIDs read from ``/proc`` (none when
-    the sandbox has no ``/proc``)."""
+    prints ``ENV_SURVIVORS_MARKER`` and the member PIDs, read from ``/proc`` or else
+    ``ps`` (none when the sandbox has neither)."""
     if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 1:
         # kill -- -1 signals every process the sandbox user can reach.
         raise ValueError(f"not a sandbox process group id: {pgid!r}")
@@ -45,10 +45,12 @@ def env_group_kill_command(pgid: int, grace: float) -> str:
         f'kill -TERM -- "-$g" 2>/dev/null; wait_gone {term_ticks} && {gone_exit}; '
         f"{escalate}"
         # Field 5 of /proc/<pid>/stat is the pgid; split after the last ") " so a comm with
-        # spaces cannot shift it. The loop's stderr is dropped: a process that exits mid-scan
-        # makes its read fail, and that message must not land inside the PID line.
-        'm=""; { for s in /proc/[0-9]*/stat; do read -r l < "$s" || continue; '
-        'set -f; set -- ${l##*) }; set +f; [ "$3" = "$g" ] && m+=" ${s//[!0-9]/}"; done; } 2>/dev/null; '
+        # spaces cannot shift it. No /proc (macOS over SSH): ask ps. The scan's stderr is
+        # dropped: a process that exits mid-scan fails its read, and that message must not
+        # land inside the PID line.
+        'm=""; { if [ -r /proc/self/stat ]; then for s in /proc/[0-9]*/stat; do read -r l < "$s" || continue; '
+        'set -f; set -- ${l##*) }; set +f; [ "$3" = "$g" ] && m+=" ${s//[!0-9]/}"; done; '
+        'else while read -r p q; do [ "$q" = "$g" ] && m+=" $p"; done < <(ps -A -o pid= -o pgid=); fi; } 2>/dev/null; '
         f'echo "{ENV_SURVIVORS_MARKER}$m"; exit 1'
     )
 

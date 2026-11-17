@@ -1,8 +1,11 @@
 import { jsonRpcErrorReason, JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { agentPackageName } from '@/app/capabilities/plugins/plugin-packages'
 import { noteEnabledAgentPackages } from '@/contrib/plugins-store'
+import { isRemoteGateway } from '@/lib/media'
 import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 /**
  * Feature store for backend (agent) plugins — the native Hermes plugins plus
@@ -179,7 +182,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
       $agentPluginsProfile.set(scope)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
-      noteEnabledAgentPackages(rows.filter(row => row.status === 'enabled').map(row => row.name))
+      noteBootDesktopHalves(rows, scope)
     } catch (e) {
       if (generation !== loadGeneration) {
         return
@@ -196,6 +199,23 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
   })()
 
   return inflight
+}
+
+/** Desktop halves are app-wide copies on this machine. Only the active local
+ *  profile's enabled unified packages may turn one on, and only by the folder
+ *  identity Electron stamps as `packageName`. A remote list, another profile's
+ *  list, or an agent-only row must not flip a local half that shares a name.
+ *  Those lists also must not replace a catch-up already noted for the local
+ *  profile — a later scan would otherwise apply the wrong names. An explicit
+ *  Desktop off still wins inside `enablePackageDesktopHalf`. */
+function noteBootDesktopHalves(rows: readonly AgentPluginRow[], profile: string | null): void {
+  if (isRemoteGateway() || normalizeProfileKey(profile) !== normalizeProfileKey($activeGatewayProfile.get())) {
+    return
+  }
+
+  noteEnabledAgentPackages(
+    rows.filter(row => row.status === 'enabled' && row.has_desktop_half).map(agentPackageName)
+  )
 }
 
 /** Flip a backend plugin on/off and patch the row from the RPC's refreshed

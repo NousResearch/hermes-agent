@@ -25,6 +25,9 @@ from tools.delegate_tool_config import _resolve_delegation_credentials
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
 _PARAM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# ``TaskRoute.request`` key of an internal caller's explicit profile route (``route_for_config``); never a model
+# parameter (those match ``_PARAM_NAME_RE``), so no backend can declare it.
+EXPLICIT_PROFILE_ROUTE = "_explicit_profile"
 
 
 @dataclass
@@ -345,5 +348,10 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
 
 def route_for_config(routing_cfg: dict[str, Any], parent_agent: Any) -> TaskRoute:
     """The route an internal caller's explicit config block describes (``/review`` ->
-    ``auxiliary.review``); bypasses the provider, as those callers own their route."""
+    ``auxiliary.review``, a Bot Mode consult -> ``{"profile": ...}``); bypasses the provider, as those callers own
+    their route. A ``profile`` key resolves exactly as a backend's profile route does."""
+    if routing_cfg.get("profile"):
+        # The profile name is all it takes to resolve this route again, so a continue after a restart rebuilds it.
+        return replace(_route_to_task_route(routing_cfg, parent_agent, {}),
+                       request={EXPLICIT_PROFILE_ROUTE: str(routing_cfg["profile"])})
     return TaskRoute(_resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg)

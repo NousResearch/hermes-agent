@@ -77,11 +77,11 @@ def _transcript_store(parent_agent: Any) -> Iterator[Any]:
         release_or_close(db)
 
 
-def _refusal(parent_agent: Any) -> Optional[str]:
+def _refusal(parent_agent: Any, joined: bool = False) -> Optional[str]:
     from agent.oneshot_footprint import agent_is_oneshot
     from agent.runtime_session_store import RuntimeSessionStore, is_worker_process
     from tools.delegate_tool_registry import is_spawn_paused
-    if agent_is_oneshot(parent_agent):
+    if agent_is_oneshot(parent_agent) and not joined:
         # The same frozen fact that strips live control from its schema: its children are joined inside the call.
         return "action='continue' is unavailable in one-shot sessions. Spawn a new task instead."
     if is_worker_process() or isinstance(getattr(parent_agent, "_session_db", None), RuntimeSessionStore):
@@ -98,11 +98,17 @@ def _refusal(parent_agent: Any) -> Optional[str]:
 
 def _durable_spec(sid: str, record: dict[str, Any], parent_agent: Any) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """A resume spec from the durable record: its route re-resolved from the task's own routing request."""
-    from tools.delegate_tool_routes import resolve_task_routes
+    from tools.delegate_tool_routes import EXPLICIT_PROFILE_ROUTE, resolve_task_routes, route_for_config
     request = record.get("route_request")
     if not isinstance(request, dict) or not record.get("session_id"):
         return None, (f"Subagent '{sid}' ran on a route that cannot be rebuilt after a restart. "
                       "Spawn a new task instead.")
+    if isinstance(profile := request.get(EXPLICIT_PROFILE_ROUTE), str):
+        try:
+            route = route_for_config({"profile": profile}, parent_agent)
+        except ValueError as exc:
+            return None, str(exc)
+        return {**record, "route": route, "endpoint": tuple(record.get("endpoint") or ()) or None}, None
     routes, err = resolve_task_routes([{"goal": record.get("goal"), **request}], delegate_tool_config._load_config(), parent_agent)
     if err or not routes or routes[0].error:
         return None, err or (routes[0].error if routes else "no route")
@@ -214,16 +220,17 @@ def _start(
 
 
 def continue_subagent(subagent_id: Optional[str], message: Optional[str], parent_agent: Any, *, background: bool,
-                      auto: bool = False) -> str:
+                      auto: bool = False, joined: bool = False) -> str:
     """delegate_task(action='continue'): validate ownership and finished state, then run ``message`` as the
     child's next turn. Returns the usual dispatch handle (new delegation_id, same subagent_id) or, where the
     session joins children inline, the joined result. ``auto``: the ``delegation.auto_resume`` scheduler's
-    continue (``delegate_tool_auto_resume``), the same claim and dispatch on a stand-in for the parent."""
+    continue (``delegate_tool_auto_resume``), the same claim and dispatch on a stand-in for the parent. ``joined``: an
+    internal caller that waits for the result in its own call (a Bot Mode consult), so a one-shot session may run it."""
     sid, text = (subagent_id or "").strip(), (message or "").strip()
     if not sid or not text:
         return tool_error("action='continue' requires subagent_id (a finished child of yours) and a non-empty "
                           "'message' (its next instruction).")
-    refusal = _refusal(parent_agent)
+    refusal = _refusal(parent_agent, joined and not background)
     if refusal:
         return tool_error(refusal)
     spec, record, err = _claim(sid, parent_agent, auto)

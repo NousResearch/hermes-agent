@@ -1133,11 +1133,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     result = agent.run_conversation(api_message, **kwargs)
                 finally:
                     agent._silence_marker_needs_reply = False
+            incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
+            outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
+            turn_token_usage = {"input_tokens": incoming, "output_tokens": outgoing,
+                                "total_tokens": incoming + outgoing}
+            result["turn_token_usage"] = turn_token_usage
             if captured is not None:
-                incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
-                outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
-                captured['usage'] = {'input_tokens': incoming, 'output_tokens': outgoing,
-                                     'total_tokens': incoming + outgoing}
+                captured["usage"] = turn_token_usage
                 _settle_api_runtime_lock(agent, result, captured)
             return result
         finally:
@@ -1498,11 +1500,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # returns, so early run_sync returns are also finalised.
         # See the outer finally/completion section below. See #60671.
         final_response = result.get("final_response")
-        # Actual token counts from the agent instance used for this run.
         agent = ctx.agent_holder[0]
         has_comp = bool(agent) and hasattr(agent, "context_compressor")
         comp = agent.context_compressor if has_comp else None
         usage = {
+            "turn_token_usage": result.get("turn_token_usage"),
             "last_prompt_tokens": getattr(comp, "last_prompt_tokens", 0) if has_comp else 0,
             "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
             "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,

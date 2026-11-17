@@ -2523,7 +2523,7 @@ Notes:
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The footer is off by default. You can enable it globally or override its settings for a specific platform.
 
 ```yaml
 display:
@@ -2538,18 +2538,30 @@ Supported fields:
 | --- | --- | --- |
 | `model` | Bare model id, vendor prefix dropped | `gpt-5.4` |
 | `context_pct` | Last-call context occupancy as a percent | `5%` |
+| `tokens` | Input, output, and total tokens across the model calls in the current turn | `1,350 in / 84 out / 1,434 total tokens` |
 | `latency` | Wall-clock duration of the turn | `22s`, `1m05s` |
 | `served_model` | The model that actually answered, when it differs from the one you configured: the deployment a routing proxy reported in its `x-litellm-model-id` (or `x-litellm-model-api-base`) response header, or the fallback model Hermes switched to for the turn | `hermes-router → gpt-4o-2024-11-20` |
 | `cwd` | Home-relative working directory | `~` |
 
-The default field set is `["model", "context_pct", "cwd"]`. `latency` and `served_model` are opt-in — add them to `fields` to use them. `served_model` renders nothing when the served model is the configured one (or when the proxy sends no such header), so behind a routing proxy or an active fallback it is the field that makes the switch visible. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
+The default field set is `["model", "context_pct", "cwd"]`. `tokens`, `latency`, and `served_model` are opt-in — add them to `fields` to use them. `served_model` renders nothing when the served model is the configured one (or when the proxy sends no such header), so behind a routing proxy or an active fallback it is the field that makes the switch visible. Fields whose data is unavailable are skipped silently rather than rendering an empty slot.
 
 The `/footer` slash command toggles this at runtime in any session.
 
-Example footer appended to a Telegram/Discord/Slack reply:
+For example, enable the model and token counts on Feishu with a platform override:
+
+```yaml
+display:
+  platforms:
+    feishu:
+      runtime_footer:
+        enabled: true
+        fields: ["model", "tokens"]
+```
+
+The same settings work under `telegram`, `discord`, and `slack`. Example footer:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+claude-opus-4.7 · 1,350 in / 84 out / 1,434 total tokens
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean. When that final message would otherwise be the footer on its own (a streamed reply, whose text is already on screen, or a reply that is only a `MEDIA:` photo), the footer goes into the last photo's caption instead, on platforms with photo captions (Telegram), and only if it fits the caption limit (1,024 characters on Telegram). Otherwise it is sent as its own short message, as before.

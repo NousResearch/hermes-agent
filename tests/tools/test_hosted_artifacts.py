@@ -218,3 +218,24 @@ def test_probe_constant_is_stable():
     assert ha.HOSTED_ARTIFACTS_CLIENT_VERSION >= 1
     assert ha.SERVER_NAME == "hermes-artifacts" and ha.MCP_PATH == "/v1/artifacts/mcp"
     assert "mcp__hermes_artifacts__artifact_show" in ha.contract_tool_names()
+
+
+def test_nous_auth_is_the_mcp_sdks_auth_class(monkeypatch):
+    from tools.mcp_tool import sdk_httpx
+
+    monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
+    monkeypatch.setattr(ha, "_read_account", _account)
+    assert isinstance(ha.nous_bearer_auth(URL), sdk_httpx().Auth)
+
+
+def test_an_attached_server_is_an_enabled_mcp_server_for_sessions():
+    from hermes_cli.tools_config import enabled_mcp_server_names
+
+    config = {"artifacts": {"base_url": BASE}}
+    artifacts = ha.ArtifactsConfig.from_raw(config["artifacts"])
+    assert ha.SERVER_NAME not in enabled_mcp_server_names(config)  # nothing decided yet: no account read here
+    ha.cached_decision(artifacts, account_reader=_account, relay_origin=lambda: "")
+    assert ha.SERVER_NAME in enabled_mcp_server_names(config)
+    ha.reset_decisions()
+    ha.cached_decision(artifacts, account_reader=lambda: _account(artifacts_access=False), relay_origin=lambda: "")
+    assert ha.SERVER_NAME not in enabled_mcp_server_names(config)

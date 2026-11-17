@@ -419,7 +419,8 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
         names |= portable - set(mcp_servers)  # native config wins on a name collision (mirrors _load_mcp_config)
     except Exception:
         logger.debug("Failed to include portable MCP servers", exc_info=True)
-    return names
+    from tools.hosted_artifacts import attached_server_names
+    return names | attached_server_names(config or {})
 
 
 #: Toolsets young enough that absence from a saved ``platform_toolsets`` list means "never offered", not

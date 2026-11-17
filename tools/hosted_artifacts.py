@@ -205,6 +205,19 @@ def cached_decision(config: ArtifactsConfig, *, now: Callable[[], float] = time.
     return decision
 
 
+def attached_server_names(root_config: dict) -> frozenset[str]:
+    """``{SERVER_NAME}`` when this profile's remembered decision attached the server, else empty. Never
+    reads the account: the decision is the one MCP config loading made (a toolset resolver must not
+    turn into a Portal round trip), so before that load the server is simply not enabled yet."""
+    from hermes_constants import get_hermes_home
+
+    config = ArtifactsConfig.from_raw((root_config or {}).get("artifacts"))
+    key = f"{get_hermes_home()}|{config.enabled}|{config.base_url}"
+    with _decisions_lock:
+        hit = _decisions.get(key)
+    return frozenset({SERVER_NAME}) if hit is not None and hit[1].attach else frozenset()
+
+
 def server_entry(url: str) -> dict[str, Any]:
     """The ``mcp_servers`` entry for the hosted server."""
     return {"url": url, "auth": AUTH_TYPE}
@@ -240,9 +253,11 @@ def nous_bearer_auth(url: str):
     hosted server's, so another MCP entry declaring ``auth: nous`` cannot receive the token."""
     import asyncio
 
-    import httpx
-
     from hermes_cli.auth import resolve_nous_access_token
+    from tools.mcp_tool import sdk_httpx
+
+    # The SDK's httpx flavour (httpx2 on mcp >= 2.0): its AsyncClient rejects any other Auth class.
+    httpx = sdk_httpx()
 
     if not bearer_allowed(url):
         raise ValueError(f"auth: {AUTH_TYPE} is reserved for the managed {SERVER_NAME} server")

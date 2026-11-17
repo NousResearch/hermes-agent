@@ -1969,16 +1969,11 @@ DEFAULT_CONFIG = {
                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
         },
-        # Remote connector discovery/lifecycle through the Nous tool gateway.
-        # The flag is the user's off switch; availability additionally requires
-        # the portal sign-in every managed tool gates on.
+        # Remote connector discovery/lifecycle through the Nous tool gateway. The flag is the user's
+        # off switch; availability additionally requires the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
     },
-    # Hosted artifacts: the Nous-managed `hermes-artifacts` MCP server joins new sessions when the
-    # signed-in Nous account has artifacts access and paid access. `enabled: false` is the off
-    # switch; an empty `base_url` uses the relay connector's origin when one is configured, and
-    # otherwise leaves the server out.
-    "artifacts": {"enabled": True, "base_url": ""},
+    "artifacts": {"enabled": True, "base_url": ""},  # hosted artifacts MCP server: tools/hosted_artifacts.py
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation

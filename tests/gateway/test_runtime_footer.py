@@ -279,3 +279,78 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# FooteredReply copying (#156709)
+# ---------------------------------------------------------------------------
+
+class TestFooteredReplyCopy:
+    """The completion payload is deep-copied by SessionEvents.publish; a str
+    subclass with a two-argument __new__ needs copy support or every footer
+    reply crashes publication (#156709)."""
+
+    def _reply(self, text="body", footer="hermes-router · 12% · ~"):
+        from gateway.runtime_footer import FooteredReply
+        return FooteredReply(text, footer)
+
+    def test_deepcopy_preserves_type_text_and_footer(self):
+        import copy
+
+        reply = self._reply()
+        copied = copy.deepcopy(reply)
+        assert type(copied) is type(reply)
+        assert str(copied) == str(reply)
+        assert copied.runtime_footer == reply.runtime_footer
+
+    def test_deepcopy_of_nested_payload_reproduces_the_reported_crash(self):
+        # Shape of the gateway publication: deepcopy({'payload': <FooteredReply>}).
+        import copy
+
+        payload = {"text": self._reply()}
+        copied = copy.deepcopy(payload)
+        assert str(copied["text"]) == str(payload["text"])
+        assert copied["text"].runtime_footer == payload["text"].runtime_footer
+
+    def test_deepcopy_shared_references_stay_shared(self):
+        import copy
+
+        reply = self._reply()
+        copied = copy.deepcopy([reply, {"k": reply}])
+        assert copied[0] is copied[1]["k"]
+
+    def test_deepcopy_empty_footer_round_trips(self):
+        # Degenerate case: a footerless FooteredReply reconstructs to the same
+        # string value and footer attribute (the constructor appends "\n\n"
+        # unconditionally, so "body only\n\n" round-trips as itself).
+        import copy
+
+        reply = self._reply(text="body only", footer="")
+        copied = copy.deepcopy(reply)
+        assert type(copied) is type(reply)
+        assert str(copied) == str(reply)
+        assert copied.runtime_footer == ""
+
+    def test_getnewargs_round_trips_through_reconstruction(self):
+        reply = self._reply(text="hello", footer="foot")
+        text, footer = reply.__getnewargs__()
+        assert (text, footer) == ("hello", "foot")
+        rebuilt = type(reply)(*reply.__getnewargs__())
+        assert str(rebuilt) == "hello\n\nfoot"
+        assert rebuilt.runtime_footer == "foot"
+
+    def test_plain_str_rewrite_yields_plain_str(self):
+        # Documented contract: any rewrite drops the subclass.
+        reply = self._reply()
+        assert type(reply + "") is str
+        assert type(reply.replace("body", "x")) is str
+
+    def test_pickle_round_trip(self):
+        import pickle
+
+        reply = self._reply(text="hello", footer="foot")
+        data = pickle.dumps(reply)
+        rebuilt = pickle.loads(data)
+        assert type(rebuilt) is type(reply)
+        assert str(rebuilt) == "hello\n\nfoot"
+        assert rebuilt.runtime_footer == "foot"

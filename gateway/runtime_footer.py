@@ -139,6 +139,22 @@ class FooteredReply(str):
         instance.runtime_footer = footer
         return instance
 
+    # ``deepcopy`` reconstructs str subclasses via ``cls.__new__(cls, <the str value>)``
+    # (copyreg.__newobj__), which here is the two-argument form — a completion payload
+    # carrying a FooteredReply crashed publication with ``TypeError: FooteredReply
+    # __new__() missing 1 required positional argument: 'footer'`` (#156709).
+    # ``__getnewargs__`` gives copy/pickle/reconstruction the original argument pair;
+    # ``__deepcopy__`` memoizes first so shared references inside one payload stay shared.
+    def __getnewargs__(self):
+        footer = self.runtime_footer
+        # The constructor appends "\n\n" unconditionally, so the original text is
+        # always the stored value minus that separator plus the footer.
+        return (str(self)[: -len(footer) - len("\n\n")], footer)
+
+    def __deepcopy__(self, memo):
+        memo[id(self)] = new = type(self)(*self.__getnewargs__())
+        return new
+
 
 class _FooterCaption(str):
     """A photo caption that carries the runtime footer (``caption_with_footer``)."""

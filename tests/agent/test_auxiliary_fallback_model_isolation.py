@@ -241,20 +241,25 @@ def test_fallback_destination_from_entry_falls_back_to_entry_model():
     assert dest.provider == "opencode-go"
 
 
-def test_async_client_preserves_fallback_destination():
-    """_to_async_client preserves _hermes_fallback_destination on AsyncOpenAI and Codex."""
-    sync_client = MagicMock()
+def test_async_openai_conversion_keeps_fallback_destination():
+    """Real OpenAI sync client exercises the wrapper path and preserves fallback destination."""
+    from openai import OpenAI
+
+    sync_client = OpenAI(api_key="test-key", base_url="https://api.opencode.ai/v1")
     dest = _FallbackDestination("opencode-go", "https://api.opencode.ai/v1", "chat_completions", "deepseek-v4.1-flash")
     sync_client._hermes_fallback_destination = dest
-    sync_client.base_url = "https://api.opencode.ai/v1"
-    sync_client.api_key = "test-key"
 
     async_client, _ = _to_async_client(sync_client, "deepseek-v4.1-flash")
-    assert hasattr(async_client, "_hermes_fallback_destination")
+
+    assert async_client is not sync_client
     assert async_client._hermes_fallback_destination == dest
 
-    # Also verify CodexAuxiliaryClient
+
+def test_async_codex_conversion_keeps_fallback_destination():
+    """CodexAuxiliaryClient preserves _hermes_fallback_destination across async wrapper."""
     from agent.auxiliary_client import CodexAuxiliaryClient
+
+    dest = _FallbackDestination("opencode-go", "https://api.opencode.ai/v1", "chat_completions", "deepseek-v4.1-flash")
     codex_sync = MagicMock(spec=CodexAuxiliaryClient)
     codex_sync.chat = MagicMock()
     codex_sync.api_key = "test-key"

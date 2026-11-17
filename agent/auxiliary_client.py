@@ -4495,8 +4495,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                 ret_client = AsyncGeminiNativeClient(sync_client)
     if ret_client is not None:
         if hasattr(sync_client, "_hermes_fallback_destination"):
-            with contextlib.suppress(Exception):
-                ret_client._hermes_fallback_destination = sync_client._hermes_fallback_destination
+            ret_client._hermes_fallback_destination = sync_client._hermes_fallback_destination
         return ret_client, model
     # ACP shims (subprocess, not an HTTP pool) are already async-safe and opt out of the wrapper.
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
@@ -4530,8 +4529,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     async_kwargs.setdefault("max_retries", 0)
     async_client = AsyncOpenAI(**async_kwargs)
     if hasattr(sync_client, "_hermes_fallback_destination"):
-        with contextlib.suppress(Exception):
-            async_client._hermes_fallback_destination = sync_client._hermes_fallback_destination
+        async_client._hermes_fallback_destination = sync_client._hermes_fallback_destination
     return async_client, model
 
 

@@ -28,7 +28,7 @@ GITHUB_TAP_PROVIDERS = {
     "nvidia/skills": "NVIDIA", "voltagent/awesome-agent-skills": "VoltAgent", "garrytan/gstack": "gstack",
     "minimax-ai/cli": "MiniMax", "wandb/skills": "Weights & Biases", "qdrant/skills": "Qdrant",
     "pinecone-io/skills": "Pinecone", "makenotion/skills": "Notion", "airtable/skills": "Airtable",
-    "shopify/shopify-ai-toolkit": "Shopify",
+    "shopify/shopify-ai-toolkit": "Shopify", "google/skills": "Google", "mattpocock/skills": "Matt Pocock",
 }
 
 # Accepted ``--source`` provider filters (lowercased). Not real source ids —
@@ -223,6 +223,13 @@ class GitHubSource(SkillSource):
         {"repo": "Airtable/skills", "path": "plugins/airtable/skills/"},
         {"repo": "Shopify/Shopify-AI-Toolkit", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        # Google's own skills for its products (Cloud, Ads, Analytics, Identity, devices), Apache-2.0,
+        # nested skills/<area>/<name>/ — one tap per area, as for openscience below. `trusted`.
+        *({"repo": "google/skills", "path": f"skills/{_area}/"}
+          for _area in ("cloud", "ads", "analytics", "developers", "identity", "platform-devices")),
+        # Matt Pocock's engineering/productivity skills (MIT). Community trust: one author, scanned on
+        # install. skills/in-progress/ is skipped on purpose (the author marks it unfinished).
+        *({"repo": "mattpocock/skills", "path": f"skills/{_area}/"} for _area in ("engineering", "productivity", "misc")),
         # --- Science bucket ---
         # Two scientific-skill repos share one hub category via the tap-level "bucket" key so
         # their skills surface together. Both stay `community` trust on purpose (NOT in

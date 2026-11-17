@@ -30,6 +30,7 @@ TRUSTED_REPOS = {
     "openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills",
     "wandb/skills", "qdrant/skills", "pinecone-io/skills",
     "makenotion/skills", "Airtable/skills", "Shopify/Shopify-AI-Toolkit",
+    "google/skills",
 }
 
 INSTALL_POLICY = {

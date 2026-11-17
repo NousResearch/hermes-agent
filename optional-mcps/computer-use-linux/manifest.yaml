@@ -1,0 +1,70 @@
+# Hermes MCP catalog entry for computer-use-linux.
+# Upstream target: NousResearch/hermes-agent optional-mcps/computer-use-linux/manifest.yaml
+# Submit as a PR to https://github.com/NousResearch/hermes-agent
+manifest_version: 1
+
+name: computer-use-linux
+description: Wayland-first Linux desktop control — AT-SPI trees, compositor window targeting, bounded screenshots, and semantic clicks/typing. Works with Hermes Mobile remote approvals.
+source: https://github.com/agent-sh/computer-use-linux
+
+transport:
+  type: stdio
+  # Uses the npm wrapper so `hermes mcp install computer-use-linux` works on any
+  # Linux host with Node 18+. The postinstall step downloads the matching
+  # release binary for the local arch.
+  command: npx
+  args:
+    - "-y"
+    - "@agent-sh/computer-use-linux"
+    - "mcp"
+
+auth:
+  type: none
+  env:
+    - name: COMPUTER_USE_LINUX_MOBILE_SCREENSHOT
+      prompt: "Phone-friendly JPEG screenshot defaults for Hermes Mobile? (1=yes, 0=no)"
+      default: "0"
+      required: false
+      secret: false
+    - name: COMPUTER_USE_LINUX_HYBRID
+      prompt: "Enable hybrid AT-SPI + coordinate fallback for Electron/Qt apps? (1=yes, 0=no)"
+      default: "0"
+      required: false
+      secret: false
+
+# Read-mostly tools enabled by default. Mutating desktop actions are opt-in
+# through the install-time checklist (`hermes mcp configure computer-use-linux`).
+tools:
+  default_enabled:
+    - doctor
+    - list_apps
+    - list_windows
+    - focused_window
+    - get_app_state
+    - screenshot
+    - find_element
+    - hybrid_strategy
+    - get_clipboard
+
+post_install: |
+  Linux desktop only. After install, verify readiness:
+
+    npx -y @agent-sh/computer-use-linux doctor | jq .readiness
+
+  You still need AT-SPI enabled, ydotoold running, and compositor-specific
+  window backends. The fastest path from a clone:
+
+    git clone https://github.com/agent-sh/computer-use-linux
+    cd computer-use-linux && ./install.sh
+
+  For Hermes Mobile remote sessions, set COMPUTER_USE_LINUX_MOBILE_SCREENSHOT=1
+  in the MCP server env block (or answer yes at install) so Artifacts use
+  smaller JPEG payloads.
+
+  Install the companion skill:
+
+    hermes skills tap add agent-sh/computer-use-linux
+    hermes skills install agent-sh/computer-use-linux/computer-use-linux
+
+  Restart Hermes to load the tools. Re-run `hermes mcp configure computer-use-linux`
+  to enable mutating tools (click, type_text, perform_action, …) when needed.

@@ -4404,17 +4404,17 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
         if not self._slash_confirm_state.pop(confirm_id, None):  # a concurrent tap claimed it first
             return await answer_callback(query, resolved)
+        from tools import slash_confirm as _slash_confirm_mod
+        run = _slash_confirm_mod.claim(session_key, confirm_id)  # claim FIRST, render after: a timed-out confirm runs nothing
         label_key = {"once": "slash_confirm.resolved_once", "always": "slash_confirm.resolved_always", "cancel": "slash_confirm.resolved_cancel"}.get(
-            choice, "approval.resolved_generic")
-        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+            choice, "approval.resolved_generic") if run else "approval.expired"
         label = t(f"platform.telegram.{label_key}")
         await answer_callback(query, label[:_TOAST_LIMIT])
-        decided = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
-        await edit_keeping_prompt(self, query, decided)
-        # The runner stored a handler keyed by session_key; run it and send any returned text as a follow-up.
+        user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+        await edit_keeping_prompt(self, query, t("platform.telegram.approval.resolved_by_user" if run else "platform.telegram.approval.expired_detail", label=label, user=user_display))
+        # The claimed handler runs now; any text it returns is sent as a follow-up.
         try:
-            from tools import slash_confirm as _slash_confirm_mod
-            result_text = await _slash_confirm_mod.resolve(session_key, confirm_id, choice)
+            result_text = await run(choice) if run else None
             if result_text and query.message:
                 # Inherit the prompt's topic: forums use message_thread_id; private DM-topic lanes need
                 # both the topic id and the prompt reply anchor.

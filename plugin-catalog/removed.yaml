@@ -10,6 +10,3 @@ removed:
 - name: or-picker
   reason: "Folded into openrouter-picker. Installing the provider alone left the picker broken. Install openrouter-picker."
   date: "2026-09-28"
-- name: 1guy
-  reason: "Withdrawn by its author; no longer maintained. Run `hermes plugins remove 1guy`, and `hermes cron remove` the 1guy-mail-cal job if you accepted its mail/calendar offer."
-  date: "2026-11-16"

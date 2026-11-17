@@ -31,13 +31,15 @@ const PRESETS = [
 const EN = {
   radio: 'Radio', browse: 'Choose a station', play: 'Play radio', pause: 'Pause radio', next: 'Next station',
   live: 'Live', paused: 'Paused', connecting: 'Connecting', error: 'Stream unavailable', retry: 'Try again',
-  search: 'Find a station…', volume: 'Volume', audioOnly: 'Audio playing · visualizer unavailable',
+  search: 'Find a station… country:uk genre:jazz', loadingMore: 'Loading more stations…', volume: 'Volume', audioOnly: 'Audio playing · visualizer unavailable',
   mute: 'Mute radio', unmute: 'Unmute radio', save: 'Pin station', unsave: 'Unpin station',
   visit: 'Visit station website', artistProfile: 'Visit artist profile',
-  noResults: 'No stations found', searchHint: 'Search by station name. Try jazz, ambient, or house.',
+  noResults: 'No stations found', searchHint: 'Search by name, or narrow it with country:uk and genre:jazz.',
   searchError: 'Station search is unavailable. Your presets still work.', searching: 'Searching stations',
   directory: 'Search powered by Radio Browser', note: 'Live radio · next switches stations',
   streamError: 'This stream could not connect. Try again or choose another station.',
+  popularError: 'The popular list is unavailable. Your stations still work.',
+  hlsNote: 'HLS streams are hidden in this edition.', skippedNote: 'unplayable results hidden',
   close: 'Close radio', nowPlaying: 'Now playing', elsewhere: 'Paused — playing in another window',
   settingsTitle: 'Radio', autoplayLabel: 'Start the last station on launch',
   autoplayDescription: 'Plays the station you listened to last when Hermes opens. Off by default; with it off nothing plays until you press play.',
@@ -119,6 +121,7 @@ const CSS = `
 .hermes-radio-volume-space{flex:1;min-width:6px}
 .hermes-radio-volume input{width:76px;min-width:0;height:3px;accent-color:var(--ui-accent);cursor:pointer}
 .hermes-radio-error{font-size:11px;line-height:17px;color:var(--ui-text-secondary);padding:4px 4px 12px}
+.hermes-radio-more{display:flex;align-items:center;justify-content:center;padding:6px 0;font-size:11px;opacity:.6}
 .hermes-radio-setting{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 0}
 .hermes-radio-setting-text{display:flex;flex-direction:column;gap:4px;max-width:62ch}
 .hermes-radio-setting-label{font-size:13px;font-weight:500}
@@ -155,33 +158,174 @@ async function fetchJson(url, signal) {
 
 let directoryServers = ['https://de1.api.radio-browser.info']
 let discovered = false
-async function searchStations(text, signal) {
-  if (!discovered) {
-    try {
-      const servers = await fetchJson(`${directoryServers[0]}/json/servers`, signal)
-      const hosts = [...new Set(servers.map(server => server.name).filter(name => /^[a-z0-9-]+\.api\.radio-browser\.info$/.test(name)))]
-      if (hosts.length) directoryServers = hosts.map(name => `https://${name}`).sort(() => Math.random() - 0.5)
-      discovered = true
-    } catch (error) {
-      if (signal.aborted) throw error
-    }
+async function ensureDirectory(signal) {
+  if (discovered) return
+  try {
+    const servers = await fetchJson(`${directoryServers[0]}/json/servers`, signal)
+    const hosts = [...new Set(servers.map(server => server.name).filter(name => /^[a-z0-9-]+\.api\.radio-browser\.info$/.test(name)))]
+    if (hosts.length) directoryServers = hosts.map(name => `https://${name}`).sort(() => Math.random() - 0.5)
+    discovered = true
+  } catch (error) {
+    if (signal.aborted) throw error
   }
-  const params = new URLSearchParams({ name: text, limit: '60', hidebroken: 'true', order: 'votes', reverse: 'true' })
+}
+
+// Radio Browser is the one directory the renderer may call directly: it sends
+// CORS headers. Other directories go through the bundled backend.
+function browseStation(row) {
+  const url = streamUrl(row.url_resolved)
+  if (!url || !row.stationuuid || !row.name) return []
+  return [{
+    id: row.stationuuid,
+    name: row.name.trim(),
+    url,
+    provider: 'Radio Browser',
+    description: row.tags?.split(',').slice(0, 2).join(' · ') || '',
+    homepage: httpsUrl(row.homepage)
+  }]
+}
+
+function isHlsRow(row) {
+  return Boolean(row?.hls) || /\.m3u8(?:$|\?)/i.test(row?.url_resolved ?? row?.url ?? '')
+}
+
+function rowsToStations(rows) {
+  const stations = []
+  let hls = 0
+  const list = Array.isArray(rows) ? rows : []
+  for (const row of list) {
+    if (isHlsRow(row)) { hls += 1; continue }
+    stations.push(...browseStation(row))
+  }
+  // The raw count, not the station count: a full page means there is probably
+  // another page behind it even when some rows did not map to a playable URL.
+  return { stations, hls, count: list.length }
+}
+
+async function browseRows(path, signal) {
   for (const server of directoryServers.slice(0, 3)) {
     try {
-      const rows = await fetchJson(`${server}/json/stations/search?${params}`, signal)
-      const seen = new Set()
-      return rows.flatMap(row => {
-        const url = httpsUrl(row.url_resolved)
-        if (!url || !row.stationuuid || !row.name || row.hls || seen.has(url)) return []
-        seen.add(url)
-        return [{ id: row.stationuuid, name: row.name.trim(), url, provider: 'Radio Browser', description: row.tags?.split(',').slice(0, 2).join(' · ') || '', homepage: httpsUrl(row.homepage) }]
-      })
+      return await fetchJson(`${server}/json/${path}`, signal)
     } catch (error) {
       if (signal.aborted) throw error
     }
   }
   throw new Error('Directory unavailable')
+}
+
+const PAGE_SIZE = 40
+const TAG_PATTERN = /\b(country|genre):("[^"]+"|\S+)/gi
+
+function parseQuery(text) {
+  let country = ''
+  let genre = ''
+  const name = String(text ?? '')
+    .replace(TAG_PATTERN, (match, key, value) => {
+      const clean = String(value).replace(/^"|"$/g, '').trim()
+      if (clean) {
+        if (key.toLowerCase() === 'country') country = clean
+        else genre = clean
+      }
+      return ' '
+    })
+    .replace(/\s+/g, ' ')
+    .trim()
+  return { name, country, genre }
+}
+
+const COUNTRY_ALIASES = new Map([
+  ['uk', 'GB'], ['gb', 'GB'], ['britain', 'GB'], ['england', 'GB'],
+  ['scotland', 'GB'], ['wales', 'GB'], ['northern ireland', 'GB'],
+  ['usa', 'US'], ['uae', 'AE'], ['holland', 'NL']
+])
+
+function searchParams({ name = '', country = '', genre = '', limit = PAGE_SIZE, offset = 0 } = {}) {
+  const params = new URLSearchParams({
+    limit: String(limit), hidebroken: 'true', order: 'votes', reverse: 'true'
+  })
+  if (offset > 0) params.set('offset', String(offset))
+  if (name) params.set('name', name)
+  if (country) {
+    const alias = COUNTRY_ALIASES.get(country.toLowerCase())
+    if (alias) params.set('countrycode', alias)
+    else if (country.length === 2) params.set('countrycode', country.toUpperCase())
+    else params.set('country', country)
+  }
+  if (genre) params.set('tag', genre)
+  return params
+}
+
+async function browserQuery(query, signal) {
+  return rowsToStations(await browseRows(`stations/search?${searchParams(query)}`, signal))
+}
+
+const CYRILLIC_LATIN = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm',
+  н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sht',
+  ъ: 'a', ь: '', ю: 'yu', я: 'ya'
+}
+
+function transliterate(text) {
+  return String(text ?? '').toLowerCase().replace(/[\u0400-\u04ff]/g, letter => CYRILLIC_LATIN[letter] ?? letter)
+}
+
+function fold(text) {
+  return transliterate(text).normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+}
+
+function searchTerms(text) {
+  const typed = String(text ?? '').trim()
+  const latin = transliterate(typed).replace(/\s+/g, ' ').trim()
+  return latin && latin !== typed.toLowerCase() ? [typed, latin] : [typed]
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function matchScore(item, terms) {
+  const name = fold(item.name)
+  let best = 0
+  for (const term of terms) {
+    const needle = fold(term).trim()
+    if (!needle) continue
+    const wholeWord = new RegExp(`(^|[^a-z0-9])${escapeRegExp(needle)}($|[^a-z0-9])`).test(name)
+    if (name === needle) best = Math.max(best, 12)
+    else if (wholeWord && name.startsWith(needle)) best = Math.max(best, 9)
+    else if (wholeWord) best = Math.max(best, 7)
+    else if (name.includes(needle)) best = Math.max(best, 2)
+    else {
+      const words = needle.split(/\s+/).filter(word => word.length > 2)
+      const hits = words.filter(word => name.includes(word)).length
+      if (hits) best = Math.max(best, 1 + hits)
+    }
+  }
+  return best
+}
+
+async function searchStations(text, signal, { offset = 0, limit = PAGE_SIZE } = {}) {
+  await ensureDirectory(signal)
+  const parsed = parseQuery(text)
+  const terms = parsed.name ? searchTerms(parsed.name) : ['']
+  const results = await Promise.all(terms.map(name => browserQuery({ ...parsed, name, offset, limit }, signal)))
+  const seen = uniqueStations(results.flatMap(result => result.stations))
+  const ranked = parsed.name
+    ? seen.map((item, index) => ({ item, index, score: matchScore(item, terms) }))
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map(entry => entry.item)
+    : seen
+  return {
+    stations: ranked,
+    hls: results.reduce((total, result) => total + result.hls, 0),
+    hasMore: results.some(result => result.count >= limit),
+    nextOffset: offset + limit
+  }
+}
+
+async function popularStations(signal, { offset = 0, limit = PAGE_SIZE } = {}) {
+  await ensureDirectory(signal)
+  const result = rowsToStations(await browseRows(`stations/topvote/${limit}?hidebroken=true&offset=${offset}`, signal))
+  return { stations: uniqueStations(result.stations), hls: result.hls, hasMore: result.count >= limit, nextOffset: offset + limit }
 }
 
 function sameStation(a, b) {
@@ -743,38 +887,88 @@ function StationRow({ station, player }) {
   ] })
 }
 
+function listRows(results, { browseStation, current, ownList }) {
+  const rows = Array.isArray(results) ? results : []
+  const anchored = ownList && browseStation && !rows.some(item => sameStation(item, browseStation))
+    ? [browseStation, ...rows]
+    : rows
+  return ownList && current && !anchored.some(item => sameStation(item, current))
+    ? [current, ...anchored]
+    : anchored
+}
+
 function Stations({ player }) {
   const t = usePluginI18n(ID)
   const favorites = useValue(player.favorites)
+  const stored = useValue(player.stations)
   const current = useValue(player.station)
   const [browseStation, setBrowseStation] = useState(() => player.station.get())
   const listRef = useRef(null)
   const [search, setSearch] = useState('')
   const [query, setQuery] = useState('')
+  const [more, setMore] = useState([])
+  const [moreState, setMoreState] = useState('idle')
+  const moreOffset = useRef(0)
+  const moreRows = useRef([])
+  const moreBusy = useRef(false)
+  const queryRef = useRef('')
   const [adding, setAdding] = useState(false)
   const [draftName, setDraftName] = useState('')
   const [draftUrl, setDraftUrl] = useState('')
   const [addNote, setAddNote] = useState('')
   const text = search.trim()
-  useEffect(() => {
-    if (listRef.current) listRef.current.scrollTop = 0
-  }, [text])
+  useEffect(() => { if (listRef.current) listRef.current.scrollTop = 0 }, [text])
   useEffect(() => {
     const timer = setTimeout(() => setQuery(text), 350)
     return () => clearTimeout(timer)
   }, [text])
-  const result = useQuery({
+  useEffect(() => {
+    queryRef.current = query
+    setMore([])
+    moreRows.current = []
+    setMoreState('idle')
+    moreOffset.current = 0
+  }, [query])
+  const browser = useQuery({
     queryKey: [ID, 'search', query], queryFn: ({ signal }) => searchStations(query, signal),
     enabled: query.length >= 2 && text === query, staleTime: 300000, retry: false
   })
-  const matches = item => [item.name, item.description, item.provider].some(value => value?.toLowerCase().includes(text.toLowerCase()))
-  const local = uniqueStations([...favorites, ...PRESETS]).filter(matches)
-  const remote = text.length >= 2 && query === text ? result.data ?? [] : []
-  const results = uniqueStations([...local, ...remote])
-  // Keep the previously prepended row until the search changes: selecting a
-  // result must not remove a row above it and move the target under the pointer.
-  const anchored = results.some(item => sameStation(item, browseStation)) ? results : [browseStation, ...results]
-  const items = anchored.some(item => sameStation(item, current)) ? anchored : [current, ...anchored]
+  const fetchPage = (token, offset) => searchStations(token, new AbortController().signal, { offset })
+  const parsedText = parseQuery(text)
+  const filterText = parsedText.name
+  const tagQuery = Boolean(parsedText.country || parsedText.genre)
+  const matches = item => !filterText || [item.name, item.description, item.provider].some(value => fold(value).includes(fold(filterText)))
+  const canPage = text.length >= 2 && Boolean(browser.data?.hasMore) && moreState !== 'done'
+  const loadMore = async () => {
+    if (!canPage || moreBusy.current || query !== queryRef.current) return
+    moreBusy.current = true
+    const token = query
+    const offset = moreOffset.current || PAGE_SIZE
+    setMoreState('loading')
+    try {
+      const next = await fetchPage(token, offset)
+      if (queryRef.current !== token) return
+      moreOffset.current = next.nextOffset || offset + PAGE_SIZE
+      const merged = uniqueStations([...moreRows.current, ...next.stations])
+      const added = merged.length > moreRows.current.length
+      moreRows.current = merged
+      setMore(merged)
+      setMoreState(added && next.hasMore ? 'idle' : 'done')
+    } catch {
+      if (queryRef.current === token) setMoreState('idle')
+    } finally {
+      moreBusy.current = false
+    }
+  }
+  const local = !tagQuery ? uniqueStations([...favorites, ...stored]).filter(matches) : []
+  const remoteResult = text.length >= 2 && query === text ? browser.data : null
+  const remote = remoteResult?.stations ?? []
+  const results = uniqueStations([...local, ...remote, ...more])
+  const items = listRows(results, { browseStation, current, ownList: true })
+  const pending = text.length >= 2 && (text !== query || browser.isFetching)
+  const failed = browser.isError && text.length >= 2
+  const empty = !pending && !failed && results.length === 0 && text.length > 0
+  const hls = remoteResult?.hls ?? 0
   const openAdd = () => { setAddNote(''); setDraftName(''); setDraftUrl(''); setAdding(true) }
   const closeAdd = () => { setAdding(false); setDraftName(''); setDraftUrl(''); setAddNote('') }
   const save = () => {
@@ -783,8 +977,6 @@ function Stations({ player }) {
     if (!outcome.added) { setAddNote(t('addExists')); return }
     closeAdd()
   }
-  const pending = text.length >= 2 && (text !== query || result.isFetching)
-  const searchFailed = text.length >= 2 && query === text && result.isError
   return jsxs('div', { children: [
     jsx('div', { className: 'hermes-radio-search', 'data-filled': Boolean(search), children: jsx(SearchField, {
       value: search, onChange: value => { setBrowseStation(player.station.get()); setSearch(value) }, placeholder: t('search'),
@@ -805,11 +997,21 @@ function Stations({ player }) {
         addNote && jsx('span', { className: 'hermes-radio-add-note', role: 'status', children: addNote })
       ] })
     ] }),
-    jsxs('div', { ref: listRef, className: 'hermes-radio-list', 'data-radio-pending': pending, children: [
-      ...items.map(station => jsx(StationRow, { station, player }, station.id)),
-      searchFailed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('searchError') }),
-      !pending && !searchFailed && text && results.length === 0 && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('noResults') })
-    ] })
+    jsxs('div', {
+      ref: listRef, className: 'hermes-radio-list', 'data-radio-pending': pending,
+      onScroll: event => {
+        const list = event.currentTarget
+        if (list.scrollHeight - list.scrollTop - list.clientHeight < 160) void loadMore()
+      },
+      children: [
+        ...items.map(station => jsx(StationRow, { station, player }, station.id)),
+        moreState === 'loading' && jsx('div', { className: 'hermes-radio-more', role: 'status', children: t('loadingMore') }),
+        pending && !items.length && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('searching') }),
+        failed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('searchError') }),
+        empty && !failed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('noResults') }),
+        hls > 0 && jsx('div', { className: 'hermes-radio-error', children: `${hls} ${t('hlsNote')}` })
+      ]
+    })
   ] })
 }
 
@@ -886,7 +1088,11 @@ function RadioSettingsPage({ ctx, player }) {
   ] })
 }
 
-export { artistProfile, resolveArtist, trackCredit, autoplayOnLaunch, shouldAutoplay, RadioSettingsPage, streamUrl, validStation, PRESETS }
+export {
+  artistProfile, resolveArtist, trackCredit, autoplayOnLaunch, shouldAutoplay, RadioSettingsPage,
+  streamUrl, validStation, PRESETS, parseQuery, searchParams, searchStations, popularStations,
+  rowsToStations, transliterate, fold, searchTerms, matchScore, listRows, isHlsRow
+}
 
 export default {
   id: ID,

@@ -81,6 +81,16 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "fallback.reprobe_per_call": {
+        "type": "number",
+        "description": "Primary health probe interval while on fallback (0 = disabled)",
+        "category": "agent",
+    },
+    "fallback.reprobe_cooldown_sec": {
+        "type": "number",
+        "description": "Minimum seconds between primary health probes",
+        "category": "agent",
+    },
     "terminal.backend": _select(
         "Terminal execution backend",
         "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox",
@@ -226,7 +236,7 @@ _CATEGORY_MERGE: dict[str, str] = {
     "nous": "agent",
     "connections": "agent",
     "auth": "security",
-    # `fallback.min_switch_reset_seconds` is the only schema-surfaced fallback field.
+    # `fallback` exposes the reset-wait and opt-in mid-turn reprobe settings.
     "fallback": "agent",
 }
 

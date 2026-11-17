@@ -9,6 +9,7 @@ import logging
 from contextlib import nullcontext
 from functools import partial
 
+from gateway.session_asks import retired_of
 from gateway.session_messaging_picks import CHAT_PICKS, is_chat_pick
 from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
@@ -431,6 +432,7 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
         # So do the password managers it unlocked: this path never reaches the viewer-close settle.
         release_unlocks(sid)
         candidate = authority.sessions.pop(sid, None)
+        retired_of(authority).forget(sid)
         if candidate is None and sid in getattr(authority, 'retired_routes', ()):
             # A conversation retirement let go: its cached agent, and what the local adapter keeps for it.
             from gateway.session_retirement import forget_retired

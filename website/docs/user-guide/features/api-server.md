@@ -727,6 +727,10 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, `tool.failed` (a tool that finished with an error), then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
+| `GET` | `/api/sessions/{id}/asks` | The prompts the session's turn waits on — see [Session asks](#session-asks) |
+| `GET` | `/api/sessions/{id}/asks/{ask_id}` | One ask |
+| `POST` | `/api/sessions/{id}/asks/{ask_id}/answer` | Answer an approval or question |
+| `POST` | `/api/sessions/{id}/asks/{ask_id}/dismiss` | Close an ask with no answer |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
@@ -740,6 +744,50 @@ curl -X POST http://localhost:8642/api/sessions/$ID/fork \
 curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -d '{"input": "what files changed in the last hour?"}'
+```
+
+### Session asks
+
+An ask is a prompt a session's running turn is blocked on. The ask's `id` is the prompt id the
+run routes use (`pending_controls[].prompt_id`), and answering goes to the same waiter as
+`POST /v1/runs/{run_id}/approval` and `/clarify`, so a prompt answered in a chat, Desktop or the TUI
+shows here as closed and an answer here closes the card there.
+
+```json
+{"object": "hermes.session.ask", "id": "9f3c…", "session_id": "…", "kind": "approval",
+ "status": "pending", "created_at": 1763400000.0, "closed_at": null, "closed_by": null,
+ "execution_generation": 3,
+ "payload": {"command": "rm -rf build", "description": "recursive delete", "choices": ["once", "session", "always", "deny"]},
+ "answer": null}
+```
+
+| `kind` | `payload` | Answer body |
+|--------|-----------|-------------|
+| `approval` | `command`, `description`, `choices` | `{"choice": "once" \| "session" \| "always" \| "deny"}` (one of the ask's `choices`) |
+| `question` | `question`, `choices`, `multi_select` | `{"text": "..."}`, or `{"choice": "<label>"}` (`["<label>", …]` when `multi_select`) |
+| `secret` | `request` (`secret` or `sudo`), `env_var`, `prompt` | None: the value is typed only into an attached client's masked prompt. `answer` returns `400 answer_with_secret`; `dismiss` skips it |
+
+| `status` | Closed by (`closed_by`) |
+|----------|-------------------------|
+| `pending` | Not closed |
+| `answered` | An answer: `api` (this route) or `session` (another surface: a chat reply, Desktop, the TUI) |
+| `dismissed` | `dismiss` (an approval is denied; a question is skipped), or a skip elsewhere |
+| `declined` | `message`: a message the user sent declined the approval instead of answering it (a deny marked as a typed reply) |
+| `interrupted` | `interrupt`: the turn was stopped or ended before anyone answered |
+| `expired` | `timeout`: `approvals.timeout` / the clarify timeout passed unanswered |
+
+- `GET /api/sessions/{id}/asks?status=pending` (default) lists newest first; `status` takes one
+  status, a comma list, or `all`. Closed asks stay listed (the last 100 per session) while the
+  gateway runs.
+- An answer or dismiss on a closed ask returns `409 ask_closed` with the ask in `error.ask`.
+- Auth is the profile's `API_SERVER_KEY`; under `/p/<profile>/` only that profile's sessions are
+  reachable. Room grants are refused (`403 room_grant_not_supported`); they answer through the run
+  routes. Advertised as `features.session_asks` and `endpoints.session_ask*` in `/v1/capabilities`.
+
+```bash
+curl -s http://localhost:8642/api/sessions/$ID/asks -H "Authorization: Bearer $API_SERVER_KEY"
+curl -s -X POST http://localhost:8642/api/sessions/$ID/asks/$ASK/answer \
+  -H "Authorization: Bearer $API_SERVER_KEY" -d '{"choice": "deny"}'
 ```
 
 ## Skills and toolsets discovery

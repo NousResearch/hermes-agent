@@ -190,6 +190,8 @@ POST /v1/runs                    Start a run, returns run_id (202)
 GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
+GET  /api/sessions/{id}/asks      A session's pending approvals, questions and secret prompts
+POST /api/sessions/{id}/asks/{ask_id}/answer|dismiss  Answer or dismiss one
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
 POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
@@ -203,6 +205,17 @@ Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wir
 
 The browser-extension controller protocol has been removed; to let Hermes drive a browser you
 already run, use `browser.cdp_url` or `/browser connect` — see [Browser-extension control (removed)](../user-guide/features/api-server#browser-extension-control-removed).
+
+### Session asks
+
+An *ask* is a prompt a session's turn is blocked on: a dangerous-command approval (`kind: approval`),
+a clarify question (`question`) or a masked secret/sudo request (`secret`). `GET /api/sessions/{id}/asks`
+lists them for any session of the key's profile, whatever surface started the turn, so an external
+UI does not have to own the run that raised one. An ask's `id` is the same `prompt_id` that
+`pending_controls` on `GET /v1/runs/{id}` and the WebSocket `approval.request` carry, and answering it
+resolves the same blocking waiter `POST /v1/runs/{id}/approval` does; there is no second queue. The
+first close wins, whichever surface it comes from. Statuses and bodies:
+[Session asks](../user-guide/features/api-server#session-asks).
 
 ### Model catalog surfaces
 

@@ -20,6 +20,7 @@ from gateway.session_contract import (
     SubscriptionSnapshot,
 )
 from gateway.session_events import SessionEvents
+from gateway.session_asks import ledger_of
 from gateway.session_pending_controls import PendingControls
 from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
 from hermes_cli.observability.shared_metrics_busy import busy_row_settled
@@ -100,7 +101,7 @@ class LiveSession:
     background_wait: threading.Event | None = None
 
     def __post_init__(self):
-        self.controls = PendingControls(self.event_stream)
+        self.controls = PendingControls(self.event_stream, ledger_of(self.event_stream))
 
     @property
     def detached(self):

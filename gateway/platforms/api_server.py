@@ -50,7 +50,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
-    "reasoning_streaming": True,
+    "reasoning_streaming": True, "session_asks": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -110,7 +110,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.display_config import resolve_display_setting
-from gateway.platforms import api_server_room_dispatch as _room_dispatch
+from gateway.platforms import api_server_asks as _session_asks, api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
@@ -1581,8 +1581,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/jobs/{job_id}", self._handle_update_job),
             ("DELETE", "/api/jobs/{job_id}", self._handle_delete_job),
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
-            ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
-            ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+            ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job), ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+        routes.extend(_session_asks._http_routes(self))
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
@@ -2371,7 +2371,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "features": features,
             "endpoints": {
                 name: {"method": entry[0], "path": entry[1]}
-                for name, entry in _CAPABILITY_ENDPOINTS
+                for name, entry in _CAPABILITY_ENDPOINTS + _session_asks.CAPABILITY_ENDPOINTS
                 if len(entry) < 3 or features[entry[2]]},
         })
 

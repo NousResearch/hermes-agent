@@ -11,6 +11,7 @@ import asyncio
 import contextvars
 
 from gateway.config import Platform
+from gateway.session_asks import ledger_of, retired_of
 
 _RETIRABLE = frozenset({Platform.LOCAL, Platform.API_SERVER})
 # How long a retired conversation an RPC brought back stays after its last authorize: longer than any
@@ -54,6 +55,7 @@ def retire_idle(authority, session_id, live, target):
     if _busy(authority, session_id, target):
         return False
     del authority.sessions[session_id]
+    retired_of(authority).keep(session_id, ledger_of(live.event_stream))  # its closed asks stay readable
     authority.launch_sources.pop(session_id, None)  # a cache: re-read from the row on demand
     authority.retired_routes[session_id] = live.route
     if live.source.platform == Platform.LOCAL:

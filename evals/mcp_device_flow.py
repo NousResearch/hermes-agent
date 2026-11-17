@@ -133,7 +133,10 @@ def run_cli(repo, mode):
                 (token_dir / filename).write_text(value)
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("HERMES_") and not any(part in key for part in ("API_KEY", "TOKEN", "SECRET"))}
-        env.update(HOME=str(home), HERMES_HOME=str(home), PYTHONPATH=str(repo), PYTHONDONTWRITEBYTECODE="1")
+        # Lazy installs off: a fresh home's CLI boot otherwise spawns the detached default-plugins
+        # installer, which outlives the CLI and writes HOME/cache while the temp dir is removed.
+        env.update(HOME=str(home), HERMES_HOME=str(home), PYTHONPATH=str(repo), PYTHONDONTWRITEBYTECODE="1",
+                   HERMES_DISABLE_LAZY_INSTALLS="1")
         command = ["reauth", "fixture"] if mode == "preregistered" else ["login", "fixture", "--flow", "device"]
         argv = [sys.executable, "-m", "hermes_cli.main", "mcp", *command]
         if mode == "persistence":

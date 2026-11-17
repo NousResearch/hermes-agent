@@ -20,7 +20,8 @@ REPO = Path(__file__).resolve().parents[2]
 
 def _hermes(home: Path, *args: str) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
-    env.update(HOME=str(home), PYTHONPATH=str(REPO))
+    # Lazy installs off: a CLI boot in a fresh home otherwise leaves a detached installer behind.
+    env.update(HOME=str(home), PYTHONPATH=str(REPO), HERMES_DISABLE_LAZY_INSTALLS="1")
     return subprocess.run([sys.executable, "-m", "hermes_cli.main", *args], env=env, cwd=home,
                           capture_output=True, text=True, timeout=120, check=False)
 

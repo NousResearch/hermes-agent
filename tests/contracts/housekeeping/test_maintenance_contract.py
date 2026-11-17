@@ -222,8 +222,8 @@ def test_export_row_is_the_stored_row(backend, scope_a):
     store_a.sessions.create(NewSession(SessionId("s-row"), "cli", model_config={"_reset_from": "s-prev", "k": 1}, system_prompt="be brief"))
     store_a.sessions.touch_activity(SessionId("s-row"), _BASE, description="busy", provenance="agent")
     row = store_a.maintenance.export_session(SessionId("s-row")).session.as_dict()
-    # CONTRACT: the row dict holds the 65 sessions columns with the resolved system prompt, the stored activity and the lifted reset marker, and no last_active.
-    assert len([key for key in row if not key.startswith("_")]) == 65 and "last_active" not in row
+    # CONTRACT: the row dict holds the 66 sessions columns with the resolved system prompt, the stored activity and the lifted reset marker, and no last_active.
+    assert len([key for key in row if not key.startswith("_")]) == 66 and "last_active" not in row
     assert (row["id"], row["system_prompt"], row["last_activity_description"], row["_reset_from"]) == ("s-row", "be brief", "busy", "s-prev")
     assert "_branched_from" not in row
     # CONTRACT: export_all rows carry last_active: the freshest of the activity stamp and the messages, the start time only without either.

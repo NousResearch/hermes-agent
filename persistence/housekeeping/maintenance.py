@@ -145,7 +145,7 @@ class PruneReclaimEstimate:
 
 @dataclass(frozen=True, slots=True)
 class SessionExportRow:
-    """One exported ``sessions`` row: the 65 columns as stored, in table order (``model_config`` and ``origin_json`` are the stored text, flags the stored 0/1). ``system_prompt`` is resolved through the prompt store; ``tool_names`` is resolved by ``export_session`` and the stored hash in ``export_all``. ``last_active`` is set by ``export_all`` only; ``reset_from`` and ``branched_from`` are the ``_reset_from`` / ``_branched_from`` markers lifted out of ``model_config``. ``as_dict()`` is the row dict: an unset extra has no key."""
+    """One exported ``sessions`` row: the 66 columns as stored, in table order (``model_config`` and ``origin_json`` are the stored text, flags the stored 0/1). ``system_prompt`` is resolved through the prompt store; ``tool_names`` is resolved by ``export_session`` and the stored hash in ``export_all``. ``last_active`` is set by ``export_all`` only; ``reset_from`` and ``branched_from`` are the ``_reset_from`` / ``_branched_from`` markers lifted out of ``model_config``. ``as_dict()`` is the row dict: an unset extra has no key."""
 
     id: SessionId
     runtime_revision: int
@@ -212,6 +212,7 @@ class SessionExportRow:
     last_read_at: Optional[float]
     tool_names: Optional[str]
     transcript_revision: int
+    prompt_cache_clock: Optional[str]
     last_active: Optional[float] = None
     reset_from: Optional[SessionId] = None
     branched_from: Optional[SessionId] = None

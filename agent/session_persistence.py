@@ -5,9 +5,9 @@ import hashlib
 
 import logging
 import re
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
@@ -25,7 +25,7 @@ from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
 from agent.message_metadata import (
     DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, RESTORED_FROM_STORE, TOOL_CALL_UID,
-    copy_identity_fields, message_uid_or_none, tool_call_uid_from_history)
+    copy_identity_fields, message_identity, message_uid_or_none, tool_call_uid_from_history)
 from agent.transcript_repair import sync_flushed_message_markers
 
 
@@ -139,6 +139,36 @@ def _image_marker(part: dict) -> str:
     url = part.get("image_url")
     detail = part.get("detail") or (url.get("detail") if isinstance(url, dict) else None)
     return f"[screenshot detail={detail}]" if detail in ("low", "high", "auto") else "[screenshot]"
+
+
+def durable_row(msg: Any) -> Any:
+    """*msg* as the store keeps it: a copy holding the flush's text projection when its content has parts,
+    else *msg* itself. The live dict keeps the parts: the model still reads them this process."""
+    content = msg.get("content") if isinstance(msg, dict) else None
+    durable = _durable_content(content)
+    return msg if durable is content else {**msg, "content": durable}
+
+
+def durable_copy(msg: dict[str, Any], fields: tuple[str, ...], *, with_tool_uids: bool = False) -> dict[str, Any]:
+    """The row a branch or seed copy writes for the live *msg* into another session: *fields* verbatim, the content
+    as the flush stores it, and the identity :func:`message_identity` stamps on *msg* (which keeps its parts)."""
+    return {"role": msg.get("role", "user"), **{field: msg.get(field) for field in fields},
+            "content": _durable_content(msg.get("content")), **message_identity(msg, with_tool_uids=with_tool_uids)}
+
+
+@contextmanager
+def durable_rows(messages: list[Any]) -> Iterator[list[Any]]:
+    """:func:`durable_row` of each message, for a writer that stores them as a new generation of rows
+    (compaction, prune, transcript rewrite), so it writes what the flush writes (#148146). After the write,
+    each live dict adopts the row state the writer stamped on its copy (row id, digest, timestamp, durable
+    ids), as an in-place write would have left it; a failed write leaves the live dicts untouched."""
+    rows = [durable_row(msg) for msg in messages]
+    yield rows
+    copied = [(msg, row) for msg, row in zip(messages, rows) if row is not msg]
+    if copied:
+        from agent.runtime_session_store import apply_row_annotations
+        from hermes_state_runtime import row_annotations
+        apply_row_annotations([msg for msg, _ in copied], row_annotations([row for _, row in copied]))
 
 
 def _persist_lock(agent):

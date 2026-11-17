@@ -569,9 +569,13 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                 old_survivor_row_ids = [_message_row_id(message) for message in truncated]
                 # active_only: a bare replace would DELETE the compaction archive (active=0
                 # rows) on every edit.  archive_dropped: a mis-aimed cut stays recoverable.
-                db.replace_messages(
-                    truncation_key, truncated, active_only=True, archive_dropped=True,
-                    reject_active_turn_lease=True)
+                # The history keeps its image parts; the rows hold the flush's text, so the
+                # kept prefix still matches past an image row.
+                from agent.session_persistence import durable_rows
+                with durable_rows(truncated) as rows:
+                    db.replace_messages(
+                        truncation_key, rows, active_only=True, archive_dropped=True,
+                        reject_active_turn_lease=True)
             except Exception as exc:
                 logger.error(
                     "prompt.submit: replace_messages failed for session %s (ordinal=%d); refusing "

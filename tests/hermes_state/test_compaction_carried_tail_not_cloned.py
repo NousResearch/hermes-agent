@@ -243,3 +243,21 @@ def test_a_claim_keeps_the_rows_current_replay_sidecar(db: SessionDB) -> None:
     db.archive_and_compact(SID, [_summary(), held], watermark=watermark, tail_count=1)
 
     assert "new exact provider input" in _replayed(db)
+
+
+def test_a_carry_whose_image_was_stripped_claims_its_text_row(db: SessionDB) -> None:
+    """Rows hold the flush's text projection, where an image is a ``[screenshot]`` line (#148146): a carried
+    copy whose image the compressor swapped for a placeholder is that row rewritten, not a second message."""
+    watermark = db.get_active_message_watermark(SID)
+    call = {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "call_1", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]}
+    result = {"role": "tool", "tool_call_id": "call_1", "content": "Image loaded.\n[screenshot]"}
+    db.append_messages_batch(SID, [call, result])
+    stripped = {**result, "content": "Image loaded.\n[Attached image — stripped after compression]"}
+
+    db.archive_and_compact(SID, [_summary(), dict(call), stripped], watermark=watermark, tail_count=2)
+
+    live = db.get_messages_as_conversation(SID)
+    assert [m["role"] for m in live] == ["user", "assistant", "tool"]
+    assert live[-1]["content"] == stripped["content"]
+    assert "Image loaded.\n[screenshot]" in [m["content"] for m in db.get_messages(SID, include_compacted=True)]

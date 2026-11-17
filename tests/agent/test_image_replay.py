@@ -130,7 +130,7 @@ def test_replay_keeps_part_order_and_appended_turn_context(tmp_path):
 
     _config()
     live, _ = _live_turn(tmp_path, "label.png", "What is on this label?")
-    _append_multimodal_context(_Agent(), live, "recalled memory", "plugin hook context", preflight_compressed=False)
+    _append_multimodal_context(_Agent(), live, "recalled memory", "plugin hook context")
     assert live["content"][-1]["type"] == "text"
 
     rebuilt = _rebuilt_request(tmp_path, [live])[0]["content"]

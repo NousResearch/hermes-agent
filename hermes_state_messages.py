@@ -21,7 +21,7 @@ from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _MERGE_DISPLAY_META, _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract, rewrite_user_row)
 from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
@@ -1042,22 +1042,20 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         return self._message_columns_cache
 
     def set_user_message_content(self, session_id: str, row_id: int, content: Any,
-                                 display_metadata: Optional[dict[str, Any]] = None) -> int:
+                                 display_metadata: Optional[dict[str, Any]] = None, *, live: Optional[dict] = None) -> int:
         """Rewrite the content of ONE known active user row. Used when a user turn was written at submit
         time (before the agent ran) and the turn prologue then rewrote the prompt it persists (@-file
         expansion, native image parts, a ``pre_llm_call`` veto's placeholder): the early row must show what
         the transcript will replay, not the raw keystrokes, and the turn must not append a second row for
-        the same input. ``display_metadata``, when given, is merge-patched in (``None`` deletes; reactions survive)."""
+        the same input. ``display_metadata``, when given, is merge-patched in (``None`` deletes; reactions survive).
+        *live*, the dict the row stores, takes the new row digest: its next flush must not adopt its own write."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
-        if display_metadata is None:
-            return self._write_rowcount(
-                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-                (self._encode_content(content), row_id, session_id))
-        return self._write_rowcount(
-            f"UPDATE messages SET content = ?, api_content = NULL, display_metadata = {_MERGE_DISPLAY_META} "
-            "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (self._encode_content(content), self._encode_display_metadata(display_metadata), row_id, session_id))
+        count, snapshot = self._execute_write(
+            lambda conn: rewrite_user_row(self, conn, session_id, row_id, content, display_metadata))
+        if live is not None and snapshot is not None:
+            live[DB_ROW_SNAPSHOT] = snapshot
+        return count
 
     def deactivate_message(self, session_id: str, row_id: int) -> int:
         """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by

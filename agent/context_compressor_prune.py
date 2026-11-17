@@ -92,6 +92,7 @@ class ProactivePruneMixin:
         next_rearm_tokens = after + runway
         if session_db and session_id:
             _cc_ = _cc()
+            from agent.session_persistence import durable_rows
             from hermes_state_errors import HeldRowRewrittenError
             model_config_patch = {_cc_.PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens}
             StaleHeldHistory = _cc_.StaleHeldHistory
@@ -105,12 +106,13 @@ class ProactivePruneMixin:
                 if rewritten is None:
                     from agent.conversation_compression_archive import coverage_for_commit
                     covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, messages)
-                    session_db.archive_and_compact(
-                        session_id, pruned_msgs,
-                        model_config_patch=model_config_patch,
-                        watermark=watermark,
-                        covered_ids=covered_ids, unresolved_held=unresolved_held,
-                        held_for_cas=messages)
+                    with durable_rows(pruned_msgs) as rows:  # the flush's text rows; the live dicts keep their parts
+                        session_db.archive_and_compact(
+                            session_id, rows,
+                            model_config_patch=model_config_patch,
+                            watermark=watermark,
+                            covered_ids=covered_ids, unresolved_held=unresolved_held,
+                            held_for_cas=messages)
             except StaleHeldHistory:
                 # Another compaction already committed this session's history; a lease-less prune of the
                 # generation this process holds would publish beside the winner. Leave the input alone.
@@ -158,6 +160,7 @@ class ProactivePruneMixin:
         rewrite = getattr(session_db, "rewrite_pruned_rows", None)
         if not callable(rewrite) or len(messages) != len(pruned_msgs):
             return None
+        from agent.session_persistence import durable_rows
         from hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
 
         _DB_PERSISTED_MARKER = _cc()._DB_PERSISTED_MARKER
@@ -176,7 +179,11 @@ class ProactivePruneMixin:
                     != {k: v for k, v in replacement.items() if k not in ignored}):
                 changes.append((original, replacement))
         try:
-            return rewrite(session_id, changes, model_config_patch=model_config_patch)
+            # The replacement is written as the flush's text row (the live dict keeps its parts); the original
+            # stays as held, since it names the stored row and a row an older build wrote may hold the parts.
+            with durable_rows([replacement for _original, replacement in changes]) as rows:
+                return rewrite(session_id, [(original, row) for (original, _), row in zip(changes, rows)],
+                               model_config_patch=model_config_patch)
         except PruneRowStaleError as exc:
             # A named row whose stored body changed is another writer's generation, which is exactly
             # what StaleHeldHistory exists to catch — the in-place prune preserved the row ids, so

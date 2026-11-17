@@ -672,10 +672,11 @@ def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
     logger.debug(log_msg, exc_info=True)
 
 
-# Seed row fields copied from the parent transcript. display_kind/metadata: timeline markers ride as role=user;
-# dropping the tag re-plants them as bare user turns after a restart and corrupts the truncate ordinal address space.
+# Seed row fields copied from the parent transcript (the content as the flush stores it). display_kind/metadata:
+# timeline markers ride as role=user; dropping the tag re-plants them as bare user turns after a restart and
+# corrupts the truncate ordinal address space.
 _WORKDIR_SEED_FIELDS = (
-    "content", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
+    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
     "codex_message_items", "display_kind", "display_metadata", "timestamp")
 
 
@@ -688,12 +689,11 @@ def _persist_branch_seed(session: dict) -> None:
     ``history`` and must never re-append it."""
     if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
         return
-    from agent.message_metadata import message_identity
+    from agent.session_persistence import durable_copy
     from agent.transcript_repair import sync_flushed_message_markers
-    with session["history_lock"]:  # message_identity stamps the live dicts
+    with session["history_lock"]:  # durable_copy stamps the live dicts' identity
         live = list(session.get("history") or [])
-        seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
-                 **message_identity(msg)} for msg in live]
+        seed = [durable_copy(msg, _WORKDIR_SEED_FIELDS) for msg in live]
     if not seed:
         return
     with _session_db(session) as db:

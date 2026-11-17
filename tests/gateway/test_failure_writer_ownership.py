@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent.session_persistence import _durable_content
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
 
 
@@ -116,7 +117,8 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             if not owned:
                 assert live_messages[-1]["content"] == PARTIAL_FAILED_TURN_NOTICE
                 persisted_user = live_messages[-2]
-                assert persisted_user["content"] == prepared.persist_user_message
+                # Stored as the agent's own flush stores the parts: their text.
+                assert persisted_user["content"] == _durable_content(prepared.persist_user_message)
                 assert persisted_user["display_metadata"]["gateway_input_owner"] == owner
             # A repeated delivery of the same closed turn adds no second boundary.
             closed = db.message_count()

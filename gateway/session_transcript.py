@@ -66,13 +66,19 @@ def transcript_append_kwargs(session_id: str, message: dict[str, Any], *, fallba
     splatted: a spooled message is arbitrary JSON from disk, and an unexpected key would raise and
     abort the replay. *fallback_ts* applies only to a message with no timestamp at all, because a
     truthiness test would rewrite epoch 0. Values bound straight to a TEXT column are made bindable
-    (:func:`_bindable_text`), so one malformed field cannot make the row unwritable."""
+    (:func:`_bindable_text`), so one malformed field cannot make the row unwritable. The content is stored
+    as the agent's own flush stores it (an image part is a ``[screenshot]`` line), never its base64."""
+    content = message.get("content")
+    if isinstance(content, (list, dict)):
+        # Only parts and envelopes change; plain text skips the agent persistence import (spool recovery at start).
+        from agent.session_persistence import _durable_content
+        content = _durable_content(content)
     is_assistant = message.get("role") == "assistant"
     timestamp = message.get("timestamp")
     kwargs = {
         "session_id": session_id,
         "role": message.get("role", "unknown"),
-        "content": message.get("content"),
+        "content": content,
         "tool_name": message.get("tool_name"),
         "tool_calls": message.get("tool_calls"),
         "tool_call_id": message.get("tool_call_id"),
@@ -561,10 +567,12 @@ class SessionTranscriptMixin:
                 # DO exist they survive. An existence probe here (has_archived_messages) would fail OPEN
                 # into the destructive replace on any DB error and can race a concurrent archive_and_compact
                 # — the same probe failure mode #80216's /retry fix (gateway/slash_commands.py) deliberately
-                # avoids.
-                db.replace_messages(
-                    session_id, messages, active_only=active_only,
-                    reject_active_turn_lease=reject_active_turn_lease)
+                # avoids. The rows hold the flush's text; the caller's messages keep any image parts.
+                from agent.session_persistence import durable_rows
+                with durable_rows(messages) as rows:
+                    db.replace_messages(
+                        session_id, rows, active_only=active_only,
+                        reject_active_turn_lease=reject_active_turn_lease)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
                 return False

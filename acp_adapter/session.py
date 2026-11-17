@@ -422,7 +422,10 @@ class SessionManager:
             # create/fork every row is active (== full replace), and archived rows survive.
             # Unconditional because an existence probe would fail OPEN on DB error and can
             # race a concurrent archive_and_compact. Still rolls back on mid-rewrite failure.
-            db.replace_messages(state.session_id, state.history, active_only=True)
+            # The rows hold the flush's text projection; the live history keeps its image parts.
+            from agent.session_persistence import durable_rows
+            with durable_rows(state.history) as rows:
+                db.replace_messages(state.session_id, rows, active_only=True)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 

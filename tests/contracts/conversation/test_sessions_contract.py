@@ -335,7 +335,8 @@ def test_update_model_writes_the_whole_route_and_clears_the_stale_endpoint(backe
     # CONTRACT: a switch with a provider stores the whole route top-level and as the gateway_runtime object, so resume on either reader recombines model, provider and endpoint.
     route = {"provider": "custom", "base_url": "https://model.example/v1", "api_mode": "chat_completions"}
     assert {key: config[key] for key in route} == route
-    assert config["gateway_runtime"] == route
+    # CONTRACT: the gateway_runtime object also names the switched model, so a fallback that later rewrites the model column cannot pair its model with this provider on resume.
+    assert config["gateway_runtime"] == {**route, "model": "m2"}
     assert gateway_runtime(config) == GatewayRuntime(**route)
     # CONTRACT: a model switch drops the runtime lock, whose route would otherwise override the switch.
     assert RUNTIME_LOCK_KEY not in config
@@ -344,14 +345,14 @@ def test_update_model_writes_the_whole_route_and_clears_the_stale_endpoint(backe
     config = (store_a.sessions.get(sid)).model_config
     # CONTRACT: switching to a provider without an endpoint deletes the previous one at top level and nulls it in gateway_runtime; it never survives to send the new model to the old host.
     assert "base_url" not in config and "api_mode" not in config
-    assert config["gateway_runtime"] == {"provider": "openrouter", "base_url": None, "api_mode": None}
+    assert config["gateway_runtime"] == {"provider": "openrouter", "base_url": None, "api_mode": None, "model": "m3"}
     assert gateway_runtime(config) == GatewayRuntime("openrouter")
 
     store_a.sessions.update_model(sid, "m4", base_url="https://ignored.example")
     config = (store_a.sessions.get(sid)).model_config
     # CONTRACT: without a provider the stored route is left untouched.
     assert config["model"] == "m4"
-    assert config["gateway_runtime"] == {"provider": "openrouter", "base_url": None, "api_mode": None}
+    assert config["gateway_runtime"] == {"provider": "openrouter", "base_url": None, "api_mode": None, "model": "m3"}
     assert "base_url" not in config
 
     store_a.sessions.update_model(sid, "")

@@ -9,6 +9,7 @@ Times are epoch-second floats.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
@@ -36,6 +37,7 @@ __all__ = [
     "TopicBinding",
     "gateway_runtime",
     "normalize_topic_profile_name",
+    "resume_route",
     "route_namespace",
 ]
 
@@ -194,6 +196,41 @@ def gateway_runtime(
     if runtime is None:
         return GatewayRuntime()
     return _route(runtime, keep_falsy=True)
+
+
+def resume_route(
+    model_config: Mapping[str, JsonValue] | str | None,
+    *,
+    model: Optional[str] = None,
+    billing_provider: Optional[str] = None,
+    billing_base_url: Optional[str] = None,
+) -> tuple[str, GatewayRuntime]:
+    """The ``(model, route)`` a resumed session runs, both taken from one record so they always pair.
+
+    ``model`` is the session's model column, the billing record: the first accounted call rewrites it to whatever served it, a turn-scoped fallback included, and touches nothing in ``model_config``. So the model comes from the record the route comes from: a nested ``gateway_runtime`` route's own ``model`` (every route writer stamps it), else the pick in ``model_config.model``. The column is used only where nothing else names a model, plus two legacy cases written with the column: a nested route from before the stamp, and a confirmed runtime lock still naming it. ``billing_provider`` served the column's model, so it never fills the provider of another model. ``model_config`` may be its JSON text; unparsable text reads as empty.
+    """
+    config: Mapping[str, JsonValue] = {}
+    if isinstance(model_config, str):
+        try:
+            parsed = json.loads(model_config)
+        except (TypeError, ValueError):
+            parsed = None
+        config = parsed if isinstance(parsed, Mapping) else {}
+    elif isinstance(model_config, Mapping):
+        config = model_config
+    column = (model or "").strip()
+    picked = str(config.get("model") or "").strip()
+    nested, lock = config.get("gateway_runtime"), config.get("browser_model_lock")
+    if isinstance(nested, Mapping) and nested.get("provider"):
+        chosen = str(nested.get("model") or "").strip() or column or picked
+    elif isinstance(lock, Mapping) and lock.get("confirmed") and str(lock.get("model") or "").strip() == column:
+        chosen = column or picked
+    else:
+        chosen = picked or column
+    same = chosen == column
+    route = gateway_runtime(config, billing_provider=billing_provider if same else None,
+                            billing_base_url=billing_base_url if same else None)
+    return chosen, route
 
 
 @runtime_checkable

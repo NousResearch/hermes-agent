@@ -961,7 +961,7 @@ class SessionRepository(Protocol):
         base_url: Optional[str] = None,
         api_mode: Optional[str] = None,
     ) -> None:
-        """Set the model, drop the runtime lock, and with a provider write the whole route at the top level and under ``gateway_runtime``."""
+        """Set the model, drop the runtime lock, and with a provider write the whole route at the top level and under ``gateway_runtime``, the nested copy stamped with the model so :func:`persistence.gateway.routing.resume_route` pairs them after a fallback rewrites the model column."""
         ...
 
     def set_runtime_lock(self, session_id: SessionId, lock: RuntimeLock) -> None:

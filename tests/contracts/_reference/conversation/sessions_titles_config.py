@@ -318,7 +318,9 @@ class SessionTitlesConfigMixin:
             patch["model"] = model
         if provider:
             route = {"provider": provider, "base_url": base_url or None, "api_mode": api_mode or None}
-            patch.update(route, gateway_runtime=route)
+            # The nested route names its model: the first accounted call may later rewrite the model
+            # column to a fallback, and resume must still pair this provider with this model.
+            patch.update(route, gateway_runtime={**route, "model": model or None})
         row["model"] = model
         self._set_config(row, self._merged(row["model_config"], patch))
 

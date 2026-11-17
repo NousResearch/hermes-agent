@@ -25,6 +25,7 @@ from persistence.gateway.routing import (
     NeverActivePrune,
     RoutingRepository,
     gateway_runtime,
+    resume_route,
 )
 from tests.contracts._concurrency import run_concurrently
 from tests.contracts._waiting import wait_past
@@ -786,3 +787,42 @@ def test_gateway_runtime_precedence():
     # Non-string members read None; the empty route is empty.
     assert gateway_runtime({"provider": 3, "gateway_runtime": "nope"}) == GatewayRuntime()
     assert gateway_runtime(None).is_empty
+
+
+# ── resume_route (pure projection: the model and route a resumed session runs) ──
+
+
+def test_resume_route_after_a_switch_then_a_fallback_keeps_the_switched_pair():
+    # CONTRACT: the nested route's own model wins over the model column, which the first accounted call rewrites to whatever served it (a fallback included), so resume pairs the switched provider with the switched model.
+    config = {"gateway_runtime": {"provider": "anthropic", "base_url": None, "api_mode": None, "model": "claude-opus-4"}}
+    assert resume_route(config, model="deepseek/deepseek-v4-flash", billing_provider="openrouter") == (
+        "claude-opus-4", GatewayRuntime(provider="anthropic"))
+
+
+def test_resume_route_after_a_fallback_served_first_call_keeps_the_pick():
+    # CONTRACT: with no nested route, the pick in model_config wins over the model column, and the billing provider (which served the column's model) never fills the pick's provider.
+    assert resume_route({"model": "claude-opus-4", "provider": "anthropic"}, model="deepseek/deepseek-v4-flash",
+                        billing_provider="openrouter") == ("claude-opus-4", GatewayRuntime(provider="anthropic"))
+    assert resume_route({"model": "claude-opus-4"}, model="deepseek/deepseek-v4-flash",
+                        billing_provider="openrouter") == ("claude-opus-4", GatewayRuntime())
+
+
+def test_resume_route_legacy_rows_written_with_the_column():
+    # CONTRACT: a nested route from before the model stamp, and a confirmed runtime lock still naming the column, take the column's model; the billing provider then fills a missing provider.
+    legacy = {"model": "claude-opus-4", "provider": "anthropic",
+              "gateway_runtime": {"provider": "openai-codex", "api_mode": "codex_responses"}}
+    assert resume_route(legacy, model="gpt-6-sol", billing_provider="anthropic") == (
+        "gpt-6-sol", GatewayRuntime(provider="openai-codex", api_mode="codex_responses"))
+    locked = {"model": "claude-opus-4", "provider": "anthropic",
+              "browser_model_lock": {"model": "claude-sonnet-5", "provider": "anthropic", "confirmed": True}}
+    assert resume_route(locked, model="claude-sonnet-5") == ("claude-sonnet-5", GatewayRuntime(provider="anthropic"))
+    # CONTRACT: an unconfirmed lock does not; the pick wins.
+    unconfirmed = {**locked, "browser_model_lock": {**locked["browser_model_lock"], "confirmed": False}}
+    assert resume_route(unconfirmed, model="claude-sonnet-5")[0] == "claude-opus-4"
+
+
+def test_resume_route_falls_back_to_the_column_and_reads_a_json_config():
+    # CONTRACT: the column is the model only when nothing else names one; model_config may arrive as its JSON text, and unparsable text reads as empty.
+    assert resume_route(None, model="m1", billing_provider="nous") == ("m1", GatewayRuntime(provider="nous"))
+    assert resume_route('{"model": "m2"}', model="m1") == ("m2", GatewayRuntime())
+    assert resume_route("not json", model="m1") == ("m1", GatewayRuntime())

@@ -292,14 +292,19 @@ def test_renaming_a_later_compression_segment_sends_that_rows_revision(store, tm
     was a revision_conflict on every try."""
     db, client = store
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
-    from hermes_state import SessionDB
-    writer = SessionDB(db_path=tmp_path / "state.db")
-    writer.create_session("local-old", source="local")
-    writer.create_session("local-tip", source="local", parent_session_id="local-old")
-    with writer._lock:
-        writer._conn.execute("UPDATE sessions SET runtime_revision=7 WHERE id='local-tip'")
-        writer._conn.commit()
-    writer.close()
+    from persistence.conversation.lineage import CompressionChild
+    from persistence.conversation.messages import NewMessage
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        seed_session(writer, "local-old", "local")
+        seed_messages(writer, "local-old", {"role": "user", "content": "hi"})
+        writer.lineage.publish_compression_child(
+            "local-old", CompressionChild(session_id="local-tip", source="local"),
+            [NewMessage.from_live({"role": "user", "content": "hi"})], require_compression_lease=False)
+        raw_holder(writer)._execute_write(
+            lambda conn: conn.execute("UPDATE sessions SET runtime_revision=7 WHERE id='local-tip'"))
     base = client.rpc
 
     async def rpc(method, *, _timeout=None, **params):

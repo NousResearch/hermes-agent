@@ -23,6 +23,12 @@ Events (``type``):
   if a ticket reopens).
 - ``asset_approved`` — a Release Assets row moved to an approved status.
 - ``asset_edited_after_approval`` — a human edited an approved row.
+  Both carry the approval measurement (``educator_wake.measure_approval``):
+  ``approved_chars``, ``snapshot_missing``, and with a snapshot
+  ``draft_chars``, ``chars_changed``, ``chars_changed_exact``, ``baseline``
+  (``draft`` | ``redraft``), ``assumption_chars`` when a re-draft exists; or
+  ``measure_error``. The approved markdown is saved to
+  ``drafts/<row-id>.approved.md``.
 - ``veto_due`` — a veto-level action waited out its window; the agent runs the
   named tool call (the script has no Slack token to do it).
 - ``notebook_not_updated`` — the last run that woke the agent did not rewrite
@@ -214,10 +220,12 @@ def _asset_events(state: dict, s: dict, now: datetime) -> list[dict]:
                 "asset_type": w.prop_text(props.get(s["type_prop"])),
                 "destination": w.prop_text(props.get("Destination"))}
         if status in s["approved"] and prev.get("status") not in s["approved"]:
-            events.append({"type": "asset_approved", **info})
+            events.append({"type": "asset_approved", **info,
+                           **w.measure_approval(rid, info["asset_type"], now)})
         elif (status in s["approved"] and prev.get("edited") and edited != prev.get("edited")
               and editor and editor != bot):
-            events.append({"type": "asset_edited_after_approval", "edited_at": edited, **info})
+            events.append({"type": "asset_edited_after_approval", "edited_at": edited, **info,
+                           **w.measure_approval(rid, info["asset_type"], now)})
         assets[rid] = {"status": status, "edited": edited}
     state["assets_cursor"] = w.iso(now)
     return events

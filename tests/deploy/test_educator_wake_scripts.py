@@ -475,3 +475,115 @@ def test_state_lives_under_cron_not_the_agent_writable_workspace(mods, http, hom
     run_watch(mods, T0)
     assert (home / "cron" / "educator-state" / "release-watch.json").is_file()
     assert not list((home / "workspace").glob("*.json"))
+
+
+# ── approval measurement (contract: product-skills learn-from-approval) ──
+
+def _naive_lev(a, b):
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+@pytest.mark.parametrize("a,b", [("", ""), ("abc", ""), ("", "xyz"), ("kitten", "sitting"),
+                                 ("flaw", "lawn"), ("same text", "same text"),
+                                 ("abcdefghij" * 7, "abXdefghij" * 6 + "zz"),
+                                 ("the quick brown fox", "a quick brown dog jumps")])
+def test_edit_distance_is_exact_levenshtein(mods, a, b):
+    wake, _, _ = mods
+    dist, exact = wake.edit_distance(a, b)
+    assert exact is True and dist == _naive_lev(a, b)
+
+
+def test_edit_distance_is_fast_for_a_long_lightly_edited_document(mods):
+    import random
+    import time
+    wake, _, _ = mods
+    rng = random.Random(7)
+    a = "".join(rng.choice("abcdefghij klmnop") for _ in range(12000))
+    b = list(a)
+    for _ in range(150):
+        b[rng.randrange(len(b))] = "#"
+    b = "".join(b)
+    t = time.monotonic()
+    dist, exact = wake.edit_distance(a, b)
+    assert exact and dist <= 150 and time.monotonic() - t < 10
+
+
+def test_edit_distance_falls_back_to_an_estimate_for_a_full_rewrite(mods, monkeypatch):
+    wake, _, _ = mods
+    monkeypatch.setattr(wake, "EDIT_DISTANCE_CELL_BUDGET", 10_000)
+    dist, exact = wake.edit_distance("a" * 3000, "b" * 2500)
+    assert exact is False and dist >= 2500
+
+
+def test_normalise_strips_the_snapshot_header_and_collapses_whitespace(mods):
+    wake, _, _ = mods
+    text = "<!-- snapshot row=x asset_type=Slack post taken=2026-11-17T09:00:00Z -->\n# Title\n\n  body   text\n"
+    assert wake.normalise_markdown(text) == "# Title body text"
+
+
+def _approve_flow(mods, http, home, monkeypatch, *, draft=None, redraft=None, approved_md="# T approved body"):
+    wake, watch, _ = mods
+    drafts = home / "workspace" / "drafts"
+    drafts.mkdir(exist_ok=True)
+    if draft is not None:
+        (drafts / f"{ROW_1}.md").write_text(draft)
+    if redraft is not None:
+        (drafts / f"{ROW_1}.redraft.md").write_text(redraft)
+    real = http.__call__
+
+    def with_markdown(method, url, headers, body=None, timeout=30):
+        if url.endswith(f"/v1/pages/{ROW_1}/markdown"):
+            http.calls.append((method, url, body))
+            return 200, {"object": "page_markdown", "markdown": approved_md, "truncated": False}
+        return real(method, url, headers, body, timeout)
+
+    monkeypatch.setattr(wake, "http_json", with_markdown)
+    run_watch(mods, T0)
+    http.assets = [asset(ROW_1, "Slack post: audio", "Approved", edited="2026-11-17T09:10:00.000Z")]
+    return events_of(run_watch(mods, T0 + timedelta(minutes=20)), "asset_approved")[0]
+
+
+def test_approved_row_is_measured_against_its_snapshot(mods, http, home, monkeypatch):
+    ev = _approve_flow(mods, http, home, monkeypatch,
+                       draft="<!-- snapshot row=r asset_type=Slack post taken=t -->\n# T draft body\n")
+    assert ev["snapshot_missing"] is False and ev["baseline"] == "draft"
+    assert ev["draft_chars"] == len("# T draft body")
+    assert ev["approved_chars"] == len("# T approved body")
+    assert ev["chars_changed"] == _naive_lev("# T draft body", "# T approved body")
+    assert ev["chars_changed_exact"] is True
+    saved = (home / "workspace" / "drafts" / f"{ROW_1}.approved.md").read_text()
+    assert saved.startswith(f"<!-- approved row={ROW_1} asset_type=Slack post taken=")
+    assert saved.rstrip().endswith("# T approved body")
+
+
+def test_redraft_splits_assumption_chars_from_writing_edits(mods, http, home, monkeypatch):
+    ev = _approve_flow(mods, http, home, monkeypatch, draft="# T old", redraft="# T approved body")
+    total = _naive_lev("# T old", "# T approved body")
+    assert ev["baseline"] == "draft" and ev["chars_changed"] == total
+    assert ev["assumption_chars"] == total  # the reviewer changed nothing after the re-draft
+
+
+def test_redraft_alone_is_the_baseline(mods, http, home, monkeypatch):
+    ev = _approve_flow(mods, http, home, monkeypatch, redraft="# T approved bodY")
+    assert ev["baseline"] == "redraft" and ev["chars_changed"] == 1 and "assumption_chars" not in ev
+
+
+def test_missing_snapshot_still_reports_the_approved_size(mods, http, home, monkeypatch):
+    ev = _approve_flow(mods, http, home, monkeypatch)
+    assert ev["snapshot_missing"] is True
+    assert ev["approved_chars"] == len("# T approved body")
+    assert "draft_chars" not in ev and "chars_changed" not in ev
+
+
+def test_markdown_fetch_failure_is_recorded_on_the_event_not_fatal(mods, http, home):
+    run_watch(mods, T0)
+    http.assets = [asset(ROW_1, "x", "Approved", edited="2026-11-17T09:10:00.000Z")]
+    p = run_watch(mods, T0 + timedelta(minutes=20))   # FakeHTTP has no markdown route -> AssertionError
+    [ev] = events_of(p, "asset_approved")
+    assert "measure_error" in ev and "chars_changed" not in ev

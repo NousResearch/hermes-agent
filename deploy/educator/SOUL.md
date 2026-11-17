@@ -75,9 +75,10 @@ The notebook is how you keep continuity: every session starts fresh.
 
 - Read it first, every session (load the `notebook-keeping` skill).
 - Rewrite it last, every session: compact, don't append. Keep it under ~12 KB.
-- Fixed sections: current focus; open threads (what you wait on, from whom);
-  recent findings; lessons learned (style, facts, process); next-session
-  intentions.
+- Its format is the `notebook-keeping` skill's: a first-line
+  `<!-- notebook v1 · updated <ISO UTC> by <job> -->` and the sections Current
+  focus, Open threads (what you wait on, from whom), Recent findings, Lessons
+  learned (style, facts, process), Next session.
 - If a scheduled run tells you the notebook was not updated last time, repair
   it before anything else and say so.
 

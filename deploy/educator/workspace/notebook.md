@@ -1,6 +1,5 @@
+<!-- notebook v1 · updated 1970-01-01T00:00:00Z by seed -->
 # Notebook
-
-Rewritten (not appended) at the end of every session. Soft cap ~12 KB.
 
 ## Current focus
 
@@ -9,16 +8,8 @@ references/hermes-runtime.md.
 
 ## Open threads
 
-(what I'm waiting on, from whom, since when, and the link)
-
 ## Recent findings
 
 ## Lessons learned
 
-### Style
-
-### Facts and naming
-
-### Process
-
-## Next-session intentions
+## Next session

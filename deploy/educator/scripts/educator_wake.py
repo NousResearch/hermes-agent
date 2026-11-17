@@ -251,6 +251,129 @@ def jira_keys(text: str) -> list[str]:
     return list(dict.fromkeys(JIRA_KEY.findall(text or "")))
 
 
+# ── approval measurement (product-skills learn-from-approval contract) ───
+#
+# The agent has no code execution, so it cannot count an exact character
+# diff. The script does it: Notion's own markdown of the approved row vs the
+# agent's first-draft snapshot (drafts/<row-id>.md, or .redraft.md after a
+# corrected assumption), whitespace collapsed and the snapshot header line
+# dropped, Levenshtein distance in characters.
+
+EDIT_DISTANCE_CELL_BUDGET = 40_000_000
+_HEADER = re.compile(r"\A\s*<!--.*?-->[^\S\n]*\n?", re.DOTALL)
+
+
+def normalise_markdown(text: str) -> str:
+    return re.sub(r"\s+", " ", _HEADER.sub("", text or "", count=1)).strip()
+
+
+def _banded_levenshtein(a: str, b: str, k: int) -> Optional[int]:
+    """Exact distance if it is <= k, else None. O(len(a) * k)."""
+    n, m = len(a), len(b)
+    if abs(n - m) > k:
+        return None
+    inf = k + 1
+    width = 2 * k + 1
+    # row i holds D[i][j] for j = i-k .. i+k at index t = j - i + k
+    prev = [j - k if 0 <= j - k <= m else inf for j in range(width)]
+    for i in range(1, n + 1):
+        ca = a[i - 1]
+        cur = [inf] * width
+        best = inf
+        for t in range(width):
+            j = i - k + t
+            if j < 0 or j > m:
+                continue
+            if j == 0:
+                v = i
+            else:
+                v = prev[t] + (ca != b[j - 1])                 # D[i-1][j-1]
+                if t + 1 < width and prev[t + 1] + 1 < v:      # D[i-1][j]
+                    v = prev[t + 1] + 1
+                if t > 0 and cur[t - 1] + 1 < v:               # D[i][j-1]
+                    v = cur[t - 1] + 1
+            cur[t] = v if v < inf else inf
+            if cur[t] < best:
+                best = cur[t]
+        if best > k:
+            return None
+        prev = cur
+    d = prev[m - n + k]
+    return d if d <= k else None
+
+
+def edit_distance(a: str, b: str) -> tuple[int, bool]:
+    """``(distance, exact)``. Exact Levenshtein while the work stays under
+    ``EDIT_DISTANCE_CELL_BUDGET``; beyond that (a near-total rewrite of a
+    long document) an upper-bound estimate from a line diff."""
+    p = 0
+    while p < len(a) and p < len(b) and a[p] == b[p]:
+        p += 1
+    a, b = a[p:], b[p:]
+    s = 0
+    while s < len(a) and s < len(b) and a[-1 - s] == b[-1 - s]:
+        s += 1
+    if s:
+        a, b = a[:-s], b[:-s]
+    if not a or not b:
+        return max(len(a), len(b)), True
+    k = max(16, abs(len(a) - len(b)))
+    while True:
+        if len(a) * (2 * k + 1) > EDIT_DISTANCE_CELL_BUDGET:
+            break
+        d = _banded_levenshtein(a, b, k)
+        if d is not None:
+            return d, True
+        if k >= max(len(a), len(b)):
+            break
+        k *= 2
+    import difflib
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    approx = sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != "equal")
+    return max(approx, abs(len(a) - len(b))), False
+
+
+def page_markdown(page_id: str) -> dict:
+    return notion_get(f"pages/{page_id}/markdown")
+
+
+def measure_approval(row_id: str, asset_type: str, now: datetime) -> dict:
+    """Fields added to an ``asset_approved`` / ``asset_edited_after_approval``
+    event, and ``drafts/<row-id>.approved.md`` written for the agent."""
+    out: dict = {}
+    try:
+        page = page_markdown(row_id)
+    except SourceError as e:
+        return {"measure_error": f"could not read the approved markdown: {e}"}
+    if page.get("truncated"):
+        return {"measure_error": "Notion returned truncated markdown for this row"}
+    approved = str(page.get("markdown") or "")
+    drafts = workspace() / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    (drafts / f"{row_id}.approved.md").write_text(
+        f"<!-- approved row={row_id} asset_type={asset_type} taken={iso(now)} -->\n{approved}\n",
+        encoding="utf-8")
+    approved_n = normalise_markdown(approved)
+    out["approved_chars"] = len(approved_n)
+    draft_p, redraft_p = drafts / f"{row_id}.md", drafts / f"{row_id}.redraft.md"
+    base_p = draft_p if draft_p.is_file() else redraft_p if redraft_p.is_file() else None
+    if base_p is None:
+        out["snapshot_missing"] = True
+        return out
+    draft_n = normalise_markdown(base_p.read_text(encoding="utf-8"))
+    dist, exact = edit_distance(draft_n, approved_n)
+    out.update(snapshot_missing=False, baseline="draft" if base_p == draft_p else "redraft",
+               draft_chars=len(draft_n), chars_changed=dist, chars_changed_exact=exact)
+    if base_p == draft_p and redraft_p.is_file():
+        # A re-draft after a corrected assumption: what the reviewer still
+        # changed after it is writing; the rest of the change is assumption.
+        writing, w_exact = edit_distance(normalise_markdown(redraft_p.read_text(encoding="utf-8")),
+                                         approved_n)
+        out["assumption_chars"] = max(0, dist - writing)
+        out["chars_changed_exact"] = exact and w_exact
+    return out
+
+
 # ── Jira (read-only) ─────────────────────────────────────────────────────
 
 def _jira_auth() -> tuple[str, dict]:

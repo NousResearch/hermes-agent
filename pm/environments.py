@@ -55,21 +55,33 @@ def owning_home_root(project_root: Path) -> Path | None:
     and it execs the owner's store Python. With no live launcher to ask, the root the checkout
     sits in outranks the platform default.
     """
-    from hermes_constants import _get_platform_default_hermes_home
-
     root = Path(project_root).resolve()
     key = install_key(root)
-    candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
-                  if (candidate / "installs" / key / "facts.json").is_file()]
-    if not candidates:
+    owner = installed_home_root(root)
+    if owner is None:
         return None
-    owner = _launcher_bound_root(root, candidates) or candidates[0]
     try:
         if (owner / "installs" / key).resolve() == install_state_dir(root).resolve():
             return None
     except OSError:
         pass
     return owner
+
+
+def installed_home_root(project_root: Path) -> Path | None:
+    """The committed installation owner, including when the caller already uses it.
+
+    Unlike ``owning_home_root`` this is an identity lookup, not a redirect test.
+    Installation-wide settings must not mistake "already at the owner" for an
+    unknown owner and then adopt a resolved profile symlink's external target.
+    """
+    from hermes_constants import _get_platform_default_hermes_home
+
+    root = Path(project_root).resolve()
+    key = install_key(root)
+    candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
+                  if (candidate / "installs" / key / "facts.json").is_file()]
+    return (_launcher_bound_root(root, candidates) or candidates[0]) if candidates else None
 
 
 def _launcher_bound_root(project_root: Path, candidates: list[Path]) -> Path | None:

@@ -250,7 +250,11 @@ updates:
   backup_keep: 5                 # Keep this many full pre-update backup zips
   non_interactive_local_changes: stash  # stash | discard
   auto_switch_parked_branch: true       # auto-switch a clean, fully merged parked branch back to main
+  auto:
+    idle_wait_minutes: 30        # scheduled `hermes update auto` slots wait this long for idle gateways, else skip
 ```
+
+`updates.auto.idle_wait_minutes` applies only to schedules you turned on with `hermes update auto enable` (off by default). When a scheduled slot finds an update, it asks every gateway serving the installation (the multiplex host and any standalone profile gateway) what it is running and waits up to this many minutes for all of them to be idle. If work is still running when the wait ends, the slot is skipped with status `deferred_busy`, the busy units are listed in `hermes update auto status`, and the next slot tries again. `0` turns the gate off. The updater's own bounded drain still applies either way. `hermes update auto run-now` and manual `hermes update` are never gated. Owed recovery from an earlier interrupted update is never deferred.
 
 `pre_update_backup` is the single pre-update safety knob: `quick` (default) snapshots critical state files (pairing data, cron jobs, config, auth; files over 1 GiB are skipped) into `state-snapshots/`; `full` additionally zips all of `HERMES_HOME` into `backups/` and can add minutes on large homes; `off` disables both. Legacy booleans are honored (`true` → `full`, `false` → `off`).
 

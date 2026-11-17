@@ -572,12 +572,14 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     """
     from hermes_cli.config import get_project_root, require_readable_config_before_write
     from hermes_cli.steward import read_install_stamp
-    from hermes_cli.update_channel import channel_record, install_id, resolve_update_channel, rides_default_channel
+    from hermes_cli.update_channel import install_id, rides_default_channel
+    from hermes_cli.update_installation import read_install_channel_record, resolve_install_channel
     from hermes_cli.release_channels import validate_name
 
     embedded = (os.environ.get("HERMES_REVISION") or None) if install_root is None else None
     root = Path(install_root if install_root is not None else get_project_root()).resolve()
-    home = Path(home if home is not None else get_hermes_home()).resolve()
+    # Preserve a named profile symlink's parent root for installation ownership.
+    home = Path(home if home is not None else get_hermes_home()).absolute()
     result = {"supported": False, "hermesRoot": str(root), "behind": None, "commits": []}
     unsupported = _unsupported_reason(read_install_stamp(root), root,
                                       explicit_root=install_root is not None, embedded=embedded)
@@ -586,8 +588,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     config = require_readable_config_before_write(home / "config.yaml")
     if passive and (config.get("updates") or {}).get("check") is False:
         return {**result, "reason": "disabled"}
-    channel = resolve_update_channel(config, root) if channel is None else validate_name(channel)
-    forward_only = rides_default_channel(channel_record(config, root), channel, root)
+    channel = resolve_install_channel(root, home=home) if channel is None else validate_name(channel)
+    forward_only = rides_default_channel(read_install_channel_record(root, home=home), channel, root)
     co = _read_checkout(root, _installed_git(git), embedded)
     desktop_config = _read_json(branch_config_path) if branch_config_path else None
     configured_branch = _configured_branch(desktop_config)

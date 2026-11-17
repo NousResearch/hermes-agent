@@ -26,6 +26,7 @@ from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, re
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_atomic import _atomic_output_path
+from hermes_cli import backup_retention
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.backup_staging import prune_backup_staging, reclaim_backup_staging, staged_backup_file, warn_legacy_backup_file
 from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
@@ -308,7 +309,12 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
-def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
+def _raise_walk_error(error: OSError) -> None:
+    raise error
+
+
+def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None,
+                       *, strict: bool = False):
     """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
 
     The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
@@ -316,7 +322,8 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
     shared by ``hermes backup`` and the pre-update path so they can never drift.
     """
     reclaim_backup_staging(hermes_root / _PRE_UPDATE_BACKUPS_DIR)
-    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(
+            hermes_root, followlinks=False, **({"onerror": _raise_walk_error} if strict else {})):
         rel_dir = Path(dirpath).relative_to(hermes_root)
         is_root = rel_dir == Path(".")
         kept = [
@@ -1110,27 +1117,10 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     return home / _QUICK_SNAPSHOTS_DIR
 
 
-def _newest_first(root: Path, keep_entry) -> list[Path]:
-    """Entries of *root* passing ``keep_entry``, newest (by name) first; ``[]`` if *root* is missing."""
-    if not root.exists():
-        return []
-    return sorted(filter(keep_entry, root.iterdir()), key=lambda p: p.name, reverse=True)
-
-
 # Kept in sync with ``_QUICK_STATE_FILES`` and ``cron/jobs.py``'s ``JOBS_FILE``.
 _CRON_JOBS_REL = "cron/jobs.json"
 
 
-def _prune_oldest(newest_first: list[Path], keep: int, remove, what: str) -> int:
-    """``remove(path)`` every entry past the first *keep*; return how many succeeded."""
-    deleted = 0
-    for p in newest_first[keep:]:
-        try:
-            remove(p)
-            deleted += 1
-        except OSError as exc:
-            logger.warning("Failed to prune %s %s: %s", what, p.name, exc)
-    return deleted
 
 
 # --- Pre-update / pre-migration auto-backups ---
@@ -1148,10 +1138,10 @@ def _prune_prefixed_zips(backup_dir: Path, prefix: str, keep: int, what: str) ->
 
     Only prefix-matched files are touched, so hand-made zips or other backup kinds survive.
     """
-    backups = _newest_first(backup_dir, lambda p: p.is_file() and p.name.startswith(prefix)
+    backups = backup_retention.newest_first(backup_dir, lambda p: p.is_file() and p.name.startswith(prefix)
                             and p.suffix.lower() == ".zip"
                             and not p.name.lower().endswith(_INCOMPLETE_ZIP_SUFFIX))
-    return _prune_oldest(backups, keep, Path.unlink, what)
+    return backup_retention.prune_oldest(backups, keep, Path.unlink, what)
 
 
 def _prune_incomplete_zips(backup_dir: Path, prefix: str, what: str) -> int:
@@ -1160,13 +1150,14 @@ def _prune_incomplete_zips(backup_dir: Path, prefix: str, what: str) -> int:
     Salvage archives never count toward normal retention, so repeated failing runs would
     otherwise pile up without bound.
     """
-    salvage = _newest_first(backup_dir, lambda p: p.is_file() and p.name.startswith(prefix)
+    salvage = backup_retention.newest_first(backup_dir, lambda p: p.is_file() and p.name.startswith(prefix)
                             and p.name.lower().endswith(_INCOMPLETE_ZIP_SUFFIX))
-    return _prune_oldest(salvage, 1, Path.unlink, f"incomplete {what}")
+    return backup_retention.prune_oldest(salvage, 1, Path.unlink, f"incomplete {what}")
 
 
 def _create_prefixed_full_backup(
-    hermes_home: Optional[Path], prefix: str, keep: int, what: str, prune_what: str) -> Optional[Path]:
+    hermes_home: Optional[Path], prefix: str, keep: int, what: str, prune_what: str,
+    *, strict: bool = False) -> Optional[Path]:
     """Write ``<HERMES_HOME>/backups/<prefix><timestamp>.zip`` and prune older same-prefix zips.
     Returns the path, or ``None`` if nothing to back up, the write failed, or the archive is
     incomplete (kept as ``<prefix><timestamp>.incomplete.zip``, excluded from retention).
@@ -1183,7 +1174,7 @@ def _create_prefixed_full_backup(
         logger.warning("Could not create %s backup dir %s: %s", what, backup_dir, exc)
         return None
     out_path = backup_dir / f"{prefix}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
-    if _write_full_zip_backup(out_path, hermes_root) is None:
+    if _write_full_zip_backup(out_path, hermes_root, **({"strict": True} if strict else {})) is None:
         # Incomplete runs publish straight to ``*.incomplete.zip`` (all-failed runs are discarded);
         # cap those salvages at one without letting them rotate complete backups out.
         _prune_incomplete_zips(backup_dir, prefix, prune_what)
@@ -1193,11 +1184,15 @@ def _create_prefixed_full_backup(
 
 
 def create_pre_update_backup(
-    hermes_home: Optional[Path] = None, keep: int = _PRE_UPDATE_DEFAULT_KEEP) -> Optional[Path]:
+    hermes_home: Optional[Path] = None, keep: int = _PRE_UPDATE_DEFAULT_KEEP,
+    *, strict: bool = False) -> Optional[Path]:
     """Full zip backup to ``backups/pre-update-<timestamp>.zip``, auto-pruned; ``None`` if nothing
     was found, the backup failed, or it was incomplete (salvage kept as ``*.incomplete.zip``).
-    Never raises — ``hermes update`` continues anyway."""
-    return _create_prefixed_full_backup(hermes_home, _PRE_UPDATE_PREFIX, max(keep, 1), "pre-update", "backup")
+    ``strict`` additionally refuses an unreadable subtree instead of omitting it.
+    Never raises — ``hermes update`` continues anyway unless its caller requires the backup."""
+    return _create_prefixed_full_backup(
+        hermes_home, _PRE_UPDATE_PREFIX, max(keep, 1), "pre-update", "backup",
+        **({"strict": True} if strict else {}))
 
 
 def create_pre_migration_backup(
@@ -2003,21 +1998,24 @@ def run_quick_backup(args) -> None:
 # Shared full-zip backup helper
 # ---------------------------------------------------------------------------
 
-def _write_full_zip_backup(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]] = ()) -> Optional[Path]:
-    """Single-flight wrapper for automatic full zip backups; ``extra``: ``(path, arcname)`` outside the home."""
+def _write_full_zip_backup(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]] = (),
+                           *, strict: bool = False) -> Optional[Path]:
+    """Single-flight wrapper for automatic full zip backups; ``extra``: ``(path, arcname)`` outside the home.
+    ``strict`` refuses an unreadable subtree instead of omitting it."""
     try:
         with _backup_operation_lock(hermes_root):
-            return _write_full_zip_backup_locked(out_path, hermes_root, list(extra))
+            return _write_full_zip_backup_locked(out_path, hermes_root, list(extra), strict=strict)
     except BackupInProgressError as exc:
         logger.warning("Full-zip backup skipped: %s", exc)
         return None
 
 
-def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]]) -> Optional[Path]:
+def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path, extra: list[tuple[Path, Path]],
+                                  *, strict: bool = False) -> Optional[Path]:
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
     try:
-        files_to_add = list(_iter_backup_files(hermes_root, out_path)) + extra
+        files_to_add = list(_iter_backup_files(hermes_root, out_path, strict=strict)) + extra
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None

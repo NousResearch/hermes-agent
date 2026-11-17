@@ -264,6 +264,7 @@ export const zhHantChrome = {
       cacheRead: '快取讀取',
       priceTitle: (input: string, output: string, cache: string) =>
         `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : ''),
+      effectiveFallback: (model: string, requested: string) => `實際模型：${model}（${requested} 的備援）`,
       localSetup: {
         title: '本機執行 · 免費、私密',
         text: (model: string, size: string) => `${model} 適合這台電腦 · 下載 ${size}`,

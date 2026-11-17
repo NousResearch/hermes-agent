@@ -1,5 +1,6 @@
 import type { ConnectionRequestPayload, FreeTierChallengePayload, ToolLabel } from '@hermes/shared'
 
+import type { SessionEffectiveRoute } from '@/lib/session-effective-route'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 
 export type StoredToolCallLabels = Record<string, ToolLabel[]>
@@ -601,6 +602,9 @@ export interface SessionInfo {
   last_active: number
   message_count: number
   model: null | string
+  /** Requested vs effective model when a provider fallback answered this session. Undefined
+   *  against older backends and for sessions that never fell back. */
+  effective_route?: SessionEffectiveRoute
   output_tokens: number
   /** Parent conversation id. Written for genuine /branch forks *and* for
    *  /new / idle / daily resets (durable lineage). Nesting uses

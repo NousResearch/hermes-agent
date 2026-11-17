@@ -14,6 +14,8 @@ export interface ModelMenuTranslations {
   free: string
   cacheRead: string
   priceTitle: (input: string, output: string, cache: string) => string
+  /** A provider fallback answers this session in place of the requested model. */
+  effectiveFallback: (model: string, requested: string) => string
   localSetup: { title: string; text: (model: string, size: string) => string; action: string }
   limited: string
   limitedUntil: (time: string) => string

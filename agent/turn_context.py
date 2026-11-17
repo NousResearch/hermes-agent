@@ -1239,6 +1239,8 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    from agent.session_route_record import settle_effective_route
+    settle_effective_route(agent)
     from agent.fallback_notice import fallback_notice_hidden, surface_hidden_fallback
     surface_hidden_fallback(agent)
     if getattr(agent, "_pending_fallback_notice", None) and not fallback_notice_hidden(agent):

@@ -16,6 +16,7 @@ export const enModelMenu: Translations['shell']['modelMenu'] = {
   cacheRead: 'cached read',
   priceTitle: (input: string, output: string, cache: string) =>
     `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : ''),
+  effectiveFallback: (model: string, requested: string) => `Effective model: ${model} (fallback from ${requested})`,
   localSetup: {
     title: 'Run locally · free, private',
     text: (model: string, size: string) => `${model} fits this machine · ${size} download`,

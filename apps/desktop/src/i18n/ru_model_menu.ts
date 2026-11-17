@@ -14,6 +14,7 @@ export const ruModelMenu = {
   cacheRead: 'чтение из кэша',
   priceTitle: (input: string, output: string, cache: string) =>
     `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : ''),
+  effectiveFallback: (model: string, requested: string) => `Фактическая модель: ${model} (резерв вместо ${requested})`,
   localSetup: {
     title: 'Запуск локально · бесплатно, приватно',
     text: (model: string, size: string) => `${model} подходит для этого компьютера · загрузка ${size}`,

@@ -26,6 +26,7 @@ import {
   Trash2,
   Wrench
 } from '@/lib/icons'
+import { sessionFallbackRoute } from '@/lib/session-effective-route'
 import { exportSession } from '@/lib/session-export'
 import { isSignedOutStatus } from '@/lib/signed-out-status'
 import { fmtDateTime } from '@/lib/time'
@@ -432,6 +433,7 @@ export function CommandCenterView({
                       {filteredSessions.map(session => {
                         const pinId = sessionPinId(session)
                         const pinned = pinnedSessionIds.includes(pinId)
+                        const fallback = sessionFallbackRoute(session)
 
                         return (
                           <li className="group flex items-center gap-2 py-2" key={session.id}>
@@ -445,6 +447,12 @@ export function CommandCenterView({
                               </div>
                               <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                                 {formatTimestamp(session.last_active || session.started_at)}
+                                {fallback && (
+                                  <span className="text-amber-600 dark:text-amber-400" data-effective-route="fallback">
+                                    {' · '}
+                                    {t.shell.modelMenu.effectiveFallback(fallback.effective, fallback.requested)}
+                                  </span>
+                                )}
                               </div>
                             </button>
                             <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">

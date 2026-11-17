@@ -343,7 +343,7 @@ def _project_tree_row(r: dict) -> dict:
         source=r.get("source"), archived=bool(r.get("archived")),
         **{k: r.get(k) or 0 for k in (
             "message_count", "tool_call_count", "input_tokens", "output_tokens")},
-        **{k: r.get(k) for k in ("actual_cost_usd", "estimated_cost_usd", "model")},
+        **{k: r.get(k) for k in ("actual_cost_usd", "estimated_cost_usd", "model", "effective_route")},
         is_active=False, **{k: r.get(k) for k in ("cwd", "git_branch", "git_repo_root")})
     return row
 

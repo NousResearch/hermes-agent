@@ -14,6 +14,7 @@ export const zhModelMenu = {
   cacheRead: '缓存读取',
   priceTitle: (input: string, output: string, cache: string) =>
     `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : ''),
+  effectiveFallback: (model: string, requested: string) => `实际模型：${model}（${requested} 的回退）`,
   localSetup: {
     title: '本地运行 · 免费、私密',
     text: (model: string, size: string) => `${model} 适合这台电脑 · 下载 ${size}`,

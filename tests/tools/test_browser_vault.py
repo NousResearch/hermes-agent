@@ -30,6 +30,7 @@ from agent.vault_login_classifier import (
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    build_fill_verify_js,
     classify_login_control,
     select_password_fill,
 )
@@ -236,7 +237,30 @@ class TestClassifier:
         assert "elements[f.index]" not in js
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
         assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
-        assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
+        # unmasking moved to build_fill_verify_js: the fill cannot know what the page kept
+        assert 'removeAttribute("data-hermes-vault-slot")' not in js
+
+    def test_build_fill_js_carries_the_value_in_the_input_event(self):
+        # A framework-controlled input (React/Vue/MUI) reverts a value written without an `input`
+        # event that carries `data`: React reads `event.data` and treats an event without it as
+        # irrelevant. Without this the field reads filled in the DOM and empty to the page.
+        js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": "x"}],
+            expected_origin="https://example.com",
+        )
+        assert 'new InputEvent("input", { bubbles: true, composed: true, data: f.value, inputType: "insertText" })' in js
+
+    def test_build_fill_verify_js_reads_back_and_unstamps(self):
+        # The fill's own count is a claim about the write. This pass is the claim about the page:
+        # exact value compare, counts only, and it removes the stamps the fill deliberately left.
+        js = build_fill_verify_js(
+            [{"index": 0, "token": "current-password", "value": "x"}],
+            nonce="n1",
+        )
+        assert "landed" in js and "reverted" in js and "missing" in js
+        assert 'String(el.value) === String(f.value)' in js
+        assert 'removeAttribute("data-hermes-vault-slot")' in js
+        assert "vaultSecret" not in js
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before
@@ -341,6 +365,8 @@ class TestBrowserVaultTools:
 
         def fake_eval_secret(task_id, expression):
             secret_exprs.append(expression)
+            if "reverted" in expression:  # read-back pass (build_fill_verify_js)
+                return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
@@ -407,6 +433,8 @@ class TestBrowserVaultTools:
 
         def fake_eval_secret(task_id, expression):
             secret_exprs.append(expression)
+            if "reverted" in expression:  # read-back pass (build_fill_verify_js)
+                return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
@@ -426,7 +454,8 @@ class TestBrowserVaultTools:
         assert "s3cret-pw" not in raw
         # The secret expression only ever goes through the secret eval path,
         # and it targets only the password field (index 1).
-        assert len(secret_exprs) == 1
+        # fill + read-back: the second pass is what proves the page kept the value
+        assert len(secret_exprs) == 2
         assert "s3cret-pw" in secret_exprs[0]
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
@@ -521,6 +550,8 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps(controls)}
 
         def fake_eval_secret(task_id, expression):
+            if "reverted" in expression:  # read-back pass (build_fill_verify_js)
+                return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         try:
@@ -570,6 +601,8 @@ class TestBrowserVaultTools:
 
         def fake_eval_secret(task_id, expression):
             secret_exprs.append(expression)
+            if "reverted" in expression:  # read-back pass
+                return {"success": True, "result": json.dumps({"landed": 3, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 3})}
 
         try:
@@ -589,7 +622,8 @@ class TestBrowserVaultTools:
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
             assert _CARD["card_number"] not in raw and _CARD["cvc"] not in raw
-            assert len(secret_exprs) == 1 and _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
+            # two secret-bearing evals by design: the fill, then the read-back that proves the page kept it
+            assert len(secret_exprs) == 2 and _CARD["card_number"] in secret_exprs[0] and "07/29" in secret_exprs[0]
             assert '"index": 3' not in secret_exprs[0]  # the email box is never a card target
             assert _CARD["card_number"] not in redact.redact_sensitive_text(f"dom says {_CARD['card_number']}")
         finally:
@@ -765,6 +799,8 @@ class TestTwoFactor:
 
         def fake_secret(task_id, expr):
             seen["expr"] = expr
+            if "reverted" in expr:  # read-back pass (build_fill_verify_js)
+                return {"success": True, "result": json.dumps({"landed": 1, "reverted": 0, "missing": []})}
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \

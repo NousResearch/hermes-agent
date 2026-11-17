@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import secrets
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from tools.browser_vault_context import plugin_errors_as_refusal, saved_origins, snapshot_refusal, write_backend_code
@@ -60,6 +61,11 @@ def _check_vault_available() -> bool:
 # A secret-bearing script runs inside this wrapper on a page backend, so a page exception is answered
 # in-page and its message (which may quote the script) never reaches the backend's error path or logs.
 _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
+
+# How long the page gets to re-render between the fill and the read-back. One turn of a 60 fps
+# frame (16 ms) is not enough for a React commit pass on a loaded form; 150 ms leaves room without
+# making a ten-field fill feel slow.
+_FILL_VERIFY_DELAY_S = 0.15
 
 
 def _page_backend(task_id: str):
@@ -538,6 +544,7 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         ClassifiedLoginControl,
         LoginControl,
         build_fill_js,
+        build_fill_verify_js,
         build_inspection_js,
         classify_checkout_control,
         classify_login_control,
@@ -627,9 +634,30 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
                 ),
             }
         )
-    filled = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
+    wrote = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
+    if not wrote:
+        return json.dumps({"success": False, "error_type": "fill_not_written", "filled_fields": 0,
+                           "error": "No field accepted the write: nothing was filled on this page."})
 
-    out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
+    # Read the page back one turn of the event loop later. The count above says what was dispatched;
+    # this says what stayed. A controlled input (React/Vue/MUI) reverts a write it did not accept,
+    # so trusting the dispatch is how a fill reports success over an empty field.
+    time.sleep(_FILL_VERIFY_DELAY_S)
+    verify = _eval_js_secret(effective_task_id, build_fill_verify_js(fills, nonce=nonce))
+    verified = _parse_json_result(verify.get("result")) if verify.get("success") else {}
+    if isinstance(verified, str):
+        verified = _parse_json_result(verified)
+    if not isinstance(verified, dict):
+        return json.dumps({"success": False, "error_type": "fill_unverified", "filled_fields": 0,
+                           "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."})
+    landed = int(verified.get("landed", 0) or 0)
+    reverted = int(verified.get("reverted", 0) or 0)
+    if landed <= 0:
+        return json.dumps({"success": False, "error_type": "fill_reverted", "filled_fields": 0,
+                           "error": (f"The page rejected the value: {reverted} field(s) reverted after the input event. "
+                                     "Nothing is filled.")})
+
+    out = {"success": True, "filled_fields": landed, "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
         out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"

@@ -124,11 +124,13 @@ def _inputs_for(called: str, given: dict[str, Any]) -> dict[str, Any]:
     return {name: given.get(name, spec.get("default")) for name, spec in declared.items()}
 
 
-def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | None = None) -> dict:
-    """Which jobs of ``rel`` run on a pull request, recursing into called workflows.
+def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | None = None,
+                  event_name: str = "pull_request") -> dict:
+    """Which jobs of ``rel`` run on ``event_name``, recursing into called workflows.
 
     Returns ``{job: {"inputs": ..., "jobs": <child result>}}`` for every job that runs.
-    ``detect`` (ci.yaml only) is the replayed ``detect`` job's outputs.
+    ``detect`` (ci.yaml only) is the replayed ``detect`` job's outputs. A called
+    workflow sees its caller's event, so every nested ``if`` is evaluated under it.
     """
     jobs = _yaml(rel)["jobs"]
     ran: dict[str, dict] = {}
@@ -151,7 +153,7 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
             all_ran = all(n in ran for n in needs)
             ctx = {
                 "inputs": inputs,
-                "github": {"event_name": "pull_request", "ref_type": "branch"},
+                "github": {"event_name": event_name, "ref_type": "branch"},
                 "needs": {n: {"outputs": (ran.get(n) or {}).get("outputs", {}),
                               "result": "success" if n in ran else "skipped"} for n in needs},
                 "__status__": {"always": True, "success": all_ran, "failure": False, "cancelled": False},
@@ -172,7 +174,7 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
                 called = uses[2:]
                 given = {k: gha.render(v, ctx) for k, v in (body.get("with") or {}).items()}
                 entry["inputs"] = _inputs_for(called, given)
-                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"])
+                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"], event_name=event_name)
             ran[name] = entry
         assert progressed, f"{rel}: unresolvable needs among {pending}"
     return ran
@@ -817,7 +819,7 @@ def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
     """`gh workflow run ci.yaml -f strict_acceptance=upd-txn` (the batch's acceptance run)."""
     lanes = cc.classify([])  # a dispatch has no diff: every lane on
     run = _run_workflow(".github/workflows/ci.yaml", inputs={"release": False, "strict_acceptance": value},
-                        detect=_detect_outputs(lanes))
+                        detect=_detect_outputs(lanes), event_name="workflow_dispatch")
     for path, rel, job, step in _STRICT_STEPS:
         assert _strict_env(run, path, rel, job, step) == value, "/".join(path)
 
@@ -826,7 +828,8 @@ def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
 def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
     """E2E suites run only on a release run or a manual dispatch, whatever the diff or labels select."""
     lanes = cc.classify([], run_e2e=True)  # every lane on, as a label or an update-path diff would
-    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name))
+    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name),
+                        event_name=event_name)
     for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
         assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
     assert "e2e-desktop-core" not in run
@@ -839,7 +842,7 @@ def test_a_canary_e2e_run_reaches_every_e2e_suite():
     ctx = {"needs": {"resolve": {"outputs": {"commit": "0" * 40}}}}
     inputs = _inputs_for(".github/workflows/ci.yaml", {k: gha.render(v, ctx) for k, v in call["with"].items()})
     run = _run_workflow(".github/workflows/ci.yaml", inputs=inputs,
-                        detect=_detect_outputs(cc.classify([]), "workflow_run", inputs))
+                        detect=_detect_outputs(cc.classify([]), "workflow_run", inputs), event_name="workflow_run")
     for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
         reached = _consumers_reached(run, lane)
         assert reached and all(reached.values()), f"{lane}: {reached}"

@@ -32,6 +32,8 @@ class FakePage(BrowserPageBackend):
             raise RuntimeError(f"page.evaluate failed: {expression}")
         if "location.href" in expression:
             return self.url
+        if "reverted" in expression:  # read-back pass: the page kept the value
+            return json.dumps({"landed": 1, "reverted": 0, "missing": []})
         if SECRET in expression:
             return json.dumps({"filled": 1})
         return json.dumps(CONTROLS)
@@ -64,7 +66,8 @@ def test_fill_runs_on_the_page_backend_and_refuses_another_origin(page):
     out = json.loads(raw)
     assert out["success"] is True and out["filled_fields"] == 1 and SECRET not in raw
     secret_calls = [expr for expr, secret in fake.calls if SECRET in expr]
-    assert len(secret_calls) == 1 and all(secret for expr, secret in fake.calls if SECRET in expr)
+    # fill + read-back: both carry the secret, both go through the secret channel
+    assert len(secret_calls) == 2 and all(secret for expr, secret in fake.calls if SECRET in expr)
 
     fake.calls.clear()
     fake.url = "https://evil.example/login"

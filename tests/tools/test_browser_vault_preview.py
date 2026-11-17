@@ -40,6 +40,8 @@ class PreviewWindow:
             result = self.origin + "/login"
         elif "data-hermes-vault-slot\", nonce" in expression:
             result = json.dumps(CONTROLS)
+        elif "reverted" in expression:  # read-back pass: the page kept the value
+            result = json.dumps({"landed": 1, "reverted": 0, "missing": []})
         else:
             result = json.dumps({"filled": 1})
         return json.dumps({"success": True, "result": result})
@@ -83,7 +85,8 @@ def test_preview_fill_writes_through_the_pinned_tab_and_redacts_echoes(home):
         "action": "fill", "handle": meta.id, "target": "preview"}, InlineToolContext(effective_task_id="t"))
     result = json.loads(raw)
     assert result["success"] is True and result["filled_fields"] == 1 and result["origin"] == ORIGIN, result
-    assert window.ops() == ["open", "evaluate", "evaluate", "evaluate", "close"]
+    # inspection, origin pre-check, fill, read-back, close: the fourth evaluate is the read-back
+    assert window.ops() == ["open", "evaluate", "evaluate", "evaluate", "evaluate", "close"]
     assert json.dumps(password) in window.calls[-2]["expression"]
     assert password not in raw
     # A page can echo its input into its text, an element label or an error.

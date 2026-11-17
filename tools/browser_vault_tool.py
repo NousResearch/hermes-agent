@@ -706,14 +706,18 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     # asserted immediately before every single keystroke (build_focus_js) and the value is read
     # back after it. A page backend (plugin browser) has no CDP channel: that path stays on JS.
     supervisor = None
-    try:
-        supervisor = _ensure_supervisor(effective_task_id)
-    except Exception as exc:  # health: allow BLE001 -- a missing supervisor is not a fill failure
-        logger.debug("vault fill: supervisor unavailable for trusted typing (%s)", exc)
+    # A plugin/preview page backend owns the page: there is no CDP channel to type into, and asking
+    # the supervisor for one would attach a managed browser to a preview-only session.
+    page_backend = _page_backend(effective_task_id)
+    if page_backend is None:
+        try:
+            supervisor = _ensure_supervisor(effective_task_id)
+        except Exception as exc:  # health: allow BLE001 -- a missing supervisor is not a fill failure
+            logger.debug("vault fill: supervisor unavailable for trusted typing (%s)", exc)
     insert_text = getattr(supervisor, "insert_text", None) if supervisor is not None else None
     # The trusted path types into the SUPERVISOR's page: only use it when that page is the page the
     # inspection stamped (no plugin page backend in front of it).
-    trusted = bool(callable(insert_text)) and _page_backend(effective_task_id) is None
+    trusted = bool(callable(insert_text)) and page_backend is None
     type_by_index = {c.control.index: c.control.type for c in classified}
     type_fills = [f for f in fills
                   if f["index"] in type_by_index

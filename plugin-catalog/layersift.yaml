@@ -1,6 +1,6 @@
 name: layersift
 repo: https://github.com/rodricksz4h5/layersift
-sha: 0adbee9b1090ada91cbc035b397fe94ed345d14d
+sha: 953903d2218a7d655f48e082704855087c7a0a73
 version: "1.0.0"
 title: Layersift
 description: >-
@@ -22,7 +22,7 @@ maintainer: rodricksz4h5
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/rodricksz4h5/layersift/tree/0adbee9b1090ada91cbc035b397fe94ed345d14d
+docs_url: https://github.com/rodricksz4h5/layersift/tree/953903d2218a7d655f48e082704855087c7a0a73
 capabilities:
   provides_tools:
     - image_summary

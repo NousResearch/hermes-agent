@@ -151,3 +151,16 @@ def test_skipped_names_stay_inside_the_cap(tmp_path, monkeypatch):
         (ws / name).write_text("x = 1\n", encoding="utf-8")
     _ws, files, err, _msg = _brief(tmp_path, ["big.py", *names])
     assert err is None and "not inlined" in files[0].block and len(files[0].block.encode()) <= 2000
+
+
+def test_cut_files_stay_unmarked_and_denied_or_binary_files_fail_the_call(tmp_path):
+    from tools.file_tools import read_file_tool
+
+    ws, files, err, _msg = _brief(tmp_path, ["big.py"])
+    dtf.mark_files_read("child-cut-task", files[0])
+    assert "401|row 401" in json.loads(read_file_tool(str(ws / "big.py"), task_id="child-cut-task"))["content"]
+    (ws / ".env").write_text("TOKEN=x\n", encoding="utf-8")
+    (ws / "blob.py").write_bytes(b"a\0b\n")
+    for entry, words in ((".env", ".env"), ("blob.py", "binary file")):
+        _ws, files, err, _msg = _brief(tmp_path, [entry])
+        assert files == [] and words in err, err

@@ -1009,6 +1009,39 @@ class TestAdapterBehavior(unittest.TestCase):
         )
         adapter._dispatch_inbound_event.assert_not_awaited()
 
+    def test_quoted_empty_reply_without_mention_is_dropped(self):
+        """只有引用锚点、没有真正 @ 机器人时，不能凭空造出一轮请求（DM 里的空回复）。"""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="Alex")
+        adapter.get_chat_info = AsyncMock(return_value={"chat_id": "oc_chat", "name": "DM", "type": "dm"})
+        adapter._fetch_message_text = AsyncMock(return_value="Please summarize this")
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            message_type="text",
+            content='{"text":" "}',
+            message_id="om_quoted_blank",
+            parent_id="om_parent",
+            root_id="om_parent",
+            mentions=[],
+        )
+        data = SimpleNamespace(event=SimpleNamespace(message=message), sender=None)
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                chat_type="p2p",
+                message_id="om_quoted_blank",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_not_awaited()
+
     @patch.dict(
         os.environ,
         {

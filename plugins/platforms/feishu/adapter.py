@@ -2668,7 +2668,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         # ignored the user. Substitute a directive so the turn answers the quoted message.
         quoted_parent = getattr(message, "parent_id", None) or getattr(message, "root_id", None)
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            if not quoted_parent:
+            if not quoted_parent or not any(ref.is_self for ref in mentions):
                 logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
                 return
             text = _QUOTED_BARE_MENTION_TEXT

@@ -6,12 +6,22 @@ The W1 twin of the Phase 2 gateway guardrail
 (``gateway/guardrail.py``, owner decision 14 Nov 2026): the same
 five-question guardrail battery through the local RNR Judgement
 Engine (``/v1/screen``), held BEFORE the submit is durably admitted -
-no session turn runs for a held message. Wired at the interactive
-control-plane surface (``prompt.submit`` and the queued-edit verbs
-``prompt.replace_queued`` / ``prompt.steer_queued``), never at
-``SessionAuthority.submit`` itself: machine producers (kanban cards,
-hosted rooms, a2a, automation envelopes) never pass through the
-interactive surface, so their traffic is structurally out of scope.
+no session turn runs for a held message. Wired at the SINGLE shared
+choke point every surface funnels through: ``SessionAuthority._submit``
+(r4, 17 Nov 2026 - the owner's live test proved the Desktop app's own
+local backend ``hermes serve`` submits straight to the session
+authority, so per-surface hooks at the gateway WS control plane never
+saw desktop traffic). Machine producers (kanban cards, hosted rooms,
+a2a, automation envelopes, cron) either use their own admission paths
+or carry the server-side ``_kanban_card`` marker - none are screened.
+
+Trust rule (r5, 17 Nov): payload FIELDS are never a trust boundary.
+A submit is not exempted because it LOOKS like a CLI turn
+(``cli_turn_v1`` is committed from ordinary canonical params -
+``api_text`` / ``turn_author`` / ``model_override`` / ``clarify_batch``
+- that the desktop app's own backend sends in normal flows). The
+boundary is the session's frozen launch source, decided by the DB
+row.
 
 Scope: sessions launched from the desktop surfaces (frozen launch
 source ``gui`` or ``desktop`` - the label a Desktop chat migrated
@@ -172,10 +182,21 @@ def _post(url: str, payload: dict, headers: dict, timeout: float) -> dict:
 def _log(record: dict) -> None:
     record["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
+        line = json.dumps(record, ensure_ascii=True)
+    except (TypeError, ValueError):
+        # A non-serialisable value (e.g. bytes text from a fuzzed
+        # payload) must never lose the log line: fall back to a safe
+        # rendering, never raise.
+        try:
+            line = json.dumps(
+                {k: repr(v) for k, v in record.items()}, ensure_ascii=True)
+        except Exception:
+            return
+    try:
         path = _log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+            handle.write(line + "\n")
     except OSError:
         logger.warning("desktop_screen: log write failed", exc_info=True)
 
@@ -265,12 +286,15 @@ async def authority_gate(authority, subject, session_id, payload, *,
     viewer's own text on a desktop-launched session:
 
     - inert unless ``HERMES_DESKTOP_SCREEN`` is on;
-    - machine producers structurally out: a kanban card marker, a
-      hosted-room request id, or a classic-CLI ``cli_turn_v1`` turn
-      (unattended fleet work) skips the gate;
+    - machine producers structurally out: a kanban card marker (the
+      kanban dispatcher's trusted server-side marker) skips the gate;
     - scope: the session's frozen launch source must be a screened
       desktop surface (review F4: the DB row decides, cache is
-      write-through);
+      write-through); classic-CLI and oneshot fleet sessions are
+      different launch sources and stay out by scope - payload
+      branding is never trusted (review r5-1: ``cli_turn_v1`` is
+      committed from ordinary canonical params the desktop backend
+      sends in normal flows);
     - screens EVERY model-visible text (``api_text`` AND ``text``,
       review N1), holding on the first block verdict.
 
@@ -283,10 +307,7 @@ async def authority_gate(authority, subject, session_id, payload, *,
     try:
         if not desktop_screen_enabled() or kanban_card:
             return
-        if not isinstance(payload, dict) or "cli_turn_v1" in payload:
-            return
-        request_id = str(payload.get("_request_id") or "")
-        if request_id.startswith("hosted:"):
+        if not isinstance(payload, dict):
             return
         texts = submit_texts(payload)
         if not texts:

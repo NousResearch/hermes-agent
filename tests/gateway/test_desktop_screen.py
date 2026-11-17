@@ -10,8 +10,13 @@ speaking the engine's wire format:
 - purpose + caller attribution headers (the W1 per-surface tagging)
 - session launch-source scoping (desktop surfaces only by default)
 - the hold refusal shape the control plane returns to the client
-- the three wiring points consult the gate before any state changes:
-  Controls.submit, prompt.steer_queued, prompt.replace_queued
+- SessionAuthority._submit (the single shared choke point - r4/r5
+  after the owner's 17 Nov live test proved the Desktop app's own
+  `hermes serve` backend submits straight to the authority): the
+  gate fires BEFORE durable admission, viewer text is screened even
+  when canonical params (api_text / turn_author / model_override /
+  clarify_batch / cli_turn_v1 branding) are present, machine
+  producers (kanban cards) skip, and a hold releases captured media
 - a slow /outcome endpoint never delays the intake decision (the
   Phase 2 review B4 rule, carried over)
 """
@@ -494,10 +499,24 @@ class TestAuthorityGate(unittest.TestCase):
         self._run({"text": "take over"}, kanban=True)
         self.assertEqual(EngineStubHandler.screen_calls, 0)
 
-    def test_cli_turn_skips(self):
+    def test_cli_branded_payload_is_screened_anyway(self):
+        # Review r5-1: cli_turn_v1 is committed from ORDINARY canonical
+        # params (api_text / turn_author / model_override / clarify_batch)
+        # that the desktop app's own backend sends in normal flows - the
+        # branding is client-asserted and must never exempt a submit.
         EngineStubHandler.tier = "block"
-        self._run({"text": "deploy", "cli_turn_v1": {"turn_author": "x"}})
-        self.assertEqual(EngineStubHandler.screen_calls, 0)
+        from hermes_state_runtime import RuntimeStoreError
+        for extra in ({"cli_turn_v1": {"turn_author": "x"}},
+                      {"clarify_batch": True},
+                      {"api_text": "ATTACK model-facing"},
+                      {"turn_author": {"kind": "voice"}},
+                      {"model_override": {"model": "m"}}):
+            EngineStubHandler.screen_calls = 0
+            with self.assertRaises(RuntimeStoreError) as raised:
+                self._run(dict({"text": "ATTACK plain"}, **extra))
+            self.assertEqual(raised.exception.reason, "desktop_screen_hold",
+                             extra)
+            self.assertEqual(EngineStubHandler.screen_calls, 1, extra)
 
     def test_out_of_scope_skips(self):
         EngineStubHandler.tier = "block"

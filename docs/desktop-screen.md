@@ -44,14 +44,17 @@ fields). Verbs covered automatically: `prompt.submit`,
 Launch-source scope still applies: only sessions frozen as `gui` or
 `desktop` (env-widened to every interactive source).
 
-NOT screened, structurally: classic-CLI turns (`cli_turn_v1` -
-unattended fleet work stays out of a blocking gate), kanban cards,
+NOT screened, structurally: classic-CLI and oneshot fleet sessions
+(different launch sources - `hermes -q` work never enters a
+desktop-sourced session), kanban cards (trusted server-side marker),
 hosted-room tasks, a2a forwards, automation envelopes, and gateway
 platform messages (already screened by Phase 2). `prompt.steer_queued`
 carries no text by contract (the transfer re-delivers the queued
 row's already-screened text). Attachments and `voice_context` are
 not screened this cycle (media triage is use case A6, later in the
-queue).
+queue). NOTE: the visible client artefact of a hold is the terse
+refusal reason (`desktop_screen_hold`) - the full hold notice lives
+in the screen log.
 
 Judge philosophy unchanged: the judge advises, it never replaces
 owner gates. The gate is one engine call, hard-capped (timeout + 1s

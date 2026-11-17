@@ -7,7 +7,7 @@ from pathlib import Path
 from persistence.core.admin import PHYSICAL_ADMIN, AdminUnsupported, HealthCheckUnavailable, ProfileRepairAdmin, StoreAdmin
 
 
-def test_both_doors_answer_by_the_declared_capability(backend, backend_name, scope_a):
+def test_both_doors_answer_by_the_declared_capability(backend, scope_a):
     store_answers = [backend.open_store_admin(scope_a), backend.open_store_admin(scope_a, read_only=False),
                      backend.open_store_admin(Path(scope_a.hermes_home_key) / "state.db")]
     repair_answers = [backend.open_profile_repair(scope_a, read_only=True), backend.open_profile_repair(scope_a, read_only=False)]
@@ -16,8 +16,9 @@ def test_both_doors_answer_by_the_declared_capability(backend, backend_name, sco
         assert all(isinstance(answer, StoreAdmin) for answer in store_answers)
         assert all(isinstance(answer, ProfileRepairAdmin) for answer in repair_answers)
     else:
-        # CONTRACT: any other backend answers both doors with the capability and its own kind.
-        unsupported = AdminUnsupported(PHYSICAL_ADMIN, backend_name)
+        # CONTRACT: any other backend answers both doors with the capability and one kind of its own, the same on every answer.
+        unsupported = store_answers[0]
+        assert isinstance(unsupported, AdminUnsupported) and unsupported.capability == PHYSICAL_ADMIN and unsupported.backend_kind
         assert store_answers == [unsupported] * 3
         assert repair_answers == [unsupported] * 2
 

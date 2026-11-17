@@ -86,6 +86,10 @@ class InMemoryBackend:
     # before copy-on-write publication; only this backend exposes that seam.
     injectable_failpoints = True
 
+    # Past their fences, rotating publications (reset, branch, compress) refuse CapabilityUnsupported here: they
+    # build gateway routing entries and compression bodies the reference does not model (authority/mutation_commands.py).
+    refuses_rotating_publication = True
+
     def __init__(self, root: Path = REFERENCE_ROOT) -> None:
         self.root = root
         self.capabilities = dataclasses.replace(_BASE_CAPABILITIES, **_CAPABILITY_OVERRIDES)

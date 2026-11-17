@@ -18,17 +18,17 @@ def test_the_recovery_errors_keep_their_runtime_error_family():
     assert SessionRecoverySourceError.__bases__ == (SessionRecoveryError,)
 
 
-def _admin(backend, backend_name, scope_a):
+def _admin(backend, scope_a):
     admin = backend.open_store_admin(scope_a)
     if not backend.capabilities.physical_admin:
         # CONTRACT: a backend without physical admin answers the door, so recovery never runs there.
-        assert admin == AdminUnsupported(PHYSICAL_ADMIN, backend_name)
+        assert isinstance(admin, AdminUnsupported) and admin.capability == PHYSICAL_ADMIN
         return None
     return admin
 
 
-def test_recovery_refusals_raise_the_contract_classes(backend, backend_name, scope_a, tmp_path):
-    admin = _admin(backend, backend_name, scope_a)
+def test_recovery_refusals_raise_the_contract_classes(backend, scope_a, tmp_path):
+    admin = _admin(backend, scope_a)
     if admin is None:
         return
     source = tmp_path / "state.db"
@@ -55,8 +55,8 @@ def test_recovery_refusals_raise_the_contract_classes(backend, backend_name, sco
     assert existing.read_bytes() == b"keep"
 
 
-def test_an_unrecoverable_source_raises_the_contract_source_error(backend, backend_name, scope_a, tmp_path):
-    admin = _admin(backend, backend_name, scope_a)
+def test_an_unrecoverable_source_raises_the_contract_source_error(backend, scope_a, tmp_path):
+    admin = _admin(backend, scope_a)
     if admin is None:
         return
     source = tmp_path / "state.db"

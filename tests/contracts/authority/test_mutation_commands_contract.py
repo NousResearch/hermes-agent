@@ -203,7 +203,7 @@ def test_import_creates_absent_rows_and_refuses_a_deleted_id(backend, scope_a):
     assert (deleted.value.reason, deleted.value.field) == ("admission_conflict", "sessions")
 
 
-def test_reset_branch_and_compress_run_their_fences_first(backend, backend_name, scope_a):
+def test_reset_branch_and_compress_run_their_fences_first(backend, scope_a):
     store = backend.open(scope_a)
     epoch = store.runtime.begin_epoch(instance_id="instance-cmd")
     store.sessions.create(NewSession(session_id="s-plain", source="cli"))
@@ -220,7 +220,7 @@ def test_reset_branch_and_compress_run_their_fences_first(backend, backend_name,
     with pytest.raises(AuthorityRefusal, match="^session_busy$"):
         store.runtime.mutate(epoch, principal_id="p", session_id=sid, request_id="b", expected_revision=0, expected_generation=0, command=rt.Branch(), owner=None)
     reset = dict(principal_id="p", session_id=sid, request_id="r", expected_revision=0, expected_generation=0, command=rt.Reset(), owner=None)
-    if backend_name == "in_memory":
+    if getattr(backend, "refuses_rotating_publication", False):
         # Reference limit: past their fences the reference refuses the publication itself (module docstring of mutation_commands).
         with pytest.raises(CapabilityUnsupported):
             store.runtime.mutate(epoch, **reset)

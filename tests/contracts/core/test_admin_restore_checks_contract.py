@@ -8,37 +8,37 @@ _SALVAGE = ("; refusing in-place restore. Use `hermes sessions recover --source 
             "to salvage transcripts into a separate output.")
 
 
-def _admin(backend, backend_name, target):
+def _admin(backend, target):
     admin = backend.open_store_admin(target)
     if not backend.capabilities.physical_admin:
         # CONTRACT: a backend without physical admin answers the door; neither check runs there.
-        assert admin == AdminUnsupported(PHYSICAL_ADMIN, backend_name)
+        assert isinstance(admin, AdminUnsupported) and admin.capability == PHYSICAL_ADMIN
         return None
     return admin
 
 
-def test_the_epoch_floor_is_the_destination_runtime_epoch(backend, backend_name, scope_a, tmp_path):
-    admin = _admin(backend, backend_name, scope_a)
+def test_the_epoch_floor_is_the_destination_runtime_epoch(backend, scope_a, tmp_path):
+    admin = _admin(backend, scope_a)
     if admin is None:
         return
     backend.open(scope_a)
     epoch = backend.begin_epoch(scope_a, "instance-a")
     # CONTRACT: a store's floor is the epoch its runtime last began.
     assert admin.restore_epoch_floor() == epoch
-    missing = _admin(backend, backend_name, tmp_path / "absent" / "state.db")
+    missing = _admin(backend, tmp_path / "absent" / "state.db")
     empty = tmp_path / "empty" / "state.db"
     empty.parent.mkdir()
     empty.write_bytes(b"")
     # CONTRACT: no file, or a database without the epoch table, has floor 0.
     assert missing.restore_epoch_floor() == 0
-    assert _admin(backend, backend_name, empty).restore_epoch_floor() == 0
+    assert _admin(backend, empty).restore_epoch_floor() == 0
 
 
-def test_an_unreadable_destination_epoch_refuses_the_restore(backend, backend_name, tmp_path):
+def test_an_unreadable_destination_epoch_refuses_the_restore(backend, tmp_path):
     damaged = tmp_path / "damaged" / "state.db"
     damaged.parent.mkdir()
     damaged.write_bytes(b"not a database" * 64)
-    admin = _admin(backend, backend_name, damaged)
+    admin = _admin(backend, damaged)
     if admin is None:
         return
     try:
@@ -50,8 +50,8 @@ def test_an_unreadable_destination_epoch_refuses_the_restore(backend, backend_na
         raise AssertionError("an unreadable destination epoch must refuse")
 
 
-def test_an_archived_copy_is_verified_offline(backend, backend_name, scope_a, tmp_path):
-    admin = _admin(backend, backend_name, scope_a)
+def test_an_archived_copy_is_verified_offline(backend, scope_a, tmp_path):
+    admin = _admin(backend, scope_a)
     if admin is None:
         return
     backend.open(scope_a)

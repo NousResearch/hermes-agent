@@ -104,7 +104,7 @@ def test_clearing_through_a_canonical_bot_chat_ancestor_keeps_its_name(backend, 
     assert store.sessions.get_by_title(CANONICAL_BOT_CHAT_TITLE) is not None
 
 
-def test_a_rotating_compress_moves_the_name_to_the_new_segment(backend, backend_name, scope_a):
+def test_a_rotating_compress_moves_the_name_to_the_new_segment(backend, scope_a):
     store = backend.open(scope_a)
     epoch = store.runtime.begin_epoch(instance_id="owner")
     sid = str(local_session_id(store.owner_profile, "p", "create-1"))
@@ -119,7 +119,7 @@ def test_a_rotating_compress_moves_the_name_to_the_new_segment(backend, backend_
     snapshot = store.runtime.prepare_mutation(epoch, **fence)
     values = {"in_place": False, "messages": [{"role": "user", "content": "hi"}], "summary": "s"}
     compress = dict(fence, prepared=rt.PreparedMutation(snapshot, values), owner=None)
-    if backend_name == "in_memory":
+    if getattr(backend, "refuses_rotating_publication", False):
         # Reference limit: past its fence the reference refuses the publication itself (module docstring of mutation_commands).
         with pytest.raises(CapabilityUnsupported):
             store.runtime.mutate(epoch, **compress)

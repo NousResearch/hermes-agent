@@ -247,6 +247,25 @@ def bearer_allowed(url: str) -> bool:
     return decision.attach and decision.url == url
 
 
+def _endpoint(url: str) -> Optional[tuple[str, str, int, str]]:
+    try:
+        parts = urlsplit(url)
+        port = parts.port or {"http": 80, "https": 443}.get(parts.scheme)
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    if not host or port is None:
+        return None
+    return parts.scheme, host, port, parts.path or "/"
+
+
+def same_endpoint(request_url: str, permitted_url: str) -> bool:
+    """True when *request_url* names exactly *permitted_url*: scheme, host, port and path (the query
+    is ignored). A redirect elsewhere on the same origin is not the endpoint."""
+    request = _endpoint(request_url)
+    return request is not None and request == _endpoint(permitted_url)
+
+
 def nous_bearer_auth(url: str):
     """An ``httpx.Auth`` that sets ``Authorization: Bearer <Nous access token>`` on each request,
     resolving (and refreshing) the token off the event loop. Refuses any URL but the attached
@@ -263,13 +282,21 @@ def nous_bearer_auth(url: str):
         raise ValueError(f"auth: {AUTH_TYPE} is reserved for the managed {SERVER_NAME} server")
 
     class NousBearerAuth(httpx.Auth):
+        # The client follows redirects through this flow, so each request is checked again: only the
+        # attached endpoint itself (same scheme, host, port and path) ever carries the token.
         def sync_auth_flow(self, request):
-            request.headers["Authorization"] = f"Bearer {resolve_nous_access_token()}"
+            if same_endpoint(str(request.url), url):
+                request.headers["Authorization"] = f"Bearer {resolve_nous_access_token()}"
+            else:
+                request.headers.pop("Authorization", None)
             yield request
 
         async def async_auth_flow(self, request):
-            token = await asyncio.to_thread(resolve_nous_access_token)
-            request.headers["Authorization"] = f"Bearer {token}"
+            if same_endpoint(str(request.url), url):
+                token = await asyncio.to_thread(resolve_nous_access_token)
+                request.headers["Authorization"] = f"Bearer {token}"
+            else:
+                request.headers.pop("Authorization", None)
             yield request
 
     return NousBearerAuth()

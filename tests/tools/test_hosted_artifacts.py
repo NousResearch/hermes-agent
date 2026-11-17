@@ -213,6 +213,63 @@ def test_nous_auth_is_refused_when_not_entitled(monkeypatch):
         ha.nous_bearer_auth(URL)
 
 
+@pytest.mark.parametrize("request_url, sends", [
+    (URL, True),
+    (URL + "?session=1", True),
+    ("https://ARTIFACTS.example.test:443" + ha.MCP_PATH, True),
+    (BASE + "/unrelated", False),
+    (URL + "/extra", False),
+    ("http://artifacts.example.test" + ha.MCP_PATH, False),
+    ("https://artifacts.example.test:8443" + ha.MCP_PATH, False),
+    ("https://other.example.test" + ha.MCP_PATH, False),
+])
+def test_bearer_goes_only_to_the_exact_endpoint_at_request_time(monkeypatch, request_url, sends):
+    import asyncio
+
+    from hermes_cli import auth as hermes_auth
+    from tools.mcp_tool import sdk_httpx
+
+    httpx = sdk_httpx()
+    monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
+    monkeypatch.setattr(ha, "_read_account", _account)
+    monkeypatch.setattr(hermes_auth, "resolve_nous_access_token", lambda **_: "TOKEN")
+    auth = ha.nous_bearer_auth(URL)
+    sync_request = httpx.Request("POST", request_url, headers={"Authorization": "Bearer stale"})
+    sync_sent = next(auth.sync_auth_flow(sync_request)).headers.get("Authorization")
+
+    async def first(flow):
+        return await flow.__anext__()
+    async_request = httpx.Request("POST", request_url)
+    async_sent = asyncio.run(first(auth.async_auth_flow(async_request))).headers.get("Authorization")
+    expected = "Bearer TOKEN" if sends else None
+    assert (sync_sent, async_sent) == (expected, expected)
+
+
+def test_same_origin_redirect_does_not_receive_the_bearer(monkeypatch):
+    """The MCP client follows a same-origin redirect; the redirected request must go without the token."""
+    import asyncio
+
+    from mcp.shared._httpx_utils import request_within_origin
+
+    from hermes_cli import auth as hermes_auth
+    from tools.mcp_tool import sdk_httpx
+
+    httpx = sdk_httpx()
+    monkeypatch.setattr(ha, "bearer_allowed", lambda _url: True)
+    monkeypatch.setattr(hermes_auth, "resolve_nous_access_token", lambda **_: "TOKEN")
+    seen = []
+
+    def handle(request):
+        seen.append((str(request.url), request.headers.get("authorization")))
+        return httpx.Response(307, headers={"location": "/unrelated"}) if len(seen) == 1 else httpx.Response(200)
+
+    async def run():
+        async with httpx.AsyncClient(auth=ha.nous_bearer_auth(URL), transport=httpx.MockTransport(handle)) as client:
+            await request_within_origin(client, "POST", URL, json={})
+    asyncio.run(run())
+    assert seen == [(URL, "Bearer TOKEN"), (BASE + "/unrelated", None)]
+
+
 class _Agent:
     def __init__(self, session_id="s1", *, enabled=None, disabled=None):
         self.session_id = session_id

@@ -12,16 +12,18 @@ from __future__ import annotations
 import sys
 import textwrap
 import threading
+import types
 
 import pytest
 
-# The import is slow enough that every other thread reaches the scan while the first is still inside it.
+# The import holds until every other thread's lookup has returned (the bug: they return at once, having
+# published an empty layer) or, bounded, while they wait on this import (the fix). Never a timing guess.
 _INIT = textwrap.dedent("""
-    import time
+    import _demo_slow_gate as gate
     from providers import register_provider
     from providers.base import ProviderProfile
 
-    time.sleep(0.3)
+    gate.others_returned.wait(2)
     register_provider(ProviderProfile(name="demo-slow", aliases=("demo-slow-alias",),
                                       base_url="process://demo-slow", auth_type="external_process"))
 """)
@@ -51,7 +53,7 @@ def home(tmp_path, monkeypatch):
     _reset_providers()
 
 
-def test_concurrent_first_scans_of_one_home_keep_its_provider_plugin(home):
+def test_concurrent_first_scans_of_one_home_keep_its_provider_plugin(home, monkeypatch):
     import providers
     from providers import get_provider_profile
 
@@ -64,10 +66,18 @@ def test_concurrent_first_scans_of_one_home_keep_its_provider_plugin(home):
     threads = 8
     barrier = threading.Barrier(threads)
     seen: list[object] = []
+    gate = types.ModuleType("_demo_slow_gate")
+    gate.others_returned = threading.Event()
+    monkeypatch.setitem(sys.modules, "_demo_slow_gate", gate)
+    seen_lock = threading.Lock()
 
     def lookup():
         barrier.wait()
-        seen.append(get_provider_profile("demo-slow"))
+        profile = get_provider_profile("demo-slow")
+        with seen_lock:
+            seen.append(profile)
+            if len(seen) == threads - 1:  # every thread but the importer is back
+                gate.others_returned.set()
 
     workers = [threading.Thread(target=lookup) for _ in range(threads)]
     for worker in workers:

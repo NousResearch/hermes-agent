@@ -61,7 +61,7 @@ def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[str, str]],
         return True
     if not (accept or prompt):
         return False
-    if not _prompt_and_record(spec.event, spec.command, accept_hooks=accept):
+    if not _prompt_and_record(spec.event, spec.command, accept_hooks=accept, wakes=spec.async_rewake):
         return False
     allowed.add(pair)
     return True
@@ -128,7 +128,7 @@ def _flock_unlock(lock_fh: Any) -> None:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
-def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
+def _prompt_and_record(event: str, command: str, *, accept_hooks: bool, wakes: bool = False) -> bool:
     """Approve an unseen ``(event, command)`` pair; True iff granted and recorded."""
     if accept_hooks:
         record_approval(event, command)
@@ -138,8 +138,10 @@ def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
         return False
     print(
         f"\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n"
-        f"    Event:   {event}\n    Command: {command}\n\n"
-        f"  Commands run with your full user credentials.  Only approve\n  commands you trust."
+        f"    Event:   {event}\n    Command: {command}\n"
+        + ("    Mode:    async_rewake (runs in the background and can start\n"
+           "             a new turn in this session when it exits 2)\n" if wakes else "")
+        + "\n  Commands run with your full user credentials.  Only approve\n  commands you trust."
     )
     try:
         answer = input("Allow this hook to run? [y/N]: ").strip().lower()

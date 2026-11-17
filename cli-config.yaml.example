@@ -2223,6 +2223,14 @@ display:
 #     - command: "~/.hermes/agent-hooks/inject-cwd-context.sh"
 #   subagent_stop:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
+#   post_llm_call:
+#     # async_rewake: run in the background; exit 2 wakes the idle session
+#     # with the hook's stderr (default timeout 3600, capped at 86400). After
+#     # max_consecutive_wakes (default 20) wakes with no message from you, the
+#     # model summarizes and asks you to confirm before the hook runs again.
+#     - command: "~/.hermes/agent-hooks/wait-for-inbox.sh"
+#       async_rewake: true
+#       timeout: 43200
 #
 # hooks_auto_accept: false
 

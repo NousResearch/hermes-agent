@@ -13,6 +13,7 @@ import logging
 import os
 import shlex
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -113,6 +114,19 @@ def _quiet_kill(kill: Callable, proc) -> None:
         logger.debug("exit-time kill of a foreground command failed", exc_info=True)
 
 
+def stop_shell_hook_runs(*, fence: bool) -> None:
+    """Stop background shell hooks (``async_rewake``); ``fence`` also refuses later starts, for a caller
+    about to ``os._exit`` after a graceful sweep. They exist only where their module was loaded: never
+    import it on the way out, and never let a failure there cost a foreground kill."""
+    rewake = sys.modules.get("agent.shell_hooks.rewake")
+    if rewake is None:
+        return
+    try:
+        rewake.stop_all(fence=fence)
+    except Exception:  # health: allow BLE001 -- exit sweep: the foreground kill must still run
+        logger.warning("exit-time stop of async_rewake shell hooks failed", exc_info=True)
+
+
 def kill_live_foreground_processes(*, now: bool = False) -> int:
     """Kill every in-flight foreground command's process tree; returns how many were signalled.
 
@@ -120,8 +134,10 @@ def kill_live_foreground_processes(*, now: bool = False) -> int:
     KILLs, so a SIGTERM-ignoring command outlives a hard exit that lands inside that window. It also
     raises the exit fence and waits for spawns already past it to register, so no command started
     around the snapshot survives, and it never blocks past ``_HARD_KILL_BUDGET_S``: SDK cancels
-    (Modal, Daytona, Vercel) run on daemon threads under that one deadline."""
+    (Modal, Daytona, Vercel) run on daemon threads under that one deadline. Background shell hooks
+    (``async_rewake``) lead their own process group too: SIGKILLed in both modes, fenced with ``now``."""
     global _exit_fenced
+    stop_shell_hook_runs(fence=now)
     if not now:
         with _live_foreground_cond:
             live = list(_live_foreground.values())

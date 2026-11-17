@@ -48,6 +48,9 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
         from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
         from tools.process_registry_notifications import heartbeat_display_text
         return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
+    from tools.process_registry_notifications import WAKE_NOTICE_KINDS
+    if (kind := WAKE_NOTICE_KINDS.get(evt_type)) is not None:  # an idle classic CLI opens only a turn with a card
+        return {"display_kind": kind.display_kind, "display_text": kind.title(evt)}
     return {}
 
 

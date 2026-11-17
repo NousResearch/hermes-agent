@@ -67,6 +67,7 @@ export const SYNTHETIC_USER_ROW_PREFIXES = [
   '[CONTEXT',
   '[PRIOR CONTEXT',
   '[IMPORTANT: Background',
+  '[IMPORTANT: Shell hook wake.',
   '[Your active task list',
   '[Planning state preserved',
   '[ASYNC DELEGATION',

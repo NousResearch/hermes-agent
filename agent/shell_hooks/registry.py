@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
 
-from agent.shell_hooks import consent
+from agent.shell_hooks import consent, rewake
 from agent.shell_hooks.consent import (
     _approved_pairs, _consented, _read_allowlist, _resolve_effective_accept, allowlist_path, allowlisted_pairs,
 )
@@ -130,7 +130,8 @@ def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
                 # Replaced, never edited in place: a concurrent invoke_hook keeps iterating the old list.
                 manager._hooks[event] = [cb for cb in manager._hooks.get(event, [])
                                          if getattr(cb, "shell_hook_key", None) not in stale]
-    for _home, event, _matcher, command in stale:
+    rewake.cancel_hooks(stale)  # a revoked or removed async_rewake hook stops waiting now, not at its timeout
+    for _home, event, _matcher, command, _mode in stale:
         logger.info("shell hook unregistered (removed from config or allowlist): %s -> %s", event, command)
 
 
@@ -173,8 +174,9 @@ def _hook_specs(cfg: Optional[dict[str, Any]]) -> tuple[Optional[list[ShellHookS
     return _parse_hooks(cfg.get("hooks"))
 
 
-def _key(home_key: str, spec: ShellHookSpec) -> tuple[str, str, Optional[str], str]:
-    return (home_key, spec.event, spec.matcher, spec.command)
+def _key(home_key: str, spec: ShellHookSpec) -> tuple[str, str, Optional[str], str, bool]:
+    # The mode is part of the identity: switching async_rewake re-registers the hook at the next sync.
+    return (home_key, spec.event, spec.matcher, spec.command, spec.async_rewake)
 
 
 def _wire(manager: Any, home_key: str, specs: list[ShellHookSpec]) -> list[ShellHookSpec]:
@@ -189,8 +191,10 @@ def _wire(manager: Any, home_key: str, specs: list[ShellHookSpec]) -> list[Shell
         manager._hooks.setdefault(spec.event, []).append(callback)
         _registered.add(key)
         registered.append(spec)
-        logger.info("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s)",
-                    spec.event, spec.command, spec.matcher, spec.timeout, spec.fail_closed)
+        logger.info("shell hook registered: %s -> %s (matcher=%s, timeout=%ds, fail_closed=%s, async_rewake=%s)",
+                    spec.event, spec.command, spec.matcher, spec.timeout, spec.fail_closed, spec.async_rewake)
+    if any(spec.async_rewake for spec in registered):
+        rewake.install_housekeeping(manager)
     return registered
 
 
@@ -214,7 +218,8 @@ def re_register_config_hooks() -> None:
 
 
 def reset_for_tests() -> None:
-    """Test-only: clear the idempotence set."""
+    """Test-only: clear the idempotence set and stop every ``async_rewake`` run."""
+    rewake.reset_for_tests()
     with _registered_lock:
         _registered.clear()
     _launch_consent.clear()

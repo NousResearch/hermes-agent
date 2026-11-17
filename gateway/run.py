@@ -3001,8 +3001,8 @@ def _format_gateway_process_notification(evt: dict) -> str | None:
         text += "]"
         return text
 
-    if evt_type in ("async_delegation", "heartbeat"):
-        from tools.process_registry_notifications import format_process_notification
+    from tools.process_registry_notifications import WAKE_NOTICE_KINDS, format_process_notification
+    if evt_type in ("async_delegation", "heartbeat", *WAKE_NOTICE_KINDS):
         return format_process_notification(evt)
 
     return None
@@ -3012,6 +3012,7 @@ def _drain_gateway_watch_events(completion_queue) -> list[dict]:
     """Drain gateway-owned watch events without spinning on requeued events.
     Foreign events requeued inside ``while not queue.empty()`` never terminate: detach, then requeue."""
     from tools.environments.sandbox_scope import event_visible
+    from tools.process_registry_notifications import WAKE_NOTICE_KINDS
     watch_events: list[dict] = []
     requeue: list[dict] = []
     while not completion_queue.empty():
@@ -3022,8 +3023,7 @@ def _drain_gateway_watch_events(completion_queue) -> list[dict]:
         evt_type = evt.get("type", "completion")
         if not event_visible(evt) or evt_type == "async_delegation":
             requeue.append(evt)  # hosted: only its own scope may deliver it; async_delegation: its own watcher does
-        elif evt_type in {"watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
-                          "heartbeat"}:
+        elif evt_type in {"watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released", "heartbeat", *WAKE_NOTICE_KINDS}:
             watch_events.append(evt)
         # else: process completion events are handled by the watcher task
     for evt in requeue:
@@ -5074,8 +5074,6 @@ def main():
         from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
         log_multiplex_decision(resolve_multiplex_mode(config))
 
-    # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
-    # wedged non-daemon worker can't block Py_FinalizeEx's join. SystemExit caught so EVERY path exits.
     try:
         # start_gateway() performs the full graceful teardown (adapters disconnected, sessions saved +
         # flushed, SQLite closed, cron/MCP stopped, PID file + runtime lock released) before it returns OR
@@ -5102,11 +5100,13 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     PID/lock release, CPU profile and bounded log drain (``QueueListener`` thread) are done here explicitly.
     The atexit ``remove_pid_file`` / ``release_gateway_runtime_lock`` (``start_gateway``) never run either:
     ``_stop_impl`` releases both on full shutdown, but the EARLY exits (clean-fatal-config #51228,
-    startup-aborted) raise ``SystemExit`` without it, so this idempotent backstop does (#53107).
-    """
+    startup-aborted) raise ``SystemExit`` without it, so this idempotent backstop does (#53107)."""
     for stream in (sys.stdout, sys.stderr):
         with suppress(Exception):
             stream.flush()
+    def _stop_shell_hooks() -> None:  # a turn that outlived the drain may have started one after the sweep
+        from tools.environments.base import stop_shell_hook_runs
+        stop_shell_hook_runs(fence=True)
     def _release_locks() -> None:
         # BEFORE the log drain (bounded, but could take its full timeout on a wedged disk); idempotent.
         from gateway.status import remove_pid_file, release_gateway_runtime_lock
@@ -5135,7 +5135,7 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
 
-    for _step in (_release_locks, _mark_exited, _flush_metrics, _write_cpu_profile, _drain_logs):
+    for _step in (_stop_shell_hooks, _release_locks, _mark_exited, _flush_metrics, _write_cpu_profile, _drain_logs):
         _best_effort(_step)
     os._exit(exit_code)
 

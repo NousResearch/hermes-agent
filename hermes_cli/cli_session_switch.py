@@ -10,7 +10,11 @@ from contextlib import suppress
 
 def _end_current_session(cli, reason: str) -> None:
     """Flush un-persisted messages, then end the current session row with ``reason``.
-    Best-effort on both steps (the switch proceeds even if the DB write fails)."""
+    Best-effort on both steps (the switch proceeds even if the DB write fails). A switch fires no
+    ``on_session_finalize``, so the session's background (``async_rewake``) hooks are stopped here:
+    left running they would take what they wait on and wake a session nobody looks at."""
+    from agent.shell_hooks import cancel_session
+    cancel_session((cli.session_id,))
     if cli.agent:
         with suppress(Exception):
             cli.agent._flush_messages_to_session_db(

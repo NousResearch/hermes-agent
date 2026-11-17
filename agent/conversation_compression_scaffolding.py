@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+# Opening of an async_rewake hook's wake notice (tools/process_registry_notifications.py renders it).
+# The one source for every check that must never read the hook's text as words the user typed.
+HOOK_WAKE_PREFIX = "[IMPORTANT: Shell hook wake."
+
 _SYNTHETIC_USER_PREFIXES = (
     "[System: Your previous response was truncated", "[System: The previous response was cut off",
     "[System: Your previous tool call", "[Your active task list was preserved across context compression]",
-    "[IMPORTANT: Background process ",
+    "[IMPORTANT: Background process ", HOOK_WAKE_PREFIX,
 )
 
 

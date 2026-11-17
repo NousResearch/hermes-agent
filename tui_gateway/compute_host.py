@@ -106,7 +106,8 @@ class ComputeHost:
         # Every caller hard-exits next (os._exit skips atexit): a foreground command still
         # running in its own process group would outlive the host.
         with contextlib.suppress(Exception):
-            from tools.environments.base import kill_live_foreground_processes
+            from tools.environments.base import kill_live_foreground_processes, stop_shell_hook_runs
+            stop_shell_hook_runs(fence=True)  # nor may a turn still finishing start an async_rewake hook
             kill_live_foreground_processes()
         # ...and the opt-in shared-metrics rows that atexit hook would have written (bounded).
         from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit

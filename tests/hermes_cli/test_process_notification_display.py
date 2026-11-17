@@ -128,3 +128,23 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     assert text == payload
     assert kwargs["display_kind"] == PROCESS_COMPLETE_DISPLAY_KIND
     assert kwargs["display_metadata"] == {"display_text": expected}
+
+
+def test_hook_wake_lands_titled_even_when_process_notifications_are_off(monkeypatch):
+    """An ``async_rewake`` hook is an explicit opt-in, not process chatter: ``off`` keeps it, and the
+    REPL paints a one-line title while the model reads the labelled hook output."""
+    from tools.process_registry_notifications import hook_wake_display_text
+    wake = {"type": "hook_wake", "event_id": "e1", "session_id": "hook_e1", "session_key": "display-session",
+            "command": "agent-bus ready", "hook_event": "post_llm_call", "output": "ping from lex", "elapsed": 60}
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    monkeypatch.setattr("tools.process_registry.process_registry", _registry([_event("proc_a", 0), wake]))
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+    monkeypatch.setattr("cli.CLI_CONFIG", {"display": {"background_process_notifications": "off"}})
+    cli._drain_process_notifications("cli-idle")
+    queued = cli._pending_input.get_nowait()
+    assert cli._pending_input.empty()
+    assert queued == format_process_notification(wake) and "ping from lex" in queued
+    assert (queued.display_kind, queued.display_text) == ("internal_notification", hook_wake_display_text(wake))

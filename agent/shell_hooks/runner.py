@@ -4,10 +4,12 @@ a run of ``spawn.spawn_hook`` into the hook's contribution."""
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any, Callable, Optional
 
+from agent.shell_hooks.rewake import WAKE_EXIT_CODE, start, wake_output
 from agent.shell_hooks.spawn import spawn_hook
-from agent.shell_hooks.spec import _BLOCKING_EVENTS, _TOOL_EVENTS, ShellHookSpec
+from agent.shell_hooks.spec import _BLOCKING_EVENTS, _TOOL_EVENTS, MAX_TIMEOUT_SECONDS, ShellHookSpec
 from agent.shell_hooks.wire import _DEFAULT_BLOCK_MESSAGE, _is_json_object, _parse_response, _serialize_payload
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,9 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
         if safe_worker_enabled() or not host_feature_enabled("shell_hooks"):
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
+            return None
+        if spec.async_rewake:  # never waits, never directs: the event goes on at once
+            start(spec, getattr(_callback, "shell_hook_key", None), kwargs, _serialize_payload(spec.event, kwargs))
             return None
         return _evaluate_result(spec, spawn_hook(spec, _serialize_payload(spec.event, kwargs)))
 
@@ -100,7 +105,13 @@ def _evaluate_result(
 
 
 def run_once(spec: ShellHookSpec, kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Fire one hook with a synthetic payload (``hermes hooks test`` / doctor) through the production path."""
+    """Fire one hook with a synthetic payload (``hermes hooks test`` / doctor) through the production path.
+    An ``async_rewake`` hook runs in the foreground here, capped at the synchronous maximum, and reports
+    the wake it would deliver."""
+    if spec.async_rewake:
+        result = spawn_hook(replace(spec, timeout=min(spec.timeout, MAX_TIMEOUT_SECONDS)), _serialize_payload(spec.event, kwargs))
+        result["parsed"] = {"wake": wake_output(result) if result["returncode"] == WAKE_EXIT_CODE else None}
+        return result
     result = spawn_hook(spec, _serialize_payload(spec.event, kwargs))
     result["parsed"] = _evaluate_result(spec, result)
     return result

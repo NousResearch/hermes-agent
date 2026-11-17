@@ -2,7 +2,7 @@ name: aipg-community
 repo: https://github.com/speteai/hermes-aipg-provider
 sha: 88dcdc1ddf23b30348703d423d14ea0b744788f1
 subdir: ""
-description: "AI Power Grid (aipowergrid.io) model provider through its OpenAI-compatible API: live model list, qwen38-flash-next-nvfp4 as fallback and auxiliary model. Community-written, not from the AIPG team. Disclosure: model provider; AIPG_API_KEY and all prompts, tool schemas and tool results go to api.aipowergrid.io and are processed in plain text on computers run by independent operators; usage is billed per token from the user's prepaid grid balance (the plugin makes no payments). No tools, hooks, middleware, telemetry or file access."
+description: "AI Power Grid (aipowergrid.io) model provider through its OpenAI-compatible API: live model list, qwen38-flash-next-nvfp4 as fallback and auxiliary model. Community-written, not from the AIPG team. Disclosure — model provider; AIPG_API_KEY and all prompts, tool schemas and tool results go to api.aipowergrid.io and are processed in plain text on computers run by independent operators; usage is billed per token from the user's prepaid grid balance (the plugin makes no payments). Community-written, not from the AIPG team. No tools, hooks, middleware, telemetry or file access."
 maintainer: speteai
 tier: community
 category: models

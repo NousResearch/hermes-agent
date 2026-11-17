@@ -54,7 +54,12 @@ row's already-screened text). Attachments and `voice_context` are
 not screened this cycle (media triage is use case A6, later in the
 queue). NOTE: the visible client artefact of a hold is the terse
 refusal reason (`desktop_screen_hold`) - the full hold notice lives
-in the screen log.
+in the screen log. Round-6 review NOTEs, documented as out of
+scope: `display_v1.title_preview` feeds only the display titler
+(an auxiliary call that writes a chat title, never the session
+prompt) and `cli_turn_v1.turn_author.name` reaches memory
+attribution providers, not the model prompt; neither is screened
+this cycle (same A6 deferral as attachments/voice_context).
 
 Judge philosophy unchanged: the judge advises, it never replaces
 owner gates. The gate is one engine call per 32k-char chunk, within a

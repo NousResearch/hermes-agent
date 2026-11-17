@@ -55,6 +55,7 @@ import {
   sourceBelongsToCategory,
   sourceLabel,
 } from "./SessionsPage_sources";
+import { SessionActivityLine, SnippetHighlight } from "./SessionsPage_row_text";
 import { StructuredReasoning } from "@/components/StructuredReasoning";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { shouldRenderStructuredReasoning } from "@/lib/reasoning-markup";
@@ -85,35 +86,6 @@ import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
-
-/** Render an FTS5 snippet with highlighted matches.
- *  The backend wraps matches in >>> and <<< delimiters. */
-function SnippetHighlight({ snippet }: { snippet: string }) {
-  const parts: React.ReactNode[] = [];
-  const regex = />>>(.*?)<<</g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  let i = 0;
-  while ((match = regex.exec(snippet)) !== null) {
-    if (match.index > last) {
-      parts.push(snippet.slice(last, match.index));
-    }
-    parts.push(
-      <mark key={i++} className="bg-warning/30 text-warning px-0.5">
-        {match[1]}
-      </mark>,
-    );
-    last = regex.lastIndex;
-  }
-  if (last < snippet.length) {
-    parts.push(snippet.slice(last));
-  }
-  return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">
-      {parts}
-    </p>
-  );
-}
 
 function ToolCallBlock({
   toolCall,
@@ -647,6 +619,7 @@ function SessionRow({
                 <span className="text-border">&#183;</span>
                 <span className="shrink-0">{timeAgo(session.last_active)}</span>
               </div>
+              <SessionActivityLine session={session} />
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
 

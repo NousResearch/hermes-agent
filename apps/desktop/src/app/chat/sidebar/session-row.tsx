@@ -31,7 +31,12 @@ import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import {
+  $sessionDotStateById,
+  hasLiveTurn,
+  type SessionDotState,
+  showsRunningArc
+} from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
@@ -52,7 +57,7 @@ import {
 } from './chrome'
 import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
-import { sessionRowDetails } from './session-row-details'
+import { sessionActivitySubtitle, sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
 import { useProfilePrewarm } from './use-profile-prewarm'
@@ -117,6 +122,35 @@ function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
 // while they are hovered or focused.
 const TAIL_HIDES = 'session-row-tail min-w-5 transition-opacity'
 const KEBAB_YIELDS = 'session-row-kebab'
+
+const ArchivedLead = () => (
+  <SidebarRowLeadGlyph className="text-(--ui-text-quaternary)">
+    <Codicon name="archive" size="0.75rem" />
+  </SidebarRowLeadGlyph>
+)
+
+// What a working/stalled turn is doing right now ("executing tool: terminal");
+// every other row renders nothing here, so its legacy layout is unchanged.
+function SessionActivityLine({ session, state }: { session: SessionInfo; state: SessionDotState }) {
+  const activity = sessionActivitySubtitle(session, state)
+
+  if (!activity) {
+    return null
+  }
+
+  return (
+    <span
+      className={cn(
+        'mt-0.5 block min-w-0 truncate text-[0.625rem] text-(--ui-text-tertiary) italic',
+        SIDEBAR_TRUNCATED_LEADING
+      )}
+      data-session-activity
+      title={activity}
+    >
+      {activity}
+    </span>
+  )
+}
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
@@ -287,11 +321,7 @@ function SidebarSessionRowImpl({
 
   // An archived session has no live status to paint, so the archive glyph takes
   // the lead slot the dot would occupy instead of adding a column of its own.
-  const lead = session.archived ? (
-    <SidebarRowLeadGlyph className="text-(--ui-text-quaternary)">
-      <Codicon name="archive" size="0.75rem" />
-    </SidebarRowLeadGlyph>
-  ) : null
+  const lead = session.archived ? <ArchivedLead /> : null
 
   // The trailing metadata sits in normal flow and the kebab lifts out of it,
   // so this cluster's intrinsic width IS the metadata's. In the one-line row
@@ -551,6 +581,7 @@ function SidebarSessionRowImpl({
                         </SidebarRowLabel>
                       </OverflowTip>
                     </RowButton>
+                    <SessionActivityLine session={session} state={dotState} />
                     {/* Session-list density (#68119): comfortable adds one
                         deterministic metadata line; detailed adds the initial
                         request preview. Compact keeps today's one-line row. */}
@@ -622,6 +653,7 @@ function SidebarSessionRowImpl({
                       </SidebarRowLabel>
                     </OverflowTip>
                   </RowButton>
+                  <SessionActivityLine session={session} state={dotState} />
                   {session.preview && rowMeta.includes('preview') ? (
                     <span
                       className={cn(

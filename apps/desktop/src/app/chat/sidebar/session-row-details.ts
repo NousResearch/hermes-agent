@@ -1,3 +1,4 @@
+import type { SessionDotState } from '@/store/session-dot-state'
 import type { SessionListDensity } from '@/store/session-list-density'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -26,6 +27,18 @@ export const sessionRowEstimate = (density: SessionListDensity) =>
  *  undersized one paints rows over their neighbours (and the divider below)
  *  on a cold start, before any measurement can correct it. */
 export const SESSION_CARD_ROW_ESTIMATE_PX = 96
+
+/** The working/stalled row's subtitle: what the turn was last doing, from the
+ *  durable activity stamp. Idle, unread, background and needs-input rows get
+ *  none — the stamp is a turn-scoped observation, and any other state already
+ *  has its own cue (the amber dot, the hollow background dot). */
+export function sessionActivitySubtitle(session: SessionInfo, state: SessionDotState): null | string {
+  if (state !== 'working' && state !== 'stalled') {
+    return null
+  }
+
+  return oneLine(session.last_activity_description ?? null)
+}
 
 export function sessionRowDetails(session: SessionInfo, fmt: SessionRowFormatters): SessionRowDetails {
   const preview = oneLine(session.preview)

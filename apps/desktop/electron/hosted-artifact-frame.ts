@@ -115,6 +115,7 @@ export function hostedArtifactFrameOrigin(
  *  valid artifact label or not. Used to fence the whole namespace off. */
 function underAnyFrameDomain(parsed: URL, policy: HostedArtifactFramePolicy): boolean {
   const host = parsed.hostname.toLowerCase()
+
   const domains = [
     (policy.frameDomain ?? HOSTED_ARTIFACT_FRAME_DOMAIN).trim().toLowerCase(),
     HOSTED_ARTIFACT_DEV_FRAME_DOMAIN

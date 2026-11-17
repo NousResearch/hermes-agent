@@ -36,7 +36,7 @@ describe('hosted artifact frame origin', () => {
     ['two labels above the domain', `https://a.${ID}.${DOMAIN}/__av?t=x`],
     ['the bare frame domain', `https://${DOMAIN}/__av?t=x`],
     ['a lookalike suffix', `https://${ID}.${DOMAIN}.evil.test/__av?t=x`],
-    ['a label glued to the domain', `https://${ID}${DOMAIN}/__av?t=x`],
+    ['a label glued to the domain', `https://${ID}x${DOMAIN}/__av?t=x`],
     ['a label that is not an artifact id', `https://notanid.${DOMAIN}/__av?t=x`],
     ['an id with a letter Crockford excludes', `https://${ID.slice(0, 25)}u.${DOMAIN}/__av?t=x`],
     ['an id one character short', `https://${ID.slice(1)}.${DOMAIN}/__av?t=x`],
@@ -117,7 +117,7 @@ describe('main process wiring', () => {
     expect(handler.slice(0, 1500)).toMatch(
       /hostedArtifactFrameNavigation\(frameOrigin, url, hostedArtifactFramePolicy\(\)\)/
     )
-    expect(handler.slice(0, 1500)).toMatch(/artifactVerdict === 'deny'[\s\S]*?event\.preventDefault\(\)/)
+    expect(handler.slice(0, 1500)).toMatch(/if \(artifactVerdict === 'deny'\) \{\s*event\.preventDefault\(\)/)
   })
 
   it('denies artifact frames in both permission handlers', () => {

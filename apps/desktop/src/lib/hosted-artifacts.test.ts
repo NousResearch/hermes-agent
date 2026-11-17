@@ -50,6 +50,12 @@ describe('parseHostedArtifactResult', () => {
     ['a stale-base error', JSON.stringify({ error: 'stale_base', head_version: 4, message: 'stale' })],
     ['an enveloped error', JSON.stringify({ result: JSON.stringify({ error: 'not_found', message: 'gone' }) })],
     ['a handler error', JSON.stringify({ error: 'MCP tool returned an error' })],
+    ['an error envelope that still carries a payload', { error: 'tool failed', structuredContent: PAYLOAD }],
+    ['a payload flagged as an error', JSON.stringify({ ...PAYLOAD, error: 'stale_base' })],
+    [
+      'an enveloped payload flagged as an error',
+      JSON.stringify({ result: JSON.stringify({ ...PAYLOAD, error: 'stale_base' }) })
+    ],
     ['an id that is not an artifact id', JSON.stringify({ ...PAYLOAD, id: '../etc' })],
     ['a non-integer version', JSON.stringify({ ...PAYLOAD, version: '3' })],
     ['a non-web viewer URL', JSON.stringify({ ...PAYLOAD, viewer_url: 'javascript:alert(1)' })],

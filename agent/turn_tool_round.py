@@ -172,7 +172,20 @@ def run_tool_round(
                     tc.function.name, agent.valid_tool_names
                 ),
             })
-        agent._flush_messages_to_session_db(messages, conversation_history)
+        try:
+            persisted = agent._flush_messages_to_session_db(messages, conversation_history)
+        except Exception as exc:
+            persisted = False
+            from hermes_state import classify_persistence_error
+            agent._last_persistence_error_cause = classify_persistence_error(exc)
+            logger.warning(
+                "Incremental invalid-tool-result persistence failed (session=%s): %s",
+                agent.session_id or "none", exc,
+            )
+        if persisted is False:
+            agent._incremental_persistence_failed = True
+            if getattr(agent, "_last_persistence_error_cause", None) is None:
+                agent._last_persistence_error_cause = "unknown"
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
     finish_tool_round(agent)

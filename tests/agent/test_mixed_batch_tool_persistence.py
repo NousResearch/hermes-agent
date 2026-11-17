@@ -3,11 +3,14 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.turn_tool_round import run_tool_round
 from run_agent import AIAgent
 
 
-def test_mixed_batch_pre_execution_flush_excludes_invalid_tool_results(monkeypatch):
+@pytest.mark.parametrize("post_flush", ["ok", "false", "exception"])
+def test_mixed_batch_pre_execution_flush_excludes_invalid_tool_results(monkeypatch, post_flush):
     """The pre-execution flush must only write the assistant tool-call turn.
 
     Synthetic error results for invalid batch calls must not be flushed ahead
@@ -57,9 +60,16 @@ def test_mixed_batch_pre_execution_flush_excludes_invalid_tool_results(monkeypat
     conversation_history = []
 
     flushed_snapshots = []
-    agent._flush_messages_to_session_db = MagicMock(
-        side_effect=lambda msgs, *args: flushed_snapshots.append(list(msgs)) or True
-    )
+
+    def record_flush(msgs, *args):
+        flushed_snapshots.append(list(msgs))
+        if len(flushed_snapshots) == 1:
+            return True
+        if post_flush == "exception":
+            raise OSError("disk full")
+        return post_flush == "ok"
+
+    agent._flush_messages_to_session_db = MagicMock(side_effect=record_flush)
 
     # Mock post-tool compression so it's a simple passthrough
     monkeypatch.setattr(
@@ -76,7 +86,7 @@ def test_mixed_batch_pre_execution_flush_excludes_invalid_tool_results(monkeypat
         ),
     )
 
-    run_tool_round(
+    verdict = run_tool_round(
         agent,
         assistant_message=assistant_message,
         finish_reason="tool_calls",
@@ -107,3 +117,11 @@ def test_mixed_batch_pre_execution_flush_excludes_invalid_tool_results(monkeypat
         m.get("role") == "tool" and m.get("tool_call_id") == "call_invalid"
         for m in messages
     )
+    if post_flush == "ok":
+        assert verdict.action == "continue"
+    else:
+        # A failed final synthetic-result write is just as fatal as the initial flush.
+        assert len(flushed_snapshots) == 2
+        assert verdict.action == "break"
+        assert verdict.failed is True
+        assert verdict._turn_exit_reason == "session_persistence_failed"

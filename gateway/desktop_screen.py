@@ -24,8 +24,9 @@ Verdicts (identical semantics to Phase 2):
 
 - ``allow``      -> proceeds (outcome ``accepted`` reported)
 - ``review``     -> proceeds, logged (outcome ``escalated``)
-- ``block``      -> HELD: ``DesktopScreenHold`` refuses the submit
-                    with a visible notice (outcome ``escalated``).
+- ``block``      -> HELD: a RuntimeStoreError refusal (reason
+                    ``desktop_screen_hold``, visible hold notice as the
+                    wire message) with outcome ``escalated``.
                     The sender IS the local owner, so the refused
                     submit's error toast is the alert; every hold is
                     also logged for the owner dashboard.
@@ -86,6 +87,8 @@ from pathlib import Path
 
 logger = logging.getLogger("hermes.gateway.desktop_screen")
 
+from hermes_state_runtime import RuntimeStoreError
+
 MAX_TEXT_CHARS = 4000
 _DEFAULT_ENDPOINT = "http://127.0.0.1:8201/v1/screen"
 _DEFAULT_HOLD_NOTICE = ("Held by the desktop intake screen (block tier): "
@@ -99,20 +102,6 @@ _INTERACTIVE_SOURCES = frozenset({"cli", "tui", "gui", "desktop", "acp"})
 # Fire-and-forget outcome tasks (kept referenced so CPython cannot GC
 # them mid-run; discarded on completion).
 _OUTCOME_TASKS: set = set()
-
-
-class DesktopScreenHold(Exception):
-    """A block-tier submit refused by the desktop intake screen.
-
-    Raised to the control-plane caller (prompt.submit /
-    prompt.replace_queued / prompt.steer_queued) so the interactive
-    client shows the hold instead of an admission receipt. Carries the
-    tier reasons for the wire error's data block.
-    """
-
-    def __init__(self, reasons):
-        self.reasons = [str(r) for r in (reasons or [])][:8]
-        super().__init__("desktop_screen_hold")
 
 
 def _log_path() -> Path:
@@ -260,6 +249,63 @@ def submit_texts(params) -> list:
         if isinstance(value, str) and value.strip() and value not in texts:
             texts.append(value)
     return texts
+
+
+async def authority_gate(authority, subject, session_id, payload, *,
+                         kanban_card=False) -> None:
+    """The SINGLE shared intake gate, called from
+    ``SessionAuthority._submit`` before durable admission - the choke
+    point EVERY viewer submit funnels through (the desktop app's own
+    local backend ``hermes serve``, the gateway WS control plane, TUI,
+    queued edits). The per-surface hooks this replaces missed the
+    serve path entirely (the owner's 17 Nov live test: attack submits
+    admitted unscreened through ``hermes serve``).
+
+    Screens only what the desktop screen is FOR - an interactive
+    viewer's own text on a desktop-launched session:
+
+    - inert unless ``HERMES_DESKTOP_SCREEN`` is on;
+    - machine producers structurally out: a kanban card marker, a
+      hosted-room request id, or a classic-CLI ``cli_turn_v1`` turn
+      (unattended fleet work) skips the gate;
+    - scope: the session's frozen launch source must be a screened
+      desktop surface (review F4: the DB row decides, cache is
+      write-through);
+    - screens EVERY model-visible text (``api_text`` AND ``text``,
+      review N1), holding on the first block verdict.
+
+    No-raise on its own bookkeeping; a block verdict raises the
+    control-plane refusal (a RuntimeStoreError with reason
+    ``desktop_screen_hold`` and the visible hold notice as its wire
+    message) so ANY client surface - desktop app, TUI, web server -
+    shows the hold.
+    """
+    try:
+        if not desktop_screen_enabled() or kanban_card:
+            return
+        if not isinstance(payload, dict) or "cli_turn_v1" in payload:
+            return
+        request_id = str(payload.get("_request_id") or "")
+        if request_id.startswith("hosted:"):
+            return
+        texts = submit_texts(payload)
+        if not texts:
+            return
+        if not session_in_scope(authority, session_id):
+            return
+        who = str(subject or "unknown")
+        for text in texts:
+            held, reasons = await screen(who, session_id, text)
+            if held:
+                raise hold_error(reasons)
+    except RuntimeStoreError as exc:
+        if getattr(exc, "reason", "") == "desktop_screen_hold":
+            raise  # the hold IS the verdict - never degrade it to proceed
+        logger.warning("desktop_screen: authority gate degraded to "
+                       "proceed", exc_info=True)
+    except Exception:
+        logger.warning("desktop_screen: authority gate degraded to "
+                       "proceed", exc_info=True)
 
 
 def session_in_scope(authority, session_id: str) -> bool:

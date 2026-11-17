@@ -30,25 +30,28 @@ for the owner dashboard (default `~/.hermes/logs/desktop-screen.log`).
 
 ## Scope (what is and is NOT screened)
 
-Screened: interactive viewer submits on sessions whose frozen launch
-source is a desktop surface (`gui` or `desktop` - the label a
-Desktop chat migrated from main keeps), on the model-facing text:
-the contract's `api_text` override when present, else the persisted
-`text` (a benign `text` with a hostile `api_text` is held - the
-engine judges what the model will see). Verbs: `prompt.submit` and
-`prompt.replace_queued` (the edit is a fresh submit). The TUI/CLI/ACP
-labels can be added later by env alone, no code change.
+Screened: EVERY interactive viewer submit that reaches durable
+admission - the gate lives at the shared choke point
+(`SessionAuthority._submit`, not at any one client surface) because
+the Desktop app submits through its OWN local backend
+(`hermes serve`, found unscreened by the owner's 17 Nov live test
+when the first wiring sat at the gateway WS control plane only).
+Screened on the model-visible text: the contract's `api_text`
+override when present AND the persisted `text` (a hostile payload
+behind a benign override is held either way - the engine judges both
+fields). Verbs covered automatically: `prompt.submit`,
+`prompt.replace_queued` (a fresh admission), TUI/ACP viewer submits.
+Launch-source scope still applies: only sessions frozen as `gui` or
+`desktop` (env-widened to every interactive source).
 
-NOT screened, structurally (machine producers never pass through the
-interactive control plane): kanban cards, hosted-room tasks, a2a
-forwards, automation envelopes (plugin injection, delegation
-completions, watch notices, heartbeat), and gateway platform
-messages (already screened by Phase 2). Bot-relay and hosted-room
-peers writing into a gui-sourced Desktop Bot Chat are Phase 2's
-territory, not this gate's. `prompt.steer_queued` carries no text by
-contract (the transfer re-delivers the queued row's already-screened
-text). Attachments and `voice_context` are not screened this cycle
-(media triage is use case A6, later in the queue).
+NOT screened, structurally: classic-CLI turns (`cli_turn_v1` -
+unattended fleet work stays out of a blocking gate), kanban cards,
+hosted-room tasks, a2a forwards, automation envelopes, and gateway
+platform messages (already screened by Phase 2). `prompt.steer_queued`
+carries no text by contract (the transfer re-delivers the queued
+row's already-screened text). Attachments and `voice_context` are
+not screened this cycle (media triage is use case A6, later in the
+queue).
 
 Judge philosophy unchanged: the judge advises, it never replaces
 owner gates. The gate is one engine call, hard-capped (timeout + 1s

@@ -182,8 +182,20 @@ teammate's credentials.
   going live; otherwise it creates a separate draft.
 - **Never:** publish, archive, delete, change permissions, or touch tickets.
 - **Guard:** a curated `(method, path)` allowlist, like `jira_api_write`.
-- **Credentials:** `ZENDESK_SUBDOMAIN` / `ZENDESK_EMAIL` /
-  `ZENDESK_API_TOKEN` via `get_secret`.
+- **Credentials:** `ZENDESK_SUBDOMAIN` / `ZENDESK_OAUTH_CLIENT_ID` /
+  `ZENDESK_OAUTH_CLIENT_SECRET` via `get_secret`. OAuth client-credentials grant
+  (Zendesk is removing API tokens), Help Center scopes only; the OAuth client is
+  **Decision 2026-11-17: the OAuth client is owned by an admin account** (no free
+  seat for a dedicated service agent). Effective rights = scopes ∩ owner's role,
+  so the token has full *Help Center* admin power, nothing outside Help Center.
+  Accepted because the tool (draft-create only, curated allowlist) is the real
+  boundary. Mitigations: client is Confidential; Allowed scopes pinned to exactly
+  `hc:read hc:write` (never empty — empty = all scopes = full account admin);
+  any scope change to this client is treated as a security change; the secret
+  lives only in the password manager and the educator `.env`. Known costs:
+  Zendesk audit attributes the teammate's actions to that admin, and the
+  integration breaks if that account loses admin. Move to a dedicated agent
+  (Manage APIs + Help Center manager only) when a seat frees up.
 - **Later:** ticket reads as a **separate** toolset (`zendesk_tickets`).
 
 ### 3. Cost budget + alerts (general fork feature)
@@ -300,7 +312,7 @@ home.
 | Slack | Its own Slack app's bot and app tokens |
 | Notion | Its own integration, shared with Release Kits, the Ideas database, its home page, and **Detailed Bucket Features** (the PRDs) only |
 | Jira | Read-only. A dedicated Atlassian account or API token, ideally a bot user with browse-only permissions on BA and EV |
-| Zendesk | The shared service account |
+| Zendesk | A confidential OAuth client (client credentials), owned by an admin account (decision 2026-11-17, see Dependencies → 2) |
 | GitHub | The fine-grained token |
 | Model | The LLM provider key, which may be the same provider as the current bot |
 

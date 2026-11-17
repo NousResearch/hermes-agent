@@ -11,7 +11,17 @@ from a fresh read (normally finding nothing left to import). Under the lock (:fu
 2. every kept-local ``.env`` line must be literal (:func:`non_literal_kept_names`): one the loader
    would expand stops the boot (``SecretStoreUnavailable``, names only) before anything is staged,
    refreshed, written or sent;
-3. the entries outside the bootstrap set (``.env`` values exactly as the local store serves them
+3. every name to be sent (the staging's, then the files' entries outside the bootstrap set) must
+   meet the plane's name rules (:func:`invalid_names`, contract §2): an invalid one stops the boot
+   (``SecretStoreUnavailable``, names shown escaped, never a value) before anything is backed up,
+   staged, refreshed, written or sent; for a leftover staging file the stop names that file;
+4. the exact bytes read of ``.env`` and ``auth.json`` are kept in :data:`PRE_IMPORT`
+   (``.env.pre-import`` / ``auth.pre-import.json``, 0600) unless a backup is already there: the
+   first original wins, so a crash after the cleanup never replaces it with rewritten bytes, and
+   nothing here ever removes one. The plane stores what the local store serves, which for some
+   files is not every byte the user wrote (a satellite serves only the first line of a quoted
+   multiline value, or of one holding U+2028 / NEL); the backup keeps the rest recoverable;
+5. the entries outside the bootstrap set (``.env`` values exactly as the local store serves them
    for the captured bytes, ``hermes_secret_routing.local_served_env``; ``auth.json`` records from
    the captured bytes) are staged in :data:`STAGING` (0600, merged over an unfinished staging)
    before the credential resolves: a token refresh saves ``auth.json`` with its bootstrap records
@@ -35,6 +45,7 @@ import io
 import json
 import logging
 import os
+import re
 import stat
 import threading
 from pathlib import Path
@@ -50,6 +61,11 @@ LOCK = ".secrets-import.lock"
 STAGING = ".secrets-import.json"
 UNIMPORTED_ENV = ".env.unimported"
 UNIMPORTED_AUTH = "auth.unimported.json"
+#: Each import input and the backup of its original bytes (beside it, 0600, never removed here).
+PRE_IMPORT = {".env": ".env.pre-import", "auth.json": "auth.pre-import.json"}
+#: The plane's name rules (contract §2; gateway-gateway refuses others with ``secret_name_invalid``).
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+AUTH_ID = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,63}")
 #: How long a boot waits for another boot's import of the same profile before failing closed.
 LOCK_SECONDS = 600.0
 
@@ -120,12 +136,62 @@ def prepare(home: Path, provider, profile: str) -> Prepared:
     assignments = _assignments(sources.env)
     if names := non_literal_kept_names(provider, assignments):
         _stop(refusal_text(profile, names))
-    env, records = _local_entries(home, provider, sources)
     staged_env, staged_auth = _staged(sources.staging)
+    if names := invalid_names(staged_env, staged_auth):
+        _stop(staging_refusal_text(profile, Path(home), names))
+    env, records = _local_entries(home, provider, sources)
+    if names := invalid_names(env, records):
+        _stop(invalid_text(profile, names))
     env, records = {**staged_env, **env}, {**staged_auth, **records}
     if env or records:
+        _keep_originals(Path(home), sources)
         _write_private_json(Path(home) / STAGING, {"env": env, "auth": records})
     return Prepared(sources, env, records)
+
+
+def invalid_names(env, records) -> list[str]:
+    """The env names and auth record ids the plane would refuse as names (contract §2), shown
+    escaped (:func:`_shown`); names only, never a value."""
+    bad = [n for n in env if not (isinstance(n, str) and ENV_NAME.fullmatch(n))]
+    bad += [r for r in records if not (isinstance(r, str) and AUTH_ID.fullmatch(r))]
+    return sorted({_shown(n) for n in bad})
+
+
+def _shown(name) -> str:
+    """*name* for a message: ASCII-escaped and quoted (no control or bidi character reaches a
+    terminal), cut at 80 characters."""
+    text = ascii(str(name))
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def invalid_text(profile: str, names: list[str]) -> str:
+    return (f"Remote secrets: profile {profile!r} has .env / auth.json entries the secrets plane cannot store: "
+            f"invalid name(s) {', '.join(names)} (env names: letters, digits and _, not starting with a digit; "
+            "auth provider ids: lower-case letters, digits and _ . : -). Hermes does not start (nothing was "
+            "sent or written; there is no fallback to the local store). Rename or remove those entries (a "
+            ".env saved as UTF-16 must be saved as UTF-8) and restart Hermes.")
+
+
+def staging_refusal_text(profile: str, home: Path, names: list[str]) -> str:
+    return (f"Remote secrets: profile {profile!r} has an unfinished import ({home / STAGING}) holding "
+            f"invalid name(s) {', '.join(names)}, which the secrets plane cannot store. Hermes does not start "
+            "(nothing was sent or written; there is no fallback to the local store). Check that "
+            f"{' / '.join(str(home / n) for n in PRE_IMPORT.values())} (if present) and the .env hold "
+            f"what you need, then delete {home / STAGING} and restart Hermes.")
+
+
+def _keep_originals(home: Path, sources: Sources) -> None:
+    """Keep the captured bytes of each import input in its :data:`PRE_IMPORT` backup (0600,
+    atomic), unless one is already there: the first original wins."""
+    for backup_name, raw in zip(PRE_IMPORT.values(), (sources.env, sources.auth)):
+        backup = home / backup_name
+        if raw is not None and not os.path.lexists(backup):
+            _write_bytes(backup, raw)
+
+
+def pre_import_backups(home: Path) -> list[Path]:
+    """The pre-import backups present in *home* (``hermes doctor`` names them)."""
+    return [p for p in (Path(home) / n for n in PRE_IMPORT.values()) if os.path.lexists(p)]
 
 
 def non_literal_kept_names(provider, assignments: list[tuple[str, str | None]]) -> list[str]:

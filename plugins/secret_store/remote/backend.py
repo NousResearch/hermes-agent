@@ -13,7 +13,9 @@ memory only:
   already has the profile (409) it wins and the local entries move to ``.env.unimported`` /
   ``auth.unimported.json`` (``importer.py``), all under one per-profile import lock. A kept-local
   ``.env`` line must be literal: one holding a ``${...}`` reference fails that profile's boot
-  closed before anything is staged or sent;
+  closed before anything is staged or sent, as does a name the plane cannot store (in the files
+  or a leftover staging). The original bytes are kept in ``.env.pre-import`` /
+  ``auth.pre-import.json`` (0600, first original wins, never removed) before staging;
 - **change detection**: a per-process poller asks for every booted view with ``If-None-Match`` every
   :data:`POLL_SECONDS`, holding the version the process booted with or last wrote itself. Nothing is
   installed from a poll: a different version asks the process for a graceful restart
@@ -569,8 +571,12 @@ class RemoteSecretStoreProvider(SecretStoreProvider):
                  f"Review and delete {listed}: the secrets plane wins over these local entries"),)
 
     def describe(self, home: Any) -> str:
+        from . import importer
         st = self._states.get(self._key(Path(home)))
         head = f"Remote secrets {client.shown_url()} (instance {client.instance_id() or '<unset>'})"
+        kept = importer.pre_import_backups(Path(home))
+        if kept:  # informational: the import's copies of the original files (names only)
+            head += f"; the original files before the import are kept in {', '.join(p.name for p in kept)}"
         if st is None:
             return f"{head}: profile not fetched yet"
         age = int(time.time() - st.fetched_at) if st.fetched_at else -1

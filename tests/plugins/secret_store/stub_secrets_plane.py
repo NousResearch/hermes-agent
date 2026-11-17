@@ -6,7 +6,8 @@ Model: per (instance, profile) a profile level; per instance an instance level a
 owner subject an owner level; one tenant level. Each level holds env entries ``{name: (value,
 version)}`` and auth entries ``{provider: (record, version)}`` and a document version. A read
 resolves per name the highest level defining it (profile > instance > owner > tenant). Reserved
-names (the vendored ``secrets-reserved-names.json``) are refused on every write.
+names (the vendored ``secrets-reserved-names.json``) are refused on every write, and so is a name
+outside contract §2's rules (``secret_name_invalid``, as gateway-gateway's ``patch.ts``).
 
 It is a test double, not server conformance evidence; the vendored connector fixtures
 (``test_remote_secrets_conformance.py``) and the connector's own suite are that evidence.
@@ -16,6 +17,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +30,8 @@ CLIENT_SECRET = "agent-secret"
 INSTANCE = "inst-0001"
 WORKLOAD_TOKEN = "workload-token-1"
 LEVELS = ("profile", "instance", "owner", "tenant")
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+AUTH_ID = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,63}")
 VENDOR = (Path(__file__).resolve().parents[3] / "plugins" / "secret_store" / "remote" / "vendor" / "conformance")
 
 
@@ -197,6 +201,11 @@ class StubSecretsPlane:
                     plane.profile(profile, instance)["version"] += 1   # another writer won the race
                 prof = plane.profile(profile, instance)
                 sets, unsets, auth = body.get("set") or {}, body.get("unset") or [], body.get("auth") or {}
+                for kind, name, rule in [*(("env", n, ENV_NAME) for n in [*sets, *unsets]),
+                                         *(("auth", r, AUTH_ID) for r in auth)]:
+                    if not rule.fullmatch(name):
+                        return self._send(400, {"error": "secret_name_invalid", "message": "invalid name",
+                                                "kind": kind, "name": name})
                 for name in [*sets, *unsets]:
                     if plane.env_reserved(name):
                         return self._send(400, {"error": "secret_name_reserved", "message": "reserved name",

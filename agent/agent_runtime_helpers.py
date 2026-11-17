@@ -1211,7 +1211,7 @@ def blank_cache_policy_stub(cache_disabled: Optional[bool] = None):
 def plan_cache_sections_for_destination(
     messages: list, tools: Optional[list], *, provider: str, base_url: str, api_mode: str,
     model: str, cache_disabled: Optional[bool] = None, cache_ttl: Optional[str] = None,
-    static_system_prefix: Optional[str] = None,
+    cache_ttl_auto: bool = False, static_system_prefix: Optional[str] = None,
 ) -> tuple[list, list]:
     """Plan request-local cache sections for one resolved destination (MoA / auxiliary senders):
     stripped copies (non-caching route) or a ``build_prompt_cache_plan`` layout; never mutates
@@ -1238,7 +1238,7 @@ def plan_cache_sections_for_destination(
     plan = build_prompt_cache_plan(
         messages, tools,
         # effective_cache_ttl resolves None → "5m"; cache-disabled agents never reach here.
-        cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url),
+        cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model, base_url=base_url, auto=cache_ttl_auto),
         native_anthropic=native_layout,
         static_system_prefix=static_system_prefix if isinstance(static_system_prefix, str) else None,
         direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(stub, **dest),

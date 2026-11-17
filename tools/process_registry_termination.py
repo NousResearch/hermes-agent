@@ -20,17 +20,19 @@ logger = logging.getLogger("tools.process_registry")
 ENV_GONE_MARKER = "__HERMES_PROCESS_TERMINATED__"
 ENV_SURVIVORS_MARKER = "__HERMES_PROCESS_SURVIVORS__"
 _ENV_TICK = 0.05
-# Exec round trip to a remote sandbox, on top of the signal waits the script itself makes.
-_ENV_KILL_TRANSPORT_SECONDS = 10.0
+# Exec round trip to a remote sandbox plus two member scans, on top of the script's signal waits.
+_ENV_KILL_TRANSPORT_SECONDS = 15.0
 
 
 def env_group_kill_command(pgid: int, grace: float) -> str:
     """POSIX shell command that stops sandbox process group *pgid* and proves it is gone.
 
     SIGTERM, then after *grace* seconds SIGKILL (no SIGKILL when *grace* is 0,
-    matching ``terminal.daemon_term_grace_seconds``). Prints ``ENV_GONE_MARKER`` once
-    ``group_liveness_shell`` finds no live member (zombies do not count). When the
-    group outlives every signal, prints ``ENV_SURVIVORS_MARKER`` and its live member
+    matching ``terminal.daemon_term_grace_seconds``). The signal waits poll the cheap
+    ``_hq`` (no process-table scan, which takes seconds on a host with ~10k processes),
+    so the scan cost never stretches the grace past the exec timeout. Then at most two
+    scans settle it: ``ENV_GONE_MARKER`` once ``group_liveness_shell`` finds no live
+    member (zombies do not count), else ``ENV_SURVIVORS_MARKER`` and the live member
     PIDs (``?`` when the sandbox cannot list them)."""
     if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 1:
         # kill -- -1 signals every process the sandbox user can reach.
@@ -40,10 +42,13 @@ def env_group_kill_command(pgid: int, grace: float) -> str:
     escalate = f'kill -KILL "-$_hg" 2>/dev/null; _hw 20 && {gone_exit}; ' if grace else ""
     return (
         group_liveness_shell(str(pgid))
-        + f'_hw() {{ _i=0; while [ "$_i" -lt "$1" ]; do _hl || return 0; sleep {_ENV_TICK}; _i=$((_i + 1)); done; ! _hl; }}; '
+        + f'_hw() {{ _i=0; while [ "$_i" -lt "$1" ]; do _hq || return 0; sleep {_ENV_TICK}; _i=$((_i + 1)); done; return 1; }}; '
         f'kill -TERM "-$_hg" 2>/dev/null; _hw {term_ticks} && {gone_exit}; '
         f"{escalate}"
-        f'echo {ENV_SURVIVORS_MARKER} $(_hm); exit 1'
+        # Zombies keep _hq "alive"; the member scan settles it (once more after a beat for
+        # members the kernel is still tearing down).
+        f'_hl || {gone_exit}; sleep 0.2; _m=$(_hm); case "$_m" in "") {gone_exit};; "?") _hq || {gone_exit};; esac; '
+        f'echo {ENV_SURVIVORS_MARKER} $_m; exit 1'
     )
 
 

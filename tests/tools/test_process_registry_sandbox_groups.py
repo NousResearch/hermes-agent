@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import psutil
@@ -326,3 +327,22 @@ def test_a_process_name_cannot_hide_a_live_member(tmp_path, shell, name):
     finally:
         member.kill()
         member.wait()
+
+
+@pytest.mark.platforms("posix")
+def test_a_slow_process_scan_does_not_stretch_the_grace():
+    # Each member scan made to take 1 s, as a full process table does on a busy host. The
+    # signal waits must not scan per tick, or the SIGKILL comes after the exec timeout.
+    script = env_group_kill_command(1234567, 0.3)
+    group = subprocess.Popen(["bash", "-c", "trap '' TERM; sleep 30 & wait"], process_group=0)
+    try:
+        wait_until(lambda: len(psutil.Process(group.pid).children()) == 1, what="group started")
+        slow = script.replace("1234567", str(group.pid)).replace("_hm() {", "_hm() { sleep 1; ", 1)
+        started = time.monotonic()
+        result = subprocess.run(["bash", "-c", slow], capture_output=True, text=True, timeout=30, check=False)
+        elapsed = time.monotonic() - started
+        assert "__HERMES_PROCESS_TERMINATED__" in result.stdout.splitlines(), result
+        assert elapsed < 6, f"kill took {elapsed:.1f}s with 1 s scans"
+    finally:
+        group.kill()
+        group.wait()

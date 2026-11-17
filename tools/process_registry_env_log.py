@@ -64,8 +64,10 @@ def group_liveness_shell(pgid_expr: str) -> str:
     cannot leak a read error into the output.
 
     ``_hl`` succeeds while the group is alive. It trusts the member list when there is
-    one; without it, only ``kill -0`` failing with ESRCH means gone, since EPERM (a
-    member owned by another user) is a live member."""
+    one; without it, it asks ``_hq``. ``_hq`` is the cheap probe (a builtin ``kill -0``,
+    no scan): only ESRCH means gone, since EPERM (a member owned by another user) is a
+    live member, and a zombie still counts, so it can say "alive" but never wrongly
+    "gone"."""
     return (
         f'_hg={pgid_expr}; '
         '_hm() { case "$_hg" in ""|*[!0-9]*) return 0;; esac; '
@@ -77,9 +79,9 @@ def group_liveness_shell(pgid_expr: str) -> str:
         'elif _o=$(ps -A -o pid= -o pgid= -o stat=); then printf \'%s\\n\' "$_o" | '
         'while read -r _p _q _t; do [ "$_q" = "$_hg" ] && case "$_t" in Z*) ;; *) echo "$_p";; esac; done; '
         'else echo "?"; fi; } 2>/dev/null; '
-        '_hl() { _m=$(_hm); case "$_m" in "") return 1;; "?") ;; *) return 0;; esac; '
-        '_he=$(LC_ALL=C kill -0 "-$_hg" 2>&1) && return 0; '
+        '_hq() { _he=$(LC_ALL=C kill -0 "-$_hg" 2>&1) && return 0; '
         'case "$_he" in *"No such process"*) return 1;; esac; return 0; }; '
+        '_hl() { _m=$(_hm); case "$_m" in "") return 1;; "?") _hq;; *) return 0;; esac; }; '
     )
 
 

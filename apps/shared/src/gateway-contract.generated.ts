@@ -5632,6 +5632,22 @@ export interface StoredTranscriptRow {
   truncated?: boolean | null
   [key: string]: unknown
 }
+export interface SessionAppendMessageParams {
+  session_id: string
+  profile?: string | null
+  role: 'user' | 'assistant'
+  content: string
+  client_id?: string | null
+  observed?: boolean
+}
+export interface SessionAppendMessageResult {
+  ok: true
+  id: number
+  message_uid: string
+  session_id: string
+  role: 'user' | 'assistant'
+  client_id: string | null
+}
 /** Open: the plugin's handler owns every other key. ``session_id`` names the session the call acts in and passes that session's authorization first. */
 export interface PluginRpcParams {
   session_id?: string | null
@@ -6344,6 +6360,10 @@ export interface GroupsChangedPayload {
   room_ids?: string[] | null
   broadcast_id?: string | null
   [key: string]: unknown
+}
+export interface SessionMessagesAppendedPayload {
+  session_id: string
+  message_ids: number[]
 }
 export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY' | 'ALIAS_TAKEN'
 
@@ -7200,6 +7220,8 @@ export interface CanonicalRpcMethods {
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
   /** The /usage account blocks for this session's route: provider plan limits, then the Nous balance. */
   'session.account_usage': { params: SessionAccountUsageParams; result: SessionAccountUsage }
+  /** Persist externally conducted speech without generating a reply. Optional client_id makes retries idempotent. */
+  'session.append_message': { params: SessionAppendMessageParams; result: SessionAppendMessageResult }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
   'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
@@ -7269,6 +7291,7 @@ export const CANONICAL_RPC_METHODS = [
   'rollback.session_diff',
   'runtime.describe',
   'session.account_usage',
+  'session.append_message',
   'session.automation',
   'session.create',
   'session.detach',
@@ -7454,6 +7477,7 @@ export interface BackendGatewayEventMap {
   'session.control.update': SessionControlUpdatePayload
   /** Live session settings snapshot (``server._session_info``); also the ``info`` of create/resume/activate. */
   'session.info': SessionLiveInfo
+  'session.messages.appended': SessionMessagesAppendedPayload
   /** The backend reclaimed a live session out from under its clients. */
   'session.reclaimed': SessionReclaimedPayload
   /** Deferred resume hydration progress. */
@@ -7565,6 +7589,7 @@ export const GATEWAY_EVENT_TYPES = [
   'review.summary',
   'session.control.update',
   'session.info',
+  'session.messages.appended',
   'session.reclaimed',
   'session.resume_progress',
   'session.title',

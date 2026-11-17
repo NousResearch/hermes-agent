@@ -37129,6 +37129,114 @@
         "title": "SessionActiveListResult",
         "type": "object"
       },
+      "SessionAppendMessageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Id"
+          },
+          "observed": {
+            "default": false,
+            "title": "Observed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "role",
+          "content"
+        ],
+        "title": "SessionAppendMessageParams",
+        "type": "object"
+      },
+      "SessionAppendMessageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "const": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "message_uid": {
+            "title": "Message Uid",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          }
+        },
+        "required": [
+          "ok",
+          "id",
+          "message_uid",
+          "session_id",
+          "role",
+          "client_id"
+        ],
+        "title": "SessionAppendMessageResult",
+        "type": "object"
+      },
       "SessionArchiveParams": {
         "additionalProperties": false,
         "description": "``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title.",
@@ -39831,6 +39939,28 @@
           }
         },
         "title": "SessionLiveInfo",
+        "type": "object"
+      },
+      "SessionMessagesAppendedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "message_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Message Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "message_ids"
+        ],
+        "title": "SessionMessagesAppendedPayload",
         "type": "object"
       },
       "SessionMostRecentParams": {
@@ -50879,6 +51009,24 @@
       }
     },
     {
+      "name": "session.append_message",
+      "summary": "Persist externally conducted speech without generating a reply. Optional client_id makes retries idempotent.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAppendMessageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAppendMessageResult"
+        }
+      }
+    },
+    {
       "name": "session.automation",
       "summary": "The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row.",
       "params": [
@@ -52128,6 +52276,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "session.messages.appended",
+      "summary": "",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SessionMessagesAppendedPayload"
           }
         }
       ]

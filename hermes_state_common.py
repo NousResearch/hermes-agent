@@ -645,6 +645,15 @@ CREATE TABLE IF NOT EXISTS worker_receipts (
     PRIMARY KEY (execution_id, sequence)
 );
 
+-- External transcript receipts survive compaction and disappear with their conversation.
+CREATE TABLE IF NOT EXISTS session_external_messages (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    client_id TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY (session_id, client_id)
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT

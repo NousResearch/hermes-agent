@@ -107,6 +107,7 @@ import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
 
+import { appendMessage } from './append-message'
 import { logBotWake } from './bot-wake-log'
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
@@ -1499,6 +1500,9 @@ export const host = {
         })
     )
   },
+
+  /** Record externally spoken text; accepted requests paint only after persistence. */
+  appendMessage,
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`

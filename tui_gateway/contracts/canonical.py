@@ -696,3 +696,25 @@ canonical_method("groups.peer.register", params=CanonicalGroupsPeerRegisterParam
 
 # Shared-name overrides load after the authority-only value shapes above.
 from . import canonical_sessions, canonical_projections, canonical_stored_reads
+
+
+class SessionAppendMessageParams(Params):
+    session_id: str
+    profile: str | None = None
+    role: Literal['user', 'assistant']
+    content: str
+    client_id: str | None = None
+    observed: bool = False
+
+
+class SessionAppendMessageResult(Result):
+    ok: Literal[True]
+    id: int
+    message_uid: str
+    session_id: str
+    role: Literal['user', 'assistant']
+    client_id: str | None
+
+
+canonical_method('session.append_message', params=SessionAppendMessageParams, result=SessionAppendMessageResult,
+                 doc='Persist externally conducted speech without generating a reply. Optional client_id makes retries idempotent.')

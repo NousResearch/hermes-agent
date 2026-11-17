@@ -277,6 +277,8 @@ class AuthorityConnection:
         handlers['session.automation'] = partial(automation, self)
         from gateway.session_reactions import react
         handlers['message.react'] = partial(react, self)
+        from gateway.session_append import append_message
+        handlers['session.append_message'] = partial(append_message, self)
         from gateway.session_clarify_lock import clarify_lock
         handlers['clarify.lock'] = partial(clarify_lock, self)
         from gateway.session_connections import handlers as connection_handlers

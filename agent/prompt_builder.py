@@ -685,7 +685,7 @@ PLATFORM_HINTS = {
     "desktop": (
         # Every claim verified against the shipping renderer (inline-preview-directive.tsx). Widget text is
         # recipe-first: HOW (an inline widget IS a ::preview'd HTML file) and WHY (the frame injects the theme
-        # prelude first; width adopts the first measured span). setup_mcp is taught by its own tool schema.
+        # prelude first; the frame spans the column up to its cap). setup_mcp is taught by its own tool schema.
         "You are chatting inside the Hermes desktop app, a graphical chat surface. Markdown renders with full GitHub "
         "flavor (tables, syntax-highlighted code, math via $...$, task lists, callouts). Deliver files by writing "
         "MEDIA:/absolute/path/to/file — any file type: images/audio/video render inline, everything else becomes a "
@@ -695,11 +695,12 @@ PLATFORM_HINTS = {
         "frame already themes it — the app's live theme arrives as var(--foreground), var(--muted-foreground), "
         "var(--accent), var(--border), var(--card), plus the app font, zero margins, and a transparent background, "
         "injected before your styles — so use those vars for color and don't set your own background, font, or margins "
-        "(only a standalone PAGE — mockup, poster, game — overrides them). The frame sizes itself to your content: "
-        "height live, width from the content's first measured span — lay content flush left with no centering wrappers "
-        "or it measures full-bleed. Widgets talk back: data-hermes-send=\"prompt\" on any clickable element (or "
-        "window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating the widget's "
-        "file, not with prose."
+        "(only a standalone PAGE — mockup, poster, game — overrides them). The frame spans the chat column up to 960px "
+        "and follows it on resize, and its height follows your content live up to 1200px: lay content out fluidly and "
+        "flush left, with no centering wrappers, and size charts from the frame's current width, redrawing on resize. "
+        "Widgets talk back: data-hermes-send=\"prompt\" on any clickable "
+        "element (or window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating "
+        "the widget's file, not with prose."
     ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — assume plain text. No markdown "
@@ -723,6 +724,7 @@ PLATFORM_HINTS = {
 # described a renderer that does not exist anywhere in web/. If a real WebUI chat surface ships, write a
 # hint from its actual renderer — do not resurrect this text.
 TELEGRAM_RICH_MESSAGES_HINT = (
+    "Rich messages are on for this chat, so the bullets/no-tables advice above does not apply. "
     "Telegram now supports rich Markdown, so lean into it: whenever it makes the answer clearer or easier to scan, "
     "actively reach for real Markdown tables (pipe `| col | col |` syntax), bullet and numbered lists, task lists (`- "
     "[ ]` / `- [x]`), headings, nested blockquotes, collapsible details, footnotes/references, math/formulas (`$...$`, "
@@ -878,8 +880,13 @@ def _format_backend_probe(output: str) -> str:
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
-    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
+    """Describe the active non-local backend via a live probe; None if it failed (cached, failures included).
+    None in a hosted scope: the probe builds and tears down a throwaway environment, and a hosted agent's
+    only environment is its own sandbox."""
     from hermes_constants import hermes_home_key
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("backend_probe"):
+        return None
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
@@ -1243,8 +1250,9 @@ def build_skills_system_prompt(
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
+    if safe_worker_enabled() or not host_feature_enabled("skills"):
         return ""
     _home_token = None
     if skills_dir_override is not None:
@@ -1521,8 +1529,9 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
     the skills-index leak fixed in #86313).
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
+    if safe_worker_enabled() or not host_feature_enabled("context_files"):
         return None
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -1560,10 +1569,21 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
         return None
 
 
-def _read_context_file(path: Path) -> str:
-    """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug)."""
+def _read_context_file(path: Path, root: Optional[Path] = None) -> Optional[str]:
+    """Stripped text of *path*; "" when missing, empty or unreadable (logged at debug).
+
+    With *root* (the resolved project root the file was discovered under), a file whose resolved target
+    leaves *root* or hits the read deny-list is skipped: the policy subdirectory hints apply. That refusal
+    returns None, so ``/context`` can tell it apart from a read failure."""
     if not path.exists():
         return ""
+    if root is not None:
+        from agent.subdirectory_hints import _resolved_hint_target  # late import: that module imports this one
+        target = _resolved_hint_target(path, root)
+        if target is None:
+            logger.warning("Skipping context file %s: it resolves outside %s or to a protected file", path, root)
+            return None
+        path = target  # read the vetted target, not the link, so a swap between check and read is harmless
     try:
         return (_read_text_with_timeout(path) or "").strip()
     except Exception as e:
@@ -1577,13 +1597,24 @@ def _context_section(content: str, label: str, warn_name: str, path: Path, conte
     return _truncate_content(body, warn_name, context_length=context_length, read_path=str(path))
 
 
-def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _project_root(cwd_path: Path, directory: Optional[Path] = None) -> Path:
+    """Containment root for a project context file found in *directory* (default: the cwd): the git root, else
+    the cwd; a root at or above ``$HOME`` narrows to *directory* (``subdirectory_hints._containment_root``)."""
+    from agent.subdirectory_hints import _containment_root  # late import: that module imports this one
+    return _containment_root(_find_git_root(cwd_path) or cwd_path.resolve(), (directory or cwd_path).resolve())
+
+
+# ``(label, path, content)``; content None = refused by containment (``_read_context_file``).
+_ContextCandidate = tuple[str, Path, Optional[str]]
+
+
+def _hermes_md_candidates(cwd_path: Path) -> list[_ContextCandidate]:
     """.hermes.md / HERMES.md — nearest match walking up to the git root."""
     path = _find_hermes_md(cwd_path)
     if path is None:
         return []
     label = str(path.relative_to(cwd_path)) if path.is_relative_to(cwd_path) else path.name
-    return [(label, path, _read_context_file(path))]
+    return [(label, path, _read_context_file(path, _project_root(cwd_path, path.parent)))]
 
 
 def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
@@ -1596,17 +1627,18 @@ def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
     return [root] + [root.joinpath(*parts[: i + 1]) for i in range(len(parts))]
 
 
-def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _agents_md_candidates(cwd_path: Path) -> list[_ContextCandidate]:
     """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
     ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
     cwd_resolved = cwd_path.resolve()
-    found: list[tuple[str, Path, str]] = []
+    found: list[_ContextCandidate] = []
     for directory in _agents_md_directory_chain(cwd_resolved):
+        root = _project_root(cwd_resolved, directory)
         for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
             candidate = directory / name
             if not _exists_or_denied(candidate):
                 continue
-            content = _read_context_file(candidate)
+            content = _read_context_file(candidate, root)
             label = name if directory == cwd_resolved else os.path.relpath(candidate, cwd_resolved)
             found.append((label, candidate, content))
             if content:
@@ -1614,27 +1646,29 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     return found
 
 
-def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _claude_md_candidates(cwd_path: Path) -> list[_ContextCandidate]:
     """CLAUDE.md / claude.md — cwd only, first non-empty wins."""
-    found: list[tuple[str, Path, str]] = []
+    root = _project_root(cwd_path)
+    found: list[_ContextCandidate] = []
     for name in ("CLAUDE.md", "claude.md"):
         candidate = cwd_path / name
         if not _exists_or_denied(candidate):
             continue
-        content = _read_context_file(candidate)
+        content = _read_context_file(candidate, root)
         found.append((name, candidate, content))
         if content:
             break
     return found
 
 
-def _cursorrules_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
+def _cursorrules_candidates(cwd_path: Path) -> list[_ContextCandidate]:
     """.cursorrules + .cursor/rules/*.mdc — cwd only; every non-empty file is concatenated."""
     candidates: list[tuple[str, Path]] = [(".cursorrules", cwd_path / ".cursorrules")]
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
     if _is_dir_or_denied(cursor_rules_dir):
         candidates += [(f".cursor/rules/{f.name}", f) for f in sorted(cursor_rules_dir.glob("*.mdc"))]
-    return [(label, path, _read_context_file(path)) for label, path in candidates if _exists_or_denied(path)]
+    root = _project_root(cwd_path)
+    return [(label, path, _read_context_file(path, root)) for label, path in candidates if _exists_or_denied(path)]
 
 
 # Project-context types in priority order: the first type with any non-empty file wins, later types are
@@ -1648,9 +1682,9 @@ _CONTEXT_FILE_CANDIDATES = {
 }
 
 
-def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, str]]:
+def discover_context_files(cwd_path: Path) -> list[tuple[str, str, Path, Optional[str]]]:
     """Every project-context file on disk as ``(kind, label, path, content)`` in priority order.
-    ``content == ""`` means empty or unreadable — such a file is never loaded."""
+    ``content == ""`` means empty or unreadable, ``None`` refused by containment; neither is ever loaded."""
     return [(kind, label, path, content)
             for kind, finder in _CONTEXT_FILE_CANDIDATES.items() for label, path, content in finder(cwd_path)]
 
@@ -1728,9 +1762,10 @@ def build_context_files_prompt(
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
 
-    if safe_worker_enabled():
-        return ""
+    if safe_worker_enabled() or not host_feature_enabled("context_files"):
+        return ""  # hosted: the project's files are in the agent's sandbox, this host's are not its
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(

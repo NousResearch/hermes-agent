@@ -2,7 +2,6 @@
 
 import json
 import logging
-import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -10,7 +9,6 @@ from urllib.parse import quote
 
 import httpx
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_guard import TRUSTED_REPOS
 from tools.skills_hub_models import (
@@ -247,7 +245,6 @@ class GitHubSource(SkillSource):
     ]
 
     SOURCE_ID = "github"
-    _parse_frontmatter_quick = staticmethod(_parse_frontmatter)
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[list[dict]] = None):
         self.auth = auth
@@ -489,8 +486,10 @@ class GitHubSource(SkillSource):
             wait = backoff
             try:
                 resp = hub()._skills_hub_http_get(
-                    url, params=params, headers=hdrs, timeout=timeout, follow_redirects=True
+                    url, params=params, headers=hdrs, timeout=timeout
                 )
+            except hub().SkillsHubFetchBlocked:
+                return None
             except httpx.HTTPError as e:
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s", url, attempt + 1, max_retries, e)
                 if last_attempt:
@@ -577,15 +576,15 @@ class GitHubSource(SkillSource):
         raw.githubusercontent.com first: the same bytes at the same commit, outside the REST rate
         limit. Through the Contents API every file in a skill folder cost one call, so an anonymous
         user (60/h) could never install a skill with more than ~58 files. A private repo or a raw
-        miss falls back to the API. A transport failure (DNS-poisoned or NXDOMAIN raw host surfaces as
-        SSRFConnectionBlocked, a dropping firewall as a 15 s timeout) also falls back, and marks raw
-        unusable for the rest of this source's flow."""
+        miss falls back to the API. A transport failure (a DNS-poisoned raw host surfaces as
+        SkillsHubFetchBlocked, NXDOMAIN as ConnectError, a dropping firewall as a 15 s timeout) also
+        falls back, and marks raw unusable for the rest of this source's flow."""
         if ref and not self._raw_unusable:
             try:
                 raw = hub()._skills_hub_http_get(
                     f"https://raw.githubusercontent.com/{repo}/{ref}/{quote(path, safe='/')}",
-                    timeout=15.0, follow_redirects=False)
-            except (httpx.HTTPError, OSError, ValueError):  # ValueError: SSRFConnectionBlocked
+                    timeout=15.0)
+            except (httpx.HTTPError, OSError):
                 self._raw_unusable = True
             else:
                 if raw.status_code == 200:

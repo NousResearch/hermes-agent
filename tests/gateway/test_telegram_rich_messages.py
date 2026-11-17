@@ -12,6 +12,7 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -82,6 +83,103 @@ def _rich_api_kwargs(adapter):
     call = adapter._bot.do_api_request.call_args
     assert call.args[0] == "sendRichMessage"
     return call.kwargs["api_kwargs"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["send", "edit", "draft"])
+async def test_rich_delivery_keeps_literal_hash_references(operation):
+    adapter = _make_adapter({"rich_drafts": True})
+    content = (
+        "#89 remains open.\n\n- #181 reported a problem.\n\n> #tag is literal.\n\n"
+        "## Real heading\n\n- [x] rich delivery\n\n`#89` stays code."
+    )
+    if operation == "send":
+        result = await adapter.send("12345", content)
+        assert result.success
+    elif operation == "edit":
+        result = await adapter.edit_message("12345", "123", content, finalize=True)
+        assert result.success
+    else:
+        assert await adapter.send_draft("12345", 123, content)
+    assert adapter._bot is not None
+    payload = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]
+    assert r"\#89 remains open." in payload["markdown"]
+    assert r"- \#181 reported a problem." in payload["markdown"]
+    assert r"> \#tag is literal." in payload["markdown"]
+    assert "## Real heading" in payload["markdown"]
+    assert "`#89` stays code." in payload["markdown"]
+    adapter._bot.send_message.assert_not_called()
+    adapter._bot.edit_message_text.assert_not_called()
+    adapter._bot.send_message_draft.assert_not_called()
+
+
+@pytest.mark.parametrize("content", [
+    "# Heading\n\n## Heading 2\n\n###### Heading 6",
+    "Use #89 and https://example.com/#anchor inline.",
+    r"\#89 is already escaped.",
+    "`code\n#89\ncode`",
+    "``code ` #89``",
+    "```python\n#89 is a comment\n```",
+    "~~~python\n#89 is a comment\n~~~",
+    "````markdown\n```\n#89\n```\n````",
+    "```python\n#89 unfinished fence",
+    "$$\n#89\n$$",
+])
+def test_literal_hash_normalization_preserves_markdown_regions(content):
+    from plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
+
+    assert escape_literal_hash_prefixes(content) == content
+    escaped = escape_literal_hash_prefixes("1. #89\n\n> - ##tag\n\n#release")
+    assert escaped == "1. \\#89\n\n> - \\#\\#tag\n\n\\#release"
+    assert escape_literal_hash_prefixes(escaped) == escaped
+    # Inline ```x``` is a code span, not an unclosed block fence swallowing the rest of the reply.
+    assert escape_literal_hash_prefixes("Use ```x``` here.\n\n#89 open.") == "Use ```x``` here.\n\n\\#89 open."
+
+
+@pytest.mark.parametrize("content, expected", [
+    # A backtick run with text after it is code inside the fence, not its closer.
+    ("```\ntext ``` trailing\n#inside\n```\n#outside", "```\ntext ``` trailing\n#inside\n```\n\\#outside"),
+    ("~~~~\n~~~ x\n#inside\n~~~~\n#outside", "~~~~\n~~~ x\n#inside\n~~~~\n\\#outside"),
+    # A quoted fence ends with its blockquote.
+    ("> ```\n> #inside\n#outside", "> ```\n> #inside\n\\#outside"),
+    # A code span never pairs across a blank line.
+    ("`open\n\n#89\nclose`", "`open\n\n\\#89\nclose`"),
+    # A prose $$ is not math reaching into the fence below it, and math never crosses a paragraph.
+    ("Your shell PID is $$ here.\n\n```bash\necho $$\n#!/usr/bin/env bash\n```\n#89",
+     "Your shell PID is $$ here.\n\n```bash\necho $$\n#!/usr/bin/env bash\n```\n\\#89"),
+    ("> Use $$ x\n> ```\n> $$\n> #not math\n> ```", "> Use $$ x\n> ```\n> $$\n> #not math\n> ```"),
+    ("$$x\n\n#89\n$$", "$$x\n\n\\#89\n$$"),
+    # An empty list item ends at the blank line, so a 3-space fence after it is a top-level fence.
+    ("- \n\n   ```\n#89\n```\n#90", "- \n\n   ```\n#89\n```\n\\#90"),
+])
+def test_literal_hash_fences_close_like_commonmark(content, expected):
+    from plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
+
+    assert escape_literal_hash_prefixes(content) == expected
+
+
+def test_rich_payload_is_linear_in_unclosed_backtick_runs():
+    """A full rich-cap reply of unclosed backtick runs of distinct lengths (`a``a```a...) builds its
+    payload well inside one second; a per-run rescan blocked the event loop for seconds."""
+    adapter = _make_adapter()
+    runs, k = [], 1
+    while sum(map(len, runs)) < adapter.RICH_MESSAGE_MAX_CHARS:
+        runs.append("`" * k + "a")
+        k += 1
+    content = "#89\n" + "".join(runs)[: adapter.RICH_MESSAGE_MAX_CHARS - 4]
+
+    started = time.perf_counter()
+    payload = adapter._rich_message_payload(content)
+
+    assert time.perf_counter() - started < 1.0
+    assert payload["markdown"].startswith("\\#89")
+
+    # Fence-like lines that never close, and backtick runs split by paragraphs.
+    unit = "```py\ntext ``` trailing\n#89\n> ```\n`open\n\n"
+    content = (unit * (adapter.RICH_MESSAGE_MAX_CHARS // len(unit)))[: adapter.RICH_MESSAGE_MAX_CHARS]
+    started = time.perf_counter()
+    adapter._rich_message_payload(content)
+    assert time.perf_counter() - started < 1.0
 
 
 @pytest.mark.asyncio

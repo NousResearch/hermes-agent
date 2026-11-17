@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug, get_label
-from utils import base_url_host_matches
+from utils import base_url_host_matches, same_base_url_origin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.model_switch")
@@ -33,7 +33,6 @@ def _save_discovered_models_to_config(
 
     Matches by base_url (slash-normalised), api_mode and headers. A failed config write is
     swallowed — the picker still shows the live models for this session."""
-    from hermes_cli.model_switch import _extra_headers_from_config
     if not api_url or not model_ids:
         return
     try:
@@ -994,7 +993,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
     one row (two Palantir Claude entries -> one "Palantir Claude" row); a different
     key_env/api_mode/headers keeps distinct rows since the wire protocol or tenant differs."""
-    from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
+    from hermes_cli.model_switch import _scoped_key_env
     from hermes_cli.config import coerce_provider_id, is_provider_enabled
     ep_groups: dict[tuple, dict] = {}
     for ep_name, ep_cfg in user_providers.items():
@@ -1088,8 +1087,12 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
     models = [default_model] if default_model else []
     native_catalog_empty = False
     try:
+        from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
+        from hermes_cli.config import load_config
+        cfg_model = load_config().get("model")
+        probe_key = custom_catalog_probe_api_key(cfg_model if isinstance(cfg_model, dict) else {}, api_url, minted=False)
         discovered, native_catalog_empty = _discover_endpoint_models(
-            "", api_url, "custom", False, headers=None, api_mode=None,
+            probe_key, api_url, "custom", False, headers=None, api_mode=None,
             probe_live=bool(b.refresh or (b.probe_current_custom_provider and is_current)),
             discovery_allowed=True,
             fast_custom_probe=b.resolved_fast_custom_probe)
@@ -1107,7 +1110,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
     (endpoint, credential identity, api_mode, extra_headers, display prefix). Four "Ollama — X"
     entries on one host become one "Ollama" row; distinct prefixes sharing a proxy URL keep
     their own rows."""
-    from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
+    from hermes_cli.model_switch import _scoped_key_env
     from hermes_cli.config import coerce_provider_id
     groups: dict[tuple, dict] = {}
     for entry in custom_providers:
@@ -1366,6 +1369,23 @@ def _prepend_moa_picker_provider(providers: list[dict], current_provider: str = 
         return providers
 
 
+def _with_local_runtime_row(providers: list[dict], current_provider: str, current_base_url: str,
+                            current_model: str, *, max_models: int | None = None,
+                            excluded_providers: list | None = None) -> list[dict]:
+    """The managed llama.cpp runtime's Local row, built by the same inventory helper the
+    desktop/CLI payload uses (#152473); the row reads the current selection, honours
+    ``excluded_providers`` and caps its models like every other row (``total_models`` stays full)."""
+    from hermes_cli.inventory import ConfigContext, inject_local_runtime_row
+    ctx = ConfigContext(current_provider=current_provider or "", current_model=current_model or "",
+                        current_base_url=current_base_url or "", user_providers={}, custom_providers=[],
+                        excluded_providers=list(excluded_providers or []))
+    rows, local_row = inject_local_runtime_row(providers, ctx)
+    if local_row is not None:
+        local_row["models"] = _cap_models(list(local_row["models"]), max_models, str(local_row.get("slug") or ""))
+    rows.sort(key=lambda r: not r.get("is_current"))  # stable: a current Local row leads, like the rest
+    return rows
+
+
 def list_picker_providers(
     current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
@@ -1387,6 +1407,8 @@ def list_picker_providers(
         current_model=current_model, for_picker=True, excluded_providers=excluded_providers,
         non_blocking_catalogs=non_blocking_catalogs, probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider)
+    providers = _with_local_runtime_row(providers, current_provider, current_base_url, current_model,
+                                        max_models=max_models, excluded_providers=excluded_providers)
     if include_moa:
         providers = _prepend_moa_picker_provider(providers, current_provider=current_provider)
 
@@ -1440,3 +1462,22 @@ def _attach_window_model_notes(providers: list[dict]) -> None:
             nous["plan_line"] = line
     except Exception:
         logger.debug("window model notes failed", exc_info=True)
+
+
+def _saved_entry_on_other_origin(name: str, base_url: str) -> bool:
+    """True when the saved ``providers.<name>`` points at another origin than *base_url*."""
+    from hermes_cli.config import load_config
+    from hermes_cli.config_providers import ENDPOINT_ADDRESS_FIELDS
+
+    saved = (load_config().get("providers") or {}).get(name)
+    if not isinstance(saved, dict):
+        return False
+    old_urls = (str(saved.get(field) or "").strip() for field in ENDPOINT_ADDRESS_FIELDS)
+    return any(url and not same_base_url_origin(url, base_url) for url in old_urls)
+
+
+def _extra_headers_from_config(entry: Any) -> dict[str, str]:
+    if not isinstance(entry, dict):
+        return {}
+    from hermes_cli.config import normalize_extra_headers
+    return normalize_extra_headers(entry.get("extra_headers"))

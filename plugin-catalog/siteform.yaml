@@ -1,0 +1,47 @@
+name: siteform
+title: SiteForm
+repo: https://github.com/duclucky/siteform
+sha: "be9b797345e695630318c66b5245657738767b9b"
+description: "Review planning PDFs, compare evidence-linked 3D options in Hermes chat, and edit the same revision in Studio. Disclosure — The siteform_import_pdf tool reads any local .pdf file whose absolute path the agent supplies and stores a copy in this profile's SiteForm library (plugin-data/siteform); optional \"use model\" quantity extraction sends selected PDF text rows to your configured Hermes model; OCR runs locally with bundled Tesseract tessdata_fast data, and the plugin makes no other network calls."
+maintainer: duclucky
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.15.0"
+docs_url: https://github.com/duclucky/siteform#readme
+image: https://raw.githubusercontent.com/duclucky/siteform/be9b797345e695630318c66b5245657738767b9b/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/duclucky/siteform/be9b797345e695630318c66b5245657738767b9b/docs/chat-3d.jpg
+  - https://raw.githubusercontent.com/duclucky/siteform/be9b797345e695630318c66b5245657738767b9b/docs/limits.jpg
+  - https://raw.githubusercontent.com/duclucky/siteform/be9b797345e695630318c66b5245657738767b9b/docs/studio.jpg
+readme: true
+platforms: [windows]
+known_issues:
+  - "Concept massing on flat ground; not BIM or a regulatory compliance determination."
+  - "A new library starts empty. Supply a PDF and confirm its scale, outlines and heights."
+capabilities:
+  provides_tools:
+    - siteform_position_studies
+    - siteform_position_study
+    - siteform_save_position_option
+    - siteform_project_review
+    - siteform_confirm_facts
+    - siteform_height_study
+    - siteform_save_study_option
+    - siteform_check
+    - siteform_revise_option
+    - siteform_view_options
+    - siteform_roof_study
+    - siteform_import_pdf
+    - siteform_documents
+    - siteform_review_pdf
+    - siteform_intake
+    - siteform_detect
+    - siteform_scene
+    - siteform_options
+    - siteform_create
+    - siteform_propose
+    - siteform_compare
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

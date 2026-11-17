@@ -615,6 +615,22 @@ def _choose_tools(name: str, tools: list[tuple[str, str]], server_config: dict[s
     return len(chosen_names)
 
 
+def _add_probe_timeout(server_config: dict) -> Optional[float]:
+    """Connect bound for the probe ``hermes mcp add`` runs; None keeps the server's connect_timeout.
+
+    An OAuth server's first connect IS the browser sign-in: the probe waits on the callback while the user
+    reads and approves the consent page. It gets the ``hermes mcp login`` window (login_connect_timeout:
+    oauth.timeout + exchange headroom), not the 30 s connect_timeout default, which closed the loopback
+    listener under people still on the consent page — the provider's redirect then hit
+    ERR_CONNECTION_REFUSED, the code was lost, and "Save config anyway?" defaulted to No (#49759).
+    """
+    if server_config.get("auth") != "oauth":
+        return None
+    from tools.mcp_oauth import login_connect_timeout
+
+    return login_connect_timeout(server_config)
+
+
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
@@ -684,7 +700,7 @@ def cmd_mcp_add(args):
     print()
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
     try:
-        tools = _probe_single_server(name, server_config)
+        tools = _probe_single_server(name, server_config, connect_timeout=_add_probe_timeout(server_config))
     except Exception as exc:
         _error(f"Failed to connect: {_probe_failure_reason(exc)}")
         _info(_probe_failure_next_step(name, exc))
@@ -783,6 +799,10 @@ def cmd_mcp_list(args=None):
 
         enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
+        if not enabled and mcp_server_enabled({k: v for k, v in cfg.items() if k != "disabled"}):
+            escaped = str(name).replace(".", "\\.")
+            status += color(f" (legacy `disabled` key; `hermes config set mcp_servers.{escaped}.enabled true` "
+                            "clears it)", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()
 
@@ -847,7 +867,8 @@ def cmd_mcp_test(args):
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
-        _info(f"Transport: HTTP → {cfg['url']}")
+        from agent.redact import redact_sensitive_text  # the rendered URL can carry a ?token= credential
+        _info(f"Transport: HTTP → {redact_sensitive_text(cfg['url'], force=True, redact_url_credentials=True)}")
     else:
         _info(f"Transport: stdio → {cfg.get('command', '?')}")
 

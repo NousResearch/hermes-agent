@@ -377,8 +377,8 @@ class GatewayModelCommandsMixin:
     def _channel_override_for(self, source):
         """This chat's ``channel_overrides`` entry (model/provider), or None."""
         from gateway.run import _get_channel_override
-        cfg = getattr(self, "config", None)
-        if not cfg or source is None:
+        cfg = self._serving_channel_config(source) if source is not None else None
+        if not cfg:
             return None
         return _get_channel_override(
             cfg, source.platform, str(source.chat_id) if source.chat_id else "",
@@ -470,14 +470,16 @@ class GatewayModelCommandsMixin:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
         from hermes_cli.model_switch_providers import list_picker_providers
+        # Uncapped: each adapter bounds its own rendering (Telegram pages, Discord 75, Slack 100) and
+        # shows "N more" past it; a shared cap below those hid every model past #50 (#129260).
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(
-                list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
-            )
+            providers = await asyncio.to_thread(list_picker_providers, include_moa=True, **listing_kwargs)
         except Exception:
             providers = []
         if not providers:
             return False
+        from gateway.approval_actor import opener_authority
+        on_model_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         result = await adapter.send_model_picker(
             chat_id=source.chat_id, providers=providers,
             current_model=listing_kwargs["current_model"],
@@ -487,6 +489,30 @@ class GatewayModelCommandsMixin:
         )
         return bool(result.success)
 
+    async def _resolve_display_provider(self, profile_home) -> str:
+        """Provider the ``/model`` listing should mark current when config.yaml has no ``model.provider``.
+
+        The runtime resolver's auto-detect answer (env keys can out-rank a logged-in OAuth provider,
+        #29285), never a placeholder: a funded OAuth login next to a dry API key must not display
+        as the current route while the gateway bills the dry key (#136801). Off-loop — the detect
+        reads config/env/auth store; under multiplex it runs inside the profile's scope so the
+        env-key tier sees that profile's credentials."""
+        from hermes_cli.auth import resolve_provider
+        from hermes_cli.runtime_provider import resolve_requested_provider
+
+        def _detect() -> str:
+            # The turn's own request order (config, then HERMES_INFERENCE_PROVIDER, else auto),
+            # resolved read-only: an env-pinned provider must be named, not auto-detect's pick.
+            if profile_home is None:
+                return resolve_provider(resolve_requested_provider())
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                return resolve_provider(resolve_requested_provider())
+
+        with contextlib.suppress(Exception):
+            return await asyncio.to_thread(_detect)
+        return ""
+
     async def _model_listing_reply(
         self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home
     ) -> Optional[str]:
@@ -494,8 +520,13 @@ class GatewayModelCommandsMixin:
         from hermes_cli.model_switch import list_authenticated_providers
         from hermes_cli.providers import get_label
 
+        # Unset, empty or ``auto`` ``model.provider``: ``ctx.current_provider`` holds a placeholder
+        # (``openrouter``, ``auto``, ``""``) — display the provider the resolver routes through instead.
+        display_provider = ctx.current_provider
+        if str(ctx.route_provider or "").strip().lower() in ("", "auto"):
+            display_provider = await self._resolve_display_provider(profile_home) or display_provider
         listing_kwargs = dict(
-            current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
+            current_provider=display_provider, current_base_url=ctx.current_base_url,
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
             # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
@@ -523,7 +554,7 @@ class GatewayModelCommandsMixin:
                 return None  # Picker sent — adapter handles the response
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
-                   provider=get_label(ctx.current_provider)), ""]
+                   provider=get_label(display_provider)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(list_authenticated_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))
@@ -622,6 +653,13 @@ class GatewayModelCommandsMixin:
         ctx.read_config()
         if request.is_reset:
             return await self._handle_model_reset(event, ctx)
+        # Turn precedence: session /model > channel_overrides > config.yaml.
+        # The channel's full route as the turn resolves it, so a config-backed endpoint (custom) survives.
+        from gateway.session_info_route import channel_override_route
+        _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(lambda: channel_override_route(
+            self._serving_channel_config(source) if source is not None else None, source))
+        if _ch_model:
+            ctx.apply_override({"model": _ch_model, **(_ch_route or ({"provider": _ch_forced} if _ch_forced else {}))})
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
@@ -939,6 +977,8 @@ class GatewayModelCommandsMixin:
         adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
+        from gateway.approval_actor import opener_authority
+        on_choice_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         try:
             result = await adapter.send_choice_picker(
                 chat_id=event.source.chat_id, title=title, choices=choices, session_key=session_key,
@@ -956,6 +996,9 @@ class GatewayModelCommandsMixin:
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
+        profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(event.source)
         # Normalize (Telegram DM topic recovery) so the override key matches the next turn's.
         # See #30479.
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
@@ -972,7 +1015,7 @@ class GatewayModelCommandsMixin:
             source=event.source, session_key=session_key, model=_session_model,
         )
         platform_key = _platform_config_key(event.source.platform)
-        if raw_args:  # typed path — same applier the picker uses
+        if args:  # typed path — same applier the picker uses
             return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
         rc = self._reasoning_config
         # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
@@ -1002,7 +1045,17 @@ class GatewayModelCommandsMixin:
         scope = t("gateway.reasoning.scope_session") if has_session_override else t("gateway.reasoning.scope_global")
 
         async def _on_reasoning_choice(_chat_id: str, value: str) -> str:
-            return self._apply_reasoning_selection(session_key, platform_key, value)
+            def _apply() -> str:
+                return self._apply_reasoning_selection(
+                    session_key, platform_key, value, persist_global=persist_global,
+                )
+
+            if profile_home is None:
+                return _apply()
+            # Picker taps arrive after the command's profile scope has exited.
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                return _apply()
 
         picker_sent = await self._try_send_choice_picker(
             event,
@@ -1013,7 +1066,8 @@ class GatewayModelCommandsMixin:
                 *({"value": lv, "label": effort_display_label(lv, *_route), "is_current": lv == current_effort}
                   for lv in VALID_REASONING_EFFORTS),
                 *({"value": v, "label": t(f"gateway.reasoning.choice_{v}"), "is_current": False}
-                  for v in ("reset", "show", "hide")),
+                  # `reset` clears the session override, which --global refuses as unsupported.
+                  for v in (("show", "hide") if persist_global else ("reset", "show", "hide"))),
             ],
             on_choice_selected=_on_reasoning_choice,
         )

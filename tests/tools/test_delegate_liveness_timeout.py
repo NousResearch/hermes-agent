@@ -80,8 +80,8 @@ def _run(child, monkeypatch, cap=_CAP_SECONDS):
         session_id="parent", _current_task_id=None, _active_children=[child],
         _active_children_lock=threading.Lock(), _touch_activity=lambda _d: None, _interrupt_requested=False,
     )
-    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: cap)
-    monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_child_timeout", lambda: cap)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: False)
     return delegate_tool._run_single_child(0, "watch the slow provider", child=child, parent_agent=parent)
 
 def test_progressing_child_outlives_a_cap_shorter_than_its_runtime(monkeypatch):

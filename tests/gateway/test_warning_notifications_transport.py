@@ -59,7 +59,7 @@ def test_warning_policy_reaches_slack_transport(tmp_path, monkeypatch, relay, th
     gateway._delivery_adapter_for = lambda source: adapter
     gateway._thread_metadata_for_source = lambda source: metadata
     ctx = TurnContext(source=source, user_config=_load_gateway_config(), _run_still_current=lambda: True,
-                      _status_adapter=adapter, _status_chat_id="D1", _status_thread_metadata=metadata)
+                      _status_adapter_pinned=adapter, _status_chat_id="D1", _status_thread_metadata=metadata)
     turn = TurnRunner(gateway, ctx)
     monkeypatch.setattr(run, "safe_schedule_threadsafe", lambda coro, *a, **k: asyncio.run(coro))
     agent = StatusOutputMixin()

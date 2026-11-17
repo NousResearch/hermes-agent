@@ -334,7 +334,7 @@ def _known_issue_warnings(entry) -> list[str]:
 def interactive_scan_decision(console, verb: str) -> Callable[[Any], bool]:
     """The terminal ``[y/N]`` that accepts a caution verdict, shared by install and update (*verb*)."""
     def decide(scan_result) -> bool:
-        from tools.plugin_guard import format_scan_report
+        from hermes_cli.plugins_install_scan import format_scan_report
         console.print()
         console.print("[yellow]⚠ Security scan flagged this plugin:[/yellow]")
         console.print(format_scan_report(scan_result))

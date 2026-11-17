@@ -77,7 +77,8 @@ def _mint_token(
 ) -> str:
     """A minimal signed JWT whose ``iat`` is ``iat_offset`` seconds in the future."""
     now = int(time.time())
-    claims = {"iss": iss, "aud": aud, "sub": "usr_abc", "iat": now + iat_offset, "exp": now + ttl_seconds}
+    claims = {"iss": iss, "aud": aud, "sub": "usr_abc", "iat": now + iat_offset, "exp": now + ttl_seconds,
+              "scope": "agent_dashboard:access"}
     return pyjwt.encode(claims, rsa_keypair["private_pem"], algorithm="RS256", headers={"kid": rsa_keypair["kid"]})
 
 

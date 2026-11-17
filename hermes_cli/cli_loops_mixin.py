@@ -144,13 +144,15 @@ class CLILoopsMixin:
         from cli import _cprint
         from hermes_state import format_session_db_unavailable
         parts = cmd_original.split(maxsplit=1)
+        # The title lives on the conversation's live segment (its compression tip).
+        title_id = self._title_session_id()
         if len(parts) == 1:
             # No argument: show current title and session ID.
             if not self._session_db:
                 _cprint(f"  {format_session_db_unavailable(details=True)}")
                 return
             _cprint(f"  {t('cli.title.session_id', session_id=self.session_id)}")
-            session = self._session_db.get_session(self.session_id)
+            session = self._session_db.get_session(title_id)
             if session and session.get("title"):
                 _cprint(f"  {t('cli.title.current', title=session['title'])}")
             elif self._pending_title:
@@ -176,9 +178,9 @@ class CLILoopsMixin:
             return True
         if not new_title:
             _cprint(f"  {t('cli.title.empty_after_cleanup')}")
-        elif self._session_db.get_session(self.session_id):
+        elif self._session_db.get_session(title_id):
             try:
-                if self._session_db.set_session_title(self.session_id, new_title):
+                if self._session_db.set_session_title(title_id, new_title):
                     self._status_bar_title_checked_at = 0.0
                     _cprint(f"  {t('cli.title.set', title=new_title)}")
                 else:

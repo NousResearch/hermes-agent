@@ -765,7 +765,9 @@ carries the full text.
 
 Poll again with `after=next_after`. `truncated: true` means older events were trimmed (the log
 keeps the newest 20,000 per session) and the client should re-read the transcript. With the log
-off the endpoint answers `409 event_log_disabled`; `/v1/capabilities` reports
+off the endpoint answers `409 event_log_disabled`; if writes to the log file keep failing for a
+minute (a full or read-only disk), the log stops recording until the next gateway start and the
+endpoint answers `503 event_log_unavailable`; `/v1/capabilities` reports
 `features.session_event_log`.
 
 Read-your-write: `POST /v1/runs` and `POST /api/sessions/{id}/chat` responses carry `seq` (also

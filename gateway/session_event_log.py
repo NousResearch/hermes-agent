@@ -32,6 +32,8 @@ DELTA_TYPES = frozenset({'message.delta', 'reasoning.delta', 'thinking.delta', '
                          'subagent.text', 'subagent.thinking'})
 # Rows kept per session; older ones are trimmed and ``first_seq`` tells a reader what it missed.
 KEEP_PER_SESSION = 20000
+# How long a failing write is retried before the log gives up (see ``EventLog.failed``).
+FAIL_AFTER_S = 60.0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS session_events (
@@ -55,13 +57,16 @@ class EventLog:
         self._next = {}
         # session -> highest committed seq, so an idle long-poll waits on memory, not SQLite.
         self.committed = {}
+        # Set when SQLite kept refusing writes for FAIL_AFTER_S: the log stops taking records (no
+        # unbounded backlog) and readers get ``event_log_unavailable`` instead of a replay with holes.
+        self.failed = False
         self._conn = self._connect()  # the table exists before any reader can open the file
         # health: allow HX012 -- writes one explicit file path; reads no profile-scoped state
         self._thread = threading.Thread(target=self._run, name='session-event-log', daemon=True)
         self._thread.start()
 
     def append(self, session_id, event_type, payload, execution=None):
-        if event_type in DELTA_TYPES or not session_id:
+        if event_type in DELTA_TYPES or not session_id or self.failed:
             return
         turn_id = (execution or {}).get('admission_id')
         self._queue.put((str(session_id), event_type, turn_id, time.time(),
@@ -115,21 +120,27 @@ class EventLog:
     def _commit(self, conn, batch):
         """Commit *batch* in order, retrying a failed write: dropping it would leave a hole the
         numbering hides (the next event takes the lost one's ``seq``)."""
-        delay = 0.05
-        while batch:
+        delay, deadline = 0.05, time.monotonic() + FAIL_AFTER_S
+        while batch and not self.failed:
             try:
                 self._write(conn, batch)
                 return
             except sqlite3.Error:
                 logger.warning('session event log write failed for %s; retrying', self.path, exc_info=True)
                 self._next.clear()  # a failed batch committed nothing: re-read each head
+                if time.monotonic() >= deadline:
+                    logger.error('session event log %s disabled until restart: writes keep failing', self.path)
+                    self.failed = True
+                    return
                 time.sleep(delay)
                 delay = min(delay * 2, 5.0)
 
-    def close(self, timeout=5.0):
-        """Commit what is queued, then stop the writer and close the file."""
+    def close(self, timeout=None):
+        """Commit what is queued, then stop the writer and close the file. ``timeout=None`` returns
+        at once (the writer finishes on its own thread); a number waits that long for it."""
         self._queue.put(_CLOSE)
-        self._thread.join(timeout)
+        if timeout is not None:
+            self._thread.join(timeout)
 
     def _write(self, conn, batch):
         touched = set()
@@ -215,7 +226,8 @@ def log_for_home(home, enabled):
 
 
 def release_home(home):
-    """Close *home*'s log (its profile stopped being served); a later ``log_for_home`` reopens it."""
+    """Close *home*'s log (its profile stopped being served); a later ``log_for_home`` reopens it.
+    Never waits for the writer: the caller may be the gateway loop."""
     with _LOGS_LOCK:
         log = _LOGS.pop(str(Path(home).resolve()), None)
     if log is not None:
@@ -228,7 +240,7 @@ def close_all():
         logs = list(_LOGS.values())
         _LOGS.clear()
     for log in logs:
-        log.close()
+        log.close(timeout=5.0)
 
 
 atexit.register(close_all)

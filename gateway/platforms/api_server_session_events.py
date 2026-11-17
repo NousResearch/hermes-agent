@@ -77,6 +77,10 @@ async def handle_session_events(adapter, request):
     log = _log(adapter)
     if log is None:
         return _disabled()
+    if log.failed:
+        return web.json_response({'error': {
+            'message': 'The session event log stopped recording after repeated write failures; '
+                       'restart the gateway once the disk is writable', 'code': 'event_log_unavailable'}}, status=503)
     session_id = await asyncio.to_thread(_canonical, adapter, session_id)
     after = _int_param(request, 'after', 0, 2 ** 62)
     limit = _int_param(request, 'limit', 100, MAX_LIMIT)

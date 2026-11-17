@@ -12,3 +12,9 @@ def build_console_parser(subparsers, *, cmd_console: Callable) -> None:
         description="Open a curated Hermes command REPL. This is not a raw shell and "
             "does not expose the full Hermes CLI.")
     console_parser.set_defaults(func=cmd_console)
+
+
+def cmd_console(args):
+    """Open the safe Hermes command console."""
+    from hermes_cli.console_engine import run_console_repl
+    return run_console_repl()

@@ -3062,6 +3062,8 @@ export interface Translations extends NoticeTranslations {
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
     previousTodos: (done: number, total: number) => string
+    todoPhases: (done: number, total: number) => string
+    todoSubtasks: (done: number, total: number) => string
     running: string
     stop: string
     dismiss: string

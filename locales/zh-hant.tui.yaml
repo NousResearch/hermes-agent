@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} 個工具"
 chatBits.thinking.toolsOther: "{0} 個工具"
 chatBits.todo.incompleteOne: "· 未完成 · 還有 {0} 項待處理"
 chatBits.todo.incompleteOther: "· 未完成 · 還有 {0} 項待處理/進行中"
+chatBits.todo.phases: "階段 {0}/{1}"
+chatBits.todo.subtasks: "子任務 {0}/{1}"
 chatBits.todo.title: "待辦"
 
 common.cancel: "取消"

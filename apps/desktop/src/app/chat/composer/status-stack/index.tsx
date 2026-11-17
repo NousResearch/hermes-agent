@@ -18,7 +18,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { todoTree } from '@/lib/todos'
+import { todoProgressLabel, todoTree } from '@/lib/todos'
 import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
@@ -88,7 +88,10 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
   }
 
   if (group.type === 'todo') {
-    return s.todos(group.items.filter(i => i.todoStatus === 'completed').length, group.items.length)
+    return todoProgressLabel(
+      group.items.map(item => ({ id: item.id, parent: item.todoParent, status: item.todoStatus ?? 'pending' })),
+      s
+    )
   }
 
   return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
@@ -311,14 +314,17 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // A settled snapshot is reviewable but never re-enters the live progress
   // feed. Only show this disclosure once the live Todo section has retired.
   if (!busy && retainedTodos.length > 0 && !groups.some(group => group.type === 'todo')) {
-    const done = retainedTodos.filter(todo => todo.status === 'completed').length
     sections.push({
       key: 'retained-todo',
       node: (
         <StatusSection
           defaultCollapsed
           icon={<Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />}
-          label={t.statusStack.previousTodos(done, retainedTodos.length)}
+          label={todoProgressLabel(retainedTodos, {
+            ...t.statusStack,
+            todos: t.statusStack.previousTodos,
+            todoPhases: t.statusStack.previousTodos
+          })}
         >
           {todoTree(retainedTodos).map(([todo, depth]) => (
             <StatusItemRow

@@ -4006,6 +4006,8 @@ export const esOverrides = {
     subagents: count => `${count} subagente${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tareas ${done}/${total}`,
     previousTodos: (done, total) => `Tareas anteriores ${done}/${total}`,
+    todoPhases: (done, total) => `Fases ${done}/${total}`,
+    todoSubtasks: (done, total) => `Subtareas ${done}/${total}`,
     running: 'En ejecución',
     stop: 'Detener',
     dismiss: 'Descartar',

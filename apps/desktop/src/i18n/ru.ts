@@ -2799,6 +2799,8 @@ export const ruOverrides = {
     subagents: count => `${count} ${RU_PLURAL(count, 'субагент', 'субагента', 'субагентов')}`,
     todos: (done, total) => `Задачи ${done}/${total}`,
     previousTodos: (done, total) => `Прошлые задачи ${done}/${total}`,
+    todoPhases: (done, total) => `Этапы ${done}/${total}`,
+    todoSubtasks: (done, total) => `Подзадачи ${done}/${total}`,
     running: 'Выполняется',
     stop: 'Стоп',
     dismiss: 'Скрыть',

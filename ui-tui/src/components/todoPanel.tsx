@@ -1,8 +1,8 @@
 import { Box, Text } from '@hermes/ink'
+import { todoProgress } from '@hermes/shared/todo-progress'
 import { memo, useState } from 'react'
 
 import { useT } from '../i18n/useT.js'
-import { countPendingTodos } from '../lib/liveProgress.js'
 import { todoGlyph, todoTone, todoTree } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type { TodoItem } from '../types.js'
@@ -52,8 +52,7 @@ export const TodoPanel = memo(function TodoPanel({
     return null
   }
 
-  const done = todos.filter(todo => todo.status === 'completed').length
-  const pending = countPendingTodos(todos)
+  const { phases, subtasks, unresolved: pending } = todoProgress(todos)
 
   return (
     <Box flexDirection="column" marginBottom={1}>
@@ -64,7 +63,9 @@ export const TodoPanel = memo(function TodoPanel({
             {T.title}
           </Text>{' '}
           <Text color={t.color.statusFg} dim>
-            ({done}/{todos.length})
+            {subtasks.total > 0
+              ? `${T.phases(phases.completed, phases.total)} · ${T.subtasks(subtasks.completed, subtasks.total)}`
+              : `(${phases.completed}/${phases.total})`}
           </Text>
           {incomplete && pending > 0 && (
             <Text color={t.color.muted} dim>

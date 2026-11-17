@@ -495,16 +495,21 @@ def _build_children(
     gives per-task builder kwargs (toolsets, model, subagent_id, session_id) that replace the spawn defaults."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
+    from tools.delegation_work import prepare_claims, release_claims
+    try:
+        claims = prepare_claims(task_list, routes, parent_agent, rebuilding=rebuild is not None)
+    except ValueError as exc:
+        return [], str(exc)
     children = []
-    for i, t in enumerate(task_list):
-        route = routes[i]
-        if route.error:
-            continue  # refused by its backend: no child; its result entry is the refusal
-        _task_schema = task_schemas[i] if i < len(task_schemas) else None
-        _child_context = t.get("context")
-        if _task_schema is not None:
-            _child_context = append_output_contract(_child_context, _task_schema)
-        try:
+    try:
+        for i, t in enumerate(task_list):
+            route = routes[i]
+            if route.error:
+                continue  # refused by its backend: no child; its result entry is the refusal
+            _task_schema = task_schemas[i] if i < len(task_schemas) else None
+            _child_context = claims[i].context if i in claims else t.get("context")
+            if _task_schema is not None:
+                _child_context = append_output_contract(_child_context, _task_schema)
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context, max_iterations=max_iterations,
                 task_count=len(task_list), parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
@@ -512,37 +517,41 @@ def _build_children(
                 # A spawn always inherits the parent's toolsets; a continued child keeps its own.
                 **{"toolsets": None, "model": route.creds["model"], **(rebuild[i] if rebuild else {})},
             )
-        except ValueError as exc:
-            # An owner refusal can land mid-batch: the siblings built so far hold reservations.
-            for _, _, built in children:
-                _detach_child(parent_agent, built)
-                _close_child(built, "Failed to close child after a refused sibling")
+            children.append((i, t, child))
+            if i in claims:
+                child._delegate_work_claim = claims[i]
+            pin_child_service_tier(child, route.creds)
+            if isinstance(getattr(child, "_delegate_resume", None), dict):
+                child._delegate_resume["route"] = route
+            if _task_schema is not None:
+                with _quiet("Could not attach output schema to child %d", i):
+                    child._delegate_output_schema = _task_schema
+            # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
+            _t_images = task_images[i] if task_images and i < len(task_images) else None
+            if _t_images:
+                with _quiet("Could not attach images to child %d", i):
+                    child._delegate_images = _t_images
+            # Tee progress events into the live transcript (wrapper keeps the
+            # _flush contract and swallows writer failures).
+            _writer = live_writers[i] if i < len(live_writers) else None
+            if _writer is not None:
+                child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
+                child._live_transcript_path = str(_writer.path)
+            if route.report() is not None:
+                child._delegate_route = route.report()
+            if live_deleg_id:
+                child._delegation_id = live_deleg_id
+                _ident_ref = getattr(child, "_progress_identity_ref", None)
+                if isinstance(_ident_ref, dict):
+                    _ident_ref["delegation_id"] = live_deleg_id
+    except BaseException as exc:
+        for _, _, built in children:
+            _detach_child(parent_agent, built)
+            _close_child(built, "Failed to close child after a refused sibling")
+        release_claims(claims.values(), "Child construction failed before delegation started")
+        if isinstance(exc, Exception):
             return [], str(exc)
-        pin_child_service_tier(child, route.creds)
-        if isinstance(getattr(child, "_delegate_resume", None), dict):
-            child._delegate_resume["route"] = route
-        if _task_schema is not None:
-            with _quiet("Could not attach output schema to child %d", i):
-                child._delegate_output_schema = _task_schema
-        # Validated per-task images; absent on image-less tasks, which keep the text-only goal turn.
-        _t_images = task_images[i] if task_images and i < len(task_images) else None
-        if _t_images:
-            with _quiet("Could not attach images to child %d", i):
-                child._delegate_images = _t_images
-        # Tee progress events into the live transcript (wrapper keeps the
-        # _flush contract and swallows writer failures).
-        _writer = live_writers[i] if i < len(live_writers) else None
-        if _writer is not None:
-            child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
-            child._live_transcript_path = str(_writer.path)
-        if route.report() is not None:
-            child._delegate_route = route.report()
-        if live_deleg_id:
-            child._delegation_id = live_deleg_id
-            _ident_ref = getattr(child, "_progress_identity_ref", None)
-            if isinstance(_ident_ref, dict):
-                _ident_ref["delegation_id"] = live_deleg_id
-        children.append((i, t, child))
+        raise
     return children, None
 
 

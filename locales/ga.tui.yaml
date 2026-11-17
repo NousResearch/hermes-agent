@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} uirlis"
 chatBits.thinking.toolsOther: "{0} uirlis"
 chatBits.todo.incompleteOne: "· neamhchríochnaithe · {0} fós ar feitheamh"
 chatBits.todo.incompleteOther: "· neamhchríochnaithe · {0} fós ar feitheamh/in_progress"
+chatBits.todo.phases: "Céimeanna {0}/{1}"
+chatBits.todo.subtasks: "Fo-thascanna {0}/{1}"
 chatBits.todo.title: "Le déanamh"
 
 common.cancel: "cealaigh"

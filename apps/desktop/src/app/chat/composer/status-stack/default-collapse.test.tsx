@@ -130,3 +130,25 @@ it('starts structured goals collapsed and preserves manual queue expansion when 
   view.rerender(stack(true))
   expect(screen.getByText('Queued request')).toBeTruthy()
 })
+
+it('shows phase acceptance separately from completed checks and a reopened descendant', () => {
+  $todosBySession.set({
+    owner: [
+      { id: 'accept', content: 'Accept delivery', status: 'in_progress' },
+      { id: 'test', content: 'Verify behavior', parent: 'accept', status: 'completed' }
+    ]
+  })
+  render(stack())
+  expect(screen.getByRole('button', { name: /Phases 0\/1 · Subtasks 1\/1/ })).toBeTruthy()
+
+  act(() =>
+    $todosBySession.set({
+      owner: [
+        { id: 'accept', content: 'Accept delivery', status: 'completed' },
+        { id: 'test', content: 'Verify behavior', parent: 'accept', status: 'pending' }
+      ]
+    })
+  )
+  expect(screen.getByRole('button', { name: /Phases 0\/1 · Subtasks 0\/1/ })).toBeTruthy()
+  expect(screen.getByText('Verify behavior')).toBeTruthy()
+})

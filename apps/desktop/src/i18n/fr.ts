@@ -4028,6 +4028,8 @@ export const frOverrides = {
     subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tâches ${done}/${total}`,
     previousTodos: (done, total) => `Tâches précédentes ${done}/${total}`,
+    todoPhases: (done, total) => `Étapes ${done}/${total}`,
+    todoSubtasks: (done, total) => `Sous-tâches ${done}/${total}`,
     running: 'En cours',
     stop: 'Arrêter',
     dismiss: 'Rejeter',

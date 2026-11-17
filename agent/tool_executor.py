@@ -48,6 +48,7 @@ from agent.inline_tool_executors import (
 )
 from agent.message_metadata import stamp_data_use
 from agent.session_persistence import sync_rewritten_tool_rows
+from agent import completion_delivery
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -1184,8 +1185,9 @@ def _commit_tool_result(
             logging.debug("Tool result metadata callback error: %s", callback_error)
     stamp_data_use(tool_message, sorted(data_use))
     messages.append(tool_message)
-    if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
-        return None
+    with completion_delivery.tool_result_boundary(agent):
+        if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
+            return None
 
     if not blocked:
         # ``tool.completed`` projects AFTER the canonical append + flush so resume can
@@ -1239,6 +1241,7 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     contents_before = [message.get("content") for message in batch]
     enforce_turn_budget(batch, env=get_active_env(effective_task_id), config=budget)
     plugin_live_notes.keep_after_turn_budget(agent, batch)
+    completion_delivery.keep_after_turn_budget(agent, batch)
     sync_rewritten_tool_rows(agent, batch, contents_before)
     record_tool_batch(agent, batch, contents_before)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)

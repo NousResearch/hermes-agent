@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "도구 {0}개"
 chatBits.thinking.toolsOther: "도구 {0}개"
 chatBits.todo.incompleteOne: "· 미완료 · {0}개 대기 중"
 chatBits.todo.incompleteOther: "· 미완료 · {0}개 대기/진행 중"
+chatBits.todo.phases: "단계 {0}/{1}"
+chatBits.todo.subtasks: "하위 작업 {0}/{1}"
 chatBits.todo.title: "할 일"
 
 common.cancel: "취소"

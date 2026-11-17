@@ -196,6 +196,16 @@ New lint errors: [details]
 Suggestions (non-blocking): [list]
 ```
 
+## Persistent review and delivery state
+
+For a long interactive task with multiple implementers or repeated review cycles, use the
+managed work protocol in [the delivery reference](references/task-delivery.md). Create a stable
+work item with explicit acceptance criteria before delegating, use the CLI-generated context
+with `delegate_task`, and record artifacts and complete review snapshots against the candidate
+digest. A child's execution status is not a review verdict or acceptance result. Check the
+ledger after a completion notification and after compression; reuse a delivered artifact
+before assigning the same work again. Unmanaged one-off reviews retain the procedure above.
+
 ## Step 7 — Auto-fix loop
 
 **Maximum 2 fix-and-reverify cycles. Interactive sessions only (see Step 5).**
@@ -224,21 +234,22 @@ Fix each issue precisely. Describe what you changed and why.""",
 )
 ```
 
-After the fix agent completes, re-run Steps 1-6 (full verification cycle).
+After the fix agent completes, reproduce the reported failures and test affected behavior.
+Freeze the integrated candidate before the agreed full regression. Reuse unchanged evidence
+only when its candidate and dependency scope still apply; classify new findings as regression,
+release blocker, pre-existing issue, fixture incompatibility, contract change or suggestion.
+A pre-existing issue can still block release. Record managed verdicts in the work ledger.
 - Passed: proceed to Step 8
 - Failed and attempts < 2: repeat Step 7
-- Failed after 2 attempts: escalate to user with the remaining issues and
-  suggest `git stash` or `git reset` to undo
+- Failed after 2 attempts: enter `needs_decision` and report the remaining blockers and preserved
+  artifacts. Do not silently reset the budget, rename the same task, weaken checks, or suggest
+  a blanket stash/reset of existing work. Resolve scope or design explicitly before continuing.
 
 ## Step 8 — Commit
 
-If verification passed:
-
-```bash
-git add -A && git commit -m "[verified] <description>"
-```
-
-The `[verified]` prefix indicates an independent reviewer approved this change.
+If verification passed and a commit is authorized, stage only the reviewed task-owned files.
+The `[verified]` prefix requires independent approval of that exact candidate. A commit or green
+suite is not deployment or user-flow acceptance; managed work records those stages separately.
 
 ## Reference: Common Patterns to Flag
 

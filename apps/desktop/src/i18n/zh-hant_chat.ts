@@ -228,6 +228,8 @@ export const zhHantChat = {
     subagents: count => `${count} 個子代理`,
     todos: (done, total) => `任務 ${done}/${total}`,
     previousTodos: (done, total) => `先前任務 ${done}/${total}`,
+    todoPhases: (done, total) => `階段 ${done}/${total}`,
+    todoSubtasks: (done, total) => `子任務 ${done}/${total}`,
     running: '執行中',
     stop: '停止',
     dismiss: '關閉',

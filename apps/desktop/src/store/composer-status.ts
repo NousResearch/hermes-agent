@@ -46,6 +46,8 @@ export interface ComposerStatusItem {
   title: string
   /** todo: the full four-state status driving the row's checkmark glyph. */
   todoStatus?: TodoStatus
+  /** todo: stable parent identity for hierarchy-aware progress. */
+  todoParent?: string
   type: StatusItemType
 }
 
@@ -179,6 +181,7 @@ const todoToItem = (t: TodoItem, depth: number): ComposerStatusItem => ({
   state: t.status === 'in_progress' ? 'running' : 'done',
   title: t.content,
   todoStatus: t.status,
+  todoParent: t.parent ? `todo:${t.parent}` : undefined,
   type: 'todo'
 })
 
@@ -211,6 +214,7 @@ const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
   a.currentTool === b.currentTool &&
   a.goalStatus === b.goalStatus &&
   a.todoStatus === b.todoStatus &&
+  a.todoParent === b.todoParent &&
   a.depth === b.depth &&
   a.sessionId === b.sessionId
 

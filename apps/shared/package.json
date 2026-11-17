@@ -35,6 +35,7 @@
     "./slash-input": "./src/slash-input.ts",
     "./slash-score": "./src/slash-score.ts",
     "./theme-presets": "./src/theme-presets.ts",
+    "./todo-progress": "./src/todo-progress.ts",
     "./usage-tick": "./src/usage-tick.ts"
   },
   "types": "./src/index.ts",

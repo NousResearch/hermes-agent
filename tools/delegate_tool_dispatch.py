@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import sqlite3
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, field, replace
@@ -68,7 +69,22 @@ class _Batch:
 
     def run_child(self, i: int, task: dict[str, Any], child: Any) -> dict[str, Any]:
         from tools.delegate_tool import _run_single_child
-        return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+        from tools.delegation_work import begin_execution, finish_execution
+        try:
+            begin_execution(child)
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            _detach_child(self.parent_agent, child)
+            _close_child(child, "Failed to close child with an invalid work claim")
+            return finish_execution(child, {"task_index": i, "status": "error",
+                                            "summary": "Managed work admission refused: " + type(exc).__name__})
+        try:
+            entry = _run_single_child(task_index=i, goal=task["goal"], child=child,
+                                      parent_agent=self.parent_agent, **self.owner_kwargs())
+        except BaseException as exc:
+            finish_execution(child, {"task_index": i, "status": "error" if isinstance(exc, Exception) else "interrupted",
+                                     "summary": "Execution raised " + type(exc).__name__})
+            raise
+        return finish_execution(child, entry)
 
 
 def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
@@ -133,9 +149,13 @@ def _waiting_on_resume(entry: dict[str, Any]) -> bool:
 def _release_unstarted_child(batch: _Batch, child: Any) -> None:
     """Teardown for a child whose run never started (``_run_single_child``'s finally never runs for it)."""
     from tools.delegate_tool_resumable import release_unstarted
-    release_unstarted(child)
-    _detach_child(batch.parent_agent, child)
-    _close_child(child, "Failed to close a subagent that never started")
+    from tools.delegation_work import release_unstarted as release_work
+    try:
+        release_work(child)
+    finally:
+        release_unstarted(child)
+        _detach_child(batch.parent_agent, child)
+        _close_child(child, "Failed to close a subagent that never started")
 
 def _run_gated(batch: _Batch, gate: Any, honor_parent_interrupt: bool, i: int, task: dict[str, Any],
                child: Any) -> dict[str, Any]:
@@ -512,6 +532,9 @@ def _dispatch_background(batch: _Batch) -> str:
             _detach_child(parent_agent, child)
         dispatch = _dispatch_unit(unit, unit_id, slot_key, routing)
         if dispatch.get("status") == "dispatched":
+            from tools.delegation_work import mark_dispatched
+            for _, _, child in unit.children:
+                mark_dispatched(child)
             slot_key = slot_key or dispatch["delegation_id"]
             dispatched.append((unit, dispatch["delegation_id"]))
             continue
@@ -545,9 +568,19 @@ def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
     from tools.delegate_tool import session_joins_delegation
     # Every unit of this call shares task_list, so its last joined unit emits the call's one row.
-    begin_delegation_run(
-        batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
-    )
-    if batch.detached_only or (background and not session_joins_delegation(batch.parent_agent)):
-        return _dispatch_background(batch)
-    return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
+    from tools.delegation_work import needs_unstarted_cleanup
+    try:
+        begin_delegation_run(
+            batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
+        )
+        if batch.detached_only or (background and not session_joins_delegation(batch.parent_agent)):
+            return _dispatch_background(batch)
+        return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
+    except BaseException:
+        for _, _, child in batch.children:
+            if needs_unstarted_cleanup(child):
+                try:
+                    _release_unstarted_child(batch, child)
+                except (ValueError, OSError, sqlite3.Error) as cleanup_error:
+                    logger.warning("Unstarted managed work requires claim reconciliation: %s", type(cleanup_error).__name__)
+        raise

@@ -4018,6 +4018,8 @@ export const deOverrides = {
     subagents: count => `${count} Subagent${count === 1 ? '' : 'en'}`,
     todos: (done, total) => `Aufgaben ${done}/${total}`,
     previousTodos: (done, total) => `Frühere Aufgaben ${done}/${total}`,
+    todoPhases: (done, total) => `Phasen ${done}/${total}`,
+    todoSubtasks: (done, total) => `Teilaufgaben ${done}/${total}`,
     running: 'Läuft',
     stop: 'Stopp',
     dismiss: 'Verwerfen',

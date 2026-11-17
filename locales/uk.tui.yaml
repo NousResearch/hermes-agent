@@ -215,6 +215,8 @@ chatBits.thinking.toolsOne: "{0} інструмент"
 chatBits.thinking.toolsOther: "{0} інструмент(ів)"
 chatBits.todo.incompleteOne: "· не завершено · {0} ще очікує"
 chatBits.todo.incompleteOther: "· не завершено · {0} ще очікують/виконуються"
+chatBits.todo.phases: "Етапи {0}/{1}"
+chatBits.todo.subtasks: "Підзавдання {0}/{1}"
 chatBits.todo.title: "Список справ"
 
 common.cancel: "скасувати"

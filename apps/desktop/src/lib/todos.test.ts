@@ -9,6 +9,7 @@ import {
   parseTodoPatch,
   parseTodoRevision,
   parseTodos,
+  todoProgressLabel,
   todoTree
 } from './todos'
 
@@ -264,5 +265,49 @@ describe('parseTodoPatch', () => {
   it('keeps status-only items that parseTodos would drop', () => {
     expect(parseTodos([{ id: 'c', status: 'completed' }])).toEqual([])
     expect(parseTodoPatch([{ id: 'c', status: 'completed' }])).toEqual([{ id: 'c', status: 'completed' }])
+  })
+})
+
+describe('todoProgressLabel', () => {
+  const labels = {
+    todos: (done: number, total: number) => `Tasks ${done}/${total}`,
+    todoPhases: (done: number, total: number) => `Phases ${done}/${total}`,
+    todoSubtasks: (done: number, total: number) => `Subtasks ${done}/${total}`
+  }
+
+  it('separates completed checks from a phase still awaiting acceptance', () => {
+    expect(
+      todoProgressLabel(
+        [
+          { id: 'accept', status: 'in_progress' },
+          { id: 'test', parent: 'accept', status: 'completed' }
+        ],
+        labels
+      )
+    ).toBe('Phases 0/1 · Subtasks 1/1')
+  })
+
+  it('does not imply success when a completed phase has a reopened check', () => {
+    expect(
+      todoProgressLabel(
+        [
+          { id: 'accept', status: 'completed' },
+          { id: 'test', parent: 'accept', status: 'pending' }
+        ],
+        labels
+      )
+    ).toBe('Phases 0/1 · Subtasks 0/1')
+  })
+
+  it('keeps flat task wording and excludes cancelled items', () => {
+    expect(
+      todoProgressLabel(
+        [
+          { id: 'done', status: 'completed' },
+          { id: 'dropped', status: 'cancelled' }
+        ],
+        labels
+      )
+    ).toBe('Tasks 1/1')
   })
 })

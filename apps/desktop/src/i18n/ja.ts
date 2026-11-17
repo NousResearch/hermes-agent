@@ -2541,6 +2541,8 @@ export const jaOverrides = {
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
     previousTodos: (done, total) => `以前のタスク ${done}/${total}`,
+    todoPhases: (done, total) => `段階 ${done}/${total}`,
+    todoSubtasks: (done, total) => `サブタスク ${done}/${total}`,
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',

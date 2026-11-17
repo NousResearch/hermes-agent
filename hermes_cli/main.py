@@ -284,7 +284,7 @@ from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.config import build_config_parser
 from hermes_cli.subcommands.skin import build_skin_parser
-from hermes_cli.subcommands.console import build_console_parser
+from hermes_cli.subcommands.console import build_console_parser, cmd_console
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
@@ -307,6 +307,7 @@ from hermes_cli.subcommands.vault import build_vault_parser
 from hermes_cli.subcommands.moa import build_moa_parser
 from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
+from hermes_cli.subcommands.work import build_work_parser
 from hermes_cli.subcommands.browser import build_browser_parser
 from hermes_cli.subcommands.secrets import build_secrets_parser
 from hermes_cli.subcommands.codex_runtime import build_codex_runtime_parser
@@ -2554,13 +2555,6 @@ def cmd_logs(args):
     )
 
 
-def cmd_console(args):
-    """Open the safe Hermes command console."""
-    from hermes_cli.console_engine import run_console_repl
-
-    return run_console_repl()
-
-
 # Top-level subcommands known WITHOUT plugin discovery (which costs 500ms+ of
 # eager plugin imports). Keep in sync with the add_parser calls in
 # _build_cli_parser: a missing entry only costs a one-time discovery; an extra
@@ -2577,7 +2571,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy", "prompt-size", "resume", "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
-        "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
+        "webhook", "whatsapp", "whatsapp-cloud", "worktree", "work", "chat", "secrets", "security",
         "browser",
         "verify",
         # Plugin commands missing from top-level --help is an accepted trade-off.
@@ -3111,6 +3105,7 @@ def _build_cli_parser():
     build_moa_parser(subparsers)
     build_fallback_parser(subparsers)
     build_worktree_parser(subparsers)
+    build_work_parser(subparsers)
     build_browser_parser(subparsers)
     build_secrets_parser(subparsers)
     # OUTBOUND egress firewall; ``hermes proxy`` (gateway group) is the INBOUND one.

@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ Orduithe diúltaithe ({count} ordú)."
     denied_reason_singular: "❌ Ordú diúltaithe. Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
     denied_reason_plural: "❌ Orduithe diúltaithe ({count} ordú). Cúis curtha ar aghaidh chuig an ngníomhaire: \"{reason}\""
+    declined_by_reply: "❌ Diúltaithe. Cuireadh do theachtaireacht ar aghaidh chuig an ngníomhaire mar an chéad treoir eile."
 
   usage_limit:
     picker_title: "Keep going on another model:"

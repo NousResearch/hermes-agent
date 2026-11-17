@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ Opdragte geweier ({count} opdragte)."
     denied_reason_singular: "❌ Opdrag geweier. Rede aan die agent oorgedra: \"{reason}\""
     denied_reason_plural: "❌ Opdragte geweier ({count} opdragte). Rede aan die agent oorgedra: \"{reason}\""
+    declined_by_reply: "❌ Geweier. Jou boodskap is as die volgende opdrag aan die agent oorgedra."
 
   usage_limit:
     picker_title: "Keep going on another model:"

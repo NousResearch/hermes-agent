@@ -178,6 +178,7 @@ gateway:
     denied_plural: "❌ 指令已拒絕（{count} 條指令）。"
     denied_reason_singular: "❌ 指令已拒絕。 已將原因轉達給代理: \"{reason}\""
     denied_reason_plural: "❌ 指令已拒絕（{count} 條指令）。 已將原因轉達給代理: \"{reason}\""
+    declined_by_reply: "❌ 已拒絕。你的訊息已作為下一條指示轉交給代理。"
 
   usage_limit:
     picker_title: "Keep going on another model:"

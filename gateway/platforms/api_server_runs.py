@@ -1438,6 +1438,29 @@ def _steer_refused(_openai_error, run_id):
                        code="run_not_accepting_steer", status=409)
 
 
+def _decline_run_approvals_with_steer(self, run_id: str, owned, steer_text: str) -> int:
+    """``approvals.typed_reply_declines``: a steer sent while the run waits on approvals declines them
+    all, and the agent reads the steer text as the user's next instruction (the request already runs
+    in the run's profile scope). Returns how many were declined; 0 leaves the steer to the agent."""
+    from tools.approval import list_gateway_approvals, resolve_gateway_approval
+    from tools.approval_context import typed_reply_declines
+    if not typed_reply_declines():
+        return 0
+    if owned is not None:
+        # The authority projects each pending approval with the queue key its turn registered it under.
+        authority, row = owned
+        live = authority.sessions.get(row['target_session_id'])
+        if live is None:
+            return 0
+        with live.event_stream.lock:
+            keys = {route for route, prompt in live.controls.pending.values()
+                    if prompt['kind'] == 'approval' and prompt['execution_generation'] == row['generation']}
+    else:
+        keys = {self._run_approval_sessions.get(run_id)} - {None}
+    return sum(resolve_gateway_approval(key, "deny", reason=steer_text, request_id=p.get("request_id"), replied=True)
+               for key in keys for p in list_gateway_approvals(key))
+
+
 async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.Response:
     """POST /v1/runs/{run_id}/steer — inject guidance into a running agent."""
     _openai_error = _api_server._openai_error
@@ -1452,8 +1475,13 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
         owned = owned if run_id not in self._stopping_run_ids else None
         agent = None
     # /stop keeps agent refs during cooperative shutdown, so the status gate (not the
-    # agent ref) is what rejects stop-then-steer.
-    if status.get("status") != "running" or (owned is None and not hasattr(agent, "steer")):
+    # agent ref) is what rejects stop-then-steer. A run paused on an approval takes a steer only
+    # as the reply that declines it (``approvals.typed_reply_declines``).
+    from tools.approval_context import typed_reply_declines
+    run_status = status.get("status")
+    if run_status not in ("running", "waiting_for_approval") or (
+            run_status == "waiting_for_approval" and not typed_reply_declines()) or (
+            run_status == "running" and owned is None and not hasattr(agent, "steer")):
         return _steer_refused(_openai_error, run_id)
     body, err = await self._read_json_body(request)
     if err:
@@ -1464,6 +1492,15 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
         return _json_error(
             _openai_error, "Missing non-empty steer text; expected 'input', 'message', or 'text'.",
             code="invalid_steer_input", status=400)
+    declined = _decline_run_approvals_with_steer(self, run_id, owned, steer_text)
+    if declined:
+        # The steer text already reached the agent as the declined approval's reply; steering it in too
+        # would deliver it twice.
+        _mark_run_event(self, run_id, "run.steered", accepted=True, declined_approvals=declined)
+        return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True,
+                                  "declined_approvals": declined})
+    if run_status != "running" or (owned is None and not hasattr(agent, "steer")):
+        return _steer_refused(_openai_error, run_id)
     if owned is not None:
         from gateway.session_contract import SessionRef
         from hermes_state_runtime import RuntimeStoreError

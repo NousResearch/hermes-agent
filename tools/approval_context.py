@@ -304,6 +304,12 @@ def _get_approval_config() -> dict:
         return {}
 
 
+def typed_reply_declines() -> bool:
+    """``approvals.typed_reply_declines``: a message sent while an approval is pending declines it and
+    is relayed to the agent as the user's next instruction (default off: only approval words answer)."""
+    return is_truthy_value(_get_approval_config().get("typed_reply_declines"), default=False)
+
+
 def _get_approval_mode() -> str:
     """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config).
 

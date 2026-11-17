@@ -1324,6 +1324,12 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # zstd-compress requests to the official ChatGPT Codex endpoint on Python 3.14+,
+  # like the official Codex client. The endpoint rejects some valid zstd bodies
+  # with a bare HTTP 400; Hermes then resends that request once as plain JSON.
+  # Set false to always send plain JSON.
+  # codex_request_compression: true
+
   # Once api_max_retries AND the fallback chain are spent on a transient outage
   # (5xx, overloaded/529, connect/read timeouts) and nothing has been delivered
   # yet, Hermes waits and retries this many more cycles (jittered 15/30/60/60/60s;

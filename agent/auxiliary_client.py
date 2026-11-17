@@ -6949,11 +6949,11 @@ def _create_with_progress(
     """Gated wrapper: holds the host-wide plan slot across the whole progress/
     retry ladder (including the stream+aggregate path of the once-helper)."""
     with _aux_plan_admission(client, kwargs, purpose="aux_progress"):
-        return _create_with_progress_ungated(client, kwargs, task, force_stream=force_stream)
+        return _create_with_progress_ungated(client, kwargs, task, force_stream=force_stream, provider=provider)
 
 
 def _create_with_progress_ungated(
-    client: Any, kwargs: dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False
+    client: Any, kwargs: dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False, provider: str = ""
 ) -> Any:
     """Credit-aware :func:`_create_with_progress_once`: a 402 naming an affordable
     budget retries ONCE with that cap (only ever lowering); anything else re-raises (as a ``_ClassifiedAttempt``

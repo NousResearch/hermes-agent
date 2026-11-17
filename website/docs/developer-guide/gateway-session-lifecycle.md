@@ -363,6 +363,18 @@ No representative model-driven quality evaluation has been run. The tool asks
 for objective, constraints, decisions, completed checks and next action; its text
 bounds are not a semantic quality guarantee.
 
+The opt-in probe `python -m evals.session_handoff_quality --help` supplies synthetic
+completed-phase, short-followup and active-work scenarios to an explicitly selected
+model/endpoint, using this tool schema and Hermes' Chat Completions or Responses
+transport. It records boundary decisions and asks a successor to recover workspace,
+authorization limits, exact failed/passed checks and next action from only the
+checkpoint. Literal fact checks expose omissions; inspect raw outputs for semantic
+errors and over-granted permissions. Scripted probe tests validate the evaluator,
+not model quality. The probe does not exercise gateway settlement or measure cache
+savings, and never loads a user's Hermes profile or executes model tools beyond
+the in-memory handoff intent. An explicit credential environment name is required;
+results are written to a new output file without credentials or endpoint URLs.
+
 ---
 
 ## 7. Restart Recovery Flow

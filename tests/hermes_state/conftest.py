@@ -1,4 +1,6 @@
 """Shared fixtures for tests/hermes_state."""
+from pathlib import Path
+
 import pytest
 
 
@@ -22,3 +24,17 @@ def worker(tmp_path):
     store.journal['pending'] = []
     store.close()
     db.close()
+
+
+@pytest.fixture()
+def no_foreign_db_holders(tmp_path, monkeypatch):
+    """These policy/repair tests own their temp DB; host processes are unrelated.
+
+    Keep the in-process holder and SQLite lock checks real. Foreign-holder
+    detection and refusal have dedicated maintenance/holder contract suites.
+    """
+    def isolated_holders(db_path):
+        assert Path(db_path).is_relative_to(tmp_path)
+        return []
+
+    monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", isolated_holders)

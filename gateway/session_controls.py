@@ -803,32 +803,15 @@ class AuthorityConnection:
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
             self._record_voice_stop(ref, params)
             return {'voice_stopped': True}
-        # W1 desktop intake screen (owner order 16 Nov 2026; review r3):
-        # block-tier submits on desktop-launched sessions are held BEFORE
-        # durable admission. The submission build (which carries the
-        # connection-level subscription check) runs FIRST - an
-        # authenticated-but-not-subscribed connection must be refused
-        # with zero engine calls (review F2/N2). The gate then authorizes
-        # and screens EVERY model-visible text - api_text when the
-        # contract carries one AND the persisted text (review N1:
-        # screening either alone moves the blind spot to the other).
-        # Inert unless env-enabled; fail-open; never raises past the
-        # dispatcher's error frame.
-        request = self.submission(ref, params)
-        from gateway.desktop_screen import (desktop_screen_enabled,
-                                            hold_error, screen as desktop_screen,
-                                            session_in_scope, submit_texts)
-        if desktop_screen_enabled():
-            self.authority.authorize(self.actor, ref, 'session:submit')
-            if session_in_scope(self.authority, ref.session_id):
-                subject = str(getattr(self.actor, 'subject', ''))
-                for text in submit_texts(params):
-                    held, reasons = await desktop_screen(
-                        subject, str(ref.session_id), text)
-                    if held:
-                        raise hold_error(reasons)
+        # W1 desktop intake screen: gating now lives at the shared
+        # choke point (SessionAuthority._submit via
+        # gateway/desktop_screen.py authority_gate) - every viewer
+        # submit surface, including this one, funnels through that
+        # admission (the per-surface hook here missed the desktop
+        # app's own serve backend, found by the owner's 17 Nov live
+        # test).
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
-        receipt = await self.authority.submit(self.actor, request,
+        receipt = await self.authority.submit(self.actor, self.submission(ref, params),
                                               queue_while_restarting=self._operator is True)
         return asdict(receipt)
 

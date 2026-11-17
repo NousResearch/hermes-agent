@@ -6,12 +6,22 @@ The W1 twin of the Phase 2 gateway guardrail
 (``gateway/guardrail.py``, owner decision 14 Nov 2026): the same
 five-question guardrail battery through the local RNR Judgement
 Engine (``/v1/screen``), held BEFORE the submit is durably admitted -
-no session turn runs for a held message. Wired at the interactive
-control-plane surface (``prompt.submit`` and the queued-edit verbs
-``prompt.replace_queued`` / ``prompt.steer_queued``), never at
-``SessionAuthority.submit`` itself: machine producers (kanban cards,
-hosted rooms, a2a, automation envelopes) never pass through the
-interactive surface, so their traffic is structurally out of scope.
+no session turn runs for a held message. Wired at the SINGLE shared
+choke point every surface funnels through: ``SessionAuthority._submit``
+(r4, 17 Nov 2026 - the owner's live test proved the Desktop app's own
+local backend ``hermes serve`` submits straight to the session
+authority, so per-surface hooks at the gateway WS control plane never
+saw desktop traffic). Machine producers (kanban cards, hosted rooms,
+a2a, automation envelopes, cron) either use their own admission paths
+or carry the server-side ``_kanban_card`` marker - none are screened.
+
+Trust rule (r5, 17 Nov): payload FIELDS are never a trust boundary.
+A submit is not exempted because it LOOKS like a CLI turn
+(``cli_turn_v1`` is committed from ordinary canonical params -
+``api_text`` / ``turn_author`` / ``model_override`` / ``clarify_batch``
+- that the desktop app's own backend sends in normal flows). The
+boundary is the session's frozen launch source, decided by the DB
+row.
 
 Scope: sessions launched from the desktop surfaces (frozen launch
 source ``gui`` or ``desktop`` - the label a Desktop chat migrated
@@ -24,8 +34,9 @@ Verdicts (identical semantics to Phase 2):
 
 - ``allow``      -> proceeds (outcome ``accepted`` reported)
 - ``review``     -> proceeds, logged (outcome ``escalated``)
-- ``block``      -> HELD: ``DesktopScreenHold`` refuses the submit
-                    with a visible notice (outcome ``escalated``).
+- ``block``      -> HELD: a RuntimeStoreError refusal (reason
+                    ``desktop_screen_hold``, visible hold notice as the
+                    wire message) with outcome ``escalated``.
                     The sender IS the local owner, so the refused
                     submit's error toast is the alert; every hold is
                     also logged for the owner dashboard.
@@ -81,12 +92,19 @@ import logging
 import math
 import os
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 logger = logging.getLogger("hermes.gateway.desktop_screen")
 
-MAX_TEXT_CHARS = 4000
+from hermes_state_runtime import RuntimeStoreError
+
+MAX_TEXT_CHARS = 32000  # per-chunk chars (engine rejects > 64*1024 chars)
+_SEAM_OVERLAP = 1024    # carry-over; payloads up to ~1 KB cannot hide in a seam
+_MAX_SCREEN_CHARS = 4_000_000  # above this the submit is HELD (never truncated)
+_SCREEN_BUDGET_S = 6.0  # hard cap for one submit's total screening
+
 _DEFAULT_ENDPOINT = "http://127.0.0.1:8201/v1/screen"
 _DEFAULT_HOLD_NOTICE = ("Held by the desktop intake screen (block tier): "
                         "your message was not delivered. It matched the "
@@ -99,20 +117,6 @@ _INTERACTIVE_SOURCES = frozenset({"cli", "tui", "gui", "desktop", "acp"})
 # Fire-and-forget outcome tasks (kept referenced so CPython cannot GC
 # them mid-run; discarded on completion).
 _OUTCOME_TASKS: set = set()
-
-
-class DesktopScreenHold(Exception):
-    """A block-tier submit refused by the desktop intake screen.
-
-    Raised to the control-plane caller (prompt.submit /
-    prompt.replace_queued / prompt.steer_queued) so the interactive
-    client shows the hold instead of an admission receipt. Carries the
-    tier reasons for the wire error's data block.
-    """
-
-    def __init__(self, reasons):
-        self.reasons = [str(r) for r in (reasons or [])][:8]
-        super().__init__("desktop_screen_hold")
 
 
 def _log_path() -> Path:
@@ -183,10 +187,21 @@ def _post(url: str, payload: dict, headers: dict, timeout: float) -> dict:
 def _log(record: dict) -> None:
     record["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
+        line = json.dumps(record, ensure_ascii=True)
+    except (TypeError, ValueError):
+        # A non-serialisable value (e.g. bytes text from a fuzzed
+        # payload) must never lose the log line: fall back to a safe
+        # rendering, never raise.
+        try:
+            line = json.dumps(
+                {k: repr(v) for k, v in record.items()}, ensure_ascii=True)
+        except Exception:
+            return
+    try:
         path = _log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+            handle.write(line + "\n")
     except OSError:
         logger.warning("desktop_screen: log write failed", exc_info=True)
 
@@ -246,20 +261,103 @@ async def drain_outcome_tasks(timeout: float = 5.0) -> None:
 
 
 def submit_texts(params) -> list:
-    """Every model-visible text of one submit-shaped params dict, in
-    deterministic order, deduplicated: the canonical contract's
-    ``api_text`` (this turn's model-facing text) AND the persisted
-    ``text`` (the user row later turns load as model history - review
-    N1: screening only one of the two moved the blind spot to the
-    other; a hostile persisted row defeats the gate with a one-turn
-    delay). Identical values are screened once. Empty list when there
-    is nothing to screen."""
+    """Every model-visible text of one submit-shaped params/payload
+    dict, in deterministic order, deduplicated. Reads BOTH the raw
+    submit shape (top-level ``api_text`` / ``text``) AND the committed
+    admission shape, where ``admit_cli_turn`` nests ``api_text`` under
+    ``cli_turn_v1`` (review r5-2: the authority gate receives the
+    COMMITTED payload, so a resolver that only reads top-level
+    ``api_text`` is dead code at the only real call site - the hostile
+    model-facing text rode in unscreened behind a benign ``text``).
+    Identical values are screened once. Empty list when there is
+    nothing to screen."""
     texts: list = []
-    for key in ("api_text", "text"):
-        value = params.get(key) if isinstance(params, dict) else None
+    candidates = []
+    if isinstance(params, dict):
+        candidates.append(params.get("api_text"))
+        cli = params.get("cli_turn_v1")
+        if isinstance(cli, dict):
+            candidates.append(cli.get("api_text"))
+        candidates.append(params.get("text"))
+    for value in candidates:
         if isinstance(value, str) and value.strip() and value not in texts:
             texts.append(value)
     return texts
+
+
+def segments(text) -> list:
+    """Split one model-visible text into judgeable chunks covering
+    EVERY character, with a small overlap so a payload cannot hide in
+    a chunk seam (reviews r6-1 truncation, r7-3 seam split, r7-1
+    silent tail drop: no slice cap - oversized text is HELD by the
+    caller, never truncated)."""
+    value = (text or "").strip() if isinstance(text, str) else ""
+    if not value:
+        return []
+    step = MAX_TEXT_CHARS - _SEAM_OVERLAP
+    return [value[i:i + MAX_TEXT_CHARS]
+            for i in range(0, len(value), step)]
+
+
+async def authority_gate(authority, subject, session_id, payload, *,
+                         kanban_card=False) -> None:
+    """The SINGLE shared intake gate, called from
+    ``SessionAuthority._submit`` before durable admission - the choke
+    point EVERY viewer submit funnels through (the desktop app's own
+    local backend ``hermes serve``, the gateway WS control plane, TUI,
+    queued edits). The per-surface hooks this replaces missed the
+    serve path entirely (the owner's 17 Nov live test: attack submits
+    admitted unscreened through ``hermes serve``).
+
+    Screens only what the desktop screen is FOR - an interactive
+    viewer's own text on a desktop-launched session:
+
+    - inert unless ``HERMES_DESKTOP_SCREEN`` is on;
+    - machine producers structurally out: a kanban card marker (the
+      kanban dispatcher's trusted server-side marker) skips the gate;
+    - scope: the session's frozen launch source must be a screened
+      desktop surface (review F4: the DB row decides, cache is
+      write-through); classic-CLI and oneshot fleet sessions are
+      different launch sources and stay out by scope - payload
+      branding is never trusted (review r5-1: ``cli_turn_v1`` is
+      committed from ordinary canonical params the desktop backend
+      sends in normal flows);
+    - screens EVERY model-visible text (``api_text`` AND ``text``,
+      review N1), holding on the first block verdict.
+
+    No-raise on its own bookkeeping; a block verdict raises the
+    control-plane refusal (a RuntimeStoreError with reason
+    ``desktop_screen_hold`` and the visible hold notice as its wire
+    message) so ANY client surface - desktop app, TUI, web server -
+    shows the hold.
+    """
+    try:
+        if not desktop_screen_enabled() or kanban_card:
+            return
+        if not isinstance(payload, dict):
+            return
+        texts = submit_texts(payload)
+        if not texts:
+            return
+        if not session_in_scope(authority, session_id):
+            return
+        who = str(subject or "unknown")
+        # One screening budget for the WHOLE submit - every text of it
+        # shares the same blocking window (review r7-5).
+        deadline = time.monotonic() + _SCREEN_BUDGET_S
+        for text in texts:
+            held, reasons = await screen(who, session_id, text,
+                                         deadline=deadline)
+            if held:
+                raise hold_error(reasons)
+    except RuntimeStoreError as exc:
+        if getattr(exc, "reason", "") == "desktop_screen_hold":
+            raise  # the hold IS the verdict - never degrade it to proceed
+        logger.warning("desktop_screen: authority gate degraded to "
+                       "proceed", exc_info=True)
+    except Exception:
+        logger.warning("desktop_screen: authority gate degraded to "
+                       "proceed", exc_info=True)
 
 
 def session_in_scope(authority, session_id: str) -> bool:
@@ -293,70 +391,144 @@ def session_in_scope(authority, session_id: str) -> bool:
         return False
 
 
-async def screen(subject: str, session_id: str, text: str) -> tuple:
+async def screen(subject: str, session_id: str, text: str,
+                 deadline=None) -> tuple:
     """Screen one desktop submit; returns ``(held, reasons)``. ``held``
-    is True only for a block-tier verdict. NEVER raises: every failure
-    degrades to 'proceed', logged."""
+    is True only for a block-tier verdict (or a coverage hold).
+    ``deadline`` (monotonic) lets one submit share ONE screening
+    budget across its several texts (review r7-5). NEVER raises:
+    every failure degrades to 'proceed', logged - except the
+    coverage holds, which are verdicts."""
     try:
-        return await _screen_inner(subject, session_id, text)
+        return await _screen_inner(subject, session_id, text,
+                                   deadline=deadline)
     except Exception:
         logger.exception("desktop_screen: unexpected error; proceeding")
         return False, []
 
 
-async def _screen_inner(subject: str, session_id: str, text: str) -> tuple:
+async def _screen_inner(subject: str, session_id: str, text: str,
+                        deadline=None) -> tuple:
     if not desktop_screen_enabled():
         return False, []
     text = (text or "").strip()
     if not text:
         return False, []
     base = {"subject": str(subject or "unknown"),
-            "session": str(session_id or ""), "preview": text[:120]}
+            "session": str(session_id or ""), "preview": text[:120],
+            "chars": len(text)}
+    if len(text) > _MAX_SCREEN_CHARS:
+        # Never truncate silently (review r7-1): text too large to
+        # judge in the blocking window is HELD, not admitted screened.
+        _log(dict(base, tier="oversized_unscreened"))
+        return True, ["oversized_unscreened"]
     endpoint = _effective_endpoint()
     timeout = _float_env("HERMES_DESKTOP_SCREEN_TIMEOUT_S", 4.0)
     headers = {"X-Judge-Caller": _caller(), "X-Judge-Purpose": _purpose()}
 
-    def call() -> dict:
-        return _post(endpoint, {"text": text[:MAX_TEXT_CHARS]},
-                     headers, timeout)
+    def call(chunk: str, spent: float) -> dict:
+        # Per-chunk socket budget is what remains of the submit's
+        # overall screening budget (review r6-1: coverage is the
+        # invariant - every model-visible character is judged within
+        # the blocking window, or the submit is held).
+        budget = max(0.5, min(timeout, _SCREEN_BUDGET_S - spent))
+        return _post(endpoint, {"text": chunk}, headers, budget)
 
-    try:
-        # Overall deadline: socket timeout + 1s guards drip-fed bodies.
-        result = await asyncio.wait_for(asyncio.to_thread(call),
-                                        timeout=timeout + 1.0)
-        if not isinstance(result, dict):
-            raise ValueError(f"non-dict engine response: {type(result)!r}")
-    except Exception as err:
-        _log(dict(base, tier="engine_unreachable_or_malformed",
-                  error=str(err)[:160]))
-        return False, []
-
-    tier = result.get("tier")
-    tier = tier if isinstance(tier, str) else None
-    raw_reasons = result.get("reasons")
-    if not isinstance(raw_reasons, list):
-        raw_reasons = []
-    reasons = [str(r) for r in raw_reasons
-               if isinstance(r, str) and r.strip()][:8]
-    served_by = result.get("served_by")
-    served_by = served_by.get("provider") if isinstance(served_by, dict) else None
-    scores = result.get("scores") if isinstance(result.get("scores"), dict) else {}
-    _log(dict(base, tier=tier, reasons=reasons,
-              served_by=served_by, scores=scores))
-    question_id = ("q_" + reasons[0]) if reasons else None
-    if tier == "block":
-        _spawn_outcome_report(result, "escalated",
-                              "block-tier held automatically (desktop screen)",
-                              question_id)
-        return True, reasons
-    if tier in ("review", "chain_down"):
-        _spawn_outcome_report(result, "escalated",
-                              f"{tier}-tier (desktop screen advisory pass)",
-                              question_id)
-        return False, reasons
-    _spawn_outcome_report(result, "accepted", "allow-tier (desktop screen)",
-                          question_id)
-    return False, []
+    chunks = segments(text)
+    if deadline is None:
+        deadline = time.monotonic() + _SCREEN_BUDGET_S
+    judged = 0
+    result = None
+    tail_reasons: list = []
+    for index, chunk in enumerate(chunks):
+        if not chunk.strip():
+            # Review r8-HIGH: a whitespace-only chunk carries no
+            # payload, and sending it earns a deterministic engine
+            # 400 that used to fail the whole tail open. Skip it.
+            _log(dict(base, tier="blank_chunk_skipped", chunk=index))
+            continue
+        spent = _SCREEN_BUDGET_S - (deadline - time.monotonic())
+        if time.monotonic() >= deadline:
+            # Coverage invariant: a tail we could not judge in budget
+            # is HELD (fail-closed for coverage - unlike an
+            # unreachable engine, which stays fail-open per Phase 2).
+            _log(dict(base, tier="screening_incomplete_budget",
+                      chunk=index, judged=judged, chunks=len(chunks)))
+            return True, ["screening_incomplete_budget"]
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(call, chunk, spent),
+                timeout=max(0.5, min(timeout, _SCREEN_BUDGET_S - spent)) + 1.0)
+            if not isinstance(result, dict):
+                raise ValueError(f"non-dict engine response: {type(result)!r}")
+        except Exception as err:
+            # Review r8-HIGH (defence in depth): a deterministic client
+            # rejection (4xx) means the engine CANNOT judge this chunk -
+            # that is a coverage hole, so HOLD. A transport failure at
+            # the budget boundary is coverage exhaustion, also HOLD.
+            # Only a genuine mid-budget engine failure stays fail-open
+            # (Phase 2: a dead engine must not lock the owner out).
+            rejected = (isinstance(err, urllib.error.HTTPError)
+                        and 400 <= int(getattr(err, "code", 0) or 0) < 500)
+            transient = (isinstance(err, urllib.error.HTTPError)
+                         and int(getattr(err, "code", 0) or 0) in (408, 429))
+            if transient:
+                # 408/429 are TRANSIENT (proxy timeout, rate limit): the
+                # engine is alive but busy. A rate-limited engine must
+                # not lock the owner out, so this joins the documented
+                # fail-open class (Phase 2), logged distinctly.
+                _log(dict(base, tier="engine_rate_limited_or_timeout",
+                          chunk=index, judged=judged, chunks=len(chunks),
+                          error=str(err)[:120]))
+                return False, []
+            if rejected:
+                _log(dict(base, tier="engine_rejected_chunk",
+                          chunk=index, judged=judged, chunks=len(chunks),
+                          error=str(err)[:120]))
+                return True, ["engine_rejected_chunk"]
+            if time.monotonic() >= deadline - 0.5:
+                _log(dict(base, tier="screening_incomplete_budget",
+                          chunk=index, judged=judged, chunks=len(chunks),
+                          error=str(err)[:120]))
+                return True, ["screening_incomplete_budget"]
+            _log(dict(base, tier="engine_unreachable_or_malformed",
+                      chunk=index, judged=judged, chunks=len(chunks),
+                      error=str(err)[:160]))
+            return False, []
+        judged += 1
+        tier = result.get("tier")
+        tier = tier if isinstance(tier, str) else None
+        raw_reasons = result.get("reasons")
+        if not isinstance(raw_reasons, list):
+            raw_reasons = []
+        reasons = [str(r) for r in raw_reasons
+                   if isinstance(r, str) and r.strip()][:8]
+        served_by = result.get("served_by")
+        served_by = (served_by.get("provider")
+                     if isinstance(served_by, dict) else None)
+        scores = (result.get("scores")
+                  if isinstance(result.get("scores"), dict) else {})
+        _log(dict(base, tier=tier, reasons=reasons, chunk=index,
+                  judged=judged, chunks=len(chunks),
+                  served_by=served_by, scores=scores))
+        question_id = ("q_" + reasons[0]) if reasons else None
+        if tier == "block":
+            _spawn_outcome_report(
+                result, "escalated",
+                "block-tier held automatically (desktop screen)", question_id)
+            return True, reasons
+        if tier in ("review", "chain_down"):
+            _spawn_outcome_report(
+                result, "escalated",
+                f"{tier}-tier (desktop screen advisory pass)", question_id)
+            tail_reasons = reasons
+        else:
+            # Review r7-4: report the outcome for EVERY judged chunk,
+            # not just the last one (the usefulness join keys are
+            # per-judgement).
+            _spawn_outcome_report(
+                result, "accepted", "allow-tier (desktop screen)", None)
+    return False, tail_reasons
 
 
 def hold_error(reasons) -> Exception:

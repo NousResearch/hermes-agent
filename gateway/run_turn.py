@@ -173,10 +173,6 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
-    def _event_thread_metadata(self, event, source):
-        """Thread metadata for a send that replies to ``event`` on ``source``."""
-        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-
     @staticmethod
     def _pop_post_delivery_callback(adapter, key, generation):
         """Pop the adapter's deferred post-delivery callback for ``key`` (legacy dict fallback)."""
@@ -286,6 +282,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             await self._record_room_silence_decision(
                 session_key, agent_result, _intentional_silence,
                 display_kind=prepared.persist_user_display_kind, reply_expected=event.reply_expected)
+            from gateway.fresh_session.settlement import settle
+            await settle(self, source, session_entry, session_key, run_generation, agent_result)
             return await self._deliver_turn_response_then_limit_offer(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,

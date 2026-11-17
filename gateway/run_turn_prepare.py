@@ -466,7 +466,8 @@ class GatewayTurnPrepareMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
+        from gateway.fresh_session.settlement import is_group_topic
+        if is_group_topic(source) or await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
@@ -495,6 +496,9 @@ class GatewayTurnPrepareMixin:
                 logger.debug("Failed to record Telegram topic binding", exc_info=True)
             return session_entry
         stored_session_id = str(binding.get("session_id") or "")
+        from gateway.fresh_session.settlement import is_group_topic
+        if is_group_topic(source) and binding.get("session_key") != session_key:
+            return session_entry  # per-user group lanes remain isolated
         bound_session_id = stored_session_id
         # A binding pointing at a pre-compression parent is walked forward to the tip so the next
         # message resumes the compressed child instead of reloading the oversized parent.
@@ -516,10 +520,13 @@ class GatewayTurnPrepareMixin:
             # #138210) is not the topic's conversation either: following it hands the user to the worker.
             bound_row = await self._session_db.get_session(bound_session_id) if self._session_db is not None else None
             from gateway.session_lifecycle import is_delegate_child_row
-            if self._session_db is not None and (not bound_row or is_delegate_child_row(bound_row)):
+            from hermes_state_common import is_automatic_end_reason
+            retired = bool(bound_row and bound_row.get("ended_at") is not None
+                           and not is_automatic_end_reason(bound_row.get("end_reason")))
+            if self._session_db is not None and (not bound_row or is_delegate_child_row(bound_row) or retired):
                 logger.warning("Telegram topic binding for %s points at session %s with %s; keeping the "
                                "current session and rebinding", session_key, bound_session_id,
-                               "a delegate subagent's row" if bound_row else "no sessions row")
+                               "a retired or delegate row" if bound_row else "no sessions row")
                 try:  # CAS on the stale id: a /new that rebound the topic during the await wins
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry,
                                             expected_session_id=stored_session_id)
@@ -536,10 +543,12 @@ class GatewayTurnPrepareMixin:
             # awaits above are a window for /new or /resume to move the route; the CAS on the
             # snapshot id lets that win instead of being clobbered by a stale binding.
             switched = await self.async_session_store.switch_session(
-                session_key, bound_session_id, expected_session_id=session_entry.session_id,
+                session_key, bound_session_id, expected_session_id=session_entry.session_id, require_live_target=True,
             )
             if switched is not None:
                 session_entry = switched
+                if bound_row and json.loads(bound_row.get("model_config") or "{}").get("_reset_from"):
+                    self._clear_session_boundary_security_state(session_key)
         if bound_session_id and bound_session_id != stored_session_id and (
                 not self._telegram_topic_publication_moved(source, publication)):
             # The stored binding pointed at a parent: rewrite it to the canonical descendant.

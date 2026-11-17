@@ -182,6 +182,7 @@ def test_preflight_rewrites_raw_assistant_images_to_text_markers():
     assert _preflight_codex_input_items(raw) == [{
         "type": "message",
         "role": "assistant",
+        "status": "completed",
         "content": [{
             "type": "output_text",
             "text": "[Assistant image omitted during replay]",

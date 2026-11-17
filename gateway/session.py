@@ -837,7 +837,7 @@ class SessionStore(
         # A fallback-only initial load is reconciled with state.db once the handle recovers.
         self._routing_db_loaded = False
         self._routing_fallback_baseline: Optional[dict[str, Any]] = None
-        self._lock = threading.Lock()  # guards _entries / _loaded only
+        self._lock = threading.RLock()  # route publication may call the normal switch while owning this lock
         self._save_lock = threading.Lock()  # whole-index persistence, never held with _lock
         # Fast (single-entry) and full saves share one generation counter so they are totally
         # ordered; _fast_persisted_entries: key -> (revision, entry_json) since the last rewrite.
@@ -1219,17 +1219,23 @@ class SessionStore(
                 source_value=old_entry.platform.value if old_entry.platform else "unknown",
                 display_name=old_entry.display_name, parent_session_id=old_entry.session_id,
             )
+            from gateway.fresh_session.settlement import is_group_topic
+            from gateway.fresh_session.publication import reset_topic
+            topic_reset = bool(old_entry.origin and is_group_topic(old_entry.origin) and self._db_for_key(session_key))
+            if topic_reset:
+                reset_topic(self._db_for_key(session_key), parent_id=old_entry.session_id, create_kwargs=db_create_kwargs)
             new_entry = self._replace_route_locked(
                 session_key, old_entry, session_id, now,
                 display_name=display_name if display_name is not None else old_entry.display_name,
                 is_fresh_reset=True,
             )
         try:
-            self._finish_route_transition(
-                session_key, end_session_id=old_entry.session_id, end_reason="session_reset",
-                create_kwargs=db_create_kwargs, origin=old_entry.origin,
-                display_name=new_entry.display_name, during=" during reset",
-            )
+            if not topic_reset:
+                self._finish_route_transition(
+                    session_key, end_session_id=old_entry.session_id, end_reason="session_reset",
+                    create_kwargs=db_create_kwargs, origin=old_entry.origin,
+                    display_name=new_entry.display_name, during=" during reset",
+                )
         finally:
             self._row_settled(session_id)
         self._announce_route(session_key, new_entry)
@@ -1243,7 +1249,11 @@ class SessionStore(
             transport_profile=old_entry.transport_profile, **fields,
         )
         self._entries[session_key] = new_entry
-        self._save()
+        try:
+            self._save()
+        except Exception:
+            self._entries[session_key] = old_entry
+            raise
         self._rows_pending.add(session_id)  # after the save: a raising save leaves nothing pending
         return new_entry
 
@@ -1352,7 +1362,7 @@ class SessionStore(
     # restart-resume freshness gate (#85709).
     def switch_session(
         self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,
-        preserve_prompt_pin: bool = True,
+        preserve_prompt_pin: bool = True, require_live_target: bool = False,
     ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
         reopens the target so resume matches the CLI.
@@ -1361,10 +1371,13 @@ class SessionStore(
         the key no longer points at that session, so a caller that resolved against a snapshot
         across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
         Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
-        starts a different conversation on the same routing key.
+        starts a different conversation on the same routing key. ``require_live_target`` permits
+        automatic-cleanup recovery but transactionally refuses deliberate retirement.
         """
         with self._lock:
             old_entry = self._entry_locked(session_key)
+            db = self._db_for_key(session_key)
+            fresh_boundary = bool(db and db.get_session_model_config_value(target_session_id, "_reset_from"))
             refused = old_entry is None or (
                 expected_session_id is not None and old_entry.session_id != expected_session_id)
             if refused and old_entry is not None:
@@ -1372,6 +1385,9 @@ class SessionStore(
                     "Session switch for %s refused: route moved from %s to %s after the caller's snapshot",
                     session_key, expected_session_id, old_entry.session_id,
                 )
+            if not refused and require_live_target:
+                if db is None or not db.reopen_session(target_session_id, automatic_only=True):
+                    return None
             # Adopt a delegate target under the route lock, after the CAS and BEFORE the route moves: a
             # failed marker write leaves the old route intact, and a refused switch never adopts, so it
             # has nothing to undo that an overlapping successful switch onto the same row relies on.
@@ -1381,7 +1397,7 @@ class SessionStore(
                 new_entry = self._replace_route_locked(
                     session_key, old_entry, target_session_id, _now(),
                     display_name=old_entry.display_name, model_override=old_entry.model_override,
-                    yolo=old_entry.yolo,
+                    yolo=None if fresh_boundary else old_entry.yolo,
                     prompt_pin=(
                         dict(old_entry.prompt_pin)
                         if preserve_prompt_pin and old_entry.prompt_pin is not None else None
@@ -1408,9 +1424,10 @@ class SessionStore(
                 # An explicit /resume/handoff/branch repoint is real user activity: the row is
                 # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
                 # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.
-                self._reopen_session_row(
-                    session_key, target_session_id, log_prefix="Session DB reopen_session failed"
-                )
+                if not require_live_target:
+                    self._reopen_session_row(
+                        session_key, target_session_id, log_prefix="Session DB reopen_session failed"
+                    )
                 self._record_gateway_session_peer(
                     target_session_id, session_key, new_entry.origin,
                     display_name=new_entry.display_name, include_compression_ancestors=True,

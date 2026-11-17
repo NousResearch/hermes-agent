@@ -330,7 +330,8 @@ class GatewaySessionCommandsMixin:
             header = await self._reset_titled_header(header, new_entry.session_id, _title_arg)
         # Telegram DM topic lane: rebind (chat_id, thread_id) → session_id so the next message uses
         # the fresh session instead of switching back to the old one.
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source) and new_entry is not None:
+        from gateway.fresh_session.settlement import is_group_topic
+        if new_entry is not None and (is_group_topic(source) or await asyncio.to_thread(self._is_telegram_topic_lane, source)):
             try:
                 await asyncio.to_thread(self._record_telegram_topic_binding, source, new_entry)
             except Exception:

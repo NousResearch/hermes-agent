@@ -354,7 +354,7 @@ async def execute_admission(authority, ref, row):
     from gateway.session_operator import is_viewer_input
     viewer_token = viewer_turn.set(live if is_viewer_input(row) else None)
     api_token = api_execution.set(None)
-    captured = {}
+    captured = {'admission': row}
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
@@ -499,6 +499,8 @@ async def deliver_settled(authority, admission_id):
     finally:
         # Held until the send returns: an empty map means every settled reply was handed over.
         authority.pending_deliveries.pop(admission_id, None)
+        event._hermes_reply_delivered = delivered
+        getattr(event, '_hermes_reply_delivery_done', asyncio.Event()).set()
         # The ledgered send already released the marker; an empty or failed send owes no more.
         await _release_turn_marker(authority, event)
         await close_producer_turn(
@@ -573,6 +575,8 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             await adapter._notify_turn_error(delivery_event, exc)
         finally:
             settle_busy_arrival(event)
+            event._hermes_reply_delivered = delivered
+            getattr(event, '_hermes_reply_delivery_done', asyncio.Event()).set()
             await close_observed_turn(event, delivered)
             # Clears the marker if no ledgered send did, then wakes the drain's bounded wait,
             # which listens on the adopter (``event``).

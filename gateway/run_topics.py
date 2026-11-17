@@ -174,7 +174,8 @@ class GatewayTopicThreadsMixin:
         Telegram topic lanes persist a (chat_id, thread_id) -> session_id row so reopening a topic in a
         fresh process resumes the right Hermes session. See #20470, #29712, #33414.
         """
-        if not self._is_telegram_topic_lane(source):
+        from gateway.fresh_session.settlement import is_group_topic
+        if not (is_group_topic(source) or self._is_telegram_topic_lane(source)):
             return
         try:
             self._record_telegram_topic_binding(source, session_entry)

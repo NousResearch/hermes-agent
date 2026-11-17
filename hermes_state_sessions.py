@@ -21,7 +21,7 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
-    _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
+    _source_match_clause, emit_session_deleted, launch_stub_filter_sql, is_automatic_end_reason,
 )
 from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
 
@@ -518,12 +518,19 @@ class SessionSessionsMixin:
         return self._execute_write(
             lambda conn: self._retire_undrained_queue_rows_conn(conn, session_id))
 
-    def reopen_session(self, session_id: str) -> None:
+    def reopen_session(self, session_id: str, *, automatic_only: bool = False) -> bool:
         """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
         children, skipping explicit fork/delegate provenance and children that predate the parent itself.
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
-        reopened and re-ended later still owns reset children from its earlier boundaries."""
+        reopened and re-ended later still owns reset children from its earlier boundaries.
+        automatic_only atomically refuses missing/deliberate ends; live rows pass unchanged."""
         def _do(conn):
+            if automatic_only:
+                row = conn.execute("SELECT ended_at, end_reason FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                if row is None or (row["ended_at"] is not None and not is_automatic_end_reason(row["end_reason"])):
+                    return False
+                if row["ended_at"] is None:
+                    return True
             self._retire_undrained_queue_rows_conn(conn, session_id)
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
@@ -541,7 +548,8 @@ class SessionSessionsMixin:
             )
             # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
             self._unarchive_auto_archived_lineage(conn, session_id)
-        self._execute_write(_do)
+            return True
+        return self._execute_write(_do)
 
     def promote_to_session_reset(self, session_id: str, reason: str = "session_reset") -> bool:
         """Durably mark an intentional reset boundary on live rows or rows with a *recoverable* accidental

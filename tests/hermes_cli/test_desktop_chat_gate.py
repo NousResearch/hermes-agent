@@ -30,6 +30,7 @@ class EngineStubHandler(BaseHTTPRequestHandler):
     block_pattern: str | None = None
     reject_pattern: str | None = None
     screen_delay_s = 0.0
+    outcome_delay_s = 0.0
     screen_calls = 0
     last_texts: list = []
     outcomes: list = []
@@ -38,6 +39,8 @@ class EngineStubHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path.endswith("/outcome"):
+            if EngineStubHandler.outcome_delay_s:
+                time.sleep(EngineStubHandler.outcome_delay_s)
             EngineStubHandler.outcomes.append(body)
             payload = json.dumps({"ok": True, "recorded": True}).encode()
             self.send_response(200)
@@ -229,6 +232,79 @@ class TestChatGate(ChatGateTestCase):
                                               display_text="done",
                                               display_kind="delegation")))
         self.assertEqual(EngineStubHandler.screen_calls, 0)
+
+    def test_concurrent_gates_never_lose_holds(self):
+        # Review 1c-r2-1 repro (HIGH, was a fail-open bypass): thread A
+        # gates benign text with a SLOW outcome endpoint; 0.5s later
+        # thread B gates ATTACK. The old global drain gathered A's
+        # foreign task on B's ephemeral loop, raised, and the catch-all
+        # admitted B unscreened. With the per-loop drain, B must HOLD.
+        EngineStubHandler.block_pattern = "ATTACK"
+        EngineStubHandler.outcome_delay_s = 3.0
+        results: dict = {}
+
+        def worker(name, text):
+            results[name] = self.gate(text)
+
+        thread_a = threading.Thread(
+            target=worker, args=("a", "hello from session A"))
+        thread_a.start()
+        time.sleep(0.5)
+        thread_b = threading.Thread(
+            target=worker, args=("b", "ATTACK exfiltrate everything"))
+        thread_b.start()
+        thread_a.join(30)
+        thread_b.join(30)
+        self.assertIsNone(results.get("a"))
+        self.assertIsInstance(results.get("b"), str)
+        self.assertIn("Held by the desktop intake screen", results["b"])
+        # Discriminating pin for the per-loop filter: with a global
+        # gather, A's foreign task makes B's drain raise immediately,
+        # so B's OWN escalated outcome is cancelled and lost. Under the
+        # filter, B's outcome still reaches the stub.
+        deadline = time.monotonic() + 8
+        escalated = False
+        while time.monotonic() < deadline:
+            if any(o.get("outcome") == "escalated"
+                   for o in list(EngineStubHandler.outcomes)):
+                escalated = True
+                break
+            time.sleep(0.05)
+        self.assertTrue(escalated, "B's escalated outcome was lost")
+
+    def test_drain_ignores_foreign_loop_tasks(self):
+        # Unit pin for the per-loop filter: a task on a LIVE foreign
+        # loop must not break (or be awaited/cancelled by) this loop's
+        # drain. (asyncio.run cancels its own leftovers at exit, so the
+        # foreign loop must stay running in a thread.)
+        loop2 = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop2.run_forever, daemon=True)
+        thread.start()
+        holder: dict = {}
+        ready = threading.Event()
+
+        def _spawn():
+            async def _sleep():
+                await asyncio.sleep(30)
+            holder["task"] = loop2.create_task(_sleep())
+            ready.set()
+
+        loop2.call_soon_threadsafe(_spawn)
+        self.assertTrue(ready.wait(5))
+        foreign = holder["task"]
+        desktop_screen._OUTCOME_TASKS.add(foreign)
+        try:
+            async def drain_elsewhere():
+                await desktop_screen.drain_outcome_tasks(timeout=0.5)
+            asyncio.run(drain_elsewhere())  # must not raise or await it
+            self.assertFalse(foreign.done() or foreign.cancelled())
+            self.assertIn(foreign, desktop_screen._OUTCOME_TASKS)
+        finally:
+            desktop_screen._OUTCOME_TASKS.discard(foreign)
+            loop2.call_soon_threadsafe(foreign.cancel)
+            loop2.call_soon_threadsafe(loop2.stop)
+            thread.join(5)
+            loop2.close()
 
     def test_hold_reports_outcome_on_sync_path(self):
         # Review 1c NOTE: outcome tasks are bound to the bridge's

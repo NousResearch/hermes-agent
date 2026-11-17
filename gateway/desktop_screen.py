@@ -247,17 +247,34 @@ def _spawn_outcome_report(result: dict, outcome: str, note: str,
 
 async def drain_outcome_tasks(timeout: float = 5.0) -> None:
     """Best-effort wait for pending outcome reports (tests, clean
-    shutdown). Never raises: a stuck report is logged by the task
-    callback and forgotten."""
-    if _OUTCOME_TASKS:
+    shutdown, the sync chat bridge). Never raises, and never touches
+    tasks bound to OTHER loops: ``_OUTCOME_TASKS`` is module-global
+    while gates may run on several threads' ephemeral loops at once -
+    gathering a foreign task raises "future belongs to a different
+    loop", which in the chat bridge used to escape and discard an
+    already-computed hold verdict (review 1c-r2-1). Only this loop's
+    own tasks are awaited; done/foreign leftovers are pruned from the
+    set so it cannot grow without bound."""
+    if not _OUTCOME_TASKS:
+        return
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    mine = [t for t in list(_OUTCOME_TASKS) if t.get_loop() is running]
+    if mine:
         try:
             await asyncio.wait_for(
-                asyncio.gather(*list(_OUTCOME_TASKS),
-                               return_exceptions=True),
+                asyncio.gather(*mine, return_exceptions=True),
                 timeout=timeout)
-        except TimeoutError:
-            for stuck in list(_OUTCOME_TASKS):
+        except Exception:
+            # A stuck/slow report is cancelled below or logged by the
+            # task callback; the drain itself must never raise.
+            for stuck in mine:
                 stuck.cancel()
+    for finished in list(_OUTCOME_TASKS):
+        if finished.done():
+            _OUTCOME_TASKS.discard(finished)
 
 
 def submit_texts(params) -> list:
@@ -625,7 +642,12 @@ def _screen_texts_sync(subject: str, session_id: str, texts: list) -> tuple:
             # Outcome reports are fire-and-forget tasks bound to THIS
             # loop; asyncio.run cancels pending tasks on exit, which
             # would silently lose desktop-chat hold/allow telemetry.
-            await drain_outcome_tasks(timeout=2.0)
+            # The drain is per-loop (review 1c-r2-1) and must never be
+            # able to discard the verdict already computed.
+            try:
+                await drain_outcome_tasks(timeout=2.0)
+            except Exception:
+                pass
             return held, reasons
 
         return asyncio.run(_screen_all())

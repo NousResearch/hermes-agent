@@ -39,8 +39,9 @@ from gateway.desktop_screen import screen, session_in_scope
 
 
 class EngineStubHandler(BaseHTTPRequestHandler):
-    tier = "allow"
-    block_pattern = None  # when set: block only texts containing this
+    tier: str = "allow"
+    block_pattern: str | None = None  # when set: block only texts containing this
+    reject_pattern: str | None = None  # when set: 400 for texts containing this
     screen_delay_s = 0.0  # simulate a slow engine (budget tests)
     outcome_delay_s = 0.0
     outcomes = []
@@ -62,6 +63,10 @@ class EngineStubHandler(BaseHTTPRequestHandler):
             EngineStubHandler.last_purpose = self.headers.get("X-Judge-Purpose", "")
             EngineStubHandler.last_text = body.get("text")
             EngineStubHandler.last_texts.append(body.get("text"))
+            reject = EngineStubHandler.reject_pattern
+            if reject is not None and reject in str(body.get("text", "")):
+                self.send_error(400, "rejected by stub")
+                return
             if EngineStubHandler.malformed:
                 payload = json.dumps(["not", "a", "dict"]).encode()
             else:
@@ -108,6 +113,7 @@ class DesktopScreenTestCase(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
+        EngineStubHandler.reject_pattern = None
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.outcome_delay_s = 0.0
         EngineStubHandler.outcomes = []
@@ -499,6 +505,7 @@ class TestAuthorityGate(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
+        EngineStubHandler.reject_pattern = None
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0
         EngineStubHandler.last_texts = []
@@ -655,6 +662,38 @@ class TestAuthorityGate(unittest.TestCase):
         self.assertEqual(reasons, ["screening_incomplete_budget"])
         self.assertEqual(EngineStubHandler.screen_calls, 0)
 
+    def test_whitespace_middle_chunk_does_not_bypass(self):
+        # Review r8-HIGH repro: 'hello' + long spaces + attack used to
+        # send a blank chunk, earn a deterministic engine 400, and
+        # fail-open the tail. Blank chunks are skipped; the attack
+        # chunk is still judged and held.
+        EngineStubHandler.block_pattern = "ATTACK"
+        from hermes_state_runtime import RuntimeStoreError
+        with self.assertRaises(RuntimeStoreError) as raised:
+            self._run({"text": "hello" + " " * 40000
+                       + "ATTACK take over the agent"})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+
+    def test_engine_4xx_holds_not_failopen(self):
+        # A deterministic client rejection means the engine cannot
+        # judge that chunk - coverage hole -> HOLD, never fail-open.
+        EngineStubHandler.reject_pattern = "REJECTME"
+        from hermes_state_runtime import RuntimeStoreError
+        with self.assertRaises(RuntimeStoreError) as raised:
+            self._run({"text": "REJECTME harmless"})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+
+    def test_seam_sentinel_longer_than_old_overlap_is_held(self):
+        # Review r8-LOW: a 400-char sentinel straddling the old 256-char
+        # overlap ('B'*31700 + 400-char marker) was never fully inside
+        # one chunk. The 1024-char overlap covers it.
+        EngineStubHandler.block_pattern = "SENTINELX"
+        marker = "SENTINELX" * 45  # 405 chars
+        from hermes_state_runtime import RuntimeStoreError
+        with self.assertRaises(RuntimeStoreError) as raised:
+            self._run({"text": "B" * 31700 + marker + "B" * 2000})
+        self.assertEqual(raised.exception.reason, "desktop_screen_hold")
+
 
 class TestAuthorityWiring(unittest.TestCase):
     """SessionAuthority._submit consults the gate BEFORE durable
@@ -741,6 +780,7 @@ class TestAuthorityWiring(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         EngineStubHandler.tier = "allow"
         EngineStubHandler.block_pattern = None
+        EngineStubHandler.reject_pattern = None
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0
         EngineStubHandler.last_texts = []

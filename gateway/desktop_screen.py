@@ -92,6 +92,7 @@ import logging
 import math
 import os
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -99,8 +100,8 @@ logger = logging.getLogger("hermes.gateway.desktop_screen")
 
 from hermes_state_runtime import RuntimeStoreError
 
-MAX_TEXT_CHARS = 32000  # per-chunk cap (engine limit is 64 KiB)
-_SEAM_OVERLAP = 256     # carry-over chars so chunk seams cannot split a payload
+MAX_TEXT_CHARS = 32000  # per-chunk chars (engine rejects > 64*1024 chars)
+_SEAM_OVERLAP = 1024    # carry-over; payloads up to ~1 KB cannot hide in a seam
 _MAX_SCREEN_CHARS = 4_000_000  # above this the submit is HELD (never truncated)
 _SCREEN_BUDGET_S = 6.0  # hard cap for one submit's total screening
 
@@ -440,6 +441,12 @@ async def _screen_inner(subject: str, session_id: str, text: str,
     result = None
     tail_reasons: list = []
     for index, chunk in enumerate(chunks):
+        if not chunk.strip():
+            # Review r8-HIGH: a whitespace-only chunk carries no
+            # payload, and sending it earns a deterministic engine
+            # 400 that used to fail the whole tail open. Skip it.
+            _log(dict(base, tier="blank_chunk_skipped", chunk=index))
+            continue
         spent = _SCREEN_BUDGET_S - (deadline - time.monotonic())
         if time.monotonic() >= deadline:
             # Coverage invariant: a tail we could not judge in budget
@@ -455,10 +462,19 @@ async def _screen_inner(subject: str, session_id: str, text: str,
             if not isinstance(result, dict):
                 raise ValueError(f"non-dict engine response: {type(result)!r}")
         except Exception as err:
-            # Review r7-2: a call that timed out at the END of the
-            # budget is coverage exhaustion, not engine failure - HOLD.
-            # A genuine engine failure mid-budget stays fail-open
+            # Review r8-HIGH (defence in depth): a deterministic client
+            # rejection (4xx) means the engine CANNOT judge this chunk -
+            # that is a coverage hole, so HOLD. A transport failure at
+            # the budget boundary is coverage exhaustion, also HOLD.
+            # Only a genuine mid-budget engine failure stays fail-open
             # (Phase 2: a dead engine must not lock the owner out).
+            rejected = (isinstance(err, urllib.error.HTTPError)
+                        and 400 <= int(getattr(err, "code", 0) or 0) < 500)
+            if rejected:
+                _log(dict(base, tier="engine_rejected_chunk",
+                          chunk=index, judged=judged, chunks=len(chunks),
+                          error=str(err)[:120]))
+                return True, ["engine_rejected_chunk"]
             if time.monotonic() >= deadline - 0.5:
                 _log(dict(base, tier="screening_incomplete_budget",
                           chunk=index, judged=judged, chunks=len(chunks),

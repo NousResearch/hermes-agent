@@ -137,7 +137,8 @@ def handle_api_error(
     )
     # The provider's own words for the switch notice, should this error end in a fallback.
     summarize = getattr(agent, "_summarize_api_error", None)
-    agent._fallback_trigger = (classified.reason, summarize(api_error) if callable(summarize) else str(api_error))
+    from agent.fallback_notice import record_fallback_trigger
+    record_fallback_trigger(agent, classified.reason, str(summarize(api_error) if callable(summarize) else api_error))
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,

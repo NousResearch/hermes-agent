@@ -1974,6 +1974,11 @@ DEFAULT_CONFIG = {
         # the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
     },
+    # Hosted artifacts: the Nous-managed `hermes-artifacts` MCP server joins new sessions when the
+    # signed-in Nous account has artifacts access and paid access. `enabled: false` is the off
+    # switch; an empty `base_url` uses the relay connector's origin when one is configured, and
+    # otherwise leaves the server out.
+    "artifacts": {"enabled": True, "base_url": ""},
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation

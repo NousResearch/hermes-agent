@@ -1,0 +1,220 @@
+"""The hosted artifacts MCP server attaches only for an entitled Nous profile, only at session start."""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from hermes_cli.nous_account import _info_from_account_payload
+from tools import hosted_artifacts as ha
+
+BASE = "https://artifacts.example.test"
+URL = BASE + ha.MCP_PATH
+
+
+def _account(**payload):
+    body = {"user": {"email": "a@example.test"}, "organisation": {"id": "org_1"},
+            "paid_service_access": {"paid_access": True}, "artifacts_access": True}
+    body.update(payload)
+    return _info_from_account_payload(body, state={"access_token": "t"}, portal_base_url=None)
+
+
+def _decide(config=None, account=None, relay=""):
+    return ha.decide(config or ha.ArtifactsConfig(base_url=BASE),
+                     account_reader=lambda: account if account is not None else _account(),
+                     relay_origin=lambda: relay)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_decisions():
+    ha.reset_decisions()
+    yield
+    ha.reset_decisions()
+
+
+def test_entitled_account_attaches_at_the_contract_path():
+    decision = _decide()
+    assert decision.attach and decision.url == URL
+
+
+@pytest.mark.parametrize("payload, reason", [
+    ({"paid_service_access": {"paid_access": False}}, ha.Reason.not_entitled),
+    ({"paid_service_access": None}, ha.Reason.not_entitled),
+    ({"artifacts_access": False}, ha.Reason.not_enabled),
+    ({"artifacts_access": None}, ha.Reason.not_enabled),
+    ({"artifacts_access": "true"}, ha.Reason.not_enabled),
+])
+def test_account_without_both_flags_is_not_attached(payload, reason):
+    decision = _decide(account=_account(**payload))
+    assert not decision.attach and decision.reason is reason and decision.url is None
+
+
+def test_signed_out_profile_is_not_attached():
+    signed_out = SimpleNamespace(logged_in=False, source="none")
+    assert _decide(account=signed_out).reason is ha.Reason.not_logged_in
+
+
+def test_jwt_snapshot_is_not_an_account_read():
+    snapshot = SimpleNamespace(logged_in=True, source="jwt", raw_account=None,
+                               paid_service_access_info=SimpleNamespace(paid_access=True))
+    assert _decide(account=snapshot).reason is ha.Reason.account_unreadable
+
+
+def test_account_fetch_failure_fails_closed():
+    def boom():
+        raise OSError("portal unreachable")
+    decision = ha.decide(ha.ArtifactsConfig(base_url=BASE), account_reader=boom, relay_origin=lambda: "")
+    assert decision.reason is ha.Reason.account_unreadable and not decision.attach
+
+
+@pytest.mark.parametrize("raw", [{"enabled": False}, {"enabled": "false"}, {"enabled": "off"}, {"enabled": 0}])
+def test_disabled_config_never_reads_the_account(raw):
+    def unread():
+        raise AssertionError("account read while disabled")
+    config = ha.ArtifactsConfig.from_raw({**raw, "base_url": BASE})
+    assert ha.decide(config, account_reader=unread).reason is ha.Reason.disabled
+
+
+def test_enabled_by_default():
+    assert ha.ArtifactsConfig.from_raw(None).enabled and ha.ArtifactsConfig.from_raw({}).enabled
+
+
+def test_no_base_url_and_no_relay_is_not_attached():
+    assert _decide(ha.ArtifactsConfig(), relay="").reason is ha.Reason.no_base_url
+
+
+def test_relay_origin_is_the_default_base_url():
+    decision = _decide(ha.ArtifactsConfig(), relay="https://relay.example.test")
+    assert decision.url == "https://relay.example.test" + ha.MCP_PATH
+
+
+@pytest.mark.parametrize("base, url", [
+    ("https://a.example.test/some/path/", "https://a.example.test" + ha.MCP_PATH),
+    ("http://127.0.0.1:8123", "http://127.0.0.1:8123" + ha.MCP_PATH),
+    ("http://gg.localhost:9000", "http://gg.localhost:9000" + ha.MCP_PATH),
+    ("http://a.example.test", None),
+    ("ftp://a.example.test", None),
+    ("not a url", None),
+])
+def test_bearer_only_goes_over_https_or_to_a_local_host(base, url):
+    decision = _decide(ha.ArtifactsConfig(base_url=base))
+    assert decision.url == url
+    if url is None:
+        assert decision.reason is ha.Reason.insecure_base_url
+
+
+def test_decision_is_cached_per_profile_until_the_ttl(monkeypatch):
+    calls = []
+    clock = [100.0]
+
+    def reader():
+        calls.append(1)
+        return _account()
+    config = ha.ArtifactsConfig(base_url=BASE)
+    first = ha.cached_decision(config, now=lambda: clock[0], account_reader=reader, relay_origin=lambda: "")
+    ha.cached_decision(config, now=lambda: clock[0], account_reader=reader, relay_origin=lambda: "")
+    assert first.attach and len(calls) == 1
+    clock[0] += ha.DECISION_TTL_SECONDS
+    ha.cached_decision(config, now=lambda: clock[0], account_reader=reader, relay_origin=lambda: "")
+    assert len(calls) == 2
+
+
+def test_attach_to_adds_and_replaces_only_when_entitled(monkeypatch):
+    monkeypatch.setattr(ha, "_read_account", _account)
+    servers = {"hermes-artifacts": {"url": "https://evil.example.test/mcp", "auth": "nous"}, "other": {"url": "x"}}
+    ha.attach_to(servers, {"artifacts": {"base_url": BASE}})
+    assert servers["hermes-artifacts"] == {"url": URL, "auth": "nous"} and servers["other"] == {"url": "x"}
+
+    ha.reset_decisions()
+    monkeypatch.setattr(ha, "_read_account", lambda: _account(artifacts_access=False))
+    servers = {}
+    ha.attach_to(servers, {"artifacts": {"base_url": BASE}})
+    assert servers == {}
+
+
+def _write_config(home, data):
+    (home / "config.yaml").write_text(json.dumps(data), encoding="utf-8")  # JSON is YAML
+
+
+def test_load_mcp_config_carries_the_managed_server_for_an_entitled_profile(tmp_path, monkeypatch):
+    from tools import mcp_tool_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, {"artifacts": {"base_url": BASE}, "mcp_servers": {"mine": {"url": "https://m.example.test/mcp"}}})
+    monkeypatch.setattr(ha, "_read_account", _account)
+    servers = mcp_tool_config._load_mcp_config()
+    assert servers[ha.SERVER_NAME] == {"url": URL, "auth": "nous"}
+    assert "mine" in servers
+
+    ha.reset_decisions()
+    _write_config(tmp_path, {"artifacts": {"enabled": False, "base_url": BASE}})
+    assert ha.SERVER_NAME not in mcp_tool_config._load_mcp_config()
+
+
+def test_nous_auth_is_refused_for_any_other_url(monkeypatch):
+    monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
+    monkeypatch.setattr(ha, "_read_account", _account)
+    with pytest.raises(ValueError, match="reserved"):
+        ha.nous_bearer_auth("https://elsewhere.example.test" + ha.MCP_PATH)
+
+
+def test_nous_auth_sends_a_fresh_token_each_request(monkeypatch):
+    import httpx
+
+    from hermes_cli import auth as hermes_auth
+
+    monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
+    monkeypatch.setattr(ha, "_read_account", _account)
+    tokens = iter(["tok-1", "tok-2"])
+    monkeypatch.setattr(hermes_auth, "resolve_nous_access_token", lambda **_: next(tokens))
+    auth = ha.nous_bearer_auth(URL)
+    seen = []
+    for _ in range(2):
+        request = httpx.Request("POST", URL)
+        flow = auth.sync_auth_flow(request)
+        seen.append(next(flow).headers["Authorization"])
+    assert seen == ["Bearer tok-1", "Bearer tok-2"]
+
+
+def test_nous_auth_is_refused_when_not_entitled(monkeypatch):
+    monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
+    monkeypatch.setattr(ha, "_read_account", lambda: _account(paid_service_access={"paid_access": False}))
+    with pytest.raises(ValueError):
+        ha.nous_bearer_auth(URL)
+
+
+class _Agent:
+    def __init__(self, session_id="s1"):
+        self.session_id = session_id
+        self.platform = "cli"
+
+
+def test_session_started_without_the_server_never_gains_it(monkeypatch):
+    import toolsets
+
+    registered = set()
+    monkeypatch.setattr(ha, "_registered_tool_names", lambda: frozenset(registered))
+    agent = _Agent("late")
+    assert ha.contract_tool_names() <= toolsets.agent_tool_drops(agent)  # first load latches "absent"
+    registered.update(ha.contract_tool_names())  # discovery finishes mid-session
+    assert ha.contract_tool_names() <= toolsets.agent_tool_drops(agent)
+    rebuilt = _Agent("late")  # same conversation rebuilt in this process
+    assert ha.contract_tool_names() <= toolsets.agent_tool_drops(rebuilt)
+    assert not (ha.contract_tool_names() & toolsets.agent_tool_drops(_Agent("new-session")))
+
+
+def test_session_started_with_the_server_keeps_it(monkeypatch):
+    registered = set(ha.contract_tool_names())
+    monkeypatch.setattr(ha, "_registered_tool_names", lambda: frozenset(registered))
+    agent = _Agent("early")
+    assert ha.late_attach_drops(agent) == frozenset()
+    registered.clear()
+    assert ha.late_attach_drops(agent) == frozenset()
+
+
+def test_probe_constant_is_stable():
+    assert ha.HOSTED_ARTIFACTS_CLIENT_VERSION >= 1
+    assert ha.SERVER_NAME == "hermes-artifacts" and ha.MCP_PATH == "/v1/artifacts/mcp"
+    assert "mcp__hermes_artifacts__artifact_show" in ha.contract_tool_names()

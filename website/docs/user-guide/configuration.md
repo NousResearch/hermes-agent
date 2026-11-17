@@ -1029,6 +1029,25 @@ The MCP threshold is always capped at the (possibly context-scaled) generic per-
 
 Hermes also flags **provider-side elision**: when an MCP or web tool result embeds its own truncation markers (`...N more items`, `"has_more": true`, "saved to sandbox" notes), a one-line notice is appended to the result warning that the visible data is incomplete and should be paged/fetched before treating any enumeration as complete.
 
+## Hosted Artifacts
+
+When you are signed in to Nous and your account has artifacts access and paid access, new
+sessions get the `hermes-artifacts` MCP server: the agent can publish HTML, SVG, Markdown, code
+and images as versioned artifacts and hand you a viewer link (the desktop app renders them
+inline). The server joins a session only when the session starts; a session that started
+without it never gains it mid-conversation.
+
+```yaml
+artifacts:
+  enabled: true     # set false to never attach the server
+  base_url: ""      # artifacts gateway origin; empty = the relay connector's origin when set
+```
+
+With `base_url` empty and no relay connector configured, the server stays off. A `base_url` must
+be `https://`, or `http://` to a loopback or `*.localhost` host. The connection sends your Nous
+access token, refreshed as needed, to that server only. While the server is attached it replaces
+any `mcp_servers.hermes-artifacts` entry of your own.
+
 ## Global Toolset Disable
 
 To suppress specific toolsets across the CLI and every gateway platform in one

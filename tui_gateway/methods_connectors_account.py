@@ -38,6 +38,7 @@ def _account_method(params_model=None, *, creates_guest, invalid="", invalid_rea
                     return _connector_auth_error(rid, exc)
                 except Exception as exc:
                     if getattr(exc, "code", None) == "org_required":
+                        from tui_gateway.contracts.connectors import ConnectorErrorReason
                         return _connector_rpc_error(
                             rid, 4090, ConnectorErrorReason.org_required, "Select an organization to manage connector rules."
                         )

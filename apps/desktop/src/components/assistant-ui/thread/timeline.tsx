@@ -7,6 +7,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { onThreadMessageJumpRequest } from '@/store/thread-scroll'
 import { $hideThreadTimeline } from '@/store/thread-timeline'
 
 import { messageContentText } from './content'
@@ -40,6 +41,7 @@ export const ThreadTimeline: FC = () => {
 
 const ActiveThreadTimeline: FC = () => {
   const view = useSessionView()
+  const storedId = useStore(view.$storedId)
   const { t } = useI18n()
   const history = useTranscriptWindow()
   const historyIndex = useTimelineHistory()
@@ -237,6 +239,36 @@ const ActiveThreadTimeline: FC = () => {
       }
     },
     [cancelJump, indexedEntries, indexComplete, indexFailed, loadMore, railEntries]
+  )
+
+  // Rebindable keybinds arrive as session-keyed intents; the rail owns the
+  // message list and the active index, so it decides which jump target that
+  // means. Refs avoid re-arming the bridge on every scroll tick.
+  const activeIndexRef = useRef(activeIndex)
+  activeIndexRef.current = activeIndex
+  const railEntriesRef = useRef(railEntries)
+  railEntriesRef.current = railEntries
+
+  useEffect(
+    () =>
+      onThreadMessageJumpRequest(direction => {
+        const all = railEntriesRef.current
+        const currentId = all[Math.min(all.length - 1, Math.max(0, activeIndexRef.current))]?.id
+        const messages = all.filter(entry => entry.id !== EARLIER_TIMELINE_ID)
+
+        if (!messages.length) {
+          return
+        }
+
+        const current = messages.findIndex(entry => entry.id === currentId)
+        const from = current < 0 ? 0 : current
+        const target = messages[from + direction]
+
+        if (target && target.id !== messages[from]?.id) {
+          void jump(target.id)
+        }
+      }, storedId),
+    [jump, storedId]
   )
 
   useEffect(() => {

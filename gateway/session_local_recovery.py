@@ -1,6 +1,7 @@
 """Restore only private, profile-bound local policy into the existing authority."""
 import asyncio
 import contextlib
+from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
@@ -10,7 +11,7 @@ from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
 from hermes_state_keys import local_identity
 from hermes_state_local import POLICY_PREFIX, local_receipt
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_state_runtime import RuntimeStoreError, get_session_admission, list_session_admissions
 
 
 def local_adapter_map(authority):
@@ -255,11 +256,14 @@ def _route_already_restored(store, route, target, lineage):
     return current is not None and current.session_id == target and target in lineage
 
 
-def transcript_target(authority, ref):
+def transcript_target(authority, ref, *, restore=True):
     """The current physical transcript of logical *ref* (a local receipt's entry, else the tip)."""
-    live = authority.sessions[ref.session_id]
+    live = authority.sessions.get(ref.session_id)
+    if live is None:
+        raise RuntimeStoreError('not_found')
     if live.source is not None and live.source.platform == Platform.LOCAL:
-        restore_local_session(authority, ref.session_id)
+        if restore:
+            restore_local_session(authority, ref.session_id)
         return local_receipt(authority.db, ref.session_id)['entry']['session_id']
     return authority.physical_target(ref)
 
@@ -304,10 +308,44 @@ def _fit_archive(live_rows, display):
     return kept[::-1], truncated
 
 
-async def prepare_history(authority, ref):
-    """``local_history``'s lineage read, off the owner loop; the locked part re-reads only the live tip."""
-    target = transcript_target(authority, ref)
-    return target, await asyncio.to_thread(display_rows, authority.db, target)
+async def prepare_history(authority, ref, *, include_display=False):
+    """Restore/catch up the physical target off-loop, before attach takes its mutation lock.
+    Hosted history callers also prepare display rows; attach reads them once in its final snapshot."""
+    def read():
+        target = transcript_target(authority, ref)
+        return target, display_rows(authority.db, target) if include_display else None
+    return await asyncio.to_thread(read)
+
+
+@dataclass(frozen=True)
+class AttachRead:
+    row: dict
+    pending: list[dict]
+    transfers: list[dict]
+    history: tuple
+    target: str | None
+
+
+def read_attach(authority, ref, *, history, transfer_ids):
+    """One DB generation for attach, without holding the stream lock. The pool's writer fallback
+    can wait indefinitely, so this entire read (including receipt catch-up) belongs on a worker."""
+    db = authority.db
+    transcript_target(authority, ref)  # a local receipt may need a compression catch-up write
+    for _ in range(4):
+        with db.transcript_read_snapshot() as consistent:
+            session = db.get_session(ref.session_id)
+            if session is None:
+                raise RuntimeStoreError('not_found')
+            target = transcript_target(authority, ref, restore=False)
+            # Compaction can supersede the target catch-up preflight; display/live rows share this snapshot.
+            rows = tuple(local_history(authority, ref, target=target)) if history else ()
+            pending = list_session_admissions(db, session_id=ref.session_id)
+            transfers = [row for admission_id in transfer_ids
+                         if (row := get_session_admission(db, admission_id=admission_id)) is not None]
+            result = AttachRead(session, pending, transfers, rows, None if history else target)
+            if consistent():
+                return result
+    raise RuntimeStoreError('storage_unavailable', detail='the attach read kept changing')
 
 
 def omitted_history_state(db, target):
@@ -347,7 +385,7 @@ def _merge_live_in_stored_order(display, live):
     return rows + pending
 
 
-def local_history(authority, ref, prepared=None):
+def local_history(authority, ref, prepared=None, *, target=None):
     """Display history of logical *ref*: every stored row the user saw, in display order.
 
     A row outside the current physical transcript's active set (summarized away by a compression)
@@ -364,9 +402,9 @@ def local_history(authority, ref, prepared=None):
     (``display_rows``), the first row carries ``archived_truncated: true``.
     """
     db = authority.db
-    target = transcript_target(authority, ref)
-    read_live, display, truncated = (prepared[1] if prepared is not None and prepared[0] == target
-                                     else display_rows(db, target))
+    target = transcript_target(authority, ref) if target is None else target
+    cached = prepared[1] if prepared is not None and prepared[0] == target else None
+    read_live, display, truncated = cached if cached is not None else display_rows(db, target)
     live = db.get_messages_as_conversation(target, include_row_ids=True)
     live_ids = {row['_row_id'] for row in live}
     if not read_live <= live_ids:

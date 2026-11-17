@@ -1,20 +1,21 @@
 name: twzrd-intel
 repo: https://github.com/twzrd-sol/twzrd-trust
-sha: "069b2ab5525860f2d5b23a20e628dd623ac0c47c"
+sha: "c9b9ae7255e4be9252fe94ed5621a25f8149acbf"
 subdir: integrations/hermes-plugin
 description: >-
   Pre-spend seller screening for x402 agent payments: a free allow/warn/block preflight and
-  merchant card for a payTo address, plus verification of TWZRD signed receipts against a
-  pinned Ed25519 key. Python standard library only, no API key, no wallet. Disclosure: the
-  seller address (and the resource URL and price, if passed) is sent to intel.twzrd.xyz;
-  receipt verification reads the receipt file you name and runs the pinned
-  twzrd-receipt-verifier@1.4.4 through npx, which downloads it from npm on first use.
+  merchant card for a payTo address, plus verification of TWZRD signed receipts against the
+  pinned TWZRD Ed25519 issuer key (fixed in the plugin, never a tool argument). Python standard
+  library only, no API key, no wallet. Disclosure: the seller address (and the resource URL and
+  price, if passed) is sent to intel.twzrd.xyz; receipt verification reads the receipt file you
+  name and runs twzrd-receipt-verifier@1.4.4 with node, installed from npm by lockfile
+  (npm ci --ignore-scripts) on first use, with a minimal child environment.
 maintainer: twzrd-sol
 tier: community
 category: tools
 requires_hermes: ">=0.23"
 docs_url: https://intel.twzrd.xyz/skill.md
-version: "0.1.0"
+version: "0.2.0"
 title: TWZRD Intel
 platforms: []
 capabilities:

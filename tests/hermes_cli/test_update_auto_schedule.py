@@ -193,7 +193,7 @@ def test_rendered_units_pass_installed_systemd_parser(spec, tmp_path):
     result = subprocess.run([*resolution.command, "--user", "verify", "--man=no",
                              str(service_path), str(timer_path)],
                             env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
-                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+                            capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     # The host may ship unrelated user sockets whose paths exceed sun_path in
     # long test roots. Any diagnostic from OUR generated units is a failure.

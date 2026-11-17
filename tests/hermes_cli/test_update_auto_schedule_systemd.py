@@ -204,7 +204,7 @@ def test_unknown_manager_state_is_not_treated_as_absent(environment):
 
 
 def test_disable_already_absent_is_verified(environment):
-    spec, info, manager = environment
+    spec, info, _manager = environment
     handle = scheduler.disable(spec)
     assert not handle.removed
     assert handle.rollback()["ok"]

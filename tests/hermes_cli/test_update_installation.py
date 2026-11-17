@@ -179,7 +179,7 @@ def test_manual_check_and_auto_share_the_installation_channel(homes, monkeypatch
 def test_retired_channel_adoption_updates_installation_root_even_from_named_profile(homes, monkeypatch):
     from hermes_cli.update_channel import adopt_retired_channel
 
-    root, home, work = homes
+    root, _home, work = homes
     set_install_channel("retired", root)
     original = installation.read_install_channel_record(root)
     monkeypatch.setenv("HERMES_HOME", str(work))

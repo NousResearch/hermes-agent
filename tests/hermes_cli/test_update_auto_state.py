@@ -94,5 +94,5 @@ def test_operation_lock_blocks_another_profile_process(context):
     )
     with state.operation_lock(context):
         result = subprocess.run([sys.executable, "-c", code, str(context.install), str(context.home / "profiles" / "work"),
-                                 str(context.receipt_directory)], timeout=20, capture_output=True)
+                                 str(context.receipt_directory)], timeout=20, capture_output=True, check=False)
     assert result.returncode == 7, result.stderr.decode()

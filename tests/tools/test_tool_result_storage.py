@@ -455,6 +455,24 @@ class TestSpillover:
         assert env.execute.call_count == 1
         assert "test -r" in env.execute.call_args[0][0]
 
+    def test_home_relative_probe_lets_the_remote_shell_expand_home(self):
+        """ssh/daytona report ``~/.hermes/...``; a single-quoted ``~`` is never
+        expanded, so the probe failed and every spill fell back to /tmp."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        with patch("tools.credential_files.to_agent_visible_cache_path",
+                   return_value="~/.hermes/cache/spillover/tc home.txt"):
+            result = maybe_persist_tool_result(
+                content="z" * 60_000,
+                tool_name="terminal",
+                tool_use_id="tc_ssh_1",
+                env=env,
+                threshold=30_000,
+            )
+        assert "~/.hermes/cache/spillover/tc home.txt" in result
+        assert env.execute.call_args[0][0] == "test -r $HOME/'.hermes/cache/spillover/tc home.txt'"
+        assert env.execute.call_count == 1
+
     def test_remote_env_probe_failure_falls_back_to_sandbox_write(self):
         """Persistent containers without the spillover mount still get a
         readable in-sandbox copy."""

@@ -243,7 +243,9 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
     except Exception as exc:
         logger.debug("Spillover sync failed: %s", exc)
     try:
-        if env.execute(f"test -r {shlex.quote(visible)}", timeout=15).get("returncode", 1) == 0:
+        from tools.environments.base import BaseEnvironment
+        probe = f"test -r {BaseEnvironment._quote_cwd_for_cd(visible)}"
+        if env.execute(probe, timeout=15).get("returncode", 1) == 0:
             return visible
     except Exception as exc:
         logger.debug("Spillover readability probe failed: %s", exc)

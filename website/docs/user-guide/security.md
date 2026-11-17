@@ -284,6 +284,18 @@ Every decision is recorded on the tool message's `display_metadata` as `approval
 
 Only sessions with a human who can answer are gated. Single-query (`-q`, `hermes -z`), cron and unattended platforms keep the pattern-only behaviour. `delegate_task` children are gated too: a synchronous child's prompts reach you while the parent's turn is running, and it shares the parent session's grants. An approval prompt can only reach you while a turn is running, so with `scope: all` a `background: true` request runs the child synchronously instead (the result carries a note saying so); YOLO and `mode: off` keep background delegation. If a child still ends up outside a running turn, a call that needs approval is refused at once with a "do not retry" reason (grants you already gave still apply). In the classic CLI a child cannot prompt, so `delegation.subagent_auto_approve` answers (default: deny). A child's turn budget is `delegation.max_iterations` (default 250), separate from `agent.max_turns`. Two paths are outside the gate: a plugin calling `ctx.dispatch_tool` directly, and the Codex app-server runtime's native shell and patch tools (they use Codex's own approvals).
 
+### Tools that ask before they act (preview + apply) {#approval-tools}
+
+A tool can declare itself an **approval tool** when it is registered (built-in or plugin): it supplies a `preview(args)` that renders the exact change, and an `apply(args, decision_id)` that performs it. For such a tool:
+
+- **It is asked under every `approvals.scope`,** including the default `dangerous`. This is the tool author's opt-in, not a change to your defaults; tools that declare nothing behave exactly as before.
+- **The approval card shows the tool's own preview** (for example the exact message a send tool will post, or the exact amount a spend tool will charge) instead of the raw arguments. `write_file` and `patch` declare a preview this way too, which is what the `scope: all` card shows for them.
+- **`apply` runs only from the approved arguments.** The approval mints a decision bound to a digest of the exact arguments; dispatch runs `apply` only for a call whose arguments hash to it, and the plain handler is never called.
+- **It runs at most once per decision.** Decisions are kept in `approvals/decisions.db` under your Hermes home. A replayed or retried tool call (same session, tool call id and arguments) finds its decision and returns the stored result without asking or running again. If Hermes stopped while `apply` was running, the decision is reported as `UNCONFIRMED`: the change may or may not have happened, so it is not re-run and the model is told to check instead.
+- YOLO / `mode: off` approve it like any other gated call (still once per decision); cron, `-q` and unattended platforms follow `cron_mode`, `single_query_mode` and `unattended_mode` (default: deny). A plugin `pre_tool_call` hook that returns `{"action": "approve"}` for the call counts as the approval. A call that reaches the tool without passing the gate (for example `ctx.dispatch_tool`) is refused rather than run.
+
+The decision id is recorded on the tool message's `display_metadata.approval` as `decision_id`.
+
 ### Approval Flow (CLI)
 
 In the interactive CLI, dangerous commands show an inline approval prompt:

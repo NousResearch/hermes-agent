@@ -26,7 +26,7 @@ from pathlib import Path
 import threading
 from typing import Any, Callable, Optional
 
-from tools.approval_tool_gate_preview import patch_preview, write_file_preview
+from tools import approval_decisions
 
 logger = logging.getLogger(__name__)
 
@@ -119,11 +119,9 @@ def _terminal_scope(tool_name: str, args: dict, task_id: str) -> _Scope:
                   warning=f"⚠️ Matches a dangerous pattern: {pattern}." if dangerous else "")
 
 
-def _edit_scope(preview):
-    def build(tool_name: str, args: dict, task_id: str) -> _Scope:
-        paths = _patch_paths(args) if tool_name == "patch" else [_str_arg(args, "path", ".")]
-        return _path_scope(tool_name, paths, task_id, preview=lambda: preview(args, task_id))
-    return build
+def _edit_scope(tool_name: str, args: dict, task_id: str) -> _Scope:
+    paths = _patch_paths(args) if tool_name == "patch" else [_str_arg(args, "path", ".")]
+    return _path_scope(tool_name, paths, task_id)
 
 
 def _tool_scope(tool_name: str, args: dict, task_id: str) -> _Scope:
@@ -137,8 +135,8 @@ def _tool_scope(tool_name: str, args: dict, task_id: str) -> _Scope:
 _SCOPE_BUILDERS = {
     "read_file": lambda n, a, t: _path_scope(n, [_str_arg(a, "path", ".")], t),
     "search_files": lambda n, a, t: _path_scope(n, [_str_arg(a, "path", ".")], t),
-    "write_file": _edit_scope(write_file_preview),
-    "patch": _edit_scope(patch_preview),
+    "write_file": _edit_scope,
+    "patch": _edit_scope,
     "terminal": _terminal_scope,
 }
 
@@ -261,13 +259,62 @@ def pop_record(tool_name: str, tool_call_id: Optional[str]) -> Optional[dict]:
         return _records.pop((tool_call_id or "", tool_name), None)
 
 
+def _declared(tool_name: str):
+    """The registry entry when the tool declared ``preview`` or ``apply``, else ``None``."""
+    from tools.registry import registry
+    entry = registry.get_entry(tool_name)
+    return entry if entry is not None and (entry.preview or entry.apply) else None
+
+
+def _with_declared_preview(scope: _Scope, entry, args: dict, task_id: str) -> _Scope:
+    """The card shows the tool's own ``preview(args)`` when it declares one (``task_id`` is
+    passed when its signature takes it)."""
+    if entry is None or entry.preview is None:
+        return scope
+    from dataclasses import replace
+    from tools.registry import _kwargs_accepted_by
+    declared = entry.preview
+    kwargs = _kwargs_accepted_by(declared, {"task_id": task_id})
+    return replace(scope, preview=lambda: str(declared(args, **kwargs) or ""))
+
+
+def _queue_decision(tool_name: str, args: dict, tool_call_id: str, approved_by: str) -> str:
+    """Mint (or find, on a replay of the same call) the decision ``apply`` will run under."""
+    from tools.approval_context import get_current_session_key
+    digest = approval_decisions.args_digest(args)
+    decision_id = approval_decisions.decision_id_for(get_current_session_key(), tool_call_id, tool_name, digest)
+    approval_decisions.mint(decision_id, tool_name, digest, approved_by)
+    approval_decisions.queue_for_dispatch(tool_call_id, tool_name, digest, decision_id)
+    return decision_id
+
+
+def _replayed_decision(tool_name: str, args: dict, tool_call_id: str) -> Optional[dict]:
+    """An earlier decision for this exact call (same session, call id and args), if any: a retry
+    or replay reuses it instead of asking and executing again."""
+    if not tool_call_id:
+        return None
+    from tools.approval_context import get_current_session_key
+    digest = approval_decisions.args_digest(args)
+    return approval_decisions.get(approval_decisions.decision_id_for(
+        get_current_session_key(), tool_call_id, tool_name, digest))
+
+
 def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Optional[str]:
     from agent.i18n import t
     from tools.approval_context import _get_approval_scope
-    if tool_name in _EXEMPT_TOOLS or _get_approval_scope() != "all":
+    if tool_name in _EXEMPT_TOOLS:
+        return None
+    entry = _declared(tool_name)
+    # A tool that declares ``apply`` is an approval tool by its own declaration: it is asked under
+    # every scope, and unattended contexts follow their cron/single-query/unattended mode.
+    commits = entry is not None and entry.apply is not None
+    if not commits and _get_approval_scope() != "all":
+        return None
+    if commits and (replayed := _replayed_decision(tool_name, args, tool_call_id)) is not None:
+        _queue_decision(tool_name, args, tool_call_id, replayed.get("approved_by") or "replay")
         return None
     presence = _human_presence()
-    if presence is None:
+    if presence is None and not commits:
         return None
     from tools import approval
     if tool_name == "terminal":
@@ -275,10 +322,11 @@ def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Op
         if floor is not None:
             _record(tool_name, tool_call_id, {"decision": "blocked", "by": "rule"})
             return floor
-    scope = _SCOPE_BUILDERS.get(tool_name, _tool_scope)(tool_name, args, task_id)
+    scope = _with_declared_preview(_SCOPE_BUILDERS.get(tool_name, _tool_scope)(tool_name, args, task_id),
+                                   entry, args, task_id)
     pattern_key = f"tool_scope:{scope.key}"
     prior = _prior_decision(pattern_key)
-    if not presence and prior is None:
+    if presence is False and prior is None:
         _record(tool_name, tool_call_id, {"decision": "denied", "by": "unreachable", "scope": scope.grant})
         return (f"BLOCKED: {tool_name} needs the user's approval, but the user cannot be reached from here "
                 "(no approval prompt is attached, e.g. a background subagent after the parent's turn ended). "
@@ -302,10 +350,12 @@ def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Op
         _record(tool_name, tool_call_id, {"decision": "denied", "scope": scope.grant})
         return str(result.get("message") or blocked)
     choice = result.get("choice")
+    by = _answered_by(choice, prior)
+    decision = {"decision_id": _queue_decision(tool_name, args, tool_call_id, by)} if commits else {}
     _record(tool_name, tool_call_id, {
-        "decision": "approved", "by": _answered_by(choice, prior),
+        "decision": "approved", "by": by,
         **({"choice": choice} if choice else {}), "scope": scope.grant,
-        **({"flag": scope.warning} if scope.warning else {}),
+        **({"flag": scope.warning} if scope.warning else {}), **decision,
     })
     if tool_name == "terminal":
         _remember_approved_command(_str_arg(args, "command", ""))
@@ -353,9 +403,12 @@ def resolve_pre_tool_block(details, tool_name: str, args: Any, *, task_id: str =
         logger.debug("approval observability context unavailable", exc_info=True)
     try:
         block, human_approved = _resolve_directive(details, tool_name)
+        final_args = details.modified_args if details.modified_args is not None else args
+        if block is None and human_approved and (entry := _declared(tool_name)) is not None and entry.apply:
+            _queue_decision(tool_name, final_args if isinstance(final_args, dict) else {}, tool_call_id,
+                            "plugin_approve")
         if block is not None or human_approved:
             return block
-        final_args = details.modified_args if details.modified_args is not None else args
         return evaluate_tool_gate(tool_name, final_args, task_id, tool_call_id)
     finally:
         if tokens is not None:

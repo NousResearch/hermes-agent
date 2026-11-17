@@ -31,6 +31,7 @@ from agent.vault_login_classifier import (
     LoginControl,
     build_fill_js,
     build_fill_verify_js,
+    build_focus_js,
     classify_login_control,
     select_password_fill,
 )
@@ -262,6 +263,15 @@ class TestClassifier:
         assert 'removeAttribute("data-hermes-vault-slot")' in js
         assert "vaultSecret" not in js
 
+    def test_build_focus_js_asserts_focus_and_refuses_a_text_box(self):
+        # Input.insertText types into whatever holds focus, so the focus must be proven in the page
+        # right before the secret is typed — and a password fill still never lands in a text box.
+        js = build_focus_js([{"index": 0, "token": "current-password"}], nonce="n1")
+        assert "document.activeElement === el" in js
+        assert 'refused: "focus_lost"' in js
+        assert 'el.type !== "password"' in js
+        assert js.index("el.focus()") < js.index("document.activeElement === el")
+
     def test_build_fill_js_asserts_origin_before_any_write(self):
         # P1-2: the origin assert must run inside the SAME script, before
         # any element write.
@@ -459,6 +469,101 @@ class TestBrowserVaultTools:
         assert "s3cret-pw" in secret_exprs[0]
         assert '"index": 0' not in secret_exprs[0]
         assert "user@example.com" not in secret_exprs[0]
+
+    def _trusted_harness(self, controls, *, focus_result, verify_result, typed, secret_exprs):
+        """Patch set for the trusted-typing path: a supervisor that records keystrokes."""
+        from tools import browser_vault_tool
+
+        def fake_eval(task_id, expression):
+            if "location.href" in expression:
+                return {"success": True, "result": "https://example.com/login"}
+            return {"success": True, "result": json.dumps(controls)}
+
+        def fake_eval_secret(task_id, expression):
+            secret_exprs.append(expression)
+            if "window.location.origin !==" in expression and "expectedOrigin" not in expression:
+                return {"success": True, "result": json.dumps({"ok": True})}          # in-page origin assert
+            if "document.activeElement === el" in expression:
+                return {"success": True, "result": json.dumps(focus_result)}          # focus assert
+            if "reverted" in expression:
+                return {"success": True, "result": json.dumps(verify_result)}         # read-back
+            if "unstamped" in expression:
+                return {"success": True, "result": json.dumps({"unstamped": True})}   # cleanup
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        class _Sup:
+            def insert_text(self, text, **kwargs):
+                typed.append(text)
+                return {"ok": True}
+
+            def focus_page(self, origin, accept=None):
+                return {"ok": True, "url": "https://example.com/login"}
+
+        return [
+            patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval),
+            patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret),
+            patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Sup()),
+            patch.object(browser_vault_tool, "_page_backend", return_value=None),
+        ]
+
+    def test_trusted_typing_types_the_secret_once_when_focus_holds(self, store):
+        """A controlled input accepts a TRUSTED keystroke: the password goes in through the browser,
+        not through a JS value write, and the read-back is what reports the fill."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        typed, secret_exprs = [], []
+        patches = self._trusted_harness(controls, focus_result={"focused": 1},
+                                        verify_result={"landed": 1, "reverted": 0, "missing": []},
+                                        typed=typed, secret_exprs=secret_exprs)
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patches[0], patches[1], patches[2], patches[3]:
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is True and out["filled_fields"] == 1
+        assert typed == ["s3cret-pw"]  # one keystroke per text field, and it is the secret
+        assert "s3cret-pw" not in raw
+
+    def test_trusted_typing_aborts_on_focus_drift_and_types_nothing(self, store):
+        """Input.insertText hits whatever holds focus. If the target does not hold it, the secret is
+        never typed — the fill refuses instead of gambling on the focused element."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        typed, secret_exprs = [], []
+        patches = self._trusted_harness(controls,
+                                        focus_result={"refused": "focus_lost", "tag": "INPUT", "found": "BODY"},
+                                        verify_result={"landed": 1, "reverted": 0, "missing": []},
+                                        typed=typed, secret_exprs=secret_exprs)
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patches[0], patches[1], patches[2], patches[3]:
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is False and out["error_type"] == "focus_lost"
+        assert typed == []             # not one keystroke reached the page
+        assert "s3cret-pw" not in raw
+
+    def test_trusted_typing_reports_a_reverted_value_as_failure(self, store):
+        """A trusted keystroke the page still rejects must not be reported as a fill."""
+        from tools import browser_vault_tool
+
+        meta = _add_login(store, origin="https://example.com")
+        controls = [{"autocomplete": "current-password", "formIndex": 0, "index": 1,
+                     "label": "", "name": "pw", "type": "password"}]
+        typed, secret_exprs = [], []
+        patches = self._trusted_harness(controls, focus_result={"focused": 1},
+                                        verify_result={"landed": 0, "reverted": 1, "missing": []},
+                                        typed=typed, secret_exprs=secret_exprs)
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patches[0], patches[1], patches[2], patches[3]:
+            raw = browser_vault_tool.browser_vault_fill(meta.id)
+        out = json.loads(raw)
+        assert out["success"] is False and out["error_type"] == "fill_reverted"
+        assert typed == ["s3cret-pw"]  # typed once, then aborted: nothing further is typed
 
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,

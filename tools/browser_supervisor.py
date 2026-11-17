@@ -267,6 +267,41 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
+    def insert_text(self, text: str, *, timeout: float = 5.0) -> dict[str, Any]:
+        """Type ``text`` into the element that currently holds focus, as TRUSTED browser input.
+
+        ``Input.insertText`` is the CDP-level equivalent of a user keystroke: the page sees the
+        same ``input`` events a human would trigger, so framework-controlled inputs (React/Vue/MUI)
+        accept the value instead of reverting it — and a page cannot tell the value apart from
+        a human typing it.
+
+        TRUSTED INPUT IS ADDRESSED TO WHATEVER HOLDS FOCUS. This method does not know which
+        element that is and does not check: the caller MUST assert focus first (see
+        ``agent.vault_login_classifier.build_focus_js``) and abort if the focus is not the
+        intended field. Typing a secret into the wrong focused element leaks it.
+
+        Returns ``{"ok": True}`` or ``{"ok": False, "error": <str>}``. Never raises.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return _fail("supervisor loop is not running")
+        with self._state_lock:
+            active, session_id = self._active, self._page_session_id
+        if not active:
+            return _fail("supervisor is not active")
+        if not session_id:
+            return _fail("supervisor has no attached page session")
+
+        try:
+            coro = self._cdp("Input.insertText", {"text": text},
+                             session_id=session_id, timeout=timeout)
+            response = _schedule(coro, loop, timeout=timeout + 1)
+        except Exception as exc:
+            return _err(exc)
+        if isinstance(response, dict) and response.get("error"):
+            return _fail(f"Input.insertText failed: {response['error']}")
+        return {"ok": True}
+
     def set_driven_target(self, target_id: Optional[str]) -> None:
         """Record the CDP target the task's browser_exec session drives (None: unknown)."""
         with self._state_lock:

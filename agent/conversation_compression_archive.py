@@ -9,8 +9,7 @@ compressor actually held, the commit archives those and clones the rest.
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from persistence.conversation.messages import HeldCoverage, HeldMessage, NewMessage, Watermark, stamp_live
 from persistence.core.identity import MessageId, SessionId
@@ -80,23 +79,6 @@ def held_message(message: dict[str, Any]) -> HeldMessage:
         own_row=bool(message.get(OWN_ROW)), retired_row=bool(message.get(RETIRED_ROW)))
 
 
-@contextmanager
-def session_db_conflicts(session_id: str) -> Iterator[None]:
-    """Raise an outside ``SessionDB``'s compaction and prune conflicts as the interface's classes, which the
-    compressor's commit paths catch (a store handle raises those itself)."""
-    from hermes_state_errors import HeldRowRewrittenError, PruneRowStaleError, PruneRowUnresolvedError
-    from persistence.core.errors import HeldRowRewritten, PruneRowStale, PruneRowUnresolved
-
-    try:
-        yield
-    except HeldRowRewrittenError as exc:
-        raise HeldRowRewritten(session_id, str(exc)) from exc
-    except PruneRowStaleError as exc:
-        raise PruneRowStale(session_id, str(exc)) from exc
-    except PruneRowUnresolvedError as exc:
-        raise PruneRowUnresolved(session_id, str(exc)) from exc
-
-
 def commit_compaction(
     session_db: Any, persistence: Any, session_id: str, compacted_messages: list[dict[str, Any]], **kwargs: Any,
 ) -> None:
@@ -105,8 +87,7 @@ def commit_compaction(
     the store's own writer does, else the method of *session_db*, a client of the file's owner. Held dicts
     become held records; a ``None`` ``covered_ids`` keeps the watermark path."""
     if persistence is None:
-        with session_db_conflicts(session_id):
-            session_db.archive_and_compact(session_id, compacted_messages, **kwargs)
+        session_db.archive_and_compact(session_id, compacted_messages, **kwargs)
         return
 
     def held(key: str) -> Optional[tuple[HeldMessage, ...]]:

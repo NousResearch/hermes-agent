@@ -28,8 +28,9 @@ import shutil
 
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_server_sessions import _open_session_db_at_path, _session_rows
-from hermes_state import SessionDB
-from hermes_state_repair import _db_fingerprint
+from persistence.sqlite._state.repair import _db_fingerprint
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 def _ids(store) -> list:
@@ -38,9 +39,8 @@ def _ids(store) -> list:
 
 def test_poll_observes_a_replaced_state_db(tmp_path):
     db_path = tmp_path / "state.db"
-    old = SessionDB(db_path=db_path)
-    old.create_session("before-recovery", source="cli")
-    old.close()
+    with open_persistence(profile_scope(home=tmp_path)) as old:
+        seed_session(old, "before-recovery", "cli")
 
     first = _open_session_db_at_path(db_path, read_only=True)
     try:
@@ -50,10 +50,10 @@ def test_poll_observes_a_replaced_state_db(tmp_path):
 
     # `hermes sessions recover` writes a clean database, which the operator
     # then installs over the corrupt one.
-    recovered = tmp_path / "recovered-state.db"
-    rebuilt = SessionDB(db_path=recovered)
-    rebuilt.create_session("after-recovery", source="cli")
-    rebuilt.close()
+    recovered = tmp_path / "recovered" / "state.db"
+    recovered.parent.mkdir()
+    with open_persistence(profile_scope(home=recovered.parent)) as rebuilt:
+        seed_session(rebuilt, "after-recovery", "cli")
 
     for suffix in ("-wal", "-shm"):
         sidecar = db_path.with_name(db_path.name + suffix)
@@ -71,9 +71,8 @@ def test_poll_observes_a_replaced_state_db(tmp_path):
 
 def test_poll_leaves_forensic_backup_reachable(tmp_path):
     db_path = tmp_path / "state.db"
-    writer = SessionDB(db_path=db_path)
-    writer.create_session("s1", source="cli")
-    writer.close()
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        seed_session(writer, "s1", "cli")
 
     baseline = _db_fingerprint(db_path)
     assert baseline is not None

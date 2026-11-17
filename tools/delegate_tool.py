@@ -138,8 +138,12 @@ def _open_child_session_db(parent_agent) -> Any:
         return None
     with _quiet("subagent: failed to open dedicated session store; child persistence disabled", exc_info=True):
         from persistence_assembly import Persistence, open_persistence, profile_scope
+        parent_persistence = getattr(parent_agent, "persistence", None)
         if isinstance(parent_session_db, Persistence):
             scope = parent_session_db.scope
+        elif isinstance(parent_persistence, Persistence):
+            # A wrapper with no db_path (the hermes_state stand-in) beside the handle it forwards to.
+            scope = parent_persistence.scope
         else:
             _parent_db_path = getattr(parent_session_db, "db_path", None)
             scope = profile_scope(home=Path(_parent_db_path).parent) if _parent_db_path is not None else profile_scope()

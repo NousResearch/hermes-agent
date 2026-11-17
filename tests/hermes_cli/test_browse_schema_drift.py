@@ -16,11 +16,16 @@ import pytest
 from fastapi import HTTPException
 
 from hermes_cli.web_server_sessions import _open_session_db_at_path
-from hermes_state import SessionDB
-from hermes_state_common import SCHEMA_VERSION
 from persistence.conversation.sessions import SessionQuery, SessionWindow
 from persistence_assembly import open_persistence, open_store_admin, profile_scope
-from tests.fixtures.storage_holder import browse_budgets, browse_integrity_scan, forget_slow_scans, raw_holder
+from tests.fixtures.storage_holder import (
+    browse_budgets,
+    browse_integrity_scan,
+    forget_slow_scans,
+    raw_holder,
+    schema_version,
+)
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 _ADDED_TABLES = ("runtime_epoch", "session_admissions", "worker_executions", "worker_receipts")
 _ADDED_COLUMNS = (("sessions", "runtime_revision"), ("sessions", "runtime_generation"),
@@ -28,11 +33,11 @@ _ADDED_COLUMNS = (("sessions", "runtime_revision"), ("sessions", "runtime_genera
 
 
 def _pre_merge_store(path, *, version=31):
-    """The shape a store kept by the release before #106742 has: built by SessionDB, then the
+    """The shape a store kept by the release before #106742 has: built by the store, then the
     tables/columns #106742 added removed again, stamped with the version that release wrote."""
-    with SessionDB(db_path=path) as db:
-        db.create_session("kept", source="cli")
-        db.append_message("kept", role="user", content="history survives")
+    with open_persistence(profile_scope(home=path.parent)) as store:
+        seed_session(store, "kept", "cli")
+        seed_messages(store, "kept", {"role": "user", "content": "history survives"})
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("DROP TRIGGER IF EXISTS sessions_runtime_ledger_delete_guard")
         for table in reversed(_ADDED_TABLES):
@@ -101,8 +106,8 @@ def test_owned_lagging_store_is_not_written_and_names_the_remedy(tmp_path):
 def test_corrupt_store_still_returns_503(tmp_path):
     """Corruption is not drift: the open fails with the corrupt-store 503 and nothing is written."""
     path = tmp_path / "state.db"
-    with SessionDB(db_path=path) as db:
-        db.create_session("kept", source="cli")
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, "kept", "cli")
     with closing(sqlite3.connect(path)) as conn:
         if conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -135,11 +140,11 @@ def test_missing_history_table_is_refused_not_recreated(tmp_path):
 
 def test_version_bump_migration_is_additive_and_idempotent(tmp_path):
     path = _pre_merge_store(tmp_path / "state.db")
-    assert SCHEMA_VERSION > 31
+    assert schema_version() > 31
 
     for _ in range(2):
         with open_persistence(profile_scope(home=path.parent)) as store, raw_holder(store)._read_ctx() as conn:
-            assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+            assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == schema_version()
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
     assert set(_ADDED_TABLES) <= _tables(path)
     with closing(sqlite3.connect(path)) as conn:
@@ -151,7 +156,7 @@ def test_version_bump_migration_is_additive_and_idempotent(tmp_path):
     other = _pre_merge_store(tmp_path / "other" / "state.db")
     _open_session_db_at_path(other, read_only=True).close()
     with open_persistence(profile_scope(home=other.parent)) as store, raw_holder(store)._read_ctx() as conn:
-        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+        assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == schema_version()
 
 
 def test_messages_route_for_lagging_profile(monkeypatch, tmp_path):
@@ -184,18 +189,16 @@ def own_store_client(monkeypatch, _isolate_hermes_home):
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
-    import hermes_state
     from hermes_cli.web_routers import profiles as profiles_routes
     from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
     path = get_hermes_home() / "state.db"
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", path)
     (get_hermes_home() / "config.yaml").write_text("{}\n", encoding="utf-8")
-    with SessionDB(db_path=path) as db:
-        db.create_session("stale-schema", source="cli")
-        db.append_message("stale-schema", role="user", content="hi")
+    with open_persistence(profile_scope(home=path.parent)) as store:
+        seed_session(store, "stale-schema", "cli")
+        seed_messages(store, "stale-schema", {"role": "user", "content": "hi"})
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return client, path
@@ -271,10 +274,9 @@ def test_startup_eager_reconcile_heals_only_an_unowned_stale_store(own_store_cli
 def _lagging_store_with_history(home, rows=400):
     """A real store with enough history for a multi-page ``messages`` b-tree, one column dropped."""
     path = home / "state.db"
-    with SessionDB(db_path=path) as db:
-        db.create_session("kept", source="cli")
-        for i in range(rows):
-            db.append_message("kept", role="user", content=f"history {i} " * 40)
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, "kept", "cli")
+        seed_messages(store, "kept", *({"role": "user", "content": f"history {i} " * 40} for i in range(rows)))
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
@@ -889,8 +891,7 @@ def test_budget_refusal_on_unowned_store_names_repair_not_a_gateway(tmp_path, mo
 
     # The named command really closes it: repair has no budget and catches the store up.
     monkeypatch.setattr(ssr, "connect_tracked", original)
-    import hermes_state_repair
-    monkeypatch.setattr(hermes_state_repair, "_live_writer_holds_db", lambda _p: False)
+    monkeypatch.setattr("persistence.sqlite._state.repair._live_writer_holds_db", lambda _p: False)
     report = open_store_admin(path, read_only=False).repair_declarative_schema(backup=False)
     assert report["repaired"], report
     forget_slow_scans()
@@ -997,18 +998,3 @@ def test_read_only_lagging_store_gets_a_permissions_message(tmp_path):
     assert "nothing was changed" in detail
     assert "restart" not in detail.lower()
     assert _file_state(path) == before
-
-
-def test_every_raw_schema_catch_up_handles_an_old_indexed_column(tmp_path):
-    """alt-glitch S1: three hand-ordered catch-ups (reconcile_state_schema, the repair snapshot and the
-    browse DDL) each encoded the columns -> SCHEMA_SQL -> columns order. One apply_declared_schema
-    now owns it; every raw caller catches an old store (indexed column missing) up the same way."""
-    import hermes_state_schema
-    from hermes_state_schema import reconcile_state_schema
-
-    path = _lagging_store_with_history(_profile_home(tmp_path), rows=5)
-    with closing(sqlite3.connect(path)) as conn:
-        reconcile_state_schema(conn)
-        assert not conn.in_transaction
-    assert "last_read_at" in _session_columns(path)
-    assert hasattr(hermes_state_schema, "apply_declared_schema")

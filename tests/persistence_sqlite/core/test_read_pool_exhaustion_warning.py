@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-import hermes_state_readpool
+from persistence.sqlite._state import readpool as hermes_state_readpool
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite.conversation._store.sessions import create_session, get_session
 

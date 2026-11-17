@@ -13,7 +13,7 @@ from session_rules.turns import flatten_message_text, project_compaction_message
 
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import _sql_json_extract
-from hermes_state_common import _shape_preview
+from persistence.sqlite._state.common import _shape_preview
 from persistence.sqlite.conversation._store.compaction_display import not_a_later_tool_copy_sql
 from persistence.sqlite.conversation._store.compression import _compression_tip_on
 from persistence.sqlite.conversation._store.local import POLICY_PREFIX

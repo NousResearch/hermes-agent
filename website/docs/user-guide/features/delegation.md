@@ -110,7 +110,21 @@ delegate_task(
 )
 ```
 
-The subagent's first message is your context followed by the goal. Its system prompt instructs it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
+The subagent's first message is your context followed by the goal. Its system prompt instructs it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered. A subagent still sees the skills index, but its guidance says the brief carries the context it needs: it loads a skill only when the brief names one or the task needs a procedure the brief does not cover.
+
+### Handing a Subagent the Code It Needs (`files`)
+
+A child starts with no view of the code. Instead of pasting snippets into `context` or letting the child grep for them, name the ranges it needs in `files`: each entry is `path` or `path:start-end` (1-based, inclusive), resolved against the workspace the child works in:
+
+```python
+delegate_task(tasks=[{
+    "goal": "Make parse_body() return {} instead of None when Content-Type is missing",
+    "context": "Keep the public signature; add one regression test.",
+    "files": ["api/handlers.py:30-80", "tests/test_handlers.py"],
+}])
+```
+
+The current lines of each range are read at dispatch and appended to the child's first message after `CONTEXT`, under `FILES (already read for you, current as of dispatch):`, each fenced and labelled with its path and range. Each file is capped at 400 lines and the whole block at 60 KB; a cut file ends with `[truncated: N more lines, read_file to see the rest]`. A path outside the workspace, a missing file or a binary file fails the call before any child starts. The ranges count as already read in the child's `read_file` dedup state, so a `read_file` of the same range returns the "unchanged" notice instead of the same bytes.
 
 ### Forwarding Images to a Subagent
 
@@ -544,7 +558,7 @@ The parent agent orchestrates its own running children with the same `delegate_t
 {"action": "stop",  "subagent_id": "sa-0-1a2b3c4d"}
 ```
 
-- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
+- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, the live transcript path, `first_edit_at` (epoch seconds of the child's first `write_file`/`patch`, or null) and `minutes_without_edit` (null once the child has edited). A child at 30 minutes with no edit is usually re-deriving a design: steer it with the decision. Ids also come back in the spawn dispatch response as `subagent_ids`.
 - **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
 - **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
 

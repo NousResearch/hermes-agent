@@ -72,6 +72,22 @@ timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
 
+## Child context
+
+Children launched through this API take the same construction path as
+`delegate_task` children, so they get the same child prompt: the skills index
+stays, but its guidance defers to the brief ("load a skill only when the brief
+names it or the task needs a procedure the brief does not cover") instead of the
+interactive session's "load every relevant skill" wording. Put what the child
+needs in `context`.
+
+The `delegate_task` tool adds two model-facing aids that this API does not
+expose: a per-task `files` list (`path` or `path:start-end`, inlined into the
+child's first turn under a `FILES` heading, 400 lines per file and 60 KB in
+total, marked as already read in the child's `read_file` dedup state), and
+`first_edit_at` / `minutes_without_edit` on `action='list'` rows, stamped from
+the child's first `write_file`/`patch` call.
+
 ## Routing
 
 Children follow the `delegation` config (`provider`, `model`, `base_url`,

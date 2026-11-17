@@ -296,7 +296,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             coro = self._cdp("Input.insertText", {"text": text},
                              session_id=session_id, timeout=timeout)
             response = _schedule(coro, loop, timeout=timeout + 1)
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- trusted typing must report failure, never raise into a fill
             return _err(exc)
         if isinstance(response, dict) and response.get("error"):
             return _fail(f"Input.insertText failed: {response['error']}")

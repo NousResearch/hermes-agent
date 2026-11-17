@@ -82,3 +82,20 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
     return rt
+
+
+def remember_primary_window(agent) -> None:
+    """Copy the compressor's live window into ``_primary_runtime`` while the agent still runs its
+    primary. The snapshot dates from construction or the last ``/model``; a window the session has
+    corrected since (a provider-reported limit, a grown local window, a live config edit) would
+    otherwise be undone by the restore that ends a fallback or ``--once`` excursion."""
+    rt = getattr(agent, "_primary_runtime", None)
+    cc = getattr(agent, "context_compressor", None)
+    if not isinstance(rt, dict) or cc is None or getattr(agent, "_fallback_activated", False):
+        return
+    # The built-in compressor resolves lazily, and resolving here would probe the endpoint that is
+    # failing right now; unresolved means nothing was learned since the snapshot.
+    window = cc._resolved_context_length if hasattr(cc, "_resolved_context_length") else getattr(cc, "context_length", None)
+    if isinstance(window, int) and window > 0:
+        rt["compressor_context_length"] = window
+        rt["compressor_threshold_tokens"] = cc.threshold_tokens

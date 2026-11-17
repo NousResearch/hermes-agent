@@ -148,3 +148,28 @@ class TestArchivedSessionRouting:
             "exclusion must not swallow the legacy reaper path."
         )
         assert len(store.load_transcript(session_id)) == 1
+
+    def test_peer_tuple_fallback_skips_deliberately_archived_row(self, tmp_path):
+        """A changed session key must not recover an archived row by peer tuple."""
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        old_id = entry.session_id
+        store._db.append_message(old_id, "user", "hello")
+
+        # A stale/migrated routing key misses the exact-key lookup. Verify the
+        # peer-tuple fallback can recover the row before changing its archive state.
+        row = store._db.get_session(old_id)
+        lookup = dict(
+            session_key=entry.session_key + ":migrated",
+            source=row["source"],
+            user_id=row["user_id"],
+            chat_id=row["chat_id"],
+            chat_type=row["chat_type"],
+            thread_id=row["thread_id"],
+        )
+        assert store._db.find_latest_gateway_session_for_peer(**lookup)["id"] == old_id
+
+        assert store._db.set_session_archived(old_id, True)
+        assert _flags(store, old_id) == (1, 0, None)
+        assert store._db.find_latest_gateway_session_for_peer(**lookup) is None

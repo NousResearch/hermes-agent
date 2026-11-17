@@ -32,6 +32,7 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 ```yaml
 approvals:
   mode: smart                     # smart | manual | off
+  scope: dangerous                # dangerous | all — see "Approving every tool call" below
   timeout: 300                    # seconds to wait for user response (default: 300)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   single_query_mode: deny         # deny | approve — what single-query (-q) sessions do on a dangerous command
@@ -45,6 +46,7 @@ The full set of keys:
 | Key | Default | What it controls |
 |---|---|---|
 | `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
+| `scope` | `dangerous` | `dangerous` asks only for flagged commands and protected paths. `all` asks a present human before **every** tool call — see [Approving every tool call](#approve-every-tool-call). |
 | `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
 | `discord_prompt_timeout` | `300` | Seconds Discord's interactive buttons (approvals, clarify, update and slash-command prompts) stay clickable; minimum 30. See [Discord](./messaging/discord.md). |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
@@ -260,6 +262,39 @@ Local sessions (classic CLI, TUI, Desktop, ACP editor) follow the interactive CL
 - turns nobody typed in it: plugin `inject_message` turns, delegation completions, background-process and watch-pattern notices, `/loop` ticks, heartbeats, hosted-room tasks
 - `delegate_task` children and `/bg` / `/btw` side tasks
 - a viewer's turn that runs while no viewer who can approve is attached
+
+### Approving every tool call (`approvals.scope: all`) {#approve-every-tool-call}
+
+The pattern list only covers shell commands, so a model can reach a file the terminal refused through `read_file`, `write_file` or `search_files`. With `approvals.scope: all`, every tool call asks first: file tools, meta tools (`tool_call`, `execute_code`'s own tool calls, connector entries), `delegate_task`, memory and MCP tools, and **each** terminal command. The check runs at the one pre-call verdict every dispatch path shares, under the real tool name.
+
+"Allow for this session" and "Always" are bound to one tool and a scope, never to the bare tool:
+
+| Tool | A grant covers |
+|---|---|
+| `read_file`, `search_files` | calls of that tool inside the session workspace, or only the exact outside path that was asked |
+| `write_file`, `patch` | calls of that tool inside the workspace, or only the exact outside file(s); a `write_file` grant does not cover `patch` |
+| `terminal` | that exact command only; every other command is asked |
+| any other tool | every call of that tool |
+
+The prompt shows the change, not the raw arguments, and it is computed by the tool's own pre-write step on the same backend, so the matcher, escape corrections, BOM handling and CRLF preservation are the ones that will run. The first row names the file and line; the changed lines follow directly (`-` old, `+` new), so even the CLI panel's short view shows them. `write_file` shows the changed lines against the existing file, or the first lines of a new one; a `patch` that will not match says so instead of showing a change. V4A patches are shown as the model wrote them. A command that matches a dangerous pattern keeps the "Dangerous Command" title and names the pattern; other calls are titled "Command approval" or "Tool approval: `<tool>`". The pattern is only a flag here, the decision is yours.
+
+`tool_search`, `tool_describe`, `todo_list` and `clarify` are never asked. The [hardline floor](#hardline-blocklist-always-on-floor) and [`approvals.deny`](#user-defined-deny-rules-approvalsdeny) are checked **before** the prompt, so a command that can never run is blocked without asking; an approved command is not asked again by the dangerous-pattern prompt. YOLO and `mode: off` skip the gate.
+
+Every decision is recorded on the tool message's `display_metadata` as `approval` (kept in the session transcript, never sent to the model), for example `{"decision": "approved", "by": "user", "choice": "once", "scope": "this exact command only"}`. `by` is `user`, `session_grant`, `permanent_grant`, `bypass` (YOLO / `mode: off`), `subagent_auto_approve`, `rule` (a deny rule or floor) or `unreachable`. Decisions are also logged (`tool approval:` in `agent.log`). A refused call still shows as a failed tool line with its reason, in the CLI and in a subagent's live transcript.
+
+Only sessions with a human who can answer are gated. Single-query (`-q`, `hermes -z`), cron and unattended platforms keep the pattern-only behaviour. `delegate_task` children are gated too: a synchronous child's prompts reach you while the parent's turn is running, and it shares the parent session's grants. An approval prompt can only reach you while a turn is running, so with `scope: all` a `background: true` request runs the child synchronously instead (the result carries a note saying so); YOLO and `mode: off` keep background delegation. If a child still ends up outside a running turn, a call that needs approval is refused at once with a "do not retry" reason (grants you already gave still apply). In the classic CLI a child cannot prompt, so `delegation.subagent_auto_approve` answers (default: deny). A child's turn budget is `delegation.max_iterations` (default 250), separate from `agent.max_turns`. Two paths are outside the gate: a plugin calling `ctx.dispatch_tool` directly, and the Codex app-server runtime's native shell and patch tools (they use Codex's own approvals).
+
+### Tools that ask before they act (preview + apply) {#approval-tools}
+
+A tool can declare itself an **approval tool** when it is registered (built-in or plugin): it supplies a `preview(args)` that renders the exact change, and an `apply(args, decision_id)` that performs it. For such a tool:
+
+- **It is asked under every `approvals.scope`,** including the default `dangerous`. This is the tool author's opt-in, not a change to your defaults; tools that declare nothing behave exactly as before.
+- **The approval card shows the tool's own preview** (for example the exact message a send tool will post, or the exact amount a spend tool will charge) instead of the raw arguments. `write_file` and `patch` declare a preview this way too, which is what the `scope: all` card shows for them.
+- **`apply` runs only from the approved arguments.** The approval mints a decision bound to a digest of the exact arguments; dispatch runs `apply` only for a call whose arguments hash to it, and the plain handler is never called.
+- **It runs at most once per decision.** Decisions are kept in `approvals/decisions.db` under your Hermes home. A replayed or retried tool call (same session, tool call id and arguments) finds its decision and returns the stored result without asking or running again. If Hermes stopped while `apply` was running, the decision is reported as `UNCONFIRMED`: the change may or may not have happened, so it is not re-run and the model is told to check instead.
+- YOLO / `mode: off` approve it like any other gated call (still once per decision); cron, `-q` and unattended platforms follow `cron_mode`, `single_query_mode` and `unattended_mode` (default: deny). A plugin `pre_tool_call` hook that returns `{"action": "approve"}` for the call counts as the approval. A call that reaches the tool without passing the gate (for example `ctx.dispatch_tool`) is refused rather than run.
+
+The decision id is recorded on the tool message's `display_metadata.approval` as `decision_id`.
 
 ### Approval Flow (CLI)
 

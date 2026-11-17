@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  危险命令： {description}"
+  tool_title: "🔐 工具审批：{tool}"
+  command_title: "🔐 命令审批"
   choose_long: "      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝"
   choose_short: "      [o]仅此一次  |  [s]本次会话  |  [d]拒绝"
   prompt_long: "      选择 [o/s/a/D]: "

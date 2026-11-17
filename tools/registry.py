@@ -241,6 +241,11 @@ class ToolEntry:
     # its own arguments and config. The executor floors its generic tool deadline by this so a
     # tool's own timeout is the one that fires — see get_deadline_floor.
     deadline_floor: Optional[Callable] = None
+    # Approval-tool contract (opt-in; see tools/approval_decisions.py). ``preview(args) -> str`` is
+    # the approval card text; ``apply(args, decision_id=...)`` replaces the handler and runs only
+    # from a human-approved decision for the exact args, at most once per decision.
+    preview: Optional[Callable] = None
+    apply: Optional[Callable] = None
 
 
 class _PluginOverridePolicy:
@@ -838,16 +843,23 @@ class ToolRegistry:
             return ""
 
     def register(
-        self, name: str, toolset: str, schema: dict, handler: Callable,
+        self, name: str, toolset: str, schema: dict, handler: Callable | None = None,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
         scope: Optional[str] = None, execution_timeout: float | None = None,
         compat_args: Iterable[str] = (), self_checked_args: Iterable[str] = (),
-        deadline_floor: Callable | None = None):
+        deadline_floor: Callable | None = None, preview: Callable | None = None,
+        apply: Callable | None = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
-        browser backend); without it, cross-toolset shadowing is rejected."""
+        browser backend); without it, cross-toolset shadowing is rejected.
+
+        ``preview`` / ``apply`` opt the tool into the approval-tool contract: ``preview(args)``
+        renders what the approval card shows, and a tool that declares ``apply`` is always put to
+        the user (any ``approvals.scope``), then runs ``apply`` once from the approved args
+        (``handler`` may be omitted; it defaults to ``apply``)."""
+        handler = handler or apply
         # Reject malformed schemas at registration, not at request time: a non-dict
         # ``parameters`` (e.g. a list) serializes into every provider request and 400s the
         # whole turn far from the offending plugin. Failing here names the culprit instead.
@@ -911,7 +923,7 @@ class ToolRegistry:
                 max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
                 dynamic_schema_overrides=dynamic_schema_overrides, compat_args=frozenset(compat_args),
                 self_checked_args=frozenset(self_checked_args),
-                deadline_floor=deadline_floor)
+                deadline_floor=deadline_floor, preview=preview, apply=apply)
             self._generation += 1
 
     def deregister(self, name: str, *, scope: Optional[str] = None) -> None:
@@ -1081,6 +1093,11 @@ class ToolRegistry:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
             # plugin handler is not broken by every field the dispatcher injects (#68318).
+            if entry.apply is not None:
+                from tools.approval_decisions import apply_approved
+                return flag_unknown_args(apply_approved(
+                    entry, args, kwargs, lambda result: self._normalize_handler_result(name, result)),
+                    name, unknown, valid)
             kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async

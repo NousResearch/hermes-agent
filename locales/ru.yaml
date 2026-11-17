@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  ОПАСНАЯ КОМАНДА: {description}"
+  tool_title: "🔐 Подтверждение инструмента: {tool}"
+  command_title: "🔐 Подтверждение команды"
   choose_long: "      [o]один раз  |  [s]сеанс  |  [a]всегда  |  [d]отклонить"
   choose_short: "      [o]один раз  |  [s]сеанс  |  [d]отклонить"
   prompt_long: "      Выбор [o/s/a/D]: "

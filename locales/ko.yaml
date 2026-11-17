@@ -1,5 +1,7 @@
 approval:
   dangerous_header: "⚠️  위험한 명령: {description}"
+  tool_title: "🔐 도구 승인: {tool}"
+  command_title: "🔐 명령 승인"
   choose_long: "      [o]한 번  |  [s]세션  |  [a]항상  |  [d]거부"
   choose_short: "      [o]한 번  |  [s]세션  |  [d]거부"
   prompt_long: "      선택 [o/s/a/D]: "

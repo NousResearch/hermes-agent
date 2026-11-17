@@ -46,7 +46,7 @@ from agent.inline_tool_executors import (
     is_memory_provider_tool,
     tool_hook_ids,
 )
-from agent.message_metadata import stamp_data_use
+from agent.message_metadata import stamp_approval, stamp_data_use
 from agent.session_persistence import sync_rewritten_tool_rows
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
@@ -56,8 +56,10 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,
     _context_pruned_argument_paths,
     _plan_tool_batch_segments,
+    emit_blocked_progress,
     make_tool_result_message,
 )
+from tools.approval_tool_gate import pop_record as pop_approval_record
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -653,6 +655,7 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any]
     if block_body is not None:
         result = json.dumps(block_body, ensure_ascii=False)
         error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
+        emit_blocked_progress(agent.tool_progress_callback, ref.name, ref.args, str(error_message))
     else:
         result = agent._guardrail_block_result(guardrail_decision)
         error_type = "guardrail_block"
@@ -1183,6 +1186,7 @@ def _commit_tool_result(
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
     stamp_data_use(tool_message, sorted(data_use))
+    stamp_approval(tool_message, pop_approval_record(function_name, tool_call_id))
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

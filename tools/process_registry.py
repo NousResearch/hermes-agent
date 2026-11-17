@@ -41,13 +41,12 @@ from tools.process_registry_output_log import ProcessOutputLogMixin, open_output
 from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
-from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
+from tools.process_registry_env_log import (
+    env_launch_command, fallback_exit_code, log_delta_command, parse_log_delta_reply)
 from tools.process_registry_wsl import _is_wsl_launcher_command
 from tools.process_registry_wait import max_wait_timeout, process_deadline_floor
 
 logger = logging.getLogger(__name__)
-
-_ENV_TERMINATED_MARKER = "__HERMES_PROCESS_TERMINATED__"
 
 def _checkpoint_path() -> Path:
     """Active profile's crash-recovery checkpoint file, resolved per call: the multiplexed gateway
@@ -564,7 +563,7 @@ class ProcessSession:
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
-    pid_scope: str = "host"                     # host|sandbox (legacy PID)|sandbox_group
+    pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
                                                 # launcher; Linux-side workers outlive it (#120546)
@@ -1278,26 +1277,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context. ``persist_on_release`` keeps the process out of
         agent-lifecycle kill sweeps (#41225)."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox_group",
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
                                     persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
-        q = shlex.quote
-        # Bash job control gives the supervisor its own process group without
-        # requiring an optional setsid executable. Its PID remains the group ID
-        # while it waits for the login shell and records the command's exit code.
-        supervisor = (
-            'printf \'%s\\n\' "$$" > "$2"; '
-            'bash -lc "$1"; rc=$?; printf \'%s\\n\' "$rc" > "$3"'
-        )
-        bg_command = (
-            f"mkdir -p {q(temp_dir)} && {{ "
-            f"set -m; nohup bash -c {q(supervisor)} "
-            f"hermes-bg {q(command)} {q(pid_path)} {q(exit_path)} "
-            f"> {q(log_path)} 2>&1 < /dev/null & "
-            f"for _hermes_wait in {{1..100}}; do "
-            f"test -s {q(pid_path)} && break; sleep 0.01; done; "
-            f"cat {q(pid_path)}; }}")
+        bg_command = env_launch_command(temp_dir, command, log_path, pid_path, exit_path)
         result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False)
         output = result.get("output", "").strip()
         session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
@@ -1309,27 +1293,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._track_started(
             session, self._env_poller_loop, f"proc-poller-{session.id}", (env, log_path, pid_path, exit_path))
         return session
-
-    @staticmethod
-    def _env_termination_command(pid: int, *, process_group: bool) -> str:
-        """Confirm a sandbox target is gone before discarding its runtime handle."""
-        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-            raise ValueError("Sandbox process PID must be a positive integer")
-        target = f"-{pid}" if process_group else str(pid)
-        return (
-            f"_hermes_target={target}; "
-            'for _hermes_signal in TERM KILL; do '
-            'kill -"$_hermes_signal" -- "$_hermes_target" 2>/dev/null || true; '
-            'for _hermes_probe in {1..20}; do '
-            # A failed probe can mean EPERM, not absence. Bash's C-locale ESRCH
-            # diagnostic is the only failure that confirms the target is gone.
-            'if _hermes_error=$(LC_ALL=C kill -0 -- "$_hermes_target" 2>&1); then :; '
-            'elif [[ "$_hermes_error" == *"No such process" ]]; then '
-            f"printf '%s\\n' {_ENV_TERMINATED_MARKER}; exit 0; "
-            'else exit 1; fi; '
-            'sleep 0.05; done; done; '
-            "printf '%s\\n' __HERMES_PROCESS_STILL_RUNNING__; exit 1"
-        )
 
     # ----- Reader / Poller Threads -----
 
@@ -2271,20 +2234,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            # Legacy sessions retain single-PID semantics. New launches own the
-            # supervisor group, including ordinary descendants of the command.
-            command = self._env_termination_command(
-                session.pid, process_group=session.pid_scope == "sandbox_group")
-            termination = session.env_ref.execute(command, timeout=5)
-            try:
-                returncode = int(termination.get("returncode", -1))
-            except (TypeError, ValueError):
-                returncode = -1
-            if returncode != 0 or _ENV_TERMINATED_MARKER not in str(termination.get("output", "")).splitlines():
-                return {"status": "error", "error": (
-                    "Sandbox process termination could not be confirmed; "
-                    "the process remains tracked")}
-
+            # The launch made the job a process group; stop all of it, or say who survived.
+            incomplete = self._kill_env_group(session)
+            if incomplete is not None:
+                return incomplete
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an

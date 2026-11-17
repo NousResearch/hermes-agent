@@ -1,9 +1,34 @@
-"""Incremental sandbox log reads for ProcessRegistry's non-local poller."""
+"""Sandbox background jobs for ProcessRegistry's non-local backends: the launch wrapper that
+writes the pid, log and exit files, and the incremental reads the poller makes of them."""
 
 import re
+import shlex
 from typing import Any, NamedTuple
 
 _HEADER = re.compile(r"([0-9]{1,20}) ([0-9]{1,20}) (?:(run)|exit:([0-9]{0,9}))")
+
+
+def env_launch_command(temp_dir: str, command: str, log_path: str, pid_path: str, exit_path: str) -> str:
+    """Shell command that starts *command* in the background and prints the job's PID.
+
+    ``set -m`` (bash job control, which needs no tty and no ``setsid``/``pkill``
+    in the image) puts the job in a new process group led by a supervisor shell,
+    so the printed PID is also the group id: a kill signals the supervisor, the
+    command and every ordinary descendant together. The supervisor traps TERM, so
+    it outlives a group SIGTERM until the command returns, then records the
+    command's exit code (143 after a kill) in *exit_path*; the poller's liveness
+    check on that PID keeps reporting the job while its command runs. A
+    descendant that leaves the group (``setsid``, a daemon's double fork) is
+    outside it."""
+    q = shlex.quote
+    supervisor = (
+        'trap : TERM; printf \'%s\\n\' "$$" > "$2"; bash -lc "$1"; rc=$?; printf \'%s\\n\' "$rc" > "$3"')
+    return (
+        f"mkdir -p {q(temp_dir)} && {{ "
+        f"set -m; nohup bash -c {q(supervisor)} hermes-bg {q(command)} {q(pid_path)} {q(exit_path)} "
+        f"> {q(log_path)} 2>&1 < /dev/null & "
+        f"for _hermes_wait in {{1..100}}; do test -s {q(pid_path)} && break; sleep 0.01; done; "
+        f"cat {q(pid_path)}; }}")
 
 
 class LogDelta(NamedTuple):

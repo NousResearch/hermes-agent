@@ -300,8 +300,8 @@ DEFAULT_CONFIG = {
         # Menlo, Consolas, monospace"). Lets users use a Nerd Font without patching the app.
         "font_family": "",
         "timeout": 180,
-        # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
-        # = SIGTERM only.
+        # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons) and
+        # remote-sandbox background jobs. 0 = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,
         # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
         # background processes to finish. The dying parent owns their stdout pipes, so exiting

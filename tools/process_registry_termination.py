@@ -1,6 +1,7 @@
 """Process-tree termination and post-kill survivor verification for ProcessRegistry."""
 
 import logging
+import math
 import os
 import signal
 import subprocess
@@ -14,6 +15,55 @@ if TYPE_CHECKING:
     from tools.process_registry import ProcessSession
 
 logger = logging.getLogger("tools.process_registry")
+
+_ENV_GONE = "__HERMES_PROCESS_TERMINATED__"
+_ENV_SURVIVORS = "__HERMES_PROCESS_SURVIVORS__"
+_ENV_TICK = 0.05
+# Exec round trip to a remote sandbox, on top of the signal waits the script itself makes.
+_ENV_KILL_TRANSPORT_SECONDS = 10.0
+
+
+def env_group_kill_command(pgid: int, grace: float) -> str:
+    """Shell command that stops sandbox process group *pgid* and proves it is gone.
+
+    SIGTERM, then after *grace* seconds SIGKILL (no SIGKILL when *grace* is 0,
+    matching ``terminal.daemon_term_grace_seconds``). Prints ``_ENV_GONE`` once
+    ``kill -0`` fails with ESRCH; any other failure (EPERM: the member belongs to
+    another user) still counts as alive. When the group outlives every signal,
+    prints ``_ENV_SURVIVORS`` and the member PIDs read from ``/proc`` (none when
+    the sandbox has no ``/proc``)."""
+    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 1:
+        # kill -- -1 signals every process the sandbox user can reach.
+        raise ValueError(f"not a sandbox process group id: {pgid!r}")
+    term_ticks = max(1, math.ceil(grace / _ENV_TICK)) if grace else round(1 / _ENV_TICK)
+    gone_exit = f"{{ echo {_ENV_GONE}; exit 0; }}"
+    escalate = f'kill -KILL -- "-$g" 2>/dev/null; wait_gone 20 && {gone_exit}; ' if grace else ""
+    return (
+        f"g={pgid}; "
+        'gone() { local e; e=$(LC_ALL=C kill -0 -- "-$g" 2>&1) && return 1; [[ $e == *"No such process"* ]]; }; '
+        f'wait_gone() {{ local i; for ((i = 0; i < $1; i++)); do gone && return 0; sleep {_ENV_TICK}; done; gone; }}; '
+        f'kill -TERM -- "-$g" 2>/dev/null; wait_gone {term_ticks} && {gone_exit}; '
+        f"{escalate}"
+        # Field 5 of /proc/<pid>/stat is the pgid; split after the last ") " so a comm with
+        # spaces cannot shift it. The loop's stderr is dropped: a process that exits mid-scan
+        # makes its read fail, and that message must not land inside the PID line.
+        'm=""; { for s in /proc/[0-9]*/stat; do read -r l < "$s" || continue; '
+        'set -f; set -- ${l##*) }; set +f; [ "$3" = "$g" ] && m+=" ${s//[!0-9]/}"; done; } 2>/dev/null; '
+        f'echo "{_ENV_SURVIVORS}$m"; exit 1'
+    )
+
+
+def parse_env_group_kill(result: dict) -> "list[int] | None":
+    """Survivors of an ``env_group_kill_command`` run: ``[]`` when the group is proven
+    gone, the listed PIDs when it outlived the signals, ``None`` when the reply proves
+    neither (transport failure, no bash)."""
+    lines = str(result.get("output", "")).splitlines()
+    if result.get("returncode") == 0 and _ENV_GONE in lines:
+        return []
+    for line in lines:
+        if line.startswith(_ENV_SURVIVORS):
+            return [int(tok) for tok in line[len(_ENV_SURVIVORS):].split() if tok.isascii() and tok.isdigit()]
+    return None
 
 
 class ProcessTerminationMixin:
@@ -140,6 +190,30 @@ class ProcessTerminationMixin:
             return []
         return [c.pid for c in children if ProcessTerminationMixin._proc_alive(c)]
 
+    def _kill_env_group(self, session: "ProcessSession") -> Optional[dict]:
+        """Stop a sandbox job's process group from inside the sandbox. None once the group
+        is proven gone; else the error result, with the session left running and killable."""
+        grace = self._daemon_term_grace_seconds()
+        result = session.env_ref.execute(
+            env_group_kill_command(session.pid, grace), timeout=grace + _ENV_KILL_TRANSPORT_SECONDS)
+        survivors = parse_env_group_kill(result)
+        if survivors == []:
+            return None
+        if survivors is None:
+            logger.warning("Kill unconfirmed for %s: sandbox reply %r", session.id, result)
+            return {
+                "status": "error",
+                "error": (f"Kill unconfirmed: the sandbox did not report process group {session.pid} "
+                          f"gone (exit {result.get('returncode')}); session running"),
+                "session_id": session.id, "process_running": True}
+        survivors = survivors or [session.pid]  # no /proc to list members: the group itself
+        alive = ", ".join(map(str, survivors))
+        logger.warning("Kill incomplete for %s: sandbox process(es) still alive (%s)", session.id, alive)
+        return {
+            "status": "error",
+            "error": f"Kill incomplete: {len(survivors)} process(es) still alive ({alive}); session running",
+            "session_id": session.id, "survivors": survivors, "process_running": True}
+
     # SIGKILL / taskkill are asynchronous: the kernel needs a scheduling tick to
     # tear the process down and the parent must reap it before poll()/isalive()
     # stop saying "alive". Verifying survivors in that window flagged every
@@ -151,8 +225,8 @@ class ProcessTerminationMixin:
 
         Fail-closed: anything unverifiable counts as a survivor, so a kill
         that leaves a live tree can never write a killed receipt. Sandbox
-        (env) sessions have no host-visible tree and are unverifiable by
-        design — they return no survivors, preserving existing behavior."""
+        (env) sessions have no host-visible tree: ``_kill_env_group`` proves
+        their group gone inside the sandbox, so they return no survivors here."""
         deadline = time.monotonic() + self._KILL_SETTLE_SECONDS
         while True:
             survivors = self._probe_survivors(session)

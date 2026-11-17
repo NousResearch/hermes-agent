@@ -148,6 +148,24 @@ def interrupt_subagent(subagent_id: str) -> bool:
         logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
         return False
 
+def _owned_by_session_db(record: dict[str, Any], session_id: str, db: Any) -> bool:
+    """The record belongs to ``session_id``'s conversation lineage in exactly ``db``'s profile store."""
+    db_path, path = getattr(db, "db_path", None), record.get("owner_db_path")
+    if not isinstance(db_path, (str, Path)) or not isinstance(path, (str, Path)):
+        return False
+    if Path(path).resolve() != Path(db_path).resolve():
+        return False
+    return _owns_subagent_record(record, SimpleNamespace(session_id=session_id, _session_db=db))
+
+
+def list_session_subagents(session_id: str, db: Any) -> list[dict[str, Any]]:
+    """Live children owned by ``session_id`` in ``db``'s profile (copies, private keys kept for the caller)."""
+    with _active_subagents_lock:
+        records = [dict(r) for r in _active_subagents.values()]
+    # Lineage resolution may read the session DB: evaluated outside the registry lock.
+    return [r for r in records if _owned_by_session_db(r, session_id, db)]
+
+
 def request_session_subagent_stop(subagent_id: str, session_id: str, db: Any) -> Optional[str]:
     """Admit a single cooperative stop only for the owning profile DB and session lineage.
 
@@ -155,17 +173,14 @@ def request_session_subagent_stop(subagent_id: str, session_id: str, db: Any) ->
     completion returns 'finished'; unknown and foreign children are indistinguishable.
     Acceptance never claims that the worker already exited or rewrites its manifest.
     """
-    db_path = getattr(db, "db_path", None)
-    if not isinstance(db_path, (str, Path)):
-        return None
-    owner = SimpleNamespace(session_id=session_id, _session_db=db)
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id) or _recent_subagents.get(subagent_id)
-        if record is None or not _owns_subagent_record(record, owner):
-            return None
-        path = record.get("owner_db_path")
-        if not isinstance(path, (str, Path)) or Path(path).resolve() != Path(db_path).resolve():
-            return None
+    # Ownership may read the DB (lineage tips): never under the registry lock.
+    if record is None or not _owned_by_session_db(record, session_id, db):
+        return None
+    with _active_subagents_lock:
+        if _active_subagents.get(subagent_id) is not record:
+            return "finished"
         agent = record.get("agent")
         if agent is None:
             return "finished"

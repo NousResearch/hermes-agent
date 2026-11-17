@@ -89,8 +89,9 @@ its route. To change how `delegate_task` routes the model's subagents, write a
 
 ## HTTP cancellation for delegated children
 
-The API server advertises `features.session_subagent_stop` through authenticated
-`GET /v1/capabilities`. When true, a client may request:
+The API server advertises `features.session_subagents` and `features.session_subagent_stop`
+through authenticated `GET /v1/capabilities`. `GET /api/sessions/{session_id}/subagents` lists the
+live children the session owns (same ownership rule as below). To stop one, a client may request:
 
 ```http
 POST /api/sessions/{session_id}/subagents/{subagent_id}/stop

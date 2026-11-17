@@ -101,3 +101,34 @@ async def test_http_stop_rejects_foreign_missing_finished_or_unauthenticated_sco
         registry._unregister_subagent(sid)
         registry._recent_subagents.pop(sid, None)
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_http_list_shows_only_this_sessions_children_in_this_profile(tmp_path):
+    db = SessionDB(tmp_path / 'state.db')
+    db.create_session('owned', 'api_server')
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={'key': 'fixture-api-key'}))
+    adapter._session_db = db
+    records = {
+        'list-mine': {'subagent_id': 'list-mine', 'goal': 'mine', 'agent': Child(), 'owner_agent_session_id': 'owned', 'owner_db_path': str(db.db_path)},
+        'list-sibling': {'subagent_id': 'list-sibling', 'goal': 'theirs', 'agent': Child(), 'owner_agent_session_id': 'foreign', 'owner_db_path': str(db.db_path)},
+        'list-profile': {'subagent_id': 'list-profile', 'goal': 'other profile', 'agent': Child(), 'owner_agent_session_id': 'owned', 'owner_db_path': str(tmp_path / 'other/state.db')},
+    }
+    for record in records.values():
+        registry._register_subagent(record)
+    app = web.Application()
+    for method, path, handler in adapter._http_route_table():
+        if 'subagents' in path:
+            app.router.add_route(method, path, handler)
+    try:
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get('/api/sessions/owned/subagents', headers={'Authorization': 'Bearer fixture-api-key'})
+            assert response.status == 200
+            payload = await response.json()
+            assert [row['subagent_id'] for row in payload['data']] == ['list-mine']
+            assert 'agent' not in payload['data'][0] and 'owner_db_path' not in payload['data'][0]
+    finally:
+        for sid in records:
+            registry._unregister_subagent(sid)
+            registry._recent_subagents.pop(sid, None)
+        db.close()

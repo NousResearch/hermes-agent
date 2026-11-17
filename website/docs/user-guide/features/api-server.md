@@ -725,8 +725,13 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session. `include_compacted=true` also returns the turns a context compaction archived (default: live transcript only). `inline_images=false` renders image attachments as `[image]` placeholders instead of inline data URIs — the transcript travels in kilobytes, for clients reading over a network |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
+| `POST` | `/api/sessions/{id}/compress` | Compact the session's context now (the API twin of `/compress`). Optional body: `{"instructions": "what the summary must keep", "preview": false}`. Returns `status` (`compressed`, `nothing_to_do`, `preview`), `before_tokens`, `after_tokens`, `messages_removed`, and the `session_id` that holds the compacted transcript (unchanged with in-place compaction, the new continuation otherwise). 409 `session_active_turn` while a turn is running on the session; only `api_server` sessions are accepted |
+| `GET` | `/api/sessions/{id}/subagents` | Live `delegate_task` children this session's conversation owns (same fields as the TUI subagent roster: `subagent_id`, `goal`, `model`, `status`, `depth`, `tool_count`, `child_session_id`, …). Requires `API_SERVER_KEY` |
+| `POST` | `/api/sessions/{id}/subagents/{subagent_id}/stop` | Ask one owned child to stop cooperatively: 202 `{"status": "stopping"}`; 409 once it has finished; 404 for an unknown or foreign child. The parent and sibling children keep running. Requires `API_SERVER_KEY` |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, `tool.failed` (a tool that finished with an error), then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
+
+`GET /api/sessions/{id}` also carries a context meter: `context_tokens` (estimated size of the next request: stored system prompt, tool schemas and the live transcript) and `context_limit` (the context window of the session's model; omitted when it cannot be resolved within 5 seconds).
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
@@ -735,6 +740,11 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 curl -X POST http://localhost:8642/api/sessions/$ID/fork \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -d '{"title": "explore alt path"}'
+
+# compact the context, telling the summary what to keep
+curl -X POST http://localhost:8642/api/sessions/$ID/compress \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -d '{"instructions": "keep the open TODOs and file paths"}'
 
 # stream a turn over SSE
 curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \

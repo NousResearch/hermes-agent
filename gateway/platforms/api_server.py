@@ -50,6 +50,8 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "session_compress": True, "session_context_meter": True, "session_subagents": True,
+    "session_subagent_stop": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
@@ -77,7 +79,10 @@ _CAPABILITY_ENDPOINTS = (
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
-    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")))
+    ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
+    ("session_compress", ("POST", "/api/sessions/{session_id}/compress")),
+    ("session_subagents", ("GET", "/api/sessions/{session_id}/subagents")),
+    ("session_subagent_stop", ("POST", "/api/sessions/{session_id}/subagents/{subagent_id}/stop")))
 
 
 def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
@@ -113,6 +118,9 @@ from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_session_compress as _session_compress
+from gateway.platforms import api_server_subagents as _api_subagents
+from gateway.platforms.api_server_session_projection import session_response
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
@@ -1564,9 +1572,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
-            ("POST", "/api/sessions/{session_id}/subagents/{subagent_id}/stop", self._handle_session_subagent_stop),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
-            ("POST", "/api/sessions/{session_id}/compress", self._handle_session_compress),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
@@ -1587,6 +1593,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
+        routes.extend(_session_compress._http_routes(self, error_response=_error_response))
+        routes.extend(_api_subagents._http_routes(self, error_response=_error_response))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -2355,7 +2363,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         runner = getattr(self, "gateway_runner", None)
         features = {
             "chat_completions": True, "chat_completions_streaming": True,
-            "session_subagent_stop": True,
             "responses_api": True, "responses_streaming": True, "run_submission": True,
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
             **_STATIC_FEATURE_FLAGS,
@@ -2437,41 +2444,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _session_db_unavailable() -> web.Response:
         return _error_response("Session database unavailable", 503, code="session_db_unavailable")
 
-    @staticmethod
-    def _session_response(session: dict[str, Any]) -> dict[str, Any]:
-        """Return a stable, client-safe session representation."""
-        safe_keys = (
-            "id", "source", "user_id", "model", "title", "started_at", "ended_at", "end_reason",
-            "message_count", "tool_call_count", "input_tokens", "output_tokens",
-            "context_tokens", "context_limit",
-            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
-            "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
-        payload = {key: session.get(key) for key in safe_keys if key in session}
-        # SQLite stores the flags as 0/1.
-        payload.update(
-            {f: bool(payload[f]) for f in ("pinned", "archived", "hidden") if f in payload})
-        # Full system prompts / model_config never cross the client API; only their presence.
-        payload["has_system_prompt"] = bool(session.get("system_prompt"))
-        payload["has_model_config"] = bool(session.get("model_config"))
-        raw_model_config = session.get("model_config")
-        try:
-            model_config = (
-                json.loads(raw_model_config)
-                if isinstance(raw_model_config, str)
-                else raw_model_config
-            )
-        except (TypeError, json.JSONDecodeError):
-            model_config = None
-        # Exact-id consumers may inspect/resume delegate children even though
-        # list endpoints intentionally omit them. Project only the provenance
-        # bit the client needs so it cannot accidentally promote such a row
-        # into an ordinary session list; never expose the model snapshot.
-        payload["is_internal_child"] = bool(
-            isinstance(model_config, dict)
-            and model_config.get("_delegate_from") is not None
-        )
-        return payload
+    _session_response = staticmethod(session_response)
 
     @staticmethod
     def _message_response(message: dict[str, Any]) -> dict[str, Any]:
@@ -2644,28 +2617,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
 
     @_require_auth
-    async def _handle_session_subagent_stop(self, request: web.Request) -> web.Response:
-        from gateway.platforms.api_server_subagents import stop_session_subagent
-        return await stop_session_subagent(self, request)
-
-    @_require_auth
     async def _handle_get_session(self, request: web.Request) -> web.Response:
         """GET /api/sessions/{session_id}."""
         session, err = await self._get_existing_session_or_404(request.match_info["session_id"])
         if err:
             return err
-        # Compute context tokens + limit for the meter (best-effort, never blocks).
-        try:
-            from agent.model_metadata import estimate_request_tokens_rough, get_model_context_length
-            db = await self._ensure_session_db_async()
-            if db is not None:
-                msgs = await asyncio.to_thread(db.get_messages_as_conversation, session.get("id"))
-                session = dict(session)
-                session["context_tokens"] = estimate_request_tokens_rough(list(msgs or []))
-                model = session.get("model") or self._model_name
-                session["context_limit"] = get_model_context_length(model)
-        except Exception:
-            pass
+        session = await _session_compress.with_context_meter(self, session)
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
     @_require_auth
@@ -2822,90 +2779,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response(str(exc), 400, code="invalid_title")
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
-
-    @_require_auth
-    async def _handle_session_compress(self, request: web.Request) -> web.Response:
-        """POST /api/sessions/{session_id}/compress — manual context compaction (Shape A)."""
-        session_id = request.match_info["session_id"]
-        _session, err = await self._get_existing_session_or_404(session_id)
-        if err:
-            return err
-        body, err = await self._read_json_body(request)
-        if err:
-            return err
-        focus_topic = body.get("focus_topic")
-        if focus_topic is not None and not isinstance(focus_topic, str):
-            return _error_response("focus_topic must be a string", 400, code="invalid_focus_topic")
-
-        db = await self._ensure_session_db_async()
-        if db is None:
-            return self._session_db_unavailable()
-
-        messages = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
-        messages = list(messages or [])
-
-        # Nothing to do for very short transcripts.
-        try:
-            from agent.conversation_compression_manual import MIN_MESSAGES
-            if len(messages) < MIN_MESSAGES:
-                return web.json_response({
-                    "object": "hermes.session.compress", "status": "nothing_to_do",
-                    "before_tokens": 0, "after_tokens": 0, "messages_removed": 0,
-                    "messages": messages})
-        except Exception:
-            pass
-
-        # Create an agent for the compressor.
-        try:
-            agent = self._create_agent(session_id=session_id)
-        except Exception as exc:
-            return _error_response(f"Failed to create agent: {exc}", 500, code="agent_creation_failed")
-
-        from agent.conversation_compression_manual import parse_compress_args, compress_now
-        from agent.conversation_compression import finalize_context_engine_compression_notification
-
-        req = parse_compress_args(focus_topic or "")
-
-        try:
-            result = await asyncio.to_thread(
-                compress_now, agent, messages, req,
-                task_id=session_id, snapshot_is_current=lambda: True)
-        except Exception as exc:
-            return _error_response(f"Compression failed: {exc}", 500, code="compression_failed")
-
-        if result.status == "preview":
-            return web.json_response({
-                "object": "hermes.session.compress", "status": "preview",
-                "before_tokens": result.before_tokens, "after_tokens": result.after_tokens,
-                "messages_removed": 0, "messages": messages})
-        if result.status == "lock_skipped":
-            return web.json_response({
-                "object": "hermes.session.compress", "status": "busy",
-                "before_tokens": result.before_tokens, "after_tokens": result.after_tokens,
-                "messages_removed": 0, "messages": messages}, status=409)
-        if result.status != "compressed":
-            return web.json_response({
-                "object": "hermes.session.compress", "status": result.status,
-                "before_tokens": result.before_tokens, "after_tokens": result.after_tokens,
-                "messages_removed": 0, "messages": messages})
-
-        # Persist the compressed transcript.
-        try:
-            await asyncio.to_thread(db.replace_messages, session_id, result.after_messages)
-        except Exception as exc:
-            return _error_response(f"Failed to persist compressed transcript: {exc}", 500,
-                                 code="persist_failed")
-        try:
-            finalize_context_engine_compression_notification(agent, committed=True)
-        except Exception:
-            pass
-
-        return web.json_response({
-            "object": "hermes.session.compress", "status": "compressed",
-            "before_tokens": result.before_tokens, "after_tokens": result.after_tokens,
-            "messages_removed": result.removed,
-            "messages": result.after_messages})
-
 
     async def _prepare_session_chat(self, request: web.Request) -> tuple:
         """Shared prelude for /api/sessions/{id}/chat[/stream]: header/body validation, then

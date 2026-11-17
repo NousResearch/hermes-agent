@@ -271,6 +271,23 @@ databases, so this endpoint does not provide a global exactly-once guarantee.
 
 ---
 
+### Session compaction and subagent control
+
+Over the API server, a client can keep a long session inside its window and manage the
+children it delegated, without a chat command:
+
+- `POST /api/sessions/{id}/compress` runs the same manual compaction as `/compress` (one
+  summarizer call, then the normal in-place or rotated commit) and returns `before_tokens` /
+  `after_tokens`. `instructions` steers what the summary keeps. A turn in flight on the session
+  makes it answer 409 `session_active_turn` instead of waiting.
+- `GET /api/sessions/{id}` returns `context_tokens` and `context_limit` for a context meter.
+- `GET /api/sessions/{id}/subagents` lists the session's live `delegate_task` children;
+  `POST /api/sessions/{id}/subagents/{subagent_id}/stop` stops one of them cooperatively.
+
+`/v1/capabilities` advertises them as `features.session_compress`, `session_context_meter`,
+`session_subagents` and `session_subagent_stop`, with matching `endpoints.*` entries. See the
+[API server guide](../user-guide/features/api-server.md#sessions-api-session-control-over-rest).
+
 ## Which one should I use?
 
 - **You're writing an IDE plugin and the IDE already speaks ACP** → ACP. Zero protocol work on the IDE side.

@@ -83,7 +83,7 @@ def _plugin_home(tmp_path: Path, *, profile: bool = False, relocated: bool = Tru
 def _run(program: str, *args, home: Path, cwd: Path) -> subprocess.CompletedProcess:
     env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": _REPO}
     return subprocess.run([sys.executable, "-c", program, *map(str, args)], env=env, cwd=cwd,
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, check=False)
 
 
 @pytest.mark.parametrize("committed", [False, True])

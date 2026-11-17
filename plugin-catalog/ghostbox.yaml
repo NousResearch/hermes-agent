@@ -2,8 +2,7 @@ name: ghostbox
 repo: https://github.com/arjunbagga-xyz/hermes-ghostbox
 sha: 151574878391416e0c5b6b21d9b3114af0fe4103
 title: Ghost-Box
-description: Speculative shadow-execution sandbox and blast-radius verifier
-  for autonomous agent tools using ephemeral Git worktrees.
+description: "Speculative shadow-execution sandbox and blast-radius verifier for autonomous agent tools using ephemeral Git worktrees. Disclosure — creates git worktrees under `<repo>/.hermes/ghostbox/`, adds `.hermes/` to the repo's `.git/info/exclude`, and its fast-forward commit tool applies the shadow worktree's changes to your checkout (paths checked against Hermes' write denylist)."
 maintainer: arjunbagga-xyz
 tier: community
 category: tools

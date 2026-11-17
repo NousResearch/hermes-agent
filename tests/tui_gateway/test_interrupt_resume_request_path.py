@@ -21,6 +21,7 @@ import types
 import pytest
 
 from tests.tui_gateway import test_auto_continue as turns
+from tests.waiting import async_wait_until
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
 
@@ -59,15 +60,6 @@ class Socket:
         pass
 
 
-async def settle(predicate, timeout=20.0):
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() > deadline:
-            return False
-        await asyncio.sleep(0.01)
-    return True
-
-
 @pytest.mark.asyncio
 async def test_a_serve_socket_takes_the_pause(monkeypatch):
     monkeypatch.setattr(ws_mod, "_start_backend_liveness", lambda: None)
@@ -84,7 +76,8 @@ async def test_a_serve_socket_takes_the_pause(monkeypatch):
     task = asyncio.create_task(ws_mod.handle_ws(sock))
     try:
         sock.inbound.put_nowait(pause_frame(sid))
-        assert await settle(lambda: any(f.get("id") == "sandbox-call-1" for f in sock.sent)), sock.sent
+        await async_wait_until(lambda: any(f.get("id") == "sandbox-call-1" for f in sock.sent), timeout=20,
+                               what="the reply to the pause frame")
     finally:
         sock.inbound.put_nowait(None)
         await asyncio.wait_for(task, 20)

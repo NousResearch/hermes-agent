@@ -23,7 +23,7 @@ import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-
 import { notify } from '@/store/notifications'
 import { isOnboardingChat } from '@/store/onboarding-session'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
-import { useReplyPaused } from '@/store/paused-replies'
+import { isReplyPaused, useReplyPaused } from '@/store/paused-replies'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -252,6 +252,16 @@ export function useComposerSubmit({
               ...(id ? { id } : {}),
               ...(displayKind ? { displayKind } : {})
             })
+
+          // The chat's reply is paused for its automatic continuation (store/paused-replies.ts), which may
+          // already be running as a turn of its own. Like a typed message the request waits in the chat's
+          // queue and goes once the continuation has completed: not ahead of it (a send) and not into it
+          // (a steer). The store is asked as the request arrives; the pause can be newer than the last render.
+          if (isReplyPaused(queueKey, sessionId)) {
+            enqueue()
+
+            return
+          }
 
           if (!current.busy) {
             // Explicitly no attachments: the send must not pick up the draft's files. A rejected

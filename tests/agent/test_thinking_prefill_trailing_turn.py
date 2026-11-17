@@ -24,6 +24,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.think_scrubber import THINK_TAG_NAMES
+
 
 @pytest.fixture()
 def loop_agent():
@@ -173,3 +175,46 @@ class TestThinkingPrefillTrailingTurn:
         sent = _sent_messages(loop_agent.client.chat.completions.create, 1)
         leaked = [m for m in sent if any(str(k).startswith("_") for k in m)]
         assert not leaked, f"Internal scaffolding keys reached the wire: {leaked}"
+
+
+_USAGE = {"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 140}
+
+
+_TOOL_HISTORY = [
+    {"role": "user", "content": "look it up"},
+    {"role": "assistant", "content": "", "tool_calls": [{
+        "id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"},
+    }]},
+    {"role": "tool", "tool_call_id": "call_1", "content": "42"},
+]
+
+
+@pytest.mark.parametrize("history", [None, _TOOL_HISTORY], ids=["user", "after-tool"])
+@pytest.mark.parametrize("usage", [None, _USAGE], ids=["no-usage", "usage"])
+@pytest.mark.parametrize("tag", THINK_TAG_NAMES)
+def test_inline_reasoning_only_reply_gets_the_reminder(loop_agent, tag, usage, history):
+    """Every inline think tag counts as thinking-only, not just ``<think>``.
+
+    Without the reminder the retry resends the identical request (or, after a tool
+    result, the generic post-tool nudge); with no usage on the response the
+    deterministic-empty guard then ends the turn after two calls."""
+    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+    from tests.agent.test_run_agent import _mock_response
+
+    def reply(**kwargs):
+        # The model answers once it is told it only reasoned, and not before.
+        if _CODEX_INCOMPLETE_NUDGE in str(kwargs["messages"][-1].get("content")):
+            return _mock_response(content="Hi!", usage=usage)
+        return _mock_response(content=f"<{tag}>planning the reply</{tag}>", usage=usage)
+
+    loop_agent.client.chat.completions.create.side_effect = reply
+    with (
+        patch("agent.turn_empty_response.interruptible_backoff_sleep", return_value=None),
+        patch.object(loop_agent, "_persist_session"),
+        patch.object(loop_agent, "_save_trajectory"),
+        patch.object(loop_agent, "_cleanup_task_resources"),
+    ):
+        result = loop_agent.run_conversation("say hi", conversation_history=history)
+
+    assert result["final_response"] == "Hi!"
+    assert loop_agent.client.chat.completions.create.call_count == 2

@@ -27,6 +27,7 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_owner_recovery
 from persistence_assembly import open_persistence, profile_scope
 from tests.fixtures.storage_seed import seed_admission, seed_session
+from tests.waiting import wait_until
 
 NOW = int(time.time())
 HOST = kb._claimer_id().split(":", 1)[0]
@@ -248,8 +249,9 @@ def test_a_refused_signal_reads_the_pid_not_the_error(board, live):
     proc = None
     if live:
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        time.sleep(0.2)
-        pid, fp = proc.pid, kbd._process_fingerprint(proc.pid)
+        fp = wait_until(lambda: kbd._process_fingerprint(proc.pid), timeout=10,
+                        what="child worker to come up")
+        pid = proc.pid
     else:
         pid, fp = _absent_pid(base=3_970_000), None
 

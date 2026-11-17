@@ -2027,59 +2027,6 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 
 
 
-def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
-    """``archive_task`` on a *running* task must actually signal its host-local
-    worker process, not just null ``worker_pid`` in the DB (#76196: a worker
-    kept running past its own archive and could still push/complete work
-    against a task nothing tracks anymore). The termination outcome is
-    auditable via the ``archive_worker_termination`` event."""
-    import json
-    import subprocess
-    import sys
-
-    # A REAL live worker: the #76196 regression is about a worker that KEEPS RUNNING past its
-    # archive. PR#51 hardening removed the vestigial signal-to-a-dead-pid call (an absent pid
-    # is gone, not signalled), so the scenario must run a live process for the kill path to
-    # exist at all.
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-    import time as _time
-    _time.sleep(0.2)
-    try:
-        with kbc.connect() as conn:
-            t = kb.create_task(conn, title="x", assignee="a")
-            host = kb._claimer_id().split(":", 1)[0]
-            kb.claim_task(conn, t, claimer=f"{host}:worker")
-            kbd._set_worker_pid(conn, t, proc.pid)
-
-            signalled = []
-
-            def kill(pid, sig):
-                signalled.append((pid, sig))
-                if sig == __import__("signal").SIGTERM:
-                    proc.terminate()
-
-            assert kb.archive_task(conn, t, signal_fn=kill) is True
-
-            assert signalled and signalled[0][0] == proc.pid
-
-            row = conn.execute(
-                "SELECT payload FROM task_events "
-                "WHERE task_id = ? AND kind = 'archive_worker_termination'",
-                (t,),
-            ).fetchone()
-            payload = json.loads(row["payload"])
-            assert payload["prev_pid"] == proc.pid
-            assert payload["host_local"] is True
-            assert payload["termination_attempted"] is True
-            assert payload["terminated"] is True
-            assert kb.get_task(conn, t).status == "archived"
-            assert proc.wait(timeout=10) is not None
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-
-
 def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
     """A never-claimed (``triage``/``ready``/``done``) task has no live worker:
     ``archive_task`` must not signal anything, and no termination event is

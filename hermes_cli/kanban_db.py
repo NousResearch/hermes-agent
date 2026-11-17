@@ -1940,204 +1940,6 @@ def _end_or_synthesize_run(
     return run_id
 
 
-# ---------------------------------------------------------------------------
-# Verdict-authority attribution + transition-triggered termination
-# (incident 2026-11-16 PR#51 dual-reviewer collision; card t_58b75f7e).
-# ---------------------------------------------------------------------------
-
-# Event kinds that close a review execution: the moment a reviewer's authority
-# ends, its worker process must stop being armed (kill-at-transition) and the
-# audit trail must say WHO ended it (attribution), because a review-lane survivor
-# keeps PR comment rights and a shell — order-of-events alone cannot tell a
-# legitimate verdict-then-close from a self-override merge.
-_REVIEW_TERMINAL_EVENT_KINDS = ("changes_requested", "completed")
-
-
-def _actor_attribution(conn: sqlite3.Connection, task_id: str) -> dict:
-    """Identity of the session RECORDING a transition (D3): pid + live session id + kanban
-    worker identity (board/task/run, which reconstructs the ``owner_admitted`` ``request_id``
-    format). An interactive session is identified by pid + session id; a merge-order witness
-    can then assert AUTHORITY per transition, not just order. Advisory: never blocks."""
-    actor: dict[str, Any] = {"pid": os.getpid()}
-    with contextlib.suppress(Exception):
-        sid = os.environ.get("HERMES_SESSION_ID")
-        if sid:
-            actor["session_id"] = sid
-    board = os.environ.get("HERMES_KANBAN_BOARD")
-    run = os.environ.get("HERMES_KANBAN_RUN_ID")
-    if run:
-        actor["kanban_worker"] = {"task_id": task_id, "run_id": int(run)}
-        if board:
-            actor["kanban_worker"]["board"] = board
-    return actor
-
-
-def _record_ending_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
-    """The run this transition is about to close (snapshot BEFORE the transition's UPDATE
-    wipes ``tasks.current_run_id``) — the supersede case: another session's transition ending
-    a live worker's run can only be detected if the ending run is read first."""
-    return _current_run_id(conn, task_id)
-
-
-def _after_review_transition(
-    conn: sqlite3.Connection, task_id: str, *, run_id: Optional[int],
-    ending_run_id: Optional[int], actor: Optional[dict], kind: str,
-) -> None:
-    """Post-commit tail of a review transition: collision witness + immediate
-    termination of the ended run's worker.
-
-    * ``review_claim_collision`` (Pepper's process half of the same incident, t_ea9f278a):
-      one event row when this transition lands on a card whose review execution is live
-      beside the actor's — the double-execution the board otherwise books under a run that
-      never posted it, with no mechanical trace.
-    * kill-at-transition (D2): when the transition ends a run that was claimed from the
-      review column (``changes_requested`` always; ``completed`` when the card sat in
-      ``review`` or superseded a review run), the ended run's worker is terminated NOW
-      instead of at reap-grace + next tick. Self-transition of a non-review worker is the
-      untouched healthy path (grace reap stays).
-    """
-    try:
-        ending_run_review = run_id is not None and _retry_status_for_run(conn, task_id, run_id) == "review"
-        if ending_run_id is not None and ending_run_id != run_id:
-            ending_run_review = ending_run_review or _retry_status_for_run(conn, task_id, ending_run_id) == "review"
-        ending_exec = _ending_review_execution(conn, task_id, run_id, ending_run_id, actor)
-        collision = _review_claim_collision_info(conn, task_id, run_id, ending_run_id, actor, ending_exec)
-        if collision is not None:
-            with write_txn(conn):
-                _append_event(conn, task_id, "review_claim_collision", {
-                    "kind": kind,
-                    "run_id": run_id,
-                    "ending_run_id": ending_run_id,
-                    "actor": actor or {},
-                    **collision,
-                }, run_id=run_id)
-        if not ending_run_review:
-            return
-        # Kill-at-transition (D2): terminate the ending execution's worker NOW — but only
-        # when the transition was recorded by a session OTHER than the worker's own
-        # (foreign close / supersede over a live reviewer). A worker recording its own
-        # verdict keeps the untouched graceful path (grace reap owns the final kill).
-        if ending_exec is None or ending_exec["self_execution"] or not ending_exec["live"]:
-            return
-        from hermes_cli import kanban_db_dispatch as _kbd
-        info = _kbd.kill_run_worker_now(conn, task_id, int(ending_exec["run_id"]))
-        if not info.get("terminated"):
-            # Left armed until the next reap tick: record the gap loudly rather than
-            # letting "handled" be assumed (the reap sweep retries on that tick).
-            with write_txn(conn):
-                _append_event(conn, task_id, "worker_kill_deferred", {
-                    "run_id": int(ending_exec["run_id"]), "kind": kind,
-                    "targets": [t[0] for t in info.get("targets", [])],
-                    "detail": {k: v for k, v in info.items() if k not in ("targets", "terminated")},
-                }, run_id=int(ending_exec["run_id"]))
-    except Exception:
-        _log.debug("kanban: post-transition termination witness failed for %s", task_id, exc_info=True)
-
-
-def _ending_review_execution(
-    conn: sqlite3.Connection, task_id: str, run_id: Optional[int],
-    ending_run_id: Optional[int], actor: Optional[dict],
-) -> Optional[dict]:
-    """The execution this transition ended, as seen AFTER the transition committed.
-
-    ``self_execution`` is a SESSION property, not a run-row property: in PR#51 the
-    interactive session ended the live reviewer run through its own ``current_run_id``
-    (run 474), which a run-equality test misreads as self-service. The run's own
-    session is the one whose identities (spawn pair + ``worker_bound``) — or whose
-    owner gateway — include the acting pid, or whose run id the actor carries in its
-    worker env. ``owner_admitted``'s pid is the owner gateway (long-lived, hosts many
-    sessions): consulted for IDENTITY ONLY, never a liveness signal nor a kill target
-    — only attempt-scoped identities can be.
-    """
-    candidates = [x for x in (ending_run_id, run_id) if x is not None]
-    from hermes_cli import kanban_db_dispatch as _kbd
-    for candidate in candidates:
-        row = conn.execute(
-            "SELECT id, profile, ended_at, worker_pid, worker_started_at FROM task_runs "
-            "WHERE id = ? AND task_id = ?", (int(candidate), task_id),
-        ).fetchone()
-        if row is None or _row_get(row, "ended_at") is None:
-            continue  # never-claimed/synthesized path, or a run this transition did not end
-        identities = _kbd._run_worker_targets(conn, int(candidate), None, None)
-        owner_pid = None
-        owner_ev = conn.execute(
-            "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? "
-            "AND kind = 'owner_admitted' ORDER BY id DESC LIMIT 1", (task_id, int(candidate)),
-        ).fetchone()
-        if owner_ev is not None:
-            with contextlib.suppress(Exception):
-                _op = _json_dict(_row_get(owner_ev, "payload")).get("pid")
-                owner_pid = int(_op) if _op else None
-        actor_pids = {actor["pid"]} if actor and actor.get("pid") else set()
-        kw = (actor or {}).get("kanban_worker")
-        self_execution = isinstance(kw, dict) and kw.get("run_id") == int(candidate)
-        if not self_execution:
-            self_execution = bool(actor_pids & ({pid for pid, _fp in identities}
-                                                | ({owner_pid} if owner_pid else set())))
-        live = [(pid, fp) for pid, fp in identities
-                if pid != os.getpid() and _worker_alive(pid, fp) and not _kbd._pid_recycled(pid, fp)]
-        return {"run_id": int(candidate), "profile": _row_get(row, "profile"),
-                "self_execution": self_execution, "live": live,
-                "session_keys": {f"pid:{pid}" for pid, _fp in identities}}
-    return None
-
-
-def _review_claim_collision_info(
-    conn: sqlite3.Connection, task_id: str, run_id: Optional[int],
-    ending_run_id: Optional[int], actor: Optional[dict],
-    ending_exec: Optional[dict],
-) -> Optional[dict]:
-    """Describe a live review execution beside the acting one; None when there is none.
-
-    Two shapes (Pepper t_ea9f278a): (a) a review transition recorded while ANOTHER review
-    run on the same card is still live (or its worker still lives after its row closed);
-    (b) the ending run IS a live review execution this actor is not — an interactive
-    session closing a dispatcher-spawned reviewer's run (exactly the PR#51 attribution
-    failure, D3 shape). A worker recording its OWN verdict is never a collision."""
-    actor_sessions: set = set()
-    if actor:
-        if actor.get("pid"):
-            actor_sessions.add(f"pid:{actor['pid']}")
-        if actor.get("session_id"):
-            actor_sessions.add(f"session:{actor['session_id']}")
-        kw = actor.get("kanban_worker")
-        if isinstance(kw, dict) and kw.get("run_id") is not None:
-            actor_sessions.add(f"run:{kw['run_id']}")
-    from hermes_cli import kanban_db_dispatch as _kbd
-    live: list[dict] = []
-    # Shape (b): the execution this transition just ended, if it was a live review
-    # run held by a DIFFERENT session (PR#51: run 474's worker alive, verdict and
-    # merge posted by another execution 41 s after its authority ended).
-    if (ending_exec is not None and not ending_exec["self_execution"]
-            and ending_exec["live"]
-            and not (ending_exec["session_keys"] & actor_sessions)):
-        live.append({"run_id": ending_exec["run_id"], "profile": ending_exec["profile"],
-                     "pids": [pid for pid, _fp in ending_exec["live"]]})
-    # Shape (a): any OTHER review run on the card still live beside the actor's.
-    rows = conn.execute(
-        "SELECT id, profile, ended_at FROM task_runs WHERE task_id = ? AND id IS NOT ? ORDER BY id DESC LIMIT 20",
-        (task_id, run_id if run_id is not None else -1),
-    ).fetchall()
-    for r in rows:
-        other = int(r["id"])
-        if ending_exec is not None and other == ending_exec["run_id"]:
-            continue  # already accounted for as the ending execution
-        if _retry_status_for_run(conn, task_id, other) != "review":
-            continue
-        identities = _kbd._run_worker_targets(conn, other, None, None)
-        session_keys = {f"pid:{pid}" for pid, _fp in identities}
-        run_live = (r["ended_at"] is None and any(_kbd._worker_alive(pid, fp) for pid, fp in identities)) or \
-            (r["ended_at"] is not None and any(_kbd._worker_alive(pid, fp) and not _kbd._pid_recycled(pid, fp)
-                                              for pid, fp in identities))
-        if not run_live:
-            continue
-        if session_keys and actor_sessions and session_keys & actor_sessions:
-            continue  # same execution under another run row: not a second executor
-        live.append({"run_id": other, "profile": r["profile"],
-                     "pids": [pid for pid, _fp in identities if _kbd._worker_alive(pid, _fp)]})
-    return {"live_runs": live} if live else None
-
-
 def _synthesize_ended_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2435,55 +2237,6 @@ def claim_review_task(
         _review_claim_collision_at_claim(conn, task_id, run_id, lock)
         return get_task(conn, task_id)
 
-
-def _review_claim_collision_at_claim(
-    conn: sqlite3.Connection, task_id: str, run_id: int, lock: str,
-) -> None:
-    """Mechanical trace for a review claim landing while ANOTHER run on the same
-    card is still open (Pepper's case (b), t_ea9f278a).
-
-    The incident showed what a silent double-execution costs: a card parked in
-    ``review`` while the same identity is steered elsewhere leaves the board
-    attributing later events to a run that never posted them (the D3 shape).
-    Witness-only — one event row, no policy change, no steering refusal:
-    arbitration belongs to the process layer (review-fan-in-collision-policy)."""
-    try:
-        rows = conn.execute(
-            "SELECT id, profile, claim_lock, started_at FROM task_runs "
-            "WHERE task_id = ? AND id != ? AND ended_at IS NULL ORDER BY id DESC LIMIT 10",
-            (task_id, int(run_id)),
-        ).fetchall()
-        others = [
-            {"run_id": int(_row_get(r, "id")), "profile": _row_get(r, "profile"),
-             "claim_lock": _row_get(r, "claim_lock"), "started_at": _row_get(r, "started_at")}
-            for r in rows
-        ]
-        if not others:
-            return
-        _append_event(conn, task_id, "review_claim_collision", {
-            "kind": "claim",
-            "run_id": int(run_id),
-            "claim_lock": lock,
-            "actor": _actor_attribution(conn, task_id),
-            "live_runs": others,
-        }, run_id=int(run_id))
-    except Exception:
-        _log.debug("kanban: review-claim collision witness failed for %s", task_id, exc_info=True)
-
-
-def _retry_status_for_run(
-    conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None,
-) -> str:
-    """``review`` when the run's ``claimed`` event says ``source_status=review``,
-    else ``ready`` — one place, so crash/timeout/reclaim can't silently turn a
-    reviewer run into an implementation run."""
-    if run_id is None:
-        run_id = _current_run_id(conn, task_id)
-    if run_id is None:
-        return "ready"
-    event = _latest_event(conn, task_id, "claimed", run_id)
-    payload = _json_dict(_row_get(event, "payload"))
-    return "review" if payload.get("source_status") == "review" else "ready"
 
 
 # Run outcome -> lifecycle status a goal loop should report for a handed-off run.
@@ -3081,31 +2834,6 @@ def _cleaned_artifact_paths(metadata: Any) -> list[str]:
     if not isinstance(raw, (list, tuple)):
         return []
     return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
-
-
-def _completed_event_payload(
-    result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
-) -> dict:
-    """``completed`` event payload: first summary line (400 chars) so gateway
-    notifiers / dashboard WS render without a second round-trip; verified
-    cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
-    # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
-    # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
-    # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
-    # ``isVoiceToggleKey``) and display it in /voice status — previously the TUI hardcoded Ctrl+B and
-    # ignored the config (#18994).
-    payload: dict = {
-        "result_len": len(result) if result else 0,
-        "summary": _first_line(event_summary, 400) or None,
-    }
-    if verified_cards:
-        payload["verified_cards"] = verified_cards
-    if isinstance(metadata, dict):
-        cleaned = _cleaned_artifact_paths(metadata)
-        if cleaned:
-            payload["artifacts"] = cleaned
-    return payload
 
 
 def _flag_phantom_prose_refs(
@@ -4483,8 +4211,16 @@ from hermes_cli.kanban_db_dispatch import (
     _defer_reclaim_for_live_worker,
     _pid_alive,
     _record_task_failure,
-    _terminate_reclaimed_worker,
     _worker_alive,
-    _worker_survived_termination,
     _worker_terminal_timeout_env,
+)
+from hermes_cli.kanban_db_termination import (
+    _actor_attribution,
+    _after_review_transition,
+    _completed_event_payload,
+    _record_ending_run_id,
+    _retry_status_for_run,
+    _review_claim_collision_at_claim,
+    _terminate_reclaimed_worker,
+    _worker_survived_termination,
 )

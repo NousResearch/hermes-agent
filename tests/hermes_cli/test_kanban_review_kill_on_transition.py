@@ -24,7 +24,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -32,6 +31,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from tests.waiting import wait_until
 
 
 @pytest.fixture
@@ -55,7 +55,10 @@ def _sleeper():
         [sys.executable, "-c", "import time; time.sleep(120)"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    time.sleep(0.2)
+    # The precondition every caller depends on is a READABLE spawn fingerprint (identity the
+    # kill/reap paths refuse to signal without); poll for it instead of assuming startup time.
+    wait_until(lambda: kbd._process_fingerprint(proc.pid), timeout=10,
+               what="sleeper child to come up")
     return proc
 
 
@@ -295,3 +298,57 @@ def test_transition_kill_failure_is_recorded_not_silent(conn, monkeypatch):
         if survivor.poll() is None:
             survivor.kill()
             survivor.wait()
+
+
+# ---------------------------------------------------------------------------
+# The archive path's kill step (moved from test_kanban_db.py with the
+# termination machinery; the fixed sleeps here became fingerprint waits)
+# ---------------------------------------------------------------------------
+
+def test_archive_running_task_terminates_worker(conn, monkeypatch):
+    """``archive_task`` on a *running* task must actually signal its host-local
+    worker process, not just null ``worker_pid`` in the DB (#76196: a worker
+    kept running past its own archive and could still push/complete work
+    against a task nothing tracks anymore). The termination outcome is
+    auditable via the ``archive_worker_termination`` event."""
+    import json
+    import signal as _signal
+
+    # A REAL live worker: the #76196 regression is about a worker that KEEPS RUNNING past its
+    # archive. PR#51 hardening removed the vestigial signal-to-a-dead-pid call (an absent pid
+    # is gone, not signalled), so the scenario must run a live process for the kill path to
+    # exist at all.
+    proc = _sleeper()
+    try:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kbd._set_worker_pid(conn, t, proc.pid)
+
+        signalled = []
+
+        def kill(pid, sig):
+            signalled.append((pid, sig))
+            if sig == _signal.SIGTERM:
+                proc.terminate()
+
+        assert kb.archive_task(conn, t, signal_fn=kill) is True
+
+        assert signalled and signalled[0][0] == proc.pid
+
+        row = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'archive_worker_termination'",
+            (t,),
+        ).fetchone()
+        payload = json.loads(row["payload"])
+        assert payload["prev_pid"] == proc.pid
+        assert payload["host_local"] is True
+        assert payload["termination_attempted"] is True
+        assert payload["terminated"] is True
+        assert kb.get_task(conn, t).status == "archived"
+        assert proc.wait(timeout=10) is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()

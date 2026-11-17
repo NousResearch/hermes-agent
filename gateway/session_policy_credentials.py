@@ -152,15 +152,17 @@ def _owner_block(config, path):
     return tuple(path[:-1])
 
 
-def _resolved(owner, block, config):
-    """``(provider_identity, url)`` the route *block* at *owner* is actually sent to."""
+def _resolved(owner, block, config, resolve=None):
+    """``(provider_identity, url)`` the route *block* at *owner* is actually sent to (*resolve*: the
+    route resolver, ``resolved_route`` unless a check reconstructs an older build's spelling)."""
     from gateway.session_route_identity import resolved_route
+    resolve = resolve or resolved_route
     if owner[0] == 'auxiliary':
         provider = str(block.get('provider') or '').strip().lower()
         if provider in _AUX_FOLLOWS_MAIN and not str(block.get('base_url') or '').strip():
             main = config.get('model') if isinstance(config.get('model'), dict) else {}
-            return ['main', *resolved_route(main, config)]
-    return list(resolved_route(block, config))
+            return ['main', *resolve(main, config)]
+    return list(resolve(block, config))
 
 
 # Endpoint fields holding a URL: digested in normalize_route_base_url's form, so a re-spelling of the same
@@ -173,15 +175,14 @@ def _url(value):
     return normalize_route_base_url(str(value or '').strip())
 
 
-def _binding(config, path):
-    """Digest of the endpoint the secret at *path* authenticates in the frozen *config* (a terminal-scope
-    secret, ``path[0] is None``, authenticates no endpoint)."""
+def _endpoint_snapshot(config, path, resolve=None):
+    """The ``[path, endpoint]`` payload ``_binding`` digests for the secret at *path*."""
     owner = _owner_block(config, path) if path and path[0] is not None else None
     block = _defined(config, owner) if owner else _ABSENT
     endpoint = {k: block[k] for k in _ENDPOINT_KEYS if k in block} if isinstance(block, dict) else {}
     if isinstance(block, dict) and _route_owner(config, path) is not None:
         # A route's key authenticates what it resolves to: a named ``providers:`` entry's URL included.
-        endpoint['resolved'] = _resolved(owner, block, config)
+        endpoint['resolved'] = _resolved(owner, block, config, resolve)
         endpoint['resolved'][-1] = _url(endpoint['resolved'][-1])
     elif isinstance(block, dict) and path[0] in _ENTRY_SECTIONS:
         from hermes_cli.runtime_provider_custom import _entry_url
@@ -189,7 +190,78 @@ def _binding(config, path):
     for key in _URL_KEYS:
         if isinstance(endpoint.get(key), str):
             endpoint[key] = _url(endpoint[key])
-    return hashlib.sha256(json.dumps([list(path), endpoint], sort_keys=True).encode()).hexdigest()
+    return [list(path), endpoint]
+
+
+def _digest_binding(payload):
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _binding(config, path):
+    """Digest of the endpoint the secret at *path* authenticates in the frozen *config* (a terminal-scope
+    secret, ``path[0] is None``, authenticates no endpoint)."""
+    return _digest_binding(_endpoint_snapshot(config, path))
+
+
+def _builtin_default_url(identity):
+    """The endpoint a built-in route naming no ``base_url`` of its own is sent to, else ``''``."""
+    if identity == 'openrouter':
+        from hermes_constants import OPENROUTER_BASE_URL
+        return OPENROUTER_BASE_URL
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    return str(getattr(PROVIDER_REGISTRY.get(identity), 'inference_base_url', '') or '')
+
+
+def _pre_151775_route(model_cfg, config):
+    """``resolved_route`` as a gateway from before #151775 stamped it, for a route block whose bare
+    built-in name (``openrouter``, ``anthropic``, any case) now resolves to the user's ``providers:``
+    entry keyed the same (``custom:<key>``); None for every other route, and for one whose endpoint
+    #151775 really moved.
+
+    Before #151775 such a name meant the built-in: identity = its canonical id, URL = the block's own
+    ``base_url`` (``''`` when it names none, the built-in's default host). That build is accepted only
+    when the endpoint it sent the key to is the one the route resolves to now: a spelling change
+    alone is not a moved endpoint (#154342), a built-in host replaced by another entry URL is.
+    """
+    from gateway.session_route_identity import _canonical, resolved_route
+    from hermes_cli.runtime_provider_custom import builtin_name_user_entry
+    identity, url = resolved_route(model_cfg, config)
+    name = str((model_cfg or {}).get('provider') or '').strip().lower()
+    if not identity.startswith('custom:') or builtin_name_user_entry(name, config.get('providers')) is None:
+        return None
+    builtin = _canonical(name)
+    own = str(model_cfg.get('base_url') or '').strip().rstrip('/')
+    if _url(own or _builtin_default_url(builtin)) != _url(url):
+        return None
+    return builtin, own
+
+
+def _pre_151775_binding(config, path):
+    """The digest a pre-#151775 gateway stamped for *path*, when it differs from today's only by that
+    route-identity change; else None."""
+    if not path or path[0] is None or _route_owner(config, path) is None:
+        return None
+    changed = []
+
+    def resolve(model_cfg, cfg):
+        legacy = _pre_151775_route(model_cfg, cfg)
+        if legacy is None:
+            from gateway.session_route_identity import resolved_route
+            return resolved_route(model_cfg, cfg)
+        changed.append(legacy)
+        return legacy
+    payload = _endpoint_snapshot(config, path, resolve)
+    return _digest_binding(payload) if changed else None
+
+
+def _bound_matches(config, path, digest):
+    """Whether *digest* (frozen in ``bound``) still binds the secret at *path* to the endpoint the frozen
+    *config* routes it to: today's binding, or the one a pre-#151775 gateway stamped for that same
+    endpoint (#154342). Newly stamped bindings always use today's spelling."""
+    if hmac.compare_digest(_binding(config, path), digest):
+        return True
+    legacy = _pre_151775_binding(config, path)
+    return legacy is not None and hmac.compare_digest(legacy, digest)
 
 
 def config_reference(authority, session_id, policy, secrets):
@@ -226,7 +298,7 @@ def _check_scope(authority, source, policy, home, skip):
         return
     config = json.loads(policy.config_json)
     for path, digest in source['bound']:
-        if path[0] not in skip and not hmac.compare_digest(_binding(config, path), digest):
+        if path[0] not in skip and not _bound_matches(config, path, digest):
             raise RuntimeStoreError('launch_credentials_unavailable', field=_field(path),
                                     detail='its endpoint moved in the session policy without a re-bind')
 

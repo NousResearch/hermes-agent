@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from hermes_cli.sessions_target import attach, paused, run_gateway_verb, session_argument
+from hermes_cli.sessions.target import attach, paused, run_gateway_verb, session_argument
 
 
 def _execution_state(snapshot) -> str:

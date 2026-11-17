@@ -1368,17 +1368,17 @@ def _cmd_discard(args):
 
 
 def _cmd_interrupt(args):
-    from hermes_cli.sessions_interrupt import cmd_interrupt
+    from hermes_cli.sessions.interrupt import cmd_interrupt
     return cmd_interrupt(args)
 
 
 def _cmd_remote(args):
-    from hermes_cli.sessions_remote import cmd_remote
+    from hermes_cli.sessions.remote import cmd_remote
     return cmd_remote(args)
 
 
 def _cmd_log(db, args):
-    from hermes_cli.sessions_log import cmd_log
+    from hermes_cli.sessions.log import cmd_log
     return cmd_log(db, args)
 
 

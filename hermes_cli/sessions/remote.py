@@ -17,7 +17,7 @@ import json
 import sys
 import uuid
 
-from hermes_cli.sessions_target import (
+from hermes_cli.sessions.target import (
     TIMEOUT_EXIT, attach, busy, paused, run_gateway_verb, session_argument, stored_id,
 )
 
@@ -42,23 +42,33 @@ async def _within(seconds, what, work):
         raise
 
 
-async def _send(client, args):
+async def _send_and_wait(client, args):
     from hermes_cli.gateway_chat_view import GatewayChatView
     snapshot = await attach(client, args.session, omit_messages=True)
-    sid = stored_id(snapshot)
-    text = " ".join(args.text)
+    # The finite chat path: the owner treats the turn as single-query (nobody answers a clarify),
+    # and the reply, exit code and stderr ``session_id:`` line match `hermes chat --resume <id> -q`.
+    view = GatewayChatView(client, snapshot, quiet=True)
+    return await view.run(" ".join(args.text), oneshot=True)
+
+
+async def _send(client, args):
     if args.wait:
-        # The finite chat path: the owner treats the turn as single-query (nobody answers a clarify),
-        # and the reply, exit code and stderr ``session_id:`` line match `hermes chat --resume <id> -q`.
-        view = GatewayChatView(client, snapshot, quiet=True)
-        return await _within(args.timeout, "waiting for the reply", view.run(text, oneshot=True))
+        return await _within(args.timeout, "waiting for the reply", _send_and_wait(client, args))
+    snapshot = await attach(client, args.session, omit_messages=True)
+    sid = stored_id(snapshot)
     if paused(snapshot.get("pending")):
         print("Not sent: session " + _PAUSED_HINT.format(sid=sid) + ".", file=sys.stderr)
         return 3
-    receipt = await client.rpc("prompt.submit", session_id=sid, input_id=uuid.uuid4().hex, text=text)
-    payload = {"session_id": sid, "admission_id": receipt.get("admission_id"), "status": receipt.get("status")}
+    receipt = await client.rpc("prompt.submit", session_id=sid, input_id=uuid.uuid4().hex, text=" ".join(args.text))
+    if receipt.get("voice_stopped") is True:
+        # A bare stop phrase typed into the session's live voice chat ended that chat; no turn was queued.
+        payload = {"session_id": sid, "admission_id": None, "status": "voice_stopped"}
+    else:
+        payload = {"session_id": sid, "admission_id": receipt["admission_id"], "status": receipt.get("status")}
     if args.json:
         print(json.dumps(payload, sort_keys=True))
+    elif payload["admission_id"] is None:
+        print(f"Not queued: the text ended the voice chat of {sid}.")
     else:
         print(f"Sent to {sid} ({payload['status']}): admission {payload['admission_id']}")
     return 0
@@ -107,16 +117,20 @@ class _Waiter:
             reader.cancel()
 
 
-async def _wait(client, args):
+async def _settle(client, args):
     snapshots = [await attach(client, name, omit_messages=True) for name in args.sessions]
     waiter = _Waiter(client, snapshots)
     total = len(waiter.pending)
-    enough = (lambda idle: bool(idle)) if args.any else (lambda idle: len(idle) == total)
-    code = await _within(args.timeout, "waiting for the sessions to settle", waiter.until(enough))
+    await waiter.until((lambda idle: bool(idle)) if args.any else (lambda idle: len(idle) == total))
     for sid in waiter.idle():
         state = _PAUSED_HINT.format(sid=sid) if paused(waiter.pending[sid]) else "idle"
         print(f"{sid}: {state}")
-    return code or 0
+    return 0
+
+
+async def _wait(client, args):
+    # The deadline covers resolving and attaching too: `--timeout 1` never waits out an RPC budget.
+    return await _within(args.timeout, "waiting for the sessions to settle", _settle(client, args))
 
 
 async def _watch(client, args):

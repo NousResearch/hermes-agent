@@ -9,7 +9,7 @@ from fnmatch import fnmatchcase
 import json
 import sys
 
-from hermes_cli.sessions_target import resolve_local, session_argument
+from hermes_cli.sessions.target import resolve_local, session_argument
 
 
 def _entries(row):
@@ -51,13 +51,32 @@ def cmd_log(db, args) -> int:
         print(f"Error: No session found matching '{args.session}'. Use 'hermes sessions list' to see available sessions.",
               file=sys.stderr)
         return 1
-    wanted = _wanted(args.types)
-    entries = [entry for row in db.get_messages(session_id, include_ancestors=True)
-               for entry in _entries(row) if wanted(entry)]
-    for entry in entries[-args.limit:] if args.limit else entries:
+    for entry in _select(db, session_id, _wanted(args.types), args.limit):
         print(json.dumps({"session_id": session_id, **entry}, ensure_ascii=False, default=str)
               if args.json else _render(entry))
     return 0
+
+
+_PAGE = 200
+
+
+def _select(db, session_id, wanted, limit):
+    """The matching entries oldest first; with *limit*, only the newest *limit*, read back from the
+    end in pages so a short tail never loads a long session. Compacted rows are the display history
+    (``include_compacted``), so an in-place compaction does not hide earlier turns."""
+    def page(offset):
+        return db.get_messages(session_id, include_ancestors=True, include_compacted=True,
+                               latest=bool(limit), limit=_PAGE if limit else None, offset=offset)
+    if not limit:
+        return [entry for row in page(0) for entry in _entries(row) if wanted(entry)]
+    tail, offset = [], 0
+    while len(tail) < limit:
+        rows = page(offset)
+        tail = [entry for row in rows for entry in _entries(row) if wanted(entry)] + tail
+        if len(rows) < _PAGE:
+            break
+        offset += _PAGE
+    return tail[-limit:]
 
 
 def add_log_parser(sessions_subparsers) -> None:

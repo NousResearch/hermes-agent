@@ -44,18 +44,18 @@ def _lookup(db, name):
 
 
 async def attach(client, name, **params):
-    """``session.resume`` for *name*: the locally resolved id, else the owner's own lookup (``-`` as
-    ``--resume latest``, otherwise exact id then title), as ``hermes chat --resume`` resolves it."""
+    """``session.resume`` for *name*: the id this profile's store resolves it to, then the owner's own
+    lookup (``-`` as ``--resume latest``, otherwise exact id then title), as ``hermes chat --resume``
+    resolves it. A local match the owner does not know (a remote owner keeps its own store) falls
+    through to the owner's lookup instead of failing."""
     resolved = await asyncio.to_thread(resolve_local, name)
-    if resolved:
-        return await client.rpc("session.resume", session_id=resolved, **params)
     if name == LAST_SESSION:
         from hermes_cli.main import _resolve_workspace_key
         workspace = await asyncio.to_thread(_resolve_workspace_key)
-        attempts = [{"latest": "cli", **({"workspace": workspace} if workspace else {})}]
+        owner = [{"latest": "cli", **({"workspace": workspace} if workspace else {})}]
     else:
-        attempts = [{"session_id": name}, {"title": name}]
-    for lookup in attempts:
+        owner = [{"session_id": name}, {"title": name}]
+    for lookup in ([{"session_id": resolved}] if resolved else []) + owner:
         try:
             return await client.rpc("session.resume", **lookup, **params)
         except GatewayClientError as exc:

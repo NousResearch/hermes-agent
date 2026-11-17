@@ -25,7 +25,7 @@ import threading
 import uuid
 from collections import OrderedDict, deque
 
-from tui_gateway.event_replay_deltas import DeltaRun, delta_key
+from tui_gateway.event_replay_deltas import DeltaRun, catch_up, delta_key
 
 # Seq counters live in-process, so a restart resets them to 1 while clients hold high
 # watermarks — events_since(sid, 97) would return [] with truncated=False forever. The
@@ -235,10 +235,15 @@ def events_since(sid: str, last_seen: int) -> list[dict]:
         for seq, entry, _size in buf or ():
             if seq <= last_seen:
                 continue
-            # A run is still growing under this lock: materialize its catch-up now (a string join).
-            snapshots.append(entry.catch_up(last_seen) if isinstance(entry, DeltaRun) else (seq, entry))
-    return [_thaw_params(entry, seq) if isinstance(entry, bytes) else {**entry, "seq": seq}
-            for seq, entry in snapshots]
+            # A run is still growing: take its unseen chunks now, join them after releasing the lock.
+            snapshots.append((seq, entry.unseen(last_seen) if isinstance(entry, DeltaRun) else entry))
+    events = []
+    for seq, entry in snapshots:
+        if isinstance(entry, bytes):
+            events.append(_thaw_params(entry, seq))
+        elif (built := catch_up(*entry)) is not None:
+            events.append({**built[1], "seq": built[0]})
+    return events
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:

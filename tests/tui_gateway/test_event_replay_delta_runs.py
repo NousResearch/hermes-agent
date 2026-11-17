@@ -86,3 +86,15 @@ def test_the_legacy_default_keeps_one_replay_entry_per_chunk():
 def event_replay_tail_bytes():
     from tui_gateway.event_replay_deltas import TOOL_TAIL_BYTES
     return TOOL_TAIL_BYTES
+
+
+def test_a_flood_of_empty_chunks_is_held_to_the_ring_byte_cap(monkeypatch):
+    # One run is one ring entry, so the 512-entry cap cannot bound it: each chunk's own retained
+    # cost must count against the byte caps, or empty chunks would grow a run for free.
+    monkeypatch.setattr(event_replay, "_REPLAY_BUFFER_BYTES_MAX", 64 * 1024)
+    for _ in range(5000):
+        _stamp("s", "message.delta", {"text": "", "turn_id": "turn-1", "segment": 0, "offset": 0})
+
+    stats = event_replay.replay_stats()
+    assert 0 < stats["bytes"] <= 64 * 1024
+    assert event_replay.is_truncated("s", 0)

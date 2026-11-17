@@ -273,9 +273,13 @@ def main() -> int:
     userver = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="on"))
 
     async def run() -> None:
+        from tests.waiting import async_wait_until
+
         task = asyncio.create_task(userver.serve(sockets=[sock]))
-        while not userver.started:
-            await asyncio.sleep(0.01)
+        await async_wait_until(lambda: userver.started or task.done(), 30, what="fake artifacts server bind")
+        if task.done():
+            await task  # surfaces the bind/startup error
+            return
         tmp = port_file + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:  # noqa: ASYNC230 -- one small local write
             fh.write(f"{port} {os.getpid()}")

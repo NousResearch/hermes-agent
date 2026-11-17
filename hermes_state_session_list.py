@@ -28,6 +28,8 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
         for key in (
             "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
             "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+            # The running turn stamps the continuation; the ended root's label was cleared.
+            "last_activity_description",
         ):
             if key in tip_row:
                 merged[key] = tip_row[key]

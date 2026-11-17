@@ -9,6 +9,9 @@ turn that was still running. Rows keep ``server._session_live_item``'s shape; ``
 """
 from __future__ import annotations
 
+import asyncio
+import json
+
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -40,14 +43,28 @@ async def active_list(connection, ref, params):
         if row.get('source') in INTERNAL_LISTING_SOURCES or entry.closed:
             continue
         sid, started = entry.session_id, float(row.get('started_at') or 0)
-        status = _status(entry.live, entry.handle, entry.pending)
-        item = {'current': sid == current, 'id': sid, 'session_key': sid,
-                'last_active': float(row.get('ended_at') or started), 'started_at': started,
-                'message_count': int(row.get('message_count') or 0),
-                'model': str(row.get('model') or ''), 'preview': '', 'title': row.get('title') or '',
-                'source': row.get('source'), 'status': status}
-        # The turn's durable activity stamp: the list endpoints are not re-read on a heartbeat.
-        if status == 'working' and (activity := row.get('last_activity_description')):
-            item['activity'] = activity
-        rows.append(item)
+        rows.append({'current': sid == current, 'id': sid, 'session_key': sid,
+                     'last_active': float(row.get('ended_at') or started), 'started_at': started,
+                     'message_count': int(row.get('message_count') or 0),
+                     'model': str(row.get('model') or ''), 'preview': '', 'title': row.get('title') or '',
+                     'source': row.get('source'), 'status': _status(entry.live, entry.handle, entry.pending)})
+    working = [row['id'] for row in rows if row['status'] == 'working']
+    if working:
+        activity = await asyncio.to_thread(_working_activity, connection.authority.db, working)
+        for row in rows:
+            if label := activity.get(row['id']):
+                row['activity'] = label
     return {'sessions': rows}
+
+
+def _working_activity(db, session_ids) -> dict[str, str]:
+    """Worker thread: each working turn's durable activity stamp, read off its compression TIP (the
+    running agent stamps the continuation and the ended root's label is cleared). Desktop's subtitle
+    needs it here because the list endpoints are not re-read on an activity heartbeat."""
+    tips = {sid: db.get_compression_tip(sid) for sid in session_ids}
+    ids = json.dumps(sorted(set(tips.values())))
+    with db._read_ctx() as conn:
+        labels = dict(conn.execute(
+            "SELECT id, last_activity_description FROM sessions WHERE id IN (SELECT value FROM json_each(?))",
+            (ids,)).fetchall())
+    return {sid: labels[tip] for sid, tip in tips.items() if labels.get(tip)}

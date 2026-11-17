@@ -35,6 +35,7 @@ import {
   reconcileActiveTranscript,
   reconcileTileTranscripts as reconcileTileTranscriptsForTest,
   rehydrateLiveSessionStatuses,
+  resetLiveRuntimeTracking,
   resetTypingActivityTracking,
   resolveActiveTranscriptSession,
   TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS,
@@ -1255,9 +1256,14 @@ describe('rehydrateLiveSessionStatuses', () => {
 
     rehydrateLiveSessionStatuses({ sessions: [{ ...working, activity: 'starting new turn' }] }, Date.now(), 'p')
     rehydrateLiveSessionStatuses({ sessions: [{ ...working, activity: 'tool running: terminal' }] }, Date.now(), 'p')
-    expect($liveActivityBySession.get()).toEqual({ busy: 'tool running: terminal' })
+    // Another profile's snapshot owns its own bucket: the same stored id there is a different chat.
+    rehydrateLiveSessionStatuses({ sessions: [{ ...working, activity: 'reading files' }] }, Date.now(), 'q')
+    expect($liveActivityBySession.get()).toEqual({ p: { busy: 'tool running: terminal' }, q: { busy: 'reading files' } })
 
     rehydrateLiveSessionStatuses({ sessions: [{ ...working, status: 'idle' }] }, Date.now(), 'p')
+    expect($liveActivityBySession.get()).toEqual({ p: {}, q: { busy: 'reading files' } })
+
+    resetLiveRuntimeTracking()
     expect($liveActivityBySession.get()).toEqual({})
   })
 })

@@ -45,7 +45,7 @@ import {
   setCurrentCwd
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
-import { setLiveActivity } from '@/store/session-live-activity'
+import { resetLiveActivity, setLiveActivity } from '@/store/session-live-activity'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -1002,6 +1002,7 @@ async function liveStatusParams(activeGatewayProfile: string): Promise<Record<st
  *  only reap runtimes that no longer exist. */
 export function resetLiveRuntimeTracking(): void {
   liveRuntimeIdsByProfile.clear()
+  resetLiveActivity()
 }
 
 interface BackgroundSyncParams {

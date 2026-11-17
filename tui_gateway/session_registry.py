@@ -676,18 +676,21 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "session_key": key, "started_at": float(session.get("created_at") or now), "status": status,
         "title": _session_live_title(session, key),
     }
-    if status == "working" and (activity := _live_activity(agent)):
+    if status == "working" and (activity := _live_activity(session)):
         item["activity"] = activity
     return item
 
 
-def _live_activity(agent) -> str:
-    """What a running turn is doing right now, straight off the agent's activity clock. The list
-    endpoints only carry the durable stamp, and no ``sessions.changed`` fires for a heartbeat, so a
-    sidebar subtitle read from the list alone freezes on the turn's first label."""
-    summary = getattr(agent, "get_activity_summary", None)
+def _live_activity(session: dict) -> str:
+    """What a running turn is doing right now: the in-process agent's activity clock, or the label an
+    isolated turn's compute host last relayed (its parent holds no agent). The list endpoints only
+    carry the durable stamp, and no ``sessions.changed`` fires for a heartbeat, so a sidebar subtitle
+    read from the list alone freezes on the turn's first label."""
+    summary = getattr(session.get("agent"), "get_activity_summary", None)
     snapshot = summary() if callable(summary) else None
-    return str(snapshot.get("last_activity_description") or "") if isinstance(snapshot, dict) else ""
+    if isinstance(snapshot, dict):
+        return str(snapshot.get("last_activity_description") or "")
+    return str(session.get("_compute_host_activity_desc") or "")
 
 
 def _session_lookup_key(session: dict, *, fallback: str = "") -> str:

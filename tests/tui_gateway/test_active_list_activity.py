@@ -36,6 +36,13 @@ def test_a_working_row_carries_the_agents_current_activity(monkeypatch):
     assert (row["status"], row["activity"]) == ("working", "executing tool: terminal")
 
 
+def test_an_isolated_turn_carries_the_label_its_compute_host_relayed(monkeypatch):
+    # turn_isolation: the parent holds no agent; the child relays its label on compute_host.activity.
+    session = {**_live(True, ""), "agent": None, "_compute_host_activity_desc": "tool running: terminal"}
+    [row] = _rows(monkeypatch, session)
+    assert row["activity"] == "tool running: terminal"
+
+
 def test_an_idle_row_carries_no_activity(monkeypatch):
     [row] = _rows(monkeypatch, _live(False, "tool completed: terminal (3.0s)"))
     assert row["status"] == "idle" and "activity" not in row

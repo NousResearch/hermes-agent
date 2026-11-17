@@ -81,10 +81,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+    requested_task_id = getattr(args, "task_id", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
             dry_run=args.dry_run,
+            **({"task_id": requested_task_id} if requested_task_id is not None else {}),
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
@@ -93,6 +95,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if getattr(args, "json", False):
         _print_json({
+            **({"requested_task_id": requested_task_id,
+                "requested_task_reason": res.requested_task_reason} if requested_task_id is not None else {}),
             **{k: getattr(res, k)
                for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
                          "reaped_terminal_workers")},
@@ -114,7 +118,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
-        return 0
+        return 1 if requested_task_id is not None and res.requested_task_reason else 0
+    if requested_task_id is not None and res.requested_task_reason:
+        return _err(f"{requested_task_id}: {res.requested_task_reason}")
     print(f"Reclaimed:    {res.reclaimed}")
     if res.reaped_terminal_workers:
         print(f"Reaped workers of finished tasks: {', '.join(res.reaped_terminal_workers)}")

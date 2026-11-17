@@ -67,6 +67,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   unread: boolean
   onArchive: () => void
   onBranch?: () => void
+  onBranchIntoProject?: (projectId: string) => void
   onDelete: () => void
   onPin: () => void
   /** Toggle the persisted read-state watermark. */
@@ -133,6 +134,7 @@ function SidebarSessionRowImpl({
   unread,
   onArchive,
   onBranch,
+  onBranchIntoProject,
   onDelete,
   onPin,
   onToggleUnread,
@@ -329,6 +331,7 @@ function SidebarSessionRowImpl({
         archived={Boolean(session.archived)}
         onArchive={onArchive}
         onBranch={onBranch}
+        onBranchIntoProject={onBranchIntoProject}
         onDelete={onDelete}
         onPin={onPin}
         onToggleUnread={onToggleUnread}
@@ -360,6 +363,7 @@ function SidebarSessionRowImpl({
       archived={Boolean(session.archived)}
       onArchive={onArchive}
       onBranch={onBranch}
+      onBranchIntoProject={onBranchIntoProject}
       onDelete={onDelete}
       onPin={onPin}
       onToggleUnread={onToggleUnread}

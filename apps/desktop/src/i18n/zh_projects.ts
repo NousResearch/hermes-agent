@@ -30,6 +30,7 @@ export const zhProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuSetActive: '设为活动',
   menuDelete: '删除',
   moveToProject: '移动到项目',
+  branchInto: name => `分支并放入 ${name}`,
   movedTo: name => `已移动到 ${name}`,
   moveFailed: '无法移动会话',
   moveNoFolder: '该项目没有可移入的文件夹',

@@ -909,6 +909,8 @@ function useSessionTabActions({ onClose, onHideTabBar, storedSessionId, tabPaneI
   return {
     onArchive: () => void sessionTileDelegate()?.archiveSession(storedSessionId),
     onBranch: () => void sessionTileDelegate()?.branchSession(storedSessionId),
+    onBranchIntoProject: (projectId: string) =>
+      void sessionTileDelegate()?.branchSession(storedSessionId, projectId),
     onClose,
     onDelete: () => void sessionTileDelegate()?.deleteSession(storedSessionId),
     onHideTabBar,

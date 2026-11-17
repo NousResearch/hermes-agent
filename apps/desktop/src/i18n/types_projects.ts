@@ -29,6 +29,8 @@ export interface SidebarProjectsTranslations {
   menuSetActive: string
   menuDelete: string
   moveToProject: string
+  /** Branch the chat and put the NEW child into this project. */
+  branchInto: (name: string) => string
   movedTo: (name: string) => string
   moveFailed: string
   moveNoFolder: string

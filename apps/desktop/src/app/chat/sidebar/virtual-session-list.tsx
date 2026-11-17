@@ -25,6 +25,7 @@ interface SessionRowCommonProps {
   unread: boolean
   onArchive: () => void
   onBranch?: () => void
+  onBranchIntoProject?: (projectId: string) => void
   onDelete: () => void
   onPin: () => void
   onToggleUnread: () => void
@@ -48,7 +49,7 @@ export interface VirtualSessionListProps {
   }
   rows: SidebarListRow[]
   onArchiveSession: (sessionId: string) => void
-  onBranchSession?: (sessionId: string, profile?: string) => void
+  onBranchSession?: (sessionId: string, profile?: string, projectId?: string) => void
   onDeleteSession: (sessionId: string) => void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onTogglePin: (sessionId: string) => void
@@ -166,6 +167,9 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       isSelected: session.id === activeSessionId,
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
+      onBranchIntoProject: onBranchSession
+        ? (projectId: string) => onBranchSession(session.id, session.profile, projectId)
+        : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
       onToggleUnread: () => onToggleUnread(session.id),

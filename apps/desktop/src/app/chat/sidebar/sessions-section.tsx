@@ -117,7 +117,7 @@ interface SidebarSessionsSectionProps {
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
-  onBranchSession?: (sessionId: string, profile?: string) => void
+  onBranchSession?: (sessionId: string, profile?: string, projectId?: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string, owner?: AgentProfileRoute) => void
@@ -289,6 +289,9 @@ export function SidebarSessionsSection({
         isSelected: session.id === activeSessionId,
         onArchive: () => onArchiveSession(session.id),
         onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
+        onBranchIntoProject: onBranchSession
+          ? (projectId: string) => onBranchSession(session.id, session.profile, projectId)
+          : undefined,
         onDelete: () => onDeleteSession(session.id),
         onPin: () => onTogglePin(sessionPinId(session)),
         onToggleUnread: () => onToggleUnread(session.id),

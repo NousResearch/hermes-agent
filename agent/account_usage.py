@@ -622,7 +622,11 @@ def fetch_account_usage(
             profile = get_provider_profile(slug)
             snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
-        return None
+        snapshot = None
+    if snapshot is None or not snapshot.windows:
+        # A codex app-server login lives in codex's own home, where the usage API cannot reach it;
+        # the windows codex pushed on its last turn are the account's (agent/codex_runtime_rate_limits.py).
+        return _recent_app_server_usage(slug) or snapshot
     # Every fetch (``/usage``, the per-turn ``session.usage``) keeps the picker's cache current.
     # A per-credential fetch is remembered under its account slot only; the provider-wide fetch
     # keeps both the legacy gauge slot and (when the fetcher identifies the account) that
@@ -630,6 +634,15 @@ def fetch_account_usage(
     remember_account_usage(provider, snapshot, identity_id=identity_id, base_url=base_url,
                            started_monotonic=started)
     return snapshot
+
+
+def _recent_app_server_usage(slug: str) -> Optional[AccountUsageSnapshot]:
+    from agent.account_usage_cache import cached_account_usage, snapshot_is_stale
+
+    cached = cached_account_usage(slug)
+    if cached is None or cached.source != "app_server" or snapshot_is_stale(cached):
+        return None
+    return cached
 
 
 # Published plugin API (hermes_cli/data/plugin_api.json lists this whole module): names that moved to the Nous

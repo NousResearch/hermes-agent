@@ -52,6 +52,13 @@ BUILT_LEVELS: dict[str, frozenset[str]] = {
     # Not built in v1: publishing is a human click in Zendesk. Built when
     # someone first decides to graduate it — its own small change.
     "zendesk_publish": frozenset({"off"}),
+    # The #release-updates post (tools/release_update_post.py): every level.
+    "post_release_update": frozenset(LEVELS),
+    # Notion write guard relaxations (tools/notion_write_guard.py). Not built
+    # in v1: the teammate may never approve its own rows or accept its own
+    # ideas, so any value but `off` is rejected and breaks the guard closed.
+    "advance_asset_status": frozenset({"off"}),
+    "ideas_accept_own": frozenset({"off"}),
 }
 
 

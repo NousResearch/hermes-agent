@@ -6,8 +6,8 @@ status, run counters, pause markers) never lands in a file, so re-exporting an u
 byte-identical no-op and a git history shows only edits a person made. ``origin`` is dropped: it is
 the chat (platform, chat id, user) the job was created from, not part of what the job does.
 Credential-shaped strings in any field are masked, so the directory is safe to push; the masked
-fields are listed under ``redacted_fields`` and import leaves those fields untouched on a job that
-already exists, so a round trip never overwrites a real value with its mask.
+fields are listed under ``redacted_fields`` and import leaves those fields (and ``origin``)
+untouched on a job that already exists, so a round trip never overwrites a real value.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import hermes_yaml as yaml
 from agent.redact import redact_credential_shapes
 from cron.job_definition import JOB_DEFINITION_FIELDS, import_job_definitions
 from cron.jobs import _jobs_lock, load_jobs
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import GIT_LOCATION_ENV, windows_hide_flags
 from hermes_platform.resolver import locate_command
 from tools.environments.local import build_subprocess_env
 
@@ -56,7 +56,7 @@ def _definition(job: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     redacted: list[str] = []
     for key in sorted(_EXPORT_FIELDS):
         value = job.get(key)
-        if value is None or value == [] or value == {}:
+        if value is None:  # an empty list is meaningful (enabled_toolsets: [] = no tools)
             continue
         masked = _mask(value)
         if masked != value:
@@ -81,9 +81,12 @@ def _git(directory: Path, *args: str) -> subprocess.CompletedProcess:
     git = locate_command("git").command
     if not git:
         raise RuntimeError("git was not found on PATH; export without --git or install git")
-    # The user's own HOME (their git identity and hooks), not a profile-bridged one.
+    # The user's own HOME and git config (their identity and hooks: this commit lands in their repo),
+    # minus inherited GIT_DIR/GIT_WORK_TREE & co., which would override -C and hit another repo.
     env = build_subprocess_env(
         scrub_secrets=False, inherit_profile_home=False, extra={"GIT_TERMINAL_PROMPT": "0"})
+    for key in GIT_LOCATION_ENV:
+        env.pop(key, None)
     try:
         return subprocess.run(
             [*git, "-C", str(directory), *args], capture_output=True, text=True, encoding="utf-8",
@@ -98,9 +101,14 @@ def _commit(directory: Path, message: str) -> Optional[str]:
         init = _git(directory, "init", "-q")
         if init.returncode != 0:
             raise RuntimeError(f"git init failed: {init.stderr.strip()}")
-    _git(directory, "add", "-A", "--", JOBS_SUBDIR)
-    if _git(directory, "diff", "--cached", "--quiet", "--", JOBS_SUBDIR).returncode == 0:
+    added = _git(directory, "add", "-A", "--", JOBS_SUBDIR)
+    if added.returncode != 0:  # an ignored jobs/, a held index.lock
+        raise RuntimeError(f"git add failed: {(added.stderr or added.stdout).strip()}")
+    diff = _git(directory, "diff", "--cached", "--quiet", "--", JOBS_SUBDIR)
+    if diff.returncode == 0:
         return None
+    if diff.returncode != 1:
+        raise RuntimeError(f"git diff failed: {diff.stderr.strip()}")
     # Only the files this export owns are committed; anything else staged stays staged.
     identity = () if _git(directory, "config", "user.email").stdout.strip() else _FALLBACK_IDENTITY
     done = _git(directory, *identity, "commit", "-q", "-m", message, "--", JOBS_SUBDIR)
@@ -158,9 +166,15 @@ def import_jobs(directory: Path) -> list[str]:
     with _jobs_lock():  # re-entrant: the merge below takes it again
         local = {job.get("id"): job for job in load_jobs() if isinstance(job, dict)}
         for job_id, record in shipped.items():
-            for key in record.pop("redacted_fields", None) or ():
-                if job_id in local and key in local[job_id]:
-                    record[key] = local[job_id][key]
+            masked = record.pop("redacted_fields", None) or ()
+            known = local.get(job_id)
+            if known is None:
+                continue
+            # origin is never exported; the merge replaces every authored field, so carry it over
+            # or a `deliver: origin` job loses the chat it delivers to.
+            for key in (*masked, "origin"):
+                if key in known:
+                    record[key] = known[key]
         import_job_definitions(
             shipped, paused_reason=f"Imported from {directory}; review it, then resume.")
     return sorted(shipped)

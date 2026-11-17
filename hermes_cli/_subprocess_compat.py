@@ -18,6 +18,7 @@ from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
     "FILTER_DISCOVERY_FAILED",
+    "GIT_LOCATION_ENV",
     "IS_WINDOWS",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
@@ -287,7 +288,7 @@ NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
 # repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
 _GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 # Variables that point git at a repository other than its cwd (credential/ssh variables stay).
-_GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                      "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
 _GIT_CONFIG_OVERRIDES = {
     "credential.helper": "",
@@ -471,7 +472,7 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
     # An inherited GIT_DIR/GIT_WORK_TREE (a dotfiles alias, a git hook) retargets the call at the
     # user's other repo instead of the cwd the caller names; a plugin's stash/reset would act on
     # it (#146032). A caller that needs one sets it on the returned env.
-    for key in _GIT_LOCATION_ENV:
+    for key in GIT_LOCATION_ENV:
         env.pop(key, None)
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull

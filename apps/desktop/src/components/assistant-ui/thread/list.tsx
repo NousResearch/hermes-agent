@@ -583,7 +583,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // runs on commits that do not grow the content (the transcript arriving
   // under the first-paint budget; a "Show earlier" whose page comes from the
   // store a commit later); consuming the anchor there spends it as a no-op and
-  // leaves the real prepend unanchored. Only a taller tree is the prepend.
+  // leaves the real prepend unanchored. Only a taller tree is the prepend —
+  // unless a still-mounted captured group has shifted, which is itself the
+  // prepend landing while skipped placeholders below shrank by the same
+  // height. The height-growth guard still gates the bottom-distance fallback.
   const anchorHeightRef = useRef<number | null>(null)
   // False from a session switch until the settle loop below parks the
   // transcript at its true bottom. While false, scrollTop is a way-point of a
@@ -1550,20 +1553,43 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       applyRestoreRef.current?.()
     }
 
+    // A still-mounted captured group proves the prepend landed even when the
+    // total height stayed flat: older groups mount while skipped placeholders
+    // below shrink by the same height, so the tree is no taller but the
+    // tracked group has shifted (#155482 review). The group itself is the
+    // evidence — a live group sitting exactly at its captured offset means
+    // this commit prepended nothing, so the anchor stays unspent for the
+    // real prepend, exactly as the height-growth guard intends. The guard
+    // still gates the bottom-distance fallback: without a taller tree that
+    // fallback has no growth to measure against. The anchor is consumed only
+    // when something actually restored it.
+    const prependGroup = prependGroupRef.current
+
+    const liveGroupShifted =
+      el != null &&
+      prependGroup != null &&
+      el.contains(prependGroup.element) &&
+      Math.abs(
+        prependGroup.element.getBoundingClientRect().top - el.getBoundingClientRect().top - prependGroup.offset
+      ) > 0.5
+
     if (
       el &&
       restoreFromBottom != null &&
-      el.scrollHeight > (anchorHeightRef.current ?? 0) &&
-      el.scrollHeight >= restoreFromBottom
+      (liveGroupShifted || (el.scrollHeight > (anchorHeightRef.current ?? 0) && el.scrollHeight >= restoreFromBottom))
     ) {
-      if (!applyPrependRef.current?.(true)) {
+      const groupRestored = applyPrependRef.current?.(true) ?? false
+
+      if (!groupRestored && el.scrollHeight > (anchorHeightRef.current ?? 0)) {
         el.scrollTop = el.scrollHeight - restoreFromBottom
       }
 
-      restoreFromBottomRef.current = null
-      // Consuming a parked offset (clamped-exit) means the view just landed at
-      // its real reading position — the load is settled from here on.
-      loadSettledRef.current = true
+      if (groupRestored || el.scrollHeight > (anchorHeightRef.current ?? 0)) {
+        restoreFromBottomRef.current = null
+        // Consuming a parked offset (clamped-exit) means the view just landed at
+        // its real reading position — the load is settled from here on.
+        loadSettledRef.current = true
+      }
     }
     // renderBudget covers DOM pages; groups.length covers store-window expands.
   }, [scrollRef, renderBudget, structuralSignature, paneVisible])

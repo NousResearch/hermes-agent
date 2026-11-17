@@ -15,12 +15,19 @@ const CLIENT_H = 600
 const GROUP_H = 400
 let captureCount = Infinity
 let lateHeight = 0
+// A flat-height prepend mounts older groups while skipped placeholders
+// below shrink by the same height, so the total stays flat even though the
+// tracked group shifts down.
+let flatHeight = false
 
-const scrollHeightNow = () =>
-  lateHeight +
-  (mountedGroups(window.document.body) > captureCount ? 100 : 0) +
-  CLIENT_H +
-  window.document.querySelectorAll('[data-slot="aui_message-group"]').length * GROUP_H
+const scrollHeightNow = () => {
+  const mounted = window.document.querySelectorAll('[data-slot="aui_message-group"]').length
+  // While flat, the groups mounted above the capture count are offset by
+  // the shrinking placeholders, so only the captured prefix counts.
+  const counted = flatHeight ? Math.min(mounted, captureCount) : mounted
+
+  return lateHeight + (flatHeight || mounted <= captureCount ? 0 : 100) + CLIENT_H + counted * GROUP_H
+}
 
 Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
   configurable: true,
@@ -225,8 +232,90 @@ describe('visible-group prepend anchoring', () => {
         rect.mockRestore()
         captureCount = Infinity
         lateHeight = 0
+        flatHeight = false
         vi.stubGlobal('ResizeObserver', previousObserver)
       }
     }
   )
+
+  it('restores the anchor when a prepend leaves the total height flat', async () => {
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+    const prefixShift = 0
+    const { container } = render(<Harness messages={heavyTranscript(60)} />)
+    const viewport = container.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')!
+    const windowed = await settledGroupCount(container)
+    expect(windowed).toBeGreaterThan(0)
+    expect(windowed).toBeLessThan(60)
+    const originalRect = HTMLElement.prototype.getBoundingClientRect
+
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      if (this === viewport) {
+        return new DOMRect(0, 32, 800, CLIENT_H)
+      }
+
+      if (this.getAttribute('data-slot') === 'aui_message-group' && viewport.contains(this)) {
+        const index = [...viewport.querySelectorAll<HTMLElement>('[data-slot="aui_message-group"]')].indexOf(this)
+
+        return new DOMRect(0, 32 + index * GROUP_H + prefixShift - viewport.scrollTop, 800, GROUP_H)
+      }
+
+      return originalRect.call(this)
+    })
+
+    try {
+      viewport.scrollTop = scrollHeightNow() - CLIENT_H
+      act(() => viewport.dispatchEvent(new Event('scroll')))
+      viewport.scrollTop = 2000
+      act(() => viewport.dispatchEvent(new Event('scroll')))
+      act(() => viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })))
+      await settle(5)
+      // At the clamped top, the next wheel (not a synthetic scroll event)
+      // initiates paging. Capture before that event, with bottom follow escaped.
+      viewport.scrollTop = 0
+      const tracked = viewport.querySelector<HTMLElement>('[data-slot="aui_message-group"]')!
+      const before = tracked.getBoundingClientRect().top
+      expect(before).toBe(32)
+      const heightBefore = scrollHeightNow()
+      captureCount = windowed
+      // Older groups mount while skipped placeholders below shrink by the
+      // same height: the total stays flat while the tracked group shifts.
+      flatHeight = true
+      act(() => viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })))
+      await settle(2)
+      expect(mountedGroups(container)).toBeGreaterThan(windowed)
+      expect(viewport.contains(tracked)).toBe(true)
+      expect(tracked.className).toContain('[content-visibility:auto]')
+      expect(scrollHeightNow()).toBe(heightBefore)
+      expect(tracked.getBoundingClientRect().top).toBeCloseTo(before, 1)
+      await settle()
+      expect(tracked.getBoundingClientRect().top).toBeCloseTo(before, 1)
+    } finally {
+      rect.mockRestore()
+      captureCount = Infinity
+      lateHeight = 0
+      flatHeight = false
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
 })

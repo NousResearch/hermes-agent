@@ -2,15 +2,15 @@ name: agy-cli2api
 title: "Agy CLI2API (Multi-Account Antigravity)"
 repo: https://github.com/nguyendaihoanh/agy-cli2api
 subdir: hermes-plugin/agy-cli2api
-sha: 5e24f270edc0708f378dc010bc07423b61d6b806
+sha: 15521e3d4a730d035c001abd763ba1686db16cc8
 version: "1.0.0"
 description: "Multi-account Google Antigravity CLI provider for Hermes with 0.2s quota auto-swap (429/403 failover), native protobuf SQLite payload decoding, optional per-account --conversation resume (AGY2API_STATEFUL), Hermes host tool calling, and zero external Python dependencies. Disclosure — spawns the local Google agy CLI binary as a child process using signed-in profiles on disk (~/.gemini_profiles/<email> and ~/.gemini/antigravity-cli/antigravity-oauth-token.*) or routes to a user-configured HTTP server via AGY_CLI2API_BASE_URL; copies token files into per-profile dirs without reading or logging token contents and touches last_check.timestamp to suppress agy auto-update prompts; reads/cleans local agy SQLite conversation DBs unless AGY2API_CLEANUP_DB=false; automated subscription usage counts against your signed-in account(s) and is subject to Google Antigravity's Terms of Service; independent community project, not affiliated with or endorsed by Google."
 maintainer: nguyendaihoanh
 tier: community
 category: models
 requires_hermes: ">=0.21.4"
-docs_url: https://github.com/nguyendaihoanh/agy-cli2api/blob/5e24f270edc0708f378dc010bc07423b61d6b806/hermes-plugin/agy-cli2api/README.md
-image: https://raw.githubusercontent.com/nguyendaihoanh/agy-cli2api/5e24f270edc0708f378dc010bc07423b61d6b806/assets/banner.svg
+docs_url: https://github.com/nguyendaihoanh/agy-cli2api/blob/15521e3d4a730d035c001abd763ba1686db16cc8/hermes-plugin/agy-cli2api/README.md
+image: https://raw.githubusercontent.com/nguyendaihoanh/agy-cli2api/15521e3d4a730d035c001abd763ba1686db16cc8/assets/banner.svg
 readme: true
 platforms:
   - linux

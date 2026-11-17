@@ -28,6 +28,7 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response, room_run_claims
 from gateway.turn_executor import _UnboundedThreadExecutor
+from gateway.platforms.api_server_run_busy import apply_if_busy, cancel_queued_run, parse_if_busy
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
 
@@ -289,7 +290,15 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
-        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
+        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
+        ("POST", "/v1/runs/{run_id}/cancel", _cancel_route(self))]
+
+
+def _cancel_route(self):
+    async def handler(request):
+        from gateway.platforms import api_server
+        return await _handle_cancel_run(self, request, _api_server=api_server)
+    return handler
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
@@ -327,7 +336,7 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {
-            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
+            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at", "delivery"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -406,7 +415,7 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
 # and clarify share the grant's ``approve`` permission. Acknowledging a lost owner epoch
 # ends the run like a stop, so ``/resolve-unknown`` rides the ``stop`` permission.
 _ROOM_CONTROL_PERMISSIONS = {
-    "/stop": "stop", "/resolve-unknown": "stop", "/approval": "approve", "/clarify": "approve"}
+    "/stop": "stop", "/cancel": "stop", "/resolve-unknown": "stop", "/approval": "approve", "/clarify": "approve"}
 
 
 def _room_permission_for(request: web.Request) -> str:
@@ -464,7 +473,7 @@ def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, An
         # The documented poll shape: the canonical projection decides status/output/usage; the
         # retained run record still names the object, the requested model and the served runtime.
         retained = self._run_statuses.get(run_id) or {}
-        return {"object": "hermes.run", **{key: retained[key] for key in ("model", "runtime", "created_at")
+        return {"object": "hermes.run", **{key: retained[key] for key in ("model", "runtime", "created_at", "delivery")
                                            if key in retained}, **canonical}
     status = self._run_statuses.get(run_id)
     if status is not None:
@@ -546,13 +555,17 @@ async def _resolve_chained_history(self, body: dict, raw_input: Any, *, _openai_
         chain_root if stored_session_id and stored_session_id != chain_root else None)
 
 
-def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool) -> web.Response:
-    """202 admission response; replays are flagged via ``Idempotency-Replayed``."""
+def _accepted_response(run_id: str, status: str, gateway_session_key, *, replayed: bool,
+                       delivery: Optional[str] = None) -> web.Response:
+    """202 admission response; replays are flagged via ``Idempotency-Replayed``. ``delivery``
+    (only for a request that sent ``if_busy``) says how the busy policy landed."""
     headers = {"Idempotency-Replayed": "true"} if replayed else {}
     if gateway_session_key:
         headers["X-Hermes-Session-Key"] = gateway_session_key
-    return web.json_response(
-        {"run_id": run_id, "status": status, "replayed": replayed}, status=202, headers=headers)
+    body = {"run_id": run_id, "status": status, "replayed": replayed}
+    if delivery is not None:
+        body["delivery"] = delivery
+    return web.json_response(body, status=202, headers=headers)
 
 
 def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> web.Response:
@@ -563,7 +576,8 @@ def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _op
             code="idempotency_key_conflict", status=409)
     original_id = str(record["run_id"])
     status = self._durable_run_status(request, original_id) or record["status"]
-    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
+    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True,
+                              delivery=status.get("delivery", record["status"].get("delivery")))
 
 
 @dataclass(slots=True)
@@ -728,6 +742,15 @@ def _run_user_message(raw_input, _openai_error) -> tuple:
     return user_message, None
 
 
+def _run_request_input(body, _openai_error) -> tuple:
+    """POST /v1/runs ``input`` and ``if_busy`` -> ``(user_message, if_busy, error_response_or_None)``."""
+    user_message, input_err = _run_user_message(body.get("input"), _openai_error)
+    if_busy, if_busy_err = parse_if_busy(body)
+    if input_err is None and if_busy_err is not None:
+        input_err = _json_error(_openai_error, if_busy_err, code="invalid_if_busy", status=400)
+    return user_message, if_busy, input_err
+
+
 async def _admit_run_to_authority(
     self, launch, run_id, session_history_delivery, _declared_selected,
     idempotency_scope, idempotency_key, _openai_error,
@@ -791,7 +814,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     idempotency_scope, idempotency_fingerprint = _run_idempotency_identity(
         self, request, body, gateway_session_key, idempotency_key)
     raw_input = body.get("input")
-    user_message, input_err = _run_user_message(raw_input, _openai_error)
+    user_message, if_busy, input_err = _run_request_input(body, _openai_error)
     if input_err is not None:
         return input_err
     try:
@@ -898,7 +921,10 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
-    return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+    # After the launch: the admitted run executes (and its drain is scheduled) whatever the busy
+    # policy step does. The decision is recorded so an exact keyed retry reports it again.
+    delivery = await apply_if_busy(launch, if_busy)
+    return _accepted_response(run_id, "started", gateway_session_key, replayed=False, delivery=delivery)
 
 
 def _retarget_to_delivered_chat(self, launch: _RunLaunch, admitted) -> None:
@@ -1525,6 +1551,27 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
         # run on the same session_id keeps its own); no-op if the run already finished.
         _api_server._reap_disconnected_agent_processes(agent, source="api_server_run_stop")
     return web.json_response({"run_id": run_id, "status": "stopping"})
+
+
+async def _handle_cancel_run(self, request: web.Request, *, _api_server) -> web.Response:
+    """POST /v1/runs/{run_id}/cancel — withdraw a run still waiting in its session's queue;
+    ``409 run_not_cancellable`` once it started (``/stop`` interrupts that) or settled."""
+    _openai_error = _api_server._openai_error
+    run_id, status, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="stop", active_fallback=False)
+    if err is not None:
+        return err
+    from gateway.platforms.api_server_authority_runs import store_error_response
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        cancelled = await cancel_queued_run(self, run_id)
+    except RuntimeStoreError as exc:
+        return store_error_response(_openai_error, exc)
+    if cancelled is None:
+        current = (self._durable_run_status(request, run_id) or status).get("status")
+        return _json_error(_openai_error, f"Run is not queued ({current}): {run_id}",
+                           code="run_not_cancellable", status=409)
+    return web.json_response(cancelled)
 
 
 async def _handle_resolve_unknown_run(

@@ -67,8 +67,8 @@ _CAPABILITY_ENDPOINTS = (
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
     ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown", "run_unknown_resolution")),
-    ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
-    ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
+    ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("run_cancel", ("POST", "/v1/runs/{run_id}/cancel", "run_cancel")),
+    ("skills", ("GET", "/v1/skills")), ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
     ("session_create", ("POST", "/api/sessions")),
     ("session", ("GET", "/api/sessions/{session_id}")),
     ("session_update", ("PATCH", "/api/sessions/{session_id}")),
@@ -2356,7 +2356,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "responses_api": True, "responses_streaming": True, "run_submission": True,
             "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
             **_STATIC_FEATURE_FLAGS,
-            "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
+            **dict.fromkeys(("run_unknown_resolution", "run_cancel", "run_if_busy"), getattr(runner, "session_authority", None) is not None),
             "cors": bool(self._cors_origins)}
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",

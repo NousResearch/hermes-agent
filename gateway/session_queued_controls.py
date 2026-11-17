@@ -149,10 +149,18 @@ async def steer_queued(connection, ref, params):
         raise RuntimeStoreError('admission_started')
     if 'steer' not in queued_controls(authority, row):
         raise RuntimeStoreError('unsupported_control')
+    return asdict(authority._receipt(await transfer_to_running(authority, ref, admission_id, row['payload']['text'])))
+
+
+async def transfer_to_running(authority, ref, admission_id, text, *, generation=None):
+    """Hand the queued admission *admission_id* (its *text*) to the session's running claim (only
+    claim *generation* when given) -> the committed row. Refused (``session_idle``,
+    ``steer_unavailable``, ``admission_started``) with the row left in its queue place; the caller
+    decided the row may be steered at all."""
     handle = authority._handle(ref)
-    if handle.execution_state != 'running':
+    if handle.execution_state != 'running' or generation not in (None, handle.execution_generation):
         raise RuntimeStoreError('session_idle')
-    generation, text, live = handle.execution_generation, row['payload']['text'], authority.sessions[ref.session_id]
+    generation, live = handle.execution_generation, authority.sessions[ref.session_id]
     session_id = ref.session_id
     with live.event_stream.lock:
         agent = _receiving_agent(authority, session_id, generation)
@@ -186,7 +194,7 @@ async def steer_queued(connection, ref, params):
             raise RuntimeStoreError('steer_unavailable', field='admission_id',
                                     detail='the running turn ended before the steer reached it')
         authority._publish_pending(ref)  # the card leaves the queue: its text is in the running turn
-    return asdict(authority._receipt(committed))
+    return committed
 
 
 def publish_transfers(authority, ref, generation):

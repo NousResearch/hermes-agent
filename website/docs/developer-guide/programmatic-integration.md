@@ -186,13 +186,14 @@ Endpoints:
 ```
 POST /v1/chat/completions        OpenAI Chat Completions (streaming via SSE)
 POST /v1/responses               OpenAI Responses API (stateful)
-POST /v1/runs                    Start a run, returns run_id (202)
+POST /v1/runs                    Start a run, returns run_id (202); optional if_busy: queue|steer|interrupt
 GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
 POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
+POST /v1/runs/{id}/cancel        Withdraw a still-queued run (409 run_not_cancellable otherwise)
 GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
@@ -229,6 +230,13 @@ Use `/v1/models` for OpenAI-client compatibility. Use `/api/model/options` or
 `model.options` when you are building a Hermes-aware model picker.
 
 `POST /v1/runs/{id}/steer` is the HTTP equivalent of Hermes `/steer`: it does not create a new user turn or immediately rewrite the assistant output already in flight. Instead, the text is appended to the live run and becomes visible to the agent after the next tool boundary, so it can course-correct without discarding the current tool-calling loop.
+
+A client that wants to steer or replace a turn it has not seen a `run_id` for yet sends the next
+message as its own run with `if_busy`: `steer` folds the text into the session's running turn
+(`delivery: "steered"`), `interrupt` stops it and runs next (`delivery: "interrupted"`), `queue`
+waits (`delivery: "queued"`) and can be withdrawn with `POST /v1/runs/{id}/cancel` while it still
+waits. An absent `if_busy` keeps the previous behaviour (wait in the session queue, no `delivery`
+field). Details: [API Server](../user-guide/features/api-server#busy-sessions-if_busy).
 
 `/v1/runs/{id}/steer` is only accepted while the run status is `running`. Queued, approval-paused, stopping, cancelled, failed, and completed runs return `409 run_not_accepting_steer`, even if the server still retains internal agent references during cooperative shutdown.
 

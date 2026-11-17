@@ -511,6 +511,34 @@ foreign transcript in parallel with its live owner. To work on a chat from
 another surface, attach through the gateway WebSocket (a `prompt.submit` on the
 shared session) instead of the OpenAI-compatible routes.
 
+#### Busy sessions: `if_busy`
+
+A run aimed at a `session_id` whose turn is still running waits in that session's queue and starts
+when the turn ends. Send `if_busy` to choose, for that one request, what happens instead:
+
+| `if_busy` | Session busy with your own run | `delivery` in the 202 |
+| --- | --- | --- |
+| absent | the run waits its turn (unchanged; no `delivery` field) | — |
+| `queue` | the run waits its turn | `queued` |
+| `steer` | the text joins the running turn at its next tool boundary, like `POST /v1/runs/{run_id}/steer`; this run settles `completed` with that turn | `steered` |
+| `interrupt` | the running turn is stopped (its run settles `cancelled`) and this run starts next | `interrupted` |
+
+An idle session answers `delivery: "started"`. `steer` and `interrupt` only act on a running turn
+started with the same API credential and profile (the scope `/stop` and `/steer` already require);
+behind anyone else's turn, behind a non-API turn, or for image input they fall back to `queued`,
+and a steer the running turn cannot take yet (it is still building its agent) stays `queued`.
+`if_busy` is part of the `Idempotency-Key` fingerprint: a retry with a different value is
+`409 idempotency_key_conflict`. Any other value is `400 invalid_if_busy`. The gateway-wide
+`display.busy_input_mode` setting governs chat surfaces only; it never changes `/v1/runs`.
+Feature-detect `features.run_if_busy` in `GET /v1/capabilities`.
+
+### POST /v1/runs/\{run_id\}/cancel
+
+Withdraw a run that is still `queued` behind its session's running turn. Answers `200` with the
+run status (`"status": "cancelled"`, `"reason": "withdrawn"`); the run never executes. A run that
+already started, settled or was steered answers `409 run_not_cancellable` (use
+`POST /v1/runs/{run_id}/stop` to interrupt a running one). Advertised as `features.run_cancel`.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.

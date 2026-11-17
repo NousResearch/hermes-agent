@@ -11,7 +11,7 @@ import uuid
 from gateway.config import Platform
 from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
 from gateway.session_results import admission_result
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, _json
+from hermes_state_runtime import STEERING, RuntimeStoreError, admit_session_input, _json
 
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
@@ -343,10 +343,11 @@ async def observe_api_turn(admitted, **kwargs):
     # The admission-time snapshot is stale once a drain already running ahead claims and settles
     # (or a stop cancels) the row; a waiter registered after that is never resolved. The current
     # row decides, read with no suspension before the waiter is registered.
-    status = (get_session_admission(authority.db, admission_id=row['admission_id']) or row)['status']
-    if status == 'unknown':
+    status = (get_session_admission(authority.db, admission_id=row['admission_id']) or row)
+    if status['status'] == 'unknown':
         raise RuntimeStoreError('unknown_execution')
-    if status == 'terminal':
+    # A row handed to the running claim (``transfer_to_running``) settles with that claim: wait for it.
+    if status['status'] == 'terminal' and status['outcome'] != STEERING:
         result, usage = _settled_api_result(authority, row['admission_id'])
         callback = kwargs.get('stream_delta_callback')
         if callback:
@@ -388,8 +389,12 @@ def _settled_api_result(authority, admission_id):
     if saved is None:
         from hermes_state_runtime import get_session_admission
         current = get_session_admission(authority.db, admission_id=admission_id)
-        if current['outcome'] == 'cancelled':
+        if current['outcome'] in ('cancelled', 'interrupted'):
+            # ``interrupted``: its text was steered into a turn that then did not complete.
             return {'final_response': '', 'interrupted': True, 'completed': False}, {}
+        if current['outcome'] == 'steered':
+            # Delivered into the running turn (``if_busy: steer``): that turn's run carries the answer.
+            return {'final_response': '', 'completed': True, 'steered': True}, {}
         raise RuntimeStoreError('unknown_execution')
     return saved['result'], saved['usage']
 

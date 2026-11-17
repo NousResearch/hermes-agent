@@ -70,6 +70,12 @@ class PersistenceStore(Protocol):
     state_meta: StateMetaRepository
     profile_identity: ProfileIdentityRepository
 
+    def serves_same_store(self, other: PersistenceStore) -> bool:
+        """Whether ``other`` serves the same store as this handle, the same generation of it included: a write through
+        either is read through the other. False for another profile's store, and once the store was replaced under
+        one of the two handles (the older one stays on the generation it held)."""
+        ...
+
 
 @runtime_checkable
 class PersistenceBackend(Protocol):

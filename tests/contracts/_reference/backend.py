@@ -221,6 +221,11 @@ class InMemoryStore:
     def scope_exists(self, scope: ProfileScope) -> bool:
         return self.backend.scope_exists(scope)
 
+    def serves_same_store(self, other: object) -> bool:
+        """The reference never replaces a store: the same backend and profile serve one store."""
+        return (isinstance(other, InMemoryStore) and other.backend is self.backend
+                and other.scope.hermes_home_key == self.scope.hermes_home_key)
+
 
 def _serialized(backend: InMemoryBackend, method: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(method)

@@ -341,6 +341,53 @@ async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('error, message, retried', [
+    ('OperationalError', 'unable to open database file', True),
+    ('OperationalError', 'attempt to write a readonly database', True),
+    ('DatabaseError', 'database disk image is malformed', False),
+    ('StoreReplaced', 'state.db was replaced under a live handle', False),
+])
+async def test_claim_retries_every_operational_storage_error_in_place(tmp_path, monkeypatch, caplog, error, message,
+                                                                      retried):
+    """Every operational storage error during the claim is retried in place, the ones the store raises
+    as StoreUnavailable or PermanentStoreError included. A corrupt or replaced store ends the drain."""
+    import logging
+    import sqlite3
+    from gateway import session_authority, session_finite
+    from persistence.core import errors
+    from persistence.sqlite._backend import translated
+
+    caplog.set_level(logging.WARNING, logger='gateway.session_authority')
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.05, raising=False)
+    ran, failed = [], []
+
+    async def execute(authority, ref, row):
+        ran.append(row['request_id'])
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    claim = authority.persistence.admissions.claim
+
+    def claim_after_one_failure(**kwargs):
+        if not failed:
+            failed.append(True)
+            with translated():
+                raise (getattr(sqlite3, error, None) or getattr(errors, error))(message)
+        return claim(**kwargs)
+    monkeypatch.setattr(authority.persistence.admissions, 'claim', claim_after_one_failure)
+    with db:
+        await _submit(authority, 'head')
+        task = authority.sessions['s'].task
+        await asyncio.wait({task}, timeout=10)
+    assert failed and task.done()
+    if retried:
+        assert task.exception() is None and ran == ['head']
+        assert 'claim deferred by storage' in caplog.text
+    else:
+        assert isinstance(task.exception(), (errors.CorruptStoreError, errors.StoreReplaced)) and ran == []
+
+
+@pytest.mark.asyncio
 async def test_cancel_committed_before_a_failed_media_cleanup_still_settles_observers_once(tmp_path, monkeypatch):
     """Media collection is a separate write after the cancellation commits. Its failure must not
     withhold observer settlement, and an exact retry (which collects again) must neither leave the

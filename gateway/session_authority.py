@@ -26,7 +26,7 @@ from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer
 from hermes_cli.observability.shared_metrics_busy import busy_row_settled
 from persistence.authority.admissions import GateRefusal
 from persistence.authority.vocabulary import STEERING
-from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, TransientStoreError
+from persistence.core.errors import STORE_FAILURES, AuthorityRefusal, CorruptStoreError, StoreReplaced
 
 # Capped backoff for a claim refused by transient storage (writer lock, full disk).
 _CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
@@ -1315,7 +1315,9 @@ class SessionAuthority:
                     logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                     self._pause(ref, exc.reason)
                     return None
-            except (OSError, sqlite3.OperationalError, TransientStoreError) as exc:
+            except (CorruptStoreError, StoreReplaced):
+                raise
+            except (OSError, sqlite3.OperationalError, *STORE_FAILURES) as exc:
                 # A writer held past its patience or a full disk is transient, and every _schedule
                 # caller is event-driven: a dead drain would strand the committed head and hang its
                 # waiters until the next submit. Retry in place (like recover_failed_settlement),

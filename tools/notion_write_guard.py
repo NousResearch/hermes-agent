@@ -69,6 +69,7 @@ _TRASH_KEYS = frozenset({"archived", "in_trash", "is_archived"})
 _PAGE_UPDATE_KEYS = frozenset({"properties", "icon", "cover"})
 _PAGE_CREATE_KEYS = frozenset({"parent", "properties", "children", "markdown", "icon", "cover"})
 _MAX_WALK = 12
+_PARENT_KEYS = ("data_source_id", "database_id", "page_id", "block_id", "workspace")
 _BLOCK_TTL = 3600.0
 _SCHEMA_TTL = 600.0
 _GUARD_KEYS = frozenset({"enabled", "release_kits", "prds", "ideas", "writable_pages"})
@@ -105,7 +106,10 @@ class GuardConfig:
     kit_draft: str = "Draft"
     prds: frozenset = frozenset()
     prd_property: str = "Release Comms Status"
-    prd_values: frozenset = frozenset({"In progress", "Done"})
+    prd_transitions: dict = field(default_factory=lambda: {
+        "Not started": frozenset({"In progress"}), "In progress": frozenset({"Done"})})
+    prd_back_relation: str = ""   # PRD-side name of the Release rows' dual PRD relation
+    kit_prd_relation: str = "PRD"
     ideas: frozenset = frozenset()
     idea_status: str = "Status"
     idea_create: str = "Proposed"
@@ -165,6 +169,14 @@ def _names(section: str, raw, default: frozenset) -> frozenset:
     return frozenset(x.strip() for x in raw)
 
 
+def _transitions(section: str, raw, default: dict) -> dict:
+    if raw is None:
+        return default
+    if not isinstance(raw, dict):
+        raise GuardConfigError(f"{section} must map a status to a list of statuses")
+    return {str(k).strip(): _names(f"{section}.{k}", v, frozenset()) for k, v in raw.items()}
+
+
 def _section(guard: dict, key: str) -> dict:
     sec = guard.get(key)
     if not isinstance(sec, dict):
@@ -185,14 +197,8 @@ def _parse(cfg: dict) -> GuardConfig:
     prds = _section(raw, "prds")
     ideas = _section(raw, "ideas")
     p = "notion.write_guard"
-    transitions_raw = ideas.get("own_transitions")
-    if transitions_raw is None:
-        transitions = {"Accepted": frozenset({"In progress"}), "In progress": frozenset({"Done"})}
-    else:
-        if not isinstance(transitions_raw, dict):
-            raise GuardConfigError(f"{p}.ideas.own_transitions must map a status to a list of statuses")
-        transitions = {str(k).strip(): _names(f"{p}.ideas.own_transitions.{k}", v, frozenset())
-                       for k, v in transitions_raw.items()}
+    transitions = _transitions(f"{p}.ideas.own_transitions", ideas.get("own_transitions"), {
+        "Accepted": frozenset({"In progress"}), "In progress": frozenset({"Done"})})
     writable_raw = raw.get("writable_pages")
     gc = GuardConfig(
         kits=_ids(f"{p}.release_kits.data_sources", kits.get("data_sources")),
@@ -200,8 +206,11 @@ def _parse(cfg: dict) -> GuardConfig:
         kit_draft=_name(f"{p}.release_kits.draft_status", kits.get("draft_status"), "Draft"),
         prds=_ids(f"{p}.prds.data_sources", prds.get("data_sources")),
         prd_property=_name(f"{p}.prds.property", prds.get("property"), "Release Comms Status"),
-        prd_values=_names(f"{p}.prds.allowed_values", prds.get("allowed_values"),
-                          frozenset({"In progress", "Done"})),
+        prd_transitions=_transitions(f"{p}.prds.transitions", prds.get("transitions"), {
+            "Not started": frozenset({"In progress"}), "In progress": frozenset({"Done"})}),
+        prd_back_relation=_name(f"{p}.prds.back_relation_property", prds.get("back_relation_property"), ""),
+        kit_prd_relation=_name(f"{p}.release_kits.prd_relation_property",
+                               kits.get("prd_relation_property"), "PRD"),
         ideas=_ids(f"{p}.ideas.data_sources", ideas.get("data_sources")),
         idea_status=_name(f"{p}.ideas.status_property", ideas.get("status_property"), "Status"),
         idea_create=_name(f"{p}.ideas.create_status", ideas.get("create_status"), "Proposed"),
@@ -511,16 +520,37 @@ def _relation_ids(name: str, value) -> set[str]:
     return out
 
 
+def _relation_config(meta) -> tuple[str, str, str]:
+    """(kind, target data source, synced property name) of a relation
+    property's schema; ("", "", "") when the schema doesn't say."""
+    rel = meta.get("relation") if isinstance(meta, dict) and isinstance(meta.get("relation"), dict) else {}
+    kind = str(rel.get("type") or "")
+    target = _hex(rel.get("data_source_id")) or _hex(rel.get("database_id"))
+    dual = rel.get("dual_property") if isinstance(rel.get("dual_property"), dict) else {}
+    return kind, target, str(dual.get("synced_property_name") or "")
+
+
 def _check_relations(props: dict, schema: dict, current: Optional[dict], guard: GuardConfig,
-                     lookup) -> None:
-    """A two-way relation write also changes every page added or removed on
-    the other side — so each of those pages must itself be writable (a Draft
-    kit row, its own idea, a free page). Otherwise an edit to a Draft row
-    could rewrite an Approved row's relations (and the Jira tickets a
-    release update checks), a PRD, or someone else's idea."""
+                     lookup, *, row_kind: str = "") -> None:
+    """A two-way (``dual_property``) relation write also changes every page
+    added or removed on the other side — so each of those pages must itself
+    be writable (a Draft kit row, its own idea, a free page). Otherwise an
+    edit to a Draft row could rewrite an Approved row's relations (and the
+    Jira tickets a release update checks), a PRD, or someone else's idea. A
+    ``single_property`` relation writes only this row, so its targets are not
+    checked; a relation whose schema can't be read is treated as two-way.
+
+    The one way into a PRD: a Release Kit row's ``prd_relation_property``
+    may be SET ONCE (from empty) to PRD pages — never removed or repointed,
+    so the release a human approved stays tied to the PRD whose tickets gate
+    its posts; for a two-way relation the PRD side must be exactly
+    ``prds.back_relation_property``."""
     for name, value in props.items():
-        if (schema.get(name) or {}).get("type") != "relation":
+        meta = schema.get(name) or {}
+        cur_meta = (current or {}).get(name) if isinstance((current or {}).get(name), dict) else {}
+        if meta.get("type") != "relation" and cur_meta.get("type") != "relation":
             continue
+        kind, target, synced = _relation_config(meta)  # ("", …) when the schema is silent: two-way
         new = _relation_ids(name, value)
         old: set[str] = set()
         if current is not None:
@@ -530,8 +560,32 @@ def _check_relations(props: dict, schema: dict, current: Optional[dict], guard: 
                             "returned, so the change can't be checked.")
             old = {_hex((i or {}).get("id")) for i in cur.get("relation") or [] if isinstance(i, dict)}
             old.discard("")
-        for pid in sorted(new ^ old):
+        changed = new ^ old
+        if not changed:
+            continue
+        if row_kind == "kit" and name == guard.kit_prd_relation:
+            if old:
+                raise _Deny(f"Notion write refused: {name!r} is set once — linking a release to its "
+                            "PRD can't be changed or removed by the teammate (ask the team).")
+            if target and target not in guard.prds:
+                raise _Deny(f"Notion write refused: {name!r} does not point at the PRD database.")
+            if kind == "dual_property" and (not guard.prd_back_relation or synced != guard.prd_back_relation):
+                raise _Deny(f"Notion write refused: {name!r} is two-way and its PRD-side property "
+                            f"{synced or '(unknown)'!r} is not notion.write_guard.prds.back_relation_property.")
+            if kind not in ("dual_property", "single_property"):
+                raise _Deny(f"Notion write refused: the {name!r} relation's schema could not be checked.")
+            for pid in sorted(new):
+                if _classify_page(pid, guard, lookup).kind != "prd":
+                    raise _Deny(f"Notion write refused: {name!r} may only link PRD pages.")
+            continue
+        if kind == "single_property":
+            continue
+        for pid in sorted(changed):
             _content_rule(_classify_page(pid, guard, lookup), guard, lookup)
+
+
+def _describe_transitions(transitions: dict) -> str:
+    return ", ".join(f"{k} → {' / '.join(sorted(v))}" for k, v in transitions.items() if v) or "nothing"
 
 
 def _is_own(row: dict, lookup) -> bool:
@@ -551,7 +605,8 @@ def _content_rule(t: _Target, guard: GuardConfig, lookup) -> None:
         return
     if t.kind == "prd":
         raise _Deny("Notion write refused: PRD pages are read-only (only "
-                    f"{guard.prd_property!r} may be set, to {' / '.join(sorted(guard.prd_values))}).")
+                    f"{guard.prd_property!r} may be moved along "
+                    f"{_describe_transitions(guard.prd_transitions)}).")
     if t.kind == "idea":
         if not _is_own(t.row, lookup):
             raise _Deny("Notion write refused: that Ideas row is not one this teammate created — read-only.")
@@ -574,7 +629,15 @@ def _page_update(ep: _Endpoint, body: dict, guard: GuardConfig, lookup) -> None:
     props = _normalise(body.get("properties") or {}, row_props)
     if t.kind in ("kit", "idea"):
         _content_rule(t, guard, lookup)  # Draft kit row / own idea
-        _check_relations(props, row_props, row_props, guard, lookup)
+        if any((row_props.get(n) or {}).get("type") == "relation" for n in props):
+            parent = t.row.get("parent") if isinstance(t.row.get("parent"), dict) else {}
+            ds = _hex(parent.get("data_source_id"))
+            if not ds:
+                raise _Deny("Notion write refused: the row's data source is unknown, so its "
+                            "relations can't be checked.")
+            schema = lookup.data_source(ds)
+            schema_props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            _check_relations(props, schema_props, row_props, guard, lookup, row_kind=t.kind)
     if t.kind == "kit":
         if guard.kit_status in props and _new_value(guard.kit_status, props[guard.kit_status]) != guard.kit_draft:
             raise _Deny(f"Notion write refused: {guard.kit_status!r} may only be {guard.kit_draft!r} — "
@@ -585,9 +648,10 @@ def _page_update(ep: _Endpoint, body: dict, guard: GuardConfig, lookup) -> None:
             _content_rule(t, guard, lookup)
         if guard.prd_property in props:
             value = _new_value(guard.prd_property, props[guard.prd_property])
-            if value not in guard.prd_values:
-                raise _Deny(f"Notion write refused: {guard.prd_property!r} may only be set to "
-                            f"{' / '.join(sorted(guard.prd_values))}.")
+            current = _select(row_props.get(guard.prd_property))
+            if value != current and value not in guard.prd_transitions.get(current, frozenset()):
+                raise _Deny(f"Notion write refused: {guard.prd_property!r} may only move "
+                            f"{_describe_transitions(guard.prd_transitions)} (it is {current or 'empty'!r}).")
         return
     if t.kind == "idea":
         _content_rule(t, guard, lookup)  # own rows only
@@ -612,7 +676,14 @@ def _create(body: dict, guard: GuardConfig, lookup) -> None:
     extra = set(body) - _PAGE_CREATE_KEYS
     if extra:
         raise _Deny(f"Notion write refused: page creation may not use {', '.join(sorted(extra))}.")
-    parent = body.get("parent") if isinstance(body.get("parent"), dict) else {}
+    parent = body.get("parent")
+    if not isinstance(parent, dict):
+        raise _Deny("Notion write refused: a new page needs a parent object.")
+    id_keys = [k for k in _PARENT_KEYS if k in parent]
+    extra_keys = set(parent) - set(_PARENT_KEYS) - {"type"}
+    if len(id_keys) != 1 or extra_keys or ("type" in parent and parent["type"] != id_keys[0]):
+        raise _Deny("Notion write refused: parent must name exactly one of "
+                    f"{', '.join(_PARENT_KEYS)} (matching parent.type).")
     ds = _hex(parent.get("data_source_id"))
     if ds:
         if ds in guard.prds:
@@ -622,7 +693,8 @@ def _create(body: dict, guard: GuardConfig, lookup) -> None:
         schema = lookup.data_source(ds)
         schema_props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
         props = _normalise(body.get("properties") or {}, schema_props)
-        _check_relations(props, schema_props, None, guard, lookup)
+        _check_relations(props, schema_props, None, guard, lookup,
+                         row_kind="kit" if ds in guard.kits else "idea")
         if ds in guard.kits:
             if guard.kit_status not in props or _new_value(guard.kit_status, props[guard.kit_status]) != guard.kit_draft:
                 raise _Deny(f"Notion write refused: a new Release Kit row must set {guard.kit_status!r} "
@@ -672,6 +744,9 @@ def _dangerous_nested(body, depth: int = 0) -> Optional[str]:
                     "databases — never allowed for this profile.")
         if body.get("type") == "child_database" or "child_database" in body:
             return "Notion write refused: creating databases (child_database) is a schema change."
+        if "synced_from" in body or body.get("type") == "synced_block":
+            return ("Notion write refused: synced blocks mirror content from elsewhere (a page "
+                    "the guard did not check) — not allowed.")
         for value in body.values():
             hit = _dangerous_nested(value, depth + 1)
             if hit:

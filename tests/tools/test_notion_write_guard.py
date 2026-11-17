@@ -324,9 +324,14 @@ def test_comments(lk):
 
 # ── PRDs ─────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("value,ok", [("In progress", True), ("Done", True), ("Not needed", False),
-                                      ("Not started", False)])
-def test_prd_only_release_comms_status(lk, value, ok):
+@pytest.mark.parametrize("current,value,ok", [
+    ("Not started", "In progress", True), ("Not started", "Done", False),
+    ("In progress", "Done", True), ("In progress", "In progress", True),
+    ("Not started", "Not needed", False), ("Not needed", "In progress", False),
+    ("A part of a bigger module", "In progress", False), ("Done", "In progress", False),
+])
+def test_prd_release_comms_status_transitions(lk, current, value, ok):
+    lk.pages["c" * 32]["properties"]["Release Comms Status"]["select"] = {"name": current}
     out = check(lk, "PATCH", f"v1/pages/{'c' * 32}", {"properties": {"Release Comms Status": status(value)}})
     assert (out is None) is ok
 
@@ -468,3 +473,87 @@ def test_guard_requires_agent_write_guard(lk):
     assert g.load_guard(config).error == ""
     config["agent_write_guard"] = {"enabled": False}
     assert g.load_guard(config).error
+
+
+
+# ── second review round: the Release → PRD link, strict parents, synced blocks ──
+
+def _kit_schema_with_prd(kind="dual_property", synced="Release Kit", target=PRDS):
+    def schema(ds):
+        out = _ds_schema(ds.replace("-", ""))
+        rel = {"data_source_id": target, "type": kind}
+        if kind == "dual_property":
+            rel["dual_property"] = {"synced_property_name": synced, "synced_property_id": "x"}
+        if kind:
+            out["properties"]["PRD"] = {"id": "prd", "type": "relation", "relation": rel}
+        return out
+    return schema
+
+
+def _link_prd(lk, ids):
+    lk.pages["a" * 32]["properties"]["PRD"] = {"id": "prd", "type": "relation",
+                                               "relation": [{"id": i} for i in ids], "has_more": False}
+
+
+PRD_CFG = cfg(prds={"data_sources": [PRDS], "back_relation_property": "Release Kit"})
+
+
+def test_release_row_links_its_prd_once(lk, monkeypatch):
+    monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd())
+    _link_prd(lk, [])
+    body = lambda ids: {"properties": {"PRD": {"relation": [{"id": i} for i in ids]}}}
+    path = f"v1/pages/{'a' * 32}"
+    assert check(lk, "PATCH", path, body(["c" * 32]), config=PRD_CFG) is None
+    assert check(lk, "PATCH", path, body(["b" * 32]), config=PRD_CFG)          # not a PRD
+    _link_prd(lk, ["c" * 32])
+    assert check(lk, "PATCH", path, body(["c" * 32]), config=PRD_CFG) is None  # unchanged
+    assert "set once" in check(lk, "PATCH", path, body([]), config=PRD_CFG)
+    assert "set once" in check(lk, "PATCH", path, body(["c" * 32, "c" * 31 + "d"]), config=PRD_CFG)
+
+
+def test_prd_link_back_relation_must_be_the_configured_one(lk, monkeypatch):
+    _link_prd(lk, [])
+    body = {"properties": {"PRD": {"relation": [{"id": "c" * 32}]}}}
+    path = f"v1/pages/{'a' * 32}"
+    monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd(synced="Owner notes"))
+    assert check(lk, "PATCH", path, body, config=PRD_CFG)
+    monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd())
+    assert check(lk, "PATCH", path, body, config=cfg())          # back relation not configured
+    monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd(kind="single_property"))
+    assert check(lk, "PATCH", path, body, config=cfg()) is None  # far side untouched
+    monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd(kind=""))
+    assert check(lk, "PATCH", path, body, config=PRD_CFG)        # schema silent
+    monkeypatch.setattr(lk, "data_source", _kit_schema_with_prd(target=IDEAS))
+    assert check(lk, "PATCH", path, body, config=PRD_CFG)        # points elsewhere
+
+
+def test_single_property_relation_targets_unchecked(lk, monkeypatch):
+    def schema(ds):
+        out = _ds_schema(ds.replace("-", ""))
+        out["properties"]["Release"] = {"id": "rel", "type": "relation",
+                                        "relation": {"data_source_id": KITS, "type": "single_property"}}
+        return out
+    monkeypatch.setattr(lk, "data_source", schema)
+    _with_relation(lk.pages["a" * 32], [])
+    body = {"properties": {"Release": {"relation": [{"id": "b" * 32}]}}}  # an In-review row
+    assert check(lk, "PATCH", f"v1/pages/{'a' * 32}", body) is None
+
+
+@pytest.mark.parametrize("parent", [
+    {"type": "page_id", "data_source_id": ASSETS},
+    {"data_source_id": ASSETS, "page_id": HOME},
+    {"data_source_id": ASSETS, "extra": 1},
+    {},
+])
+def test_create_parent_must_be_exact(lk, parent):
+    assert check(lk, "POST", "v1/pages", {"parent": parent, "properties": {"Status": status("Draft")}})
+
+
+def test_create_parent_with_matching_type_ok(lk):
+    assert check(lk, "POST", "v1/pages", {"parent": {"type": "data_source_id", "data_source_id": ASSETS},
+                                          "properties": {"Status": status("Draft")}}) is None
+
+
+def test_synced_blocks_denied(lk):
+    body = {"children": [{"type": "synced_block", "synced_block": {"synced_from": {"block_id": "x"}}}]}
+    assert "synced" in check(lk, "PATCH", f"v1/blocks/{'a' * 32}/children", body)

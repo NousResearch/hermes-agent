@@ -1237,6 +1237,10 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    if getattr(agent, "_pending_fallback_notice", None):
+        # A switch decided before this turn (primary credentials failed at build) is announced before the
+        # turn starts, like an in-turn switch is announced when it happens: never after the answer.
+        agent._emit_pending_fallback_notice()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

@@ -234,9 +234,12 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     # no other file-tool guard covers them (#92146).
     for candidate in (normalized, resolved):
         base = os.path.basename(candidate)
-        key = _name_key(base)
-        if key in _PROTECTED_INSTRUCTION_BASENAMES or any(
-                fnmatch.fnmatch(key, _name_key(pattern)) for pattern in extra_patterns):
+        # Folded keys only ADD matches: the lowercase pair stays, since a glob's ``?`` or ``[ß]`` matches the
+        # one-char ``ß`` but not its folded ``ss``.
+        keys = (base.lower(), _name_key(base))
+        if keys[1] in _PROTECTED_INSTRUCTION_BASENAMES or any(
+                fnmatch.fnmatch(key, norm(pattern)) for pattern in extra_patterns
+                for key, norm in zip(keys, (str.lower, _name_key))):
             return base
 
     # The ``.hermes`` component rule below targets PROJECT-LOCAL config, and the home

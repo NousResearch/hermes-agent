@@ -123,14 +123,14 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
     monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
     calls = []
-    def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
+    def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, **_kwargs):
         # Another process reclaims the task while the owner session is being created.
         with closing(connect(board='owned')) as conn:
             kb.block_task(conn, task_id, reason='replace claim', expected_run_id=old.current_run_id)
             kb.unblock_task(conn, task_id)
             kb.claim_task(conn, task_id)
         return SimpleNamespace(session_id='owner-session', profile_id=str(tmp_path))
-    monkeypatch.setattr('gateway.session_local.create_local_session', create_local_session)
+    monkeypatch.setattr('gateway.session_local.stage_local_session', stage_local_session)
     async def submit(actor, submission, **kwargs):
         calls.append(('submit', submission))
     async def resume(ref, params):

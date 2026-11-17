@@ -34,7 +34,7 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
         board_db = conn.execute('PRAGMA database_list').fetchone()[2]
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
     monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
-    monkeypatch.setattr('gateway.session_local.create_local_session', lambda *a, **k: SimpleNamespace(
+    monkeypatch.setattr('gateway.session_local.stage_local_session', lambda *a, **k: SimpleNamespace(
         session_id='owner-session', profile_id=str(tmp_path)))
     calls = []
 

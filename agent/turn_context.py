@@ -145,10 +145,24 @@ def substitute_api_content(api_msg: dict[str, Any]) -> Optional[str]:
     return sidecar
 
 
-def drop_stale_api_content(msg: dict[str, Any]) -> None:
+# Reasoning fields replayed from an assistant row a rewrite replaced: the text they explain is gone,
+# and a signed thinking block ties its signature to that text, so a provider can no longer verify it.
+_REWRITE_STALE_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details")
+
+
+def drop_stale_api_content(msg: dict[str, Any], *, drop_reasoning: bool = False) -> None:
     """Drop the ``api_content`` sidecar from a message whose content was rewritten
-    (replaying it would resend what the rewrite removed; cost is one cache miss)."""
+    (replaying it would resend what the rewrite removed; cost is one cache miss).
+
+    ``drop_reasoning`` is for the compaction summary merge, where the rewrite replaces the row's
+    text with a handoff summary: replaying the row's signed thinking beside that text is what the
+    provider refuses as reasoning extraction (#152513), so an assistant carrier loses its reasoning
+    fields too. Ordered provider carriers (``anthropic_content_blocks`` &c.) are a separate contract.
+    """
     msg.pop("api_content", None)
+    if drop_reasoning and msg.get("role") == "assistant":
+        for key in _REWRITE_STALE_REASONING_KEYS:
+            msg.pop(key, None)
 
 
 def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:

@@ -204,3 +204,28 @@ def test_quota_hold_on_a_manual_run_delays_a_queued_run_now_without_spending_the
 
     after = get_job(job["id"])
     assert (after["next_run_at"], after["repeat"]) == (slot, {"times": 3, "completed": 0})
+
+
+def test_trigger_landing_during_a_scheduled_run_survives_its_completion(clock):
+    """A run-now queued while a SCHEDULED fire is in flight is its own extra fire, as during a
+    manual run: the scheduled run's completion must not drop it, and firing it spends no repeat
+    run and leaves the natural slot the scheduled run computed."""
+    job = create_job("digest", "every 60m", name="digest", repeat=3)
+    clock["now"] += timedelta(minutes=60, seconds=5)
+    assert [d["id"] for d in get_due_jobs()] == [job["id"]]
+    advance_next_runs([job["id"]])  # the tick's pre-run advance
+    claimed = claim_job_for_fire(job["id"], return_job=True)
+    assert isinstance(claimed, dict) and claim_dispatch(job["id"])
+
+    clock["now"] += timedelta(seconds=10)
+    trigger_job(job["id"], extra_prompt="also check the backlog")  # lands mid-run
+    clock["now"] += timedelta(seconds=10)
+    assert mark_job_run(job["id"], success=True, expected_fire_owner=claimed["fire_claim"]["by"])
+
+    queued_job = get_job(job["id"])
+    slot = queued_job["manual_run_restore_at"]  # the natural slot the scheduled run computed
+    assert queued_job["manual_run_prompt"] == "also check the backlog"
+    assert [d["id"] for d in get_due_jobs()] == [job["id"]]  # the run-now is still due
+    _fire(job["id"])
+    after = get_job(job["id"])
+    assert (after["next_run_at"], after["repeat"]["completed"]) == (slot, 1)

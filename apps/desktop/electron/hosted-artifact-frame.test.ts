@@ -1,13 +1,10 @@
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { describe, expect, it } from 'vitest'
 
 import {
   HOSTED_ARTIFACT_FRAME_DOMAIN,
   hostedArtifactFrameNavigation,
   hostedArtifactFrameOrigin,
+  hostedArtifactFramePolicy,
   isHostedArtifactId,
   isHostedArtifactRequestingUrl
 } from './hosted-artifact-frame'
@@ -107,30 +104,13 @@ describe('hosted artifact permissions', () => {
   })
 })
 
-// The policy only protects anything if the main process consults it.
-describe('main process wiring', () => {
-  const main = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'main.ts'), 'utf8')
-
-  it('fences subframe navigation through the artifact policy', () => {
-    const handler = main.slice(main.indexOf("on('will-frame-navigate'"))
-
-    expect(handler.slice(0, 1500)).toMatch(
-      /hostedArtifactFrameNavigation\(frameOrigin, url, HOSTED_ARTIFACT_FRAME_POLICY\)/
-    )
-    expect(handler.slice(0, 1500)).toMatch(/if \(artifactVerdict === 'deny'\) \{\s*event\.preventDefault\(\)/)
-  })
-
+describe('hosted artifact frame policy of a build', () => {
   it('honours the development frame domain only in unpackaged runs', () => {
-    expect(main).toContain('const HOSTED_ARTIFACT_FRAME_POLICY = { dev: !IS_PACKAGED }')
-  })
+    const dev = `http://${ID}.artifacts.localhost:8787/__av?t=x`
 
-  it('denies artifact frames in both permission handlers', () => {
-    const request = main.slice(main.indexOf('setPermissionRequestHandler('))
-    const check = main.slice(main.indexOf('setPermissionCheckHandler('))
-
-    expect(request.slice(0, 400)).toMatch(
-      /isHostedArtifactRequestingUrl\(details\?\.requestingUrl[\s\S]*?callback\(false\)/
+    expect(hostedArtifactFrameOrigin(dev, hostedArtifactFramePolicy(true))).toBeNull()
+    expect(hostedArtifactFrameOrigin(dev, hostedArtifactFramePolicy(false))).toBe(
+      `http://${ID}.artifacts.localhost:8787`
     )
-    expect(check.slice(0, 300)).toMatch(/isHostedArtifactRequestingUrl\(requestingOrigin[\s\S]*?return false/)
   })
 })

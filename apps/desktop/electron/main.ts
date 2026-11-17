@@ -318,7 +318,12 @@ import {
 } from './hardening'
 import { isHermesProcess } from './hermes-process'
 import { assertNotPassiveSpawn } from './host-backend-singleton'
-import { hostedArtifactFrameNavigation, isHostedArtifactRequestingUrl } from './hosted-artifact-frame'
+import {
+  denyHostedArtifactPermissionChecks,
+  denyHostedArtifactPermissionRequests,
+  installSubframeNavigationFence
+} from './hosted-artifact-fence'
+import { hostedArtifactFramePolicy } from './hosted-artifact-frame'
 import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
@@ -589,7 +594,6 @@ import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } f
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { registerStreamWorkClock } from './stream-work-clock'
-import { findFrameByIdentifier, safeFrameOrigin, safeUrlOrigin } from './subframe'
 import { installSystemCaTrust } from './system-ca'
 import { terminalGatewayTarget } from './terminal-gateway-target'
 import { registerTerminalIpc } from './terminal-ipc'
@@ -786,7 +790,7 @@ if (process.env.HERMES_DESKTOP_TMPDIR) {
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
 // Unpackaged (development) runs may also frame the local artifacts server.
-const HOSTED_ARTIFACT_FRAME_POLICY = { dev: !IS_PACKAGED }
+const HOSTED_ARTIFACT_FRAME_POLICY = hostedArtifactFramePolicy(IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -6750,22 +6754,18 @@ function installMediaPermissions() {
   // clipboard-sanitized-write is granted ONLY to the exact Skills Hub origins
   // (hub-iframe-policy.ts): the picker's Copy controls write to the clipboard,
   // and every other frame — artifact previews included — stays denied.
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    // A hosted artifact frame is untrusted content: it is granted nothing.
-    if (isHostedArtifactRequestingUrl(details?.requestingUrl, HOSTED_ARTIFACT_FRAME_POLICY)) {
-      callback(false)
+  // A hosted artifact frame is untrusted content: both handlers grant it nothing.
+  session.defaultSession.setPermissionRequestHandler(
+    denyHostedArtifactPermissionRequests(HOSTED_ARTIFACT_FRAME_POLICY, (webContents, permission, callback, details) => {
+      if ((permission as string) === 'clipboard-sanitized-write') {
+        callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
 
-      return
-    }
+        return
+      }
 
-    if ((permission as string) === 'clipboard-sanitized-write') {
-      callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
-
-      return
-    }
-
-    callback(isMediaCapturePermission(permission, details))
-  })
+      callback(isMediaCapturePermission(permission, details))
+    })
+  )
 
   // Synchronous check handler: Chromium consults this for getUserMedia on
   // Windows in addition to (or instead of) the request handler. Without it,
@@ -6774,17 +6774,15 @@ function installMediaPermissions() {
   // the shared predicate runs with `undefined` details and allows the capture
   // permissions — identical policy to the request handler below, just without
   // the metadata refinement (absent metadata is allowed there too).
-  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
-    if (isHostedArtifactRequestingUrl(requestingOrigin, HOSTED_ARTIFACT_FRAME_POLICY)) {
-      return false
-    }
+  session.defaultSession.setPermissionCheckHandler(
+    denyHostedArtifactPermissionChecks(HOSTED_ARTIFACT_FRAME_POLICY, (webContents, permission) => {
+      if ((permission as string) === 'clipboard-sanitized-write') {
+        return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
+      }
 
-    if ((permission as string) === 'clipboard-sanitized-write') {
-      return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
-    }
-
-    return isMediaCapturePermission(permission, undefined)
-  })
+      return isMediaCapturePermission(permission, undefined)
+    })
+  )
 }
 
 // Origin of the frame a permission request came from. The request handler is
@@ -11812,47 +11810,33 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   // pagination), but the moment it tries to escape to the full docs site —
   // whose layout is not embeddable and whose links are then dead — the
   // navigation is denied and the frame is reloaded onto the picker URL.
-  win.webContents.on('will-frame-navigate', (event, url, isMainFrame, frameProcessId, frameRoutingId) => {
-    if (isMainFrame) {
-      return
-    }
+  // Hosted artifact frames stay on their own origin, and only origins this
+  // build may frame are entered (hosted-artifact-fence.ts); every other
+  // subframe navigation reaches the Skills Hub rule below.
+  installSubframeNavigationFence(win.webContents, {
+    policy: HOSTED_ARTIFACT_FRAME_POLICY,
+    log: rememberLog,
+    otherNavigation: (details, frameOrigin) => {
+      if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
+        return
+      }
 
-    const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
-    const frameOrigin = safeFrameOrigin(frame)
+      if (isHermesHubPickerUrl(details.url)) {
+        return
+      }
 
-    // Hosted artifact frames stay on their own origin, and only origins this
-    // build may frame are entered (hosted-artifact-frame.ts).
-    const artifactVerdict = hostedArtifactFrameNavigation(frameOrigin, url, HOSTED_ARTIFACT_FRAME_POLICY)
+      details.preventDefault()
 
-    if (artifactVerdict === 'deny') {
-      event.preventDefault()
-      rememberLog(`[hosted-artifact] denied frame navigation to ${safeUrlOrigin(url)}`)
-
-      return
-    }
-
-    if (artifactVerdict === 'allow') {
-      return
-    }
-
-    if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
-      return
-    }
-
-    if (isHermesHubPickerUrl(url)) {
-      return
-    }
-
-    event.preventDefault()
-
-    // Reload the frame back onto the picker instead of leaving it on a
-    // half-navigated document.
-    try {
-      frame?.reload()
-    } catch {
-      // A destroyed frame is gone; nothing to restore.
+      // Reload the frame back onto the picker instead of leaving it on a
+      // half-navigated document.
+      try {
+        details.frame?.reload?.()
+      } catch {
+        // A destroyed frame is gone; nothing to restore.
+      }
     }
   })
+
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return

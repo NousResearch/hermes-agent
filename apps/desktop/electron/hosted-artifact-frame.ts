@@ -35,6 +35,11 @@ export interface HostedArtifactFramePolicy {
   frameDomain?: string
 }
 
+/** The policy of this build: the development frame domain only in unpackaged runs. */
+export function hostedArtifactFramePolicy(isPackaged: boolean): HostedArtifactFramePolicy {
+  return { dev: !isPackaged }
+}
+
 export function isHostedArtifactId(value: unknown): value is string {
   return typeof value === 'string' && ARTIFACT_ID_RE.test(value)
 }

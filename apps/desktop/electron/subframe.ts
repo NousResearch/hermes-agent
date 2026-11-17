@@ -1,29 +1,7 @@
 /**
- * Subframe identity helpers for the main window's `will-frame-navigate`
- * guards (Skills Hub picker, hosted artifact frames). Pure, no Electron import.
+ * Subframe helpers for the main window's navigation guards (Skills Hub
+ * picker, hosted artifact frames). Pure, no Electron import.
  */
-
-/** Look up a subframe by its process/routing id; never throws. */
-export function findFrameByIdentifier(
-  webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
-  frameProcessId: number,
-  frameRoutingId: number
-): { origin?: string; reload?: () => void } | null {
-  const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
-    processId?: number
-    routingId?: number
-    frameProcessId?: number
-    frameRoutingId?: number
-    origin?: string
-    reload?: () => void
-  }>
-
-  return (
-    candidates.find(
-      f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
-    ) ?? null
-  )
-}
 
 /** `frame.origin` as a safe string; destroyed frames report opaque/'null'. */
 export function safeFrameOrigin(frame: { origin?: string } | null | undefined): string | null {

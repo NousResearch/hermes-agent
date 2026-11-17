@@ -98,6 +98,8 @@ class TestFallbackChainAdvancement:
         )
         agent.model = "gpt-5.6-sol"
         agent.provider = "openai-codex"
+        shown = []
+        agent.status_callback = lambda kind, text: shown.append(str(text))
         clients = [
             _mock_client(base_url="https://api.z.ai/v1"),
             _mock_client(base_url="https://api.deepseek.com/v1"),
@@ -106,15 +108,20 @@ class TestFallbackChainAdvancement:
             "agent.auxiliary_client.resolve_provider_client",
             side_effect=[(clients[0], "glm-5.2"), (clients[1], "deepseek-v4-flash")],
         ):
+            # The error handler records the provider's words; the switch for that reason quotes them.
+            agent._fallback_trigger = (FailoverReason.rate_limit, "HTTP 429: quota exceeded for gpt-5.6-sol")
             assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
+            # Shown at the switch, before the fallback model is called: not held for the turn's end.
+            assert len(shown) == 1
             assert agent._try_activate_fallback(FailoverReason.overloaded) is True
 
         # One user-visible notice per switch, in order, each naming from/to.
-        notices = agent._pending_fallback_notice
-        assert len(notices) == 2
-        assert "gpt-5.6-sol" in notices[0] and "glm-5.2" in notices[0]
-        assert "glm-5.2" in notices[1] and "deepseek-v4-flash" in notices[1]
-        assert agent._retry_status_buffer[-1] == ("status", notices[1])
+        assert len(shown) == 2
+        assert "gpt-5.6-sol" in shown[0] and "glm-5.2" in shown[0]
+        assert "quota exceeded for gpt-5.6-sol" in shown[0]
+        # The second switch had no recorded error of its own: it never borrows the first one's.
+        assert "glm-5.2" in shown[1] and "deepseek-v4-flash" in shown[1] and "quota" not in shown[1]
+        assert not getattr(agent, "_pending_fallback_notice", None)
 
     def test_skips_unconfigured_provider_to_next(self):
         """If resolve_provider_client returns None, skip to next in chain."""

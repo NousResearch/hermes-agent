@@ -1,0 +1,79 @@
+"""The user-visible fallback-switch notice: why the picked model could not respond, and when it is shown.
+
+The fallback walk (``chat_completion_helpers.try_activate_fallback``) builds one line per switch and
+shows it at the switch, before the fallback model is called, so the user sees which model is answering
+while the turn runs. The error handler that classified the failure records the provider's own words on
+``agent._fallback_trigger``; the switch for that same reason quotes them, redacted and truncated.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from agent.error_classifier import FailoverReason
+
+logger = logging.getLogger(__name__)
+
+_FALLBACK_REASON_LABELS = {
+    FailoverReason.auth: "authentication failed",
+    FailoverReason.auth_permanent: "authentication permanently failed",
+    FailoverReason.billing: "billing or quota exhausted",
+    FailoverReason.rate_limit: "rate limit",
+    FailoverReason.upstream_rate_limit: "upstream model rate limit",
+    FailoverReason.overloaded: "provider overloaded",
+    FailoverReason.server_error: "provider server error",
+    FailoverReason.timeout: "request timeout",
+    FailoverReason.ssl_cert_verification: "TLS certificate verification failed",
+    FailoverReason.context_overflow: "context window exceeded",
+    FailoverReason.payload_too_large: "request payload too large",
+    FailoverReason.image_too_large: "image payload too large",
+    FailoverReason.model_not_found: "model not found",
+    FailoverReason.provider_policy_blocked: "provider policy blocked the request",
+    FailoverReason.content_policy_blocked: "content policy blocked the request",
+    FailoverReason.format_error: "request format rejected",
+    FailoverReason.role_alternation: "adjacent same-role messages rejected",
+    FailoverReason.invalid_encrypted_content: "encrypted reasoning state rejected",
+    FailoverReason.multimodal_tool_content_unsupported: "multimodal tool content unsupported",
+    FailoverReason.thinking_signature: "thinking signature rejected",
+    FailoverReason.long_context_tier: "long-context tier unavailable",
+    FailoverReason.oauth_long_context_beta_forbidden: "OAuth long-context beta unavailable",
+    FailoverReason.llama_cpp_grammar_pattern: "grammar pattern rejected",
+    FailoverReason.unknown: "provider failure",
+}
+
+_FALLBACK_DETAIL_MAX_CHARS = 200
+
+
+def fallback_reason_text(reason: FailoverReason | None) -> str:
+    """Return a concise operator-facing explanation for a fallback switch."""
+    label = _FALLBACK_REASON_LABELS.get(reason)
+    return label or str(getattr(reason, "value", None) or reason or "provider failure").replace("_", " ")
+
+
+def fallback_trigger_text(agent, reason: FailoverReason | None) -> str:
+    """The reason label plus the provider's own error. The error handler that classified the failure
+    stashes ``(reason, summary)`` on ``_fallback_trigger``; it is used once, and only by a switch for
+    that same reason, so an empty-response or truncation switch never borrows an older error."""
+    label = fallback_reason_text(reason)
+    stashed = getattr(agent, "_fallback_trigger", None)
+    agent._fallback_trigger = None
+    if not (isinstance(stashed, tuple) and len(stashed) == 2 and reason is not None and stashed[0] == reason):
+        return label
+    from agent.redact import redact_sensitive_text
+    detail = " ".join(redact_sensitive_text(str(stashed[1] or "")).split())
+    if not detail:
+        return label
+    if len(detail) > _FALLBACK_DETAIL_MAX_CHARS:
+        detail = detail[:_FALLBACK_DETAIL_MAX_CHARS - 1].rstrip() + "…"
+    return f"{label}: {detail}"
+
+
+def announce_fallback_switch(agent, notice: str) -> None:
+    """Show the switch now, before the fallback model starts answering: the user must see which
+    model this turn runs on while it runs, not after it ends. Display-only (status rail), so the
+    cached prompt is untouched; it obeys the muted-warnings setting like every diagnostic. Not
+    buffered with the retry chatter, so a terminal-failure flush cannot repeat it."""
+    try:
+        agent._emit_diagnostic_status(notice)
+    except Exception:  # health: allow BLE001 -- a surface failure must never fail the switch itself
+        logger.debug("fallback switch notice failed to emit", exc_info=True)

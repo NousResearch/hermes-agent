@@ -20,6 +20,7 @@ from persistence import (
     AuthorityRefusal, DelegationId, JsonValue, PersistenceError, SessionId, StoreContention, StoreReplaced,
 )
 from persistence.core.errors import HandoffUnsettled
+from hermes_state_write import write_site, writer_mutex_until
 from persistence.authority.coordination import (
     COMPLETION_DELIVERIES, DELEGATION_CLAIM_STALE_SECONDS, DELEGATION_FAILURE_WINDOW_SECONDS,
     DELEGATION_MAX_DELIVERY_ATTEMPTS, DELEGATION_MAX_DURABLE_PENDING, DELEGATION_MAX_RETAINED_TERMINAL,
@@ -155,11 +156,15 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
         conn, done = _setup_done.get(holder, (None, set()))
         if conn is holder._conn and step in done:
             return
-        with _setup_lock:
-            deadline = time.monotonic() + LEDGER_PATIENCE_S
+        deadline = time.monotonic() + LEDGER_PATIENCE_S
+        # Both locks are taken against the ledgers' lock wait, as every write takes the writer lock: a long write
+        # elsewhere refuses the setup with ``StoreContention`` instead of holding every ledger verb behind it.
+        if not _setup_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise StoreContention("database is locked (ledger setup waited past the ledgers' lock wait)")
+        try:
             while True:
                 try:
-                    with translated(), holder._lock:
+                    with translated(), writer_mutex_until(holder._lock, deadline, db=holder, site=write_site(step)):
                         holder._raise_if_db_replaced()
                         if holder._conn is None:
                             holder._reopen_after_close_locked(context="write")
@@ -174,6 +179,8 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
                 except StoreContention:
                     if not holder._sleep_before_write_retry(deadline, LEDGER_PATIENCE_S):
                         raise
+        finally:
+            _setup_lock.release()
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:
         """``_write_sql`` that logs a store failure instead of raising."""

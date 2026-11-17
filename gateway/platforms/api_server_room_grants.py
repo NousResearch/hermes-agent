@@ -272,7 +272,8 @@ async def _handle_room_member_run_close(self, request: web.Request) -> web.Respo
     which would start the turn on a member that never had it. A closed key answers any later
     POST /v1/runs under it with ``idempotency_key_conflict``. Rides the grant's ``stop``
     permission and its own run namespace, as POST /v1/runs/{id}/stop does."""
-    from gateway.platforms.api_server import _api_request_profile, _openai_error
+    from gateway.platforms.api_server import _api_request_profile
+    from gateway.platforms.api_server_errors import _openai_error
     from gateway.platforms.api_server_runs import room_run_scope
     try:
         claims = self._room_grant_claims(request, permission="stop")

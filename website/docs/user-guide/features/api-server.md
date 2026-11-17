@@ -378,6 +378,41 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
+### GET /v1/schema
+
+Returns the API server's surface, built from the routes the listener actually serves (Bearer auth, like the other `/v1` routes):
+
+```json
+{
+  "object": "hermes.api_server.schema",
+  "version": 1,
+  "routes": [{"method": "POST", "path": "/v1/chat/completions"}, {"method": "GET", "path": "/v1/schema"}],
+  "error": {"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "Hermes API server error", "...": "..."},
+  "error_codes": {"gateway_draining": {"status": 503, "retryable": true}, "session_not_found": {"status": 404, "retryable": false}}
+}
+```
+
+`error` is the JSON Schema of the [error body](#error-responses); `error_codes` is the closed table of `code` values with their HTTP status and whether a resend can succeed. Every route is also served under `/p/<profile>/` when multiplexing.
+
+## Error responses {#error-responses}
+
+Every JSON error keeps the OpenAI-compatible envelope (`message`, `type`, `param`, `code`), so OpenAI SDKs parse it unchanged, and adds four fields:
+
+| Field | Meaning |
+|---|---|
+| `retryable` | `true` when resending the same request can succeed (draining, rate limit, store busy); from the `error_codes` table, else the status/`Retry-After` |
+| `retry_after_ms` | The `Retry-After` header in milliseconds, or `null` |
+| `field` | The offending input name (same value as `param`), or `null` |
+| `request_id` | Your `X-Request-Id` header (1–128 visible ASCII characters) echoed back, or a generated `req_…` id |
+
+```json
+{"error": {"message": "Gateway is draining existing work; retry shortly.", "type": "invalid_request_error",
+           "param": null, "code": "gateway_draining", "retryable": true, "retry_after_ms": 1000,
+           "field": null, "request_id": "req_3f9c…"}}
+```
+
+Every response (success or error) carries the same id in its `X-Request-Id` header. Streaming (SSE) responses keep their in-stream error events unchanged.
+
 ## Browser-extension control (removed)
 
 The browser-extension controller protocol (`POST /v1/browser-control/register`,

@@ -45,7 +45,7 @@ async def create_peer_bot_chat(adapter, body):
             or body.get('id') or body.get('session_id')):
         return None
     from aiohttp import web
-    from gateway.platforms.api_server import _error_response
+    from gateway.platforms.api_server_errors import _error_response
     if unsupported := sorted(set(body) - _PEER_CREATE_FIELDS):
         return _error_response(
             f"Bot Chat creation refused: bot_chat_parameters_unsupported ({', '.join(unsupported)}); "

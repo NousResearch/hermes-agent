@@ -236,6 +236,10 @@ def _clean_request_string(value: Any) -> Optional[str]:
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
 from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
+from gateway.platforms.api_server_errors import (
+    _error_response, _invalid_request, _openai_error, _redact_api_error_text, error_body_middleware,
+    current_request_id, stamp_request_id)
+from gateway.platforms.api_server_schema import schema_route
 
 
 def _apply_runtime_agent_overrides(
@@ -630,7 +634,8 @@ def check_api_server_requirements() -> bool:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id, X-Request-Id",
+    "Access-Control-Expose-Headers": "X-Request-Id"}
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -729,31 +734,6 @@ def _resolve_media_to_data_urls(text: str) -> str:
         return text if resolved == scan else resolved
     except Exception:
         return text
-
-
-def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
-    """Redact API-bound error text before it crosses the HTTP boundary."""
-    redacted = redact_sensitive_text(str(value), force=True)
-    return redacted[:limit] if limit is not None else redacted
-
-
-def _openai_error(message: str, err_type: str = "invalid_request_error", param: str | None = None, code: str | None = None) -> dict[str, Any]:
-    """OpenAI-style error envelope."""
-    return {"error": {
-        "message": _redact_api_error_text(message), "type": err_type, "param": param, "code": code}}
-
-
-def _error_response(
-    message: str, status: int, *, err_type: str = "invalid_request_error",
-    param: str | None = None, code: str | None = None, headers: Optional[dict[str, str]] = None,
-) -> web.Response:
-    """``web.json_response(_openai_error(...), status=...)`` in one call."""
-    return web.json_response(_openai_error(message, err_type, param, code), status=status, headers=headers)
-
-
-def _invalid_request(message: str) -> web.Response:
-    """400 with the bare ``{message, type}`` envelope the OpenAI-compatible validators use."""
-    return web.json_response({"error": {"message": message, "type": "invalid_request_error"}}, status=400)
 
 
 _api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
@@ -1369,6 +1349,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "method": self._clean_log_value(request.method, max_len=16),
             "path": self._clean_log_value(request.path_qs, max_len=500),
             "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
+            "request_id": self._clean_log_value(current_request_id.get(), max_len=128),
             # The Portal user a peer pass holder signed in as; set by the dashboard's /api/peer route.
             "peer_principal": self._clean_log_value(request.headers.get("X-Hermes-Peer-Principal", ""), max_len=128)}
 
@@ -1585,6 +1566,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
+        routes.append(schema_route(self))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -3938,9 +3920,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             from gateway.platforms.api_server_config_guard import config_unavailable_middleware
             mws = [mw for mw in (  # the config guard outermost: entering a profile scope reads config
-                config_unavailable_middleware, self._make_profile_prefix_middleware(), cors_middleware,
+                error_body_middleware, config_unavailable_middleware, self._make_profile_prefix_middleware(), cors_middleware,
                 body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
+            self._app.on_response_prepare.append(stamp_request_id)
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and
             # scopes config/credentials when multiplexing is on).

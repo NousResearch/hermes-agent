@@ -784,7 +784,8 @@ class OpenAICompatRoutesMixin:
         self, body: dict[str, Any], *, session_id, gateway_session_key, model_alias) -> tuple:
         """Resolve the model_routes alias + per-request overrides ->
         ``(route, agent_overrides, error_response_or_None)``."""
-        from gateway.platforms.api_server import _error_response, _request_agent_overrides
+        from gateway.platforms.api_server import _request_agent_overrides
+        from gateway.platforms.api_server_errors import _error_response
         route = self._resolve_route(model_alias)
         overrides = _request_agent_overrides(
             body, virtual_model=self._model_name, allow_bare_model=self._direct_model_requests)
@@ -843,7 +844,7 @@ class OpenAICompatRoutesMixin:
         def _on_status(kind, message=None):
             # Lifecycle/warning status (provider wait, auto-recovery countdown, fallback switch) as a
             # ``hermes.status`` event, so a client sees why the stream is silent instead of a dead socket.
-            from gateway.platforms.api_server import _redact_api_error_text
+            from gateway.platforms.api_server_errors import _redact_api_error_text
             text = _redact_api_error_text(message if message is not None else kind or "").strip()
             if text:
                 stream_q.put_threadsafe(("__status__", {"kind": str(kind), "text": text}))
@@ -1094,11 +1095,11 @@ class OpenAICompatRoutesMixin:
             return await asyncio.to_thread(implicit_api_session, authority.db, session_id,
                                            self._chat_request_id(request)), None
         except (RuntimeStoreError, sqlite3.Error, OSError) as exc:
-            from gateway.platforms.api_server import _openai_error
+            from gateway.platforms.api_server_errors import _openai_error
             from gateway.platforms.api_server_authority_runs import store_error_response
             return session_id, store_error_response(_openai_error, exc)
         except Exception as e:
-            from gateway.platforms.api_server import _error_response
+            from gateway.platforms.api_server_errors import _error_response
             logger.error("Error resolving the chat completions session: %s", e, exc_info=True)
             return session_id, _error_response(f"Internal server error: {e}", 500, err_type="server_error")
 
@@ -1115,7 +1116,8 @@ class OpenAICompatRoutesMixin:
         ``route`` is the logical endpoint (``/v1/...`` and its ``/p/<profile>/v1/...`` alias are the same
         route), folded into the key because the store keeps the fingerprint only as the slot's value.
         """
-        from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
+        from gateway.platforms.api_server import _idem_cache, _make_request_fingerprint
+        from gateway.platforms.api_server_errors import _error_response
         from hermes_state_runtime import RuntimeStoreError
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
@@ -1130,7 +1132,7 @@ class OpenAICompatRoutesMixin:
                 result, usage = await compute()
             return (result, usage), None
         except RuntimeStoreError as exc:
-            from gateway.platforms.api_server import _openai_error
+            from gateway.platforms.api_server_errors import _openai_error
             from gateway.platforms.api_server_authority_runs import store_error_response
             return None, store_error_response(_openai_error, exc)
         except Exception as e:
@@ -1264,7 +1266,8 @@ class OpenAICompatRoutesMixin:
         ``durable_key`` (canonical Idempotency-Key record) is written only once the admitted turn
         settled, so an exact retry replays this stream instead of admitting different history.
         """
-        from gateway.platforms.api_server import _abandon_agent_task, _redact_api_error_text
+        from gateway.platforms.api_server import _abandon_agent_task
+        from gateway.platforms.api_server_errors import _redact_api_error_text
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
         st = _ResponsesStream(
             self, response, response_id=response_id, model=model, created_at=created_at,
@@ -1344,7 +1347,7 @@ class OpenAICompatRoutesMixin:
             idempotency_scope = self._run_idempotency_scope(request)
             durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
                            _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)))
-            from gateway.platforms.api_server import _openai_error
+            from gateway.platforms.api_server_errors import _openai_error
             from gateway.platforms.api_server_response_admissions import request_binding
             response_store = self._current_response_store()
             binding = request_binding(self, request, durable_key)
@@ -1404,7 +1407,7 @@ class OpenAICompatRoutesMixin:
             context, error = await prepare_context(
                 self, request, body, gateway_session_key, durable_key, idempotency_scope, idempotency_key)
         except RuntimeStoreError as exc:
-            from gateway.platforms.api_server import _openai_error
+            from gateway.platforms.api_server_errors import _openai_error
             from gateway.platforms.api_server_authority_runs import store_error_response
             return store_error_response(_openai_error, exc)
         if error is not None:
@@ -1508,7 +1511,7 @@ class OpenAICompatRoutesMixin:
 
     async def _handle_get_response(self, request: web.Request) -> web.Response:
         """GET /v1/responses/{response_id} — retrieve a stored response."""
-        from gateway.platforms.api_server import _error_response
+        from gateway.platforms.api_server_errors import _error_response
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -1521,7 +1524,7 @@ class OpenAICompatRoutesMixin:
 
     async def _handle_delete_response(self, request: web.Request) -> web.Response:
         """DELETE /v1/responses/{response_id} — delete a stored response."""
-        from gateway.platforms.api_server import _error_response
+        from gateway.platforms.api_server_errors import _error_response
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -1600,7 +1603,7 @@ class OpenAICompatRoutesMixin:
     def _extract_output_items(result: dict[str, Any], start_index: int = 0, *, response_id=None) -> list[dict[str, Any]]:
         """Output items from ``result["messages"][start_index:]``: ``function_call`` per assistant
         tool_call, ``function_call_output`` per tool message, then the final ``message``."""
-        from gateway.platforms.api_server import _redact_api_error_text
+        from gateway.platforms.api_server_errors import _redact_api_error_text
         items: list[dict[str, Any]] = []
         messages = result.get("messages", [])
         if start_index > 0:

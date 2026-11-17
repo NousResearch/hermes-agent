@@ -34,6 +34,7 @@ from agent.redact_headers import (
 from agent.redact_partial_keys import _redact_partial_private_keys
 from agent.redact_hermes_home import _is_under_hermes_home
 from agent.redact_pattern_shape import _pattern_structure
+from agent.redact_env_values import redact_profile_env_values
 from agent.redact_secret_sources import redact_secret_source_values
 from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
 from agent.redact_zhipu import _ZHIPU_API_KEY_RE
@@ -1531,7 +1532,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     text = redact_secret_source_values(redact_registered_vault_values(text))
     if not (force or _redact_enabled()):
         return text
-    return redact_credential_shapes(text, force=force, code_file=code_file, file_read=file_read,
+    # The profile's own .env values first, before a shape rule masks part of one and leaves the rest bare.
+    return redact_credential_shapes(redact_profile_env_values(text), force=force, code_file=code_file, file_read=file_read,
                                     secret_file=secret_file, redact_url_credentials=redact_url_credentials,
                                     keep_phone_numbers=keep_phone_numbers)
 

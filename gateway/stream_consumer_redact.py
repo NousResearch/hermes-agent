@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 
 from agent.redact import _PREFIX_SUBSTRINGS
+from agent.redact_env_values import registered_secret_forms
 from agent.redact_control_split import _strip_shadow
 from agent.redact_phone_policy import redact_for_chat_egress as redact_for_egress
 
@@ -186,12 +187,29 @@ def _open_tail_start(text: str, end: int) -> int:
     return best
 
 
+def _registered_value_head(text: str) -> int:
+    """Start of the longest tail of ``text`` that begins one of the profile's exact secret values
+    (``.env`` / secret-source), else ``len(text)``. Such a value has no shape the probes above can
+    see, so its first characters would otherwise settle raw before the rest arrives."""
+    n = len(text)
+    best = n
+    for form in registered_secret_forms():
+        lo = max(0, n - len(form) + 1)
+        start = text.find(form[0], lo, best)  # candidate starts only: one find per form per tick
+        while start != -1:
+            if form.startswith(text[start:]):
+                best = start
+                break
+            start = text.find(form[0], start + 1, best)
+    return best
+
+
 def settled_end(text: str) -> int:
     """Index where the text that can no longer become part of a secret ends."""
     n = len(text)
     if not n:
         return 0
-    end = n
+    end = _registered_value_head(text)
     token_start = max(text.rfind(c) for c in " \t\r\n") + 1
     if token_start < n:
         probe_start = _probe_start(text, token_start)

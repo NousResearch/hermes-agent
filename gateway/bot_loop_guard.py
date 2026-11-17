@@ -176,7 +176,10 @@ class BotLoopGuard:
             ask = (sender, hashlib.sha256(" ".join(str(text or "").split()).encode()).hexdigest())
             if ask in chain.asks:
                 return False, "duplicate"
-            if not settings.bot_replies_expect_reply and chain.replied_to == sender:
+            # A sender without an ID (a Slack integration post: bot_id, no user) would match a fresh
+            # chain's empty replied_to, and cannot be told apart from another such sender. The reply
+            # rule needs an identity; max_hops still ends the exchange.
+            if not settings.bot_replies_expect_reply and sender and chain.replied_to == sender:
                 return False, "reply_to_reply"
             if chain.hops >= settings.max_hops:
                 return False, "max_hops"

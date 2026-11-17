@@ -21,6 +21,9 @@ from tools.environments.sandbox_egress import SandboxEgress, daytona_create_kwar
 
 logger = logging.getLogger(__name__)
 
+# Marks a sandbox whose network policy Hermes applied from terminal.egress (cleared on removal).
+_EGRESS_LABEL = "hermes_egress"
+
 
 class DaytonaEnvironment(BaseEnvironment):
     """Daytona cloud sandbox execution backend.
@@ -84,13 +87,11 @@ class DaytonaEnvironment(BaseEnvironment):
                     self._sandbox = None
         if self._sandbox is None:
             self._sandbox = self._daytona.create(CreateSandboxFromImageParams(
-                image=image, name=sandbox_name, labels=labels, auto_stop_interval=0, resources=resources,
-                **network))
+                image=image, name=sandbox_name, labels={**labels, **({_EGRESS_LABEL: "1"} if network else {})},
+                auto_stop_interval=0, resources=resources, **network))
             logger.info("Daytona: created sandbox %s for task %s", self._sandbox.id, task_id)
-        elif network:
-            # A resumed sandbox keeps the policy it was created with; apply the current one before any
-            # command runs. A failure propagates: the sandbox is never used under a stale policy.
-            self._sandbox.update_network_settings(**network)
+        else:
+            self._sync_resumed_network_policy(network)
 
         self._remote_home = "/root"
         with contextlib.suppress(Exception):
@@ -107,6 +108,20 @@ class DaytonaEnvironment(BaseEnvironment):
             bulk_upload_fn=self._daytona_bulk_upload, bulk_download_fn=self._daytona_bulk_download)
         self._sync_manager.sync(force=True)
         self.init_session()
+
+    def _sync_resumed_network_policy(self, network: dict) -> None:
+        """A resumed sandbox keeps the policy it last had: apply the current ``terminal.egress``, or
+        clear one Hermes applied (labelled) once the key is removed. A policy set outside Hermes is
+        left alone. A failure propagates, so no command runs under a stale policy."""
+        current = dict(getattr(self._sandbox, "labels", None) or {})
+        if network:
+            self._sandbox.update_network_settings(**network)
+            if current.get(_EGRESS_LABEL) != "1":
+                self._sandbox.set_labels({**current, _EGRESS_LABEL: "1"})
+        elif current.get(_EGRESS_LABEL):
+            # network_block_all=False restores open egress and drops a stored CIDR list; "" clears domains.
+            self._sandbox.update_network_settings(network_block_all=False, domain_allow_list="")
+            self._sandbox.set_labels({k: v for k, v in current.items() if k != _EGRESS_LABEL})
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via Daytona SDK."""

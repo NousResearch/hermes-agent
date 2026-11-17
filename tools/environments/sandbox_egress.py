@@ -80,11 +80,28 @@ def parse_sandbox_egress(raw: Any) -> SandboxEgress | None:
                          _entries(raw.get("cidrs"), "cidrs", _cidr))
 
 
-def sandbox_egress_from_config() -> SandboxEgress | None:
-    """The active profile's allowlist (``load_config`` follows the bound profile home)."""
-    from hermes_cli.config import load_config_readonly
+def _terminal_egress(config: Any) -> Any:
+    return ((config or {}).get("terminal") or {}).get("egress")
 
-    return parse_sandbox_egress((load_config_readonly().get("terminal") or {}).get("egress"))
+
+def sandbox_egress_from_config() -> SandboxEgress | None:
+    """The active profile's allowlist (``load_config`` follows the bound profile home).
+
+    A config.yaml that cannot be read must not turn an allowlist into an open network: the
+    fail-open reader's fallback (last-known-good or bare defaults) is used only when it carries
+    the key, else the newest good backup decides, and with neither the sandbox refuses to start."""
+    from hermes_cli.config import FailedConfigRead, get_config_path, load_config_readonly
+    from hermes_cli.config_backups import load_newest_good_backup
+
+    config = load_config_readonly()
+    raw = _terminal_egress(config)
+    if isinstance(config, FailedConfigRead) and not raw:
+        backup = load_newest_good_backup(get_config_path())
+        if backup is None:
+            raise ValueError(f"config.yaml could not be read ({config.read_error}), so whether {CONFIG_KEY} "
+                             "limits this sandbox is unknown; fix config.yaml (`hermes config check`).")
+        raw = _terminal_egress(backup)
+    return parse_sandbox_egress(raw)
 
 
 # Backends whose provider enforces the allowlist; every other backend (plugins included) refuses.

@@ -301,12 +301,16 @@ class CLICommandsSessionToolsMixin:
         from hermes_cli.slash_exec import CommandContext, execute_command
         _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
 
-    def _handle_profile_command(self):
-        """Display active profile name and home directory."""
+    def _handle_profile_command(self, cmd: str):
+        """/profile [--list | <name>] — the active profile, the roster, or one profile's details."""
         from hermes_cli.slash_exec import CommandContext, execute_command
-        reply = execute_command("profile", CommandContext(surface="cli"))
-        _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
-                   f"  {_t('profile.home', home=reply.data['home'])}")
+        args = _command_arg(cmd)
+        reply = execute_command("profile", CommandContext(surface="cli", args=args))
+        if not args:
+            _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
+                       f"  {_t('profile.home', home=reply.data['home'])}")
+            return
+        _say_block(*(f"  {line}" for line in reply.text.splitlines()))
 
 
 def _stop_background_work() -> None:

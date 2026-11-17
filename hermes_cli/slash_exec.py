@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from agent.i18n import t
@@ -54,11 +55,72 @@ def _exec_egress(ctx: CommandContext) -> CommandReply:
     return CommandReply(format_status_text())
 
 
-def _exec_profile(ctx: CommandContext) -> CommandReply:
-    """Core /profile data — active profile name + home directory.
+def _profiles_for_display() -> list[Any]:
+    """Every profile for ``/profile --list`` / ``/profile <name>``, name-only if a config won't load."""
+    from hermes_cli.profiles import list_profile_names, list_profiles
+    try:
+        return list_profiles(lazy_skill_count=True)
+    except Exception:
+        return [SimpleNamespace(name=name, model=None, provider=None, is_default=name == "default",
+                                path=None, display_name="") for name in list_profile_names()]
 
-    A multiplexed gateway may pre-resolve the per-source profile/home via ``options``
-    (``profile_name`` / ``home_display``); otherwise process-level values are used.
+
+def _profile_roster(active: str) -> CommandReply:
+    """``/profile --list`` — every profile, the active one marked, plus how a profile is entered."""
+    rows = _profiles_for_display()
+    if not rows:
+        return CommandReply("No profiles found.", data={"profiles": [], "active": active})
+    width = max(len(p.name) for p in rows)
+    lines = [f"Profiles ({len(rows)}), ◆ = active here:"]
+    for p in rows:
+        model = f"  {p.model}" if p.model else ""
+        lines.append(f"  {'◆' if p.name == active else ' '} {p.name:<{width}}{model}")
+    lines.append("Switch: hermes -p <name>   (or `hermes profile use <name>` to change the default)")
+    return CommandReply("\n".join(lines),
+                        data={"profiles": [p.name for p in rows], "active": active})
+
+
+def _profile_detail(requested: str, active: str) -> CommandReply:
+    """``/profile <name>`` — that profile's model/path and the command that actually switches.
+
+    A profile is bound at process launch, so this reports; it never claims a mid-session swap.
+    """
+    from hermes_cli.profiles import format_profile_label, normalize_profile_name
+    try:
+        wanted = normalize_profile_name(requested)
+    except ValueError:
+        wanted = requested
+    rows = _profiles_for_display()
+    match = next((p for p in rows if p.name == wanted), None)
+    if match is None:
+        known = ", ".join(p.name for p in rows) or "none"
+        return CommandReply(f"No profile named '{requested}'. Known profiles: {known}.",
+                            data={"error": "unknown_profile", "requested": requested,
+                                  "profiles": [p.name for p in rows]})
+    lines = [f"Profile: {format_profile_label(match.name, getattr(match, 'display_name', ''))}"]
+    if match.path is not None:
+        lines.append(f"Path:    {match.path}")
+    if match.model:
+        lines.append(f"Model:   {match.model}" + (f" ({match.provider})" if match.provider else ""))
+    is_active = match.name == active
+    lines.append(f"Active:  {'yes' if is_active else f'no — this session runs {active}'}")
+    switch = f"hermes -p {match.name}"
+    if is_active:
+        lines.append(f"Switch:  {switch}   (already active here; starts a new session on it)")
+    else:
+        lines.append(f"Switch:  {switch}   (or `hermes profile use {match.name}` to change the default)")
+    return CommandReply("\n".join(lines),
+                        data={"profile": match.name, "active": is_active,
+                              "model": match.model or "", "path": str(match.path or "")})
+
+
+def _exec_profile(ctx: CommandContext) -> CommandReply:
+    """Core /profile data — the active profile, the roster, or one profile's details.
+
+    Bare: active profile name + home directory. A multiplexed gateway may pre-resolve the
+    per-source profile/home via ``options`` (``profile_name`` / ``home_display``); otherwise
+    process-level values are used. ``--list``/``-l`` reads the roster, a name reads that
+    profile — ``/profile`` cannot switch, because the profile is bound when the process starts.
     """
     from hermes_cli.profiles import get_active_profile_name
     from hermes_constants import display_hermes_home
@@ -72,6 +134,13 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
         label = format_profile_label(profile_name, display)
     except Exception:
         pass
+    args = (ctx.args or "").strip()
+    if args:
+        # Flags, not words: ``PROFILE_ID_RE`` is ``^[a-z0-9][a-z0-9_-]{0,63}$``, so no profile can
+        # be named ``--list``/``-l`` and ``/profile list`` stays a real profile.
+        if args in {"--list", "-l"}:
+            return _profile_roster(profile_name)
+        return _profile_detail(args, profile_name)
     return CommandReply(t("gateway.profile.plain", profile=label, home=home_display),
                         data={"profile": profile_name, "home": home_display})
 

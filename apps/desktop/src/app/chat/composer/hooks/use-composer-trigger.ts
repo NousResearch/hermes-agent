@@ -269,6 +269,16 @@ export function useComposerTrigger({
       return false
     }
 
+    // A bare command token is not a "fully-typed argument" — it is a complete
+    // invocation in its own right (`/profile` prints the active profile). The
+    // Space fallback exists for `/personality creative`, where the completer
+    // dropped the exact match; chipping bare `/profile ` here would turn the
+    // command into a terminal-prompt pill and close the option list before a
+    // profile name could be typed. Require a real argument token.
+    if (!/\s+\S/.test(trigger.query)) {
+      return false
+    }
+
     // Free prose must stay ordinary contentEditable text. This guard also
     // protects against a stale completion result reaching the keydown path
     // before refreshTrigger has caught up with the latest DOM input.
@@ -374,7 +384,12 @@ export function useComposerTrigger({
     const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
 
     const argumentMode = desktopSlashCommandArgumentMode(command)
-    const expandsToArgs = trigger.kind === '/' && !trigger.inline && !serialized.includes(' ') && argumentMode !== null
+    // A completed command row arrives with a trailing space (`profile `, from the
+    // completer's exact-match rule for every command outside _PICKER_COMMANDS).
+    // That space is the completer asking for an argument, not an argument pick —
+    // so the bare-token test trims it, and `/profile` expands like `/skin`.
+    const expandsToArgs =
+      trigger.kind === '/' && !trigger.inline && !serialized.trimEnd().includes(' ') && argumentMode !== null
 
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)

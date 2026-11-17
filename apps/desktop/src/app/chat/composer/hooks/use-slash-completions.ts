@@ -20,7 +20,9 @@ import {
 import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { onboardingChatStore } from '@/store/onboarding-session'
+import { $profiles, $profilesByConnection } from '@/store/profile'
 import { $sessions } from '@/store/session'
+import { isSessionOwnerRoute, type SessionOwnerScope } from '@/store/session-request-router'
 
 import { completionOwner, completionOwnerKey, requestCompletion } from './completion-route'
 import type { CompletionEntry, CompletionPayload } from './use-live-completion-adapter'
@@ -57,6 +59,42 @@ function commandText(value: string): string {
 
 /** How many recent sessions to surface inline before the "Browse all…" entry. */
 const SESSION_INLINE_LIMIT = 7
+
+type ProfileRow = ReturnType<typeof $profiles.get>[number]
+
+/**
+ * The roster the app already fetched for the backend that owns this draft.
+ * Session-owned drafts have their own connection (the ambient socket is a
+ * different profile on a multiplexed gateway), so prefer that source when we
+ * know it; fall back to the active gateway's roster for new chats.
+ */
+function profilesForCompletion(owner: SessionOwnerScope): readonly ProfileRow[] {
+  if (isSessionOwnerRoute(owner)) {
+    const byConnection = $profilesByConnection.get().get(owner.connectionId)
+    // $profiles mirrors the ACTIVE backend; a draft can belong to a session owned
+    // by a different connection. Returning the ambient roster here would offer
+    // names from the wrong backend and point the next chat at a profile that is
+    // not there. An empty/unloaded entry must fall through to the owner-scoped
+    // complete.slash RPC below, which asks the backend that actually owns it.
+    return byConnection ?? []
+  }
+
+  return $profiles.get()
+}
+
+/** `/profile <name>` from the loaded roster: no RPC, no catalog, no 1 h query cache. */
+function localProfileCompletions(owner: SessionOwnerScope, arg: string): CompletionEntry[] {
+  const needle = normalize(arg ?? '').toLowerCase()
+
+  return profilesForCompletion(owner)
+    .filter(profile => profile.name.toLowerCase().startsWith(needle))
+    .map(profile => ({
+      text: `/profile ${profile.name}`,
+      display: profile.name,
+      meta: [profile.model, profile.is_default ? 'default' : ''].filter(Boolean).join(' · ') || 'profile',
+      kind: 'command'
+    }))
+}
 
 export interface SlashCompletions {
   /** Null while this session offers no `/` menu: the onboarding chat before its setup ends. */
@@ -182,6 +220,21 @@ export function useSlashCompletions(options: {
         })
 
         return { items, query }
+      }
+
+      // /profile completes from the roster the app already holds for the
+      // profile picker. The gateway RPC path depends on a warmed catalog and a
+      // 1 h query cache, which made this list intermittent; the picker roster
+      // is loaded up front on both desktop and webapp. Only fall back to the
+      // backend provider when that roster is still empty.
+      const profileArg = /^\/profile\s+(.*)$/is.exec(text)
+
+      if (profileArg) {
+        const owner = keysFor().owner
+
+        if (profilesForCompletion(owner).length) {
+          return { items: localProfileCompletions(owner, profileArg[1] ?? ''), query }
+        }
       }
 
       const { catalogKey, owner, scopeKey } = keysFor()

@@ -3441,7 +3441,7 @@ export const en: Translations = {
       '/context':
         'Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput',
       '/whoami': 'Show your slash command access (admin / user)',
-      '/profile': 'Switch the active Hermes profile',
+      '/profile': 'Choose the profile new chats open in',
       '/codex-runtime': 'Toggle codex app-server runtime for OpenAI/Codex models',
       '/personality': 'Set a predefined personality',
       '/battery': 'Toggle a color-coded battery indicator in the status bar',

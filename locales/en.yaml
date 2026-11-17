@@ -1702,7 +1702,7 @@ slash:
   whoami:
     description: "Show your slash command access (admin / user)"
   profile:
-    description: "Show active profile name and home directory"
+    description: "Show the active profile, list profiles (--list), or one profile's details"
   sessions:
     description: "Browse and resume previous sessions"
   config:

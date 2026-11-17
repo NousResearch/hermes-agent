@@ -109,6 +109,15 @@ describe('acceptsTriggerCompletion', () => {
   it('keeps Tab as the explicit accept even over free text', () => {
     expect(press('Tab', { freeTextArgStage: true, query: 'goal stat' })).toBe(true)
   })
+
+  it('takes the highlighted options row on Space, like any other picker', () => {
+    // /profile is an `options` command on the desktop, so it must accept on
+    // Space exactly as /skin and /personality do.
+    expect(press(' ', { query: 'profile' })).toBe(true)
+    expect(press(' ', { query: 'profile c' })).toBe(true)
+    expect(press('Enter', { query: 'profile c' })).toBe(true)
+    expect(press('Tab', { query: 'profile c' })).toBe(true)
+  })
 })
 
 describe('implicitSlashAcceptIndex', () => {

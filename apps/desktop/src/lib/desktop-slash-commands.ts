@@ -232,7 +232,17 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('handoff'),
     argumentMode: 'options'
   },
-  { name: '/profile', description: 'Switch the active Hermes profile', surface: action('profile') },
+  {
+    name: '/profile',
+    // A profile is per-session: this points the NEXT new chat at `name` (the desktop
+    // already has the roster). Saying "switch" here promised a mid-thread swap that
+    // use-prompt-actions/slash.ts deliberately refuses. The names come from the
+    // desktop's already-loaded profile roster ($profiles), not a gateway
+    // round-trip, so the arg stage must not wait for commands.catalog either.
+    description: 'Choose the profile new chats open in',
+    surface: action('profile'),
+    argumentMode: 'options'
+  },
   {
     name: '/skin',
     description: 'Switch desktop theme or cycle to the next one',

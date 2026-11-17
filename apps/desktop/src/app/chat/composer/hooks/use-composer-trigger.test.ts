@@ -252,6 +252,73 @@ describe('useComposerTrigger — free-text slash arguments', () => {
     expect(composerPlainText(editor)).toBe('/personality creative ')
     expect(editor.querySelector('[data-slash-kind]')?.getAttribute('data-ref-text')).toBe('/personality creative')
   })
+
+  it('never chips a bare /profile — the no-arg command is complete, not a typed option', () => {
+    // With an empty option list the Space fallback used to commit "/profile"
+    // as a terminal-prompt pill. That closes the popover and turns the text
+    // green/monospace, so a profile name can never be typed.
+    const editor = mountEditor('/profile ')
+    const { hook } = mountTrigger(editor, [])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.trigger).not.toBeNull()
+    expect(hook.result.current.commitTypedSlashDirective()).toBe(false)
+    expect(composerPlainText(editor)).toBe('/profile ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+  })
+
+  it('expands a picked bare /profile to the arg stage instead of chipping it', () => {
+    // Tab and a mouse click both go through replaceTriggerWithChip, not the
+    // Space fallback above. They must agree with typing the trailing space.
+    const editor = mountEditor('/profile')
+    const { hook } = mountTrigger(editor, [item('/profile', 'Commands')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/profile', 'Commands')))
+
+    expect(composerPlainText(editor)).toBe('/profile ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+  })
+
+  it('expands the completer own `profile ` row (trailing space) instead of chipping it', () => {
+    // The gateway returns `{text: "profile "}` for an exact match — every
+    // command outside _PICKER_COMMANDS gets that trailing space — while /skin
+    // returns a bare `skin`. The trailing space must not read as an arg pick.
+    const completed: Unstable_TriggerItem = {
+      id: 'profile |0',
+      type: 'slash',
+      label: 'profile ',
+      metadata: {
+        command: '/profile ',
+        display: 'profile ',
+        meta: '',
+        group: 'Commands',
+        action: '',
+        rawText: '/profile '
+      }
+    }
+    const editor = mountEditor('/profile')
+    const { hook } = mountTrigger(editor, [completed])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(completed))
+
+    expect(composerPlainText(editor)).toBe('/profile ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+  })
+
+  it('keeps bare /profile editable even when the catalog has no argument mode', () => {
+    rememberDesktopCommandsCatalog({ commands: { '/profile': { argument_mode: null, desktop: null } } })
+    const editor = mountEditor('/profile')
+    const { hook } = mountTrigger(editor, [item('/profile', 'Commands')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/profile', 'Commands')))
+
+    expect(composerPlainText(editor)).toBe('/profile ')
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+  })
 })
 
 describe('useComposerTrigger — chip survival (the plaintext-demotion bug class)', () => {

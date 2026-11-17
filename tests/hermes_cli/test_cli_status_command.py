@@ -95,8 +95,27 @@ def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path, caps
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "unrelated-home")
 
-    cli_obj._handle_profile_command()
+    cli_obj._handle_profile_command("/profile")
 
     out = capsys.readouterr().out
     assert "Profile: coder" in out
     assert f"Home:    {profile_home}" in out
+
+
+def test_profile_command_forwards_roster_argument(monkeypatch, tmp_path, capsys):
+    """A typed argument reaches the executor: `--list` prints the roster, not the active profile."""
+    cli_obj = _make_cli()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda **_kw: [
+        SimpleNamespace(name="default", model="cheap-ai-fallback", provider=None,
+                        is_default=True, path=tmp_path / "default", display_name=""),
+        SimpleNamespace(name="coder", model="qwen3.8-flash", provider=None,
+                        is_default=False, path=tmp_path / "coder", display_name=""),
+    ])
+
+    cli_obj._handle_profile_command("/profile --list")
+
+    out = capsys.readouterr().out
+    assert "Profiles (2)" in out
+    assert "coder" in out
+    assert "hermes -p <name>" in out

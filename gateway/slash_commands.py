@@ -325,8 +325,20 @@ class GatewaySlashCommandsMixin(
                 display = display_hermes_home()
 
         # Shared executor resolves process-level fallbacks; the multiplexed per-source overrides
-        # (when any) ride in via options.
-        reply = _execute("profile", options={"profile_name": profile_name, "home_display": display})
+        # (when any) ride in via options. An argument selects the roster (``--list``/``-l``) or one
+        # profile's details, so its text replaces the two-line active-profile block. The roster
+        # names every profile and the details carry its home path, so under slash gating that
+        # stays admin-only: a non-admin keeps the bare two-line answer they already had.
+        args = (event.get_command_args() or "").strip()
+        if args:
+            from gateway.slash_access import policy_for_runner_source
+            policy = policy_for_runner_source(self, source)
+            if not policy.is_admin(getattr(source, "user_id", None)):
+                args = ""
+        reply = _execute("profile", args=args,
+                         options={"profile_name": profile_name, "home_display": display})
+        if args:
+            return reply.text
         return "\n".join([t("gateway.profile.header", profile=reply.data["profile"]),
                           t("gateway.profile.home", home=reply.data["home"])])
 

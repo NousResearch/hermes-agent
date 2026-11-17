@@ -38,6 +38,18 @@ def _make_event(text: str, *, platform: Platform = Platform.TELEGRAM) -> Message
     )
 
 
+def _session_entry(session_id: str = "sess-1") -> SessionEntry:
+    now = datetime.now()
+    return SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id=session_id,
+        created_at=now,
+        updated_at=now,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+
+
 def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.TELEGRAM):
     from gateway.run import GatewayRunner
 
@@ -637,6 +649,85 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     with _profile_runtime_scope(profile_home):
         expected_home = display_hermes_home()
     assert f"**Home:** `{expected_home}`" in result
+
+
+@pytest.mark.asyncio
+async def test_profile_list_argument_prints_the_roster(monkeypatch, tmp_path):
+    """/profile --list reaches the shared executor on a gateway surface too.
+
+    The argument used to be dropped here (only the CLI forwarded it), so a name the popover
+    offered was a dead end in Discord/Telegram.
+    """
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda **_kw: [
+        SimpleNamespace(name="default", model="cheap-ai-fallback", provider=None, is_default=True,
+                        path=tmp_path / "default", display_name=""),
+        SimpleNamespace(name="coder", model="qwen3.8-flash", provider=None, is_default=False,
+                        path=tmp_path / "coder", display_name=""),
+    ])
+    runner = _make_runner(_session_entry())
+    runner.config.multiplex_profiles = False
+
+    result = await runner._handle_profile_command(_make_event("/profile --list"))
+
+    assert "Profiles (2)" in result
+    assert "coder" in result
+    assert "◆" in result  # the active profile is marked
+    assert "hermes -p <name>" in result
+    assert "**Profile:**" not in result  # the roster replaces the two-line active block
+
+
+@pytest.mark.asyncio
+async def test_profile_name_argument_prints_details_and_the_switch_command(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda **_kw: [
+        SimpleNamespace(name="default", model="cheap-ai-fallback", provider=None, is_default=True,
+                        path=tmp_path / "default", display_name=""),
+        SimpleNamespace(name="coder", model="qwen3.8-flash", provider="openrouter", is_default=False,
+                        path=tmp_path / "coder", display_name=""),
+    ])
+    runner = _make_runner(_session_entry())
+    runner.config.multiplex_profiles = False
+
+    result = await runner._handle_profile_command(_make_event("/profile coder"))
+
+    assert "Model:   qwen3.8-flash (openrouter)" in result
+    assert "hermes -p coder" in result
+    assert "hermes profile use coder" in result
+
+
+@pytest.mark.asyncio
+async def test_profile_list_stays_admin_only_under_slash_gating(monkeypatch, tmp_path):
+    """The roster names every profile and the details carry its home path, so on a gated
+    install only an admin gets them; a non-admin keeps the bare two-line answer."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda **_kw: [
+        SimpleNamespace(name="default", model="cheap-ai-fallback", provider=None, is_default=True,
+                        path=tmp_path / "default", display_name=""),
+        SimpleNamespace(name="coder", model="qwen3.8-flash", provider=None, is_default=False,
+                        path=tmp_path / "coder", display_name=""),
+    ])
+    runner = _make_runner(_session_entry())
+    runner.config.multiplex_profiles = False
+    runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(
+        enabled=True, extra={"allow_admin_from": ["admin-1"]})
+
+    non_admin_event = _make_event("/profile --list")
+    non_admin_event.source.user_id = "someone-else"
+    non_admin = await runner._handle_profile_command(non_admin_event)
+    assert "Profiles (" not in non_admin
+    assert "**Profile:**" in non_admin  # the same answer bare /profile already gave them
+
+    admin_event = _make_event("/profile --list")
+    admin_event.source.user_id = "admin-1"
+    admin = await runner._handle_profile_command(admin_event)
+    assert "Profiles (2)" in admin
 
 
 # ── /context command tests ────────────────────────────────────────────────

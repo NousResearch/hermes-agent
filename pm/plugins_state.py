@@ -70,7 +70,7 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError) as exc:
-        raise ValueError(f"could not read plugin selection: {exc}") from exc
+        raise ValueError(f"could not read plugin selection: {config_path}: {exc}") from exc
     except YAMLError as exc:
         # Name the YAML problem and where it is: this is the message a bootstrap install
         # prints when an existing config.yaml keeps dependencies from installing, so

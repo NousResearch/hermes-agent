@@ -160,6 +160,18 @@ def test_syntax_error_names_the_problem_line_not_just_the_path(homes):
     assert "line" in message
     assert "hermes config check" in message
 
+def test_invalid_utf8_read_error_preserves_path_and_decoder_cause(homes):
+    """A damaged config must identify both its path and its UTF-8 decode failure."""
+    default_home, _ = homes
+    config = default_home / "config.yaml"
+    config.write_bytes(b"plugins:\n  enabled: [\xff]\n")
+    with pytest.raises(ValueError) as failure:
+        pstate.read_home_selection(default_home)
+    message = str(failure.value)
+    assert str(config) in message
+    assert "can't decode byte" in message
+
+
 def test_unreadable_config_names_the_os_error_not_only_the_path(homes):
     """An OSError carries its own reason; 'could not read' plus a path hid it."""
     default_home, _ = homes

@@ -27,6 +27,7 @@ except ImportError:
     RequestKey = None  # type: ignore[assignment,misc]
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response, room_run_claims
+from agent.model_call_events import EVENT_FIELDS as MODEL_CALL_EVENT_FIELDS, model_call_payload
 from gateway.turn_executor import _UnboundedThreadExecutor
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
@@ -387,6 +388,9 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
                 event_fields["preview"] = _tool_completed_preview(
                     kwargs.get("result"), redact_sensitive_text)
             _push(_run_event(run_id, event_type, **event_fields))
+        elif event_type in MODEL_CALL_EVENT_FIELDS:
+            # Numbers and identifiers only: nothing here can carry secret text.
+            _push(_run_event(run_id, event_type, **model_call_payload(event_type, kwargs)))
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = _run_event(run_id, event_type)
             if preview is not None:
@@ -1131,7 +1135,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
                     run.admission, stream_delta_callback=_text_cb,
-                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
+                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete,
+                    model_call_callback=lambda event_type, **fields: tool_cb(event_type, **fields))
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (

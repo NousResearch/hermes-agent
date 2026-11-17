@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import time
 
+from agent.model_call_events import EVENT_FIELDS as MODEL_CALL_EVENT_FIELDS, model_call_payload
 from gateway import local_desktop_ui
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,9 @@ def publish_progress(turn, event_type, name, preview, kwargs) -> None:
     if event_type == "tool.progress":
         from agent.tool_progress_relay import tool_progress_payload
         turn._publish_execution(event_type, tool_progress_payload(name, preview, kwargs))
+        return
+    if event_type in MODEL_CALL_EVENT_FIELDS:
+        turn._publish_execution(event_type, model_call_payload(event_type, kwargs))
         return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
         return

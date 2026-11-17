@@ -505,7 +505,19 @@ def _progress_subagent(sid: str, name: str, preview, kw, event_type):
 
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be
 # emitted at all ("name" / "preview" / None).
+# Per-call meter data (agent/model_call_events.py), not chat content: no display gate.
+def _progress_usage_recorded(sid, name, preview, kw):
+    from agent.model_call_events import model_call_payload
+    _emit("usage.recorded", sid, model_call_payload("usage.recorded", kw))
+
+
+def _progress_model_rate_limited(sid, name, preview, kw):
+    from agent.model_call_events import model_call_payload
+    _emit("model.rate_limited", sid, model_call_payload("model.rate_limited", kw))
+
+
 _PROGRESS_HANDLERS = {
+    "usage.recorded": (_progress_usage_recorded, None), "model.rate_limited": (_progress_model_rate_limited, None),
     "tool.output_risk": (_progress_output_risk, "name"), "tool.progress": (_progress_tool_progress, "name"),
     "reasoning.available": (_progress_reasoning, "preview"),
     "moa.reference": (_progress_moa_reference, "name"),

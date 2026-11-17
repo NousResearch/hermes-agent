@@ -6257,6 +6257,33 @@ export interface MoaPhasePayload {
   refs_total?: number | null
   aggregator?: string | null
 }
+/** One finished model API call. ``first_token_ms`` only when the attempt streamed; ``used_tokens`` / ``window_tokens`` are the context now in use and the model's window. */
+export interface UsageRecordedPayload {
+  call_index: number
+  api_request_id?: string | null
+  model?: string
+  provider?: string
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  reasoning_tokens?: number
+  cost_usd?: number | null
+  first_token_ms?: number | null
+  duration_ms?: number
+  used_tokens?: number
+  window_tokens?: number | null
+}
+/** The retry loop started waiting on a rate limit. ``retry_after_ms`` is the provider's own cooldown (absent when it named none); ``wait_ms`` is the wait actually taken. */
+export interface ModelRateLimitedPayload {
+  api_request_id?: string | null
+  model?: string
+  provider?: string
+  attempt: number
+  max_attempts: number
+  retry_after_ms?: number | null
+  wait_ms?: number
+}
 /** ``tools/open_preview_tool.py``. */
 export interface PreviewOpenPayload {
   url: string
@@ -7410,6 +7437,8 @@ export interface BackendGatewayEventMap {
   'moa.progress': MoaProgressPayload
   /** One MoA reference model's output. */
   'moa.reference': MoaReferencePayload
+  /** The agent is backing off on a provider rate limit before retrying. */
+  'model.rate_limited': ModelRateLimitedPayload
   /** Informational one-liner for the session (capabilities refreshed). */
   notice: NoticePayload
   /** Withdraw the notice with this key. */
@@ -7502,6 +7531,8 @@ export interface BackendGatewayEventMap {
   'tool.progress': ToolProgressPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
+  /** Token, cost, latency and context-fill figures for one model API call. */
+  'usage.recorded': UsageRecordedPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
   /** Live STT text so far while the user is still speaking. */
@@ -7543,6 +7574,7 @@ export const GATEWAY_EVENT_TYPES = [
   'moa.phase',
   'moa.progress',
   'moa.reference',
+  'model.rate_limited',
   'notice',
   'notification.clear',
   'notification.show',
@@ -7589,6 +7621,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.output_risk',
   'tool.progress',
   'tool.start',
+  'usage.recorded',
   'voice.interrupted',
   'voice.partial',
   'voice.status',

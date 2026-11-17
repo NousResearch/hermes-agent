@@ -14,7 +14,8 @@ import threading
 import pytest
 
 from persistence import (
-    PermanentStoreError, ProfileScope, StoreContention, StoreQuarantined, StoreReplaced, StoreUnavailable,
+    CorruptStoreError, MalformedSchema, PermanentStoreError, ProfileScope, SearchIndexCorrupt, StoreContention,
+    StoreQuarantined, StoreReplaced, StoreUnavailable, TransientStoreError,
 )
 from persistence.sqlite import SQLiteBackend, translated
 from persistence.sqlite import _registry
@@ -172,11 +173,17 @@ def test_list_prefix_answers_the_store_like_rows_in_table_order(backend, scope_a
     (sqlite3.OperationalError("database is locked"), StoreContention),
     (sqlite3.OperationalError("attempt to write a readonly database"), PermanentStoreError),
     (sqlite3.OperationalError("unable to open database file"), StoreUnavailable),
+    (sqlite3.OperationalError("disk I/O error"), TransientStoreError),
+    (sqlite3.DatabaseError("fts5: corruption found reading blob 7 from table \"messages_fts\""), SearchIndexCorrupt),
+    (sqlite3.DatabaseError("malformed database schema (idx_sessions) - near \"x\": syntax error"), MalformedSchema),
+    (sqlite3.DatabaseError("database disk image is malformed"), CorruptStoreError),
 ])
 def test_store_errors_cross_the_boundary_typed(raised, expected):
     with pytest.raises(expected) as caught:
         with translated():
             raise raised
+    # CONTRACT: each SQLite failure crosses as its own contract class, not a parent: a lost branch falls to a wider one.
+    assert type(caught.value) is expected
     assert caught.value.__cause__ is raised
 
 

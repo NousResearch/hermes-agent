@@ -1,6 +1,6 @@
 name: tradersagent-plugin
 repo: https://github.com/godzillacode0000/tradersagent-plugin
-sha: 42a3a1d92fe029a92b96cd4467eb5b8228cce0cb
+sha: 3c927216ace9e5f01d3399a36f5a85834bdfe01c
 subdir: traders-desk
 description: >-
   A chart-first Trader's Agent for Hermes Desktop: one sidebar row docks a live Vela chart beside your
@@ -17,7 +17,7 @@ category: desktop
 requires_hermes: ">=0.17.0"
 docs_url: https://github.com/godzillacode0000/tradersagent-plugin#readme
 version: "1.3.0"
-image: https://raw.githubusercontent.com/godzillacode0000/tradersagent-plugin/42a3a1d92fe029a92b96cd4467eb5b8228cce0cb/docs/screenshot.png
+image: https://raw.githubusercontent.com/godzillacode0000/tradersagent-plugin/3c927216ace9e5f01d3399a36f5a85834bdfe01c/docs/screenshot.png
 platforms: [linux, macos]
 known_issues:
   - "The chart pane needs the repository's local console (127.0.0.1:8787), which this entry does not install. Clone https://github.com/godzillacode0000/tradersagent-plugin and run ./console/start.sh — the pane says exactly that when the console is unreachable."

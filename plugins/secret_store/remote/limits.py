@@ -7,8 +7,12 @@ provider ids in the plane's grammar and outside its reserved names (the vendored
 ``conformance/secrets-reserved-names.json`` the plane's list is generated from); an env value a
 string of at most :data:`MAX_ENTRY_BYTES` UTF-8 bytes; an auth record a JSON object whose
 ``JSON.stringify`` is at most :data:`MAX_ENTRY_BYTES` UTF-8 bytes; at most
-:data:`MAX_ENTRIES_PER_LEVEL` entries. Stricter than the plane in one way: a number a JavaScript
-number cannot hold (``1e400``, a 400-digit integer) is refused, where the plane would store null.
+:data:`MAX_ENTRIES_PER_LEVEL` entries; versions integers by ``Number.isInteger`` (``0.0``, ``1e0`` and
+``-0.0`` count). The bytes are read as the plane reads them (:mod:`.plane_json`: a leading BOM
+dropped, any nesting depth). Stricter than the plane in two ways, where the plane would store
+something else: a number a JavaScript number cannot hold (``1e400``, a 400-digit integer; the plane
+stores null), and bytes that are not UTF-8 or a lone surrogate (the plane stores U+FFFD).
+A body of any JSON shape gets violations, never an exception.
 
 :func:`check` encodes a body with the transport's own encoder
 (:func:`plugins.config_backends.remote.client.encode_body`, which refuses NaN / Infinity and lone
@@ -18,13 +22,12 @@ from __future__ import annotations
 
 import functools
 import json
-import math
 import re
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from plugins.config_backends.remote.client import encode_body
+from plugins.secret_store.remote import plane_json
 
 MAX_ENTRY_BYTES = 64 * 1024
 MAX_ENTRIES_PER_LEVEL = 1000
@@ -47,9 +50,6 @@ class Violation(NamedTuple):
     code: str
 
 
-_UNHOLDABLE = object()   # a JSON number a JavaScript number cannot hold (the plane reads ±Infinity)
-
-
 def import_body(env: dict[str, Any], records: dict[str, Any]) -> dict[str, Any]:
     """The one-time import's ``PATCH /self`` body for a profile the plane has never stored."""
     return {"expectedProfileVersion": 0, "set": env,
@@ -61,7 +61,7 @@ def check(body: dict[str, Any]) -> list[Violation]:
     take it. A body the encoder refuses is blamed on the entries it refuses."""
     try:
         data = encode_body(body)
-    except (ValueError, TypeError):               # UnicodeEncodeError is a ValueError
+    except (ValueError, TypeError, RecursionError):   # UnicodeEncodeError is a ValueError
         return _unencodable(body)
     return validate_patch(data)
 
@@ -74,45 +74,26 @@ def validate_patch(data: bytes) -> list[Violation]:
         out.append(_whole(f"the import request would be {len(data)} bytes (at most {MAX_BODY_BYTES}): "
                           "too much at once", "secret_body_too_large"))
     try:
-        raw = json.loads(data.decode("utf-8"), parse_constant=_not_json,
-                         parse_float=_held(float), parse_int=_held(int))
+        raw = plane_json.parse(data)
     except ValueError:                            # not UTF-8, not JSON, or a NaN / Infinity token
         return [*out, _whole("the import request is not JSON", "secret_request_invalid")]
+    # The plane's order (patch.ts parseProfilePatch): the body's keys, `set`, `unset`, `auth`, then
+    # the version. A part of the wrong JSON type ends the check, as the plane's first throw does.
     not_a_write = _whole("the import request is not a profile write", "secret_request_invalid")
     if not isinstance(raw, dict) or not set(raw) <= _BODY_KEYS:
         return [*out, not_a_write]
-    env, unset, auth = raw.get("set", {}), raw.get("unset", []), raw.get("auth", {})
-    if not (isinstance(env, dict) and isinstance(unset, list) and isinstance(auth, dict)):
+    env = raw.get("set", {})
+    if not isinstance(env, dict):
         return [*out, not_a_write]
-    for name, value in env.items():
-        out += _name("env", name)
-        size = _utf8_size(value) if isinstance(value, str) else None
-        if size is None:
-            out.append(Violation("env", name, f"{shown(name)} (the value is not UTF-8 text)", "secret_value_invalid"))
-        elif size > MAX_ENTRY_BYTES:
-            out.append(Violation("env", name, f"{shown(name)} (a {size}-byte value; at most {MAX_ENTRY_BYTES})",
-                                 "secret_value_invalid"))
-    for name in unset:
-        out += _name("env", name) if isinstance(name, str) else [not_a_write]
-        if name in env:
-            out.append(not_a_write)
-    for rid, change in auth.items():
-        out += _name("auth", rid)
-        if not (isinstance(change, dict) and set(change) == {"expectedVersion", "record"}
-                and _version(change["expectedVersion"])):
-            out.append(not_a_write)
-            continue
-        record = change["record"]
-        if record is None:
-            continue
-        size = _utf8_size(_js_json(record)) if isinstance(record, dict) else None
-        if size is None:
-            out.append(Violation("auth", rid, f"auth record {shown(rid)} (not a JSON object of UTF-8 text, or it "
-                                 "holds a number JavaScript cannot hold: NaN, Infinity or beyond 1.8e308)",
-                                 "secret_value_invalid"))
-        elif size > MAX_ENTRY_BYTES:
-            out.append(Violation("auth", rid, f"auth record {shown(rid)} ({size} bytes; at most {MAX_ENTRY_BYTES})",
-                                 "secret_value_invalid"))
+    out += _env_violations(env)
+    unset = raw.get("unset", [])
+    if not isinstance(unset, list):
+        return [*out, not_a_write]
+    out += _unset_violations(unset, env, not_a_write)
+    auth = raw.get("auth", {})
+    if not isinstance(auth, dict):
+        return [*out, not_a_write]
+    out += _auth_violations(auth, not_a_write)
     if not (env or unset or auth):
         out.append(_whole("the import request writes nothing", "secret_request_invalid"))
     if "expectedProfileVersion" in raw:
@@ -124,6 +105,53 @@ def validate_patch(data: bytes) -> list[Violation]:
                                 for c in auth.values())) > MAX_ENTRIES_PER_LEVEL:
         out.append(_whole(f"{count} entries (a profile holds at most {MAX_ENTRIES_PER_LEVEL})",
                           "secret_level_too_large"))
+    return out
+
+
+def _env_violations(env: dict) -> list[Violation]:
+    out = []
+    for name, value in env.items():
+        out += _name("env", name)
+        size = _utf8_size(value) if isinstance(value, str) else None
+        if size is None:
+            out.append(Violation("env", name, f"{shown(name)} (the value is not UTF-8 text)", "secret_value_invalid"))
+        elif size > MAX_ENTRY_BYTES:
+            out.append(Violation("env", name, f"{shown(name)} (a {size}-byte value; at most {MAX_ENTRY_BYTES})",
+                                 "secret_value_invalid"))
+    return out
+
+
+def _unset_violations(unset: list, env: dict, not_a_write: Violation) -> list[Violation]:
+    out = []
+    for name in unset:
+        if not isinstance(name, str):             # `unset` holds names: [{}], [[]], [1], [null] are not
+            out.append(not_a_write)
+            continue
+        out += _name("env", name)
+        if name in env:
+            out.append(not_a_write)
+    return out
+
+
+def _auth_violations(auth: dict, not_a_write: Violation) -> list[Violation]:
+    out = []
+    for rid, change in auth.items():
+        out += _name("auth", rid)
+        if not (isinstance(change, dict) and set(change) == {"expectedVersion", "record"}
+                and _version(change["expectedVersion"])):
+            out.append(not_a_write)
+            continue
+        record = change["record"]
+        if record is None:
+            continue
+        size = _utf8_size(plane_json.stringify(record)) if isinstance(record, dict) else None
+        if size is None:
+            out.append(Violation("auth", rid, f"auth record {shown(rid)} (not a JSON object of UTF-8 text, or it "
+                                 "holds a number JavaScript cannot hold: NaN, Infinity or beyond 1.8e308)",
+                                 "secret_value_invalid"))
+        elif size > MAX_ENTRY_BYTES:
+            out.append(Violation("auth", rid, f"auth record {shown(rid)} ({size} bytes; at most {MAX_ENTRY_BYTES})",
+                                 "secret_value_invalid"))
     return out
 
 
@@ -175,22 +203,11 @@ def _utf8_size(text: str | None) -> int | None:
 
 
 def _version(v: Any) -> bool:
-    return type(v) is int and 0 <= v <= MAX_VERSION
-
-
-def _not_json(token: str) -> Any:
-    raise ValueError(f"{token} is not JSON")
-
-
-def _held(parse):
-    """A JSON number as the plane's ``JSON.parse`` holds it: :data:`_UNHOLDABLE` beyond a double."""
-    def number(text: str) -> Any:
-        value = parse(text)
-        try:
-            return value if math.isfinite(float(value)) else _UNHOLDABLE
-        except OverflowError:
-            return _UNHOLDABLE
-    return number
+    """The plane's ``versionOk``: a JSON number ``Number.isInteger`` takes (``1.0``, ``1e0`` and
+    ``-0.0`` are integers; true is not a number) from 0 to :data:`MAX_VERSION`."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return (isinstance(v, int) or v.is_integer()) and 0 <= v <= MAX_VERSION
 
 
 def _unencodable(body: dict[str, Any]) -> list[Violation]:
@@ -198,62 +215,14 @@ def _unencodable(body: dict[str, Any]) -> list[Violation]:
     def fails(*values) -> bool:
         try:
             encode_body({"v": values})
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             return True
         return False
+    def entries(part: str) -> list:
+        value = body.get(part)
+        return list(value.items()) if isinstance(value, dict) else []
     out = [Violation("env", n, f"{shown(n)} (the name or value is not UTF-8 text)", "secret_value_invalid")
-           for n, v in (body.get("set") or {}).items() if fails(n, v)]
+           for n, v in entries("set") if fails(n, v)]
     out += [Violation("auth", r, f"auth record {shown(r)} (not JSON of UTF-8 text: a lone surrogate, NaN or "
-                      "Infinity)", "secret_value_invalid") for r, c in (body.get("auth") or {}).items() if fails(r, c)]
+                      "Infinity)", "secret_value_invalid") for r, c in entries("auth") if fails(r, c)]
     return out or [_whole("the import request cannot be encoded", "secret_request_invalid")]
-
-
-def _js_json(value: Any) -> str | None:
-    """``JSON.stringify`` of *value* once the plane has parsed it (JavaScript numbers), or None
-    for what the plane cannot hold."""
-    if value is None or isinstance(value, bool):
-        return json.dumps(value)
-    if isinstance(value, (int, float)):
-        return _js_number(value)
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, (list, tuple)):
-        items = []
-        for v in value:
-            text = _js_json(v)
-            if text is None:
-                return None
-            items.append(text)
-        return "[" + ",".join(items) + "]"
-    if isinstance(value, dict):
-        parts = []
-        for k, v in value.items():
-            text = _js_json(v)
-            if not isinstance(k, str) or text is None:
-                return None
-            parts.append(json.dumps(k, ensure_ascii=False) + ":" + text)
-        return "{" + ",".join(parts) + "}"
-    return None
-
-
-def _js_number(x: float) -> str:
-    """ECMAScript ``Number::toString`` of the finite double *x* (or an int that rounds to one)."""
-    if isinstance(x, int) and abs(x) <= 2 ** 53:
-        return str(x)
-    x = float(x)
-    if x == 0:
-        return "0"
-    _sign, digits, exponent = Decimal(repr(abs(x))).as_tuple()
-    s = "".join(map(str, digits)).rstrip("0") or "0"
-    k = len(s)
-    n = int(exponent) + len(digits)                  # x = 0.s × 10^n
-    lead = "-" if x < 0 else ""
-    if k <= n <= 21:
-        return lead + s + "0" * (n - k)
-    if 0 < n <= 21:
-        return lead + s[:n] + "." + s[n:]
-    if -6 < n <= 0:
-        return lead + "0." + "0" * -n + s
-    e = n - 1
-    mantissa = s if k == 1 else s[0] + "." + s[1:]
-    return f"{lead}{mantissa}e{'+' if e >= 0 else '-'}{abs(e)}"

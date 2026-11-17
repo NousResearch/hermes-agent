@@ -18,13 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from plugins.secret_store.remote import limits
+from plugins.secret_store.remote import limits, plane_json
 from tests.plugins.secret_store import plane_patch_cases
 
 FIXTURE = json.loads(plane_patch_cases.FIXTURE.read_text(encoding="utf-8-sig"))
 CASES = plane_patch_cases.cases()
 STRICTER = {"number_overflow", "number_negative_overflow", "number_int_beyond_double", "value_not_utf8",
-            "value_lone_surrogate_escape", "record_lone_surrogate_escape"}
+            "value_lone_surrogate_escape", "record_lone_surrogate_escape", "record_5000_digit_number"}
 
 
 def _verdict(data: bytes) -> str:
@@ -46,6 +46,40 @@ def test_the_import_check_agrees_with_the_plane(cid, data):
         assert ours != "ok", cid
     else:
         assert ours == plane, (cid, ours, plane)
+
+
+@pytest.mark.parametrize(("cid", "data"), CASES, ids=[cid for cid, _b in CASES])
+def test_the_deep_reader_reads_as_json_loads_does(cid, data):
+    """The stackless reader (taken past the C scanner's depth) builds what json.loads builds."""
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return
+    try:
+        expected = json.loads(text, parse_constant=plane_json._not_json, parse_float=plane_json._number,
+                              parse_int=plane_json._number)
+    except RecursionError:                        # these bodies are compact JSON: they write back as read
+        assert plane_json.stringify(plane_json._parse_deep(text)) == text
+        return
+    except ValueError:
+        with pytest.raises(ValueError):
+            plane_json._parse_deep(text)
+        return
+    assert plane_json._parse_deep(text) == expected
+
+
+def test_a_body_of_any_json_shape_is_refused_never_raised_on():
+    for part in ("set", "unset", "auth", "expectedProfileVersion"):
+        for value in ([{}], [[]], [None], {"A": {}}, {"a": []}, {"a": {"expectedVersion": {}, "record": {}}},
+                      {"a": {"expectedVersion": 0, "record": [[{}]]}}, "x", 1.5, None, True):
+            body = {"expectedProfileVersion": 0, "set": {"RV_X": "v"}, part: value}
+            assert isinstance(limits.check(body), list), (part, value)
+    deep: list = []
+    for depth in range(1, 32_001):
+        deep = [deep]
+        if depth in (5000, 32_000):                # the plane takes both; json.dumps may not reach the second
+            found = limits.check({"auth": {"codex": {"expectedVersion": 0, "record": {"n": deep}}}})
+            assert found == [] if depth == 5000 else isinstance(found, list)
 
 
 def test_the_verdicts_are_the_checkouts():

@@ -120,6 +120,31 @@ def cases() -> list[tuple[str, bytes]]:
     out.append(("set_list", b'{"expectedProfileVersion":0,"set":[]}'))
     out.append(("nothing_to_write", _body()))
     out.append(("set_and_unset", _body({"RV_A": "v"}, unset=["RV_A"])))
+    # Versions are integers by Number.isInteger: an integral JSON number of any spelling counts.
+    for label, number in [("0.0", "0.0"), ("-0.0", "-0.0"), ("1.0", "1.0"), ("max_float", "2147483647.0"),
+                          ("1e0", "1e0"), ("2.0e1", "2.0e1"), ("-0", "-0"), ("1e-400", "1e-400"),
+                          ("max_rounds_down", "2147483647.0000001"), ("max_plus_float", "2147483648.0"),
+                          ("0.5", "0.5"), ("true", "true"), ("null", "null"), ("string", '"0"'), ("list", "[0]"),
+                          ("1e400", "1e400"), ("-1.0", "-1.0")]:
+        out.append((f"version_{label}", b'{"expectedProfileVersion":%s,"set":{"RV_X":"v"}}' % number.encode()))
+        out.append((f"auth_version_{label}", b'{"auth":{"codex":{"expectedVersion":%s,"record":{}}}}' %
+                    number.encode()))
+    # `unset` holds names: any other JSON value in it is refused, never raised on.
+    for label, entry in [("object", "{}"), ("list", "[]"), ("null", "null"), ("number", "1"), ("true", "true"),
+                         ("nested", "[[{}]]")]:
+        out.append((f"unset_{label}", b'{"expectedProfileVersion":0,"set":{"RV_X":"v"},"unset":[%s]}' %
+                    entry.encode()))
+    out.append(("unset_deep", b'{"expectedProfileVersion":0,"set":{"RV_X":"v"},"unset":%s%s}' %
+                (b"[" * 100_000, b"]" * 100_000)))
+    # The plane reads the bytes as Request.text() and JSON.parse do: a BOM dropped, any depth.
+    out.append(("bom", b"\xef\xbb\xbf" + _body({"RV_A": "v"})))
+    out.append(("two_boms", b"\xef\xbb\xbf\xef\xbb\xbf" + _body({"RV_A": "v"})))
+    for depth in (999, 1000, 5000, 32_000):
+        out.append((f"record_depth_{depth}", _raw_record("[" * depth + "]" * depth)))
+    out.append(("record_depth_over_64k", _raw_record("[" * 32_800 + "]" * 32_800)))
+    out.append(("record_deep_objects", _raw_record('{"a":' * 5000 + "0" + "}" * 5000)))
+    out.append(("value_5000_digit_number", b'{"expectedProfileVersion":0,"set":{"RV_X":%s}}' % (b"1" * 5000)))
+    out.append(("record_5000_digit_number", _raw_record("1" * 5000)))
     out.append(("not_object", b"[]"))
     out.append(("not_json", b"{"))
     for n in (999, 1000, 1001):

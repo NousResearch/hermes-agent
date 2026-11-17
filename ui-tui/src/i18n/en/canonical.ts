@@ -31,7 +31,7 @@ export const canonicalEn = {
         `legacy delivery unconfirmed: ${message} — input retained; check the session before sending a new input`,
       statusDeliveryUnconfirmed: 'delivery unconfirmed',
       deliveryNotResent: 'delivery unconfirmed — check the session before sending a new input; retained input was not resent',
-      busyTextOnly: 'busy corrections accept text only — image input retained; submit it with /queue',
+      busyTextOnly: 'busy corrections accept text only — image input queued for the next turn',
       inputRetained: (message: string) => `input retained: ${message} — Alt+K retries the same submission`,
       imageNotSubmitted: (message: string) => `image not submitted: ${message} — input retained`,
       statusImageNotSubmitted: 'image not submitted',

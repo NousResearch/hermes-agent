@@ -702,8 +702,8 @@ def _launcher_python(target: Path, *, strict_io: bool = False) -> Path | None:
             text = data.decode("utf-8-sig")
         except UnicodeDecodeError:
             return None
-        lines = text.splitlines()
         if suffix == ".cmd":
+            lines = text.splitlines()
             # "@echo off", then '"<python>" -I -c "<code>" %*'. The file's
             # own \r\n pair gains a translated extra \r on Windows writes,
             # so the command may sit past a blank line — never assume its index.
@@ -711,14 +711,17 @@ def _launcher_python(target: Path, *, strict_io: bool = False) -> Path | None:
             if line is None:
                 return None
         else:
-            # POSIX shell wrapper: "#!/bin/sh", then "exec <python> -I -c ...".
-            line = next((entry for entry in lines if entry.startswith("exec ")), None)
-            if line is None:
+            import re
+
+            # A quoted POSIX filename can contain any line separator. Keep the
+            # complete command so splitting lines cannot truncate its first token.
+            command = re.search(r"^exec (.*)", text, re.MULTILINE | re.DOTALL)
+            if command is None:
                 return None
             # The writer quotes with shlex.join, which splices an apostrophe in as
             # '"'"', so read the first token the way sh does. Only the first: the
-            # rest of the line opens a multi-line -c argument.
-            lexer = shlex.shlex(line.removeprefix("exec "), posix=True)
+            # rest of the command opens a multi-line -c argument.
+            lexer = shlex.shlex(command[1], posix=True)
             lexer.whitespace_split = True
             try:
                 token = lexer.get_token()

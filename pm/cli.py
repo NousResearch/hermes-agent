@@ -508,7 +508,7 @@ def _gc_launcher_entries(store_root: Path) -> set[str]:
     from hermes_constants import get_default_hermes_root
     from pm.filesystem import native
 
-    root = paths.install_root().resolve()
+    root = Path(native(paths.install_root().resolve()))
     store_root = Path(native(store_root.resolve()))
     entries = set()
     legacy = root / "bin"
@@ -542,14 +542,15 @@ def _gc_launcher_entries(store_root: Path) -> set[str]:
                         target.read_text(encoding="utf-8-sig")
                     except UnicodeError:
                         pass  # Binary non-exe files are not readable launchers.
-                if not (_owns_launcher(target, root, strict_io=True)
-                        or _launcher_checkout(target, strict_io=True) == root):
-                    continue
+                if not _owns_launcher(target, root, strict_io=True):
+                    checkout = _launcher_checkout(target, strict_io=True)
+                    if checkout is None or Path(native(checkout.resolve())) != root:
+                        continue
                 python = _launcher_python(target, strict_io=True)
                 if python is None:
                     continue
                 for parent in python.parents:
-                    if parent.resolve() == store_root:
+                    if Path(native(parent.resolve())) == store_root:
                         entries.add(python.relative_to(parent).parts[0])
                         break
             except OSError as exc:

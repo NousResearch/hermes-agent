@@ -54,7 +54,6 @@ def _entry(store: Path, name: str, executable: Path) -> Path:
         shutil.copy2(executable, interpreter)
     else:
         interpreter.symlink_to(executable)
-        interpreter.chmod(0o755)
     return interpreter
 
 
@@ -80,25 +79,73 @@ def _write_orphan(store: Path) -> None:
     (store / "python-orphan").mkdir()
 
 
-def test_gc_normalizes_windows_verbatim_store_prefix():
-    # Store.root is verbatim on Windows; launcher interpreter paths are native.
-    from pathlib import PureWindowsPath
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("form", ["cmd", "exe"])
+@pytest.mark.parametrize("verbatim_python", [False, True])
+@pytest.mark.parametrize("verbatim_root", [False, True])
+@pytest.mark.parametrize("verbatim_payload", [False, True])
+def test_gc_normalizes_windows_verbatim_store_prefix(
+    launcher_gc_env, monkeypatch, form, verbatim_python, verbatim_root, verbatim_payload
+):
+    home, root, store = launcher_gc_env
+    old_python = _entry(store, "python-old", Path(sys._base_executable).resolve())
+    _entry(store, "python-current", Path(sys._base_executable).resolve())
+    out = home / "bin"
+    out.mkdir()
+    python = filesystem.long_root(old_python) if verbatim_python else old_python
+    checkout = filesystem.long_root(root) if verbatim_root else root
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(checkout))
+    writer = _write_cmd if form == "cmd" else _write_exe
+    writer(out / f"hermes.{form}", python,
+           filesystem.long_root(root) if verbatim_payload else root)
+    _write_orphan(store)
 
-    verbatim = PureWindowsPath(r"\\?\C:\Users\user\AppData\Local\hermes\tools")
-    native_store = PureWindowsPath(filesystem.native(verbatim))
-    launcher_python = native_store / "python-old" / "python.exe"
-    assert any(
-        parent == native_store
-        for parent in launcher_python.parents
-    )
-    assert native_store != verbatim
+    removed, kept = _gc_store(Store(store), Facts(store / "facts.json"))
+
+    assert removed == 1 and kept == 2
+    assert old_python.is_file()
+    assert not (store / "python-orphan").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_entry_fixture_does_not_chmod_external_interpreter(tmp_path):
+    executable = tmp_path / "external-python"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o700)
+    original_mode = executable.stat().st_mode
+    store = tmp_path / "store"
+    store.mkdir()
+
+    _entry(store, "python-old", executable)
+
+    assert executable.stat().st_mode == original_mode
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("body", [
+    "#!/bin/sh\n# exec /not/a/python\n",
+    "#!/bin/sh\nexec \n",
+    "#!/bin/sh\nexec '' -I -c 'pass'\n",
+    "#!/bin/sh\nexec 'unclosed\n",
+    '#!/bin/sh\nexec "unclosed\n',
+])
+def test_launcher_python_rejects_missing_or_malformed_shell_token(tmp_path, body):
+    target = tmp_path / "hermes"
+    target.write_text(body, encoding="utf-8")
+
+    assert _launchers._launcher_python(target) is None
 
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("location", ["home", "local", "legacy"])
-def test_gc_preserves_posix_launcher_interpreter_and_launches(launcher_gc_env, location):
+@pytest.mark.parametrize("entry_name", [
+    "python-old", "python space", "python-'quote", 'python-"quote',
+    "python-#hash", "python-[brackets]", r"python-\slash", "python-café",
+    *(f"python-{separator}-old" for separator in "\t\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"),
+])
+def test_gc_preserves_posix_launcher_interpreter_and_launches(launcher_gc_env, location, entry_name):
     home, root, store = launcher_gc_env
-    old_python = _entry(store, "python-old", Path(sys._base_executable).resolve())
+    old_python = _entry(store, entry_name, Path(sys._base_executable).resolve())
     _entry(store, "python-current", Path(sys._base_executable).resolve())
     out = {"home": home / "bin", "local": root / ".hermes/bin", "legacy": root / "bin"}[location]
     out.mkdir(parents=True, exist_ok=True)
@@ -106,15 +153,7 @@ def test_gc_preserves_posix_launcher_interpreter_and_launches(launcher_gc_env, l
         "hermes", root, out, old_python, None
     )
     _write_orphan(store)
-
-    removed, kept = _gc_store(Store(store), Facts(store / "facts.json"))
-
-    assert removed == 1 and kept == 2
-    assert old_python.is_file()
-    assert (store / "python-current").is_dir()
-    assert not (store / "python-orphan").exists()
     assert launcher is not None
-    assert _launchers._launcher_python(launcher) == old_python
     probe = root / "hermes_cli" / "main.py"
     probe.parent.mkdir()
     probe.write_text("import sys; sys.exit(23)\n", encoding="utf-8")
@@ -125,9 +164,20 @@ def test_gc_preserves_posix_launcher_interpreter_and_launches(launcher_gc_env, l
         f"    return Path({str(home)!r})\n",
         encoding="utf-8",
     )
+    # sh, not the parser under review, establishes that the quoted path runs.
+    assert subprocess.run([launcher, "--version"], check=False).returncode == 23
+
+    removed, kept = _gc_store(Store(store), Facts(store / "facts.json"))
+
+    assert removed == 1 and kept == 2
+    assert old_python.is_file()
+    assert (store / "python-current").is_dir()
+    assert not (store / "python-orphan").exists()
+    assert _launchers._launcher_python(launcher) == old_python
     assert subprocess.run([launcher, "--version"], check=False).returncode == 23
 
 
+@pytest.mark.platforms("windows", "posix")
 @pytest.mark.parametrize("location", ["home", "local", "legacy"])
 @pytest.mark.parametrize("form", ["cmd", "exe"])
 def test_gc_preserves_windows_launcher_interpreter(launcher_gc_env, location, form):
@@ -149,24 +199,36 @@ def test_gc_preserves_windows_launcher_interpreter(launcher_gc_env, location, fo
     assert not (store / "python-orphan").exists()
 
 
-def test_gc_ignores_foreign_launcher_and_external_python(launcher_gc_env):
-    home, _root, store = launcher_gc_env
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("form", ["cmd", "exe"])
+@pytest.mark.parametrize("owned, internal, removed_count, kept_count", [
+    (True, True, 1, 2),
+    (False, True, 2, 1),
+    (True, False, 2, 1),
+    (False, False, 2, 1),
+])
+def test_gc_ignores_foreign_launcher_and_external_python(
+    launcher_gc_env, form, owned, internal, removed_count, kept_count
+):
+    home, root, store = launcher_gc_env
     python = Path(sys._base_executable).resolve()
+    old_python = _entry(store, "python-old", python)
     _entry(store, "python-current", python)
-    foreign = home / "bin"
-    foreign.mkdir()
-    if os.name == "nt":
-        (foreign / "hermes.cmd").write_text(f'@"{python}" -I -c "print(1)" %*\r\n', encoding="utf-8")
-    else:
-        (foreign / "hermes").write_text(f'#!/bin/sh\nexec {python} -I -c "print(1)"\n', encoding="utf-8")
+    out = home / "bin"
+    out.mkdir()
+    writer = _write_cmd if form == "cmd" else _write_exe
+    writer(out / f"hermes.{form}", old_python if internal else python,
+           root if owned else home / "foreign-checkout")
     _write_orphan(store)
 
     removed, kept = _gc_store(Store(store), Facts(store / "facts.json"))
 
-    assert removed == 1 and kept == 1
+    assert removed == removed_count and kept == kept_count
+    assert old_python.is_file() == (owned and internal)
     assert not (store / "python-orphan").exists()
 
 
+@pytest.mark.platforms("windows", "posix")
 def test_gc_legacy_directory_skips_unrelated_unreadable_file(launcher_gc_env, monkeypatch):
     _home, root, store = launcher_gc_env
     python = Path(sys._base_executable).resolve()
@@ -193,6 +255,7 @@ def test_gc_legacy_directory_skips_unrelated_unreadable_file(launcher_gc_env, mo
     assert not (store / "python-orphan").exists()
 
 
+@pytest.mark.platforms("windows", "posix")
 @pytest.mark.parametrize("failure", ["directory_status", "directory_scan", "launcher_status", "launcher_read", "launcher_text_read"])
 @pytest.mark.parametrize("location", ["local", "legacy"])
 def test_gc_refuses_incomplete_launcher_scan_on_low_level_io_error(
@@ -253,6 +316,7 @@ def test_gc_refuses_incomplete_launcher_scan_on_low_level_io_error(
     assert (store / "python-orphan").is_dir()
 
 
+@pytest.mark.platforms("windows", "posix")
 @pytest.mark.parametrize("reader", ["python_bytes", "owner_text_cmd", "owner_text_exe", "checkout_text"])
 @pytest.mark.parametrize("location", ["local", "legacy"])
 def test_gc_aborts_when_parser_read_fails_after_preflight(

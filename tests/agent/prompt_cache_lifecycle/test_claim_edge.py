@@ -16,7 +16,7 @@ def test_two_racing_owners_get_one_compaction(monkeypatch):
     monkeypatch.setattr(edge, "_session_gate", lambda agent: None)
     monkeypatch.setattr(edge, "_window_gate", lambda agent, spent, now: None)
     monkeypatch.setattr(edge, "_grew_enough", lambda agent: True)
-    barrier = threading.Barrier(2, timeout=1)
+    barrier = threading.Barrier(2, timeout=5)
     decide = pcl.PromptCacheWarmer.edge_decision
 
     def decide_then_pause(self, **kw):

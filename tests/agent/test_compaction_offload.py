@@ -291,7 +291,7 @@ def test_compaction_window_archives_structured_tool_text_instead_of_losing_it(ho
     msgs[1]["content"] = body
     msgs[1]["api_content"] = body
 
-    projected, count, _written = _compressor()._offload_window_results(msgs, 0, len(msgs))
+    projected, count, _written, _failed = _compressor()._offload_window_results(msgs, 0, len(msgs))
 
     assert count == 1
     stub = projected[1]["content"]
@@ -313,3 +313,13 @@ def test_compaction_archives_small_string_results(home, summarizer, body):
     files = _archived(home)
     assert any(p.read_bytes() == body.encode("utf-8") for p in files)
     assert all(f"cache/pruned/{p.name}" in str(compressed) for p in files)
+
+
+def test_a_summarized_result_whose_archive_write_fails_is_reported(home):
+    """Greptile on 2a51baab: the summary replaces the whole window, so a result there whose archive write
+    fails is kept only by the summary and state.db; the offload reports it instead of passing silently."""
+    msgs = _round("structured", "Important result: " + "Q" * 4_000)
+    with patch("tools.tool_result_storage._write_to_spillover", return_value=None):
+        projected, count, written, failed = _compressor()._offload_window_results(msgs, 0, len(msgs))
+    assert (count, written, failed) == (0, [], 1)
+    assert projected[1]["content"] == msgs[1]["content"]  # the row itself is never stubbed without a file

@@ -549,6 +549,7 @@ class PromptCacheWarmer:
             self._miss_streak = (0, 0)
         else:
             self._uncharge_miss(run)
+        retry_from = sent_at if miss is not None else None
         # A hit, a routing blip or the one retried miss: the reply (re)wrote the prefix, warm on its window.
         with self._lock:
             if self._run is not run:
@@ -563,6 +564,10 @@ class PromptCacheWarmer:
                 if window is None:  # the budget is over all the same: steps 2/3 decide at its next send
                     self._end_budget(run, f"learned: {learned}", due_at=run.next_warm_at)
                     return
+            if retry_from is not None:
+                # The miss re-sent the whole prompt at ``retry_from``, so the entry lives from then. An automatic
+                # cache that reports no write counter left the clock where it was: never retry from that.
+                window = (max(window[0] if window else 0.0, retry_from + run.ttl_s), run.ttl_s)
             if window is None:
                 self._stop("cache window not guaranteed warm")
                 return

@@ -174,6 +174,7 @@ export const ja: Translations = {
     selectedSessionsSkippedActive: "{deleted}件を削除、実行中のターンがあるため{count}件を保持しました",
     failedToDeleteSelected: "選択したセッションの削除に失敗しました",
     resumeInChat: "チャットで再開",
+    openInPlatform: "{platform}で開く",
     newChat: "新しいチャット",
     workspace: "ワークスペース",
     workspaceDefault: "デフォルト",

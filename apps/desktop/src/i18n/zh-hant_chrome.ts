@@ -205,6 +205,8 @@ export const zhHantChrome = {
       unarchive: '取消封存',
       newWindow: '新視窗',
       openInTerminal: '在終端機中開啟',
+      openInPlatform: platform => `在 ${platform} 中開啟`,
+      openInPlatformFallback: '聊天應用程式',
       copyIdFailed: '無法複製工作階段 ID',
 
       sessionActions: '工作階段動作',

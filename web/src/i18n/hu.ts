@@ -174,6 +174,7 @@ export const hu: Translations = {
     selectedSessionsSkippedActive: "{deleted} törölve; {count} megtartva, mert egy kör még fut",
     failedToDeleteSelected: "Nem sikerült törölni a kijelölt munkameneteket",
     resumeInChat: "Folytatás a csevegésben",
+    openInPlatform: "Megnyitás itt: {platform}",
     newChat: "Új csevegés",
     workspace: "munkaterület",
     workspaceDefault: "Alapértelmezett",

@@ -3288,6 +3288,8 @@ export const en: Translations = {
       unarchive: 'Unarchive',
       newWindow: 'New window',
       openInTerminal: 'Open in terminal',
+      openInPlatform: platform => `Open in ${platform}`,
+      openInPlatformFallback: 'chat app',
       hideTabBar: 'Hide tab bar',
       openInNewTab: 'Open in new tab',
       openInSplit: 'Open in split',

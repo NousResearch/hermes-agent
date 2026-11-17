@@ -227,6 +227,8 @@ export interface Translations {
     selectedSessionsSkippedActive: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
+    /** Session row link to its messaging conversation; {platform} = Slack, Discord, … */
+    openInPlatform: string;
     newChat: string;
     workspace: string;
     workspaceDefault: string;

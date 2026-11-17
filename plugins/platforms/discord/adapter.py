@@ -1176,6 +1176,7 @@ from plugins.platforms.discord.adapter_authorization import DiscordAuthorization
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_live_gates import DiscordLiveGatesMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
+from plugins.platforms.discord.thread_link import discord_thread_url
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, build_vault_code_view
@@ -1188,6 +1189,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
+    thread_url = staticmethod(discord_thread_url)  # the session lists' "Open in Discord"
     allow_from_covers_groups = True  # no group_allow_from: allow_from is the one user allowlist
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # A reply needing more messages goes out as one .md file (#152012; the #86581 flood was 31 messages).
@@ -7211,17 +7213,14 @@ def register(ctx) -> None:
         required_env=["DISCORD_BOT_TOKEN"],
         install_hint="Run `hermes setup` to install Discord support.",
         setup_fn=interactive_setup,
-        # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
-        # (require_mention, free_response_channels, auto_thread, free_response_auto_thread,
-        # reactions, ignored_channels, allowed_channels, no_thread_channels, allow_mentions.*,
-        # reply_to_mode, thread_require_mention)
-        # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
-        # block that used to live in ``gateway/config.py``. Hook contract: #24836.
+        # YAML→env config bridge: ``config.yaml`` ``discord:`` keys (require_mention, free_response_channels,
+        # auto_thread, free_response_auto_thread, reactions, ignored_channels, allowed_channels, no_thread_channels,
+        # allow_mentions.*, reply_to_mode, thread_require_mention) → ``DISCORD_*`` env the adapter reads (#24836).
         apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var="DISCORD_HOME_CHANNEL",
         # Out-of-process cron delivery via REST, else ``deliver=discord`` jobs fail with "No live adapter".
         standalone_sender_fn=_standalone_send,
-        max_message_length=2000,
+        max_message_length=2000, thread_url_fn=DiscordAdapter.thread_url,
         emoji="🎮",
         allow_update_command=True,
         platform_hint=PLATFORM_HINT,

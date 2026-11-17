@@ -4934,6 +4934,8 @@
     "sidebar.row.needsInput",
     "sidebar.row.newWindow",
     "sidebar.row.openInNewTab",
+    "sidebar.row.openInPlatform",
+    "sidebar.row.openInPlatformFallback",
     "sidebar.row.openInSplit",
     "sidebar.row.openInTerminal",
     "sidebar.row.ownedByProfile",

@@ -2888,6 +2888,8 @@ export interface Translations extends NoticeTranslations {
       unarchive: string
       newWindow: string
       openInTerminal: string
+      openInPlatform: (platform: string) => string
+      openInPlatformFallback: string
       hideTabBar: string
       openInNewTab: string
       openInSplit: string

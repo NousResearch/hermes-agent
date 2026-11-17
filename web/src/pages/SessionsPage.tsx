@@ -48,6 +48,7 @@ import { Markdown } from "@/components/Markdown";
 import {
   AUTOMATION_SESSION_SOURCES,
   NO_MATCHING_SESSION_SOURCE,
+  OriginLink,
   SOURCE_CONFIG,
   type SessionFilterCategory,
   type SourceSelectionsByCategory,
@@ -84,7 +85,6 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
-
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -209,7 +209,6 @@ function splitCompactionContent(content: string): CompactionSplit | null {
       .replace(/^\s+/, ""),
   };
 }
-
 
 function MessageBubble({
   msg,
@@ -453,6 +452,7 @@ function SessionRow({
         {session.source ? sourceLabel(session.source) : "local"}
       </Badge>
 
+      <OriginLink session={session} label={t.sessions.openInPlatform} />
       {resumeInChatEnabled && (
         <Button
           ghost

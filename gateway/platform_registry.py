@@ -173,6 +173,10 @@ class PlatformEntry:
     # ``{ENV_KEY: (accepts(value) -> bool, 400 detail)}``: the dashboard PUT rejects a non-empty value
     # the predicate refuses, catching credentials pasted into the wrong field.
     env_value_rules: dict = field(default_factory=dict)
+    # ``(SessionSource) -> Optional[str]``: an https link that opens the conversation a session came
+    # from (the session lists' "Open in <platform>"); register the adapter's ``thread_url``. None, or
+    # a None return (no such link exists, e.g. a Telegram private chat) = the lists show no link.
+    thread_url_fn: Optional[Callable[[Any], Optional[str]]] = None
     # --- env ---
     # Ordered ``step(GatewayConfig) -> None`` env->config bridge run by ``_apply_env_overrides`` for a
     # platform with activation evidence (``gateway.platform_env.EnvCred`` / ``home_step`` /

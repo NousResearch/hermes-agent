@@ -634,6 +634,10 @@ export interface SessionInfo {
    *  explicitly marked unread or a response arrived after it was last read.
    *  Undefined against a backend predating the flag; treat as read. */
   unread?: boolean
+  /** Link that opens a messaging session's conversation in its platform's client (Slack thread,
+   *  Discord channel, Telegram topic), built by the platform plugin from the stored origin. Null
+   *  when no such link exists or is known; undefined against older backends. */
+  origin_url?: null | string
   preview: null | string
   source: null | string
   started_at: number

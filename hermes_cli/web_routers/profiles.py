@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.session_listing import subagent_listing_scope
+from hermes_cli.session_origin_link import stamp_origin_urls
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
 from hermes_cli.isolated_scope import scope_to_launch_profile
@@ -433,6 +434,7 @@ def get_profiles_sessions(
                 # Same SQL-level blob skip as /api/sessions.
                 compact_rows=not full, include_pinned=True, **scoped)
             totals[name] = db.session_count(exclude_children=True, **scoped)
+            stamp_origin_urls(rows, home)
             merged.extend(_tag_rows(rows, name, now))
         _read_profile_db(name, home, errors, _read)
 
@@ -534,6 +536,7 @@ def get_profiles_sessions_sidebar(
         recents_truncated[name] = len(slices["recents"]) >= cap["recents"]
         profile_totals[name] = slices["usage"]
         for key in slice_scope:
+            stamp_origin_urls(slices[key], home)
             rows[key].extend(_tag_rows(slices[key], name, now))
 
     def _window(key: str) -> list[dict[str, Any]]:

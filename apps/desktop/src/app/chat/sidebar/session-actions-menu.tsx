@@ -26,11 +26,13 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { ArchiveOff } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
+import { sessionSourceLabel } from '@/lib/session-source'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -156,6 +158,21 @@ export async function renameSessionPreferringRpc(
   }
 
   return renameSession(storedSessionId, title, resolvedProfile)
+}
+
+/** "Open in Slack/Discord/Telegram": the conversation a messaging session came from, when the
+ *  backend built a link for its row (`origin_url`). */
+function originLinkItems(sessionId: string, r: { openInPlatform: (platform: string) => string; openInPlatformFallback: string }) {
+  const row = ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))
+  const url = row?.origin_url
+
+  if (!url) {
+    return []
+  }
+
+  const label = r.openInPlatform(sessionSourceLabel(row.source) ?? r.openInPlatformFallback)
+
+  return [{ icon: 'link-external', label, onSelect: () => openExternalLink(url) } satisfies ActionItemSpec]
 }
 
 interface SessionActions {
@@ -555,10 +572,14 @@ function useSessionActions({
     }
   ]
 
-  const renderItems = (kit: MenuKit) => (
+  // Built when the menu opens: the row is read then, not subscribed per row (see Open in terminal).
+  const renderItems = (kit: MenuKit) => {
+    const open = [...openItems, ...originLinkItems(sessionId, r)]
+
+    return (
     <>
-      {openItems.map(item => renderActionItem(kit, item))}
-      {openItems.length > 0 && <kit.Separator />}
+      {open.map(item => renderActionItem(kit, item))}
+      {open.length > 0 && <kit.Separator />}
       {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>
@@ -613,7 +634,8 @@ function useSessionActions({
         </>
       )}
     </>
-  )
+    )
+  }
 
   const renameDialog = renameable ? (
     <RenameSessionDialog

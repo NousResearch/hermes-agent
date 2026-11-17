@@ -137,7 +137,6 @@ export function getManagementProfile(): string {
   return _managementProfile || dashboardServingProfile();
 }
 
-
 // The dashboard's own profile when nothing else named one. The backend injects it only
 // when it provably resolves back to the serving home, so this can never retarget another
 // profile — it just says out loud what an unnamed request already meant. Without it every
@@ -1645,7 +1644,6 @@ export interface McpCatalogDiagnostic {
   message: string;
 }
 
-
 export type McpHttpAuth = "none" | "header" | "oauth";
 
 export interface McpServerCreate {
@@ -2048,9 +2046,10 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
-  /** Owning profile stamped by the list/detail endpoints (the store the row
-   * was read from). Absent on search-endpoint rows, which carry no stamp. */
+  /** Owning profile stamped by list/detail endpoints; absent on search rows. */
   profile?: string;
+  /** The messaging conversation it came from (Slack thread, Discord channel). */
+  origin_url?: string | null;
 }
 
 export interface SessionLatestDescendantResponse {

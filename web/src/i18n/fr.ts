@@ -174,6 +174,7 @@ export const fr: Translations = {
     selectedSessionsSkippedActive: "{deleted} supprimées ; {count} conservées car un tour est en cours",
     failedToDeleteSelected: "Échec de la suppression des sessions sélectionnées",
     resumeInChat: "Reprendre dans le chat",
+    openInPlatform: "Ouvrir dans {platform}",
     newChat: "Nouveau chat",
     workspace: "espace de travail",
     workspaceDefault: "Par défaut",

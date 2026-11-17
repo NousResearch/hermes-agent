@@ -174,6 +174,7 @@ export const uk: Translations = {
     selectedSessionsSkippedActive: "Видалено: {deleted}; залишено: {count}, бо хід ще виконується",
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
+    openInPlatform: "Відкрити в {platform}",
     newChat: "Новий чат",
     workspace: "робоча папка",
     workspaceDefault: "За замовчуванням",

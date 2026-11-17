@@ -172,6 +172,7 @@ export const zh: Translations = {
     selectedSessionsSkippedActive: "已删除 {deleted} 个；{count} 个因仍有回合运行中而保留",
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
+    openInPlatform: "在 {platform} 中打开",
     newChat: "新对话",
     workspace: "工作区",
     workspaceDefault: "默认",

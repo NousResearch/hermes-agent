@@ -64,8 +64,8 @@ def _adapter(**extra):
     return a
 
 
-async def _run(adapter, text, ts, user="U_HUMAN"):
-    event = {"channel": CHANNEL, "channel_type": "channel", "user": user, "text": text, "ts": ts,
+async def _run(adapter, text, ts, user="U_HUMAN", channel=CHANNEL, channel_type="channel"):
+    event = {"channel": channel, "channel_type": channel_type, "user": user, "text": text, "ts": ts,
              "client_msg_id": f"m{ts}"}
     with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="human")), \
             patch.object(adapter, "_fetch_thread_context", new=AsyncMock(return_value=None)), \
@@ -75,15 +75,17 @@ async def _run(adapter, text, ts, user="U_HUMAN"):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("label, expected", [
-    (False, "ask  later about the deploy"),  # legacy: every self-mention removed
-    (True, "ask @hermes (you) later about the deploy"),
+@pytest.mark.parametrize("label, text, expected", [
+    (False, f"<@{BOT}> ask <@{BOT}> later about the deploy", "ask  later about the deploy"),  # legacy
+    (True, f"<@{BOT}> ask <@{BOT}> later about the deploy", "ask @hermes (you) later about the deploy"),
+    (True, f"<@{BOT}>, /stop", ", /stop"),  # the label never turns plain text into a command
 ])
-async def test_inline_self_mention_label(label, expected):
+async def test_inline_self_mention_label(label, text, expected):
     adapter = _adapter(inline_mention_label=label)
-    await _run(adapter, f"<@{BOT}> ask <@{BOT}> later about the deploy", ts="1700000000.000001")
+    await _run(adapter, text, ts="1700000000.000001")
     msg = adapter.handle_message.await_args.args[0]
     assert msg.text == expected
+    assert msg.get_command() is None
     assert msg.reply_expected is True
 
 
@@ -94,7 +96,12 @@ async def test_unauthorized_channel_mention_gets_one_ephemeral_notice():
     await _run(adapter, f"<@{BOT}> help me", ts="1700000000.000002")
     await _run(adapter, f"<@{BOT}> help me again", ts="1700000000.000003")
     await _run(adapter, "no mention here", ts="1700000000.000004", user="U_OTHER")
+    await _run(adapter, f"<@{BOT}> hi", ts="1700000000.000005", user="U_GROUP", channel="G0MPIM",
+               channel_type="mpim")
+    adapter.config.extra["allowed_channels"] = [CHANNEL, "G0MPIM"]
+    await _run(adapter, f"<@{BOT}> hi", ts="1700000000.000006", user="U_ELSEWHERE", channel="C0OTHER")
     adapter.handle_message.assert_not_awaited()
     calls = adapter._app.client.chat_postEphemeral.await_args_list
-    assert [(c.kwargs["channel"], c.kwargs["user"]) for c in calls] == [(CHANNEL, "U_HUMAN")]
+    assert [(c.kwargs["channel"], c.kwargs["user"]) for c in calls] == [
+        (CHANNEL, "U_HUMAN"), ("G0MPIM", "U_GROUP")]
     assert "not enabled for you" in calls[0].kwargs["text"]

@@ -4724,7 +4724,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 user_id, chat_id=channel_id, team_id=team_id))
         if self._early_reject_unauthorized(
                 user_id, channel_id, is_dm, thread_id=thread_ts, is_bot=sender_is_bot):
-            return await notify_unauthorized_mention(self, event, user_id, channel_id, team_id, is_dm, sender_is_bot)
+            return await notify_unauthorized_mention(self, event, _slack_mention_detection_text(event), user_id,
+                                                     channel_id, team_id, skip=is_one_to_one_dm or sender_is_bot)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks (#52387).
         routing_text = _slack_mention_detection_text(event) or original_text or ""

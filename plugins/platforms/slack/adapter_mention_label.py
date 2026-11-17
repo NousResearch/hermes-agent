@@ -31,8 +31,11 @@ def self_mention_rewritten(adapter: Any, text: str, bot_uid: str, team_id: str) 
 
 def rewrite_self_mentions(text: str, bot_uid: str, *, label: bool, name: str) -> str:
     """``text`` with the bot's own mention handled per the mode described in the module docstring."""
+    legacy = text.replace(f"<@{bot_uid}>", "").strip()
     if not label or not name:
-        return text.replace(f"<@{bot_uid}>", "").strip()
+        return legacy
     mention = rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>"
-    rest = re.sub(rf"^\s*(?:{mention}[\s,:]*)+", "", text)
-    return re.sub(mention, lambda _m: f"@{name} (you)", rest).strip()
+    labelled = re.sub(mention, lambda _m: f"@{name} (you)", re.sub(
+        rf"^\s*(?:{mention}[\s,:]*)+", "", text)).strip()
+    # Display must never create a command: "@bot, /stop" stays text, as the canonical probe saw it.
+    return legacy if labelled.startswith("/") and not legacy.startswith("/") else labelled

@@ -607,6 +607,42 @@ class TestWireInvariant:
         replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
         assert replayed == history[0]["content"]
 
+    @pytest.mark.parametrize("recall,hook_context", [
+        ("The dog is called Biscuit. He is three.", []),
+        # Recall can quote the transcript, attachment hints included (they are written to it with the photo).
+        ("Last week's photo of Biscuit:\n[Image attached at: /elsewhere/biscuit-old.png]", [{"context": "PLUGIN-CTX"}]),
+    ], ids=["memory-only", "memory-quoting-an-older-photo-plus-hook"])
+    def test_photo_turn_replays_the_memory_it_was_sent_with(self, wire_env, tmp_path, monkeypatch, recall, hook_context):
+        """A photo turn's recalled memory is stored in its text projection, and the reload sanitizes
+        that text: without a sidecar the turn rebuilt from the DB dropped the memory it was sent with,
+        so the request stopped matching at that row."""
+        from agent.image_routing import build_native_content_parts
+        from gateway.session_ingress_media import capture_native_media
+        from run_agent import AIAgent
+        from tests.agent.test_image_replay import _PNG, _config
+
+        make_agent, handler, db, sid = wire_env
+        _config()  # the model takes images natively; default replay window
+        staged = tmp_path / "biscuit.png"
+        staged.write_bytes(_PNG)
+        photo, _ = build_native_content_parts("What's his name?", [capture_native_media([staged])[0]["path"]])
+        monkeypatch.setattr("agent.turn_context._memory_turn_start_and_prefetch", lambda *_a, **_k: recall)
+
+        def hooks(hook, **_kw):
+            return hook_context if hook == "pre_llm_call" else []
+
+        with patch("hermes_cli.plugins.invoke_hook", side_effect=hooks), \
+                patch.object(AIAgent, "_model_supports_vision", return_value=True):
+            make_agent().run_conversation(list(photo), conversation_history=[], task_id="t1")
+            sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+            assert sent[:2] == photo and recall.splitlines()[0] in sent[2]["text"]
+
+            handler.captured_requests = []
+            make_agent().run_conversation(
+                "And how old is he?", conversation_history=db.get_messages_as_conversation(sid), task_id="t2")
+
+        assert _user_messages(_chat_requests(handler)[0])[0]["content"] == sent
+
     @staticmethod
     def _stored_multimodal_turn(wire_env):
         from run_agent import AIAgent

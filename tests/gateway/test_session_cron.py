@@ -135,6 +135,45 @@ async def test_owner_execution_binds_the_scheduler_cron_identity_inside_run_job(
     assert current_cron_execution() is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ended_by_run, end_reason', [(None, 'cron_complete'),
+                                                      ('cron_incomplete_no_output', 'cron_incomplete_no_output')])
+async def test_a_fire_that_skips_the_agent_still_ends_its_session(tmp_path, monkeypatch, ended_by_run, end_reason):
+    """A wake-gate skip returns before run_job ends the fire's session. Left open, a per-minute
+    watchdog job piled up thousands of rows that every boot restored until the gateway timed out."""
+    from contextlib import nullcontext
+    import json
+    from cron import scheduler
+    from gateway import run, session_cron
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import SessionRef
+    from hermes_state import SessionDB
+    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    db = SessionDB(tmp_path / 'state.db')
+    db.create_session('s', source='cron')
+    authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='test', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='cron-owner'), 'route')
+    monkeypatch.setattr(run, '_profile_runtime_scope', lambda home: nullcontext())
+
+    def run_job(job, *, extra_prompt, execution_id, cancel_event):
+        if ended_by_run:
+            db.end_session('s', ended_by_run)
+        return (True, '', scheduler.SILENT_MARKER, None)
+    monkeypatch.setattr(scheduler, 'run_job', run_job)
+    with db:
+        admit_session_input(db, epoch=authority.epoch, principal_id='cron-owner', session_id='s',
+                            request_id='cron:job:fire', payload={'text': ''})
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        policy = SimpleNamespace(request_json=json.dumps({
+            'extra_prompt': None, 'request_id': 'cron:job:fire', 'cron_job': {'id': 'job'}}))
+        await session_cron.execute(authority, SessionRef('p', 's'), row, policy)
+        session = db.get_session('s')
+    assert session['ended_at'] is not None and session['end_reason'] == end_reason
+
+
 def test_draining_owner_still_answers_status_and_cancel_of_admitted_cron_work(tmp_path, monkeypatch):
     """A stop/restart sets ``_draining`` while it waits for in-flight cron work. The in-gateway
     firer polls ``status`` until the run settles: refusing it made the firer raise

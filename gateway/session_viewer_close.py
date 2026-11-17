@@ -23,7 +23,7 @@ from functools import partial
 from pathlib import Path
 
 from gateway.session_history_mount import is_history_mount
-from hermes_state_local import local_receipt
+from hermes_state_local import POLICY_PREFIX, local_receipt
 from hermes_state_mutation_retirement import VIEWER_CLOSE_PREFIX
 from hermes_state_runtime import RuntimeStoreError
 
@@ -164,6 +164,38 @@ def rearm_persisted_closes(authority):
         authority.pending_closes.setdefault(session_id, _PendingClose.from_record(record))
         armed.append(session_id)
     return armed
+
+
+# Stored closes with nothing left to finish: the row the receipt targets is already ended (a sweep
+# stamped it first, or a settle died between its stamp and its delete) and no input or worker is
+# pending on it. Settling one only forgets it (``_requeue_if_busy``), yet boot restores every
+# session that has a stored close, one by one on the owner loop, before anything settles.
+_FINISHED_CLOSES_SQL = (
+    "DELETE FROM state_meta WHERE key IN (SELECT c.key FROM state_meta c "
+    "JOIN state_meta r ON r.key = ? || substr(c.key, ?) "
+    "JOIN sessions s ON s.id = CASE WHEN json_valid(r.value) THEN json_extract(r.value, '$.entry.session_id') END "
+    "WHERE c.key LIKE ? AND s.ended_at IS NOT NULL AND COALESCE(s.end_reason, '') != 'compression' "
+    "AND NOT EXISTS (SELECT 1 FROM session_admissions a WHERE a.target_session_id = substr(c.key, ?) "
+    "AND a.status IN ('queued','started','unknown')) "
+    "AND NOT EXISTS (SELECT 1 FROM worker_executions w WHERE w.session_id IN (substr(c.key, ?), s.id) "
+    "AND w.status IN ('registered','running','unknown')))")
+
+
+def forget_finished_closes(authority):
+    """Blocking, at boot before the receipts are read: drop every stored close with nothing left to
+    finish (``_FINISHED_CLOSES_SQL``) in one write, so boot does not restore each such session only
+    for its settle to drop the close. Returns how many went."""
+    from hermes_state_runtime import _epoch
+    start = len(CLOSE_PREFIX) + 1
+
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        return conn.execute(_FINISHED_CLOSES_SQL, (POLICY_PREFIX, start, CLOSE_PREFIX + '%', start, start)).rowcount
+    try:
+        return authority.db._execute_write(write)
+    except RuntimeStoreError as exc:
+        logger.info('Finished stored closes left in place: %s', exc)
+        return 0
 
 
 def _seconds(raw, default):

@@ -182,6 +182,31 @@ async def test_boot_restores_only_open_sessions_and_an_ended_one_on_first_touch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('queued', [False, True])
+async def test_boot_drops_a_stored_close_whose_session_already_ended(tmp_path, monkeypatch, queued):
+    """A close stored for a row something else ended first has nothing left to do. Boot used to
+    restore every such session on the owner loop before the watchdog's first probe; 27k of them
+    (the state.db sweep ending a backlog of cron rows under their pending closes) never booted."""
+    from gateway.session_viewer_close import _PendingClose, _persist_close
+    from hermes_state_local import end_idle_local_session
+    from hermes_state_runtime import admit_session_input
+
+    first, _ = await _owner(tmp_path, monkeypatch)
+    sid = _create(first).session_id
+    _persist_close(first, sid, _PendingClose('startup_orphan_reap').record)
+    assert end_idle_local_session(first.db, epoch=first.epoch, session_id=sid, target_id=sid,
+                                  reason='startup_orphan_reap')
+    if queued:  # input still waiting on it: its own drain and settle decide
+        admit_session_input(first.db, epoch=first.epoch, principal_id=first.sessions[sid].source.user_id,
+                            session_id=sid, request_id='r1', payload={'text': 'queued'})
+
+    authority, _ = await _owner(tmp_path, monkeypatch)
+    assert (sid in authority.sessions) is queued
+    assert (_stored_close(authority.db, sid) is not None) is queued
+    assert authority.db.get_session(sid)['end_reason'] == 'startup_orphan_reap'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('producer', ['delegation', 'process'])
 async def test_work_finishing_after_close_and_restart_is_noted_on_the_ended_session(tmp_path, monkeypatch, producer):
     """Boot leaves ended sessions unrestored, but not one whose background work has not reported yet."""

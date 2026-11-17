@@ -474,6 +474,9 @@ def local_receipt_ids(authority):
 
 
 def recover_local_sessions(authority, *, schedule=False):
+    from gateway.session_viewer_close import forget_finished_closes
+    if forgotten := forget_finished_closes(authority):
+        logging.getLogger(__name__).info('Dropped %d stored close(s) whose session had already ended', forgotten)
     orphans = []
     for sid in local_receipt_ids(authority):
         try:

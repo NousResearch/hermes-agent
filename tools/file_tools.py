@@ -107,7 +107,7 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
         f"Output truncated at the {max_chars:,}-char read budget after "
         f"{lines_kept} line(s) (showing lines {offset}-{next_offset - 1} of "
         f"{total_lines}). Use offset={next_offset} to continue.")
-    if len(trimmed.split("\n", 1)[0]) >= max_chars:
+    if len(content.split("\n", 1)[0]) > max_chars:
         result_dict["truncated_lines"] = True
         result_dict["hint"] += (
             " Note: the first line alone exceeded the budget and was "
@@ -418,7 +418,7 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str, add_line_numbers: bool = True) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -464,11 +464,14 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     max_line_length = get_max_line_length()
     truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
-        "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+        "content": (file_ops._add_line_numbers(page_text, offset) if add_line_numbers
+                    else ShellFileOperations._add_line_numbers(file_ops, page_text, offset, False)) if page_text else "",
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
         "extracted_document": True}
+    if truncated_lines:
+        result_dict["truncated_lines"] = True
     if result_dict["truncated"]:
         result_dict["hint"] = (
             f"Use offset={end_line + 1} to continue reading "
@@ -610,7 +613,7 @@ def _read_device_base(path: str, task_id: str) -> tuple[Path | PurePosixPath | N
         return None, True
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", add_line_numbers: bool = True) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
@@ -658,7 +661,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if block_error:
             return tool_error(block_error)
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, add_line_numbers)
         if extracted is not None:
             return extracted
 
@@ -676,7 +679,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
         # Dedup: identical (path, offset, limit) on an unchanged file returns a
         # lightweight stub instead of re-sending the content.
-        dedup_key = (resolved_str, offset, limit)
+        dedup_key = (resolved_str, offset, limit) if add_line_numbers else (resolved_str, offset, limit, False)
         task_data, cached_version, content_served_in_generation = _dedup_lookup(task_id, dedup_key)
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
@@ -686,7 +689,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit, **({} if add_line_numbers else {"add_line_numbers": False}))
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -1170,7 +1173,8 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000},
+            "add_line_numbers": {"type": "boolean", "description": "Prefix lines with line numbers (default true); false returns unnumbered paginated text, still subject to truncation and safety limits.", "default": True}
         },
         "required": ["path"]
     }
@@ -1320,7 +1324,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, add_line_numbers=args.get("add_line_numbers", True))
 
 
 def _handle_write_file(args, **kw):

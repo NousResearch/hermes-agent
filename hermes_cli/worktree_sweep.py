@@ -520,18 +520,52 @@ def _ignored_artifact_dirs(path: str) -> list[str]:
     return found
 
 
-def _shed_blocker(repo_root: str, path: str, idle_since: float, pins: dict) -> Optional[str]:
-    """Why the tree at *path* must keep its artifacts now (kanban, pinned, live lock, a live
-    process inside, activity after *idle_since*), else None."""
+def _holds_repository(path: Path) -> bool:
+    """Whether a ``.git`` (an embedded repository or worktree, whose commits no branch of this
+    tree holds) sits anywhere under *path*. ``--directory`` collapses an ignored dir, so git
+    never reports one inside it. Unreadable = yes."""
+    failed: list = []
+    for _root, dirs, files in os.walk(path, onerror=failed.append):
+        if ".git" in dirs or ".git" in files:
+            return True
+    return bool(failed)
+
+
+def _shed_blocker(repo_root: str, path: str, target: Path, idle_since: float) -> Optional[str]:
+    """Why *target* inside the tree at *path* must stay right now (kanban, a resumable pin read
+    fresh, a live lock, a live process inside, activity after *idle_since* including the tree or
+    target dir itself, an embedded repository), else None. Run before EACH removal: an earlier
+    one can take long enough for an owner to come back."""
     from hermes_cli import worktree_ops as ops
-    from tools.delegate_tool_resumable import pin_reason
     if _KANBAN_TREE.match(os.path.basename(path)):
         return "owned by kanban gc"
-    if pinned := pin_reason(path, pins):
+    if pinned := pinned_now(path):
         return pinned
     if ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "lock owner still running"
-    return _in_use_since(path, idle_since)
+    try:
+        # A fresh top-level install stamps the tree dir and the install dir, not any git signal.
+        if max(Path(path).stat().st_mtime, target.stat().st_mtime) >= idle_since:
+            return "created or changed inside the window"
+    except OSError:
+        return "gone"
+    if busy := _in_use_since(path, idle_since):
+        return busy
+    return "holds an embedded repository" if _holds_repository(target) else None
+
+
+def _shed_one(entry: Path, rel: str) -> bool:
+    """Remove ``entry/rel``, then put its parent's times back so the tree stays exactly as idle
+    as it was (the tree dir's own mtime is the removal tiers' age clock). False on any OS error."""
+    target, parent = entry / rel, (entry / rel).parent
+    try:
+        stamp = parent.stat()
+        shutil.rmtree(target)
+        os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    except OSError as exc:
+        logger.warning("Sweep: could not shed %s/%s: %s", entry.name, rel, exc)
+        return False
+    return True
 
 
 def shed_idle_artifacts(repo_root: str, settings: dict, *, dry_run: bool = False,
@@ -546,32 +580,18 @@ def shed_idle_artifacts(repo_root: str, settings: dict, *, dry_run: bool = False
     worktrees_dir = Path(repo_root) / ".worktrees"
     if hours <= 0 or not worktrees_dir.is_dir():
         return []
-    from hermes_cli import worktree_ops as ops
     idle_since = (now or time.time()) - hours * 3600
-    pins = ops.resumable_pins()
     shed: list[str] = []
     for entry in sorted(p for p in worktrees_dir.iterdir() if p.is_dir() and (p / ".git").exists()):
-        dirs = _ignored_artifact_dirs(str(entry))
-        if not dirs:
-            continue
-        why = _shed_blocker(repo_root, str(entry), idle_since, pins)
-        if why:
-            logger.debug("Sweep: keeping artifacts of %s (%s)", entry.name, why)
-            continue
-        for rel in dirs:
-            if not dry_run:
-                parent = (entry / rel).parent
-                stamp = parent.stat()
-                try:
-                    shutil.rmtree(entry / rel)
-                except OSError as exc:
-                    logger.warning("Sweep: could not shed %s/%s: %s", entry.name, rel, exc)
-                    continue
-                # Unlinking stamps the parent; the tree must stay exactly as idle as it was for its
-                # removal tier and the activity probe (the tree dir's own mtime is the age clock).
-                os.utime(parent, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-                logger.info("Sweep: shed ignored %s/%s (idle over %gh)", entry.name, rel, hours)
-            shed.append(f"{entry.name}/{rel}")
+        for rel in _ignored_artifact_dirs(str(entry)):
+            why = _shed_blocker(repo_root, str(entry), entry / rel, idle_since)
+            if why:
+                logger.debug("Sweep: keeping %s/%s (%s)", entry.name, rel, why)
+                continue
+            if dry_run or _shed_one(entry, rel):
+                if not dry_run:
+                    logger.info("Sweep: shed ignored %s/%s (idle over %gh)", entry.name, rel, hours)
+                shed.append(f"{entry.name}/{rel}")
     return shed
 
 

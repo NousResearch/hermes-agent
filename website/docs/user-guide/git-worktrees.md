@@ -283,9 +283,11 @@ idle that long, the directories git ignores whose name is one of
 `.tox` or `.gradle`. The tree itself stays: tracked files, uncommitted edits,
 untracked files that are not ignored, the branch and the index are never
 touched, so `npm install` / `uv sync` brings it back to work. Symlinked
-directories (a shared venv) are skipped, and so are Kanban trees, trees a
+directories (a shared venv) and folders holding a nested git repository are
+skipped, and so are Kanban trees, trees a
 resumable subagent owns, trees whose lock owner runs, trees a live process
-works in, and trees with any edit inside the window. Each deleted folder is
+works in, and trees with any edit (or a fresh install) inside the window;
+these checks run again right before each folder goes. Each deleted folder is
 logged (`Sweep: shed ignored <tree>/<dir>`); `hermes worktree prune --dry-run`
 lists what would go.
 

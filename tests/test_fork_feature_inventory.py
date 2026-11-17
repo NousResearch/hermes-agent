@@ -67,6 +67,18 @@ WIRING = [
     ("zendesk OAuth", "tools/zendesk_tool.py", 'resp = await _authed_request(path, scope=_READ_SCOPE)', "reads use the hc:read token"),
     ("autonomy levels", "agent/autonomy.py", "def verify_pending", "signed pending records"),
     ("autonomy state protected", "agent/file_safety.py", '(anchor / "autonomy").resolve()', "file tools can't touch autonomy state"),
+    # ── Boundary enforcement (education design 5a/5b) ─────────────────────
+    ("notion write guard", "tools/notion_api_tool.py", "denial = guard_denial(method, path, body)", "checked inside notion_api before ntn runs"),
+    ("notion write guard", "model_tools.py", "denial_for_tool_call(function_name, function_args)", "mirrored in the execution backstop"),
+    ("notion write guard", "tools/notion_write_guard.py", "return raw.get(\"enabled\") is not False", "a malformed block enforces, never off"),
+    ("notion write guard", "tools/notion_write_guard.py", 'return "Notion write refused: DELETE is never allowed', "no DELETE"),
+    ("notion write guard", "tools/zendesk_tool.py", "return is_enforcing(cfg)", "Zendesk precondition = the guard's own predicate"),
+    ("gated release posts", "tools/slack_post_thread_tool.py", "rup.post_release_update(args, cfg)", "gated channels take a row id, never text"),
+    ("gated release posts", "tools/release_update_post.py", "jira = await check_jira_done(await collect_jira_keys(page, s), s)", "every linked Jira key Done"),
+    ("gated release posts", "tools/release_update_post.py", "autonomy.ledger_put(ACTION, key, entry)", "one post per row"),
+    ("gated release posts", "agent/autonomy.py", '"post_release_update": frozenset(LEVELS)', "built for every autonomy level"),
+    ("posting allowlist", "agent/slack_post_policy.py", "def channel_denial", "post_allowed_channels / post_gated_channels"),
+    ("posting allowlist", "cron/scheduler.py", "targets, _policy_refused = _apply_post_policy(targets)", "cron delivery honours the policy"),
     ("allow_bots_channels", "plugins/platforms/slack/adapter.py", "def _slack_allow_bots_channels", "per-channel app admission"),
     ("allow_bots_channels", "gateway/authz_mixin.py", "_slack_allow_bots_channels(source)", "gate admits listed channels; RBAC outranks bypass"),
     # ── Cost attribution ──────────────────────────────────────────────────

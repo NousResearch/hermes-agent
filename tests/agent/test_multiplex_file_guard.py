@@ -22,7 +22,9 @@ def homes(tmp_path, monkeypatch):
         for rel in FILES:
             f = home / rel
             f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text("x", encoding="utf-8")
+            # config.yaml must be a valid mapping: an unparseable one now
+            # turns agent_write_guard ON (agent/boundary_config.py).
+            f.write_text("model: x\n" if rel == "config.yaml" else "x", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     mfg.set_served_profile_homes([root, edu])
     mfg._recent_audits.clear()

@@ -32,6 +32,8 @@ def _with_top_thinking_level(model: str, reasoning_config: Any, thinking_config:
 class GeminiProfile(ProviderProfile):
     """Gemini — translate reasoning_config to thinking_config in extra_body."""
 
+    uses_primary_http_client = True
+
     def build_extra_body(self, *, session_id: str | None = None, **context: Any) -> dict[str, Any]:
         """Native: ``thinking_config``; OpenAI-compat /openai subpath:
         ``extra_body.google.thinking_config`` (snake_case)."""

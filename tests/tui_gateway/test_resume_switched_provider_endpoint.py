@@ -90,6 +90,21 @@ def test_resume_after_model_switch_then_fallback_first_call_keeps_the_switched_p
     assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
         "claude-opus-4", "anthropic")
 
+    # A later Desktop/TUI pick on the same provider persists through the live writer; reopening must keep it,
+    # not the older nested route the CLI switch left.
+    from types import SimpleNamespace
+    from hermes_state_sessions import _parse_model_config
+    from tui_gateway.agent_factory import _runtime_model_config
+    agent = SimpleNamespace(model="claude-sonnet-5", provider="anthropic", base_url="", api_mode="",
+                            reasoning_config=None, service_tier=None)
+    config = _runtime_model_config(agent, _parse_model_config(row["model_config"]))
+    db.update_session_meta("s1", json.dumps(config), "claude-sonnet-5")
+    row = db.get_session("s1")
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-sonnet-5", "anthropic")
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
+        "claude-sonnet-5", "anthropic")
+
 
 @pytest.mark.parametrize("picked", [
     {"model": "claude-opus-4", "provider": "anthropic"},

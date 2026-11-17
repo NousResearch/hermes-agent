@@ -59,3 +59,6 @@ def test_ready_nonempty_ignores_tasks_the_tick_held_back(monkeypatch):
     # A whole-tick hold (board lock) skips the board entirely.
     locked = kbd.DispatchResult(skipped_locked=True)
     assert dispatcher.ready_nonempty([("default", locked)]) is False
+    # Elevated pressure permits one spawn; failed spawns must remain visible.
+    elevated = kbd.DispatchResult(memory_pressure="elevated")
+    assert dispatcher.ready_nonempty([("default", elevated)]) is True

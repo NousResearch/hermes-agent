@@ -207,16 +207,16 @@ def held_ready_task_ids(result: Optional[DispatchResult]) -> set[str]:
 
 
 def whole_tick_hold(result: Optional[DispatchResult]) -> bool:
-    """True when this tick held the board's ENTIRE ready queue back by
-    configuration: another dispatcher owns the board lock (``skipped_locked``)
-    or the memory-pressure guard restricted new workers (``memory_pressure``).
+    """True if the whole tick could not spawn: board lock or critical memory.
 
-    Neither hold leaves per-task ids (the tick did no lane work at all, or was
-    globally restricted), so the health telemetry treats the whole queue as
-    correctly idle for such a tick — see :func:`held_ready_task_ids` for the
-    per-task half of the same rule.
+    Elevated memory pressure still permits one worker. If that spawn fails,
+    the ready queue must remain visible to dispatcher-stuck telemetry.
+    Per-task deferrals are handled by :func:`held_ready_task_ids`.
     """
-    return bool(result is not None and (result.skipped_locked or result.memory_pressure))
+    return bool(
+        result is not None
+        and (result.skipped_locked or result.memory_pressure == "critical")
+    )
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in

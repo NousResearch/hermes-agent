@@ -1,8 +1,8 @@
 name: phoenix
-title: "Phoenix - The Exactly-Once Trust Layer for Autonomous Agents"
+title: "Phoenix - Execution Flight Recorder & Crash Recovery for Autonomous Agents"
 repo: https://github.com/Ratz00007/phoenix
-sha: 9cadbc81894146bbb63cb4a87d0b6d73d6d5148d
-description: "Visual flight recorder, deterministic SHA-256 state fingerprinting, idempotency replay guard, and forward zero-LLM crash recovery with deterministic fault-injection wind tunnel for Hermes agents. Guarantees exactly-once tool execution across crashes with zero duplicate writes and zero LLM calls in recovery. Disclosure — journals every tool call's arguments and result (common secret patterns redacted) to a local SQLite ledger under the plugin data dir, kept 7 days / 10,000 rows; the owner-typed /recover re-runs interrupted tool calls from earlier sessions through the tool registry, bypassing other plugins' pre_tool_call hooks, and the opt-in idempotency guard can return a stored result instead of re-running a repeated call in the same session."
+sha: 7e8b3c17737c3fc5b980b53813f12509a0725312
+description: "Visual flight recorder, deterministic SHA-256 state fingerprinting, opt-in idempotency replay guard, and forward zero-LLM crash recovery with deterministic fault-injection wind tunnel for Hermes agents. Reconciles interrupted tool calls via pre/post SHA-256 disk fingerprinting with zero LLM calls in recovery. Disclosure — journals every tool call's arguments and result (common secret patterns redacted) to a local SQLite ledger under the plugin data dir, kept 7 days / 10,000 rows; the owner-typed /recover re-runs interrupted tool calls from earlier sessions through the tool registry, bypassing other plugins' pre_tool_call hooks, and the opt-in idempotency guard can return a stored result instead of re-running a repeated call in the same session."
 maintainer: Ratz00007
 tier: community
 category: tools

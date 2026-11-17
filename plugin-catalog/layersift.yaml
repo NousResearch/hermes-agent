@@ -1,0 +1,33 @@
+name: layersift
+repo: https://github.com/rodricksz4h5/layersift
+sha: 0adbee9b1090ada91cbc035b397fe94ed345d14d
+version: "1.0.0"
+title: Layersift
+description: >-
+  Exact, local reading of saved container images: docker save and podman save
+  tars (classic and Docker 25+ layouts) and OCI image archives, including
+  multi-platform indexes and gzip, bzip2 or xz compression. image_summary says
+  where the size goes: each layer with the Dockerfile instruction that made it,
+  the final filesystem size, bytes still shipped after a later layer deletes or
+  overwrites them (which layer added them, which removed them), caches and
+  archives left behind (apt lists, apk/yum/dnf, pip/uv/npm/yarn, Go and Cargo
+  caches, /tmp, .git, compilers) with the fix, and the biggest directories and
+  files; image_layer opens one layer; image_compare compares two images before
+  and after a Dockerfile change. Standard library only: no network, never runs
+  docker or contacts a registry, no credentials, no subprocess, never extracts
+  to disk, no third-party dependencies, no self-update.
+  Disclosure: reads the local image archives you pass it (read-only), only
+  regular files, and honours Hermes' core read denylist.
+maintainer: rodricksz4h5
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/rodricksz4h5/layersift/tree/0adbee9b1090ada91cbc035b397fe94ed345d14d
+capabilities:
+  provides_tools:
+    - image_summary
+    - image_layer
+    - image_compare
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

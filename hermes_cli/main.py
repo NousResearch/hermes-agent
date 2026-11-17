@@ -2697,8 +2697,15 @@ def _prepare_agent_startup(args) -> None:
 
     if not (args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)):
         return
-    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere
-    exit_if_profile_runs_elsewhere(args.command)  # before any banner, TUI or gateway contact
+    # Before any banner, TUI, discovery or gateway contact. `gateway run` gets the gateway's own refusal here (exit 78,
+    # EX_CONFIG, and the verdict in the profile's logs): in gateway.run_bootstrap it only comes after the discovery
+    # below and run_gateway's host-gateway guards.
+    from hermes_cli.profiles_run_elsewhere import exit_if_profile_runs_elsewhere, run_elsewhere_for_home
+    if args.command == "gateway" and (_elsewhere := run_elsewhere_for_home(get_hermes_home())) is not None:
+        logger.error("Refusing to start the gateway: %s", _elsewhere.message())
+        print(_elsewhere.message(), file=sys.stderr)
+        raise SystemExit(78)
+    exit_if_profile_runs_elsewhere(args.command)  # returns for `gateway`, handled above
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
     if not (_is_tui_chat_launch(args) or _chat_runs_at_gateway(args)):
@@ -2737,10 +2744,7 @@ def _prepare_agent_startup(args) -> None:
                 thread_name="cli-mcp-discovery",
             )
         except Exception:
-            logger.debug(
-                "Background MCP tool discovery failed at CLI startup",
-                exc_info=True,
-            )
+            logger.debug("Background MCP tool discovery failed at CLI startup", exc_info=True)
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
@@ -2753,10 +2757,7 @@ def _prepare_agent_startup(args) -> None:
             accept_for_process()
         register_outbound_webhooks(_hooks_cfg)
     except Exception:
-        logger.debug(
-            "shell-hook registration failed at CLI startup",
-            exc_info=True,
-        )
+        logger.debug("shell-hook registration failed at CLI startup", exc_info=True)
 
 
 def _apply_safe_mode(args) -> None:

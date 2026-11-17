@@ -4,13 +4,19 @@ A host-side plugin that runs a profile's whole backend elsewhere (for example in
 marks the profile for as long as it does. While a profile is marked, nothing on this host runs it,
 whether or not the plugin's own process is running:
 
-- ``AIAgent`` refuses to build an agent for it, whichever frontend asks;
+- ``AIAgent`` refuses to build an agent for it, whichever frontend asks, and
+  ``run_conversation()`` checks again before each turn, so an agent built before the profile was
+  marked runs no further turn;
+- ``cron.scheduler_tick.tick()`` returns before the tick lock or the due scan, and
+  ``CronScheduler.claim_fire()`` claims nothing, so no in-process cron ticker and no provider's
+  inbound fire runs its jobs;
 - CLI commands that run a turn (chat, ``acp``, ``cron run``/``tick``, ...) exit 1 and
   ``hermes serve``/``dashboard`` exit 78 before they start, and the gateway process exits 78;
 - ``profiles_to_serve()`` leaves it out, so the host gateway (platforms, cron, Kanban watchers,
   ``/p/<profile>/`` routes), the Desktop cron ticker and the Kanban dispatcher skip it;
-- ``hermes gateway ensure`` refuses it (``profile_runs_elsewhere``), and the dashboard's cron,
-  session, file and Webapp requests for it answer 409.
+- ``hermes gateway ensure`` refuses it (``profile_runs_elsewhere``), the dashboard's cron,
+  session, file and Webapp requests for it answer 409, and a dashboard session's deferred agent
+  build refuses before the profile's MCP servers are started.
 
 The marker is the file ``<hermes root>/profiles_run_elsewhere/<profile>.json``. It lives under the
 Hermes root and never inside a profile home, so the profile's backend cannot remove it. The file's
@@ -24,6 +30,7 @@ running its own profile. Any other error reading the folder refuses every profil
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -96,22 +103,30 @@ def _log_once(level: int, message: str, *args) -> None:
         logger.log(level, message, *args)
 
 
-def _marked_names(folder: Path) -> frozenset[str] | OSError:
-    """Profile ids with a marker in *folder*, or the error that made the folder unreadable."""
+@dataclass(frozen=True)
+class _MarkerFolder:
+    """One listing of the marker folder: the profile ids it marks, and ``error`` when the folder
+    could not be read (no profile may run here then)."""
+
+    names: frozenset[str] = frozenset()
+    error: OSError | None = None
+
+
+def _read_folder(folder: Path) -> _MarkerFolder:
     try:
         names = os.listdir(folder)
-    except (FileNotFoundError, NotADirectoryError):
-        return frozenset()
+    except FileNotFoundError:
+        return _MarkerFolder()
     except PermissionError:
         _log_once(logging.INFO, "Cannot list %s (permission denied): this process is a backend a "
                   "plugin runs elsewhere, so it refuses no profile", folder)
-        return frozenset()
-    except OSError as exc:
+        return _MarkerFolder()
+    except OSError as exc:  # a file where the folder belongs, an I/O error, ...
         _log_once(logging.ERROR, "Cannot read %s (%s); running no profile until it can be read", folder, exc)
-        return exc
-    # Writers rename a dot-prefixed temp file over <profile>.json; any other name is not a marker.
-    return frozenset(name[:-len(_SUFFIX)] for name in names
-                     if name.endswith(_SUFFIX) and _is_profile_id(name[:-len(_SUFFIX)]))
+        return _MarkerFolder(error=exc)
+    # Writers stage a marker under a dot-prefixed name; any name but <profile>.json is not a marker.
+    return _MarkerFolder(frozenset(name[:-len(_SUFFIX)] for name in names
+                                   if name.endswith(_SUFFIX) and _is_profile_id(name[:-len(_SUFFIX)])))
 
 
 def _read_entry(folder: Path, profile: str) -> RunElsewhere:
@@ -132,28 +147,52 @@ def run_elsewhere(profile: str, *, root: str | Path | None = None) -> RunElsewhe
     if not isinstance(profile, str) or not _is_profile_id(profile):
         return None
     folder = run_elsewhere_dir(root)
-    marked = _marked_names(folder)
-    if isinstance(marked, OSError):
-        return RunElsewhere(profile, folder / f"{profile}{_SUFFIX}", folder_error=str(marked))
-    return _read_entry(folder, profile) if profile in marked else None
+    listing = _read_folder(folder)
+    if listing.error is not None:
+        return RunElsewhere(profile, folder / f"{profile}{_SUFFIX}", folder_error=str(listing.error))
+    return _read_entry(folder, profile) if profile in listing.names else None
+
+
+def _home_readings(home: Path) -> list[tuple[str, Path]]:
+    """``(profile, root)`` for *home* as written and as resolved, without repeats:
+    ``<root>/profiles/<id>`` is that named profile of ``<root>``; any other home is the default
+    profile of the root it is."""
+    spellings = [home]
+    try:
+        spellings.append(home.resolve(strict=False))
+    except (OSError, RuntimeError):  # a link loop: only the written path is left to read
+        pass
+    readings: list[tuple[str, Path]] = []
+    for path in spellings:
+        name = path.name.lower()  # ids are stored lowercase; a case-insensitive volume opens any case
+        named = path.parent.name == "profiles" and name != "default" and _is_profile_id(name)
+        reading = (name, path.parent.parent) if named else ("default", path)
+        if reading not in readings:
+            readings.append(reading)
+    return readings
 
 
 def run_elsewhere_for_home(home: str | Path) -> RunElsewhere | None:
-    """:func:`run_elsewhere` for the profile whose home is *home*: ``<root>/profiles/<id>`` is that
-    named profile of ``<root>``; any other home is the default profile of the root it is."""
-    home = Path(home).expanduser()
-    if home.parent.name == "profiles" and home.name != "default" and _is_profile_id(home.name):
-        return run_elsewhere(home.name, root=home.parent.parent)
-    return run_elsewhere("default", root=home)
+    """:func:`run_elsewhere` for the profile whose home is *home*.
+
+    *home* is read both as written and resolved, so another path to a profile home (a symlink or
+    junction, a relative or ``..`` path, another letter case) reaches that profile's marker. A
+    marker under either reading refuses, so neither reading can hide the other's.
+    """
+    for profile, root in _home_readings(Path(home).expanduser()):
+        entry = run_elsewhere(profile, root=root)
+        if entry is not None:
+            return entry
+    return None
 
 
 def without_profiles_run_elsewhere(profiles: list[tuple[str, Path]]) -> list[tuple[str, Path]]:
     """*profiles* (``(name, home)`` pairs of this process's root) minus the marked ones. An
     unreadable marker folder leaves none: the host cannot tell which profiles it may run."""
-    marked = _marked_names(run_elsewhere_dir())
-    if isinstance(marked, OSError):
+    listing = _read_folder(run_elsewhere_dir())
+    if listing.error is not None:
         return []
-    return [(name, home) for name, home in profiles if name not in marked]
+    return [(name, home) for name, home in profiles if name not in listing.names]
 
 
 def require_home_runs_here(home: str | Path | None = None) -> None:
@@ -200,14 +239,20 @@ def _same_path(a: Path, b: Path) -> bool:
         return False
 
 
-def own_profile_dir_when_unlistable(profiles_root: Path, *, live_only: bool) -> list[Path]:
-    """The named-profile dirs a process denied *profiles_root* can see: its own home, when that is
-    a named profile directly under it (a backend a plugin runs elsewhere is denied the folder)."""
+def own_profile_dir_when_unlistable(profiles_root: Path, denied: PermissionError, *, live_only: bool) -> list[Path]:
+    """The named-profile dirs a process that is denied *profiles_root* can see.
+
+    A process whose home is a named profile directly under it is a backend a plugin runs elsewhere
+    (the plugin denies it the folder) and sees its own profile. Any other process gets *denied*
+    raised, as before this fallback existed, so a host that fails closed on a profiles folder it
+    cannot list (``activate_multi_profile_hosting_eagerly``) still does.
+    """
     from hermes_constants import get_hermes_home, named_profile_has_identity, named_profile_is_deleted
     own = Path(get_hermes_home())
+    if not _same_path(own.parent, profiles_root) or not PROFILE_ID_RE.match(own.name):
+        raise denied
     try:
-        if (not _same_path(own.parent, profiles_root) or not PROFILE_ID_RE.match(own.name)
-                or not named_profile_has_identity(own)):
+        if not named_profile_has_identity(own):
             return []
     except OSError:
         return []
@@ -232,30 +277,61 @@ def _require_profile(profile: str) -> str:
     return name
 
 
+def _publish_new(path: Path, payload: dict) -> bool:
+    """Write *payload* to *path* only where no file is yet; False when one is.
+
+    The payload is written whole under a dot-prefixed name, which readers skip, and hard-linked
+    into place: a link never replaces an existing file, where a POSIX rename would.
+    """
+    from utils import atomic_json_write, fsync_directory
+    staged = path.with_name(f".{path.stem}.{os.getpid()}.{os.urandom(4).hex()}.new")
+    try:
+        atomic_json_write(staged, payload)
+        try:
+            os.link(staged, path)
+        except FileExistsError:
+            return False
+        except OSError:
+            # No hard links on this filesystem (FAT, Android app storage): rename into place, which
+            # cannot tell two first writers apart.
+            atomic_json_write(path, payload, fsync_dir=True)
+            return True
+        fsync_directory(path.parent)
+        return True
+    finally:
+        with contextlib.suppress(OSError):
+            staged.unlink()
+
+
 def mark_profile_run_elsewhere(profile: str, plugin: str, *, root: str | Path | None = None) -> RunElsewhere:
     """Record that *plugin* runs *profile*'s backend elsewhere, so this host stops running it.
 
     Keeps ``since`` when *plugin* already marked the profile; raises ``ValueError`` when another
-    plugin did. Running host services drop the profile at their next rescan; a running host
-    gateway drops a named profile at once through ``gateway.control_socket.request_unserve_profile``.
-    The host gateway runs as the default profile, so stop it before marking ``default``.
+    plugin did, also when both found no marker and the other's landed first. Running host services
+    drop the profile at their next rescan; a running host gateway drops a named profile at once
+    through ``gateway.control_socket.request_unserve_profile``. The host gateway runs as the default
+    profile, so stop it before marking ``default``.
     """
     from utils import atomic_json_write
     name, plugin = _require_profile(profile), _require_plugin(plugin)
     folder = run_elsewhere_dir(root)
-    marked = _marked_names(folder)
-    current = _read_entry(folder, name) if not isinstance(marked, OSError) and name in marked else None
-    if current is not None and current.plugin not in (None, plugin):
-        raise ValueError(f"profile '{name}' already runs elsewhere under the '{current.plugin}' plugin")
-    since = (current.since if current is not None and current.plugin == plugin and current.since
-             else datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    path = folder / f"{name}{_SUFFIX}"
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     folder.mkdir(parents=True, exist_ok=True)
     if os.name == "posix":
         # Host services that run as another local user must be able to list it: a permission
         # error reads as "this process is the backend running elsewhere" and refuses nothing.
         os.chmod(folder, 0o755)
-    atomic_json_write(folder / f"{name}{_SUFFIX}", {"plugin": plugin, "since": since}, fsync_dir=True)
-    return RunElsewhere(name, folder / f"{name}{_SUFFIX}", plugin, since)
+    current = _read_entry(folder, name) if name in _read_folder(folder).names else None
+    if current is None:
+        if _publish_new(path, {"plugin": plugin, "since": now}):
+            return RunElsewhere(name, path, plugin, now)
+        current = _read_entry(folder, name)  # another writer's marker landed first: it decides
+    if current.plugin not in (None, plugin):
+        raise ValueError(f"profile '{name}' already runs elsewhere under the '{current.plugin}' plugin")
+    since = current.since if current.plugin == plugin and current.since else now
+    atomic_json_write(path, {"plugin": plugin, "since": since}, fsync_dir=True)
+    return RunElsewhere(name, path, plugin, since)
 
 
 def clear_profile_run_elsewhere(profile: str, plugin: str, *, root: str | Path | None = None) -> bool:
@@ -263,11 +339,16 @@ def clear_profile_run_elsewhere(profile: str, plugin: str, *, root: str | Path |
     when the marker names another plugin. Clear it only once the backend elsewhere has stopped."""
     name, plugin = _require_profile(profile), _require_plugin(plugin)
     folder = run_elsewhere_dir(root)
+    path = folder / f"{name}{_SUFFIX}"
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False  # nothing to remove; a marker published from here on is not this call's to delete
     current = _read_entry(folder, name)
     if current.plugin is not None and current.plugin != plugin:
         raise ValueError(f"profile '{name}' runs elsewhere under the '{current.plugin}' plugin, not '{plugin}'")
     try:
-        (folder / f"{name}{_SUFFIX}").unlink()
+        path.unlink()
     except FileNotFoundError:
         return False
     return True

@@ -261,8 +261,11 @@ running:
 
 - the host gateway does not serve it (platforms, cron, Kanban watchers,
   `/p/<profile>/` routes), and the Desktop cron ticker skips it;
-- no agent is built for it, and `hermes -p <profile> chat`, `acp`, `cron run`,
-  `cron tick`, `serve` and `dashboard` exit with a message naming the plugin;
+- no agent is built for it, an agent built before the profile was marked runs
+  no further turn, and no cron ticker on the host (the gateway's, the
+  Desktop's, a cron provider's built-in fallback) runs its jobs;
+- `hermes -p <profile> chat`, `acp`, `cron run`, `cron tick`, `serve` and
+  `dashboard` exit with a message naming the plugin;
 - `hermes -p <profile> gateway run` exits 78, and `hermes gateway ensure`
   refuses it (`profile_runs_elsewhere`);
 - the dashboard's cron, session, file and Webapp requests for it answer `409`,
@@ -272,17 +275,36 @@ running:
 The default profile can be marked too. The host gateway runs as the default
 profile, so it then refuses to start; stop it before marking `default`. A
 running host gateway drops a newly marked named profile at its next rescan
-(30 seconds). A marker that cannot be read still counts; only the plugin name
-is then unknown.
+(30 seconds). A gateway or a `hermes serve` / `hermes dashboard` backend that
+was started as the marked profile itself is not stopped by the marker: it runs
+no further turn and no cron job for the profile, but it stays up until it is
+stopped, so stop it before marking. A marker that cannot be read still counts;
+only the plugin name is then unknown.
 
 The marker lives under the Hermes root, never in a profile home, so the
-profile's own backend cannot remove it. Host-side plugin code sets and clears it
-with `hermes_cli.profiles_run_elsewhere.mark_profile_run_elsewhere(profile, plugin)`
-and `clear_profile_run_elsewhere(profile, plugin)`; other writers write a temp
-file whose name starts with `.` in that folder and rename it over
-`<profile>.json`. The plugin keeps the folder out of the backend it runs: a
-process that is denied the folder applies none of these refusals, so that
-backend keeps running its own profile. To run the profile on this host again,
+profile's own backend cannot remove it. Host-side plugin code sets, reads and
+clears it with three functions of the
+[public plugin API](../developer-guide/plugins/public-api.md):
+
+```python
+from hermes_cli.profiles_run_elsewhere import (
+    clear_profile_run_elsewhere, mark_profile_run_elsewhere, run_elsewhere,
+)
+
+mark_profile_run_elsewhere("ops", "my-plugin")   # before the backend starts elsewhere
+entry = run_elsewhere("ops")                     # entry.plugin == "my-plugin"; None when unmarked
+clear_profile_run_elsewhere("ops", "my-plugin")  # once that backend has stopped
+```
+
+`mark_profile_run_elsewhere` and `clear_profile_run_elsewhere` raise
+`ValueError` for a marker another plugin owns. Other writers write the file
+under a name that starts with `.` in that folder and rename it over
+`<profile>.json`. Only a missing folder means that nothing is marked: if
+anything else is in its place, or it cannot be read, the host runs no profile
+until that is fixed. The one exception is a process that is denied the folder.
+The plugin keeps the folder out of the backend it runs, so such a process
+applies none of these refusals, and that backend keeps running its own
+profile. To run the profile on this host again,
 turn it off in the plugin.
 
 ### No new per-profile gateways

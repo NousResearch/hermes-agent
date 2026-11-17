@@ -244,6 +244,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
         try:
+            # Before the profile's scope is bound or its MCP servers are started: ``AIAgent`` refuses
+            # a profile a plugin runs elsewhere, but only after discovery has spawned them.
+            from hermes_cli.profiles_run_elsewhere import require_home_runs_here
+            require_home_runs_here(profile_home or None)
             if not _await_resume_history(sid, current):
                 # Replaced mid-build: the finally still sets ``agent_ready`` with ``agent`` None, so record
                 # why — a turn admitted against this record refuses with the real reason (#111531).

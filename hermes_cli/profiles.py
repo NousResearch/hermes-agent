@@ -489,14 +489,15 @@ def _iter_named_profile_dirs(*, live_only: bool = True) -> list[Path]:
     cron/logging side-effects and pre-tombstone ghost shells leave marker-less dirs that must
     not be listed, served, ticked, or ``.env``-seeded — that seeding is what turned a ghost
     shell into a "real" profile on the next ``hermes update`` (#95188, #94823, #99392).
-    A process denied the profiles folder (a backend a plugin runs elsewhere) sees only its own."""
+    A named profile's process denied the profiles folder (a backend a plugin runs elsewhere) sees
+    only its own; any other process gets the error."""
     profiles_root = _get_profiles_root()
     try:
         if not profiles_root.is_dir():
             return []
         entries = sorted(profiles_root.iterdir())
-    except PermissionError:
-        return own_profile_dir_when_unlistable(profiles_root, live_only=live_only)
+    except PermissionError as denied:
+        return own_profile_dir_when_unlistable(profiles_root, denied, live_only=live_only)
     return [
         entry for entry in entries
         if entry.is_dir()

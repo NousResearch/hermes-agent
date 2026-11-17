@@ -276,19 +276,34 @@ def _deny_profiles_folder(monkeypatch, profiles_root: Path):
     monkeypatch.setattr(Path, "iterdir", iterdir)
 
 
-def test_denied_profiles_folder_lists_no_named_profiles_for_the_default_profile(root, monkeypatch):
+def test_denied_profiles_folder_still_raises_for_a_default_profile_process(root, monkeypatch):
+    """Only a process that runs a named profile of this root is the backend a plugin denied the
+    folder. A default-profile process gets the error, as it did before the fallback existed, so a
+    caller that fails closed on a profiles folder it cannot list still does: the host's eager
+    multi-profile activation cannot prove the host is single-profile, and arms the credential guard."""
+    from agent import secret_scope
     from hermes_cli import profiles
+    from tui_gateway import launch_profile_policy
 
     _deny_profiles_folder(monkeypatch, profiles._get_profiles_root())
-    assert profiles._iter_named_profile_dirs() == []
-    assert [p.name for p in profiles.list_profiles(lazy_skill_count=True)] == ["default"]
-    assert _names(profiles.profiles_to_serve(True)) == ["default"]
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    assert launch_profile_policy.activate_multi_profile_hosting_eagerly() is True
+    assert secret_scope.is_multiplex_active()
+
+    with pytest.raises(PermissionError):
+        profiles._iter_named_profile_dirs()
+    with pytest.raises(PermissionError):
+        profiles.profiles_to_serve(True)
+    assert profiles.list_profile_names() == ["default"]  # the name-only listing always tolerated it
 
 
 def test_denied_profiles_folder_still_lists_the_backends_own_profile(root, monkeypatch):
     """A named profile's backend sees its own profile, even with the tombstone folder denied too."""
     import hermes_constants
+    from agent import secret_scope
     from hermes_cli import profiles
+    from tui_gateway import launch_profile_policy
 
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
     _deny_profiles_folder(monkeypatch, profiles._get_profiles_root())
@@ -299,6 +314,12 @@ def test_denied_profiles_folder_still_lists_the_backends_own_profile(root, monke
     monkeypatch.setattr(hermes_constants, "named_profile_is_deleted", tombstone_denied)
     assert [p.name for p in profiles._iter_named_profile_dirs()] == ["ops"]
     assert [p.name for p in profiles.list_profiles(lazy_skill_count=True)] == ["default", "ops"]
+
+    # Two homes (the root's default and its own), so that backend arms the credential guard too.
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr("hermes_logging.enable_profile_log_routing", lambda homes: None)
+    assert launch_profile_policy.activate_multi_profile_hosting_eagerly() is True
 
 
 # ── ensure_gateway_runtime ─────────────────────────────────────────────────────────────────────

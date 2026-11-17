@@ -253,6 +253,22 @@ def is_inflight_restatement(msg: Mapping[str, Any]) -> bool:
     return isinstance(metadata, dict) and bool(metadata.get(INFLIGHT_TASK_RESTATEMENT))
 
 
+def inflight_restatement_has_original(msg: Mapping[str, Any], rows: list[dict]) -> bool:
+    """Whether this restatement's original user turn is visible in the same read.
+
+    Active-only reads after a committed compaction hold only the restatement.
+    A lineage read may hold both copies, identified by their durable message UID.
+    """
+    uid = message_uid_or_none(msg)
+    return bool(uid) and any(
+        isinstance(row, dict)
+        and row.get("role") == "user"
+        and not is_inflight_restatement(row)
+        and message_uid_or_none(row) == uid
+        for row in rows
+    )
+
+
 _IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
 
 

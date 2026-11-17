@@ -380,7 +380,7 @@ function MessageList({
       ref={containerRef}
       className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
     >
-      {messages.map((msg, i) => (
+      {messages.filter((msg) => msg.display_kind !== "hidden").map((msg, i) => (
         <MessageBubble key={i} msg={msg} highlight={highlight} />
       ))}
     </div>

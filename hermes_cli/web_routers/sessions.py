@@ -726,7 +726,7 @@ def _is_untyped_scaffold_notice(message) -> bool:
     return isinstance(content, str) and content.lstrip().startswith("[System:")
 
 
-def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
+def _project_for_display(messages: list, *, home=None, inline_images: bool = True, lineage: bool = False) -> list:
     """Replace compaction summaries with their display-only projection and hide untyped
     gateway-scaffold notices plus the compressor's stamped in-flight-task restatement.
 
@@ -739,10 +739,11 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     Desktop collapses other display-only rows; typed notices stay for the timeline.
     """
     from agent.compaction_display import project_compaction_message_for_display
-    from session_rules.turns import is_compaction_summary_message, withheld_prompt_text
+    from agent.context_compressor import _restated_request_text
     from agent.conversation_compression import _extract_steer_text_from_message
     from agent.history_commentary import project_history_commentary
-    from agent.message_metadata import is_inflight_restatement
+    from agent.message_metadata import inflight_restatement_has_original, is_inflight_restatement
+    from session_rules.turns import is_compaction_summary_message, withheld_prompt_text
     from agent.prompt_builder import STEER_DISPLAY_KIND
     from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, untyped_failed_turn_display_kind
 
@@ -776,7 +777,12 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
         # The compressor's in-flight-task restatement is display-only too: the flag says the row is the
         # model's copy of a still-running request, never something the person typed (#155495).
         if is_inflight_restatement(message):
-            projected_messages.append({**message, "display_kind": "hidden"})
+            if lineage or inflight_restatement_has_original(message, messages):
+                projected_messages.append({**message, "display_kind": "hidden"})
+            else:
+                # Active-only readers need this only surviving copy of the request, without the model frame.
+                text = _restated_request_text(message.get("content"))
+                projected_messages.append({**message, "content": text, "display_content": text})
             continue
         # Mid-turn steer: the user's own words, not the model-facing marker (same as session.resume).
         if message.get("role") == "user" and message.get("display_kind") == STEER_DISPLAY_KIND and (
@@ -841,7 +847,7 @@ async def get_session_messages(
     sid, _limit, messages = result
     projected_messages = await asyncio.to_thread(
         _project_for_display, messages, home=_history_profile_home(profile),
-        inline_images=inline_images)
+        inline_images=inline_images, lineage=include_compacted)
     return {
         "session_id": sid,
         # The same stamp list rows carry, so the Desktop keys a page under the
@@ -915,7 +921,7 @@ async def get_session_messages_around(
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     result["messages"] = await asyncio.to_thread(
-        _project_for_display, result["messages"], home=_history_profile_home(profile))
+        _project_for_display, result["messages"], home=_history_profile_home(profile), lineage=True)
     return result
 
 

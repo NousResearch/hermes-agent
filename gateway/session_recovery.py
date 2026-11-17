@@ -91,8 +91,10 @@ class SessionRecoveryMixin:
     def _generate_session_key(self, source: SessionSource, key_source: Optional[SessionSource] = None) -> str:
         """Session key for *source* (profile from *source*; key from *key_source* if given)."""
         from gateway.session import build_session_key
+        from gateway.session_dm_threads import dm_thread_key_source, session_db_for_source, telegram_extra_for
+        keyed = key_source if key_source is not None else source
         return build_session_key(
-            key_source if key_source is not None else source,
+            dm_thread_key_source(keyed, telegram_extra_for(keyed, self.config), lambda: session_db_for_source(self, keyed)),
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=self._resolve_profile_for_key(source))
@@ -319,6 +321,19 @@ class SessionRecoveryMixin:
                 logger.debug("%s: %s", log_prefix, exc)
             else:
                 logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
+
+    def _adopt_delegate_row(self, session_key: str, session_id: str) -> bool:
+        """An explicit repoint (``/resume <child> --all``, handoff) makes a delegate subagent's row the
+        chat's conversation: mark it adopted so the route guard (``is_delegate_child_row``, #138210) does
+        not read the session the user chose as a stale capture and move the chat off it. ``_delegate_from``
+        is kept: compression lineage and the still-running worker's publish check both read it."""
+        from gateway.session_lifecycle import CHAT_ADOPTED_MARKER, is_delegate_child_row
+        db = self._db_for_key(session_key)
+        row = db.get_session(session_id)
+        if not (row and is_delegate_child_row(row)):
+            return False
+        db.patch_session_model_config(session_id, {CHAT_ADOPTED_MARKER: True})
+        return True
 
     def _record_gateway_session_peer(
         self, session_id: str, session_key: str, source: Optional[SessionSource],

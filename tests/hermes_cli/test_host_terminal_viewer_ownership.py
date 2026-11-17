@@ -354,17 +354,23 @@ def unread_posix_pty(_monkeypatch):
     bridge = pty_bridge.PtyBridge.__new__(pty_bridge.PtyBridge)
     bridge._fd, bridge._closed, bridge._fd_lock = master, False, threading.Lock()
     waiting, cancelled = threading.Event(), threading.Event()
-    wait_writable = bridge._wait_writable
+    wait_writable, write = bridge._wait_writable, bridge.write
 
     async def watched(timeout):
         waiting.set()
+        return await wait_writable(timeout)
+
+    # The cancel can land anywhere in the write, not only in its wait for room: once the line
+    # discipline frees room after the first wait, the write resumes and a close can cancel it
+    # while its worker thread reports the next full queue.
+    async def watched_write(data, **kwargs):
         try:
-            return await wait_writable(timeout)
+            return await write(data, **kwargs)
         except asyncio.CancelledError:
             cancelled.set()
             raise
 
-    bridge._wait_writable = watched
+    bridge._wait_writable, bridge.write = watched, watched_write
     try:
         yield bridge, waiting, cancelled
     finally:

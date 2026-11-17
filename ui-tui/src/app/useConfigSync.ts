@@ -1,9 +1,9 @@
 import type { MouseTrackingMode } from '@hermes/ink'
+import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '@hermes/shared/gateway-types'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
@@ -80,6 +80,13 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
 const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
 const TRUTHY_MOUSE_ALL = new Set(['1', 'true', 'yes', 'on', 'all', 'full', 'any'])
 const hasOwn = (obj: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(obj, key)
+
+// `display.inline_images`: YAML 1.1 reads a bare `off` as false; the quoted string means the same.
+export const inlineImagesEnabled = (raw: unknown): boolean =>
+  raw !== false &&
+  String(raw ?? '')
+    .trim()
+    .toLowerCase() !== 'off'
 
 // `display.mouse_tracking` accepts boolean (`true` ⇒ all modes, `false` ⇒ off)
 // for back-compat, plus the string presets `off|wheel|buttons|all` (aliases:
@@ -350,6 +357,7 @@ export const applyDisplay = (
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
+    inlineImages: inlineImagesEnabled(d.inline_images),
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),

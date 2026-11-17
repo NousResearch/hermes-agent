@@ -6,10 +6,11 @@ import os
 
 
 def log_caches(inputs: dict, steps: dict, scope: str) -> None:
+    node = inputs["node-package-manager"]
     for family, name, producer, output in [
         ("tools", "tools", "prepare", "store"),
         ("uv", "python", "install", "uv-cache-path"),
-        ("npm", "node", "install", "npm-cache-path"),
+        (node, "node", "install", {"npm": "npm-cache-path", "pnpm": "pnpm-store-path"}[node]),
     ]:
         candidates = [steps.get(f"{name}-cache", {}), steps.get(f"{name}-cache-restore", {})]
         selected = next((step for step in candidates if step.get("outcome") not in (None, "skipped")), {})

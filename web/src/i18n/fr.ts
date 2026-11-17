@@ -371,6 +371,13 @@ export const fr: Translations = {
     authRequired: "Authentification requise",
     authRequiredHint: "Exécutez cette commande pour vous authentifier:",
     updateGit: "Git pull",
+    updateAll: "Tout mettre à jour",
+    updatingAll: "Mise à jour des plugins…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Mis à jour ${updated}, à vérifier ${needsReview}, échecs ${failed}`,
+    autoUpdate: "Mise à jour automatique",
+    autoUpdateDesc: (hours: number) =>
+      `Appliquer automatiquement les mises à jour des plugins lors des vérifications de la passerelle (toutes les ${hours} h). Le code mis à jour se charge dans les nouvelles sessions.`,
     versionBadge: "Version",
     showInSidebar: "Afficher dans la barre latérale",
     hideFromSidebar: "Masquer de la barre latérale",

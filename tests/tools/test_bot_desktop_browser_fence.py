@@ -9,14 +9,15 @@ import subprocess
 import pytest
 
 from tools.bot_desktop import lease, runtime
+from tests.bot_desktop_lease import reset_lease
 
 
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
-    lease._reset_for_tests()
+    reset_lease()
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
     yield
-    lease._reset_for_tests()
+    reset_lease()
 
 
 def _wire_browser_exec(monkeypatch, run_cli):

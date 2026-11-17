@@ -15,7 +15,7 @@ schedule = SessionAuthority._schedule
 def boundary(self, ref):
     pending = list_session_admissions(self.db, session_id=ref.session_id)
     text = pending[-1]['payload'].get('text') if pending else None
-    if text in {'RECOVER_RESET', 'FOREIGN_QUEUE'}:
+    if text in {'RECOVER_RESET', 'TAMPERED_QUEUE'}:
         return
     if text == 'RECOVER_SAFE':
         for logical_id, live in self.sessions.items():

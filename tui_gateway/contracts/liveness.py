@@ -46,6 +46,11 @@ class ClientCapabilitiesResult(Result):
     #: answer: the request settles only once every attached client declined (server_requests.py).
     #: An older backend settles on the first error, so a client sends the decline only when this is true.
     declines_not_shown: bool = False
+    #: A canonical owner on this backend admits ``clarify_batch`` on ``prompt.submit``: the turn's
+    #: multi-question clarify arrives as ONE ``clarify`` request answered with ``clarify.lock``, not
+    #: one card per question. An older owner refuses the unknown key, so a client declares it only when
+    #: this is true. (The legacy sidecar always asks the batch at once and is never sent the key.)
+    canonical_clarify_batch: bool = False
 
 
 method("client.capabilities", params=ClientCapabilitiesParams, result=ClientCapabilitiesResult,

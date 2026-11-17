@@ -156,7 +156,7 @@ metadata:
 | `requires_toolsets` | 当列出的 toolsets 不可用时，skill **隐藏**。可用时显示。 |
 | `requires_tools` | 同上，但检查单个工具。 |
 
-**示例：** 内置的 `duckduckgo-search` skill 使用 `fallback_for_toolsets: [web]`。当你设置了 `FIRECRAWL_API_KEY` 时，web toolset 可用，agent 使用 `web_search`——DuckDuckGo skill 保持隐藏。如果 API key 缺失，web toolset 不可用，DuckDuckGo skill 会自动作为 fallback 出现。
+**示例：** 一个声明了 `fallback_for_toolsets: [web]` 的基于 curl 的搜索 skill，在 web toolset 可用时保持隐藏，仅在其被禁用时出现，确保 agent 仍有搜索途径。
 
 没有任何条件字段的 skills 行为与之前完全相同——始终显示。
 

@@ -107,7 +107,8 @@ def validate_output(text: str, schema: dict[str, Any]) -> tuple[bool, list[str]]
 
 
 def build_retry_message(errors: list[str]) -> str:
-    """Single bounded retry turn: errors verbatim, schema deliberately NOT re-pasted."""
+    """Single bounded retry turn: errors verbatim. The caller appends the contract itself, because a
+    compaction of a long first turn can leave the original one only in a summary."""
     error_block = "\n".join(f"- {e}" for e in errors)
     return ("Your previous final response was rejected by the output contract "
             "validator. Validation errors:\n" f"{error_block}\n\n"

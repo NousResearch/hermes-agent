@@ -16,9 +16,9 @@ import threading
 import time
 from dataclasses import dataclass
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
 
@@ -230,6 +230,17 @@ class ToolEntry:
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
     execution_timeout: float | None = None
+    # Argument names the handler accepts that the schema does not advertise (legacy call
+    # shapes, wrong-tool guards). tools/arg_validation.py never flags them, and a call that
+    # carries one is left for the handler to judge instead of the required-argument check.
+    compat_args: frozenset = frozenset()
+    # Required arguments whose absence the handler answers with its own guidance; the generic
+    # refusal leaves those to it.
+    self_checked_args: frozenset = frozenset()
+    # ``fn(args) -> seconds | None``: how long ONE call may legitimately block, derived from
+    # its own arguments and config. The executor floors its generic tool deadline by this so a
+    # tool's own timeout is the one that fires — see get_deadline_floor.
+    deadline_floor: Optional[Callable] = None
 
 
 class _PluginOverridePolicy:
@@ -259,6 +270,11 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # Grace window after a success in which a failure counts as a flake; kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
+# How long a list built on a grace-served True may be reused (``check_fn_verdict_window``). Inside the
+# grace window the tool is advertised whatever the re-probe returns, so reuse changes no result and only
+# bounds how often a failing probe re-runs: at most 12 per 60 s grace per memo key instead of one per
+# catalog read or tool_call, which a probe that fails by timing out would block for its full duration.
+_CHECK_FN_GRACE_REUSE_SECONDS = 5.0
 _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: dict[tuple[Callable, Optional[str]], float] = {}
@@ -267,12 +283,42 @@ _check_fn_core_drop_warned: set[tuple[Callable, Optional[str]]] = set()  # once-
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: set[Callable] = set()
+# Bumped by invalidate_check_fn_cache(): anything derived from the dropped verdicts is void.
+_check_fn_epoch = 0
+# Earliest expiry of the verdicts consulted inside check_fn_verdict_window() (None outside one).
+_verdict_expiry: ContextVar[Optional[list]] = ContextVar("check_fn_verdict_expiry", default=None)
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
     return fn
+
+
+def check_fn_cache_epoch() -> int:
+    """Changes whenever ``invalidate_check_fn_cache()`` drops the cached verdicts."""
+    return _check_fn_epoch
+
+
+@contextmanager
+def check_fn_verdict_window():
+    """Yield a one-item list holding the earliest expiry (``time.monotonic``) of the cached
+    ``check_fn`` verdicts consulted inside the block, ``inf`` when none was. A result filtered on
+    those verdicts must not be reused past it: reusing it would replay a verdict this cache has
+    already expired. A grace-served True expires after ``_CHECK_FN_GRACE_REUSE_SECONDS``, never past
+    the end of its grace window. ``no_cache_check_fn`` probes are config-backed and set no expiry."""
+    sink = [float("inf")]
+    token = _verdict_expiry.set(sink)
+    try:
+        yield sink
+    finally:
+        _verdict_expiry.reset(token)
+
+
+def _note_verdict_expiry(deadline: float) -> None:
+    sink = _verdict_expiry.get()
+    if sink is not None and deadline < sink[0]:
+        sink[0] = deadline
 
 
 def _fn_label(fn: Callable) -> object:
@@ -308,11 +354,104 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
+# A probe that never answers held its caller forever: the boot warm-up never finished and the first
+# inbound turn stopped before its provider request, silently (#131145). A probe gets this budget
+# (the environment probe's) and then counts as unavailable; its thread stays parked, and later
+# calls in the same profile answer False at once instead of waiting or spawning another thread.
+# Callers that arrive while a probe is still running wait on that same worker.
+_CHECK_FN_PROBE_TIMEOUT_SECONDS = 10.0
+# Bound at import: callers that swap ``threading.Thread`` for their own worker type must not turn
+# the probe's bounded wait into an unstarted (or inline) one.
+_ProbeThread = threading.Thread
+
+
+class _Probe:
+    """One in-flight ``check_fn`` run, shared by every caller that asks for the same key meanwhile."""
+
+    __slots__ = ("before", "ctx", "done", "outcome", "timed_out")
+
+    def __init__(self) -> None:
+        self.ctx, self.done, self.outcome, self.timed_out = copy_context(), threading.Event(), {}, False
+        # What the starter's context held: only the probe's OWN writes are published, so a caller
+        # that joined this run never adopts the starter's session-bound values.
+        self.before = dict(self.ctx.items())
+
+
+_check_fn_inflight: dict[tuple[Callable, str], _Probe] = {}
+_check_fn_inflight_lock = threading.Lock()
+_UNSET = object()
+
+
+class CheckFnTimeout(Exception):
+    """A ``check_fn`` did not answer within ``_CHECK_FN_PROBE_TIMEOUT_SECONDS``."""
+
+
+def _call_check_fn(fn: Callable, *, shared: bool = True) -> bool:
+    """``bool(fn())`` on a daemon worker under the caller's contextvars, bounded. The probe's
+    contextvar writes are published back (``memory_tool`` hands its availability snapshot to the
+    schema build that follows). ``shared`` callers for one key (cached probes: profile-invariant by
+    contract) join a single worker, reserved under the lock before it starts; an unshared probe
+    (``no_cache_check_fn`` or an unresolved cache scope) answers for its own caller's context only,
+    and is recorded only once it times out. Raises what the probe raised, or ``CheckFnTimeout``."""
+    key = (fn, hermes_home_key())
+    with _check_fn_inflight_lock:
+        current = _check_fn_inflight.get(key)
+        if current is not None and current.timed_out:
+            raise CheckFnTimeout("is still not answering")
+        if shared and current is not None:
+            probe, start = current, False
+        else:
+            probe, start = _Probe(), True
+            if shared:
+                _check_fn_inflight[key] = probe
+
+    def _settle() -> None:
+        # A settled probe leaves the table (MCP refreshes register a fresh check_fn each time, so a
+        # kept record would never be replaced); callers already waiting keep their reference.
+        # ``done`` flips under the lock so a timed-out caller cannot park an already-settled probe.
+        with _check_fn_inflight_lock:
+            if _check_fn_inflight.get(key) is probe:
+                del _check_fn_inflight[key]
+            probe.done.set()
+
+    if start:
+        def _probe() -> None:
+            try:
+                probe.outcome["value"] = bool(fn())
+            except BaseException as exc:  # health: allow BLE001 -- re-raised on the calling thread
+                probe.outcome["error"] = exc
+            finally:
+                _settle()
+
+        try:
+            _ProbeThread(target=probe.ctx.run, args=(_probe,), name="check-fn-probe", daemon=True).start()
+        except BaseException as exc:  # health: allow BLE001 -- re-raised to every waiter, then here
+            probe.outcome["error"] = exc
+            _settle()
+            raise
+    if not probe.done.wait(_CHECK_FN_PROBE_TIMEOUT_SECONDS):
+        with _check_fn_inflight_lock:
+            probe.timed_out = True
+            if not probe.done.is_set():
+                # Park it so later calls answer at once instead of starting another worker.
+                _check_fn_inflight.setdefault(key, probe)
+        raise CheckFnTimeout(f"did not answer within {_CHECK_FN_PROBE_TIMEOUT_SECONDS:.0f}s")
+    caller = copy_context()
+    for var, value in probe.ctx.items():
+        if probe.before.get(var, _UNSET) is not value and caller.get(var, _UNSET) is not value:
+            var.set(value)
+    if "error" in probe.outcome:
+        raise probe.outcome["error"]
+    return probe.outcome["value"]
+
+
 def _run_check_fn_uncached(fn: Callable) -> bool:
     """Run an availability check without cache/grace handling."""
     from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
-        return bool(fn())
+        return _call_check_fn(fn, shared=False)
+    except CheckFnTimeout as exc:
+        logger.warning("check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), exc)
     except UnscopedSecretError:
         # The verdict comes from the LIVE scope at the catch site, not from which registry branch
         # ran the probe: ``no_cache_check_fn`` probes skip the cache-scope lookup entirely, so a
@@ -352,10 +491,14 @@ def _check_fn_cached(fn: Callable) -> bool:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
         cached = _check_fn_cache.get(cache_key)
         if cached is not None:
+            _note_verdict_expiry(cached[0] + _CHECK_FN_TTL_SECONDS)
             return cached[1]
     exc_info = None
+    timed_out = False
     try:
-        value, outcome = bool(fn()), "returned False"
+        value, outcome = _call_check_fn(fn), "returned False"
+    except CheckFnTimeout as exc:
+        value, outcome, timed_out = False, str(exc), True
     except Exception as exc:
         # Keep the exception for the verdict log below (emitted outside this block, where
         # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
@@ -363,16 +506,21 @@ def _check_fn_cached(fn: Callable) -> bool:
         value, outcome, exc_info = False, "raised", exc
     # Resolved outside the cache lock: the registry snapshot takes its own lock.
     core_dropped = sorted(_core_tools_gated_by(fn)) if not value else []
+    # Stamped at completion: a probe that fails by timing out has spent its timeout, and a window
+    # measured from its start would already be over when it returns, so every read would re-probe.
+    now = time.monotonic()
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:
             _check_fn_last_good[cache_key] = now
             _check_fn_ever_good.add(cache_key)
             _check_fn_cache[cache_key] = (now, True)
+            _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
             return True
         last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
-            # Recent success → flake: serve last-good True, do NOT cache (next call re-probes).
+            # Recent success → flake: serve last-good True, do NOT cache (next direct check re-probes).
+            _note_verdict_expiry(min(now + _CHECK_FN_GRACE_REUSE_SECONDS, last_good + _CHECK_FN_FAILURE_GRACE_SECONDS))
             logger.warning(
                 "check_fn %s failed (%s) within %.0fs of last success; "
                 "treating as transient and keeping tool(s) available",
@@ -394,11 +542,13 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "so not searchable either); dependent tools will be unavailable this turn",
                 _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
         else:
-            log = logger.warning if exc_info else logger.info
+            # A probe that never answers is a bug in the probe, not a missing backend: WARNING.
+            log = logger.warning if exc_info or timed_out else logger.info
             log(
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
+        _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
         return False
 
 
@@ -421,7 +571,9 @@ def _memo_check(fn: Callable, memo: dict[Callable, bool]) -> bool:
 
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results (after config changes like ``hermes tools enable``)."""
+    global _check_fn_epoch
     with _check_fn_cache_lock:
+        _check_fn_epoch += 1
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
         _check_fn_ever_good.clear()
@@ -453,7 +605,6 @@ class ToolRegistry:
         # remain confined to the profile that loaded them.
         self._plugin_override_policy: dict[tuple[Optional[str], str], _PluginOverridePolicy] = {}
         self._plugin_module_scopes: dict[str, set[Optional[str]]] = {}
-        self._toolset_checks: dict[str, Callable] = {}
         self._toolset_aliases: dict[str, str] = {}
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
@@ -495,17 +646,9 @@ class ToolRegistry:
     def _toolset_entries(self, toolset: str, scope: Optional[str]) -> list[ToolEntry]:
         return self._grouped(self._merged_tools(scope).values()).get(toolset, [])
 
-    def _snapshot_state(
-        self, scope: Optional[str] = None) -> tuple[list[ToolEntry], dict[str, Callable]]:
-        """Return a coherent snapshot of registry entries and toolset checks."""
-        with self._lock:
-            entries = list(self._merged_tools(scope).values())
-            checks = dict(self._toolset_checks)
-            checks.update({e.toolset: e.check_fn for e in entries if e.check_fn is not None})
-            return entries, checks
-
     def _snapshot_entries(self) -> list[ToolEntry]:
-        return self._snapshot_state()[0]
+        with self._lock:
+            return list(self._merged_tools(None).values())
 
     def _toolset_has_exposable_tools(self, toolset: str, entries: list[ToolEntry]) -> bool:
         """True when at least one tool in *toolset* would be exposed. Mirrors
@@ -618,6 +761,12 @@ class ToolRegistry:
         mod = self._callable_module(handler)
         return self._plugin_namespace_of_module(mod) if mod else None
 
+    def is_builtin(self, entry: ToolEntry) -> bool:
+        """True for a tool Hermes ships: handler defined in the ``tools`` package, and not an
+        MCP server's tool (those handlers live in ``tools`` too, under an ``mcp-*`` toolset)."""
+        return (not entry.toolset.startswith("mcp-")
+                and self._callable_module(entry.handler).partition(".")[0] == "tools")
+
     @staticmethod
     def _callable_module(handler: Callable) -> str:
         """Resolve defining module through wrappers, partials, and objects."""
@@ -693,7 +842,9 @@ class ToolRegistry:
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
-        scope: Optional[str] = None, execution_timeout: float | None = None):
+        scope: Optional[str] = None, execution_timeout: float | None = None,
+        compat_args: Iterable[str] = (), self_checked_args: Iterable[str] = (),
+        deadline_floor: Callable | None = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -758,13 +909,9 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
-                dynamic_schema_overrides=dynamic_schema_overrides)
-            # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
-            # longer gates a toolset; it still feeds get_toolset_requirements ->
-            # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,
-            # never called) to classify an unavailable toolset as lazy-init vs disabled.
-            if scope is None and check_fn and toolset not in self._toolset_checks:
-                self._toolset_checks[toolset] = check_fn
+                dynamic_schema_overrides=dynamic_schema_overrides, compat_args=frozenset(compat_args),
+                self_checked_args=frozenset(self_checked_args),
+                deadline_floor=deadline_floor)
             self._generation += 1
 
     def deregister(self, name: str, *, scope: Optional[str] = None) -> None:
@@ -820,7 +967,6 @@ class ToolRegistry:
             if scope is not None and not target:
                 self._scoped_tools.pop(scope, None)
             if not self._toolset_entries(entry.toolset, scope):
-                self._toolset_checks.pop(entry.toolset, None)
                 self._drop_toolset_aliases(entry.toolset)
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
@@ -853,19 +999,11 @@ class ToolRegistry:
             if scope is not None and not target:
                 self._scoped_tools.pop(scope, None)
 
-            # Rebuild affected toolset checks from survivors: a plugin may have replaced an
-            # entry in the same toolset, so its check_fn would otherwise linger after restore.
             affected_toolsets = {current.toolset}
             if previous is not None:
                 affected_toolsets.add(previous.toolset)
             for toolset in affected_toolsets:
                 surviving = self._toolset_entries(toolset, scope)
-                check_fn = next((entry.check_fn for entry in surviving if entry.check_fn), None)
-                if scope is None:
-                    if check_fn is None:
-                        self._toolset_checks.pop(toolset, None)
-                    else:
-                        self._toolset_checks[toolset] = check_fn
                 in_overlays = (e for m in self._scoped_tools.values() for e in m.values())
                 if not surviving and not any(e.toolset == toolset for e in in_overlays):
                     self._drop_toolset_aliases(toolset)
@@ -929,9 +1067,16 @@ class ToolRegistry:
         self, name: str, args: dict, *, scope: Optional[str] = None, **kwargs) -> str | dict:
         """Execute a tool handler by name: async handlers bridged via ``_run_async()``,
         results normalized, every exception returned as ``{"error": ...}``."""
+        from tools.hosted_tool_policy import hosted_tool_refusal
+        if refusal := hosted_tool_refusal(name):  # deny-by-default in a hosted scope, before any handler
+            return tool_error(refusal)
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        from tools.arg_validation import check_tool_args, flag_unknown_args
+        refusal, unknown, valid = check_tool_args(entry, args)
+        if refusal is not None:
+            return refusal
         try:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
@@ -942,7 +1087,7 @@ class ToolRegistry:
                 result = _run_async(entry.handler(args, **kwargs))
             else:
                 result = entry.handler(args, **kwargs)
-            return self._normalize_handler_result(name, result)
+            return flag_unknown_args(self._normalize_handler_result(name, result), name, unknown, valid)
         except Exception as e:
             # exc_info already renders the exception, so keep the message copy bounded.
             logger.exception("Tool %s dispatch error: %s", name, _bound_error_text(str(e)))
@@ -969,6 +1114,23 @@ class ToolRegistry:
             return default
         from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
         return DEFAULT_RESULT_SIZE_CHARS
+
+    def get_deadline_floor(self, name: str, args: dict) -> Optional[float]:
+        """Seconds this call may legitimately block for, as the tool itself declares it, or
+        ``None`` when it declares nothing. Callers raise their generic deadline to it.
+
+        Plugin tools can declare one too, so a declaration that raises or returns junk degrades
+        to "no floor" instead of taking tool dispatch down.
+        """
+        declare = self._attr(name, "deadline_floor")
+        if declare is None:
+            return None
+        try:
+            value = float(declare(args if isinstance(args, dict) else {}) or 0)
+        except Exception:
+            logger.warning("Tool %s: deadline_floor() failed; ignoring", name, exc_info=True)
+            return None
+        return value if 0 < value < float("inf") else None
 
     def get_all_tool_names(self) -> list[str]:
         return sorted(entry.name for entry in self._snapshot_entries())
@@ -1012,7 +1174,8 @@ class ToolRegistry:
 
     def get_toolset_requirements(self) -> dict[str, dict]:
         """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
-        entries, toolset_checks = self._snapshot_state()
+        entries = self._snapshot_entries()
+        toolset_checks = {e.toolset: e.check_fn for e in entries if e.check_fn is not None}
         result: dict[str, dict] = {}
         for toolset, members in self._grouped(entries).items():
             result[toolset] = {

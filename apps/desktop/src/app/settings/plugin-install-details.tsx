@@ -43,6 +43,8 @@ interface PluginInstallDetailsProps {
   pin: PinState
   force: boolean
   onForceChange: (value: boolean) => void
+  /** Offer Force for a catalog pick too: a partial install proceeds only by replacing both halves. */
+  offerForce?: boolean
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -178,7 +180,7 @@ export function PluginInstallDetails(props: PluginInstallDetailsProps) {
           </SelectContent>
         </Select>
       </Row>
-      {!request.catalogName && (
+      {(!request.catalogName || props.offerForce) && (
         <div>
           <label className={cn(CAPTION, 'flex items-center justify-between gap-3 text-foreground')}>
             <span>{copy.forceReinstall}</span>

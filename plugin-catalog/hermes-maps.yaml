@@ -1,0 +1,37 @@
+name: hermes-maps
+repo: https://github.com/tuancookiez-hub/hermes-maps
+sha: 48a8ec745036d0c9e4c8343ef4e64130d43367ae
+version: "0.1.0"
+title: Hermes Maps
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-maps/48a8ec745036d0c9e4c8343ef4e64130d43367ae/docs/images/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-maps/48a8ec745036d0c9e4c8343ef4e64130d43367ae/docs/images/chat-and-map.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-maps/48a8ec745036d0c9e4c8343ef4e64130d43367ae/docs/images/pin-card.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-maps/48a8ec745036d0c9e4c8343ef4e64130d43367ae/docs/images/area-selection.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-maps/48a8ec745036d0c9e4c8343ef4e64130d43367ae/docs/images/route.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-maps/48a8ec745036d0c9e4c8343ef4e64130d43367ae/docs/images/globe.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-maps/48a8ec745036d0c9e4c8343ef4e64130d43367ae/docs/images/simple.png
+description: "A live map you and Hermes share, docked beside the chat. Hermes plots places it finds on the web with real coordinates, flies the camera, drops pins with a note and source link, and draws routes. You click a pin or circle an area and Hermes receives what you picked. Two looks: a clean flat map and a cinematic globe. No keys and no cost. Disclosure — viewing the map sends tile requests (your IP address and the area viewed) to tiles.openfreemap.org; a bundled world outline is the offline fallback. Plotting and place search send place names and search text (and the visible map bounds for a visible-area search) from this machine to photon.komoot.io, a free service with no uptime guarantee; results are kept in memory for an hour. Google Maps links and a pin's source link open in the browser only when clicked. Selections you send become chat messages and reach your model provider. Pins, routes, camera and selections are stored in Hermes plugin storage on this machine. No background processes, no telemetry, no credentials, no self-update."
+maintainer: tuancookiez-hub
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/tuancookiez-hub/hermes-maps/tree/48a8ec745036d0c9e4c8343ef4e64130d43367ae
+capabilities:
+  provides_tools:
+    - map_open
+    - map_fly_to
+    - map_add_pins
+    - map_clear
+    - map_draw_route
+    - map_get_state
+    - map_plot_places
+    - map_search_places
+    - map_request_selection
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Hermes Desktop is required: the map is a Desktop pane. The tools still save their changes without it and report delivery as queued."
+  - "Place lookup uses OpenStreetMap data through Photon. Places it does not list come back as not placed instead of getting a guessed pin, and each lookup takes several seconds."
+  - "Routes are straight lines between stops, not road routes."

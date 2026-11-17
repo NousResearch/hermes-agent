@@ -1,0 +1,19 @@
+name: apple-keychain
+title: Apple Keychain
+repo: https://github.com/robbiemu/hermes-agent
+sha: 6b573f8f2f31ac0f5254c99b6f64d97e674ff569
+subdir: plugins/apple-keychain
+description: "Load Hermes secrets from macOS Keychain, with interactive setup, safe rotation and recovery. Reads explicitly configured Keychain items; operator commands can write items and manage recovery copies. Does not read or edit .env files. Compiles the included C helper locally with Apple developer tools and uses Security.framework and local macOS commands. Imports some private Hermes configuration helpers. Disclosure — registers the apple_keychain secret source: on macOS, once secrets.apple_keychain.enabled is true, Hermes startup reads the configured generic-password items from macOS Keychain and loads them as environment variables, overriding .env and inherited values by default (override_existing: true); on first use it compiles a small native helper from the plugin's own C source with the local Xcode Command Line Tools clang and caches it in ~/Library/Caches/hermes/apple-keychain (shared by all of the user's profiles; a plugin update can require re-authorising the new helper in Keychain Access), and it keeps empty per-item lock files in /private/tmp; the operator commands hermes keychain setup, set, provision and recovery write secrets.apple_keychain in config.yaml and create, rotate, restore or delete Keychain items, and provision copies the inherited environment values of the configured names into Keychain; rotation keeps the old value as a recovery item in the same keychain until the new value verifies (kept with --keep-backup or after a failed rotation until discarded); items the plugin creates trust the helper and /usr/bin/security (so other programs running as the same user can read them through the security CLI without a prompt), or any application with --allow-any-app; subprocesses get only PATH, HOME and TMPDIR; no network calls, no self-update; imports a few private Hermes helpers that can change between releases."
+maintainer: robbiemu
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+version: "0.1.1"
+platforms:
+  - macos
+docs_url: https://github.com/robbiemu/hermes-agent/blob/6b573f8f2f31ac0f5254c99b6f64d97e674ff569/plugins/apple-keychain/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

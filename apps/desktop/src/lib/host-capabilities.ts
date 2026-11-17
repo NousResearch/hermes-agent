@@ -17,12 +17,16 @@ import { isBrowserHostedDesktop } from '@/lib/platform'
 type Host = 'browser' | 'native'
 
 export const HOST_CAPABILITIES = Object.freeze({
+  /** OS notifications go through the browser's Notification API and its per-site permission. */
+  browserNotifications: 'browser',
   /** Mouse back/forward buttons are the app's to handle; a browser tab keeps its own history. */
   appMouseHistoryButtons: 'native',
   /** The browser opens its own context menu, which the app menu must cancel or let through. */
   browserContextMenu: 'browser',
   /** Shortcuts whose native chord the browser takes first (new tab, close tab) default to another chord. */
   browserShortcutDefaults: 'browser',
+  /** Hermes Cloud sign-in runs here (a portal window); the Webapp signs in from Settings ▸ Providers. */
+  cloudPortalLogin: 'native',
   /** Writes go through Electron's clipboard IPC before `navigator.clipboard`. */
   clipboardIpc: 'native',
   /** Gateway connection management (switch, connect, recover) lives on this host. */
@@ -39,6 +43,8 @@ export const HOST_CAPABILITIES = Object.freeze({
   nativeFolderPicker: 'native',
   /** Host files are read through the Electron bridge, not the gateway's REST routes. */
   nativeHostFiles: 'native',
+  /** Main can enumerate the OS windows around this one (read_window_below); a browser tab cannot. */
+  osWindowEnumeration: 'native',
   /** Preferences are stored per serving origin (and per profile) in this tab. */
   originScopedPrefs: 'browser',
   /** The profile rail shows its squares (drag, hold-to-recolor) instead of always condensing. */

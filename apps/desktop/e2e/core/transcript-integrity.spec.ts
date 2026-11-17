@@ -246,7 +246,10 @@ test('transcript oracle holds across every transition', async () => {
       const row = page.locator('[data-slot="bots-roster"] [data-roster-key="local::p2"]')
       await expect(row).toBeVisible({ timeout: 60_000 })
       await row.click()
-      await expect(page.getByRole('tab', { name: /Draft/ })).toBeVisible({ timeout: 60_000 })
+      // The tab is named by its title; its status dot carries the draft state.
+      await expect(
+        page.getByRole('tab', { exact: true, name: 'P2', selected: true }).getByLabel(/Draft/)
+      ).toBeVisible({ timeout: 60_000 })
       provider.script(U(9), [{ text: words(A(9), 'profile', 'two', 'first') }])
       await send(page, `${U(9)} on p2`, 'Enter', ws)
       await finished(U(9))

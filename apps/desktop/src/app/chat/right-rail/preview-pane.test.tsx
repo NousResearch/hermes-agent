@@ -504,6 +504,11 @@ describe('PreviewPane console state', () => {
 
     window.hermesDesktop = {
       ...previousDesktop,
+      beginPreviewGuestActivity: vi.fn(async () => 17),
+      endPreviewGuestActivity: vi.fn(async () => {}),
+      executePreviewGuestScript: vi.fn(async (_token, code) =>
+        (webview.executeJavaScript as (source: string) => Promise<unknown>)(code)
+      ),
       capturePreview: vi.fn(async () => {
         captureCount += 1
 
@@ -825,7 +830,12 @@ describe('PreviewPane console state', () => {
   // A browser tab's back button belongs to the tab: the pane leaves it alone.
   it('leaves the mouse back button to the browser tab in browser-hosted Desktop', async () => {
     globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
-    const target = { kind: 'url' as const, label: 'Example', source: 'https://example.com/', url: 'https://example.com/' }
+    const target = {
+      kind: 'url' as const,
+      label: 'Example',
+      source: 'https://example.com/',
+      url: 'https://example.com/'
+    }
 
     let rendered!: ReturnType<typeof render>
     await act(async () => {

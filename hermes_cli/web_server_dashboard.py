@@ -3,15 +3,13 @@
 
 import asyncio
 import logging
-import importlib.util
 import json
 import os
-import sys
 import threading
 import time
 from contextlib import contextmanager
 import hermes_yaml as yaml
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocketException
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette import status
@@ -104,6 +102,31 @@ _HEADLESS_MSG = (
 )
 
 
+def _bundle_unavailable(request: Request, message: str, status_code: int) -> Response:
+    """Why the SPA cannot be served: a readable page for a browser, the JSON error for API clients.
+
+    The Webapp is served to the internet behind a funnel, where the person who signed in may
+    never have seen a terminal; a raw JSON body is all a browser would show them.
+    """
+    if "text/html" not in request.headers.get("accept", ""):
+        return JSONResponse({"error": message}, status_code=status_code, headers=_NO_STORE)
+    from html import escape
+    from hermes_cli.webapp_page_policy import page_headers
+    html = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>Hermes is unavailable</title><style>"
+        "body{font-family:system-ui,sans-serif;max-width:36rem;margin:15vh auto;padding:0 1rem;"
+        "line-height:1.5;color:#1c1c1c;background:#fafafa}"
+        "@media (prefers-color-scheme:dark){body{color:#e8e8e8;background:#141414}}"
+        "</style></head><body><h1>Hermes is unavailable</h1>"
+        f"<p>{escape(message)}</p>"
+        "<p>Ask whoever runs this Hermes host to run that command, then reload this page.</p>"
+        "</body></html>"
+    )
+    return HTMLResponse(html, status_code=status_code, headers=page_headers(request, html, _NO_STORE))
+
+
 def mount_spa(application: FastAPI):
     """Mount the built SPA; unmatched paths fall back to index.html for client-side routing.
 
@@ -175,15 +198,15 @@ def mount_spa(application: FastAPI):
             # Webapp's bundle is built by `hermes webapp`, not by the dashboard's web project.
             webapp = getattr(application.state, "ui_surface", "dashboard") == "webapp"
             missing = ("The Webapp is not built. Run: hermes webapp" if webapp
-                       else "Frontend not built. Run: cd web && npm run build")
-            return JSONResponse({"error": missing}, status_code=404)
+                       else "Frontend not built. Run: pnpm --dir web run build")
+            return _bundle_unavailable(request, missing, 404)
         if getattr(application.state, "ui_surface", "dashboard") == "webapp":
             # A bundle `hermes update` could not rebuild was built for the code before the update:
             # refuse it until `hermes webapp` rebuilds it.
             from gateway.webapp_listener import bundle_stale_reason
             stale = bundle_stale_reason(web_dist())
             if stale:
-                return JSONResponse({"error": stale}, status_code=503, headers=_NO_STORE)
+                return _bundle_unavailable(request, stale, 503)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(application.state, "auth_required", False))
         # Only a host that records its surface (the gateway's Webapp) names it to the page.
@@ -512,7 +535,7 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     original string when the resolved path stays under ``dashboard_dir``, else ``None`` so
     the plugin still loads its static JS/CSS but its backend ``api`` is rejected.
 
-    The web server later imports this file as a Python module via ``importlib.util.spec_from_file_location``
+    The web server later imports this file as a Python module via ``plugin_isolation.import_user_code``
     (arbitrary code execution by design — that's how plugins extend the backend). Pre-#29156 the field was
     used as-is, which meant:
     """
@@ -936,16 +959,24 @@ class PluginApiWebSocketGate:
     A Desktop's native grant is the exception: it names the profile the socket acts for, so it is
     redeemed here, once (:func:`_native_ws_scope`), and consent is checked in that profile. A
     secondary profile's socket to a plugin its own host serves is answered here too (PLG-3).
+
+    First it runs the core sockets' Host/Origin/peer gate (``_ws_request_is_allowed``, 4403), which
+    HTTP middleware never applies to an upgrade. Here it covers every plugin socket, whatever form
+    declares it: a router dependency reaches ``@router.websocket`` routes only.
     """
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
+        from hermes_cli.web_server_chat import _ws_request_is_allowed
         from hermes_cli.web_server_plugin_profiles import plugin_request_scope, refuse_secondary_plugin_socket
         name = _plugin_api_name(scope) if scope["type"] == "websocket" else ""
         if not name:
             await self.app(scope, receive, send)
+            return
+        if not _ws_request_is_allowed(WebSocket(scope, receive, send)):
+            await send({"type": "websocket.close", "code": 4403})
             return
         with _native_ws_scope(scope) as admitted, plugin_request_scope(scope):
             if admitted and not await _plugin_api_request_refused(name):
@@ -1215,19 +1246,12 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
         return False
     try:
-        module_name = f"hermes_dashboard_plugin_{plugin['name']}"
-        spec = importlib.util.spec_from_file_location(module_name, api_path)
-        if spec is None or spec.loader is None:
-            return False
-        mod = importlib.util.module_from_spec(spec)
-        # Register in sys.modules BEFORE exec_module so pydantic/FastAPI can resolve
+        from hermes_cli.plugin_isolation import import_user_code
+        # Registered in sys.modules while the body runs so pydantic/FastAPI can resolve
         # string annotations (``from __future__ import annotations``) by module name.
-        sys.modules[module_name] = mod
-        try:
-            spec.loader.exec_module(mod)
-        except Exception:
-            sys.modules.pop(module_name, None)
-            raise
+        mod = import_user_code(api_path, f"hermes_dashboard_plugin_{plugin['name']}")
+        if mod is None:
+            return False
         router = getattr(mod, "router", None)
         if router is None:
             _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])

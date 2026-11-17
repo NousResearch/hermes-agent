@@ -1,0 +1,18 @@
+name: zambo-receipts
+title: Zambo Receipts
+repo: https://github.com/zambodotdev/hermes-zambo-receipts
+sha: 5da9e11cb3bc22a4b567e135b0330addc55de55f
+version: "1.0.2"
+description: "Verifiable receipts for Hermes Agent sessions. Lifecycle hooks journal every tool call in a session to Zambo (zambo.dev) as it happens, and when the session ends the plugin wraps it into an AER-1 verifiable receipt that anyone can open and check at a public zambo.dev/run link. Receipt pages are public: anyone with the link can read them, and the summary and goal text passed to zambo_wrap_session is published on the receipt page. Adds three tools (zambo_verify_receipt, zambo_wrap_session, zambo_session_status), a /receipt slash command, and a bundled skill. Disclosure — while enabled, the plugin makes network calls to zambo.dev (the configured MCP endpoint) carrying, per tool call, the tool name, duration, result size and a SHA-256 hash of the result; result text (truncated to 4,000 characters) is sent only when journal_results is set to full; at session finalize (/new, quit, gateway reset) it publishes a receipt as a public zambo.dev/run page, including the summary and goal text passed to zambo_wrap_session; failed entries buffer in a bounded outbox under $HERMES_HOME/plugin-data/zambo-receipts/ with a stable per-install caller id; no credentials."
+maintainer: zambodotdev
+tier: community
+category: tools
+docs_url: https://github.com/zambodotdev/hermes-zambo-receipts/blob/5da9e11cb3bc22a4b567e135b0330addc55de55f/README.md
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [zambo_verify_receipt, zambo_wrap_session, zambo_session_status]
+  provides_hooks: [on_session_start, post_tool_call, on_session_end, on_session_finalize]
+  provides_middleware: []
+  requires_env: []

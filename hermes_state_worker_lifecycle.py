@@ -2,6 +2,7 @@
 import json
 import time
 
+from hermes_state_common import _MERGE_DISPLAY_META
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -176,11 +177,17 @@ def worker_message_api_content(db, conn, session_id, payload):
 
 def worker_user_content(db, conn, session_id, payload):
     """Rewrite ONE active user row of this session, same guards as ``SessionDB.set_user_message_content``."""
-    if set(payload) != {'row_id', 'content'}:
+    if set(payload) - {'display_metadata'} != {'row_id', 'content'}:
         raise RuntimeStoreError('invalid_params')
+    if 'display_metadata' not in payload:
+        return {'value': conn.execute(
+            "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
+            (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
     return {'value': conn.execute(
-        "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
-        (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
+        f"UPDATE messages SET content=?, api_content=NULL, display_metadata={_MERGE_DISPLAY_META} "
+        "WHERE id=? AND session_id=? AND role='user' AND active=1",
+        (db._encode_content(payload['content']), db._encode_display_metadata(payload['display_metadata']),
+         _row_id(payload), session_id)).rowcount}
 
 
 WORKER_LIFECYCLE_HANDLERS = {
@@ -220,6 +227,12 @@ def insert_session_row_in_transaction(
         raise RuntimeStoreError('not_found')
     if not (profile_name or "").strip():
         profile_name = self._own_profile_name()
+    # A newly inserted /new continuation must be visible immediately; schema-open repair
+    # only heals rows already on disk (#109073).
+    if (session_key and isinstance(model_config, dict)
+            and model_config.get("_reset_from") is not None
+            and model_config.get("_delegate_from") is not None):
+        model_config = {key: value for key, value in model_config.items() if key != "_delegate_from"}
     system_prompt_hash = self._store_system_prompt(conn, system_prompt)
     conn.execute(
         """INSERT INTO sessions (
@@ -245,7 +258,9 @@ def insert_session_row_in_transaction(
                             sessions.model_config, '$._reset_from'
                         ) = '{}'
                    THEN json_set(
-                       excluded.model_config,
+                       -- a reset row is the chat itself: a delegate marker riding the incoming
+                       -- config would hide it from every list while it keeps the route (#109073)
+                       json_remove(excluded.model_config, '$._delegate_from'),
                        '$._reset_from',
                        json_extract(
                            sessions.model_config, '$._reset_from'

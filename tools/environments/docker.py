@@ -25,7 +25,7 @@ from typing import Optional
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
 from tools.terminal_tool_config import (
-    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount,
+    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount, home_profile_name,
 )
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
@@ -93,10 +93,6 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
-# Module-level binding: tests patch ``docker._load_hermes_env_vars`` to fake the .env file.
-_load_hermes_env_vars = load_hermes_env_vars
-
-
 # Docker label values must match [a-zA-Z0-9_.-] and stay <=63 chars to round-trip
 # through `docker ps --filter label=key=value`.
 _LABEL_VALUE_OK_RE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -115,13 +111,10 @@ _sandbox_dir_name = sanitize_task_id_for_path
 
 
 def _get_active_profile_name() -> str:
-    """Active Hermes profile name, or ``"default"`` on any error. Resolved at container-create
-    time so a container stays tagged with its creator even if the process switches profiles."""
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "default"
-    except Exception:
-        return "default"
+    """Active Hermes profile name (the container key's own lookup), or ``"default"`` on error. Resolved
+    at container-create time so a container stays tagged with its creator even if the process switches
+    profiles."""
+    return home_profile_name()
 
 
 def _container_identity(shared_key: str = "") -> str:
@@ -1089,7 +1082,7 @@ class DockerEnvironment(BaseEnvironment):
 
     def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
         """See ``remote_common.resolve_passthrough_env``; explicit docker_forward_env bypasses the blocklist."""
-        return resolve_passthrough_env(self._forward_env, hermes_env_loader=_load_hermes_env_vars)
+        return resolve_passthrough_env(self._forward_env, hermes_env_loader=load_hermes_env_vars)
 
     def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...], dict[str, str]]:
         """Runtime name-only forwarding args, names absent from scope, and the values
@@ -1297,6 +1290,7 @@ class DockerEnvironment(BaseEnvironment):
         the thread to finish before the interpreter exits, so ``docker stop`` / ``docker rm`` actually
         completes when we do trigger it.
         """
+        self.stop_all_processes()  # streams into the container: their host-side exec clients too
         container_id = self._container_id
         if not container_id:
             # Bind-mount dirs are still dropped in non-persistent mode.

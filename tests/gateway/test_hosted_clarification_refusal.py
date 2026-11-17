@@ -59,7 +59,7 @@ def test_hosted_clarify_is_declined_without_waiting(ask):
 def test_local_choice_prompt_still_accepts_a_typed_answer(ask):
     outcomes = []
     (response, answered), _ = ask('cli', on_sent=lambda key: outcomes.append(
-        clarify_mod.attempt_text_response_for_session(key, 'something else entirely')))
+        clarify_mod.attempt_text_response('q-cli', 'something else entirely')))
     assert outcomes == [clarify_mod.TEXT_RESOLVED]
     assert (response, answered) == ('something else entirely', True)
 
@@ -70,7 +70,7 @@ def test_clarify_without_an_answering_viewer_is_declined(ask, owner):
     attached. A viewer's own turn keeps waiting for its author (the local test above)."""
     from gateway.run_turn_runner_clarify_delivery import UNDELIVERED_DECLINED
     from gateway.session_authority import LiveSession
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_state_runtime import admit_session_input, claim_session_input
     forwarded = {'source': 'a2a', 'a2a_identity': ['dev', '', 'peer', 'ctx']}
     (response, answered), elapsed = ask('a2a', request=forwarded)
@@ -83,8 +83,8 @@ def test_clarify_without_an_answering_viewer_is_declined(ask, owner):
     (response, answered), elapsed = ask('cli')
     assert (response, answered) == (UNDELIVERED_DECLINED, False), 'a Bot DM waited for an unseen question'
     assert elapsed < 5
-    live.subscribers['viewer'] = Principal('uid', 'default', frozenset({'session:read', 'session:respond'}), 't')
+    live.subscribers['viewer'] = SessionActor('uid', 'default', frozenset({'session:read', 'session:respond'}), 't')
     outcomes = []
     (response, answered), _ = ask('cli', on_sent=lambda key: outcomes.append(
-        clarify_mod.attempt_text_response_for_session(key, 'blue')))
+        clarify_mod.attempt_text_response('q-cli', 'blue')))
     assert (response, answered) == ('blue', True)

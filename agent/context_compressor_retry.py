@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.message_metadata import typed_prompt_content  # re-exported with the retry text helper
+
 
 def retryable_user_text(content: Any) -> str:
     """Lossless retry text, or raise before destructive mutation (media/unknown parts fail closed: no replay protocol)."""

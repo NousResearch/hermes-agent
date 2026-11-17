@@ -208,7 +208,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "cancel", "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
@@ -1134,6 +1134,41 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                            lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
 
 
+def _cmd_cancel(args: argparse.Namespace) -> int:
+    ids = list(args.task_ids or [])
+    session_id = getattr(args, "session_id", None)
+    if ids and session_id:
+        return _err("choose either task_ids to cancel or --session")
+    if not ids and not session_id:
+        return _err("at least one task_id or --session is required")
+    by = getattr(args, "cancelled_by", None) or _profile_author()
+    reason = getattr(args, "reason", None)
+    with kbc.connect_closing() as conn:
+        if session_id:
+            cancelled = kb.cancel_tasks_for_session(
+                conn, session_id, reason=reason, cancelled_by=by,
+            )
+            if _json_out(args, {"session_id": session_id, "cancelled": cancelled}):
+                return 0
+            for tid in cancelled:
+                print(f"Cancelled {tid}")
+            if not cancelled:
+                print(f"No non-terminal tasks for session {session_id}")
+            return 0
+        outcomes = [
+            kb.cancel_task(conn, tid, reason=reason, cancelled_by=by) for tid in ids
+        ]
+        cancelled = [o.task_id for o in outcomes if o.cancelled]
+        failed = [o.task_id for o in outcomes if not o.cancelled]
+        if _json_out(args, {"cancelled": cancelled, "failed": failed}):
+            return 1 if failed else 0
+        for tid in cancelled:
+            print(f"Cancelled {tid}")
+        for tid in failed:
+            print(f"cannot cancel {tid} (unknown id, or already terminal)", file=sys.stderr)
+        return 1 if failed else 0
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         stats = kb.board_stats(conn)
@@ -1351,7 +1386,7 @@ _HANDLERS = {
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
-    "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
+    "archive": _cmd_archive, "cancel": _cmd_cancel, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,

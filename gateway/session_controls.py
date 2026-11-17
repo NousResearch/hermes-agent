@@ -114,6 +114,7 @@ _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'delivery.status',
+                               'kanban.cancel', 'kanban.cancel_all',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
@@ -251,6 +252,7 @@ class AuthorityConnection:
                     'bot_relay.roster.sync': self.bot_roster, 'bot_relay.outbox.drain': self.bot_outbox,
                     'bot_relay.reply': self.bot_reply, 'a2a.forward': self.a2a_forward,
                     'kanban.run': self.kanban_run,
+                    'kanban.cancel': self.kanban_cancel, 'kanban.cancel_all': self.kanban_cancel_all,
                     'cron.submit': self.cron_submit, 'cron.status': self.cron_status,
                     'cron.cancel': self.cron_cancel, 'cron.recover': self.cron_recover,
                     'worker.register': self.worker_register, 'worker.adopt': self.worker_adopt,
@@ -423,6 +425,13 @@ class AuthorityConnection:
     async def delivery_status(self, ref, params):
         from gateway.session_delivery_status import delivery_status
         return await delivery_status(self, ref, params)
+    async def kanban_cancel(self, ref, params):
+        from gateway.session_kanban_cancel import cancel_task
+        return await cancel_task(self, ref, params)
+
+    async def kanban_cancel_all(self, ref, params):
+        from gateway.session_kanban_cancel import cancel_all
+        return await cancel_all(self, ref, params)
 
     async def cron_recover(self, ref, params):
         from gateway.session_cron import rpc

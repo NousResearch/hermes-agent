@@ -116,3 +116,21 @@ class TestUnifiedDispatch:
         assert result["success"] is True
         assert provider.last_kwargs["image_url"].startswith("data:image/png;base64,")
         assert provider.last_kwargs["reference_image_urls"] == ["https://example.com/ref.png"]
+
+    @pytest.mark.parametrize("budget", [None, 200_000])
+    def test_inline_images_shrink_only_under_a_declared_budget(self, budget):
+        """A provider without ``max_inline_image_chars`` gets the caller's data: URL byte-for-byte."""
+        import base64
+        import io
+        import os
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.frombytes("RGB", (1200, 1200), os.urandom(1200 * 1200 * 3)).save(buf, "PNG")  # past FAL's 3.5 MB
+        big = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+        provider = _RecordingProvider()
+        if budget:
+            provider.capabilities = lambda: {"modalities": ["text", "image"], "max_inline_image_chars": budget}
+        video_gen_registry.register_provider(provider)
+        assert self._run({"prompt": "a dog", "image_url": big}, configured="fake")["success"] is True
+        sent = provider.last_kwargs["image_url"]
+        assert (sent == big) if budget is None else (sent.startswith("data:image/") and len(sent) <= budget)

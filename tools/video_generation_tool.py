@@ -166,15 +166,19 @@ def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
         image_url, reference_image_urls, task_id)
     if confine_error is not None:
         return confine_error
-    # Every video API fetches URLs itself and none reads our disk, so local paths become data: URLs
-    # (guarded read, downscaled to the managed FAL gateway's body budget) for every backend.
-    from tools.image_generation_tool import _inline_fal_sources
+    # No video API reads our disk, so local paths become data: URLs (guarded read) for every
+    # backend; only a provider declaring an inline body budget gets its sources downscaled.
     sources = ([image_url] if image_url else []) + (reference_image_urls or [])
+    provider = _resolve_active_provider()
     if sources:
+        from tools.image_generation_tool import _fit_inline_budget, _inline_local_sources
         try:
-            inlined = _inline_fal_sources(sources)
+            inlined = _inline_local_sources(sources)
         except ValueError as exc:
             return tool_error(str(exc))
+        budget = _provider_call(provider, "capabilities", {}).get("max_inline_image_chars")
+        if budget:
+            inlined = _fit_inline_budget(inlined, int(budget))
         if image_url:
             image_url, inlined = inlined[0], inlined[1:]
         reference_image_urls = inlined or None
@@ -196,7 +200,6 @@ def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
             "video_generate only supports text-to-video, image-to-video, and "
             "reference-to-video; use a provider-specific tool for video edit/extend")
     configured = _read_configured_video_provider()
-    provider = _resolve_active_provider()
     if provider is None:
         return _missing_provider_error(configured)
 

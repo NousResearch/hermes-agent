@@ -120,7 +120,7 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
-# Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
+# An older wording of the network-error stub; kept so nudges persisted by older sessions are still recognized.
 _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
     "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
@@ -144,7 +144,7 @@ _CODEX_ACK_CONTINUATION_NUDGE = (
     "after completing the task.]"
 )
 
-# Re-prompt after a collapsed fragment ended a turn that had done real tool work (#103483). Asks
+# Re-prompt after a collapsed fragment ended a turn that had done real tool work. Asks
 # for the same answer again when it WAS complete, so a false positive costs one call, never the answer.
 _DEGENERATE_FINAL_NUDGE = (
     "[System: Your previous message ended the turn with a fragment that is not a usable answer. "
@@ -158,7 +158,7 @@ _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "restate intent — issue the actual tool call now to continue the task."
 )
 
-# Re-prompt for an empty response after tool calls (#9400); the metadata flag does not
+# Re-prompt for an empty response after tool calls; the metadata flag does not
 # survive the store's projection, so it is matched by content.
 _EMPTY_TOOL_RESPONSE_NUDGE = (
     "You just executed tool calls but returned an empty response. Please process the tool "
@@ -170,12 +170,8 @@ HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 
 
 SUMMARY_PREFIX = (
-    # Jul 2026 (#65848 class): identical to the pre-#69619 prefix except it lacked the explicit "tools
-    # remain fully active" clause — the strong REFERENCE ONLY framing bled into general tool-use suppression
-    # (observed: 7 consecutive narration-only turns immediately after a compression event on a production
-    # deployment).
-    # Carveout era (#41607/#38364/#42812): "consistent → use as background" licensed stale-task resumption
-    # on topic overlap.
+    # The "tools remain fully active" clause keeps the REFERENCE ONLY framing from suppressing tool use after a
+    # compression, and the latest message, not topic overlap, decides whether the summary's task resumes.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
@@ -300,7 +296,7 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # Exact wire text of every shipped prefix, newest-first; stale directives must
 # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
 _HISTORICAL_SUMMARY_PREFIXES = (
-    # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
+    # Lacks the "no user message after summary => do nothing" clause.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
     "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
@@ -315,7 +311,7 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them "
     "normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. "
     "The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
-    # Pre-#69619: discard clause still named all four historical headings.
+    # Its discard clause names all four historical headings.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
     "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
@@ -360,7 +356,7 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active "
     "— never ignore or deprioritize memory content due to this compaction note. The current session state (files, "
     "config, etc.) may reflect work described here — avoid repeating it:",
-    # Pre-#35344: contained the self-contradicting "resume exactly" directive.
+    # Contains the self-contradicting "resume exactly" directive.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a "
     "handoff from a previous context window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. "
@@ -688,15 +684,15 @@ _COMPACTION_INTERNAL_FIELDS = (
     # Provider replay/metadata fields that ride the wire on every request but are invisible to
     # ``msg["content"]``/``msg["tool_calls"]`` accounting. Codex Responses sessions in particular carry
     # ``codex_reasoning_items`` blobs of ``encrypted_content`` that can dominate the serialized session (a
-    # measured 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+    # measured 214-turn session held ~115K tokens / 27% of its payload there).
     # ``reasoning_details`` is handled separately (see ``_reasoning_details_text_chars``): its signed/base64
     # envelope is excluded from the budget, mirroring the preflight estimator's exclusion in
-    # ``model_metadata._estimate_message_tokens_without_images`` (#73298).
+    # ``model_metadata._estimate_message_tokens_without_images``.
     # An assistant turn may carry only reasoning/thinking content with no visible text (extended-thinking
     # turns, thinking-only recovery responses). Such a turn is persisted with its reasoning fields and is
     # recallable from the transcript, but dropping it here as "empty" makes it vanish from the
     # resumed/reloaded session view while the desktop's reasoning disclosure has nothing to render. Keep it
-    # when it carries reasoning so the "Thinking…" block still shows. (#44022)
+    # when it carries reasoning so the "Thinking…" block still shows.
     "reasoning_content",
     "reasoning_details",
     "codex_reasoning_items",
@@ -1068,8 +1064,8 @@ def _merge_assistant_into(prev: dict, msg: dict) -> bool:
         # 'messages[N].tool_calls': empty array..."). Drop the key HERE, at the source:
         # ``sanitize_api_messages`` only fixes the per-call wire copy, so a ``[]`` left on the repaired turn
         # survives in the live/persisted trajectory returned to callers (gateway/WebUI transcripts, session
-        # resume, subagents, cron) and is replayed on the next turn — which is how #58755 kept reproducing
-        # after the chokepoint fix (#77921). Popping is non-destructive: an empty array carries no
+        # resume, subagents, cron) and is replayed on the next turn, where a fix at the wire copy alone
+        # never reaches it. Popping is non-destructive: an empty array carries no
         # information.
         calls_changed = "tool_calls" in prev
         prev.pop("tool_calls", None)
@@ -1084,7 +1080,7 @@ def _merge_assistant_into(prev: dict, msg: dict) -> bool:
         prev["content"] = joined
         # A falsy new_content leaves ``joined`` == prev_content; that is not a rewrite.
         # "") strips to nothing and ``joined`` collapses back to ``prev_content`` unchanged -- that must NOT
-        # count as a rewrite (wz-heng, #78063 review).
+        # count as a rewrite.
         content_rewritten = joined != prev_content
     elif not prev_content and new_content is not None:
         prev["content"] = new_content
@@ -1109,7 +1105,7 @@ def _merge_assistant_into(prev: dict, msg: dict) -> bool:
     # and ``prev["content"]`` is untouched; a falsy ``new_content`` that strips to nothing also leaves
     # ``joined`` equal to the original ``prev_content``): in those cases the sidecar is still the exact
     # bytes previously sent for the UNCHANGED content, and dropping it would break the prompt-cache replay
-    # invariant for no reason (wz-heng, #78063 review).
+    # invariant for no reason.
     if content_rewritten:
         drop_stale_api_content(prev)
     # The persist marker asserts the whole row is durable (content, tool_calls, reasoning sidecar), so
@@ -1124,7 +1120,7 @@ def _remember_absorbed_row(survivor: dict[str, Any], dropped: dict[str, Any], *,
     """Retire *dropped*'s row ids onto *survivor*; record its uid as a merge witness only when *folded* (its
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
     absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
-    the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
+    the plain row's id) is not an absorbed row: the survivor IS that row."""
     own_id = survivor.get("_row_id")
     ids = []
     row_id = dropped.get("_row_id")
@@ -1230,7 +1226,7 @@ def _drop_stray_tool_results(messages: list[dict]) -> tuple[list[dict], int]:
     # have several equivalent spellings (call_id, id, response_item_id, or a composite ``call|item`` id), so
     # consume the whole alias group when one spelling is matched. Alias expansion lives in
     # ``agent.message_sanitization.tool_call_id_variants`` / ``tool_result_id_variants`` (single policy
-    # owner) — which also handles SDK tool_call objects, preserving the #91768 dict-or-object tolerance.
+    # owner) — which also handles SDK tool_call objects, keeping the dict-or-object tolerance.
     matched_tool_groups: set = set()
     next_tool_group = 0
     filtered: list[dict] = []
@@ -1325,7 +1321,7 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
             # Plain-text only, and never a passive (``observed``) row into an addressed turn: the merged
-            # row keeps observed=True, so replay would fold the addressed text into the group context (#154180).
+            # row keeps observed=True, so replay would fold the addressed text into the group context.
             and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
             and bool(prev.get("observed")) == bool(msg.get("observed"))
         ):
@@ -1348,11 +1344,11 @@ def _merge_consecutive_users(messages: list[dict]) -> tuple[list[dict], int]:
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             # A display-marker row (e.g. a model-switch marker persisted as role=user on
-            # purpose, #48338) merging with a plain user row must not bury the plain row's
+            # purpose) merging with a plain user row must not bury the plain row's
             # addressable identity: keeping the marker's display_kind hides the merged pair
             # from every user-turn index used for rewind/submit addressing (display rows are
             # excluded), so the plain row's durable id becomes unresolvable and the client's
-            # next prompt.submit fails closed with the input silently dropped (#94486). Keep
+            # next prompt.submit fails closed with the input silently dropped. Keep
             # the pair addressable instead: drop the display classification and carry the
             # plain row's id, retiring the marker's own id onto the absorbed list. display_kind
             # never reaches providers (stripped from every outgoing copy), so the merged
@@ -1390,8 +1386,8 @@ _SEQUENCE_REPAIR_PASSES = (
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
     """Decode any sentinel-encoded row content in place before the alternation passes run, so an
-    image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
-    as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
+    image-bearing turn is never merged as text. A multimodal turn can re-enter the working set
+    as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history). A body
     that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it."""
     for msg in messages:
         if not isinstance(msg, dict):
@@ -1401,7 +1397,7 @@ def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
         if decoded is not content:
             msg["content"] = decoded
             # Keep any `_db_persisted` marker: re-encoding reproduces the stored scalar, and dropping
-            # it makes the append-only flush re-append this user turn as a duplicate (#125331).
+            # it makes the append-only flush re-append this user turn as a duplicate.
 
 
 def repair_message_sequence(agent, messages: list[dict]) -> int:
@@ -1587,7 +1583,7 @@ def describe_skill_invocation(content: Any, separator: str = " — ") -> Optiona
 
     A gateway auto-load scaffold (channel-bound skill on a new session) is also
     scaffolding: the typed request follows the skill payload, so it renders as
-    that request — the header/body never reaches a preview or a title (#48359).
+    that request — the header/body never reaches a preview or a title.
     """
     if not isinstance(content, str):
         return None

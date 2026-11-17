@@ -17,7 +17,6 @@ class ActivityProvenance(str, Enum):
 
     UNKNOWN = "unknown"
     # Compression writers: heartbeat, host timeout, cooldown, turn hold.
-    # See #72424.
     AGENT_COMPRESSION = "agent.compression"
     AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
     AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"

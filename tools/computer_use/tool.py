@@ -8,7 +8,6 @@ from __future__ import annotations
 import atexit
 import base64
 import contextlib
-import contextvars
 import hashlib
 import json
 import logging
@@ -92,7 +91,7 @@ _backend_displays: dict[str, str] = {}  # DISPLAY the cached backend was spawned
 # unused for its profile's Bot Desktop idle window is released; the next call starts a fresh one.
 _backend_last_used: dict[str, float] = {}     # time.monotonic() of the last admission or finished call
 _backend_idle_limits: dict[str, float] = {}   # seconds, read in the owning profile's scope at install; 0 = never
-_backend_contexts: dict[str, contextvars.Context] = {}  # the installing call's context: teardown runs in its profile
+_backend_homes: dict[str, Optional[str]] = {}  # the installing call's profile override: teardown runs in it
 _IDLE_SWEEP_S = 60.0
 _idle_sweeper_started = threading.Event()
 # Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
@@ -178,7 +177,8 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
     _backend_call_locks[sid] = threading.RLock()
     from tools.bot_desktop.runtime import idle_stop_seconds
     _backend_idle_limits[sid], _backend_last_used[sid] = idle_stop_seconds(), time.monotonic()
-    _backend_contexts[sid] = contextvars.copy_context()
+    from hermes_constants import get_hermes_home_override
+    _backend_homes[sid] = get_hermes_home_override()  # the profile only: a whole context would pin the call's objects
     if _backend_idle_limits[sid] > 0 and not _idle_sweeper_started.is_set():
         _idle_sweeper_started.set()
         # health: allow HX012 -- one process-wide sweep; each backend carries its own profile's limit
@@ -188,7 +188,7 @@ def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str
 def _detach_locked(sid: str) -> tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
     """Remove one session's cache entries. Caller holds ``_backend_lock``."""
     _backend_permission_modes.pop(sid, None), _backend_displays.pop(sid, None)
-    _backend_last_used.pop(sid, None), _backend_idle_limits.pop(sid, None), _backend_contexts.pop(sid, None)
+    _backend_last_used.pop(sid, None), _backend_idle_limits.pop(sid, None), _backend_homes.pop(sid, None)
     backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
     return backend, call_lock
 
@@ -211,7 +211,7 @@ def release_idle_backends(now: Optional[float] = None) -> list[str]:
     A backend whose call lock is held is in use (a call holds it from admission to return), however long
     ago that call started, and is skipped: detaching it would let the next call start a second driver for
     the same session while the first action still runs. The decision is taken again once the lock is held.
-    Teardown runs in the context the backend was installed from, so it sees its own profile."""
+    Teardown runs under the profile the backend was installed from (the sweep itself runs in none)."""
     now = time.monotonic() if now is None else now
     with _backend_lock:
         candidates = [(sid, _backend_call_locks.get(sid)) for sid in list(_backend_idle_limits)
@@ -224,15 +224,16 @@ def release_idle_backends(now: Optional[float] = None) -> list[str]:
             with _backend_lock:
                 if _backend_call_locks.get(sid) is not call_lock or not _idle_due_locked(sid, now):
                     continue
-                context = _backend_contexts.get(sid)
+                home = _backend_homes.get(sid)
                 backend, _ = _detach_locked(sid)
             _reset_screenshot_dedup(sid)
             if backend is None:
                 continue
             logger.info("computer_use backend for session %s idle; released", sid)
-            run = (context.copy().run if context is not None else lambda fn, *a: fn(*a))
-            run(_stop_backend, backend, None,
-                lambda e: logger.debug("computer_use idle release failed for session %s", sid, exc_info=True))
+            from agent.runtime_scope import bind_profile_scope
+            with bind_profile_scope(home) if home is not None else contextlib.nullcontext():
+                _stop_backend(backend, None, lambda e: logger.debug(
+                    "computer_use idle release failed for session %s", sid, exc_info=True))
             released.append(sid)
         finally:
             call_lock.release()
@@ -338,7 +339,7 @@ def _shutdown_backend_atexit() -> None:
     with _backend_lock:
         unique = {id(b): (b, _backend_call_locks.get(sid)) for sid, b in _backends.items()}
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
-        _backend_last_used.clear(), _backend_idle_limits.clear(), _backend_contexts.clear()
+        _backend_last_used.clear(), _backend_idle_limits.clear(), _backend_homes.clear()
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():

@@ -136,3 +136,26 @@ def test_teardown_runs_in_the_owning_profile(backends, tmp_path):
         _call()
     assert len(cu.release_idle_backends(now=time.monotonic() + 3600)) == 1
     assert backends[0].stopped_in == str(other)
+
+
+def test_a_cached_backend_does_not_keep_the_installing_call_alive(backends):
+    """Backends outlive agent eviction; whatever the installing call had bound (progress sinks that hold
+    a parent agent) must not live as long as they do."""
+    import contextvars
+    import gc
+    import weakref
+
+    class Sink:
+        pass
+
+    var = contextvars.ContextVar("test_call_binding")
+    sink = Sink()
+    ref = weakref.ref(sink)
+    token = var.set(sink)
+    try:
+        _call()
+    finally:
+        var.reset(token)
+    del sink
+    gc.collect()
+    assert ref() is None

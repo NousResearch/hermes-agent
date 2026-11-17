@@ -41,6 +41,8 @@ from typing import Any, Callable, Iterator, Optional
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 from hermes_scope import Principal, Scope
 from tools.environments.sandbox_scope import CrossAgentHandleRefused, ProcessRef, ProcessStream, SandboxIdentity
+from tools.process_registry_env_log import LAUNCH_NAME
+from tools.process_registry_termination import ENV_GONE_MARKER, ENV_SURVIVORS_MARKER
 
 STUB_BACKEND = "recording_sandbox"
 
@@ -61,8 +63,9 @@ class Call:
 
 class RecordingSandboxEnvironment:
     """A sandbox that runs nothing: every ``execute`` is recorded and exits 0 with no output, except
-    the background-process launch wrapper, which is answered with a PID. Long-lived processes are an
-    in-process echo (a ``cat`` child the stub owns)."""
+    the background-process launch wrapper, which is answered with a PID, and the background kill,
+    which is answered with its group gone. Long-lived processes are an in-process echo (a ``cat``
+    child the stub owns)."""
 
     uses_host_filesystem = False
 
@@ -76,8 +79,11 @@ class RecordingSandboxEnvironment:
     def execute(self, command: str, cwd: str = "", *, scope: Scope, stdin_data: Optional[str] = None,
                 **_: Any) -> dict:
         self._record("execute", scope, command, stdin_data)
-        launched = "nohup bash -lc" in command and "echo $! >" in command
-        return {"output": "4242\n" if launched else "", "returncode": 0}
+        if f" {LAUNCH_NAME} " in command:
+            return {"output": "4242\n", "returncode": 0}
+        if ENV_SURVIVORS_MARKER in command:
+            return {"output": f"{ENV_GONE_MARKER}\n", "returncode": 0}
+        return {"output": "", "returncode": 0}
 
     def get_temp_dir(self, *, scope: Scope) -> str:
         return "/tmp"  # no-tmp: ok — the sandbox's own temp dir, never created on the host

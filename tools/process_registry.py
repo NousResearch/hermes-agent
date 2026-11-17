@@ -39,9 +39,10 @@ from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_env_scope import ProcessEnvScopeMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_ownership import ProcessOwnershipMixin
-from tools.process_registry_termination import ProcessTerminationMixin
+from tools.process_registry_termination import ProcessTerminationMixin, survivors_result
 from tools.process_registry_results import load_completed_results, save_completed_result
-from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
+from tools.process_registry_env_log import (
+    env_job_paths, env_launch_command, fallback_exit_code, log_delta_command, parse_log_delta_reply)
 from tools.process_registry_wsl import _is_wsl_launcher_command
 from tools.process_registry_wait import max_wait_timeout, process_deadline_floor
 
@@ -564,6 +565,7 @@ class ProcessSession:
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
+    group_liveness: bool = False                # sandbox kill begun: the poller probes the job's whole group
     wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
                                                 # launcher; Linux-side workers outlive it (#120546)
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
@@ -646,6 +648,26 @@ class ProcessSession:
         self.exited, self.exit_code, self.completion_reason = True, exit_code, reason
         self.termination_source = source or self.termination_source
         return True
+
+    def begin_group_kill(self) -> bool:
+        """Switch the sandbox poller to the job's whole group, unless an exit is already
+        recorded (then False: there is nothing to signal). Takes ``self._lock``, the lock the
+        poller records an exit under, so a supervisor-only exit verdict read before the
+        switch can never be recorded after it."""
+        with self._lock:
+            if self.exited:
+                return False
+            self.group_liveness = True
+            return True
+
+    def mark_exited_if_probe_current(self, exit_code, probed_group: bool) -> bool:
+        """``mark_exited`` for the sandbox poller, unless a kill switched to group liveness
+        after this verdict's probe ran on the supervisor alone (then False: probe again)."""
+        with self._lock:
+            if self.group_liveness and not probed_group:
+                return False
+            self.mark_exited(exit_code)
+            return True
 
 
 # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
@@ -1279,13 +1301,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
                                     persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
-        log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
-        q = shlex.quote
-        bg_command = (
-            f"mkdir -p {q(temp_dir)} && "
-            f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
-            f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
+        log_path, pid_path, exit_path = env_job_paths(temp_dir, session.id)
+        bg_command = env_launch_command(temp_dir, command, log_path, pid_path, exit_path)
         result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False)
         output = result.get("output", "").strip()
         session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
@@ -1424,10 +1441,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         prev_output_bytes = 0
         while not session.exited:
             time.sleep(2)
+            group = session.group_liveness  # a supervisor probe that races a kill's start is redone
             try:
                 # Read only the bytes written since the last poll, plus the process status.
                 raw = env.execute(
-                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
+                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path), group=group),
                     timeout=10).get("output", "")
                 reply = parse_log_delta_reply(raw)
                 delta = reply.delta if reply else ""
@@ -1452,9 +1470,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     self._emit_output(session, delta)
 
                 # Unreadable reply: separate liveness and exit-code reads, as before the combined read.
-                exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path))
-                if exit_code is not None:
-                    self._finish_exited(session, exit_code)
+                exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path), group)
+                if exit_code is not None and session.mark_exited_if_probe_current(exit_code, group):
+                    self._move_to_finished(session)
                     return
             except Exception:
                 # Environment might be gone (sandbox reaped, etc.). A kill that already
@@ -2129,25 +2147,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         if session is None:
             return _not_found(session_id)
         if session.exited:
-            # A double-forked descendant may still be alive in the systemd scope even
-            # though the main process exited — stop the scope to reap survivors.
-            # See #70716.
-            # If the worker was spawned in its own systemd scope (#70716), stop the entire unit to reap any
-            # double-forked descendants that were reparented inside the scope and survived the PID signal
-            # above (reviewer gap #2). ``systemctl --user stop`` sends SIGTERM to every process in the
-            # cgroup and escalates to SIGKILL after TimeoutStopSec. This is additive — the PID-based kill
-            # above already handled the main process; this catches stragglers.
-            scope_stopped = self._stop_scope(session)
-            with session._lock:
-                result = self._exit_snapshot(session, "already_exited")
-                finalizing = self._reader_finalizing(session)
-            if not scope_stopped:
-                result["scope_stop_failed"] = session.systemd_unit
-            # Only suppress the autonomous turn after its output is present in
-            # the explicit kill result, matching wait/log consumption.
-            if consume_output and not finalizing:
-                self._completion_consumed.add(session.id)
-            return result
+            return self._already_exited_result(session, consume_output)
         try:
             early = self._signal_kill(session, consume_output)
             if early is not None:
@@ -2166,17 +2166,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # real exit; only a still-running session needs tree-death proof.
             survivors = [] if signal_race_exited else self._post_kill_survivors(session)
             if survivors:
-                alive = ", ".join(map(str, survivors))
-                logger.warning(
-                    "Kill incomplete for %s: %d process(es) still alive (%s) — session kept running",
-                    session.id, len(survivors), alive)
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Kill incomplete: {len(survivors)} process(es) still alive "
-                        f"({alive}); session running"),
-                    "session_id": session.id, "survivors": survivors,
-                    "process_running": True}
+                return survivors_result(session, survivors)
             # Descendants outside the root's tree are visible only to the scope; a scope that did
             # not stop leaves nothing proving they are gone, even when the root exited meanwhile.
             # The session keeps its unit, so a later kill retries the stop.
@@ -2238,7 +2228,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+            if not session.begin_group_kill():  # the poller recorded an exit since kill_process looked
+                return self._already_exited_result(session, consume_output)
+            incomplete = self._kill_env_group(session)  # the whole job group, or who survived
+            if incomplete is not None:
+                return incomplete
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an
@@ -2524,7 +2518,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 and s.id not in exclude_ids and (not s.exited or s._scope_stop_pending)
                 and not (lifecycle and s.persist_on_release)
             ]
-        results = [self.kill_process(s.id, source=source, consume_output=consume_output) for s in targets]
+        results = self._kill_targets(targets, source=source, consume_output=consume_output)
         return sum(
             r.get("status") in {"killed", "already_exited"} and "scope_stop_failed" not in r
             for r in results)

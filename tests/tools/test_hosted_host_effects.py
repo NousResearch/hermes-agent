@@ -16,6 +16,7 @@ from tests.tools.test_sandbox_scope_conformance import A
 from tests.tools.test_sandbox_scope_conformance import host_dir as _conformance_host_dir
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
 from tools.environments import sandbox_conformance as c
+from tools.process_registry_env_log import LAUNCH_NAME
 
 provider = _conformance_provider  # the recording-sandbox fixture, by its name
 host_dir = _conformance_host_dir
@@ -234,7 +235,7 @@ def _hosted_background(monkeypatch, command="echo TENANT-PROCESS-PRIVATE"):
 
     def execute(self, command, **kwargs):
         result = original(self, command, **kwargs)
-        return {"returncode": 0, "output": "12345\n"} if "nohup bash -lc" in command else result
+        return {"returncode": 0, "output": "12345\n"} if f" {LAUNCH_NAME} " in command else result
 
     monkeypatch.setattr(c.RecordingSandboxEnvironment, "execute", execute)
     release = threading.Event()  # holds the poller until the test delivers the simulated exit

@@ -11,7 +11,6 @@ already exists, so a round trip never overwrites a real value with its mask.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +22,7 @@ from cron.job_definition import JOB_DEFINITION_FIELDS, import_job_definitions
 from cron.jobs import _jobs_lock, load_jobs
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_platform.resolver import locate_command
+from tools.environments.local import build_subprocess_env
 
 __all__ = ["ExportResult", "export_jobs", "import_jobs", "read_exported_jobs"]
 
@@ -81,7 +81,9 @@ def _git(directory: Path, *args: str) -> subprocess.CompletedProcess:
     git = locate_command("git").command
     if not git:
         raise RuntimeError("git was not found on PATH; export without --git or install git")
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    # The user's own HOME (their git identity and hooks), not a profile-bridged one.
+    env = build_subprocess_env(
+        scrub_secrets=False, inherit_profile_home=False, extra={"GIT_TERMINAL_PROMPT": "0"})
     try:
         return subprocess.run(
             [*git, "-C", str(directory), *args], capture_output=True, text=True, encoding="utf-8",

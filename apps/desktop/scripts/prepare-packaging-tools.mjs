@@ -87,6 +87,25 @@ async function preparePackagingTools({ source, out, cache, target = `${process.p
 }
 
 /**
+ * The builder aborts an artifact download ten minutes after it starts, progressing or not, so a
+ * packaged build on a slow link fails on the Electron zip (about 100 MB) while it is still arriving.
+ * Keep a bounded deadline (a stalled transfer still ends) and the builder's checksum validation.
+ * @param {{ downloadElectronArtifactZip: (details: any) => Promise<string> }} electronGet
+ * @param {any} details
+ * @param {number} [timeoutMs]
+ * @returns {Promise<string>}
+ */
+export function downloadPreparedElectron(electronGet, details, timeoutMs = 60 * 60 * 1000) {
+  return electronGet.downloadElectronArtifactZip({
+    ...details,
+    options: {
+      ...details.options,
+      downloadOptions: { ...details.options?.downloadOptions, signal: AbortSignal.timeout(timeoutMs) },
+    },
+  })
+}
+
+/**
  * @param {{ source: string, out: string, cache: string, target: string, formats: string[], builderRoot: string, config: import('app-builder-lib').Configuration, dmgbuild: string | null }} options
  * @returns {Promise<string>}
  */
@@ -103,7 +122,7 @@ async function acquirePackagingTools({ source, out, cache, target, formats, buil
   const unpackedOnly = formats.every(format => format === 'dir')
   const hostRuntime = unpackedOnly && packagingTargetArch(target) === process.arch
   const [archive, archiveTool, iconTools] = await Promise.all([
-    hostRuntime ? null : electronGet.downloadElectronArtifactZip({ version: config.electronVersion, platformName: process.platform,
+    hostRuntime ? null : downloadPreparedElectron(electronGet, { version: config.electronVersion, platformName: process.platform,
       arch: packagingTargetArch(target), artifactName: 'electron', cacheDir: path.join(cache, 'electron') }),
     unpackedOnly ? null : sevenZip.getPath7za(),
     unpackedOnly ? null : icons.getIconsToolsetPath(config.toolsets?.icons, resourcesDir),

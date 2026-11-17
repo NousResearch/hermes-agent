@@ -10,8 +10,11 @@ recovery every turn.
 """
 
 import pytest
+from types import SimpleNamespace
 
 from run_agent import AIAgent
+from agent.turn_context import reanchor_current_turn_user_idx
+from agent.turn_context_compaction import _reanchor
 
 
 def _bare_agent():
@@ -129,6 +132,36 @@ def test_repair_plain_user_then_marker_stays_addressable():
         "the user's real prompt\n\n[System: The active model for this chat has changed to ds4.]"
     )
     assert 12135 in (survivor.get("_absorbed_row_ids") or [])
+
+
+def test_repair_reanchors_async_completion_merged_after_model_switch():
+    """Regression for #140650: a typed completion remains the active turn."""
+    agent = _bare_agent()
+    completion = "[ASYNC DELEGATION BATCH COMPLETE — deleg_current]\nResult: done."
+    messages = [
+        {"role": "user", "content": "older human request"},
+        {"role": "assistant", "content": "waiting"},
+        {
+            "role": "user",
+            "content": "[System: The active model for this chat has changed.]",
+            "display_kind": "model_switch",
+        },
+        {
+            "role": "user",
+            "content": completion,
+            "display_kind": "async_delegation_complete",
+        },
+    ]
+
+    assert AIAgent._repair_message_sequence(agent, messages) == 1
+
+    assert reanchor_current_turn_user_idx(messages, completion) == 2
+    anchor_owner = SimpleNamespace(_persist_user_message_idx=3)
+    assert _reanchor(anchor_owner, messages, completion) == 2
+    assert anchor_owner._persist_user_message_idx == 2
+
+    no_human_messages = messages[2:]
+    assert reanchor_current_turn_user_idx(no_human_messages, completion) == 0
 
 
 def test_repair_does_not_rewind_ongoing_dialog_tool_pair():

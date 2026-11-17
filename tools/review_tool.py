@@ -11,9 +11,9 @@ from tools.registry import registry
 REVIEW_SCHEMA = {
     "name": "review",
     "description": (
-        "Independent review of the work in this conversation (PR, code, docs) by the configured reviewer model — "
-        "what the user's /review starts. It is briefed with your recent conversation and loaded skills and "
-        "investigates the artifacts itself. Runs in the background; the review re-enters as a new message, so end "
+        "Start an independent reviewer on this conversation's work (PR, code, docs). It is what the user's "
+        "/review starts: the configured reviewer model, briefed with your recent conversation and loaded skills, "
+        "investigating the artifacts itself. Runs in the background; the review re-enters as a new message, so end "
         "your turn after starting it."
     ),
     "parameters": {

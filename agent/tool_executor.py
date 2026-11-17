@@ -862,7 +862,9 @@ def _resolve_sequential_tool_timeout() -> float | None:
 # one run).
 # ``manage_connections`` waits on the connection operation's own deadline; the generic deadline
 # would return tool_timeout while its approval card is still open.
-_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections"})
+# ``review`` dispatches its reviewer through ``delegate_task``; on channels without async completions that
+# runs synchronously for the whole review, so the same deadline would drop the verdict as tool_timeout.
+_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS = frozenset({"delegate_task", "manage_connections", "review"})
 
 
 def _abandoned_sequential_result(agent, ref: _ToolCallRef, message: str, result_cls, **outcome) -> _ManagedToolResult:

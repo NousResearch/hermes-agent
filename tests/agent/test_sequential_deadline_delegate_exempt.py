@@ -5,3 +5,9 @@ from agent import tool_executor as te
 
 def test_delegate_task_is_exempt_from_the_sequential_deadline():
     assert "delegate_task" in te._SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
+
+
+def test_review_is_exempt_from_the_sequential_deadline():
+    """``review`` runs its reviewer via ``delegate_task``, synchronously on channels without async
+    completions; under the generic deadline a long review returned tool_timeout and lost its verdict."""
+    assert "review" in te._SEQUENTIAL_DEADLINE_EXEMPT_TOOLS

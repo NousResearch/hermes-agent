@@ -114,10 +114,16 @@ export function boundRetainedTranscript(
     return NOTHING_RELEASED
   }
 
-  // Nothing in flight may be released: a `pending` row has no backend row yet,
-  // so it cannot be fetched back and dropping it would lose content outright.
-  for (let i = 0; i < boundary; i += 1) {
-    if (messages[i].pending) {
+  // A redirect/correction is optimistic `role:user` without a durable rowId,
+  // but is not necessarily `pending`. It and the preceding zero-span assistant
+  // fragment belong together: even cutting AT the correction would release
+  // part of a folded tool round without rewinding its source rows.
+  for (let i = 0; i <= boundary; i += 1) {
+    if (messages[i].role === 'user' && messages[i].rowId === undefined) {
+      return NOTHING_RELEASED
+    }
+
+    if (i < boundary && messages[i].pending) {
       return NOTHING_RELEASED
     }
   }

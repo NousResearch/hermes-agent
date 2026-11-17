@@ -257,6 +257,14 @@ def test_complete_validates_then_checks_route_and_state(backend, scope_a):
     assert worker.read(sequence=3).result == {"items": ["a", "b"]}
 
 
+def test_complete_refuses_a_success_status(backend, scope_a):
+    worker = LedgerWorker(backend, scope_a, seed_delegations(backend, scope_a))
+    worker.dispatch(sequence=1)
+    with refused("invalid_params"):
+        worker.complete(event(status="success"), sequence=2)
+    assert worker.read(sequence=2).state == "running"
+
+
 def test_children_keep_one_entry_per_index_until_completion(backend, scope_a):
     worker = LedgerWorker(backend, scope_a, seed_delegations(backend, scope_a))
     worker.dispatch()
@@ -299,6 +307,14 @@ def _completed(backend, scope):
     worker.dispatch()
     worker.complete()
     return worker
+
+
+def test_only_a_running_delegation_refuses_the_claim(backend, scope_a):
+    worker = LedgerWorker(backend, scope_a, seed_delegations(backend, scope_a))
+    worker.dispatch()
+    worker.store.coordination.record_delegation_completion(delegation_id=DELEGATION, state="finalizing", completed_at=1700000100.25,
+                                                           event=event(status="finalizing"), result={})
+    assert worker.deliver("claim", "t") is True
 
 
 def test_a_live_claim_blocks_another_claimant(backend, scope_a):

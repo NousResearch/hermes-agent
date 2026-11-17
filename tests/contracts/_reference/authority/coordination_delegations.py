@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["DelegationLedger"]
 
-_IN_FLIGHT = ("running", "finalizing")
+_IN_FLIGHT = ("running",)
 
 
 def _json_value(value: Any) -> Any:

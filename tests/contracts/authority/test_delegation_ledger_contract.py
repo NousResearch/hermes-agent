@@ -333,6 +333,17 @@ def test_list_finished_delegations_reads_recent_terminal_rows_by_selector(backen
     assert [row.delegation_id for row in coord.list_finished_delegations(origin_ui_session_id="ui-x", now=NOW - 24 * 3600)] == [first, old]
 
 
+def test_only_a_running_row_is_in_flight(backend, scope_a, clock):
+    # CONTRACT: ``running`` is the one in-flight state; a row stored with any other state, ``finalizing`` included, is finished for the in-flight read, the finished read and the orphan sweep.
+    coord = backend.open(scope_a).coordination
+    did = dispatch(coord, "d-fin")
+    complete(coord, did, state="finalizing")
+    assert coord.list_inflight_delegations() == ()
+    assert [(row.delegation_id, row.state) for row in coord.list_finished_delegations(origin_ui_session_id="ui-1")] == [(did, "finalizing")]
+    clock[0] += 61
+    assert [item.delegation_id for item in coord.list_orphan_completions(now=clock[0])] == [did]
+
+
 
 def test_delegation_ledger_two_profile_isolation(backend, scope_a, scope_b, clock):
     # CONTRACT: the ledger is per profile: a colliding delegation id is two rows, and a claim in one profile leaves the other's row claimable.

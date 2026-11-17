@@ -11,6 +11,8 @@ import pytest
 
 from tests.gateway.test_session_end_delegations import _local
 from tests.gateway.test_unviewed_completion_notes import _human, _target
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import transcript_rows
 from tools import async_delegation as delegation
 
 _CARD = {'id': 'share-1', 'text': 'Share "deploy-checklist" with your team?',
@@ -43,7 +45,7 @@ def _serve(runner, monkeypatch):
 
 
 def _cards(authority, target):
-    return [m for m in authority.db.get_messages(target) if m.get('display_kind') == 'plugin_card']
+    return [m for m in transcript_rows(authority.persistence, target) if m.get('display_kind') == 'plugin_card']
 
 
 def _published(authority, ref):
@@ -91,7 +93,7 @@ async def test_card_from_a_background_thread_lands_as_one_note(tmp_path, monkeyp
         assert 'wisdom-share' not in row['content'] and 'mode' not in row['content']
         from agent.message_metadata import without_persistence_fields
         from gateway.run import _build_gateway_agent_history
-        model_history, _observed = _build_gateway_agent_history(authority.db.get_messages(target))
+        model_history, _observed = _build_gateway_agent_history(transcript_rows(authority.persistence, target))
         assert model_history[-1]['content'] == row['content'], 'the next model turn must actually load the card line'
         wire_history = [without_persistence_fields(message) for message in model_history]
         assert 'wisdom-share' not in str(wire_history) and 'mode' not in str(wire_history)
@@ -100,7 +102,7 @@ async def test_card_from_a_background_thread_lands_as_one_note(tmp_path, monkeyp
         assert row['display_metadata']['display_text'] == _CARD['text']
         assert events == [{**card, 'text': _CARD['text']}]
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -125,7 +127,7 @@ async def test_card_waits_for_the_input_ahead_and_a_person_still_goes_first(tmp_
         assert seen == [('BEFORE', 0), ('AFTER', 1)]
         assert len(_cards(authority, target)) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -150,14 +152,14 @@ async def test_card_posted_during_a_running_turn_lands_after_it(tmp_path, monkey
         assert during == [{'ok': True, 'card_id': 'share-1', 'status': 'queued'}, 0], during
         assert len(_cards(authority, target)) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
 async def test_queued_card_survives_an_owner_restart_and_reloads(tmp_path, monkeypatch):
     """Durable before it is written: a card queued behind input is noted once after a real owner
     restart, and a fresh read of the state db hydrates the same card."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
     from tests.gateway.test_unviewed_completion_notes import _restart
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     _serve(runner, monkeypatch)
@@ -177,17 +179,17 @@ async def test_queued_card_survives_an_owner_restart_and_reloads(tmp_path, monke
         assert seen == ['FIRST'], 'the card is never a turn'
         assert len(_cards(authority, target)) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
-    reread = SessionDB(authority.db.db_path)
+    reread = open_persistence(profile_scope(home=authority.persistence.scope.profile_dir))
     try:
-        rows = _cards(SimpleNamespace(db=reread), target)
+        rows = _cards(SimpleNamespace(persistence=reread), target)
         assert len(rows) == 1
         assert rows[0]['display_metadata']['plugin_card'] == {
             'plugin_id': 'cwplug', 'card_id': 'share-1', 'directive': _CARD['directive']}
         assert rows[0]['display_metadata']['display_text'] == _CARD['text']
     finally:
-        reread.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -207,7 +209,7 @@ async def test_same_id_is_one_card_and_other_content_is_a_conflict(tmp_path, mon
         await authority._drain(ref)
         assert len(_cards(authority, target)) == 1
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -239,7 +241,7 @@ async def test_refusals(tmp_path, monkeypatch):
         await authority._drain(ref)
         assert _cards(authority, target) == []
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -251,8 +253,8 @@ async def test_card_by_origin_is_recorded_once_in_the_private_chat_and_never_sen
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
+    from gateway.session_persistence import authority_persistence
     from gateway.session_results import execution_result
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tests.waiting import async_wait_until
 
@@ -283,8 +285,8 @@ async def test_card_by_origin_is_recorded_once_in_the_private_chat_and_never_sen
 
     def settled():
         owner = runner.session_store.peek_session_id(key)
-        rows = list_session_admissions(authority.db, session_id=owner, pending_only=False) if owner else []
-        return rows and all(row['status'] == 'terminal' for row in rows)
+        rows = authority_persistence(authority).admissions.list(session_id=owner, pending_only=False) if owner else []
+        return rows and all(row.status == 'terminal' for row in rows)
     try:
         await adapter.handle_message(MessageEvent(text='A', source=source, message_id='A'))
         await async_wait_until(settled, what='the human turn to settle')
@@ -306,7 +308,7 @@ async def test_card_by_origin_is_recorded_once_in_the_private_chat_and_never_sen
         assert turns == ['A'], 'the card is never a turn'
         assert sent == ['reply'], 'core sends nothing for the card; the plugin sends its own native card'
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -343,7 +345,7 @@ async def test_card_admission_runs_in_the_gateway_context_not_the_callers(tmp_pa
         assert scope.get() == 'caller-loop', "the caller's own context is left alone"
         await authority._drain(ref)
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def test_plugin_host_refuses_post_card(tmp_path):

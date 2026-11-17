@@ -145,13 +145,14 @@ async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: s
         return refusal
     from gateway.session_authorities import authority_for_home
     from gateway.session_automation import admit_route_wake
-    from hermes_state_runtime import RuntimeStoreError, find_session_admission
+    from gateway.session_persistence import authority_persistence
+    from persistence.core.errors import AuthorityRefusal
     authority = authority_for_home(runner, plugin_home) if plugin_home is not None else None
     if authority is None:
         return _err("no_conversation", "no session authority serves this plugin's profile")
     request_id = f"{plugin_id}:{normalized['card_id']}"
     identity = json.dumps([PRODUCER, key, request_id], separators=(",", ":"))
-    seen = await asyncio.to_thread(find_session_admission, authority.db, principal_id="automation:" + key,
+    seen = await asyncio.to_thread(authority_persistence(authority).admissions.find, principal_id="automation:" + key,
                                    session_id=authority.logical_owner(entry.session_id), request_id=identity)
     if seen is None and _rate_limited(plugin_id, key):
         return _err("rate_limited", f"more than {RATE_LIMIT[0]} cards in {RATE_LIMIT[1]:.0f}s for this session")
@@ -163,7 +164,7 @@ async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: s
         async with runner._plugin_injection_scope(source, plugin_home):
             admitted = await admit_route_wake(runner, adapter, source, model_line(plugin_id, normalized["text"]),
                                               PRODUCER, metadata, request_id=request_id)
-    except RuntimeStoreError as exc:
+    except AuthorityRefusal as exc:
         if exc.reason == "admission_conflict":
             return _err("card_conflict", f"card {normalized['card_id']!r} was posted with different content")
         logger.warning("plugin_card plugin=%s session=%s refused: %s", plugin_id, key, exc.reason)

@@ -74,9 +74,10 @@ def _closed_by_user(authority, session_id):
     if refused_for_session((authority.profile_id, session_id)) or (
             pending is not None and pending.reason not in ORPHAN_REASONS):
         return True
-    from hermes_state_common import _RECOVERABLE_END_REASONS
-    row = authority.db.get_session(_physical_target(authority, session_id)) or {}
-    return bool(row.get('ended_at')) and row.get('end_reason') not in _RECOVERABLE_END_REASONS
+    from gateway.session_persistence import authority_persistence
+    from persistence.conversation.sessions import RECOVERABLE_END_REASONS
+    row = authority_persistence(authority).sessions.get(_physical_target(authority, session_id))
+    return row is not None and bool(row.ended_at) and row.end_reason not in RECOVERABLE_END_REASONS
 
 
 def _wakes_unviewed_parent(authority, session_id, live, descriptor):
@@ -125,6 +126,7 @@ async def note_if_unviewed(authority, ref, row):
         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
         await reopen_for_turn(authority, ref)
         return None
+    from gateway.session_persistence import authority_persistence
     from gateway.session_viewer_close import _physical_target
     metadata = {'completion_note': sorted(set(descriptor.get('identities') or ()) | {descriptor['identity']})}
     metadata.update({key: descriptor[key] for key in ('display_text', 'notification_category', 'plugin_card')
@@ -132,7 +134,7 @@ async def note_if_unviewed(authority, ref, row):
     target = _physical_target(authority, ref.session_id)
     # Keyed by its admission: a claim is never replayed, and this keeps a write retry exact.
     await tracked_write(authority, partial(
-        authority.db.append_completion_note, target, row['admission_id'], row['payload']['text'],
+        authority_persistence(authority).messages.append_completion_note, target, row['admission_id'], row['payload']['text'],
         descriptor.get('display_kind', 'internal_notification'), metadata))
     refresh = getattr(authority.runner, '_refresh_agent_cache_message_count', None)
     if refresh is not None:  # the owner's own row: a cached agent stays, as after a turn's writes

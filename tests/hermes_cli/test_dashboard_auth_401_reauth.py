@@ -224,11 +224,11 @@ class TestTransparentRefreshOnAccessTokenEviction:
                 raise AssertionError("foreign refresh token reached Basic provider")
 
         # Browsing is read-only; initialize the real store as its owner would.
-        from contextlib import closing
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
 
-        with closing(SessionDB()) as db:
-            db.create_session("refresh-owner-session", source="cli")
+        with open_persistence(profile_scope()) as store:
+            seed_session(store, "refresh-owner-session", "cli")
 
         wrong = WrongProvider()
         _provider, valid_rt = self._build_rt_only_app()

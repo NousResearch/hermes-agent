@@ -1,8 +1,9 @@
 import { compactNumber } from '@hermes/shared'
-import { useContext, useMemo } from 'react'
+import { useContext, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -10,23 +11,29 @@ import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types
 
 import type { CompactConversationAction } from './hooks/use-compact-conversation'
 import { StatusbarMenuCloseContext } from './statusbar-controls'
+import { type RequestGateway, TurnInspector } from './turn-inspector'
 
 interface ContextUsagePanelProps {
   breakdown: ContextBreakdown | null
   /** Omitted by surfaces that cannot act on the session: numbers only. */
   compact?: CompactConversationAction
+  /** The focused session the turn inspector reads; omitted by surfaces with no session to inspect. */
+  inspector?: { requestGateway: RequestGateway; sessionId: null | string }
   loading: boolean
   usage: UsageStats
 }
+
+type PanelTab = 'inspector' | 'usage'
 
 /** Presentational: the breakdown is fetched by the statusbar (see
  *  `useContextBreakdown`) because the gauge's own label needs it, so the
  *  popover opens with its numbers already in hand. `usage` is the gauge's
  *  merged figure — measured occupancy when the backend has it, the estimate
  *  otherwise — so the header and the bar can never disagree. */
-export function ContextUsagePanel({ breakdown, compact, loading, usage }: ContextUsagePanelProps) {
+export function ContextUsagePanel({ breakdown, compact, inspector, loading, usage }: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
+  const [tab, setTab] = useState<PanelTab>('usage')
   const contextMax = usage.context_max ?? 0
   const contextUsed = usage.context_used ?? 0
   const contextPercent = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
@@ -42,8 +49,20 @@ export function ContextUsagePanel({ breakdown, compact, loading, usage }: Contex
 
   const segmentTotal = categories.reduce((sum, category) => sum + category.tokens, 0) || contextUsed || 1
 
+  const tabs = inspector && <PanelTabs onSelect={setTab} tab={tab} />
+
+  if (inspector && tab === 'inspector') {
+    return (
+      <div className="flex w-96 flex-col gap-3 p-3 text-[0.75rem]" data-slot="context-usage-panel">
+        {tabs}
+        <TurnInspector requestGateway={inspector.requestGateway} sessionId={inspector.sessionId} />
+      </div>
+    )
+  }
+
   return (
     <div className="flex w-72 flex-col gap-3 p-3 text-[0.75rem]" data-slot="context-usage-panel">
+      {tabs}
       <div className="flex items-baseline justify-between gap-2">
         <p className="font-medium text-foreground">{copy.title}</p>
 
@@ -94,6 +113,23 @@ export function ContextUsagePanel({ breakdown, compact, loading, usage }: Contex
 
       {compact && <CompactConversationRow compact={compact} />}
     </div>
+  )
+}
+
+function PanelTabs({ onSelect, tab }: { onSelect: (tab: PanelTab) => void; tab: PanelTab }) {
+  const { t } = useI18n()
+  const copy = t.shell.statusbar.contextUsagePanel.tabs
+
+  return (
+    <Tabs onValueChange={value => onSelect(value as PanelTab)} value={tab}>
+      <TabsList className="h-7 w-full">
+        {(['usage', 'inspector'] as const).map(id => (
+          <TabsTrigger className="h-6 flex-1 text-[0.6875rem]" key={id} value={id}>
+            {copy[id]}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   )
 }
 

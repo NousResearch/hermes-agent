@@ -415,7 +415,32 @@ export const zhHantChrome = {
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,
         title: '上下文使用量',
-        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`,
+        tabs: { inspector: '檢查器', usage: '用量' },
+        inspector: {
+          changes: {
+            model_changed: (before, after) => `模型已變更: ${before} → ${after}`,
+            prompt_changed: '提示詞已變更',
+            provider_changed: (before, after) => `供應商已變更: ${before} → ${after}`,
+            tool_added: name => `新增工具: ${name}`,
+            tool_removed: name => `移除工具: ${name}`
+          },
+          error: '無法讀取代理看到的內容',
+          lineage: count => `壓縮譜系 · ${count} 個分段`,
+          loading: '正在讀取已儲存的快照…',
+          mcpServers: 'MCP 伺服器',
+          model: '模型',
+          noChanges: '無變化',
+          noPrompt: '尚無已儲存的提示詞：首輪之後才會儲存。',
+          none: '無',
+          promptChars: count => `${count} 字元`,
+          provider: '供應商',
+          segment: index => `分段 ${index}`,
+          sourceLive: '執行中的代理',
+          sourceStored: '已儲存的快照',
+          systemPrompt: '系統提示詞',
+          tools: count => `工具 (${count})`
+        }
       },
       focusedSince: '聚焦以來',
       focusedSinceTitle: '自本次聚焦此對話以來的時間，不是回合執行時長',

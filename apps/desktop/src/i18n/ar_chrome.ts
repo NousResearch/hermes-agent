@@ -471,6 +471,31 @@ export const arChrome = {
           question: 'ضغط هذه المحادثة في ملخص؟',
           questionNamed: title => `ضغط «${title}» في ملخص؟`,
           working: 'جارٍ الضغط…'
+        },
+        tabs: { inspector: 'المفتش', usage: 'الاستخدام' },
+        inspector: {
+          changes: {
+            model_changed: (before, after) => `تغيّر النموذج: ${before} → ${after}`,
+            prompt_changed: 'تغيّرت التعليمات',
+            provider_changed: (before, after) => `تغيّر المزوّد: ${before} → ${after}`,
+            tool_added: name => `أُضيفت أداة: ${name}`,
+            tool_removed: name => `أُزيلت أداة: ${name}`
+          },
+          error: 'تعذّرت قراءة ما رآه الوكيل',
+          lineage: count => `سلسلة الضغط · ${count} مقاطع`,
+          loading: 'جارٍ قراءة اللقطة المحفوظة…',
+          mcpServers: 'خوادم MCP',
+          model: 'النموذج',
+          noChanges: 'لا تغييرات',
+          noPrompt: 'لا توجد تعليمات محفوظة بعد: تُحفظ بعد الدور الأول.',
+          none: 'لا شيء',
+          promptChars: count => `${count} حرفًا`,
+          provider: 'المزوّد',
+          segment: index => `المقطع ${index}`,
+          sourceLive: 'الوكيل النشط',
+          sourceStored: 'اللقطة المحفوظة',
+          systemPrompt: 'تعليمات النظام',
+          tools: count => `الأدوات (${count})`
         }
       },
       focusedSince: 'منذ التركيز',

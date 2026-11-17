@@ -5,6 +5,8 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -573,6 +575,63 @@ class SessionContextBreakdownResult(Result):
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,
        doc="Cursor-style split of the context window by category.")
+
+
+class SessionRenderSnapshotParams(SessionParams):
+    pass
+
+
+class RenderSnapshotTool(Result):
+    name: str
+    toolset: str
+    mcp_server: str | None = None
+    description: str
+
+
+class RenderSnapshotChange(Result):
+    """One difference from the previous compression segment. ``kind``: ``model_changed`` |
+    ``provider_changed`` | ``prompt_changed`` (``before``/``after``: the values, prompt hashes for a
+    prompt) | ``tool_added`` | ``tool_removed`` (``name``)."""
+
+    kind: Literal["model_changed", "provider_changed", "prompt_changed", "tool_added", "tool_removed"]
+    name: str | None = None
+    before: str | None = None
+    after: str | None = None
+
+
+class RenderSnapshotSegment(Result):
+    """One stored session of the compression lineage, oldest first."""
+
+    session_id: str
+    started_at: float | None = None
+    end_reason: str | None = None
+    model: str
+    provider: str
+    prompt_hash: str | None = None
+    prompt_chars: int
+    tool_count: int
+    changes: list[RenderSnapshotChange] = []
+
+
+class SessionRenderSnapshotResult(Result):
+    """``agent.render_snapshot.build_render_snapshot``: the stored system prompt (redacted; null before
+    the first turn persists one), the route, the tools as the live agent holds them (``tools_source:
+    live``) or as the row pinned them (``stored``), and the lineage's per-segment changes."""
+
+    session_id: str
+    system_prompt: str | None = None
+    model: str
+    provider: str
+    tools_source: Literal["live", "stored", "none"]
+    tools: list[RenderSnapshotTool]
+    toolsets: list[str]
+    mcp_servers: list[str]
+    segments: list[RenderSnapshotSegment]
+
+
+method("session.render_snapshot", params=SessionRenderSnapshotParams, result=SessionRenderSnapshotResult,
+       doc="What the agent saw: the stored system prompt, model, tools and MCP servers, and what changed "
+           "between compression segments. Read-only; never rebuilds the prompt.")
 
 
 # ── compression ───────────────────────────────────────────────────────────────────────────────

@@ -3675,6 +3675,47 @@ export interface PromptCacheWindow {
   refreshed_at?: number | null
   coverage?: Record<string, number>
 }
+export interface SessionRenderSnapshotParams {
+  session_id: string
+  profile?: string | null
+}
+/** ``agent.render_snapshot.build_render_snapshot``: the stored system prompt (redacted; null before the first turn persists one), the route, the tools as the live agent holds them (``tools_source: live``) or as the row pinned them (``stored``), and the lineage's per-segment changes. */
+export interface SessionRenderSnapshotResult {
+  session_id: string
+  system_prompt?: string | null
+  model: string
+  provider: string
+  tools_source: 'live' | 'stored' | 'none'
+  tools: RenderSnapshotTool[]
+  toolsets: string[]
+  mcp_servers: string[]
+  segments: RenderSnapshotSegment[]
+}
+export interface RenderSnapshotTool {
+  name: string
+  toolset: string
+  mcp_server?: string | null
+  description: string
+}
+/** One stored session of the compression lineage, oldest first. */
+export interface RenderSnapshotSegment {
+  session_id: string
+  started_at?: number | null
+  end_reason?: string | null
+  model: string
+  provider: string
+  prompt_hash?: string | null
+  prompt_chars: number
+  tool_count: number
+  changes?: RenderSnapshotChange[]
+}
+/** One difference from the previous compression segment. ``kind``: ``model_changed`` | ``provider_changed`` | ``prompt_changed`` (``before``/``after``: the values, prompt hashes for a prompt) | ``tool_added`` | ``tool_removed`` (``name``). */
+export interface RenderSnapshotChange {
+  kind: 'model_changed' | 'provider_changed' | 'prompt_changed' | 'tool_added' | 'tool_removed'
+  name?: string | null
+  before?: string | null
+  after?: string | null
+}
 export interface SessionCompressParams {
   session_id: string
   profile?: string | null
@@ -6747,6 +6788,8 @@ export interface RpcMethods {
   'session.most_recent': { params: SessionMostRecentParams; result: SessionMostRecentResult }
   /** Redirect the active turn (queued for the next turn while the agent is still building). */
   'session.redirect': { params: SessionCorrectionParams; result: SessionCorrectionResult }
+  /** What the agent saw: the stored system prompt, model, tools and MCP servers, and what changed between compression segments. Read-only; never rebuilds the prompt. */
+  'session.render_snapshot': { params: SessionRenderSnapshotParams; result: SessionRenderSnapshotResult }
   /** Attach to a stored session: reuse it if live here, else lazy / deferred / cold / eager rebuild. */
   'session.resume': { params: SessionResumeParams; result: SessionResumeResult }
   /** Export the transcript to ~/.hermes/sessions/saved (classic /save). */
@@ -7075,6 +7118,7 @@ export const RPC_METHODS = [
   'session.list',
   'session.most_recent',
   'session.redirect',
+  'session.render_snapshot',
   'session.resume',
   'session.save',
   'session.set_hidden',

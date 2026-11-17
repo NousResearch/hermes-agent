@@ -5,6 +5,7 @@ import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deContextUsagePanel } from './de_context_usage_panel'
 import { deCronControl } from './de_cron_control'
 import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
@@ -4659,32 +4660,7 @@ export const deOverrides = {
         unifiedNote: 'Unified Memory — die GPU und das System teilen sich diesen Speicherpool.',
         toggle: 'Systemressourcen'
       },
-      contextUsagePanel: {
-        categories: {
-          conversation: 'Konversation',
-          mcp: 'MCP',
-          memory: 'Memory',
-          rules: 'Regeln',
-          skills: 'Skills',
-          subagent_definitions: 'Subagent-Definitionen',
-          system_prompt: 'System-Prompt',
-          tool_definitions: 'Tool-Definitionen'
-        },
-        compact: {
-          action: 'Unterhaltung verdichten',
-          busyHint: 'Beende oder stoppe zuerst die laufende Antwort',
-          confirm: 'Verdichten',
-          hint: 'Älteren Kontext zusammenfassen, um Platz zu schaffen. Dieses Gespräch wird fortgesetzt.',
-          question: 'Diese Unterhaltung zu einer Zusammenfassung verdichten?',
-          questionNamed: title => `„${title}“ zu einer Zusammenfassung verdichten?`,
-          working: 'Verdichte …'
-        },
-        empty: 'Noch keine Kontext-Daten',
-        loading: 'Aufschlüsselung wird geladen…',
-        percentFull: percent => `${percent}% voll`,
-        title: 'Kontext-Verbrauch',
-        tokenSummary: (used, max) => `${used} / ${max} Tokens`
-      },
+      contextUsagePanel: deContextUsagePanel,
       focusedSince: 'Fokussiert seit',
       focusedSinceTitle: 'Zeit seit dem Fokussieren dieses Chats — nicht die Laufzeit eines Turns',
       yoloOn: 'YOLO an — gefährliche Befehle werden automatisch genehmigt. Shift+Klick schaltet global um.',

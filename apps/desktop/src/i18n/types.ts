@@ -17,6 +17,7 @@ import type { CatalogTranslations } from './types_catalog'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
+import type { ContextUsagePanelCopy } from './types_context_usage_panel'
 import type { CronControlCopy } from './types_cron_control'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
@@ -3680,32 +3681,7 @@ export interface Translations extends NoticeTranslations {
         unifiedNote: string
         toggle: string
       }
-      contextUsagePanel: {
-        categories: {
-          conversation: string
-          mcp: string
-          memory: string
-          rules: string
-          skills: string
-          subagent_definitions: string
-          system_prompt: string
-          tool_definitions: string
-        }
-        compact: {
-          action: string
-          busyHint: string
-          confirm: string
-          hint: string
-          question: string
-          questionNamed: (title: string) => string
-          working: string
-        }
-        empty: string
-        loading: string
-        percentFull: (percent: number) => string
-        title: string
-        tokenSummary: (used: string, max: string) => string
-      }
+      contextUsagePanel: ContextUsagePanelCopy
       focusedSince: string
       focusedSinceTitle: string
       yoloOn: string

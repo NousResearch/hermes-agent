@@ -15,6 +15,10 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from gateway.session_authorities import owner_scope
+from gateway.session_busy_controls import authorize
+from hermes_state_runtime import RuntimeStoreError
+
 # The TUI surfaces whose /status and /context read as main's TUI sidecar did.
 _TUI_SOURCES = frozenset({'tui'})
 
@@ -178,6 +182,24 @@ async def context_breakdown(connection, ref, params) -> dict:
                 payload['context_files'] = context_file_sources_for_agent(agent)
             live.context_breakdown = (key, payload)
             return dict(payload)
+    return await asyncio.to_thread(build)
+
+
+async def render_snapshot(connection, ref, params) -> dict:
+    """``session.render_snapshot`` on the owner: ``build_render_snapshot`` over the session's stored rows,
+    with the resident agent's own tools[] and route when one is loaded. Builds nothing and rebuilds no prompt."""
+    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:read')
+    authority = connection.authority
+    if ref.session_id not in authority.sessions:
+        raise RuntimeStoreError('not_found')
+    agent = authority.agent(ref)
+
+    def build():
+        from agent.render_snapshot import build_render_snapshot
+        with owner_scope(authority):
+            return build_render_snapshot(authority.db, _context_id(authority, ref), agent=agent)
     return await asyncio.to_thread(build)
 
 

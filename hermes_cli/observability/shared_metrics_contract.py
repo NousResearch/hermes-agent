@@ -1302,6 +1302,8 @@ def _event_shape_matches(event: Any, **expected: Any) -> bool:
 def _bounded_dimensions(metric_name: str, data: Any) -> dict[str, str] | None:
     """Project ``data`` onto the metric's closed field set, or None when it does not fit."""
     expected_fields = _METRIC_FIELDS[metric_name]
+    if metric_name == INSTALL_SNAPSHOT_METRIC and isinstance(data, dict) and not set(data) & set(GROUP_CHAT_SNAPSHOT_FIELDS):
+        expected_fields -= set(GROUP_CHAT_SNAPSHOT_FIELDS)  # an unreadable room store leaves out only these
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
     dimensions = {field: data.get(field) for field in sorted(expected_fields)}

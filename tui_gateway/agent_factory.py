@@ -188,13 +188,24 @@ def _scoped_session_provider(agent, session: dict) -> str:
         return _runtime_model_config(agent).get("provider") or "custom"
 
 
+def _session_route_view(agent):
+    """The agent as the SESSION's own route: a voice turn's route and a turn-scoped provider fallback both
+    leave the live fields on another model until the next turn restores the primary, so a settings save in
+    between must persist the primary snapshot, never the route standing in for it."""
+    from agent.voice_turn_route import _SessionRuntimeView, session_runtime_view
+    view = session_runtime_view(agent)
+    primary = getattr(agent, "_primary_runtime", None)
+    if getattr(agent, "_provider_fallback_active", False) is True and isinstance(primary, dict) and primary.get("model"):
+        view = _SessionRuntimeView(view, {"snapshot": primary, "reasoning_config": getattr(view, "reasoning_config", None)})
+    return view
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     """Merge the agent's CURRENT runtime identity onto the row's persisted ``model_config``. Falsy agent
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
-    from agent.voice_turn_route import session_runtime_view
-    agent = session_runtime_view(agent)
+    agent = _session_route_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, base_url = attr("model"), attr("base_url")
     from hermes_cli.runtime_provider_custom import session_provider_identity

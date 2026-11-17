@@ -197,7 +197,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             dst.unlink(missing_ok=True)
         return False
     finally:
-        # Interrupted mid-copy (SIGTERM -> SystemExit): the worker is still inside the C copy with
+        # Interrupted mid-copy (Ctrl-C -> KeyboardInterrupt): the worker is still inside the C copy with
         # both connections, and close() would wait on their mutex until the copy ends. The process
         # is exiting; leave them to it, and the caller unlinks the staging file.
         if copier is None or not copier.running():
@@ -219,6 +219,19 @@ def _reclaim_abandoned_staging(home: Path, prefix: str) -> None:
                 staged.unlink()
 
 
+# Staging files a SIGTERM exit must remove (see _exit_on_sigterm).
+_STAGING: set[Path] = set()
+
+
+def _exit_on_sigterm(signum, _frame) -> None:
+    # Not sys.exit(): a handler that runs inside a weakref callback or __del__ (import machinery
+    # fires both) has its SystemExit printed as "Exception ignored" and dropped, and the copy goes on.
+    for path in list(_STAGING):
+        with suppress(OSError):
+            path.unlink()
+    os._exit(128 + signum)
+
+
 def preflight_state_db(home: Path) -> dict:
     """Publish an emergency snapshot; do not prune recovery files on failure."""
     source = home / "state.db"
@@ -231,6 +244,9 @@ def preflight_state_db(home: Path) -> dict:
     # Named before it exists, so a SIGTERM at any point after creation reaches the
     # cleanup below; _safe_copy_db creates it owner-only and refuses a symlink.
     staged = home / f"{prefix}{stamp}-{os.getpid()}.partial"
+    # A copy stopped mid-write leaves the staging copy's rollback journal behind too.
+    staging = {staged, Path(f"{staged}-journal")}
+    _STAGING.update(staging)
     try:
         if not _safe_copy_db(source, staged):
             raise RuntimeError("SQLite safe copy failed; previous emergency snapshots were retained")
@@ -244,9 +260,9 @@ def preflight_state_db(home: Path) -> dict:
         size = staged.stat().st_size
         os.replace(staged, destination)
     finally:
-        staged.unlink(missing_ok=True)
-        # A copy stopped mid-write leaves the staging copy's rollback journal behind too.
-        Path(f"{staged}-journal").unlink(missing_ok=True)
+        for path in staging:
+            path.unlink(missing_ok=True)
+        _STAGING.difference_update(staging)
     for old in sorted(home.glob(f"{prefix}*.bak"), reverse=True)[2:]:
         try:
             old.unlink()
@@ -258,5 +274,5 @@ def preflight_state_db(home: Path) -> dict:
 if __name__ == "__main__":
     # The Desktop stops a pre-flight past its deadline with SIGTERM; exit through
     # the staging cleanup instead of dying with a full-size .partial left behind.
-    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
     print(json.dumps(preflight_state_db(Path(sys.argv[1]))))

@@ -123,11 +123,12 @@ def _inputs_for(called: str, given: dict[str, Any]) -> dict[str, Any]:
     return {name: given.get(name, spec.get("default")) for name, spec in declared.items()}
 
 
-def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | None = None) -> dict:
-    """Which jobs of ``rel`` run on a pull request, recursing into called workflows.
+def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | None = None,
+                  event_name: str = "workflow_dispatch") -> dict:
+    """Which jobs of ``rel`` run on ``event_name``, recursing into called workflows.
 
     Returns ``{job: {"inputs": ..., "jobs": <child result>}}`` for every job that runs.
-    ``detect`` (ci.yaml only) is the replayed ``detect`` job's outputs.
+    ``detect`` (ci.yaml only) is the replayed ``detect`` job's outputs, replayed for the same event.
     """
     jobs = _yaml(rel)["jobs"]
     ran: dict[str, dict] = {}
@@ -150,7 +151,7 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
             all_ran = all(n in ran for n in needs)
             ctx = {
                 "inputs": inputs,
-                "github": {"event_name": "pull_request", "ref_type": "branch"},
+                "github": {"event_name": event_name, "ref_type": "branch"},
                 "needs": {n: {"outputs": (ran.get(n) or {}).get("outputs", {}),
                               "result": "success" if n in ran else "skipped"} for n in needs},
                 "__status__": {"always": True, "success": all_ran, "failure": False, "cancelled": False},
@@ -171,7 +172,7 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
                 called = uses[2:]
                 given = {k: gha.render(v, ctx) for k, v in (body.get("with") or {}).items()}
                 entry["inputs"] = _inputs_for(called, given)
-                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"])
+                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"], event_name=event_name)
             ran[name] = entry
         assert progressed, f"{rel}: unresolvable needs among {pending}"
     return ran
@@ -822,14 +823,26 @@ def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
 
 
 @pytest.mark.parametrize("event_name", ["pull_request", "push"])
-def test_pull_requests_and_main_pushes_never_run_e2e(event_name):
-    """E2E suites run only on a release run or a manual dispatch, whatever the diff or labels select."""
+def test_pull_requests_and_main_pushes_run_no_e2e_but_the_upgrade_shards_on_a_pull_request(event_name):
+    """A pull request that touches the update path runs the Linux e2e-upgrade shards; every other
+    E2E suite, and every suite on a push to main, runs only on a release run or a manual dispatch."""
     lanes = cc.classify([], run_e2e=True)  # every lane on, as a label or an update-path diff would
-    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name))
-    for lane in ("e2e", "e2e_upgrade", "e2e_desktop_update"):
+    run = _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes, event_name),
+                        event_name=event_name)
+    upgrade = _consumers_reached(run, "e2e_upgrade")
+    assert upgrade.pop("tests-os/install-update-e2e/install-update") is False, f"{event_name}: Windows journey ran"
+    assert all(value is (event_name == "pull_request") for value in upgrade.values()), upgrade
+    for lane in ("e2e", "e2e_desktop_update"):
         assert not any(_consumers_reached(run, lane).values()), f"{event_name}: {lane} ran"
     assert "e2e-desktop-core" not in run
     assert "tests" in run and "tests-os" in run  # the unit lanes still run
+
+
+def test_a_pull_request_off_the_update_path_runs_no_upgrade_shard():
+    run = _run_workflow(".github/workflows/ci.yaml", inputs={},
+                        detect=_detect_outputs(_real_classifier(["agent/redact.py"]), "pull_request"),
+                        event_name="pull_request")
+    assert not any(_consumers_reached(run, "e2e_upgrade").values())
 
 
 def test_windows_install_update_dispatch_alone_sets_strict():

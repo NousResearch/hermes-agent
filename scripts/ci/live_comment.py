@@ -80,6 +80,7 @@ _INFRA_JOBS = frozenset({
     "CI review comment (live)",
     "All required checks pass",
     "All required checks pass (v2)",
+    "All required checks pass (v3)",
     "Detect affected areas",
 })
 

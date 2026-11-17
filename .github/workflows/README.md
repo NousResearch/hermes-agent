@@ -153,7 +153,7 @@ Blacksmith.
 
 ## Regular CI: `ci.yaml`
 
-**Name:** `CI`. **Required check:** `All required checks pass (v2)`.
+**Name:** `CI`. **Required check:** `All required checks pass (v3)`.
 
 ### Triggers
 
@@ -241,7 +241,7 @@ of every suite that reads it.
 | ↳ Prompt surface diff (advisory steps) | | PR and `python` | push, or no Python change |
 | ↳ Lint Docker scripts (steps) | | `docker_meta` | no Docker meta change |
 | ↳ Supply-chain scan / PyPI upper bounds (steps) | | PR and `scan` / `deps` | push, or neither lane |
-| All required checks pass (v2) | inline | `always()` | never |
+| All required checks pass (v3) | inline | `always()` | never |
 | ↳ CI timing report (advisory steps of the gate job) | | `always()`. Saves a baseline on `main`; makes a diff report on PRs | never |
 
 Steps inside one job keep what told the old jobs apart: the lane gate is the step's
@@ -284,7 +284,7 @@ ones. OSV runs on a weekly schedule.
   `e2e-desktop` may skip. The PR-only checks are steps of `repo-guards`, which
   runs on every event, so they never reach the gate as a skip.
 
-Branch protection requires only this check. The `(v2)` suffix is deliberate.
+Branch protection requires only this check. The `(v3)` suffix is deliberate.
 When a new job joins the required set, bump the version here and in the
 `protect-main` ruleset together, so old greens on open PRs stop counting.
 

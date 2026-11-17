@@ -1,9 +1,13 @@
 """Opt-in release ledger behind ``hermes update --rollback``.
 
-With ``updates.rollback_releases: N`` (N > 0) every ``hermes update`` first records the commit
-the install is running as ``refs/hermes/releases/<seq>-<sha12>`` in the checkout's own
-repository, keeping the newest N. The refs keep those commits (and, in a blobless clone, the
-blobs their checkout already fetched) reachable, so a rollback needs no network.
+With ``updates.rollback_releases: N`` (N > 0) every ``hermes update`` that moves the code records
+the commit it left as ``refs/worktree/hermes/releases/<seq>-<sha12>``, keeping the newest N. The
+entry is written once the move is verified (``update_cmd._apply_pulled_update``, still in the
+running updater, so a target without this module records too), so an update that fails or finds
+nothing new never rotates the ledger. ``refs/worktree/`` refs are private to the checkout that
+wrote them (a linked worktree install keeps its own ledger) yet still reachability roots for
+``git gc``, so the commits (and, in a blobless clone, the blobs their checkout already fetched)
+stay on disk and a rollback needs no network.
 
 ``hermes update --rollback`` selects the entry after the running commit (the newest when the
 running commit is not in the ledger) and hands it to the normal update pipeline as a pinned,
@@ -22,8 +26,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-RELEASE_PREFIX = "refs/hermes/releases/"
-_RELEASE_REF = re.compile(r"^refs/hermes/releases/(\d+)-[0-9a-f]+$")
+RELEASE_PREFIX = "refs/worktree/hermes/releases/"
+_RELEASE_REF = re.compile(r"^refs/worktree/hermes/releases/(\d+)-[0-9a-f]+$")
 
 
 def keep_count(updates_config: dict) -> int:
@@ -76,15 +80,15 @@ def rollback_target(git_cmd, root: Path, head: str | None) -> str | None:
 
 
 def select(args, git_cmd, root: Path, request: dict) -> tuple | None:
-    """``select_apply_target``'s ledger step: the rollback target tuple for ``--rollback``,
-    else None after recording the running commit (when the ledger is on)."""
+    """``select_apply_target``'s ledger step: the rollback target tuple for ``--rollback``, else
+    None after noting on ``request`` the commit a ledger-on update leaves (``record_left``)."""
     from hermes_cli.update_cmd import _capture_head_sha, _record_update_step, _updates_config
 
     head = _capture_head_sha(list(git_cmd), root)
     if not getattr(args, "rollback", False):
         keep = keep_count(_updates_config())
-        if keep and head and (ref := record_release(git_cmd, root, head, keep)):
-            print(f"→ Recorded {head[:12]} for `hermes update --rollback` ({ref.rsplit('/', 1)[1]})")
+        if keep and head:
+            request["release_ledger"] = {"leaving": head, "keep": keep}
         return None
     target = rollback_target(git_cmd, root, head)
     if target is None:
@@ -94,5 +98,16 @@ def select(args, git_cmd, root: Path, request: dict) -> tuple | None:
     print(f"→ Rolling back: {head[:12] if head else 'unknown'} → {target[:12]} (recorded release)")
     _record_update_step("rollback", True, f"{(head or '')[:12]} -> {target[:12]}")
     request["expected_sha"] = target
-    # Already local and already ran here: no fetch, no channel hold. The pipeline still checks it.
+    request["local_target"] = True  # already on disk: no fetch, no unshallow, no channel hold
     return target, target, True, None
+
+
+def record_left(request: dict) -> None:
+    """Record the commit this update moved off, once the move landed on ``expected_sha``."""
+    ledger = request.get("release_ledger")
+    landed = request.get("expected_sha")
+    if not ledger or not landed or ledger["leaving"] == landed:
+        return
+    ref = record_release(["git"], Path(request["source"]), ledger["leaving"], ledger["keep"])
+    if ref:
+        print(f"  ✓ Kept {ledger['leaving'][:12]} for `hermes update --rollback` ({ref.rsplit('/', 1)[1]})")

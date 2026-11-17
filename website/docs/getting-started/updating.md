@@ -210,9 +210,12 @@ updates:
   rollback_releases: 3   # keep the 3 most recent commits this install updated away from (0 = off)
 ```
 
-From then on, every `hermes update` records the commit it is about to leave as a git ref
-(`refs/hermes/releases/<seq>-<sha>`) in the install's own repository and prunes the ledger to
-the newest N. The refs keep those commits on disk, so going back needs no network.
+From then on, every `hermes update` that moves the code records the commit it moved off as a
+git ref (`refs/worktree/hermes/releases/<seq>-<sha>`) and prunes the ledger to the newest N. The
+entry is written after the move, so a failed update or one that finds nothing new leaves the
+ledger as it was. The refs are private to that checkout (another worktree of the same repository
+keeps its own ledger) and keep those commits on disk, so going back needs no network, not even
+on a shallow checkout.
 
 `hermes update --rollback` picks the release before the one you are running and moves the
 install there through the normal update pipeline: gateways are paused and restarted on that

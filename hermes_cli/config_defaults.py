@@ -2323,7 +2323,7 @@ DEFAULT_CONFIG = {
         # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
         # e.g. on non-admin accounts where /Applications isn't writable.
         "refresh_cua_driver": True,
-        # Keep the newest N commits updates left (refs/hermes/releases/*) for `update --rollback`.
+        # Keep the newest N commits updates left (refs/worktree/hermes/releases/*) for `update --rollback`.
         "rollback_releases": 0,
     },
     # LSP diagnostics (pyright, gopls, rust-analyzer...) in the post-write lint check of

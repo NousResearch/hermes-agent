@@ -565,6 +565,7 @@ class ProcessSession:
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
+    group_liveness: bool = False                # sandbox kill begun: the poller probes the job's whole group
     wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
                                                 # launcher; Linux-side workers outlive it (#120546)
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
@@ -1420,10 +1421,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         prev_output_bytes = 0
         while not session.exited:
             time.sleep(2)
+            group = session.group_liveness  # a supervisor probe that races a kill's start is redone
             try:
                 # Read only the bytes written since the last poll, plus the process status.
                 raw = env.execute(
-                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
+                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path), group=group),
                     timeout=10).get("output", "")
                 reply = parse_log_delta_reply(raw)
                 delta = reply.delta if reply else ""
@@ -1448,8 +1450,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     self._emit_output(session, delta)
 
                 # Unreadable reply: separate liveness and exit-code reads, as before the combined read.
-                exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path))
-                if exit_code is not None:
+                exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path), group)
+                if exit_code is not None and (group or not session.group_liveness):
                     self._finish_exited(session, exit_code)
                     return
             except Exception:
@@ -2234,8 +2236,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            # The launch made the job a process group; stop all of it, or say who survived.
-            incomplete = self._kill_env_group(session)
+            incomplete = self._kill_env_group(session)  # the whole job group, or who survived
             if incomplete is not None:
                 return incomplete
         elif session.detached and session.pid_scope == "host" and session.pid:

@@ -217,7 +217,7 @@ def test_only_esrch_proves_the_group_gone(diagnostic, gone):
     # A shell function stands in for the kill builtin, so no real process is signalled.
     script = (
         "kill() { printf '%s\\n' " + shlex.quote("bash: kill: (-4321) - " + diagnostic)
-        + " >&2; return 1; }; " + env_group_kill_command(4321, 0.1, "/dev/null"))
+        + " >&2; return 1; }; " + env_group_kill_command(4321, 0.1))
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10, check=False)
     assert (result.returncode == 0) is gone
     assert ("__HERMES_PROCESS_TERMINATED__" in result.stdout.splitlines()) is gone
@@ -226,4 +226,30 @@ def test_only_esrch_proves_the_group_gone(diagnostic, gone):
 @pytest.mark.parametrize("pgid", [0, 1, -1, True])
 def test_kill_command_refuses_group_ids_that_reach_other_processes(pgid):
     with pytest.raises(ValueError):
-        env_group_kill_command(pgid, 1.0, "/dev/null")
+        env_group_kill_command(pgid, 1.0)
+
+
+def test_a_supervisor_probe_that_raced_a_kill_is_repeated_on_the_group(monkeypatch):
+    import tools.process_registry as module
+
+    registry = ProcessRegistry()
+    session = ProcessSession(id="proc_race", command="writer", task_id="task", pid=4321, pid_scope="sandbox")
+    group_probes = []
+
+    class Env:
+        def execute(self, command, **_kwargs):
+            group_probes.append('kill -0 "-$(cat' in command)
+            if len(group_probes) == 1:
+                session.group_liveness = True  # a kill begins while this supervisor probe runs
+                return {"output": "0 0 exit:\n"}  # ...and has already stopped the supervisor
+            return {"output": "0 0 run\n" if len(group_probes) == 2 else "0 0 exit:143\n"}
+
+    monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
+    session.env_ref = Env()
+    registry._running[session.id] = session
+
+    registry._env_poller_loop(session, session.env_ref, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit")
+
+    assert group_probes == [False, True, True]
+    assert session.exit_code == 143

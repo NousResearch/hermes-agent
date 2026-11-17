@@ -51,15 +51,22 @@ class LogDelta(NamedTuple):
     delta: str
 
 
-def log_delta_command(quoted_log_path: str, offset: int, quoted_pid_path: str, quoted_exit_path: str) -> str:
+def _alive_probe(quoted_pid_path: str, group: bool) -> str:
+    """``kill -0`` on the job's supervisor, or on its whole process group (``-<pgid>``) once
+    a kill has begun, so a member that outlives the supervisor keeps the job running."""
+    sign = "-" if group else ""
+    return f'kill -0 "{sign}$(cat {quoted_pid_path} 2>/dev/null)" 2>/dev/null'  # no "--": dash rejects it
+
+
+def log_delta_command(quoted_log_path: str, offset: int, quoted_pid_path: str, quoted_exit_path: str,
+                      *, group: bool = False) -> str:
     """Shell command that reads only the log bytes written since ``offset``
     (``cat``-ing the whole file every poll re-sends all output over docker/SSH)
     and reports the process status in the same exec (sandboxes rate-limit exec
     starts, so one poll must cost one).
 
     Prints one header line ``"<size> <offset> <status>"`` then the bytes in
-    [offset, size). The status is ``run`` while ``kill -0`` on the pid file
-    succeeds (the supervisor's PID, or ``-<pgid>`` once a kill has begun), else ``exit:<code>`` (``exit:`` with no digits when the exit file
+    [offset, size). The status is ``run`` while ``_alive_probe`` succeeds, else ``exit:<code>`` (``exit:`` with no digits when the exit file
     is missing or unreadable). It sits in the header line, ahead of the delta, so
     log content cannot forge it.
 
@@ -77,7 +84,7 @@ def log_delta_command(quoted_log_path: str, offset: int, quoted_pid_path: str, q
     header reports the trimmed size. After an exit no poll follows, so nothing is
     held back and a truncated trailing sequence is delivered (decoded as U+FFFD)."""
     return (
-        f'if kill -0 "$(cat {quoted_pid_path} 2>/dev/null)" 2>/dev/null; then T=run; '
+        f'if {_alive_probe(quoted_pid_path, group)}; then T=run; '
         f"else T=\"exit:$(cat {quoted_exit_path} 2>/dev/null | tr -dc '0-9')\"; fi; "
         f"O={offset}; "
         f"S=$({{ wc -c < {quoted_log_path}; }} 2>/dev/null | tr -dc '0-9'); "
@@ -116,12 +123,12 @@ def parse_log_delta_reply(raw: str) -> LogDelta | None:
     return LogDelta(int(size), int(offset), exit_code, delta)
 
 
-def fallback_exit_code(env: Any, quoted_pid_path: str, quoted_exit_path: str) -> int | None:
+def fallback_exit_code(env: Any, quoted_pid_path: str, quoted_exit_path: str, group: bool = False) -> int | None:
     """Separate liveness and exit-code reads for a reply the combined command
     could not deliver, so a backend that mangles it still sees the exit.
     ``None`` while the process looks alive, else the recorded code (-1 if none)."""
     check = env.execute(
-        f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
+        f"{_alive_probe(quoted_pid_path, group)}; echo $?", timeout=5)
     check_output = check.get("output", "").strip()
     if not check_output or check_output.splitlines()[-1].strip() == "0":
         return None

@@ -3,7 +3,6 @@
 import logging
 import math
 import os
-import shlex
 import signal
 import subprocess
 import time
@@ -11,7 +10,6 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.process_registry_env_log import env_job_paths
 
 if TYPE_CHECKING:
     from tools.process_registry import ProcessSession
@@ -25,13 +23,10 @@ _ENV_TICK = 0.05
 _ENV_KILL_TRANSPORT_SECONDS = 10.0
 
 
-def env_group_kill_command(pgid: int, grace: float, pid_path: str) -> str:
+def env_group_kill_command(pgid: int, grace: float) -> str:
     """Shell command that stops sandbox process group *pgid* and proves it is gone.
 
-    It first rewrites the job's *pid_path* to ``-<pgid>``, so the poller's ``kill -0``
-    liveness probe follows the whole group from then on: a member that outlives the
-    signals keeps the session running (and killable again) after the supervisor exits.
-    Then SIGTERM, then after *grace* seconds SIGKILL (no SIGKILL when *grace* is 0,
+    SIGTERM, then after *grace* seconds SIGKILL (no SIGKILL when *grace* is 0,
     matching ``terminal.daemon_term_grace_seconds``). Prints ``ENV_GONE_MARKER`` once
     ``kill -0`` fails with ESRCH; any other failure (EPERM: the member belongs to
     another user) still counts as alive. When the group outlives every signal,
@@ -44,7 +39,7 @@ def env_group_kill_command(pgid: int, grace: float, pid_path: str) -> str:
     gone_exit = f"{{ echo {ENV_GONE_MARKER}; exit 0; }}"
     escalate = f'kill -KILL -- "-$g" 2>/dev/null; wait_gone 20 && {gone_exit}; ' if grace else ""
     return (
-        f"g={pgid}; printf '%s\\n' \"-$g\" 2>/dev/null > {shlex.quote(pid_path)}; "
+        f"g={pgid}; "
         'gone() { local e; e=$(LC_ALL=C kill -0 -- "-$g" 2>&1) && return 1; [[ $e == *"No such process"* ]]; }; '
         f'wait_gone() {{ local i; for ((i = 0; i < $1; i++)); do gone && return 0; sleep {_ENV_TICK}; done; gone; }}; '
         f'kill -TERM -- "-$g" 2>/dev/null; wait_gone {term_ticks} && {gone_exit}; '
@@ -201,9 +196,11 @@ class ProcessTerminationMixin:
         """Stop a sandbox job's process group from inside the sandbox. None once the group
         is proven gone; else the error result, with the session left running and killable."""
         grace = self._daemon_term_grace_seconds()
-        _, pid_path, _ = env_job_paths(self._env_temp_dir(session.env_ref), session.id)
+        # Before any signal: the poller now probes the whole group, so a member that outlives
+        # the supervisor keeps the session running, and killable again.
+        session.group_liveness = True
         result = session.env_ref.execute(
-            env_group_kill_command(session.pid, grace, pid_path), timeout=grace + _ENV_KILL_TRANSPORT_SECONDS)
+            env_group_kill_command(session.pid, grace), timeout=grace + _ENV_KILL_TRANSPORT_SECONDS)
         survivors = parse_env_group_kill(result, session.pid)
         if survivors == []:
             return None

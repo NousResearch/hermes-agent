@@ -87,12 +87,12 @@ def _existing_board_slug(slug: str) -> str:
 
 
 def _conn(board: Optional[str] = None):
-    """Connect to the already-normalised ``board`` (``None`` = active). ``init_db`` is
-    idempotent; running it here lets a fresh install self-heal if POST /tasks arrives first."""
-    try:
-        kanban_db.init_db(board=board)
-    except Exception as exc:
-        log.warning("kanban init_db failed: %s", exc)
+    """Connect to the already-normalised ``board`` (``None`` = active).
+
+    ``connect`` runs the schema/migration pass and the integrity probe the first time
+    this process opens a path (so a fresh install still self-heals on its first
+    request) and skips them afterwards. Calling ``init_db`` here forced that pass on
+    every request: on a large board a full ``PRAGMA integrity_check`` per API call."""
     return kbc.connect(board=board)
 
 

@@ -680,6 +680,7 @@ hermes webhook subscribe sentry-alerts --identity body:/data/event/event_id
 - `body:` reads a string or integer field. A provider that re-serializes the body on retry still matches, so the body is not compared.
 - `header:` is a key the sender chose. If the sender reuses it for a different body, the request is refused with `409` and recorded in the history as `failed` (`same delivery id, different body`). Signature, timestamp and transport headers (`X-Webhook-Timestamp`, `X-Hub-Signature-256`, `Content-Type`, `Host` and the like) change on every attempt or belong to the transport, so they are refused when the route loads.
 - A request that does not carry the named value falls back to the default header chain.
+- On a route with `identity`, every route kind (agent routes included) dedupes through the durable delivery receipts. A body-pointer retry whose JSON keys arrive in another order is therefore `duplicate`, not an admission conflict.
 
 ### Delivery history {#delivery-history}
 

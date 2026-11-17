@@ -1,5 +1,6 @@
 """A route's ``identity`` source decides which deliveries are retries of one another."""
 
+import asyncio
 import json
 
 import pytest
@@ -60,10 +61,29 @@ async def test_identity_from_a_body_pointer_or_a_named_header_dedupes_retries():
     # The sender reused its key for a different body: refused, nothing sent.
     assert await _post(adapter, "acme", {"data": {"n": 3}}, **{"Acme-Event-Id": "k-1"}) == (409, None)
     assert len(sent) == 2
+    # Two overlapping first sightings of one key with different bodies: one runs, the other is a 409.
+    racing = await asyncio.gather(_post(adapter, "acme", {"data": {"n": 4}}, **{"Acme-Event-Id": "k-2"}),
+                                  _post(adapter, "acme", {"data": {"n": 5}}, **{"Acme-Event-Id": "k-2"}))
+    assert sorted(racing, key=str) == [(200, "delivered"), (409, None)]
+
+
+@pytest.mark.asyncio
+async def test_agent_route_retry_with_reordered_json_is_a_duplicate_not_a_conflict():
+    adapter = _gateway([], {"agent": {"secret": _INSECURE_NO_AUTH, "identity": "body:/id"}})
+    admitted = []
+
+    async def admit(payload, prompt, delivery_id, now, **_kw):
+        admitted.append(delivery_id)
+        return "accepted"
+
+    adapter._admit_agent_run = admit
+    assert await _post(adapter, "agent", {"id": "e-1", "a": 1, "b": 2}) == (202, "accepted")
+    assert await _post(adapter, "agent", {"b": 2, "a": 1, "id": "e-1"}) == (200, "duplicate")
+    assert admitted == ["e-1"]
 
 
 def test_an_identity_that_cannot_dedupe_is_refused_at_startup():
-    for bad in ("header:X-Webhook-Timestamp", "body:data/id", "cookie:x"):
+    for bad in ("header:X-Webhook-Timestamp", "body:data/id", "cookie:x", "body:/data/~2"):
         adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 0,
                                                                      "routes": {"r": _route(bad)}}))
         with pytest.raises(ValueError, match="identity"):

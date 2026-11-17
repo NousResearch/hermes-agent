@@ -55,6 +55,7 @@ class DeliveryReceipt:
     reason: str = ""
     ref: str = ""  # what it started: ``cron_job:<ref>``, ``deliver:<target>``, ``admission:<id>``
     outcome_unknown: bool = False  # a send that may have landed: keep the claim even on a failure
+    body_digest: str = ""  # sha256 of the body, set only when the route's identity is a sender-chosen header
 
     @property
     def identity(self):
@@ -86,6 +87,14 @@ CREATE TABLE IF NOT EXISTS receipts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS receipts_claim ON receipts(profile, route, delivery_id) WHERE claim = 1;
 CREATE INDEX IF NOT EXISTS receipts_received ON receipts(received_at);
+CREATE TABLE IF NOT EXISTS delivery_digests (
+    profile TEXT NOT NULL,
+    route TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    first_seen_at REAL NOT NULL,
+    PRIMARY KEY (profile, route, delivery_id)
+);
 CREATE TABLE IF NOT EXISTS failed_attempts (
     profile TEXT NOT NULL,
     route TEXT NOT NULL,
@@ -135,6 +144,22 @@ class WebhookReceipts:
                 conn.executescript(_SCHEMA)
                 self._conn = conn
             yield self._conn
+
+    def body_conflicts(self, identity, digest: str, now: float) -> bool:
+        """Bind *identity* to *digest* on first sight; True when it is already bound to another body.
+        One transaction, so two overlapping requests with one id and different bodies cannot both pass.
+        Kept in its own keyed table (pruned by the retention window only, never by the history cap)."""
+        with self._connect() as conn, conn:
+            conn.execute(
+                "DELETE FROM delivery_digests WHERE profile = ? AND route = ? AND delivery_id = ? AND first_seen_at < ?",
+                (identity.profile, identity.route, identity.delivery_id, now - self.retention_seconds))
+            conn.execute(
+                "INSERT OR IGNORE INTO delivery_digests (profile, route, delivery_id, digest, first_seen_at)"
+                " VALUES (?, ?, ?, ?, ?)", (identity.profile, identity.route, identity.delivery_id, digest, now))
+            bound = conn.execute(
+                "SELECT digest FROM delivery_digests WHERE profile = ? AND route = ? AND delivery_id = ?",
+                (identity.profile, identity.route, identity.delivery_id)).fetchone()
+        return bound[0] != digest
 
     def claim(self, identity, event_type: str, now: float) -> Optional[int]:
         """Durably claim *identity*; the new row id, or None when a live claim already holds it."""
@@ -243,6 +268,7 @@ class WebhookReceipts:
         self._next_prune_at = now + _PRUNE_INTERVAL_SECONDS
         conn.execute("DELETE FROM receipts WHERE received_at < ?", (now - self.retention_seconds,))
         conn.execute("DELETE FROM failed_attempts WHERE failed_at < ?", (now - self.retention_seconds,))
+        conn.execute("DELETE FROM delivery_digests WHERE first_seen_at < ?", (now - self.retention_seconds,))
         # Live claims are bounded by the per-route rate limit over the retention window; the cap only
         # trims history rows, so trimming never re-opens a delivery to a replay.
         conn.execute(
@@ -297,6 +323,8 @@ def outcome_for_response(status: int, body_text: str) -> tuple[str, str]:
     if not isinstance(body, dict):
         body = {}
     state = body.get("status")
+    if status == 409:
+        return FAILED, "same delivery id, different body"
     if state == FAILED and body.get("terminal"):
         return FAILED, f"gave up after {body.get('attempts')} failed attempts"
     if state == DUPLICATE:

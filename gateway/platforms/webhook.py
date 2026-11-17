@@ -433,7 +433,7 @@ class WebhookAdapter(BasePlatformAdapter):
         seen_at = self._seen_deliveries.get(identity)
         if seen_at is not None and now - seen_at < self._idempotency_ttl:
             return False
-        row_id = await asyncio.to_thread(self._receipts.claim, identity, event_type, now, receipt.body_digest)
+        row_id = await asyncio.to_thread(self._receipts.claim, identity, event_type, now)
         if row_id is None:
             return False
         receipt.claim_row = row_id
@@ -887,8 +887,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # the ledger cannot dedupe a provider retry or a replayed signed delivery; the durable receipt
         # claim is their replay defence, across restarts too (main dedupes every route here). A refused
         # cron admission or a rejected direct delivery answers 5xx, and filing that answer releases the claim.
+        # A configured ``identity`` also claims here, agent routes included: the admission ledger compares the
+        # rendered payload, so a body-pointer retry whose JSON keys moved would be refused as a conflict.
         non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job")
-                           or isinstance(coalesce, dict))
+                           or isinstance(coalesce, dict) or route_config.get("identity"))
         if route_config.get("deliver_only"):
             receipt.ref = f"deliver:{route_config.get('deliver', 'log')}"
         if non_durable and (gave_up := await self._gave_up_response(delivery_identity, route_config, now)):
@@ -896,7 +898,7 @@ class WebhookAdapter(BasePlatformAdapter):
             receipt.ref = receipts.GAVE_UP_REF
             return gave_up
         if receipt.body_digest and await asyncio.to_thread(
-                self._receipts.conflicting_body, delivery_identity, receipt.body_digest, now):
+                self._receipts.body_conflicts, delivery_identity, receipt.body_digest, now):
             logger.warning("[webhook] Delivery %s on route %s reused with a different body", delivery_id, route_name)
             return _json_error("This delivery id was already used with a different body", 409)
         if non_durable and not await self._record_delivery_id(delivery_identity, now, receipt, event_type):

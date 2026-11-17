@@ -62,21 +62,33 @@ def parse_identity(spec: object) -> tuple[Optional[IdentitySource], Optional[str
                           "name the header that carries the provider's delivery id")
         return IdentitySource(HEADER, value), None
     if kind == BODY and sep:
-        if not value.startswith("/") or value == "/":
-            return None, f"identity body pointer {value!r} must be a JSON pointer such as /data/event/event_id"
+        if pointer_tokens(value) is None:
+            return None, (f"identity body pointer {value!r} is not an RFC 6901 JSON pointer "
+                          "such as /data/event/event_id")
         return IdentitySource(BODY, value), None
     return None, f"identity must be 'header:<Name>', 'body:/json/pointer' or 'none', not {spec!r}"
 
 
+_BAD_ESCAPE_RE = re.compile(r"~(?![01])")
+_ARRAY_INDEX_RE = re.compile(r"^(?:0|[1-9][0-9]*)$")
+
+
+def pointer_tokens(pointer: str) -> Optional[list[str]]:
+    """The reference tokens of an RFC 6901 pointer, or None when it is malformed. The whole-document
+    pointer ``""`` is refused too: an identity must name one field."""
+    if not pointer.startswith("/") or _BAD_ESCAPE_RE.search(pointer):
+        return None
+    return [raw.replace("~1", "/").replace("~0", "~") for raw in pointer[1:].split("/")]
+
+
 def _pointer_value(payload: Any, pointer: str) -> Optional[str]:
     node = payload
-    for raw in pointer[1:].split("/"):
-        token = raw.replace("~1", "/").replace("~0", "~")
+    for token in pointer_tokens(pointer) or ():
         if isinstance(node, dict):
             if token not in node:
                 return None
             node = node[token]
-        elif isinstance(node, list) and token.isdigit() and int(token) < len(node):
+        elif isinstance(node, list) and _ARRAY_INDEX_RE.match(token) and int(token) < len(node):
             node = node[int(token)]
         else:
             return None

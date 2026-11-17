@@ -94,6 +94,37 @@ class TestCompressionBoundaryHook:
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
             assert len(comp_calls) == 1
 
+    def test_boundary_hook_passes_the_memory_manager(self):
+        """Engines that own compaction need the manager to run on_pre_compress."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            manager = object()
+            agent._memory_manager = manager
+            compressor = MagicMock()
+            compressor.compress.return_value = [
+                {"role": "user", "content": "summary"}
+            ]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+
+            agent._compress_context(
+                [{"role": "user", "content": "request"}], "sys", approx_tokens=100
+            )
+
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert comp_calls
+            assert all(c.kwargs.get("memory_manager") is manager for c in comp_calls)
+
     def test_automatic_notification_follows_core_persistence(self):
         from hermes_state import SessionDB
 

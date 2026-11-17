@@ -67,7 +67,9 @@ _HEX = re.compile(r"^[0-9a-f]{32}$")
 _SEGMENT = re.compile(r"^[A-Za-z0-9_-]+$")
 _TRASH_KEYS = frozenset({"archived", "in_trash", "is_archived"})
 _PAGE_UPDATE_KEYS = frozenset({"properties", "icon", "cover"})
-_PAGE_CREATE_KEYS = frozenset({"parent", "properties", "children", "markdown", "icon", "cover"})
+# No "markdown": POST v1/pages takes none (verified live on ntn 0.15.1,
+# 2026-06-16) — a page body is written with PATCH pages/<id>/markdown.
+_PAGE_CREATE_KEYS = frozenset({"parent", "properties", "children", "icon", "cover"})
 _MAX_WALK = 12
 _PARENT_KEYS = ("data_source_id", "database_id", "page_id", "block_id", "workspace")
 # Notion's enhanced markdown has tags that create or mirror OBJECTS rather than
@@ -808,8 +810,10 @@ def check_request(method: str, path: str, body, *, cfg: dict, lookup=None) -> Op
     nested = _dangerous_nested(body)
     if nested:
         return nested
-    markdown_strings = (_strings(body.get("markdown")) if ep.kind == "create"
-                        else _strings(body) if ep.kind == "page_content" else [])
+    # pages/<id>/markdown takes a command body — insert_content.content,
+    # update_content.content_updates[].new_str, replace_content.new_str —
+    # so every string in it is scanned, whatever the command.
+    markdown_strings = _strings(body) if ep.kind == "page_content" else []
     if any(_MARKDOWN_OBJECT_TAG.search(text) for text in markdown_strings):
         return ("Notion write refused: the markdown contains a tag that creates or mirrors a page, "
                 "database, synced block or mention (<page>, <database>, <data-source>, <synced…>, "

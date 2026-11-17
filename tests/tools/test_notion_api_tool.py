@@ -146,3 +146,13 @@ def test_notion_toolset_declared_and_maps_to_tool():
     assert "notion" in toolsets.TOOLSETS
     assert toolsets.TOOLSETS["notion"]["tools"] == ["notion_api"]
     assert registry.get_tool_names_for_toolset("notion") == ["notion_api"]
+
+
+def test_schema_describes_the_verified_markdown_shapes():
+    """POST v1/pages takes no markdown; the markdown endpoint takes a command
+    body (verified live on ntn 0.15.1). The old {'markdown': …} advice was wrong."""
+    from tools.notion_api_tool import NOTION_API_SCHEMA
+    desc = NOTION_API_SCHEMA["description"]
+    for shape in ("insert_content", "update_content", "replace_content", "NO markdown"):
+        assert shape in desc
+    assert "{'markdown': '...'}" not in desc

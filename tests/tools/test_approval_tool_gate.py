@@ -362,3 +362,26 @@ def test_backend_path_link_does_not_ride_a_workspace_grant(gate_env, monkeypatch
     assert "error" in escaped and len(human.prompts) == 2
     assert str(outside / "secret.txt") in human.prompts[1][1]  # the grant names the link's real target
     assert (outside / "secret.txt").read_text(encoding="utf-8") == "outside-secret\n"
+
+
+def test_write_file_card_shows_a_final_newline_change(gate_env):
+    human = _Human("deny")
+    set_approval_callback(human)
+    _call("write_file", {"path": "notes.txt", "content": "workspace-notes"})
+    rows = human.prompts[0][0].splitlines()
+    assert "content unchanged" not in rows[0] and "only the final newline changes" in rows[0]
+    assert "⏎ final newline removed" in rows
+
+
+def test_large_rewrite_card_does_not_wait_on_a_quadratic_diff(gate_env):
+    import time
+
+    old = "\n".join(f"{i % 7} {'x' * (i % 3)}" for i in range(6000))
+    new = "\n".join(f"{i % 5} {'y' * (i % 4)}" for i in range(6000))
+    (gate_env["workspace"] / "generated.txt").write_text(old, encoding="utf-8")
+    human = _Human("deny")
+    set_approval_callback(human)
+    started = time.monotonic()
+    _call("write_file", {"path": "generated.txt", "content": new})
+    assert time.monotonic() - started < 3  # the full-file line diff took ~10s here
+    assert "line 2, 5999 lines changed" in human.prompts[0][0].splitlines()[0]  # line 1 is equal

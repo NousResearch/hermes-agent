@@ -13,6 +13,9 @@ from typing import Optional
 _MAX_LINES = 40
 _MAX_CHARS = 4000
 _HUNK_GAP = "⋯"
+_NEWLINE_ADDED = "⏎ final newline added"
+_NEWLINE_REMOVED = "⏎ final newline removed"
+_DIFF_WORK = 250_000  # changed-region old x new lines above which the region is shown whole, not diffed
 
 
 def _clip(lines: list[str]) -> str:
@@ -24,18 +27,49 @@ def _clip(lines: list[str]) -> str:
     return shown
 
 
+def _final_newline_note(old: str, new: str) -> str:
+    """A change to the final newline alone is invisible in ``-``/``+`` lines, so it gets a row."""
+    had, has = old.endswith(("\n", "\r")), new.endswith(("\n", "\r"))
+    if not old or not new or had == has:
+        return ""
+    return _NEWLINE_ADDED if has else _NEWLINE_REMOVED
+
+
+def _opcodes(old_lines: list[str], new_lines: list[str]) -> tuple[int, list[tuple]]:
+    """``(offset, opcodes)`` for the region between the common head and tail. The head and tail
+    are trimmed in linear time; a region still too large to diff quickly is shown as one hunk,
+    so the card never waits on a quadratic comparison."""
+    limit = min(len(old_lines), len(new_lines))
+    head = 0
+    while head < limit and old_lines[head] == new_lines[head]:
+        head += 1
+    tail = 0
+    while tail < limit - head and old_lines[-1 - tail] == new_lines[-1 - tail]:
+        tail += 1
+    a, b = old_lines[head:len(old_lines) - tail], new_lines[head:len(new_lines) - tail]
+    if len(a) * len(b) > _DIFF_WORK:
+        return head, [("replace", 0, len(a), 0, len(b))]
+    return head, difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+
+
 def _changes(old: str, new: str) -> tuple[Optional[int], list[str]]:
     """``(first_changed_line, changed_lines)``: ``-``/``+`` lines only, hunks separated by ``⋯``."""
     old_lines, new_lines = old.splitlines(), new.splitlines()
+    head, opcodes = _opcodes(old_lines, new_lines)
+    old_lines, new_lines = old_lines[head:], new_lines[head:]
     first, out = None, []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False).get_opcodes():
+    for tag, i1, i2, j1, j2 in opcodes:
         if tag == "equal":
             continue
         if first is None:
-            first = i1 + 1
+            first = head + i1 + 1
         elif out:
             out.append(_HUNK_GAP)
         out += [f"-{line}" for line in old_lines[i1:i2]] + [f"+{line}" for line in new_lines[j1:j2]]
+    note = _final_newline_note(old, new)
+    if note:
+        first = first or head + len(old_lines) or 1
+        out.append(note)
     return first, out
 
 
@@ -45,6 +79,8 @@ def _size(changes: list[str]) -> str:
     removed = sum(1 for line in changes if line.startswith("-"))
     added = sum(1 for line in changes if line.startswith("+"))
     count = max(removed, added)
+    if count == 0:
+        return "only the final newline changes"
     return f"{count} line{'s' if count != 1 else ''} changed: -{removed} +{added}"
 
 

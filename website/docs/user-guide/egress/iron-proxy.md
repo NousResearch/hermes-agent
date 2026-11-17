@@ -114,10 +114,11 @@ proxy:
       match_headers: [x-ebirdapitoken]
     # Optional request scope: the real value is swapped in only for these
     # methods and this path prefix; any other request keeps the opaque token.
-    - env_var: GITHUB_READ_TOKEN
-      hosts: [api.github.com]
-      methods: [GET]          # default when omitted: every method
-      path_prefix: /repos     # default when omitted: every path
+    # Each host belongs to one mapping, so scope a host you have not already listed.
+    - env_var: GITLAB_READ_TOKEN
+      hosts: [gitlab.com]
+      methods: [GET]                       # default when omitted: every method
+      path_prefix: /api/v4/projects        # default when omitted: every path
 ```
 
 ### Default allowed upstream hosts
@@ -135,7 +136,7 @@ If your agent needs an upstream that isn't on the list — a self-hosted inferen
 
 `extra_allowed_hosts` grants reachability only. To inject a non-provider credential without exposing its real value to the sandbox, add a `proxy.extra_secrets` entry and rerun `hermes egress setup`. Each mapping automatically allows its own `hosts`, so those hosts do not also need to appear in `extra_allowed_hosts`. Credential mappings require exact hosts because a wildcard could include attacker-controlled tenants under a shared suffix. Hermes rejects schemes, ports, paths, IP literals, wildcard scopes, malformed env/header names, built-in env-var collisions, and routing/framing/hop-by-hop headers. Custom secret values may live in the process environment, `~/.hermes/.env`, or the configured Bitwarden project just like built-in provider keys.
 
-`methods` and `path_prefix` narrow *when* iron-proxy swaps the real value in. A `path_prefix` of `/repos` matches `/repos` and everything below it (`/repos/owner/name`), but not `/reposx` or `/user`; requests with `.`/`..` segments are refused by iron-proxy before matching. A request to the same host with another method or path still reaches the upstream (the host is allowlisted), but it carries only the sandbox's opaque token, so the upstream sees an invalid credential. Prefixes must be literal: wildcards, `%`-escapes, query strings and dot segments are rejected at `hermes egress setup`. Changing `methods` or `path_prefix` re-mints that mapping's sandbox token on the next setup, so a container holding the old token cannot keep the broader scope.
+`methods` and `path_prefix` narrow *when* iron-proxy swaps the real value in. A `path_prefix` of `/api/v4/projects` matches `/api/v4/projects` and everything below it (`/api/v4/projects/42`), but not `/api/v4/projectsx` or `/api/v4/user`; requests with `.`/`..` segments are refused by iron-proxy before matching. A request to the same host with another method or path still reaches the upstream (the host is allowlisted), but it carries only the sandbox's opaque token, so the upstream sees an invalid credential. Prefixes must be literal: wildcards, `%`-escapes, query strings and dot segments are rejected at `hermes egress setup`. Changing `methods` or `path_prefix` re-mints that mapping's sandbox token on the next setup, so a container holding the old token cannot keep the broader scope.
 
 ### Default SSRF deny CIDRs
 

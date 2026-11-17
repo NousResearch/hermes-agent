@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 
 import pytest
 
@@ -52,6 +53,7 @@ def watcher(monkeypatch):
         asyncio.run(asyncio.wait_for(runner._kanban_dispatcher_watcher(), timeout=5.0))
         return reaps
 
+    run.runner = runner
     run.lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
     return run
 
@@ -109,3 +111,37 @@ def test_lock_unavailable_after_startup_pauses_dispatch_and_warns_once(watcher, 
     assert all(reaps), "the watcher dispatched while the lock was unavailable"
     unavailable = [r for r in caplog.records if "dispatcher lock unavailable" in r.getMessage()]
     assert len(unavailable) == 1
+
+
+def test_cancel_mid_tick_keeps_the_lock_while_the_tick_thread_runs(watcher, monkeypatch):
+    started, finish = threading.Event(), threading.Event()
+
+    def _blocking_tick(_self):
+        started.set()
+        finish.wait(5)
+        return []
+
+    monkeypatch.setattr(_kw._KanbanDispatcher, "tick_once", _blocking_tick)
+    monkeypatch.setattr(_kw, "_resolve_auto_decompose_settings", lambda _load: (False, 0))
+    monkeypatch.setattr(_kw, "_kanban_dispatch_allowed", lambda: True)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch.reap_worker_zombies", list)
+
+    async def scenario():
+        task = asyncio.create_task(watcher.runner._kanban_dispatcher_watcher())
+        try:
+            assert await asyncio.to_thread(started.wait, 5), "the watcher never started a tick"
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            handle, state = _acquire_singleton_lock(watcher.lock_path)
+            _release_singleton_lock(handle)
+            return state
+        finally:
+            finish.set()
+
+    try:
+        state = asyncio.run(scenario())
+    finally:
+        watcher.runner._release_kanban_dispatcher_lock()
+
+    assert state == "contended", "a peer could take the lock while the cancelled tick still ran"

@@ -246,8 +246,8 @@ class GatewayKanbanWatchersMixin:
         # life of the process when the holder later exits.
         self._kanban_dispatcher_lock_path = _lock_path
         _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
-        # Decided once at startup: the "no flock on this platform" fallback, never
-        # a licence to dispatch unlocked after a transient failure later on.
+        # Decided once at startup: the fallback when the lock cannot be used at
+        # all, never a licence to dispatch unlocked after a later failure.
         self._kanban_dispatcher_lock_unsupported = _lock_state == "unavailable"
         if _lock_state == "held":
             self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
@@ -362,8 +362,10 @@ class GatewayKanbanWatchersMixin:
                     )
                     last_warn_at = now
             except asyncio.CancelledError:
+                # Keep the lock: cancelling to_thread does not stop the thread, so
+                # this tick can still be writing, and a waiting gateway re-tries the
+                # lock every tick. Process exit releases it.
                 logger.debug("kanban dispatcher: cancelled")
-                self._release_kanban_dispatcher_lock()
                 raise
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")

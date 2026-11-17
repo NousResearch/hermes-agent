@@ -5,11 +5,13 @@ from dataclasses import replace
 import pytest
 
 from persistence import FenceStale, PermanentStoreError
+from tests.contracts._reference._real_text import real_as_text
 from tests.contracts.authority.test_bindings_contract import begin, make_binding
 from tests.contracts._scopes import profile_scope
 
 
-@pytest.mark.parametrize("value, expected", [(7, "7"), (True, "1"), (1.2345678901234567, "1.2345678901234567"), (-(2**63), "-9223372036854775808"), (2**63 - 1, "9223372036854775807")])
+# A REAL in a TEXT column is spelled by the linked SQLite (15 or 17 significant digits, by build), so the float row reads the spelling from it.
+@pytest.mark.parametrize("value, expected", [(7, "7"), (True, "1"), (1.2345678901234567, real_as_text(1.2345678901234567)), (-(2**63), "-9223372036854775808"), (2**63 - 1, "9223372036854775807")])
 def test_binding_chat_id_uses_text_affinity(backend, scope_a, value, expected):
     store_a = backend.open(scope_a)
     epoch = begin(store_a)

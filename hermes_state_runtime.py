@@ -519,16 +519,41 @@ def retarget_local_automation(db, *, epoch: int, session_id: str, principal_id: 
 
 
 def recover_session_inputs(db, *, epoch: int) -> int:
-    """Never replay started work. Live worker adoption is a separate explicit operation."""
+    """Never replay started work. Live worker adoption is a separate explicit operation.
+
+    No index covers a status plus an epoch, so each predicate below is a full table scan, and a
+    ``session_admissions`` scan reads every payload's overflow pages. The scans run on a read
+    connection and the write touches only what they found, by key, so the boot does not hold the
+    state.db write lock for the length of four scans. Each UPDATE repeats its predicate, so a row
+    that stopped being stale in between (adopted, finished) is left alone; a row cannot become stale
+    in between, because an older epoch's writer is refused by ``_epoch`` and a row of this epoch never
+    matches ``owner_epoch!=?``. A boot that finds nothing opens no write transaction."""
+    from hermes_state_runtime_workers import retire_stale_children, stale_child_ids
+    with db._read_ctx() as conn:
+        _epoch(conn, epoch)
+        children = stale_child_ids(conn, epoch)
+        running = [r[0] for r in conn.execute(
+            "SELECT execution_id FROM worker_executions WHERE status IN ('registered','running') "
+            "AND owner_epoch!=?", (epoch,))]
+        steering = [r[0] for r in conn.execute(
+            "SELECT seq FROM session_admissions WHERE status='terminal' AND outcome=? AND owner_epoch!=?",
+            (STEERING, epoch))]
+        started = [r[0] for r in conn.execute(
+            "SELECT seq FROM session_admissions WHERE status='started' AND owner_epoch!=?", (epoch,))]
+    if not (children or running or steering or started):
+        return 0
+
     def write(conn):
         _epoch(conn, epoch)
-        from hermes_state_runtime_workers import retire_stale_children
-        retire_stale_children(conn, epoch)
-        conn.execute("UPDATE worker_executions SET status='unknown' WHERE status IN ('registered','running') AND owner_epoch!=?", (epoch,))
+        retire_stale_children(conn, epoch, children)
+        conn.executemany("UPDATE worker_executions SET status='unknown' WHERE execution_id=? "
+                         "AND status IN ('registered','running') AND owner_epoch!=?",
+                         [(execution_id, epoch) for execution_id in running])
         # A steer handed to a lost claim may or may not have reached its agent: never replayed.
-        conn.execute("UPDATE session_admissions SET outcome='interrupted' WHERE status='terminal' AND outcome=? "
-                     "AND owner_epoch!=?", (STEERING, epoch))
-        return conn.execute("UPDATE session_admissions SET status='unknown' WHERE status='started' AND owner_epoch!=?", (epoch,)).rowcount
+        conn.executemany("UPDATE session_admissions SET outcome='interrupted' WHERE seq=? AND status='terminal' "
+                         "AND outcome=? AND owner_epoch!=?", [(seq, STEERING, epoch) for seq in steering])
+        return conn.executemany("UPDATE session_admissions SET status='unknown' WHERE seq=? AND status='started' "
+                                "AND owner_epoch!=?", [(seq, epoch) for seq in started]).rowcount
     return db._execute_write(write)
 
 

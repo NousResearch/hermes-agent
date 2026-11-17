@@ -47,7 +47,8 @@ def _lift_pause(job_id, pause):
     if (job is not None and job.get('state') == 'paused'
             and (job.get('paused_at'), job.get('paused_reason')) == (pause['paused_at'], pause['reason'])):
         try:
-            resume_job(job_id)
+            # Not a repair: a job that keeps failing keeps its failure count through this pause.
+            resume_job(job_id, keep_failure_streak=True)
         except ValueError:  # a one-shot whose instant has passed stays paused for the operator
             pass
 
@@ -72,6 +73,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             raise CronExecutionUnknown('cron admission identity conflict')
     attempted = journal.exists()
     owner = owner_for_home(get_hermes_home())
+    interrupted = [False]
 
     def write_journal():
         root.mkdir(parents=True, exist_ok=True)
@@ -111,6 +113,13 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
         await save()
         delay, progress = .1, None
         while True:
+            if interrupted[0]:
+                # The SIGINT handler only latches intent. Publish the cancel here, outside the handler,
+                # so the ordinary operator-cancel path (the marker ``cancel_event`` reads) owns the
+                # bookkeeping and the gateway's run sees it too.
+                from cron.cancellation import request_cancel
+                request_cancel(request_id, reason='cancelled by Ctrl-C (hermes cron run)')
+                interrupted[0] = False
             if cancel_event is not None and cancel_event.is_set():
                 await call('cancel', receipt)
             state = await call('status', receipt)
@@ -133,6 +142,17 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
         async with connect_gateway() as client:
             return await observe(lambda op, data: client.rpc('cron.' + op, **data))
 
+    # Once the gateway accepted the run, a shell SIGINT must not unwind this process: that books the
+    # execution failed and frees the fire claim while the gateway keeps running the job. Ctrl-C becomes
+    # an operator cancel instead, and the claim and ledger row stay until the gateway reports terminal.
+    # Only the main thread may install a handler, an in-process owner handles its own signals, and a
+    # caller's own non-default handler stays in charge.
+    import signal
+    import threading
+    previous_sigint = None
+    if (owner is None and threading.current_thread() is threading.main_thread()
+            and signal.getsignal(signal.SIGINT) is signal.default_int_handler):
+        previous_sigint = signal.signal(signal.SIGINT, lambda _sig, _frame: interrupted.__setitem__(0, True))
     try:
         if owner is not None:
             authority, loop = owner
@@ -150,6 +170,9 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
         error = f'{type(exc).__name__}: {exc}'
         return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
+    finally:
+        if previous_sigint is not None:
+            signal.signal(signal.SIGINT, previous_sigint)
 
 def reconcile_pending(*, allow_connect=True):
     """Observe prepared fires; never submit missing or interrupted work.

@@ -482,6 +482,9 @@ def test_self_removal_followed_by_replacement_record_stays_fail_closed(tmp_path,
         replacement["fire_claim"] = {"at": job["fire_claim"]["at"], "by": "other-machine:owner"}
         jobs_mod.save_jobs(jobs_mod.load_jobs() + [replacement])
 
+    from cron import scheduler
+    # The fence only: keeping the lost run's output is tests/cron/cancellation/test_lost_claim_output.py.
+    monkeypatch.setattr(scheduler, "keep_lost_claim_output", lambda *_args: None)
     delivered, finished = _run_claimed_job_with_mid_run_action(
         tmp_path, monkeypatch, _remove_then_replace, execution_id="replacement-execution")
 

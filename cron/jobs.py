@@ -2151,8 +2151,8 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[dict[str, A
     })
 
 
-def resume_job(job_id: str) -> Optional[dict[str, Any]]:
-    """Resume a paused job. Accepts a job ID or name.
+def resume_job(job_id: str, *, keep_failure_streak: bool = False) -> Optional[dict[str, Any]]:
+    """Resume a paused job (ID or name). Its failure count starts over unless *keep_failure_streak*.
 
     A recurring job paused across one of its slots must not lose that slot silently: the stored
     ``next_run_at`` (already past) survives resume as the due instant, and the ordinary late /
@@ -2185,8 +2185,8 @@ def resume_job(job_id: str) -> Optional[dict[str, Any]]:
     return update_job(job["id"], {
         "enabled": True,
         "state": "scheduled",
-        "paused_at": None,
-        "paused_reason": None,
+        "paused_at": None, "paused_reason": None,
+        **({} if keep_failure_streak else {"failure_streak": 0}),  # last_status/last_error stay as the record
         "next_run_at": next_run_at,
     })
 

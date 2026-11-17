@@ -87,6 +87,15 @@ async def _acp_detach(authority, owner, tmp_path, db):
     assert db.get_session(ref.session_id)['end_reason'] is not None
 
 
+async def _acp_shutdown_sweep(authority, owner, tmp_path, db):
+    """Gateway stop: the sweep that ends every viewer-less ACP session (``settle_gateway_runtime``)."""
+    from gateway import run_runtime
+    ref = _local(authority, owner, tmp_path, source='acp')
+    authority.runner.session_authority = authority  # what ``all_authorities`` serves the stop
+    await run_runtime.settle_gateway_runtime(authority.runner)
+    assert db.get_session(ref.session_id)['end_reason'] is not None
+
+
 async def _create_titled_hidden(authority, owner, tmp_path, db):
     reply = await owner.dispatch({'id': 1, 'method': 'session.create', 'params': {
         'request_id': 'titled', 'source': 'cli', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': [],
@@ -168,6 +177,7 @@ CASES = [
     ('claim-reopen', 'gateway.session_local_recovery', 'reopen_local_session', _claim_reopen),
     ('acp-idle-after-turn', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_idle_after_turn),
     ('acp-detach', 'gateway.session_acp_lifecycle', 'end_idle_local_session', _acp_detach),
+    ('acp-shutdown-sweep', 'gateway.session_acp_lifecycle', 'end_idle_acp_sessions', _acp_shutdown_sweep),
     ('create-title-hidden', 'gateway.session_local_title', 'title_new_session', _create_titled_hidden),
     ('native-register', 'gateway.session.SessionStore', 'get_or_create_session', _native_register),
     ('initialize-epoch', 'gateway.session_authority', 'begin_runtime_epoch', _initialize),

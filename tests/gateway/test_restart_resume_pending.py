@@ -1137,15 +1137,13 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
 
     The risk the pre-claim introduces is a *self-bounce*: the resume
     turn's own ``_handle_message`` sees the sentinel it pre-claimed at
-    the early running-agent guard, queues the event into
-    ``_pending_messages`` and returns ``None`` without running the
-    agent.  The adapter's late-arrival drain (in
-    ``_process_message_background``'s ``finally``) re-dispatches the
-    queued event, and because the guard wrapper's ``finally`` releases
-    the pre-claim before the spawned drain task starts, the agent runs
-    exactly once.  This test locks that invariant in: the resume agent
-    must run once — never zero (regression) and never twice (the bug
-    the fix targets).
+    the early running-agent guard and queues the event into
+    ``_pending_messages`` without running the agent.  The claim names
+    its event, so the guard admits exactly that event
+    (``_owns_startup_resume_claim``); see
+    ``tests/gateway/run_startup/test_resume_claim.py``.  This test locks
+    the invariant in: the resume agent must run once — never zero
+    (regression) and never twice (the bug the fix targets).
     """
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="full-path-chat")

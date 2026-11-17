@@ -7,7 +7,7 @@ A later ``session/load`` + prompt reopens the row (``session_local_recovery.reop
 """
 import logging
 
-from hermes_state_local import POLICY_PREFIX, end_idle_local_session, local_receipt
+from hermes_state_local import end_idle_local_session, local_receipt
 from hermes_state_runtime import RuntimeStoreError
 
 ACP_END_REASON = 'acp_disconnect'
@@ -64,9 +64,21 @@ async def reopen_if_reattached(authority, session_id, ended):
     return ended
 
 
+def acp_candidate_ids(db):
+    """Ids that can hold an ACP policy receipt, read from the indexed ``sessions`` table.
+
+    A receipt with ``policy.source='acp'`` creates its row as ``source='acp'``, and a peer refresh
+    relabels it ``source='local'`` with ``created_source='acp'`` (``session_policy.STORED_AS_LOCAL``).
+    A candidate is only a lookup key: ``end_idle_acp_session`` still judges the receipt's own policy.
+    """
+    with db._read_ctx() as conn:
+        return [row[0] for row in conn.execute(
+            "SELECT id FROM sessions WHERE source = 'acp' OR (source = 'local' AND created_source = 'acp')")]
+
+
 def end_idle_acp_sessions(authority):
-    """Gateway shutdown: every ACP session nobody is viewing, attached this run or not."""
-    with authority.db._read_ctx() as conn:
-        ids = [row[0][len(POLICY_PREFIX):] for row in conn.execute(
-            'SELECT key FROM state_meta WHERE key LIKE ?', (POLICY_PREFIX + '%',))]
-    return sum(end_idle_acp_session(authority, sid) for sid in ids)
+    """Gateway shutdown: every ACP session nobody is viewing, attached this run or not.
+
+    Costs one receipt read per ACP session, not one per local session ever created: the policy
+    receipts of every other surface are never parsed (``acp_candidate_ids``)."""
+    return sum(end_idle_acp_session(authority, sid) for sid in acp_candidate_ids(authority.db))

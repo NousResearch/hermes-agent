@@ -12,6 +12,7 @@ from contextlib import nullcontext
 
 from hermes_cli import update_auto_schedule as scheduler
 from hermes_cli.update_auto_run import check_update, command, reconcile_run, require_source_install, run_update
+from hermes_cli.update_auto_idle import idle_wait_minutes, wait_for_idle
 from hermes_cli.update_auto_precheck import recovery_needed
 from hermes_cli.update_auto_state import (
     AutoUpdateContext, append_log, operation_lock, read_status, utc_now, write_status,
@@ -176,7 +177,10 @@ def _scheduled(context: AutoUpdateContext, status: dict, args) -> int:
     if action == "plan":
         return _plan(context, status, selected)
     result = _scheduled_check(context, status, selected)
-    if result["updateAvailable"] or recovery_needed(context, result.get("currentSha")):
+    recovery = recovery_needed(context, result.get("currentSha"))
+    if result["updateAvailable"] or recovery:
+        if not recovery and _deferred_busy(context, status, result):
+            return 0
         return _run(context, status, selected)
     checked_at = utc_now()
     status.update(status="up_to_date", lastRunAt=checked_at, finishedAt=checked_at,
@@ -186,6 +190,30 @@ def _scheduled(context: AutoUpdateContext, status: dict, args) -> int:
     append_log(context, "check", result="up_to_date", currentSha=result.get("currentSha"))
     print("Hermes is up to date; no updater or backup was started.")
     return 0
+
+
+def _deferred_busy(context: AutoUpdateContext, status: dict, result: dict) -> bool:
+    """Skip this slot when a gateway stays busy past ``updates.auto.idle_wait_minutes``.
+
+    Owed recovery is never deferred: the canonical updater must finish what an earlier run began.
+    """
+    budget_s = idle_wait_minutes(context.home) * 60.0
+    if budget_s <= 0:
+        return False
+    print(f"Update available; waiting up to {budget_s / 60:.0f} min for the gateways to go idle...")
+    verdict = wait_for_idle(context.home, budget_s)
+    append_log(context, "idle_gate", idle=verdict.idle, waitedS=verdict.waited_s, busy=list(verdict.busy))
+    if verdict.idle:
+        return False
+    checked_at = utc_now()
+    status.update(status="deferred_busy", lastRunAt=checked_at, finishedAt=checked_at, lastCheck=result,
+                  outcomeSource="idle_gate", busy=list(verdict.busy), error=None, runPending=False,
+                  correlationId=None, receiptPath=None, terminalReceipt=None, exitCode=0)
+    write_status(context, status)
+    print(f"Gateways still busy after {verdict.waited_s / 60:.0f} min; update deferred to the next slot:")
+    for line in verdict.busy:
+        print(f"  • {line}")
+    return True
 
 
 def _scheduled_check(context: AutoUpdateContext, status: dict, args) -> dict:

@@ -2240,7 +2240,13 @@ hermes update auto disable
   are accepted. A manual run does not enable a schedule.
 - `run-scheduled` checks availability before starting the updater. A clean,
   already-current installation records a check-only `up_to_date` result without
-  starting a child, creating backups, or restarting anything. Check failures
+  starting a child, creating backups, or restarting anything.
+  When an update is available, the slot first waits up to
+  `updates.auto.idle_wait_minutes` (default 30) for every gateway of the
+  installation to be idle; if live turns, cron runs or background delegations
+  are still running, it records `deferred_busy` with the busy units and leaves
+  the update to the next slot. `0` disables this gate. Owed recovery is never
+  deferred. Check failures
   stop the attempt. Existing or unreadable recovery evidence keeps the canonical
   updater path so unfinished completion/restart work is not silently abandoned.
 - `enable --time HH:MM` uses the host's local clock. Repeat `--plan-time HH:MM`

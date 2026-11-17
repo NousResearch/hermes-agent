@@ -210,8 +210,7 @@ Note: on Windows winget installs, gh lands at `/c/Program Files/GitHub CLI` — 
 > ```bash
 > # $TOKEN = the access token from the device flow above (never echo it)
 > mkdir -p ~/.config/gh
-> LOGIN=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/user \
->   | sed 's/.*"login": *"\([^"]*\)".*/\1/')
+> LOGIN=$(curl -s -H "Authorization: token $TOKEN" https://api.github.com/user | jq -r '.login')
 > printf 'github.com:\n    users:\n        %s:\n            oauth_token: %s\n    git_protocol: https\n    oauth_token: %s\n    user: %s\n' \
 >   "$LOGIN" "$TOKEN" "$TOKEN" "$LOGIN" > ~/.config/gh/hosts.yml
 > chmod 600 ~/.config/gh/hosts.yml
@@ -222,6 +221,15 @@ Note: on Windows winget installs, gh lands at `/c/Program Files/GitHub CLI` — 
 > `gh auth status` and `setup-git` read the file store without touching the
 > keyring, so they work immediately. Proven on a headless x86_64 VPS
 > (gh 2.97.0, Aug 2026) after `--with-token` hung twice.
+>
+> **PITFALL (sed vs JSON): parse GitHub API responses with `jq`, not `sed`.**
+> `sed 's/.../\1/'` prints every input line unchanged except where the pattern
+> matches, so it only works on single-line JSON. The device-code and
+> access-token endpoints return single-line JSON (the `sed` extractions above
+> are safe), but `GET /user` returns pretty-printed multi-line JSON — running
+> the same `sed` on it yields the whole JSON doc, not the value. Use
+> `jq -r '.login'`, or where jq is unavailable,
+> `python3 -c "import json,sys;print(json.load(sys.stdin)['login'])"`.
 
 ### Token-Based Login (Headless / SSH Servers)
 

@@ -86,6 +86,9 @@ class LiveSession:
     # (principal, effort) of a ``/reasoning`` command that arrived while a turn ran: applied in memory at
     # once, committed to the policy at the next boundary (gateway/session_setting_commands.py).
     pending_reasoning: tuple | None = None
+    # Folder a ``desktop_project`` tool call moved this chat to mid-turn: committed as its ``workspace``
+    # mutation at the next boundary (gateway/local_desktop_ui.py, session_mutation_policy.py).
+    pending_workspace: str | None = None
     # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
     review: SimpleNamespace = field(default_factory=SimpleNamespace)
@@ -1136,6 +1139,8 @@ class SessionAuthority:
                 from gateway.session_deferred_pick import apply_deferred_pick
                 from gateway.session_setting_commands import apply_pending_reasoning
                 await apply_pending_reasoning(self, ref, live)
+                from gateway.session_mutation_policy import apply_pending_workspace
+                await apply_pending_workspace(self, ref, live)
                 await apply_deferred_pick(self, ref, live)
             if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import restore_local_session

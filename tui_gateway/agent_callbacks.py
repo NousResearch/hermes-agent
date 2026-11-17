@@ -192,11 +192,12 @@ def _agent_cbs(sid: str) -> dict:
     return callbacks
 
 
-def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
+def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> bool:
     """Intentional workspace move from the project_* tools: re-anchor the live session's cwd
-    and push session.info. The ONLY auto-cwd path — an explicit tool call, never a `cd`."""
+    and push session.info. The ONLY auto-cwd path — an explicit tool call, never a `cd`.
+    False when no live session owns *task_id* (the tool then reports ``moved: false``)."""
     if not path:
-        return
+        return False
     # task_id is the durable session_key; _sessions (and desktop event routing) key by sid.
     key = str(task_id or "")
     with _sessions_lock:
@@ -206,7 +207,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
             ("", None))
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if session is None or not os.path.isdir(resolved):
-        return
+        return False
     # explicit switch supersedes a settle-adopted cwd
     session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
     _register_session_cwd(session)
@@ -220,6 +221,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         _emit("session.info", sid, info)
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
+    return True
 
 
 def _wire_callbacks(sid: str):

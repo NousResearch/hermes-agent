@@ -14,8 +14,8 @@ import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState } 
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
+import type { ServerRequestContext } from './server-request-context'
 import { handleServerRequest, previewSessionRoute, requestNamesActiveSession } from './server-requests'
-import type { ServerRequestContext } from './server-requests'
 
 vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 

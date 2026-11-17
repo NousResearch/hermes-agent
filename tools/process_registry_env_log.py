@@ -63,25 +63,38 @@ def group_liveness_shell(pgid_expr: str) -> str:
     with neither it prints ``?``. Its stderr is dropped, so a process exiting mid-scan
     cannot leak a read error into the output.
 
-    ``_hl`` succeeds while the group is alive. It trusts the member list when there is
-    one; without it, it asks ``_hq``. ``_hq`` is the cheap probe (a builtin ``kill -0``,
-    no scan): only ESRCH means gone, since EPERM (a member owned by another user) is a
-    live member, and a zombie still counts, so it can say "alive" but never wrongly
-    "gone"."""
+    ``_hm first`` stops at the first live member: the poller only needs to know whether
+    one exists, so it does not read the rest of the process table every tick. A ``/proc``
+    scan that finds no member prints ``!`` instead of nothing: ``/proc`` can hide
+    processes (another user's behind ``hidepid``, a ``stat`` it could not read), so that
+    answer is confirmed with ``_hp``. A ``ps`` listing is complete, so its empty answer
+    stands (macOS also answers ``kill -0`` on a zombie-only group with EPERM).
+
+    ``_hl`` succeeds while the group is alive and leaves the member list in ``_m``. It
+    trusts a non-empty list. Without one it asks ``_hq``, the cheap probe (a builtin
+    ``kill -0``, no scan): only ESRCH means gone, since EPERM (a member owned by another
+    user) is a live member, and a zombie still counts, so it can say "alive" but never
+    wrongly "gone". ``_hp`` is ``_hq`` for a group the scan found empty: a ``kill -0``
+    that succeeds reaches only zombies, which are gone, while EPERM is a member the scan
+    could not see."""
     return (
         f'_hg={pgid_expr}; '
-        '_hm() { case "$_hg" in ""|*[!0-9]*) return 0;; esac; '
+        '_hm() { case "$_hg" in ""|*[!0-9]*) return 0;; esac; _hf=$1; '
         # The whole stat file, lines joined: a comm (process name) may itself hold a newline.
-        'if [ -r /proc/self/stat ]; then for _s in /proc/[0-9]*/stat; do _l=; '
+        'if [ -r /proc/self/stat ]; then _hn=; for _s in /proc/[0-9]*/stat; do _l=; '
         '{ while IFS= read -r _x || [ -n "$_x" ]; do _l="$_l $_x"; done; } < "$_s" || continue; '
         '_r=${_l##*) }; set -f; set -- $_r; set +f; '
-        '[ "$3" = "$_hg" ] && [ "$1" != Z ] && { _p=${_s#/proc/}; echo "${_p%/stat}"; }; done; '
+        '[ "$3" = "$_hg" ] && [ "$1" != Z ] && { _p=${_s#/proc/}; echo "${_p%/stat}"; _hn=1; [ -n "$_hf" ] && break; }; '
+        'done; [ -n "$_hn" ] || echo "!"; '
         'elif _o=$(ps -A -o pid= -o pgid= -o stat=); then printf \'%s\\n\' "$_o" | '
-        'while read -r _p _q _t; do [ "$_q" = "$_hg" ] && case "$_t" in Z*) ;; *) echo "$_p";; esac; done; '
+        'while read -r _p _q _t; do [ "$_q" = "$_hg" ] && case "$_t" in Z*) ;; '
+        '*) echo "$_p"; [ -n "$_hf" ] && break;; esac; done; '
         'else echo "?"; fi; } 2>/dev/null; '
         '_hq() { _he=$(LC_ALL=C kill -0 "-$_hg" 2>&1) && return 0; '
         'case "$_he" in *"No such process"*) return 1;; esac; return 0; }; '
-        '_hl() { _m=$(_hm); case "$_m" in "") return 1;; "?") _hq;; *) return 0;; esac; }; '
+        '_hp() { _he=$(LC_ALL=C kill -0 "-$_hg" 2>&1) && return 1; '
+        'case "$_he" in *"No such process"*) return 1;; esac; return 0; }; '
+        '_hl() { _m=$(_hm "$1"); case "$_m" in "") return 1;; "!") _hp;; "?") _hq;; *) return 0;; esac; }; '
     )
 
 
@@ -91,7 +104,7 @@ def _alive_probe(quoted_pid_path: str, group: bool) -> str:
     supervisor keeps the job running."""
     if not group:
         return f'kill -0 "$(cat {quoted_pid_path} 2>/dev/null)" 2>/dev/null'
-    return f'{{ {group_liveness_shell(f"$(cat {quoted_pid_path} 2>/dev/null)")}_hl; }}'
+    return f'{{ {group_liveness_shell(f"$(cat {quoted_pid_path} 2>/dev/null)")}_hl first; }}'
 
 
 def log_delta_command(quoted_log_path: str, offset: int, quoted_pid_path: str, quoted_exit_path: str,

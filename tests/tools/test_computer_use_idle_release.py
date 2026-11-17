@@ -165,7 +165,7 @@ def test_a_profile_that_cannot_be_bound_still_has_its_backend_stopped(backends, 
     """The backend is out of the cache before teardown: if binding its profile fails, nothing else would
     ever stop it, and its driver (a remote exec stream) would keep the sandbox awake."""
     from contextlib import contextmanager
-    import agent.runtime_scope as runtime_scope
+    from agent import runtime_scope
 
     @contextmanager
     def unavailable(home, **kw):

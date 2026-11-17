@@ -1187,16 +1187,46 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         The rich endpoint is reserved for constructs where raw markdown materially improves output: pipe
         tables (MarkdownV2 has no table syntax and rewrites them into bullet lists), GFM task lists,
         collapsible ``<details>`` blocks, and block math. Adapted from #45995 (@YonganZhang).
+
+        Rich rendering also handles blockquotes and headings, which MarkdownV2
+        degrades to a literal chevron / plain bold. The scan is fence-aware so
+        markup-like lines inside code fences stay on the MarkdownV2 path.
         """
         if not content:
             return False
-        if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
+        if any(_TABLE_SEPARATOR_RE.match(l) for l in content.splitlines()):
             return True
         if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
             return True
         if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
             return True
-        return "$$" in content
+        if "$$" in content:
+            return True
+        # Fence-aware scan for the wider rich family (heading, blockquote incl.
+        # expandable **>, divider ---/===/***, ordered list, footnote ref/def,
+        # inline $math$). Skips code fences so markup-looking lines in code
+        # (e.g. bash `---` or `#`) stay on the MarkdownV2 path.
+        in_fence = False
+        for _line in content.splitlines():
+            if _line.lstrip()[:3] == "```":
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if re.match(r"^#{1,6}\s+\S", _line):                       # heading
+                return True
+            if re.match(r"^\*{0,2}>\s?\S", _line):                     # blockquote / expandable
+                return True
+            if re.match(r"^\s*(-{3,}|\*{3,}|={3,})\s*$", _line):       # divider / setext
+                return True
+            if re.match(r"^\s*\d{1,3}[.)]\s+\S", _line):               # ordered list
+                return True
+            if re.search(r"\[\^[^\]]{1,12}\]", _line):                 # footnote
+                return True
+            if re.search(r"(?<![A-Za-z0-9])\$[^\s$/\\][^\$\n]{1,239}\$(?![A-Za-z0-9/])",
+                         _line):                                      # inline math (not URLs)
+                return True
+        return False
 
     def _rich_delivery_enabled(self) -> bool:
         """Whether rich delivery is allowed (``rich_messages`` opt-in)."""

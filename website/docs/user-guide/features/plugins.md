@@ -1082,7 +1082,8 @@ A plugin can put a card into a conversation from anywhere, including a timer or 
 thread, without starting a model turn. The card is saved in the session's history, so it is still there
 after a reload. A card is display-only: people see it, and the model is told only that the plugin posted
 a card with that id (one line, `[<plugin id> posted a card <card id>]`). The model never reads the card's
-text, directive or attrs:
+text, directive or attrs. Hermes also strips those fields before handing transcript rows to memory
+providers through `on_session_end()` or `on_pre_compress()`:
 
 ```python
 result = ctx.post_card(
@@ -1135,8 +1136,8 @@ hook inside a turn hands none of that turn's scopes to the session queue.
 
 Cards need the `conversation.cards` capability. Declare it in `plugin.yaml` and grant it on the consent
 screen. It is separate from `allow_gateway_injection` because a card runs no model and no tools, sends
-nothing to a platform, and puts no plugin-authored text in front of the model: the model is told a card
-was posted, never its text.
+nothing to a platform, and puts no plugin-authored text in front of the model or a memory provider: the
+model is told a card was posted, never its text.
 
 ## Injecting Messages
 

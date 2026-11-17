@@ -500,6 +500,18 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
 
+    def test_499_client_closed_request_is_retryable_timeout(self):
+        """HTTP 499 "client closed request" means the request was cut mid-flight
+        (a cold start the caller gave up on, a cancelled upstream, a proxy that
+        closed the flow) — not a malformed request. It must classify as a
+        retryable timeout; the unlisted-4xx default made it a non-retryable
+        format_error, so one abort failed the turn over to the next provider
+        instead of retrying (#156837)."""
+        e = MockAPIError("Client Closed Request", status_code=499)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.timeout
+        assert result.retryable is True
+
     def test_400_bad_request_still_non_retryable_format_error(self):
         """Guard the boundary: a genuine 400 Bad Request must remain a
         non-retryable format_error and must not be swept up by the 408 branch."""

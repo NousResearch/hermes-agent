@@ -39,7 +39,6 @@ import {
 import type {
   SessionInfo,
   SessionMessage,
-  SessionSearchResult,
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
@@ -84,6 +83,9 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
+import { LoadErrorNotice } from "@/components/LoadErrorNotice";
+import { useSessionSearch } from "@/hooks/useSessionSearch";
+import { en } from "@/i18n/en";
 
 
 /** Render an FTS5 snippet with highlighted matches.
@@ -689,6 +691,19 @@ type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
 
+/** The session list, or the load/search failure in its place: never "No sessions yet" for a list
+ *  that failed to load, nor every session listed as a match for a search that failed. */
+function SessionsListOrError({ searchActive, searchError, loadError, onRetrySearch, onRetryLoad, children }: {
+  searchActive: boolean; searchError: string | null; loadError: string | null;
+  onRetrySearch: () => void; onRetryLoad: () => void; children: React.ReactNode;
+}) {
+  const { t } = useI18n();
+  const error = searchActive ? searchError : loadError;
+  if (!error) return <>{children}</>;
+  const what = searchActive ? (t.sessions.searchWhat ?? en.sessions.searchWhat!) : (t.sessions.loadWhat ?? en.sessions.loadWhat!);
+  return <LoadErrorNotice what={what} detail={error} onRetry={searchActive ? onRetrySearch : onRetryLoad} />;
+}
+
 function SessionsPagination({
   className,
   compact = false,
@@ -744,11 +759,7 @@ export default function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [searchResults, setSearchResults] = useState<
-    SessionSearchResult[] | null
-  >(null);
-  const [searching, setSearching] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -979,8 +990,14 @@ export default function SessionsPage() {
         if (requestId !== sessionsRequestRef.current) return;
         setSessions(resp.sessions);
         setTotal(resp.total);
+        setLoadError(null);
       })
-      .catch(() => {})
+      .catch((err) => {
+        // A background refresh keeps the list it has; a real load says it failed instead of
+        // showing "No sessions yet" (the backend's 503 exists so clients never read a busy store as empty).
+        if (requestId !== sessionsRequestRef.current || silent) return;
+        setLoadError(errorMessage(err));
+      })
       .finally(() => {
         if (requestId !== sessionsRequestRef.current) return;
         if (!silent) setLoading(false);
@@ -1172,32 +1189,8 @@ export default function SessionsPage() {
     clearSelection();
   }, [clearSelection, sessionCategory]);
 
-  // Debounced FTS search
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-
-    if (!search.trim()) {
-      debounceRef.current = setTimeout(() => {
-        setSearchResults(null);
-        setSearching(false);
-      }, 0);
-      return;
-    }
-
-    debounceRef.current = setTimeout(() => {
-      setSearching(true);
-      setSearchResults(null);
-      api
-        .searchSessions(search.trim(), sessionQueryOptions)
-        .then((resp) => setSearchResults(resp.results))
-        .catch(() => setSearchResults(null))
-        .finally(() => setSearching(false));
-    }, 300);
-
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [search, sessionQueryOptions]);
+  // Debounced FTS search; a failed search is not the unfiltered page.
+  const { results: searchResults, searching, error: searchError, retry: retrySearch } = useSessionSearch(search, sessionQueryOptions);
 
   // The profile a listed row was read from — the store that owns it. Every
   // per-row request (delete, rename, export, messages) must go there, not to
@@ -2012,7 +2005,9 @@ export default function SessionsPage() {
       )}
 
       {showList ? (
-        filtered.length === 0 ? (
+        <SessionsListOrError searchActive={Boolean(search.trim())} searchError={searchError} loadError={loadError}
+          onRetrySearch={retrySearch} onRetryLoad={() => loadSessions(page)}>
+          {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
             <Clock className="h-8 w-8 mb-3 opacity-40" />
             <p className="text-sm font-medium">
@@ -2061,7 +2056,8 @@ export default function SessionsPage() {
               />
             )}
           </>
-        )
+        )}
+        </SessionsListOrError>
       ) : (
         <div className="flex min-w-0 flex-col gap-4">
           {platformEntries.length > 0 && status && (

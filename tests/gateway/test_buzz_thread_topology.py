@@ -196,6 +196,90 @@ class TestThreadRootAnchoring:
         assert args[args.index("--reply-to") + 1] == ROOT_EVT
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply_mode", ["first", "all"])
+@pytest.mark.parametrize("group_per_user,thread_per_user", [(True, False), (True, True), (False, True)])
+async def test_channel_starter_and_followups_share_only_their_root(
+    reply_mode, group_per_user, thread_per_user,
+):
+    from gateway.session import build_session_key
+
+    adapter = _make_adapter(reply_to_mode=reply_mode)
+    adapter._message_handler = AsyncMock()
+    adapter.handle_message = AsyncMock()
+    cli = _CapturingCli()
+    adapter._run_cli = cli
+    other_channel = "other-channel"
+    events = [
+        (CHANNEL, _top_level_event(ROOT_EVT)),
+        (CHANNEL, _top_level_event(MID_EVT)),
+        (CHANNEL, _nip10_reply_event("d" * 64, root=ROOT_EVT, parent=ROOT_EVT, content="@Chip follow-up")),
+        (CHANNEL, _nip10_reply_event("e" * 64, root=ROOT_EVT, parent="d" * 64, content="@Chip next", pubkey="f" * 64)),
+        (other_channel, _top_level_event(ROOT_EVT)),
+    ]
+    sources = []
+    for channel, event in events:
+        event["tags"][0] = ["h", channel]
+        state = adapter._channel_state.setdefault(channel, adapter._new_channel_state("group"))
+        await adapter._handle_event(channel, state, event)
+        dispatched = adapter.handle_message.call_args.args[0]
+        sources.append(dispatched.source)
+        # The source anchor and the existing reply_to fallback must produce
+        # identical outbound topology for starters and nested replies alike.
+        cli.calls.clear()
+        for metadata in ({"thread_id": dispatched.source.thread_id}, {}):
+            result = await adapter.send(channel, "answer", reply_to=event["id"], metadata=metadata)
+            assert result.success
+        targets = [args[args.index("--reply-to") + 1] for args, _ in cli.calls]
+        assert targets == [adapter._extract_thread_root(event) or event["id"]] * 2
+
+    assert adapter.handle_message.await_count == len(events)
+    keys = [build_session_key(s, group_per_user, thread_per_user) for s in sources]
+    assert keys[0] != keys[1]  # Independent starters, even for the same user.
+    assert keys[0] == keys[2]  # A starter must retain its context in follow-ups.
+    assert (keys[0] != keys[3]) == (group_per_user and thread_per_user)
+    assert keys[0] != keys[4]  # Roots remain scoped to their channel.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_type,extra,cfg", [
+    ("dm", {}, {}),
+    ("group", {"reply_in_thread": False}, {}),
+    ("group", {}, {"reply_to_mode": "off"}),
+])
+async def test_flat_starters_keep_existing_sessions_and_reply_behavior(chat_type, extra, cfg):
+    from gateway.session import build_session_key
+
+    adapter = _make_adapter(extra=extra, **cfg)
+    adapter._message_handler = AsyncMock()
+    adapter.handle_message = AsyncMock()
+    cli = _CapturingCli()
+    adapter._run_cli = cli
+    state = adapter._channel_state[CHANNEL] = adapter._new_channel_state(chat_type)
+    sources = []
+    for event in (
+        _top_level_event(ROOT_EVT), _top_level_event(MID_EVT),
+        _nip10_reply_event("d" * 64, root=ROOT_EVT, parent=MID_EVT, content="@Chip follow-up"),
+    ):
+        await adapter._handle_event(CHANNEL, state, event)
+        source = adapter.handle_message.call_args.args[0].source
+        sources.append(source)
+        assert source.thread_id == adapter._extract_thread_root(event)
+        cli.calls.clear()
+        result = await adapter.send(CHANNEL, "answer", reply_to=event["id"], metadata={"thread_id": source.thread_id})
+        assert result.success
+        args, _ = cli.calls[0]
+        if chat_type == "dm":
+            # DM session pooling does not change the existing send anchor.
+            assert args[args.index("--reply-to") + 1] == (source.thread_id or event["id"])
+        else:
+            assert "--reply-to" not in args
+    assert adapter.handle_message.await_count == len(sources) == 3
+    assert sources[0].thread_id is sources[1].thread_id is None
+    assert build_session_key(sources[0]) == build_session_key(sources[1])
+    assert build_session_key(sources[0]) != build_session_key(sources[2])
+
+
 # ── 2. Config honoring: reply_in_thread / reply_to_mode ─────────────────
 
 

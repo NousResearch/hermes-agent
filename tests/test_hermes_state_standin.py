@@ -515,6 +515,24 @@ def test_an_agent_given_only_the_stand_in_saves_its_turn(sole):
     assert [(row["role"], row["content"]) for row in rows] == [("user", "hello there"), ("assistant", "done")]
 
 
+def test_a_child_delegated_from_a_stand_in_agent_on_another_home_opens_that_homes_store(quiet, tmp_path):
+    from tools.delegate_tool import _open_child_session_db
+
+    home = tmp_path / "other"
+    home.mkdir()
+    db = hermes_state.SessionDB(db_path=home / "state.db")
+    try:
+        agent = _agent_on(db)
+        assert Path(profile_scope().profile_dir).resolve() != home.resolve()
+        child = _open_child_session_db(agent)
+        try:
+            assert Path(child.scope.profile_dir).resolve() == home.resolve()
+        finally:
+            child.close()
+    finally:
+        db.close()
+
+
 def test_an_agent_given_only_the_stand_in_saves_its_token_counts(sole):
     agent = _agent_on(sole)
     agent.run_conversation("hello there")

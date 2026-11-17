@@ -501,6 +501,18 @@ def _handle_send(args):
                 return json.dumps(_resolve_err)
             chat_id = _resolved
 
+    # Fork (education design 5b): the profile's Slack posting policy applies
+    # here too — defence in depth if `messaging` is ever granted to a
+    # profile with slack.post_allowed_channels / post_gated_channels. Inert
+    # for a profile with neither list (and no Notion write guard).
+    if platform_name == "slack":
+        from agent.boundary_config import read_boundary_config
+        from agent.slack_post_policy import channel_denial
+
+        _policy_denial = channel_denial(chat_id, read_boundary_config())
+        if _policy_denial:
+            return json.dumps(_error(_policy_denial))
+
     try:
         from model_tools import _run_async
         send_kwargs = {

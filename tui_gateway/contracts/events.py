@@ -413,6 +413,13 @@ class ToolStartPayload(Payload):
 event("tool.start", ToolStartPayload, doc="A tool call began (stable id + full args).")
 
 
+class ArtifactLink(Payload):
+    """``tools.hosted_artifacts.ViewerLink``: a hosted artifact's shareable viewer page (never its view ticket)."""
+
+    url: str
+    title: str | None = None
+
+
 class ToolCompletePayload(Payload):
     """``tool_progress._on_tool_complete``; ``todos``/``revision`` merged in for the todo tools."""
 
@@ -428,6 +435,7 @@ class ToolCompletePayload(Payload):
     revision: int | None = None
     labels: list[ToolLabel] | None = None
     image_path: str | None = None  # local image the call produced or looked at (agent.terminal_image.tool_image_path)
+    artifact_link: ArtifactLink | None = None  # hosted artifact a create/update/show/get call returned
 
 
 event("tool.complete", ToolCompletePayload, doc="A tool call finished: parsed result, summary, optional diff / todo snapshot.")

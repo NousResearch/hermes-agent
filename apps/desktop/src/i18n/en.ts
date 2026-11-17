@@ -17,6 +17,7 @@ import { enErrorLayers } from './en_error_layers'
 import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
+import { enHostedArtifact } from './en_hosted_artifact'
 import { enLocalModels } from './en_local_models'
 import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
@@ -37,6 +38,7 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   externalOpenFailed: enExternalOpenFailed,
+  hostedArtifact: enHostedArtifact,
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
   firstRun: enFirstRun,

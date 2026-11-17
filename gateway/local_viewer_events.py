@@ -207,8 +207,8 @@ def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:
 def complete_fields(turn, call_id, tool_name=None, args=None, result=None, *, is_error=False) -> dict:
     """``duration_s``, ``inline_diff`` (the rendered edit diff main's CLI printed after a write,
     ``None`` when there is none), ``image_path`` (the local image the call produced or looked at,
-    which main's CLI draws inline; ``None`` when there is none or the call failed) and, for the todo tool, the full
-    ``todos`` snapshot."""
+    which main's CLI draws inline; ``None`` when there is none or the call failed), ``artifact_link`` (a hosted
+    artifact's viewer page, ``None`` for any other call) and, for the todo tool, the full ``todos`` snapshot."""
     key = str(call_id or "")
     started = turn.__dict__.setdefault("_local_tool_starts", {}).pop(key, None)
     fields = {"duration_s": (time.monotonic() - started) if started is not None else None}
@@ -226,6 +226,9 @@ def complete_fields(turn, call_id, tool_name=None, args=None, result=None, *, is
     fields["inline_diff"] = "\n".join(rendered) if rendered else None
     from agent.terminal_image import tool_image_path
     fields["image_path"] = tool_image_path(tool_name, args, result, is_error=is_error)
+    from tools.hosted_artifacts import viewer_link
+    link = viewer_link(tool_name, result)
+    fields["artifact_link"] = link.as_payload() if link else None
     todo = todo_state(tool_name, result)
     if todo is not None:
         fields.update(todo)

@@ -260,6 +260,26 @@ SESSION_SEARCH_GUIDANCE = (
 # (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
 SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
+# Hosted artifacts (the artifact_* tools): only sessions whose tool list has them get this, and the
+# surface sentence is chosen once per session from its platform, so the prompt stays byte-stable.
+HOSTED_ARTIFACTS_GUIDANCE = (
+    "To change a hosted artifact, call artifact_update with base_version set to the version you last saw; "
+    "on a stale_base error, re-read it with artifact_get and retry from head_version. Give the user an "
+    "artifact's viewer_url, never its content_url (a short-lived ticket for the embedded view)."
+)
+HOSTED_ARTIFACTS_SURFACE_HINTS = {
+    "desktop": "This app renders artifacts inline when you create, update or show one.",
+    "cli": "This terminal cannot render artifacts; it prints each artifact's viewer link after the call.",
+    "tui": "This terminal cannot render artifacts; it shows each artifact's viewer link after the call.",
+}
+HOSTED_ARTIFACTS_LINK_HINT = "This chat cannot render artifacts inline: share the viewer_url as a link."
+
+
+def hosted_artifacts_guidance(platform: str | None) -> str:
+    """The artifact tools' guidance for a session on *platform* (``desktop``, ``cli``, ``tui`` or a chat)."""
+    surface = HOSTED_ARTIFACTS_SURFACE_HINTS.get((platform or "").lower().strip(), HOSTED_ARTIFACTS_LINK_HINT)
+    return f"{surface} {HOSTED_ARTIFACTS_GUIDANCE}"
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from the shared board at `~/.hermes/kanban.db`. Your task id is in "

@@ -22,6 +22,7 @@ import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
 import type { GatewayHostTranslations } from './types_gateway_host'
+import type { HostedArtifactCopy } from './types_hosted_artifact'
 import type { MemoryLayersTranslations } from './types_memory_layers'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
@@ -98,6 +99,7 @@ export interface Translations extends NoticeTranslations {
   appTour: AppTourTranslations
   firstRun: FirstRunCopy
   externalOpenFailed: ExternalOpenFailedCopy
+  hostedArtifact: HostedArtifactCopy
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]

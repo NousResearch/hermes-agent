@@ -6114,6 +6114,12 @@ export interface ToolCompletePayload {
   revision?: number | null
   labels?: ToolLabel[] | null
   image_path?: string | null
+  artifact_link?: ArtifactLink | null
+}
+/** ``tools.hosted_artifacts.ViewerLink``: a hosted artifact's shareable viewer page (never its view ticket). */
+export interface ArtifactLink {
+  url: string
+  title?: string | null
 }
 /** ``agent_callbacks`` tool_gen_callback. */
 export interface ToolGeneratingPayload {

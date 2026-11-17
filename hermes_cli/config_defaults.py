@@ -1969,11 +1969,11 @@ DEFAULT_CONFIG = {
                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
         },
-        # Remote connector discovery/lifecycle through the Nous tool gateway.
-        # The flag is the user's off switch; availability additionally requires
-        # the portal sign-in every managed tool gates on.
+        # Remote connector discovery/lifecycle through the Nous tool gateway. The flag is the user's
+        # off switch; availability additionally requires the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
     },
+    "artifacts": {"enabled": True, "base_url": ""},  # hosted artifacts MCP server: tools/hosted_artifacts.py
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation

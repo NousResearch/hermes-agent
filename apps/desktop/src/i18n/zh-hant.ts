@@ -169,6 +169,17 @@ export const zhHantOverrides = {
   },
   cron: zhHantCommandCenter.cron,
   artifacts: zhHantArtifacts.artifacts,
+  hostedArtifact: {
+    untitled: '成品',
+    version: version => `版本 ${version}`,
+    newerVersion: version => `有新版本 ${version}`,
+    openViewer: '在檢視器中開啟',
+    linkOnly: '開啟檢視器以查看此成品。',
+    frameTitle: title => `成品：${title}`,
+    messagePrompt: '成品想傳送這則訊息：',
+    messageSend: '傳送',
+    messageDismiss: '略過'
+  },
   artifactCard: zhHantArtifacts.artifactCard,
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,

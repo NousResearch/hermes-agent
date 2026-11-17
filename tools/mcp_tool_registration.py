@@ -511,13 +511,18 @@ def _adopter_identity_digest(server_name: str, config: dict) -> str | None:
     return _identity_digest(inputs)
 
 
+# Auth types whose credential belongs to the profile that connected: an OAuth token store, or the
+# profile's own Nous sign-in (``auth: nous``). A connection using one is never adopted across profiles.
+_PROFILE_BOUND_AUTH = frozenset({"oauth", "nous"})
+
+
 def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False,
                        resolved_identity: str | None = None) -> bool:
     """Whether *server* matches *config*. Across profiles the static config is not enough: OAuth
     tokens live in the owner's token store (never reusable), and secret-source env, the profile
     identity header and the default cwd resolve per profile, so the adopter's resolution
     (*resolved_identity*, computed by the caller outside the registry lock; None refuses) must hash
-    to what the owner connected with. Within one profile the connection is the profile's: its
+    to what the owner connected with; a Nous sign-in (``auth: nous``) is the owner's too. Within one profile the connection is the profile's: its
     default cwd resolves in the connection task's own context, never per session."""
     if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
         return False
@@ -525,7 +530,7 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
         return True
     # Identities match, so both sides carry the same normalised auth type.
     recorded = getattr(server, "_resolved_identity", None)
-    return (_auth_type(config) != "oauth" and recorded is not None
+    return (_auth_type(config) not in _PROFILE_BOUND_AUTH and recorded is not None
             and resolved_identity is not None and recorded == resolved_identity)
 
 

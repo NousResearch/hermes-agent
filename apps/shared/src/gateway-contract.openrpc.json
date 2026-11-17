@@ -5665,6 +5665,33 @@
         "title": "ArgumentMode",
         "type": "string"
       },
+      "ArtifactLink": {
+        "additionalProperties": false,
+        "description": "``tools.hosted_artifacts.ViewerLink``: a hosted artifact's shareable viewer page (never its view ticket).",
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "ArtifactLink",
+        "type": "object"
+      },
       "AttachedImageResult": {
         "additionalProperties": false,
         "description": "``methods_prompt.py::_attached_image_result``: the image is queued for the next turn.",
@@ -46482,6 +46509,17 @@
             ],
             "default": null,
             "title": "Image Path"
+          },
+          "artifact_link": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

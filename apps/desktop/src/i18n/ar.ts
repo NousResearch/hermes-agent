@@ -118,6 +118,17 @@ export const arOverrides = {
   modelAssignment: arSettings.modelAssignment,
   cron: arCommandCenter.cron,
   artifacts: arArtifacts.artifacts,
+  hostedArtifact: {
+    untitled: 'عنصر',
+    version: version => `الإصدار ${version}`,
+    newerVersion: version => `الإصدار ${version} متاح`,
+    openViewer: 'فتح في العارض',
+    linkOnly: 'افتح العارض لعرض هذا العنصر.',
+    frameTitle: title => `عنصر: ${title}`,
+    messagePrompt: 'يريد العنصر إرسال هذه الرسالة:',
+    messageSend: 'إرسال',
+    messageDismiss: 'تجاهل'
+  },
   artifactCard: arArtifacts.artifactCard,
   artifactPreview: arArtifacts.artifactPreview,
   sidebar: arChrome.sidebar,

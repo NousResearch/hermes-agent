@@ -3066,6 +3066,17 @@ export const zhOverrides = {
     copyPath: '复制路径'
   },
 
+  hostedArtifact: {
+    untitled: '工件',
+    version: version => `版本 ${version}`,
+    newerVersion: version => `有新版本 ${version}`,
+    openViewer: '在查看器中打开',
+    linkOnly: '打开查看器以查看此工件。',
+    frameTitle: title => `工件：${title}`,
+    messagePrompt: '工件想发送这条消息：',
+    messageSend: '发送',
+    messageDismiss: '忽略'
+  },
   artifactCard: {
     kind: { code: '代码', html: '交互页面', svg: '图形' },
     generating: lines => `生成中… ${lines} 行`,

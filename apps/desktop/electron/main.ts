@@ -318,6 +318,12 @@ import {
 } from './hardening'
 import { isHermesProcess } from './hermes-process'
 import { assertNotPassiveSpawn } from './host-backend-singleton'
+import {
+  denyHostedArtifactPermissionChecks,
+  denyHostedArtifactPermissionRequests,
+  installSubframeNavigationFence
+} from './hosted-artifact-fence'
+import { hostedArtifactFramePolicy } from './hosted-artifact-frame'
 import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
@@ -783,6 +789,8 @@ if (process.env.HERMES_DESKTOP_TMPDIR) {
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+// Unpackaged (development) runs may also frame the local artifacts server.
+const HOSTED_ARTIFACT_FRAME_POLICY = hostedArtifactFramePolicy(IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -6746,15 +6754,18 @@ function installMediaPermissions() {
   // clipboard-sanitized-write is granted ONLY to the exact Skills Hub origins
   // (hub-iframe-policy.ts): the picker's Copy controls write to the clipboard,
   // and every other frame — artifact previews included — stays denied.
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    if ((permission as string) === 'clipboard-sanitized-write') {
-      callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
+  // A hosted artifact frame is untrusted content: both handlers grant it nothing.
+  session.defaultSession.setPermissionRequestHandler(
+    denyHostedArtifactPermissionRequests(HOSTED_ARTIFACT_FRAME_POLICY, (webContents, permission, callback, details) => {
+      if ((permission as string) === 'clipboard-sanitized-write') {
+        callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
 
-      return
-    }
+        return
+      }
 
-    callback(isMediaCapturePermission(permission, details))
-  })
+      callback(isMediaCapturePermission(permission, details))
+    })
+  )
 
   // Synchronous check handler: Chromium consults this for getUserMedia on
   // Windows in addition to (or instead of) the request handler. Without it,
@@ -6763,13 +6774,15 @@ function installMediaPermissions() {
   // the shared predicate runs with `undefined` details and allows the capture
   // permissions — identical policy to the request handler below, just without
   // the metadata refinement (absent metadata is allowed there too).
-  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-    if ((permission as string) === 'clipboard-sanitized-write') {
-      return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
-    }
+  session.defaultSession.setPermissionCheckHandler(
+    denyHostedArtifactPermissionChecks(HOSTED_ARTIFACT_FRAME_POLICY, (webContents, permission) => {
+      if ((permission as string) === 'clipboard-sanitized-write') {
+        return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
+      }
 
-    return isMediaCapturePermission(permission, undefined)
-  })
+      return isMediaCapturePermission(permission, undefined)
+    })
+  )
 }
 
 // Origin of the frame a permission request came from. The request handler is
@@ -6809,37 +6822,6 @@ function isHermesHubPickerUrl(url: string): boolean {
   } catch {
     return false
   }
-}
-
-/** Look up a subframe by its process/routing id; never throws. */
-function findFrameByIdentifier(
-  webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
-  frameProcessId: number,
-  frameRoutingId: number
-): { origin?: string; reload?: () => void } | null {
-  const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
-    processId?: number
-    routingId?: number
-    frameProcessId?: number
-    frameRoutingId?: number
-    origin?: string
-    reload?: () => void
-  }>
-
-  return (
-    candidates.find(
-      f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
-    ) ?? null
-  )
-}
-
-/** `frame.origin` as a safe string; destroyed frames report opaque/'null'. */
-function safeFrameOrigin(frame: { origin?: string } | null | undefined): string | null {
-  if (!frame?.origin || frame.origin === 'null') {
-    return null
-  }
-
-  return frame.origin
 }
 
 // ---------------------------------------------------------------------------
@@ -11828,32 +11810,33 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   // pagination), but the moment it tries to escape to the full docs site —
   // whose layout is not embeddable and whose links are then dead — the
   // navigation is denied and the frame is reloaded onto the picker URL.
-  win.webContents.on('will-frame-navigate', (event, url, isMainFrame, frameProcessId, frameRoutingId) => {
-    if (isMainFrame) {
-      return
-    }
+  // Hosted artifact frames stay on their own origin, and only origins this
+  // build may frame are entered (hosted-artifact-fence.ts); every other
+  // subframe navigation reaches the Skills Hub rule below.
+  installSubframeNavigationFence(win.webContents, {
+    policy: HOSTED_ARTIFACT_FRAME_POLICY,
+    log: rememberLog,
+    otherNavigation: (details, frameOrigin) => {
+      if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
+        return
+      }
 
-    const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
-    const frameOrigin = safeFrameOrigin(frame)
+      if (isHermesHubPickerUrl(details.url)) {
+        return
+      }
 
-    if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
-      return
-    }
+      details.preventDefault()
 
-    if (isHermesHubPickerUrl(url)) {
-      return
-    }
-
-    event.preventDefault()
-
-    // Reload the frame back onto the picker instead of leaving it on a
-    // half-navigated document.
-    try {
-      frame?.reload()
-    } catch {
-      // A destroyed frame is gone; nothing to restore.
+      // Reload the frame back onto the picker instead of leaving it on a
+      // half-navigated document.
+      try {
+        details.frame?.reload?.()
+      } catch {
+        // A destroyed frame is gone; nothing to restore.
+      }
     }
   })
+
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return

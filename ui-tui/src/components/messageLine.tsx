@@ -1,4 +1,4 @@
-import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
+import { Ansi, Box, Link, NoSelect, Text } from '@hermes/ink'
 import { hasAnsi, sanitizeAnsiForRender, stripAnsi } from '@hermes/shared/ansi'
 import { memo, useState } from 'react'
 
@@ -17,7 +17,7 @@ import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { MessageImages } from './inlineImage.js'
-import { Md } from './markdown.js'
+import { Md, sanitizeTerminalText } from './markdown.js'
 import { PasteSections } from './pasteSections.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
@@ -164,9 +164,7 @@ export const MessageLine = memo(function MessageLine({
         <NoSelect flexShrink={0} fromLeftEdge width={eventGutterWidth}>
           <Text> </Text>
         </NoSelect>
-        <Text color={t.color.muted} dimColor>
-          ◈ {msg.text}
-        </Text>
+        <EventText msg={msg} t={t} />
       </Box>
     )
   }
@@ -348,6 +346,25 @@ const isUsageGaugeRow = (msg: Msg): boolean =>
 
 // wrap-ansi treats a colored `[||||||||  ]` as a broken CSI sequence and
 // prints `?[32m`, so each segment is its own <Text> with no wrapping.
+// An event row with a link target (a hosted artifact's viewer page) is an OSC 8 hyperlink.
+function EventText({ msg, t }: { msg: Msg; t: Theme }) {
+  if (!msg.linkUrl) {
+    return (
+      <Text color={t.color.muted} dimColor>
+        ◈ {msg.text}
+      </Text>
+    )
+  }
+
+  return (
+    <Link url={sanitizeTerminalText(msg.linkUrl)}>
+      <Text color={t.color.accent} underline>
+        ◈ {msg.text}
+      </Text>
+    </Link>
+  )
+}
+
 function UsageGaugeRow({ t, text }: { t: Theme; text: string }) {
   return (
     <Box>

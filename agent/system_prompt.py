@@ -295,11 +295,13 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
     if _kanban_guidance is None and "kanban_show" in names and owned_kanban_task():
         _kanban_guidance = KANBAN_GUIDANCE
+    from tools.hosted_artifacts import session_has_artifacts
     tool_guidance = [
         memory_guidance,
         SESSION_SEARCH_GUIDANCE if "session_search" in names else None,
         SKILLS_GUIDANCE if "skill_manage" in names else None,
         _kanban_guidance,
+        _pb.hosted_artifacts_guidance(agent.platform) if session_has_artifacts(names) else None,
     ]
     return " ".join(g for g in tool_guidance if g) or None
 

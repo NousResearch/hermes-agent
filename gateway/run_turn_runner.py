@@ -1575,6 +1575,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 }
             return {"final_response": final_response, **common,
                     "agent_persisted": _agent_persisted_flag(result, agent)}
+        if local_sinks is None:
+            # A chat cannot show an artifact: its viewer link rides the reply. Local viewers print it per call.
+            from gateway.artifact_links import append_viewer_links
+            final_response = append_viewer_links(final_response, result.get("messages"), len(agent_history))
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.

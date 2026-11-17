@@ -382,5 +382,130 @@ export function selectArtifactVersion(artifactId: string, versionIndex: number) 
 export function clearArtifactRegistry() {
   $artifactRegistry.set({})
   $artifactVersionSelection.set({})
+  $hostedArtifacts.set({})
   closeArtifactPreviewTabs()
+}
+
+/**
+ * SERVER-HOSTED ARTIFACTS — a cache of what the artifacts server said, keyed
+ * by the server's artifact id. The server is authoritative (any surface can
+ * add a version); this only remembers the versions this window has seen in
+ * tool results, so a card can tell that a newer version exists. It never
+ * holds content: each version is a URL pair, and the frame loads the bytes.
+ *
+ * Kept apart from the local registry above on purpose: local artifacts are
+ * keyed by (session, slug) and own their content; hosted ones are global ids
+ * that only the server can mint.
+ */
+
+export interface HostedArtifactVersion {
+  /** Short-lived ticketed URL on the artifact's own origin. */
+  contentUrl: string
+  /** When this window last saw a result for this version (ms). */
+  seenAt: number
+  title: string
+  version: number
+  viewerUrl: string
+}
+
+export interface HostedArtifactRecord {
+  /** The newest version any result has named. Latest wins. */
+  headVersion: number
+  id: string
+  title: string
+  updatedAt: number
+  /** Ascending by version number. */
+  versions: HostedArtifactVersion[]
+}
+
+export const $hostedArtifacts = atom<Record<string, HostedArtifactRecord>>({})
+
+const MAX_HOSTED_ARTIFACTS = 200
+/** The server keeps the newest 20 versions; caching more would only name
+ *  versions that may no longer exist. */
+const MAX_HOSTED_VERSIONS = 20
+
+export interface HostedArtifactSighting {
+  contentUrl: string
+  id: string
+  title?: string
+  version: number
+  viewerUrl: string
+}
+
+/**
+ * Record one version a tool result named. A newer version moves the head; an
+ * older one is retained below it without moving the head back; seeing the
+ * same version again refreshes its ticket URL. Returns the record.
+ */
+export function recordHostedArtifactVersion(
+  sighting: HostedArtifactSighting,
+  now: number = Date.now()
+): HostedArtifactRecord | null {
+  const { id, version } = sighting
+
+  if (!id || !Number.isInteger(version) || version < 1) {
+    return null
+  }
+
+  const all = $hostedArtifacts.get()
+  const existing = all[id]
+  const title = sighting.title?.trim() ?? ''
+
+  const entry: HostedArtifactVersion = {
+    contentUrl: sighting.contentUrl,
+    seenAt: now,
+    title,
+    version,
+    viewerUrl: sighting.viewerUrl
+  }
+
+  const previous = existing?.versions.find(candidate => candidate.version === version)
+
+  if (
+    previous &&
+    previous.contentUrl === entry.contentUrl &&
+    previous.viewerUrl === entry.viewerUrl &&
+    previous.title === entry.title
+  ) {
+    // A re-render of the same result: keep reference identity, write nothing.
+    return existing!
+  }
+
+  const versions = [...(existing?.versions.filter(candidate => candidate.version !== version) ?? []), entry]
+    .sort((a, b) => a.version - b.version)
+    .slice(-MAX_HOSTED_VERSIONS)
+
+  const headVersion = Math.max(existing?.headVersion ?? 0, version)
+  const head = versions.find(candidate => candidate.version === headVersion)
+
+  const record: HostedArtifactRecord = {
+    headVersion,
+    id,
+    // The head's title when it carries one, else the newest title known.
+    title: head?.title || [...versions].reverse().find(candidate => candidate.title)?.title || existing?.title || '',
+    updatedAt: now,
+    versions
+  }
+
+  const next = { ...all, [id]: record }
+  const ids = Object.keys(next)
+
+  if (ids.length > MAX_HOSTED_ARTIFACTS) {
+    for (const stale of ids
+      .sort((a, b) => next[a]!.updatedAt - next[b]!.updatedAt)
+      .slice(0, ids.length - MAX_HOSTED_ARTIFACTS)) {
+      if (stale !== id) {
+        delete next[stale]
+      }
+    }
+  }
+
+  $hostedArtifacts.set(next)
+
+  return record
+}
+
+export function getHostedArtifact(id: string): HostedArtifactRecord | null {
+  return $hostedArtifacts.get()[id] ?? null
 }

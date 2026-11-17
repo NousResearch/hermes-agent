@@ -532,7 +532,12 @@ class MCPServerTransportMixin:
 
     def _build_oauth_auth(self, url: str, config: dict):
         """OAuth 2.1 PKCE via the central MCPOAuthManager (one provider reused across reconnects and
-        CLI paths). Setup failures re-raise (after a warning) so only this server is reported failed."""
+        CLI paths). Setup failures re-raise (after a warning) so only this server is reported failed.
+        ``auth: nous`` sends the profile's Nous access token, resolved fresh on every request, and only
+        to the managed hosted artifacts server."""
+        if self._auth_type == "nous":
+            from tools.hosted_artifacts import nous_bearer_auth
+            return nous_bearer_auth(url)
         if self._auth_type != "oauth":
             return None
         try:

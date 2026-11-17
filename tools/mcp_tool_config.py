@@ -754,7 +754,8 @@ def _load_mcp_config() -> dict[str, dict]:
         except ImportError as exc:
             logger.warning("MCP server validator unavailable; no MCP servers started: %s", exc)
             return {}
-        servers = load_config().get("mcp_servers")
+        root_config = load_config()
+        servers = root_config.get("mcp_servers")
         try:  # ensure .env vars are available for interpolation
             from hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
@@ -772,6 +773,8 @@ def _load_mcp_config() -> dict[str, dict]:
         # tighter limit would fall back to the package's looser one while the server keeps spending).
         rejected = frozenset(n for n in servers if n not in kept and _malformed_cost_table(n, servers[n]) is not None)
         _portable_mcp_servers(safe_servers, rejected)
+        from tools.hosted_artifacts import attach_to
+        attach_to(safe_servers, root_config)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)

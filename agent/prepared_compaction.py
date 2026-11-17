@@ -91,6 +91,9 @@ class _Miss(str):
         miss.code = code
         return miss
 
+    def __getnewargs_ex__(self):  # copy/pickle rebuild via __new__, which needs the code
+        return (self.code, str(self)), {}
+
 
 def _record(event: str, **dims: Any) -> None:
     """Count one event in opt-in shared metrics (a no-op when off; never raises)."""

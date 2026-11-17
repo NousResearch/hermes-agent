@@ -186,3 +186,64 @@ def test_guard_keeps_last_good_rules_through_a_typo():
     _write(GOOD + "\nautonomy: [broken\n")
     guard = g.load_guard(bc.read_boundary_config())
     assert guard.error == "" and guard.prds
+
+
+# ── sticky guards and file versions ──────────────────────────────────────
+
+def test_dropped_write_guard_stays_on_until_restart(caplog):
+    import tools.notion_write_guard as g
+    _write(GOOD)
+    assert g.load_guard(bc.read_boundary_config()).error == ""
+    # an indentation slip turns write_guard into a sibling key: still parses
+    _write(GOOD.replace("  write_guard:", "write_guard:"))
+    cfg = bc.read_boundary_config()
+    assert g.is_enforcing(cfg) and g.load_guard(cfg).error == ""
+    assert "keeping the earlier value" in caplog.text
+    _write(GOOD.replace("enabled: true", "enabled: false"))
+    assert g.is_enforcing(bc.read_boundary_config())
+    bc.clear_cache()  # a restart
+    assert not g.is_enforcing(bc.read_boundary_config())
+
+
+def test_dropped_agent_write_guard_stays_on():
+    _write(GOOD)
+    bc.read_boundary_config()
+    _write(GOOD.replace("agent_write_guard: true", "agent_write_guard: false"))
+    assert bc.read_boundary_config()["agent_write_guard"] is True
+    from agent.profile_write_guard import write_guard_denial
+    assert write_guard_denial(str(get_hermes_home() / "config.yaml"))
+
+
+def test_posting_lists_never_fall_back_to_unconfigured():
+    _write(GOOD)
+    bc.read_boundary_config()
+    _write(GOOD.replace("  post_allowed_channels: [CHOME001]\n", "").replace(
+        "  post_gated_channels: [CREL0001]\n", "  post_gated_channels: []\n"))
+    slack = bc.read_boundary_config()["slack"]
+    assert slack["post_allowed_channels"] == ["CHOME001"]
+    assert slack["post_gated_channels"] == ["CREL0001"]
+    # a configured list may still be edited
+    _write(GOOD.replace("[CHOME001]", "[CHOME001, CNEW0001]"))
+    assert bc.read_boundary_config()["slack"]["post_allowed_channels"] == ["CHOME001", "CNEW0001"]
+
+
+def test_replaced_file_with_same_mtime_and_size_is_reread():
+    path = _write("model: aaaa\n")
+    assert bc.read_boundary_config() == {"model": "aaaa"}
+    st = path.stat()
+    tmp = path.with_name("config.yaml.new")
+    tmp.write_text("model: bbbb\n", encoding="utf-8")
+    os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+    os.replace(tmp, path)  # new inode, same mtime and size
+    assert bc.read_boundary_config() == {"model": "bbbb"}
+
+
+def test_older_version_never_replaces_last_good():
+    path = _write(GOOD)
+    bc.read_boundary_config()
+    key = str(path)
+    newest = bc._LAST_GOOD[key][0]
+    bc._LAST_GOOD[key] = ((newest[0] + 10**9, newest[1]), {"marker": "newer"})
+    bc._VERSION.clear()
+    bc.read_boundary_config()  # re-parses the (older) file version
+    assert bc._LAST_GOOD[key][1] == {"marker": "newer"}

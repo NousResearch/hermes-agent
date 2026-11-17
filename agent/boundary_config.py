@@ -13,7 +13,10 @@ preconditions — reads through ``read_boundary_config`` instead:
 - parse error, non-mapping or empty file → the LAST KNOWN GOOD parse of that
   path in this process; with none, ``UnreadableConfig`` — a deny sentinel;
 - missing file → "not configured" (``{}``) only if no good parse of that
-  path was ever seen; otherwise the last known good.
+  path was ever seen; otherwise the last known good;
+- a parse that DROPS a guard seen on earlier in this process (write guard,
+  agent_write_guard, the posting lists) keeps the earlier value — sticky
+  until restart (see ``_apply_sticky``).
 
 ``UnreadableConfig`` is a dict pre-filled with the most restrictive values
 (write guard on, agent_write_guard on, empty post allowlist, autonomy
@@ -61,8 +64,9 @@ def unreadable_message(cfg) -> str:
 
 
 _lock = threading.Lock()
-_LAST_GOOD: dict = {}     # path -> dict
-_VERSION: dict = {}       # path -> ((mtime_ns, size), dict | None)
+_LAST_GOOD: dict = {}     # path -> (order, dict): newest good parse seen
+_VERSION: dict = {}       # path -> (version, dict | None): parse of that exact file version
+_STICKY: dict = {}        # path -> {setting: value} guards seen ON in this process
 _LOGGED: set = set()
 
 
@@ -70,6 +74,7 @@ def clear_cache() -> None:
     with _lock:
         _LAST_GOOD.clear()
         _VERSION.clear()
+        _STICKY.clear()
         _LOGGED.clear()
 
 
@@ -80,6 +85,69 @@ def _parse(text: str):
     except ImportError:  # pragma: no cover
         import yaml
         return yaml.safe_load(text)
+
+
+# ── sticky guards ────────────────────────────────────────────────────────
+#
+# A config.yaml that still PARSES but has lost a guard (an indentation slip
+# that moves the block, a partial read of an in-place save, a deleted key)
+# would otherwise switch that guard off mid-process and become the last good
+# version. Once a path has parsed with a guard on, a later parse that drops or
+# disables it keeps the last-on value, logging an ERROR; an admin turns a
+# guard off by editing the file AND restarting the gateway. The posting lists
+# never fall back to "unconfigured" (absent) mid-process either; a configured
+# list may still be edited.
+
+def _write_guard_on(data: dict) -> bool:
+    from tools.notion_write_guard import is_enforcing
+    return is_enforcing(data)
+
+
+def _awg_on(data: dict) -> bool:
+    raw = data.get("agent_write_guard")
+    if raw is True:
+        return True
+    if isinstance(raw, dict):
+        enabled = raw.get("enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(enabled)
+    return False
+
+
+def _apply_sticky(key: str, data: dict) -> dict:
+    with _lock:
+        sticky = _STICKY.setdefault(key, {})
+        restored = []
+        notion = data.get("notion") if isinstance(data.get("notion"), dict) else None
+        if _write_guard_on(data):
+            sticky["write_guard"] = copy.deepcopy(notion["write_guard"])
+        elif "write_guard" in sticky:
+            if notion is None:
+                notion = data["notion"] = {}
+            notion["write_guard"] = copy.deepcopy(sticky["write_guard"])
+            restored.append("notion.write_guard")
+        if _awg_on(data):
+            sticky["agent_write_guard"] = copy.deepcopy(data["agent_write_guard"])
+        elif "agent_write_guard" in sticky:
+            data["agent_write_guard"] = copy.deepcopy(sticky["agent_write_guard"])
+            restored.append("agent_write_guard")
+        slack = data.get("slack") if isinstance(data.get("slack"), dict) else None
+        for name in ("post_allowed_channels", "post_gated_channels"):
+            value = slack.get(name) if slack is not None else None
+            present = value is not None and not (name == "post_gated_channels" and not value)
+            if present:
+                sticky[name] = copy.deepcopy(value)
+            elif name in sticky:
+                if slack is None:
+                    slack = data["slack"] = {}
+                slack[name] = copy.deepcopy(sticky[name])
+                restored.append(f"slack.{name}")
+    if restored:
+        logger.error("[boundary] %s parsed without %s — keeping the earlier value(s) ON until the "
+                     "gateway restarts (guards are only switched off by a restart)",
+                     key, ", ".join(restored))
+    return data
 
 
 def read_boundary_config(home: Optional[Path] = None) -> dict:
@@ -95,10 +163,13 @@ def read_boundary_config(home: Optional[Path] = None) -> dict:
     except FileNotFoundError:
         with _lock:
             good = _LAST_GOOD.get(key)
-        return copy.deepcopy(good) if good is not None else {}
+        return copy.deepcopy(good[1]) if good is not None else {}
     except OSError as e:
         return _fallback(key, f"stat failed: {e}", None)
-    version = (st.st_mtime_ns, st.st_size)
+    # inode + ctime too: an atomic replace, or a same-size edit within the
+    # mtime granularity, is still a new version.
+    version = (st.st_mtime_ns, st.st_ctime_ns, st.st_ino, st.st_size)
+    order = (st.st_mtime_ns, st.st_ctime_ns)
     with _lock:
         hit = _VERSION.get(key)
     if hit is not None and hit[0] == version:
@@ -114,15 +185,21 @@ def read_boundary_config(home: Optional[Path] = None) -> dict:
         with _lock:
             _VERSION[key] = (version, None)
         return _fallback(key, reason, version)
+    data = _apply_sticky(key, data)
     with _lock:
         _VERSION[key] = (version, copy.deepcopy(data))
-        _LAST_GOOD[key] = copy.deepcopy(data)
+        current = _LAST_GOOD.get(key)
+        # Only a strictly newer file version replaces the last good one (a
+        # thread that parsed an older version late must not roll it back).
+        if current is None or order > current[0]:
+            _LAST_GOOD[key] = (order, copy.deepcopy(data))
     return data
 
 
 def _fallback(key: str, reason: str, version) -> dict:
     with _lock:
-        good = _LAST_GOOD.get(key)
+        entry = _LAST_GOOD.get(key)
+        good = entry[1] if entry is not None else None
         first = (key, version) not in _LOGGED
         _LOGGED.add((key, version))
     if first:

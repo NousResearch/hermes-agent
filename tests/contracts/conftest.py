@@ -10,7 +10,7 @@ Fixtures provided:
 
 Collection policy: a contracts run that collects backend-bound cases fails when every such case has a ``skip`` marker or a ``skipif`` marker whose first positional argument is truthy; entirely backend-neutral collections are exempt. It tests that argument directly; it does not evaluate string conditions or read ``condition=``. Use ``require_capability`` for capability-gated optional features so the skip reason names the missing capability; ``_approved_skip`` also accepts uppercase ``QUIRK`` reason text.
 
-Skip accounting: per-backend outcome counts are collected from runtest reports (a skip raised at setup or call time counts as a skip; nothing is inferred at collection time) and written as JSON to the path in ``HERMES_CONTRACT_ACCOUNTING`` when set and reports or backend-bound collected nodes exist, keyed by backend name with collected/passed/skipped/xfailed/errored/failed counts plus each skipped node id and reason. With that artifact requested, ``pytest_sessionfinish`` fails an otherwise successful run on accounting violations, including an unapproved skip in a mapped authority case whose backend declares the capability.
+Skip accounting: per-backend outcome counts are collected from runtest reports (a skip raised at setup or call time counts as a skip; nothing is inferred at collection time) and written as JSON to the path in ``HERMES_CONTRACT_ACCOUNTING`` when set and reports or backend-bound collected nodes exist, keyed by backend name with collected/passed/skipped/xfailed/errored/failed counts plus each skipped node id and reason. With that artifact requested, ``pytest_sessionfinish`` fails an otherwise successful run on accounting violations, including an unapproved skip in a mapped authority case whose backend declares the capability; the accounting judges only the suites a run selected, so a partial run passes on its own cases, and it refuses xdist, whose workers would each reconcile the whole collection against their own reports.
 """
 
 from __future__ import annotations
@@ -106,6 +106,9 @@ def _approved_skip(reason: str) -> bool:
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "contract_backend: parametrized persistence-contract case bound to one registered backend")
+    if os.environ.get(_ACCOUNTING_ENV) and (os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None)):
+        # Each xdist worker would reconcile the whole collection against only its own reports and race the others on one artifact.
+        raise pytest.UsageError(f"{_ACCOUNTING_ENV} accounting needs one pytest process; it refuses xdist")
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
@@ -252,10 +255,15 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _accounting.record(report)
 
 
+def _suite_exists(flag: str) -> bool:
+    """Whether a suite file the map names for ``flag`` exists under the contracts tree."""
+    return any(any(_CONTRACTS_DIR.rglob(name)) for name, mapped in _AUTHORITY_SUITE_FLAGS.items() if mapped == flag)
+
+
 def _authority_accounting() -> dict[str, Any]:
     """Per-backend per-capability denominators from the final collection, declared flags from the assembled capabilities, and the violation list used by ``pytest_sessionfinish``.
 
-    Violations (each a dict with a ``kind``): ``missing_report`` (a collected backend-bound node produced no outcome), ``unexpected_deselection`` (a node seen at collection-modification time vanished from the final collection), ``missing_declaration`` (authority cases were collected but no assembled instance recorded its flags), ``unapproved_skip`` (an authority-flagged case skipped on a backend that declares the flag, with a reason ``_approved_skip`` rejects), and ``zero_exercised`` (a backend declares an authority flag with no passed cases, including when no cases for that flag were collected). ``pytest_sessionfinish`` writes this list to the requested accounting artifact and fails an otherwise successful run when it is nonempty; without an artifact request it does neither.
+    Violations (each a dict with a ``kind``): ``missing_report`` (a collected backend-bound node produced no outcome), ``unexpected_deselection`` (a node seen at collection-modification time vanished from the final collection), ``missing_declaration`` (authority cases were collected but no assembled instance recorded its flags), ``unapproved_skip`` (an authority-flagged case skipped on a backend that declares the flag, with a reason ``_approved_skip`` rejects), and ``zero_exercised`` (a backend declares an authority flag with no passed cases among the cases this run selected, or the flag's suite file is missing from the tree; a flag whose suite exists but was not selected is a partial run, not a violation). ``pytest_sessionfinish`` writes this list to the requested accounting artifact and fails an otherwise successful run when it is nonempty; without an artifact request it does neither.
     """
     per_capability: dict[str, dict[str, dict[str, int]]] = {}
     violations: list[dict[str, str]] = []
@@ -287,10 +295,12 @@ def _authority_accounting() -> dict[str, Any]:
             if not value:
                 continue
             counts = flags.get(flag)
+            if counts is None and _suite_exists(flag):
+                # The capability's suite exists but this run did not select it: a partial run, not an omission.
+                continue
             if counts is None or counts["passed"] == 0:
-                # A declared capability with NO collected cases (omitted suite,
-                # broken node-to-capability map) is as much a zero-exercise
-                # violation as one whose cases all skipped or failed.
+                # A declared capability whose suite file is gone (omitted suite, broken node-to-capability map)
+                # is as much a zero-exercise violation as one whose selected cases all skipped or failed.
                 violations.append({"kind": "zero_exercised", "backend": backend, "capability": flag})
         for entry in _accounting.skips.get(backend, []):
             flag = _NODE_CAPABILITY_FLAGS.get(entry["nodeid"])

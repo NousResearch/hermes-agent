@@ -5,12 +5,13 @@ import pytest
 
 from gateway.session_parallel import conversation_scope
 from hermes_state_parallel import by_anchor
-from tests.gateway.test_parallel_native_ingress import admissions, event, setup_owner
+from tests.gateway.test_parallel_native_ingress import MESSAGING_PLATFORMS, admissions, event, setup_owner
 from tests.waiting import async_wait_until
 
 
+@pytest.mark.parametrize('platform', MESSAGING_PLATFORMS, ids=lambda p: p.value)
 @pytest.mark.asyncio
-async def test_discord_text_batch_does_not_merge_replies_to_distinct_work(monkeypatch):
+async def test_text_batch_does_not_merge_replies_to_distinct_work(monkeypatch, platform):
     gate = asyncio.Event()
     entered = []
 
@@ -20,9 +21,8 @@ async def test_discord_text_batch_does_not_merge_replies_to_distinct_work(monkey
             await gate.wait()
         return row['payload']['text'].upper()
 
-    _runner, authority, adapter = await setup_owner(monkeypatch, produce)
-    # Discord's real adapter calls this inherited batching API before handle_message
-    # for ordinary text; its constructor's default quiet period is 0.6 seconds.
+    _runner, authority, adapter = await setup_owner(monkeypatch, produce, platform=platform)
+    # Shared text batching must not collapse replies addressed to separate work.
     adapter._text_batch_delay_seconds = 0.6
     try:
         await adapter.handle_message(event(adapter, 'm1', 'work one'))
@@ -44,21 +44,22 @@ async def test_discord_text_batch_does_not_merge_replies_to_distinct_work(monkey
         authority.db.close()
 
 
+@pytest.mark.parametrize('platform', MESSAGING_PLATFORMS, ids=lambda p: p.value)
 @pytest.mark.asyncio
-async def test_background_watcher_reply_remains_correlated(monkeypatch):
+async def test_background_watcher_reply_remains_correlated(monkeypatch, platform):
     gate = asyncio.Event()
 
     async def produce(*args):
         await gate.wait()
         return 'DONE'
 
-    runner, authority, adapter = await setup_owner(monkeypatch, produce)
+    runner, authority, adapter = await setup_owner(monkeypatch, produce, platform=platform)
     try:
         original = event(adapter, 'request', 'long-running work')
         await adapter.handle_message(original)
         await async_wait_until(lambda: len(admissions(authority)) == 1, what='work admitted')
         route = runner._session_key_for_source(original.source)
-        await runner._send_watcher_message('discord', 'room', None, 'Background command completed', {'session_key': route})
+        await runner._send_watcher_message(platform.value, 'room', None, 'Background command completed', {'session_key': route})
         receipt = adapter.deliveries[-1][3]
         assert adapter.deliveries[-1][1] == 'Background command completed'
         anchor = by_anchor(authority.db, conversation_scope(original.source), receipt)

@@ -12,15 +12,17 @@ from gateway.session_authority import initialize_session_authority
 from gateway.session_parallel import physical_count
 from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
-from tests.gateway.test_parallel_native_ingress import DiscordFixture, admissions, event
+from tests.gateway.test_parallel_native_ingress import MESSAGING_PLATFORMS, DiscordFixture, admissions, event
 from tests.waiting import async_wait_until
 
 
 @asynccontextmanager
-async def native_owner(monkeypatch, respond):
+async def native_owner(monkeypatch, respond, *, platform=Platform.DISCORD):
     import gateway.run as gateway_run
     home = Path(os.environ['HERMES_HOME'])
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', 'alice,bob')
+    if platform != Platform.DISCORD:
+        monkeypatch.setenv('GATEWAY_ALLOW_ALL_USERS', 'true')
     with FakeLLMServer(respond, aux=lambda request: Text('Auxiliary')) as server:
         write_hermes_home(home, server.base_url, extra_config=OFFLINE_CONFIG + NO_BACKGROUND_REVIEW + '''
 display:
@@ -32,8 +34,8 @@ approvals:
   approvers: []
   timeout: 30
 platform_toolsets:
-  discord: [terminal, clarify]
-''')
+  PLATFORM: [terminal, clarify]
+'''.replace('PLATFORM', platform.value))
         monkeypatch.setattr(gateway_run, '_hermes_home', home)
         monkeypatch.setattr(gateway_run, '_resolve_runtime_agent_kwargs', lambda: {
             'api_key': 'sk-fake-e2e', 'base_url': server.base_url,
@@ -41,8 +43,9 @@ platform_toolsets:
         runner = GatewayRunner(GatewayConfig())
         runner.config.streaming = StreamingConfig(enabled=False)
         adapter = DiscordFixture()
+        adapter.platform = platform
         adapter.gateway_runner = runner
-        runner.adapters = {Platform.DISCORD: adapter}
+        runner.adapters = {platform: adapter}
         authority = await initialize_session_authority(runner, profile_id='default', instance_id='controls')
         runner._wire_adapter_handlers(adapter)
         runner._busy_input_mode = 'parallel'
@@ -69,8 +72,9 @@ def confirmed_prompt(authority, message_id):
                             (message_id,)).fetchone() is not None
 
 
+@pytest.mark.parametrize('platform', MESSAGING_PLATFORMS, ids=lambda p: p.value)
 @pytest.mark.asyncio
-async def test_native_stop_targets_one_work_and_waits_for_physical_return(monkeypatch):
+async def test_native_stop_targets_one_work_and_waits_for_physical_return(monkeypatch, platform):
     entered = {name: threading.Event() for name in ('STOP-ONE', 'KEEP-TWO')}
     release = {name: threading.Event() for name in entered}
 
@@ -81,7 +85,7 @@ async def test_native_stop_targets_one_work_and_waits_for_physical_return(monkey
         return Text('ANSWER-' + name)
 
     try:
-        async with native_owner(monkeypatch, respond) as (runner, authority, adapter):
+        async with native_owner(monkeypatch, respond, platform=platform) as (runner, authority, adapter):
             for mid, text in [('m1', 'STOP-ONE'), ('m2', 'KEEP-TWO')]:
                 await adapter.handle_message(event(adapter, mid, text))
             await async_wait_until(lambda: all(e.is_set() for e in entered.values()), timeout=20, what='two model calls')
@@ -108,8 +112,9 @@ async def test_native_stop_targets_one_work_and_waits_for_physical_return(monkey
             gate.set()
 
 
+@pytest.mark.parametrize('platform', MESSAGING_PLATFORMS, ids=lambda p: p.value)
 @pytest.mark.asyncio
-async def test_native_approval_and_clarify_are_sender_request_and_generation_scoped(monkeypatch):
+async def test_native_approval_and_clarify_are_sender_request_and_generation_scoped(monkeypatch, platform):
     from tools import approval, clarify_gateway
     from hermes_state_runtime import RuntimeStoreError
 
@@ -122,7 +127,7 @@ async def test_native_approval_and_clarify_are_sender_request_and_generation_sco
             return ToolCall('terminal', {'command': 'rm -rf /parallel-test-never-execute'})
         return ToolCall('clarify', {'questions': [{'question': 'Choose CLARIFY-TWO', 'choices': ['blue', 'green']}]})
 
-    async with native_owner(monkeypatch, respond) as (_runner, authority, adapter):
+    async with native_owner(monkeypatch, respond, platform=platform) as (_runner, authority, adapter):
         for mid, text in [('m1', 'APPROVAL-ONE'), ('m2', 'CLARIFY-TWO')]:
             await adapter.handle_message(event(adapter, mid, text))
         await async_wait_until(lambda: any('approve' in s.lower() for s in adapter.sent)

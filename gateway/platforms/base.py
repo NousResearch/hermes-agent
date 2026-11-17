@@ -2464,7 +2464,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text batching (subclasses may override)."""
-        return self._event_session_key(event)
+        from gateway.session_parallel import batch_key
+        return batch_key(self, event, self._event_session_key(event))
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""

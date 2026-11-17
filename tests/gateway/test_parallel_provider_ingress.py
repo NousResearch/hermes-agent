@@ -1,4 +1,4 @@
-"""Ordinary native Discord ingress through real TurnRunner/AIAgent and a loopback model."""
+"""Ordinary messaging ingress through real TurnRunner/AIAgent and a loopback model."""
 import asyncio
 import os
 from pathlib import Path
@@ -11,12 +11,13 @@ from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
-from tests.gateway.test_parallel_native_ingress import DiscordFixture, admissions, event
+from tests.gateway.test_parallel_native_ingress import MESSAGING_PLATFORMS, DiscordFixture, admissions, event
 from tests.waiting import async_wait_until
 
 
+@pytest.mark.parametrize('platform', MESSAGING_PLATFORMS, ids=lambda p: p.value)
 @pytest.mark.asyncio
-async def test_two_real_native_model_turns_overlap_keep_history_and_receipts(monkeypatch):
+async def test_two_real_native_model_turns_overlap_keep_history_and_receipts(monkeypatch, platform):
     import gateway.run as gateway_run
     entered = {name: threading.Event() for name in ('ONE-991', 'TWO-992')}
     release = threading.Event()
@@ -33,6 +34,8 @@ async def test_two_real_native_model_turns_overlap_keep_history_and_receipts(mon
 
     home = Path(os.environ['HERMES_HOME'])
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', 'alice,bob')
+    if platform != Platform.DISCORD:
+        monkeypatch.setenv('GATEWAY_ALLOW_ALL_USERS', 'true')
     with FakeLLMServer(respond, aux=lambda request: Text('Auxiliary')) as server:
         write_hermes_home(home, server.base_url, extra_config=OFFLINE_CONFIG + NO_BACKGROUND_REVIEW + '''
 display:
@@ -40,8 +43,8 @@ display:
   tool_progress: off
   interim_assistant_messages: false
 platform_toolsets:
-  discord: [todo]
-''')
+  PLATFORM: [todo]
+'''.replace('PLATFORM', platform.value))
         monkeypatch.setattr(gateway_run, '_hermes_home', home)
         monkeypatch.setattr(gateway_run, '_resolve_runtime_agent_kwargs', lambda: {
             'api_key': 'sk-fake-e2e', 'base_url': server.base_url,
@@ -49,8 +52,9 @@ platform_toolsets:
         runner = GatewayRunner(GatewayConfig())
         runner.config.streaming = StreamingConfig(enabled=False)
         adapter = DiscordFixture()
+        adapter.platform = platform
         adapter.gateway_runner = runner
-        runner.adapters = {Platform.DISCORD: adapter}
+        runner.adapters = {platform: adapter}
         authority = await initialize_session_authority(runner, profile_id='default', instance_id='provider-parallel')
         runner._wire_adapter_handlers(adapter)
         runner._busy_input_mode = 'parallel'

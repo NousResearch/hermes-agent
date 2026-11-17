@@ -4707,6 +4707,10 @@ class SlackAdapter(BasePlatformAdapter):
             # authorize them. Same predicate as the drop gate (api_human_users stay human).
             is_bot=self._event_declares_bot_sender(event))
         source.shared_session = event.get("channel_type") == "mpim"  # a group DM keys "dm" but is shared
+        runner = self.gateway_runner
+        if not thread_ts and ts and runner is not None and runner._effective_busy_input_mode(source) == 'parallel':
+            # Correlate a later root-thread reply without forcing channel responses into a thread.
+            source.prospective_thread_id = ts
         from gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped
         # above); render as ``@DisplayName`` so the agent knows who is addressed.

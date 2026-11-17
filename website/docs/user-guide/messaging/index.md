@@ -504,9 +504,9 @@ display:
 
 All four keys are read from each profile's own `config.yaml`, so multiplexed profiles keep independent busy policies; there is no process-environment override.
 
-#### Independent Discord work (`parallel`)
+#### Independent messaging work (`parallel`)
 
-Opt in with `/busy parallel` on Discord, or configure:
+Opt in with `/busy parallel` on a messaging platform, or configure:
 
 ```yaml
 display:
@@ -544,8 +544,18 @@ identity, and platforms without this proof, fail closed and need operator recove
 from a pre-crash snapshot after all work has been verified stopped; do not delete
 lease rows or lower limits to make capacity appear free.
 
-This first implementation supports the native Discord messaging adapter only. Other gateway
-surfaces explicitly refuse parallel input; the classic CLI warns and uses queue without
+The shared messaging ingress supports parallel work without a platform allowlist, including
+Telegram, Discord, Slack, WhatsApp, Signal, Matrix and plugin adapters. Each adapter must
+provide stable sender and message IDs; missing identity is refused rather than merged into
+another work. Native replies must populate `reply_to_message_id`, and confirmed output IDs
+are needed to reply to bot responses. On a transport without reply references, an unanchored
+control may select the sender's sole active work; multiple possible targets are refused.
+Independent text requests and replies to different work are never coalesced by shared batching.
+Slack with `reply_in_thread: false` keeps responses in the channel: continue a work in the
+**original request's thread**. Starting a new thread on a separate top-level bot response is
+not correlated to the original work and is refused, rather than searching other thread scopes.
+The default `reply_in_thread: true` keeps the request and its responses in the same thread.
+Local CLI/TUI sessions are not messaging ingress: the classic CLI warns and uses queue without
 changing the saved configuration. Existing interrupt/queue/steer defaults remain unchanged.
 Changing mode does not abandon existing work: replies can still select it. Fresh work has
 no sibling-history clone; put required context in its request. Sessions are **not filesystem

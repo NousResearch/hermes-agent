@@ -1016,8 +1016,8 @@ class GatewaySlashCommandsMixin(
         arg = event.get_command_args().strip().lower()
         live = local_live(self, event.source)
         if arg == 'parallel':
-            if event.source.platform != Platform.DISCORD:
-                return EphemeralReply('Parallel mode is supported on Discord messaging only; no setting was changed.')
+            if event.source.platform == Platform.LOCAL:
+                return EphemeralReply('Parallel mode requires messaging ingress; no setting was changed.')
             from cli import save_config_value
             if not save_config_value('display.busy_input_mode', arg):
                 return EphemeralReply(t('gateway.busy.save_failed'))
@@ -1031,7 +1031,7 @@ class GatewaySlashCommandsMixin(
         if not arg or arg == "status":
             mode = session_busy_mode(self, live) if live is not None else self._effective_busy_input_mode(event.source)
             if mode == 'parallel':
-                return EphemeralReply('Busy input mode: parallel (Discord). Independent requests overlap; replies select their original work.')
+                return EphemeralReply('Busy input mode: parallel. Independent requests overlap; replies select their original work.')
             behavior = t(_BUSY_MODE_BEHAVIOR.get(mode, _BUSY_MODE_BEHAVIOR["interrupt"])[0])
             return EphemeralReply(t("gateway.busy.status", mode=mode, behavior=behavior))
         if arg not in _BUSY_MODE_BEHAVIOR:

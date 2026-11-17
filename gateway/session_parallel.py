@@ -152,8 +152,8 @@ async def route_input(runner, event):
         return None  # ordinary ingress still owns the authorization refusal
     if binding_of(source) is not None:
         return None
-    if source.platform.value != 'discord':
-        return 'Parallel mode currently supports Discord messaging only. Set queue, steer or interrupt for this surface.' if mode == 'parallel' else None
+    if source.platform.value == 'local':
+        return 'Parallel mode requires messaging ingress. Use queue, steer or interrupt for local sessions.' if mode == 'parallel' else None
     from hermes_state_parallel import active_work, binding_values, by_anchor
     scope = conversation_scope(source)
     anchor = event.reply_to_message_id
@@ -287,9 +287,10 @@ def physical_count(authority):
 
 def batch_key(adapter, event, key):
     runner = adapter.gateway_runner
-    if (event.source.platform.value == 'discord' and runner is not None
+    if (runner is not None
             and (event.reply_to_message_id or runner._effective_busy_input_mode(event.source) == 'parallel')):
-        return key + ':input:' + str(event.message_id)
+        suffix = ':input:' + str(event.message_id)
+        return key if key.endswith(suffix) else key + suffix
     return key
 
 

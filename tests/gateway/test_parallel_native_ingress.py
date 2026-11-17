@@ -1,4 +1,4 @@
-"""Independent requests in one Discord room keep native single-writer ownership."""
+"""Independent messaging requests keep native single-writer ownership."""
 import asyncio
 from datetime import datetime
 
@@ -25,14 +25,17 @@ class DiscordFixture(Adapter):
         return result
 
 
-async def setup_owner(monkeypatch, producer):
+async def setup_owner(monkeypatch, producer, *, platform=Platform.DISCORD):
     import gateway.session_finite as finite
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', 'alice,bob')
     monkeypatch.setattr(finite, 'execute_finite_admission', producer)
     runner = GatewayRunner(GatewayConfig())
     adapter = DiscordFixture()
+    adapter.platform = platform
     adapter.gateway_runner = runner
-    runner.adapters = {Platform.DISCORD: adapter}
+    runner.adapters = {platform: adapter}
+    if platform != Platform.DISCORD:
+        monkeypatch.setenv('GATEWAY_ALLOW_ALL_USERS', 'true')
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='parallel')
     runner._wire_adapter_handlers(adapter)
     monkeypatch.setattr(runner, '_effective_busy_input_mode', lambda source: 'parallel')
@@ -50,8 +53,14 @@ def admissions(authority):
             for row in list_session_admissions(authority.db, session_id=sid, pending_only=False)]
 
 
+MESSAGING_PLATFORMS = tuple(p for p in Platform if p not in {
+    Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK, Platform.MSGRAPH_WEBHOOK,
+}) + (Platform('irc'),)
+
+
+@pytest.mark.parametrize('platform', MESSAGING_PLATFORMS, ids=lambda p: p.value)
 @pytest.mark.asyncio
-async def test_same_room_independent_requests_overlap_and_replay_once(monkeypatch):
+async def test_same_room_independent_requests_overlap_and_replay_once(monkeypatch, platform):
     entered, releases = {}, {name: asyncio.Event() for name in ('one', 'two')}
 
     async def produce(authority, ref, row):
@@ -60,7 +69,7 @@ async def test_same_room_independent_requests_overlap_and_replay_once(monkeypatc
         await releases[name].wait()
         return name.upper()
 
-    _runner, authority, adapter = await setup_owner(monkeypatch, produce)
+    _runner, authority, adapter = await setup_owner(monkeypatch, produce, platform=platform)
     try:
         await adapter.handle_message(event(adapter, 'm1', 'one'))
         await async_wait_until(lambda: 'one' in entered, what='first work started')

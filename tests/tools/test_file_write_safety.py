@@ -788,7 +788,7 @@ class TestProtectedInstructionFiles:
     def test_yolo_cannot_bypass_selected_transport_denial(
         self, approvals, monkeypatch
     ):
-        import tools.approval as approval
+        from tools import approval
         from tools.file_tools_write_guards import _request_protected_instruction_approval
 
         calls = []

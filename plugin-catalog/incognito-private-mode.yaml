@@ -2,16 +2,24 @@ name: incognito-private-mode
 repo: https://github.com/Tranquil-Flow/hermes-incognito-private-mode
 sha: 84306582b184393aa4e11808f636c18f78e98998
 version: 0.3.0
-description: >-
-  Private mode, honestly: provider privacy flags, memory blocks stripped from
-  main-chat requests (provenance-checked against the last 6 observed file
-  versions, fail-closed outside that window), tool vetoes on unclassified
-  tools, honest coverage labels, and consent-gated fenced history cleanup on
-  close (exact-id + transcript + closed-state fences, archived chats excluded).
-  Content-free outbound audit log (endpoints + verdicts only, local 0600). No
-  telemetry; the plugin itself makes no network calls. Disclosed limits:
-  auxiliary-call fan-out not stripped, MoA advisors receive the full
-  unstripped request before private mode blocks the aggregation,
-  provider-side retention guarantees impossible.
+description: "Private mode, honestly: provider privacy flags, memory blocks stripped from main-chat requests (provenance-checked against the last 6 observed file versions, fail-closed outside that window), tool vetoes on unclassified tools, honest coverage labels, and consent-gated fenced history cleanup on close (exact-id + transcript + closed-state fences, archived chats excluded). Content-free outbound audit log (endpoints + verdicts only, local 0600). No telemetry; the plugin itself makes no network calls. Disclosed limits: auxiliary-call fan-out not stripped, MoA advisors receive the full unstripped request before private mode blocks the aggregation, provider-side retention guarantees impossible. Disclosure — after you record consent in setup, deletes closed private chats from Hermes history (state.db and session files) through Hermes' fenced session delete, run in a background cleanup thread; installs a process-wide log filter that redacts gateway, turn-context and tool-call log records while private mode is on; changes outgoing main-chat requests (provider privacy flags, memory blocks stripped) and blocks the memory, skill_manage and session_search tools; keeps a content-free audit log and hashed-id ledger in its own plugin-data directory (0600); makes no network calls of its own."
 maintainer: Tranquil-Flow
 license: AGPL-3.0
+requires_hermes: ">=0.22.5"
+title: Incognito Private Mode
+tier: community
+category: general
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - pre_tool_call
+  - on_session_start
+  - on_session_finalize
+  - on_session_delete
+  - post_compaction
+  - subagent_start
+  - pre_auxiliary_call
+  - transform_api_error_classification
+  provides_middleware:
+  - llm_request
+  - llm_execution

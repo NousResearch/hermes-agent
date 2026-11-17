@@ -33,7 +33,7 @@ _MIGRATION_GUIDE = (
 _logger = _logging.getLogger("hermes_state")
 _warned = False
 
-# The SQLite backend's writer and read-pool helpers main's hermes_state published: no public replacement.
+# The SQLite backend's writer and read-pool helpers this module carries have no public replacement.
 _NO_WRITER_REPLACEMENT = "the store's own write verbs (the SQLite backend's writer helpers have no public replacement)"
 _NO_READ_POOL_REPLACEMENT = "the store's own read verbs (the SQLite backend's read pool has no public replacement)"
 

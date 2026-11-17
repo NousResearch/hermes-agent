@@ -246,7 +246,7 @@ def test_the_moved_helpers_are_their_replacements(quiet):
         assert getattr(hermes_state, name) is getattr(module, name), name
 
 
-def test_the_backend_writer_and_read_pool_helpers_main_published_are_their_homes_objects(quiet):
+def test_the_backend_writer_and_read_pool_helpers_are_their_homes_objects(quiet):
     from persistence.sqlite._state import readpool, write
 
     for name in ("WriterMutexTimeout", "maintain_after_commit", "write_site", "writer_mutex_until"):

@@ -119,6 +119,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
         provider=provider, base_url=base_url, api_mode=api_mode, model=model)
     agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
+    from agent.conversation_compression_feasibility import refresh_compressor_output_reservation
+    refresh_compressor_output_reservation(agent)  # before update_model(), which keeps the old route's reservation
     _update_fallback_context_compressor(agent)
     _reresolve_fallback_reasoning_config(agent)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
@@ -149,6 +151,8 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
         agent._use_prompt_caching = False
         agent._use_native_cache_layout = False
     _rebuild_primary_client(agent, rt, reason="restore_primary")
+    from agent.conversation_compression_feasibility import refresh_compressor_output_reservation
+    refresh_compressor_output_reservation(agent)
     agent.context_compressor.update_model(
         model=rt["compressor_model"], context_length=rt["compressor_context_length"],
         base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],

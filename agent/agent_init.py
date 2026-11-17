@@ -34,6 +34,7 @@ from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, fetch_model_metadata
 from agent.process_transport import is_local_server
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
 from agent.agent_init_compression_notice import _emit_compression_summary
+from agent.conversation_compression_feasibility import _compressor_max_tokens
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -1798,24 +1799,6 @@ def _select_context_engine(_agent_cfg):
             "Context engine '%s' not found — falling back to built-in compressor", _engine_name
         )
     return _selected_engine
-
-
-def _compressor_max_tokens(agent):
-    """``agent.max_tokens``, or the native-Gemini adapter default when unset: generateContent
-    still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so
-    reserving 0 let the provider 400 before compaction fired."""
-    if agent.max_tokens is not None:
-        return agent.max_tokens
-    with suppress(Exception):
-        from agent.gemini_native_adapter import (
-            GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, is_native_gemini_base_url
-        )
-        _gemini_provider = str(agent.provider or "").strip().lower() in {
-            "gemini", "google", "google-gemini", "google-ai-studio",
-        }
-        if _gemini_provider or is_native_gemini_base_url(agent.base_url):
-            return GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
-    return None
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):

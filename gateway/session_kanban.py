@@ -58,8 +58,13 @@ def build_kanban_policy(connection, params, config):
     if policy.model is None:
         from gateway.run import _resolve_gateway_model
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+    # The dispatcher resolves machine-owned board paths pin-first (that is where it made the
+    # card's scratch workspace); the worker must be told the same root or artifact staging
+    # reads its scratch directory as unmanaged.
+    with kb.pin_first_board_resolution():
+        workspaces_root = str(kb.workspaces_root(board=board).resolve())
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
-        profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
+        profile=task.assignee, workspaces_root=workspaces_root,
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
         goal_text='\n\n'.join(p for p in (task.title, task.body) if p), context=context,
         max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True)

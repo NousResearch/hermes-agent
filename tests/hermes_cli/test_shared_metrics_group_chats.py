@@ -23,9 +23,14 @@ import pytest
 
 from gateway import hosted_rooms
 from gateway.hosted_rooms_gateway_import import handoff_gateway_id
+from hermes_cli import lifecycle
+from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_snapshot import collect_install_snapshot
+from tests.hermes_cli import test_relay_shared_metrics_runtime as runtime_tests
+
+direct_runtime = runtime_tests.direct_runtime  # the Relay runtime fixture the lifecycle test runs on
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[2] / "hermes_cli" / "observability" / "schemas"
@@ -215,6 +220,23 @@ def test_any_failure_reading_group_chats_keeps_the_rest_of_the_snapshot(root_hom
 
     assert _group_chat_fields(snapshot) == {}
     assert contract.counter_dimensions_are_valid(contract.INSTALL_SNAPSHOT_METRIC, snapshot), snapshot
+
+
+@pytest.mark.usefixtures("direct_runtime")
+@pytest.mark.parametrize("room_store", ["readable", "unreadable"])
+def test_an_unreadable_store_still_records_the_rest_of_the_daily_snapshot(tmp_path, room_store):
+    # Through the real hook lifecycle, so the subscriber's record-time check is covered too.
+    home = tmp_path / "hermes-home"
+    home.mkdir(parents=True, exist_ok=True)
+    if room_store == "unreadable":
+        (home / "shared-state.db").write_bytes(b"not a sqlite database" * 64)
+    lifecycle.invoke_hook("pre_llm_call", session_id="s1", task_id="t1", platform="cli")
+    relay_shared_metrics.finish_task_run(session_id="s1", task_id="t1", platform="cli", result={"completed": True})
+    lifecycle.finalize_session(session_id="s1")
+
+    [snapshot] = runtime_tests._stored_counters(tmp_path)[contract.INSTALL_SNAPSHOT_METRIC]
+    assert len(_group_chat_fields(snapshot)) == (4 if room_store == "readable" else 0)
+    assert "hosting" in snapshot and snapshot["terminal_backend"] == "local"  # the rest still arrives
 
 
 def test_snapshots_with_and_without_group_chat_fields_package_against_the_v4_schema(root_home, tmp_path):

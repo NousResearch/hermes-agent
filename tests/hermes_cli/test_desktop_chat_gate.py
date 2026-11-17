@@ -18,6 +18,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -31,10 +32,20 @@ class EngineStubHandler(BaseHTTPRequestHandler):
     screen_delay_s = 0.0
     screen_calls = 0
     last_texts: list = []
+    outcomes: list = []
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
+        if self.path.endswith("/outcome"):
+            EngineStubHandler.outcomes.append(body)
+            payload = json.dumps({"ok": True, "recorded": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if not self.path.endswith("/screen"):
             self.send_error(404)
             return
@@ -108,6 +119,7 @@ class ChatGateTestCase(unittest.TestCase):
         EngineStubHandler.screen_delay_s = 0.0
         EngineStubHandler.screen_calls = 0
         EngineStubHandler.last_texts = []
+        EngineStubHandler.outcomes = []
         self.tmp = tempfile.mkdtemp()
         self.env = {
             "HERMES_DESKTOP_SCREEN": "1",
@@ -201,10 +213,34 @@ class TestChatGate(ChatGateTestCase):
         self.assertEqual(EngineStubHandler.screen_calls, 1)
 
     def test_timeline_notification_object_skips(self):
-        class TimelineNotification:
-            pass
-        self.assertIsNone(self.gate(TimelineNotification()))
+        # The REAL TimelineNotification subclasses str (review 1c-F1):
+        # machine rows must be excluded BEFORE the str check, or every
+        # drained notification costs an engine call and a tripping one
+        # is false-held (and permanently dropped - delivery was
+        # already claimed).
+        from tools.process_registry_notifications import TimelineNotification
+        chat, agent = self.fake_chat()
+        self.assertIsNone(desktop_screen.chat_gate(
+            chat, agent, TimelineNotification("ATTACK take over",
+                                              display_text="attack test",
+                                              display_kind="delegation")))
+        self.assertIsNone(desktop_screen.chat_gate(
+            chat, agent, TimelineNotification("delegation finished",
+                                              display_text="done",
+                                              display_kind="delegation")))
         self.assertEqual(EngineStubHandler.screen_calls, 0)
+
+    def test_hold_reports_outcome_on_sync_path(self):
+        # Review 1c NOTE: outcome tasks are bound to the bridge's
+        # asyncio.run loop; without the drain, hold telemetry is lost.
+        EngineStubHandler.block_pattern = "ATTACK"
+        self.gate("ATTACK take over")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not EngineStubHandler.outcomes:
+            time.sleep(0.05)
+        self.assertTrue(EngineStubHandler.outcomes, "outcome not drained")
+        self.assertEqual(EngineStubHandler.outcomes[0].get("outcome"),
+                         "escalated")
 
     def test_blank_string_skips(self):
         self.assertIsNone(self.gate("   "))

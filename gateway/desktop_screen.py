@@ -575,9 +575,17 @@ class _ChatAuthority:
 
 def _message_texts(message) -> list:
     """Model-visible text pieces of one chat() message. Viewer strings
-    and multimodal text parts are screened; ``TimelineNotification``
-    rows are machine-produced UI metadata (never viewer input) and
-    images are A6-deferred, so neither is screened."""
+    and multimodal text parts are screened (deduplicated);
+    ``TimelineNotification`` rows are machine-produced UI metadata
+    (never viewer input - and a str SUBCLASS in real code, so they are
+    excluded BEFORE the str check) and images are A6-deferred, so
+    neither is screened."""
+    try:
+        from tools.process_registry_notifications import TimelineNotification
+        if isinstance(message, TimelineNotification):
+            return []
+    except Exception:
+        pass
     if isinstance(message, str):
         return [message] if message.strip() else []
     if isinstance(message, list):
@@ -606,13 +614,21 @@ def _screen_texts_sync(subject: str, session_id: str, texts: list) -> tuple:
 
     def _run() -> tuple:
         deadline = time.monotonic() + _SCREEN_BUDGET_S
-        held, reasons = False, []
-        for text in texts:
-            held, reasons = asyncio.run(
-                screen(subject, session_id, text, deadline=deadline))
-            if held:
-                return True, reasons
-        return False, reasons
+
+        async def _screen_all() -> tuple:
+            held, reasons = False, []
+            for text in texts:
+                held, reasons = await screen(
+                    subject, session_id, text, deadline=deadline)
+                if held:
+                    break
+            # Outcome reports are fire-and-forget tasks bound to THIS
+            # loop; asyncio.run cancels pending tasks on exit, which
+            # would silently lose desktop-chat hold/allow telemetry.
+            await drain_outcome_tasks(timeout=2.0)
+            return held, reasons
+
+        return asyncio.run(_screen_all())
 
     try:
         asyncio.get_running_loop()

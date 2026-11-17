@@ -7,7 +7,6 @@ Only a terminal receipt from this exact invocation can certify its outcome.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys

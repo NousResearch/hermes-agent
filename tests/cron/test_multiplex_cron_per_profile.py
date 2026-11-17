@@ -268,3 +268,51 @@ def test_run_agent_import_loads_the_process_home_under_multiplex(profiles):
         assert run_agent._import_time_env_home() == root
     finally:
         reset_hermes_home_override(tok)
+
+
+# ── Bot Chat delivery runs the child as the job's own profile ──────────────
+
+
+def _capture_bot_chat(monkeypatch):
+    import types
+
+    import cron.scheduler as sched
+
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"] = list(argv)
+        seen["env"] = dict(kw.get("env") or {})
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sched.subprocess, "run", fake_run)
+    monkeypatch.setattr("shutil.which", lambda _n: "/usr/local/bin/hermes")
+    return sched, seen
+
+
+def test_bot_chat_delivery_runs_as_the_owning_profile(profiles, monkeypatch):
+    root, edu = profiles
+    sched, seen = _capture_bot_chat(monkeypatch)
+    ss.set_multiplex_active(True)
+
+    with as_cron_of(edu):
+        assert sched._deliver_to_bot_chat({"id": "job1", "name": "n"}, "out", "") is None
+    argv, env = seen["argv"], seen["env"]
+    assert argv[argv.index("-p") + 1] == "educator"
+    assert "HERMES_HOME" not in env
+    assert env.get("JIRA_API_TOKEN") == "jira-edu"
+    assert "NOTION_API_KEY" not in env  # the default's secret
+
+    with as_cron_of(root):
+        assert sched._deliver_to_bot_chat({"id": "job1", "name": "n"}, "out", "") is None
+    argv, env = seen["argv"], seen["env"]
+    assert "-p" not in argv
+    assert env.get("JIRA_API_TOKEN") == "jira-default"
+
+
+def test_bot_chat_delivery_off_is_unchanged(profiles, monkeypatch):
+    root, _ = profiles
+    sched, seen = _capture_bot_chat(monkeypatch)
+    assert sched._deliver_to_bot_chat({"id": "job1", "name": "n"}, "out", "") is None
+    assert "-p" not in seen["argv"]
+    assert seen["env"] == dict(os.environ)

@@ -2858,7 +2858,25 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         except Exception:
             return "bot-chat delivery failed: hermes CLI not resolvable"
 
-    env = os.environ.copy()
+    if _cron_multiplex_active():
+        # Fork (multiplex): the child must run as the profile that owns this
+        # job. os.environ (and its HERMES_HOME) is the DEFAULT profile's, so
+        # name the owning profile explicitly and hand the child that
+        # profile's scoped environment, never the default's credentials.
+        from agent.fork_secrets import scoped_subprocess_env
+
+        env = scoped_subprocess_env()
+        if not profile:
+            try:
+                from agent.file_safety import _resolve_active_profile_name
+
+                owner = _resolve_active_profile_name()
+            except Exception:
+                return "bot-chat delivery failed: could not resolve the job's profile"
+            if owner and owner != "default":
+                profile = owner
+    else:
+        env = os.environ.copy()
     if profile:
         argv += ["-p", profile]
         # -p owns profile resolution in the child; a leftover HERMES_HOME

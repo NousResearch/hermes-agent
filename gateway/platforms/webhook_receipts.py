@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS receipts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS receipts_claim ON receipts(profile, route, delivery_id) WHERE claim = 1;
 CREATE INDEX IF NOT EXISTS receipts_received ON receipts(received_at);
+CREATE TABLE IF NOT EXISTS failed_attempts (
+    profile TEXT NOT NULL,
+    route TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    failures INTEGER NOT NULL,
+    last_failed_at REAL NOT NULL,
+    PRIMARY KEY (profile, route, delivery_id)
+);
 """
 
 
@@ -144,15 +152,22 @@ class WebhookReceipts:
             return cursor.lastrowid
 
     def failed_attempts(self, identity, now: float) -> int:
-        """How many times this delivery was tried and failed inside the retention window."""
+        """How many times this delivery was tried and failed inside the retention window. Kept in its own
+        keyed table, so the history cap never lowers it."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM receipts WHERE profile = ? AND route = ? AND delivery_id = ?"
-                " AND outcome = ? AND ref != ? AND received_at >= ?",
-                (identity.profile, identity.route, identity.delivery_id, FAILED, GAVE_UP_REF,
-                 now - self.retention_seconds),
+                "SELECT failures FROM failed_attempts WHERE profile = ? AND route = ? AND delivery_id = ?"
+                " AND last_failed_at >= ?",
+                (identity.profile, identity.route, identity.delivery_id, now - self.retention_seconds),
             ).fetchone()
-        return int(row[0])
+        return int(row[0]) if row else 0
+
+    @staticmethod
+    def _count_failure(conn: sqlite3.Connection, profile: str, route: str, delivery_id: str, now: float) -> None:
+        conn.execute(
+            "INSERT INTO failed_attempts (profile, route, delivery_id, failures, last_failed_at) VALUES (?, ?, ?, 1, ?)"
+            " ON CONFLICT (profile, route, delivery_id) DO UPDATE SET failures = failures + 1,"
+            " last_failed_at = excluded.last_failed_at", (profile, route, delivery_id, now))
 
     def is_claimed(self, identity) -> bool:
         with self._connect() as conn:
@@ -170,9 +185,11 @@ class WebhookReceipts:
         request was filed) is never undone. A release that cannot be written is retried on the next claim."""
         try:
             with self._connect() as conn, conn:
-                conn.execute(
+                settled = conn.execute(
                     "UPDATE receipts SET outcome = ?, reason = ?, ref = ?, claim = ? WHERE id = ? AND claim = 1",
-                    (outcome, reason, ref, int(keep_claim), row_id))
+                    (outcome, reason, ref, int(keep_claim), row_id)).rowcount
+                if settled and outcome == FAILED:
+                    self._count_failure(conn, identity.profile, identity.route, identity.delivery_id, time.time())
         except sqlite3.Error:
             if not keep_claim:
                 self._remember_unreleased(identity, reason)
@@ -194,12 +211,14 @@ class WebhookReceipts:
                 "UPDATE receipts SET ref = ? WHERE profile = ? AND route = ? AND delivery_id = ? AND claim = 1",
                 (ref, identity.profile, identity.route, identity.delivery_id))
 
-    @staticmethod
-    def _release(conn: sqlite3.Connection, identity, reason: str) -> None:
-        conn.execute(
+    @classmethod
+    def _release(cls, conn: sqlite3.Connection, identity, reason: str) -> None:
+        released = conn.execute(
             "UPDATE receipts SET outcome = ?, reason = ?, claim = 0"
             " WHERE profile = ? AND route = ? AND delivery_id = ? AND claim = 1",
-            (FAILED, reason, identity.profile, identity.route, identity.delivery_id))
+            (FAILED, reason, identity.profile, identity.route, identity.delivery_id)).rowcount
+        if released:
+            cls._count_failure(conn, identity.profile, identity.route, identity.delivery_id, time.time())
 
     def _remember_unreleased(self, identity, reason: str) -> None:
         with self._lock:
@@ -218,12 +237,15 @@ class WebhookReceipts:
                 "INSERT INTO receipts (profile, route, delivery_id, event_type, outcome, reason, ref, received_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (identity.profile, identity.route, identity.delivery_id, event_type, outcome, reason, ref, now))
+            if outcome == FAILED and ref != GAVE_UP_REF:  # the terminal answer itself is not an attempt
+                self._count_failure(conn, identity.profile, identity.route, identity.delivery_id, now)
 
     def _prune(self, conn: sqlite3.Connection, now: float) -> None:
         if now < self._next_prune_at:
             return
         self._next_prune_at = now + _PRUNE_INTERVAL_SECONDS
         conn.execute("DELETE FROM receipts WHERE received_at < ?", (now - self.retention_seconds,))
+        conn.execute("DELETE FROM failed_attempts WHERE last_failed_at < ?", (now - self.retention_seconds,))
         # Live claims are bounded by the per-route rate limit over the retention window; the cap only
         # trims history rows, so trimming never re-opens a delivery to a replay.
         conn.execute(

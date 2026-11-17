@@ -102,6 +102,10 @@ async def test_a_delivery_that_keeps_failing_gets_a_terminal_answer_and_is_query
     sent = []
     for _ in range(2):  # the target refuses twice, across a restart
         assert await _post(_gateway(sent, reject=True, max_delivery_attempts=2), "d-9") == (502, "error")
+    # Other traffic trims the history rows of those failures; the attempt count survives the trim.
+    import sqlite3
+    with sqlite3.connect(receipts_path(get_hermes_home())) as conn:
+        conn.execute("DELETE FROM receipts WHERE delivery_id = 'd-9'")
     for _ in range(2):  # every later retry gets the same terminal answer
         status, body = await _post(_gateway(sent, max_delivery_attempts=2), "d-9", full=True)
         assert (status, body["status"], body["terminal"], body["attempts"]) == (200, "failed", True, 2)
@@ -116,6 +120,6 @@ async def test_a_delivery_that_keeps_failing_gets_a_terminal_answer_and_is_query
         webhook_command(SimpleNamespace(webhook_action="history", route=None, limit=20, delivery="d-9",
                                         outcome=None, json=True))
     rows = json.loads(out.getvalue())
-    assert [r["outcome"] for r in rows] == ["failed"] * 4
+    assert [r["outcome"] for r in rows] == ["failed"] * 2  # the two terminal answers; the trimmed rows are gone
     assert {r["delivery_id"] for r in rows} == {"d-9"}
     assert "gave up after 2 failed attempts" in rows[0]["reason"]

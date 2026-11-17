@@ -142,3 +142,15 @@ def test_the_clis_session_lookups_read_the_current_profiles_store(store_elsewher
     from hermes_cli import main
     _seed(_home(), "s", "cli")
     assert main._resolve_last_session(source="cli") == "s"
+
+
+def test_the_gateway_backed_clis_reader_reads_the_current_profiles_store(store_elsewhere):
+    from types import SimpleNamespace
+
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    _seed(_home(), "s", "cli")
+    store = GatewaySessionStore(SimpleNamespace(final=False))
+    try:
+        assert store.get_session("s")["id"] == "s"
+    finally:
+        store.close_reader()

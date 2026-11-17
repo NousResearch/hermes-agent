@@ -91,15 +91,16 @@ class GatewaySessionStore:
         first start, after the CLI's startup maintenance probe) is retried on the next read."""
         if self._reader is None:
             from hermes_constants import get_hermes_home
-            path = get_hermes_home() / "state.db"
-            if not path.exists():
+            from persistence_assembly import open_persistence_reader, profile_scope, store_location
+            home = get_hermes_home()
+            location = store_location(profile_scope(home=home))
+            if location is not None and not location.exists():
                 return None
             from contextlib import ExitStack
 
-            from persistence_assembly import open_persistence_reader
             handles = ExitStack()
             try:
-                store = handles.enter_context(open_persistence_reader(path))
+                store = handles.enter_context(open_persistence_reader(home))
                 store.ready()
             except Exception as exc:  # health: allow BLE001 -- reads find nothing; retried on the next read
                 handles.close()
@@ -440,6 +441,12 @@ class GatewaySessionStore:
         }
 
 
+def _window(limit, offset):
+    """The listing window for ``limit``/``offset``: a negative limit is no limit, as SQL's ``LIMIT -1``."""
+    from persistence.conversation.sessions import SessionWindow
+    return SessionWindow(limit=None if limit is not None and limit < 0 else limit, offset=offset)
+
+
 class SurfaceLabelReader:
     """Main's read-only ``SessionDB`` reads, served by a storage interface handle in their dict and list
     shapes. Source-filtered listings read main's labels: ``source='cli'`` also matches a gateway row
@@ -496,11 +503,10 @@ class SurfaceLabelReader:
             lambda src, lim, off, surfaces: self._search(src, lim, off, surfaces, **kw))
 
     def _search(self, source, limit, offset, local_created_sources, *, workspace_key=None, skip_launch_stubs=False):
-        from persistence.conversation.sessions import SessionWindow
         entries = self.persistence.sessions.search_sessions(
             sources=([source] if isinstance(source, str) else list(source)) if source else None,
             workspace_key=workspace_key, local_created_sources=local_created_sources,
-            skip_launch_stubs=skip_launch_stubs, window=SessionWindow(limit=limit, offset=offset))
+            skip_launch_stubs=skip_launch_stubs, window=_window(limit, offset))
         return [{**entry.session.as_session_row(), "last_active": entry.last_active} for entry in entries]
 
     def list_sessions_rich(self, source=None, sources=None, limit=20, offset=0, **kw):
@@ -513,14 +519,14 @@ class SurfaceLabelReader:
 
     def _list(self, sources, limit, offset, local_created_sources, *, exclude_sources=None,
               order_by_last_active=False, search_query=None, compact_rows=False, **filters):
-        from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
+        from persistence.conversation.sessions import SessionOrder, SessionQuery
         query = SessionQuery(
             sources=tuple(sources) if sources else None, exclude_sources=tuple(exclude_sources or ()),
             order=SessionOrder.LAST_ACTIVE if order_by_last_active else SessionOrder.STARTED_AT,
             search_text=search_query,
             local_created_sources=tuple(local_created_sources) if local_created_sources else None, **filters)
         entries = self.persistence.sessions.list_sessions(
-            query, SessionWindow(limit=limit, offset=offset), compact_rows=compact_rows)
+            query, _window(limit, offset), compact_rows=compact_rows)
         return [entry.as_list_row() for entry in entries]
 
     def session_count(self, source=None, sources=None, **kw):

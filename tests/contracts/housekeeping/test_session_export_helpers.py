@@ -25,6 +25,7 @@ _ROW_KEYS = [
     "handoff_platform", "handoff_error", "compression_failure_cooldown_until", "compression_failure_error", "compression_fallback_streak",
     "compression_ineffective_count", "compression_recovery_deadline", "compression_overload_streak", "profile_name", "transport_profile",
     "rewind_count", "archived", "auto_archived", "pinned", "hidden", "last_read_at", "tool_names", "transcript_revision",
+    "prompt_cache_clock",
 ]
 _MESSAGE_KEYS = [
     "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name", "effect_disposition", "timestamp", "token_count",

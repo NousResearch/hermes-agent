@@ -439,6 +439,22 @@ def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, m
     assert len(db.list_sessions_rich(limit=10)) == 4
 
 
+def test_a_negative_limit_lists_every_session(store, tmp_path, monkeypatch):
+    """``hermes sessions list/browse --limit -1`` lists every session: a negative limit is no limit, as in SQL."""
+    db, _ = store
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    with open_persistence(profile_scope(home=tmp_path)) as writer:
+        for sid in ("a", "b", "c"):
+            seed_session(writer, sid, "cli")
+            seed_messages(writer, sid, {"role": "user", "content": "hi " + sid})
+    for source in (None, "cli"):
+        assert len(db.list_sessions_rich(source=source, limit=-1)) == 3
+        assert len(db.search_sessions(source=source, limit=-1)) == 3
+        assert len(db.list_sessions_rich(source=source, limit=2)) == 2
+
+
 def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     """``chat -c NAME --create-if-missing``: the gateway creates the titled session (its own
     resolve -> create -> title step); the CLI then resumes the id it returns. No client write."""

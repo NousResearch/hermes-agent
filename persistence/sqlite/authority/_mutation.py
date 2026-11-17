@@ -120,15 +120,32 @@ def apply_action(holder, conn, session_id, operation, payload, *, prepared=None,
                 'reset': reset_in_transaction}
     if operation in handlers:
         return handlers[operation](holder, conn, session_id, payload)
-    from ..conversation._store.sessions import _set_lineage_column_in_transaction
-    from ..conversation._store.titles import _retire_canonical_bot_chat_in_transaction, _set_session_title_in_transaction
+    from ..conversation._store.compression import _compression_tip_on
+    from ..conversation._store.sessions import _LINEAGE_CTE_SQL, _set_lineage_column_in_transaction
+    from ..conversation._store.titles import _retire_canonical_bot_chat_in_transaction, _set_session_title_in_transaction, sanitize_title
     affected = set()
     result = {}
     for key, value in payload.items():
         if key == 'title':
-            affected.update(_set_session_title_in_transaction(
-                holder, conn, session_id, value, source=TITLE_SOURCE_USER))
-            result[key] = conn.execute('SELECT title FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
+            # The listing shows a compressed conversation under its live tip's title, so a rename
+            # addressed to an ended segment (a stale tab/row) lands there. Every segment can rename
+            # that tip, so a committed rename advances the whole lineage's revision, as the
+            # lineage-wide flags below do: a client holding any segment's older copy refuses.
+            tip = _compression_tip_on(holder, conn, session_id)
+            written = _set_session_title_in_transaction(holder, conn, tip, value, source=TITLE_SOURCE_USER)
+            # A row the uniqueness rule freed the name from (an empty chat, a retired Bot Chat) changed too.
+            affected.update(written)
+            if written:
+                lineage = [row[0] for row in conn.execute(
+                    _LINEAGE_CTE_SQL + 'SELECT id FROM lineage', (session_id, session_id))]
+                affected.update(lineage)
+                if not sanitize_title(value):
+                    # An untitled tip lists under an ancestor's title, so a clear clears the lineage,
+                    # each row through the same title rules (the canonical Bot Chat's name refuses).
+                    for sid in lineage:
+                        affected.update(_set_session_title_in_transaction(
+                            holder, conn, sid, value, source=TITLE_SOURCE_USER))
+            result[key] = conn.execute('SELECT title FROM sessions WHERE id=?', (tip,)).fetchone()[0]
         else:
             column = 'last_read_at' if key == 'unread' else key
             stored = (0.0 if value else time.time()) if key == 'unread' else int(value)

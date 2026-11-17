@@ -499,7 +499,7 @@ def test_skill_installed_from_another_terminal_broadcasts_skills_changed(watcher
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: new-skill\ndescription: d\n---\nbody\n")
     os.utime(skills, (time.time() + 5, time.time() + 5))
-    server._broadcast_watched_changes(now=10.0)
+    server._broadcast_watched_changes(now=20.0)
 
     assert ("skills.changed", {}) in events
 
@@ -536,10 +536,38 @@ def test_a_skill_installed_in_another_sessions_repo_broadcasts_skills_changed(wa
     skill = repo_b / ".hermes" / "skills" / "workspace-only"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: workspace-only\ndescription: d\n---\nbody\n")
-    server._broadcast_watched_changes(now=10.0)
+    server._broadcast_watched_changes(now=20.0)
     assert ("skills.changed", {}) in events
     token = set_session_cwd(str(repo_b))
     try:
         assert "/workspace-only" in sc.get_skill_commands()
     finally:
         reset_session_cwd(token)
+
+
+def test_sessions_probe_does_not_run_between_its_interval(watcher_home, monkeypatch):
+    """A tick before the interval leaves the probe alone: hashing the sessions table four times
+    per 2 s broadcast window is what starved a 1-vCPU gateway's event loop."""
+    _home, _events = watcher_home
+    calls = []
+    interval, _sig, payload_fn = server._CHANGE_WATCHES["sessions.changed"]
+    monkeypatch.setitem(server._CHANGE_WATCHES, "sessions.changed",
+                        (interval, lambda: calls.append(1) or ("digest",), payload_fn))
+
+    server._broadcast_watched_changes(now=0.0)
+    server._broadcast_watched_changes(now=interval / 2)
+
+    assert calls == [1]
+
+
+def test_watch_interval_env_override_keeps_the_default_on_a_bad_value(monkeypatch):
+    """``HERMES_WATCH_*`` slows a probe down per box; an unset, malformed or non-positive value
+    keeps the default, because a 0 interval would spin the watcher thread."""
+    assert server._watch_interval("HERMES_WATCH_UNSET_FOR_TEST_S", 7.0) == 7.0
+
+    monkeypatch.setenv("HERMES_WATCH_SET_FOR_TEST_S", "0.25")
+    assert server._watch_interval("HERMES_WATCH_SET_FOR_TEST_S", 7.0) == 0.25
+
+    for bad in ("0", "-2", "2s"):
+        monkeypatch.setenv("HERMES_WATCH_BAD_FOR_TEST_S", bad)
+        assert server._watch_interval("HERMES_WATCH_BAD_FOR_TEST_S", 7.0) == 7.0

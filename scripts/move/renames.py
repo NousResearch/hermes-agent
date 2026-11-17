@@ -23,10 +23,13 @@ def current_name(name: str, renames: dict[str, str]) -> str | None:
 def emptied_folders(tree: Iterable[str], paths: Iterable[tuple[str, str]]) -> frozenset[str]:
     """Folders the move took away: those above a moved file whose every tracked file moved.
 
-    ``tree`` is every tracked path before the move. A folder that keeps one file stayed, however many left it.
+    ``tree`` is every tracked path before the move. A folder that keeps one file stayed, however many left it,
+    and so did a folder a moved file landed in.
     """
-    moved = {old for old, _ in paths}
+    pairs = list(paths)
+    moved = {old for old, _ in pairs}
     kept = {str(parent) for path in tree if path not in moved for parent in PurePosixPath(path).parents}
+    kept |= {str(parent) for _, new in pairs for parent in PurePosixPath(new).parents}
     above = {str(parent) for old in moved for parent in PurePosixPath(old).parents}
     return frozenset(above - kept - {"."})
 

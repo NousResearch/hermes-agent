@@ -14,6 +14,8 @@ import { finalizeStoppedMessages } from '@/app/session/hooks/use-prompt-actions/
 import type { ClientSessionState } from '@/app/types'
 import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
+import { clearAllPrompts, hasBlockingPromptRequest, setApprovalRequest } from '@/store/prompts'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
@@ -277,5 +279,121 @@ describe("a turn that starts before the previous turn's end-of-turn report arriv
     turnEndReport()
 
     expectSettled()
+  })
+})
+
+// The report also ends a compaction phase whose `compacted` edge was lost (a reconnect), and clears prompts a
+// lost completion left parked. Both are facts about the turn the report is for: taken from the completed
+// turn's late report they would end the phase and close the card of the turn now live.
+describe("what the completed turn's late report leaves to the turn now live", () => {
+  const compacting = () => Object.hasOwn($compactingSessions.get(), RUNTIME)
+  const status = (kind: string) => emit({ payload: { kind, text: '' }, type: 'status.update' })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    setSessionCompacting(RUNTIME, false)
+    clearAllPrompts(RUNTIME)
+  })
+
+  it('keeps the compaction phase of a turn that compacts as it starts, until its own compacted edge', async () => {
+    mount()
+    await completedTurn('first')
+
+    submit('second')
+    emit({ payload: {}, type: 'message.start' })
+    status('compacting')
+    expect(compacting()).toBe(true)
+
+    turnEndReport()
+
+    expect(compacting()).toBe(true)
+    expectRunning()
+
+    status('compacted')
+    expect(compacting()).toBe(false)
+    expectRunning()
+  })
+
+  it('keeps it through the reports of two completed turns', async () => {
+    mount()
+    await completedTurn('first')
+    await completedTurn('second')
+
+    submit('third')
+    emit({ payload: {}, type: 'message.start' })
+    status('compacting')
+    turnEndReport()
+    turnEndReport()
+
+    expect(compacting()).toBe(true)
+    expectRunning()
+  })
+
+  it("keeps a manual /compress phase too: the completed turn's report is not its `ready`", async () => {
+    mount()
+    await completedTurn('first')
+
+    submit('second')
+    emit({ payload: {}, type: 'message.start' })
+    status('compressing')
+    turnEndReport()
+
+    expect(compacting()).toBe(true)
+
+    status('ready')
+    expect(compacting()).toBe(false)
+  })
+
+  it("still ends the phase on the live turn's own report when its compacted edge and completion never arrived", async () => {
+    mount()
+    await completedTurn('first')
+    turnEndReport()
+
+    submit('second')
+    emit({ payload: {}, type: 'message.start' })
+    status('compacting')
+    expect(compacting()).toBe(true)
+
+    // Both lost in a reconnect: the report is this turn's own and the only terminal fact.
+    turnEndReport()
+
+    expect(compacting()).toBe(false)
+    expectSettled()
+  })
+
+  it('still ends the phase of a session no turn is live on (a report after a reconnect)', () => {
+    mount()
+    act(() => setSessionCompacting(RUNTIME, true))
+
+    turnEndReport()
+
+    expect(compacting()).toBe(false)
+  })
+
+  it('keeps the phase through a running heartbeat of the turn that compacts', () => {
+    mount()
+    submit('first')
+    emit({ payload: {}, type: 'message.start' })
+    status('compacting')
+
+    emit({ payload: { running: true, stored_session_id: CHAT }, type: 'session.info' })
+
+    expect(compacting()).toBe(true)
+    expectRunning()
+  })
+
+  it('keeps an approval the turn now live is waiting on', async () => {
+    mount()
+    await completedTurn('first')
+
+    submit('second')
+    emit({ payload: {}, type: 'message.start' })
+    act(() => setApprovalRequest({ command: 'rm -rf build', description: 'delete the build folder', sessionId: RUNTIME }))
+
+    turnEndReport()
+
+    expect(hasBlockingPromptRequest(RUNTIME)).toBe(true)
+    expectRunning()
   })
 })

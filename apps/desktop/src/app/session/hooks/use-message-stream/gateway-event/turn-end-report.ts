@@ -39,8 +39,9 @@ const payOne = (state: ClientSessionState, now: number): ClientSessionState =>
 /**
  * Whether a session.info's `running` field is an edge for the session's turn.
  * A completed turn's end-of-turn report that arrives after the next turn's
- * message.start says nothing about the turn now live: it neither clears that
- * turn's prompts nor settles it, and only pays one owed mark.
+ * message.start says nothing about the turn now live: it neither ends that
+ * turn's compaction phase, nor clears its prompts, nor settles it, and only
+ * pays one owed mark.
  */
 export function runningEdge(
   { deps, payload, sessionId }: GatewayEventContext,

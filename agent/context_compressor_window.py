@@ -4,10 +4,13 @@ summary into that window."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from agent.context_compressor_tail import tail_cut_progress_floor
 from agent.prepared_compaction import PreparedCompaction, PreparedSummary
+
+logger = logging.getLogger(__name__)
 
 
 def _restart_probe_extra() -> int:
@@ -128,7 +131,12 @@ class CompactionWindowMixin:
             plan, _written, kept = archive_compaction_drops(originals, plan, session_id)
             pruned_count -= kept
         if start < end:
-            plan, offloaded, _written = self._offload_window_results(plan, start, end)
+            plan, offloaded, _written, failed = self._offload_window_results(plan, start, end)
+            if failed:
+                # The summary (which read the original) still replaces the window; refusing would re-pay the
+                # summary on every later turn while the disk stays full. Say so: no byte-exact copy exists.
+                logger.warning("compaction: %d summarized tool result(s) could not be archived (disk full or "
+                               "read-only home); only the summary and the session store keep them", failed)
             pruned_count += offloaded
         if getattr(self, "tail_mode", "lean") == "lean":
             plan = self._demote_stale_tail_tools(plan, end)
@@ -149,15 +157,15 @@ class CompactionWindowMixin:
 
     def _offload_window_results(
         self, plan: list[dict[str, Any]], start: int, end: int,
-    ) -> tuple[list[dict[str, Any]], int, list[str]]:
+    ) -> tuple[list[dict[str, Any]], int, list[str], int]:
         """The tool results the summary replaced, saved after it was generated: each one the prune left whole
         inside ``plan[start:end]`` becomes its one-line stub naming the byte-exact file, so the model can still
-        open the exact output. Local backend only; a result whose write fails stays whole."""
+        open the exact output. Local backend only. Returns ``(rows, stubbed, written paths, failed writes)``."""
         from agent.context_compressor import _PRUNE_MIN_CHARS, _rewritten, _tool_calls_by_id
         from tools.tool_result_storage import _backend_reads_host_files, archive_pruned_originals, has_archive_pointer
 
         if not _backend_reads_host_files():
-            return plan, 0, []
+            return plan, 0, [], 0
         demoted, calls = list(plan), _tool_calls_by_id(plan)
         changed = 0
         for i in range(start, end):
@@ -170,9 +178,9 @@ class CompactionWindowMixin:
                 demoted[i] = _rewritten(plan[i], "[Tool output archived]")
                 changed += 1
         if not changed:
-            return plan, 0, []
+            return plan, 0, [], 0
         rows, written, kept = archive_pruned_originals(plan, demoted, getattr(self, "_session_id", "") or "")
-        return rows, changed - kept, written
+        return rows, changed - kept, written, kept
 
     def _take_prepared_summary(
         self, messages: list[dict[str, Any]], compress_start: int, *, fresh: bool, provider_context: bool,

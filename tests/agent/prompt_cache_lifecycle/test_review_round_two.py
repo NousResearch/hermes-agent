@@ -8,6 +8,7 @@
 - A late keep-alive miss that lands after its run ended with no successor still decides step 2/3.
 - The compaction hand-off carries a real keep-alive miss to the child session.
 - A finite admission (``chat -q`` / ``-z`` through the gateway) arms no idle keep-alive.
+- A retried miss that reported no cache write (the clock did not move) waits a full window, never resends at once.
 """
 
 import json
@@ -129,3 +130,51 @@ def test_a_finite_admission_arms_no_idle_keep_alive():
         assert pcl.get_prompt_cache_warmer(agent)._run.idle_ok is False
     pcl.end_turn_prompt_cache_warming(agent)
     assert pcl.get_prompt_cache_warmer(agent)._run is None
+
+
+def test_a_retried_miss_with_no_write_counter_waits_a_window_before_the_next_send(monkeypatch):
+    """An automatic (OpenAI-spec) cache reports a miss as plain input: no read, no write, so the clock does not
+    move. The retry must wait a full window from the miss, not fire at once off the old deadline."""
+    import time
+
+    from agent.prompt_cache_clock import record_cache_response
+    from agent.usage_pricing import CanonicalUsage
+
+    class _CC:
+        def __init__(self):
+            self.calls = []
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        @staticmethod
+        def effective_output_cap(*, max_tokens=None, max_completion_tokens=None, **_):
+            return max_completion_tokens or max_tokens
+
+        def with_options(self, **kw):
+            return self
+
+        def _create(self, **kw):
+            self.calls.append(kw)
+            usage = SimpleNamespace(prompt_tokens=120_000, completion_tokens=1, total_tokens=120_001,
+                                    prompt_tokens_details=SimpleNamespace(cached_tokens=0))
+            return SimpleNamespace(id="chatcmpl-x", usage=usage, choices=[])
+
+    client = _CC()
+    agent = _chat(api_mode="chat_completions", client=client, provider="custom", base_url="https://gw.example/v1",
+                  model="deepseek-v4")
+    agent.client = client
+    t0 = time.time() - 1000  # the cached reply landed ~17 min ago: the 30m window is still guaranteed
+    agent._prompt_cache_attempt = {"sent_at": t0, "marker_ttl": None}
+    record_cache_response(agent, CanonicalUsage(input_tokens=50, cache_read_tokens=120_000), model=agent.model,
+                          provider=agent.provider, base_url=agent.base_url, api_mode="chat_completions")
+    request = {"model": "deepseek-v4", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]}
+    response = SimpleNamespace(id="chatcmpl-0", usage=SimpleNamespace(
+        prompt_tokens=120_050, completion_tokens=5, total_tokens=120_055,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=120_000)))
+    assert pcl.get_prompt_cache_warmer(agent).start(request, response) is None, pcl.get_prompt_cache_warmer(agent).status
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    agent._executing_tools = True
+    before = time.time()
+    _fire(warmer)  # the keep-alive misses (read 0): retried once
+    run = warmer._run
+    assert len(client.calls) == 1 and run is not None
+    assert run.next_warm_at >= before + 0.8 * pcl.cache_warming_delay_s(run.ttl_s), "the retry fires at once"

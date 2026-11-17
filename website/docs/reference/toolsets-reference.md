@@ -107,7 +107,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-sms` | Same as `hermes-cli`. |
 | `hermes-bluebubbles` | Same as `hermes-cli`. |
 | `hermes-dingtalk` | Same as `hermes-cli`. |
-| `hermes-feishu` | Adds the five `feishu_doc_*` / `feishu_drive_*` tools (only used by the document-comment handler, not the regular chat adapter). |
+| `hermes-feishu` | Adds the five `feishu_doc_*` / `feishu_drive_*` tools. The Feishu chat is offered them too, but they reach the Lark client only inside the document-comment handler; elsewhere they answer that no Feishu client is available. |
 | `hermes-qqbot` | Same as `hermes-cli`. |
 | `hermes-wecom` | Same as `hermes-cli`. |
 | `hermes-wecom-callback` | Same as `hermes-cli`. |

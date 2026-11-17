@@ -17,6 +17,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# The lark client of the comment being answered: _run_comment_agent sets it around the agent run and
+# the handlers in tools.py read it. A context variable, because each tool call runs on a worker thread
+# that gets a copy of the agent's context (tools/thread_context.py) and none of its thread-locals.
+# Concurrent comment events each run in their own context, so they never see each other's client.
+current_client: contextvars.ContextVar = contextvars.ContextVar("feishu_comment_client", default=None)
+
 
 async def _exec_request(client, method, uri, paths=None, queries=None, body=None):
     """Execute a lark API request (tenant token) and return (code, msg, data_dict)."""
@@ -491,7 +497,6 @@ def _save_session_history(key: str, messages: list[dict[str, Any]]) -> None:
 def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     """Create an AIAgent with feishu tools and run the prompt; empty string on failure. *session_key*, if given, loads/saves history for cross-card memory in the same document."""
     from run_agent import AIAgent
-    from tools.feishu_lark import current_client
     logger.info("[Feishu-Comment] _run_comment_agent: binding lark client for the agent's tool calls")
     client_token = current_client.set(client)
     try:

@@ -276,3 +276,23 @@ def test_logs_json_emits_one_record_per_entry_with_tracebacks_folded(tmp_path, m
     assert records[1]["ts"] == "2026-10-03 10:00:01,002"
     assert records[1]["message"] == 'boom\nTraceback (most recent call last):\n  File "x.py", line 1, in <module>'
     assert records[0]["file"] == "agent"
+
+
+def test_logs_json_n_counts_records_and_keeps_the_traceback_header(tmp_path, monkeypatch, capsys):
+    import json
+
+    from hermes_cli.logs import tail_log
+
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "agent.log").write_text(
+        "2026-10-03 10:00:00,001 INFO run_agent: earlier\n"
+        "2026-10-03 10:00:01,002 ERROR [sess_a] tools.x: boom\n"
+        "Traceback (most recent call last):\n"
+        "RuntimeError: probe\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    tail_log("agent", num_lines=1, as_json=True)
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert [(r["level"], r["session"], r["message"]) for r in records] == [
+        ("ERROR", "sess_a", "boom\nTraceback (most recent call last):\nRuntimeError: probe")]

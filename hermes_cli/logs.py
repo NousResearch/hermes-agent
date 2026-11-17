@@ -274,13 +274,16 @@ def tail_log(
     has_filters = any(v is not None for v in filters.values())
 
     try:
-        lines = _read_tail(log_path, num_lines, has_filters=has_filters, **filters)
+        if as_json:
+            records = _read_tail_records(log_path, num_lines, log_name, **filters)
+        else:
+            lines = _read_tail(log_path, num_lines, has_filters=has_filters, **filters)
     except PermissionError:
         print(f"Permission denied: {log_path}")
         sys.exit(1)
 
     if as_json:
-        for record in parse_log_records(lines, log_name):
+        for record in records:
             _emit_json(record)
         sys.stdout.flush()
         if follow:
@@ -318,6 +321,18 @@ def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filte
     raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
     keep = _LineFilter(**filters)
     return [l for l in raw_lines if keep(l)][-num_lines:]
+
+
+def _read_tail_records(path: Path, num_records: int, log_name: str, **filters) -> list:
+    """The last *num_records* records (``-n`` counts entries in JSON mode). Over-reads so a
+    traceback keeps its stamped header; a record the read window cut off at the top is dropped."""
+    window = max(num_records * 20, 2000)
+    raw_lines = _read_last_n_lines(path, window)
+    keep = _LineFilter(**filters)
+    records = parse_log_records([line for line in raw_lines if keep(line)], log_name)
+    if len(raw_lines) >= window and records and _parse_line_timestamp(raw_lines[0]) is None:
+        records = records[1:]
+    return records[-num_records:] if num_records > 0 else []
 
 
 def _read_all_lines(path: Path) -> list:
@@ -361,24 +376,32 @@ def _follow_log(path: Path, *, folder: Optional[_RecordFolder] = None, **filters
     A folded record is emitted once the next stamp or an idle poll ends it."""
     keep = _LineFilter(**filters)
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-        # Seek to end
-        f.seek(0, 2)
-        while True:
-            line = f.readline()
-            if not line:
-                if folder is not None and (rec := folder.flush()) is not None:
-                    _emit_json(rec)
-                    sys.stdout.flush()
-                time.sleep(0.3)
-            elif not keep(line):
-                continue
-            elif folder is None:
-                print(line, end="")
-                sys.stdout.flush()
-            elif (rec := folder.feed(line)) is not None:
+        try:
+            _poll_lines(f, keep, folder)
+        finally:
+            # Ctrl+C mid-record: the last entry already read still goes out.
+            if folder is not None and (rec := folder.flush()) is not None:
                 _emit_json(rec)
                 sys.stdout.flush()
 
+
+def _poll_lines(f, keep, folder: Optional[_RecordFolder]) -> None:
+    f.seek(0, 2)
+    while True:
+        line = f.readline()
+        if not line:
+            if folder is not None and (rec := folder.flush()) is not None:
+                _emit_json(rec)
+                sys.stdout.flush()
+            time.sleep(0.3)
+        elif not keep(line):
+            continue
+        elif folder is None:
+            print(line, end="")
+            sys.stdout.flush()
+        elif (rec := folder.feed(line)) is not None:
+            _emit_json(rec)
+            sys.stdout.flush()
 
 def _size_label(size: int) -> str:
     if size < 1024:

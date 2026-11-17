@@ -19,6 +19,7 @@ import type { GroupSetter } from '@/app/shell/group-setter'
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
 import type { TitlebarTool } from '@/app/shell/titlebar-controls'
 import { DecodeText } from '@/components/ui/decode-text'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
@@ -28,7 +29,9 @@ import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { logLineSeverity, type LogSeverity } from '@/lib/log-search'
 import { cn } from '@/lib/utils'
 import { openPreview } from '@/store/preview'
+import { $sessions, knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
+import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 // ---------------------------------------------------------------------------
@@ -60,6 +63,19 @@ function recordSeverities(lines: readonly string[]): (LogSeverity | null)[] {
   })
 }
 
+/** Keep `session`'s records (stamped lines naming it + their continuation lines).
+ *  Idempotent over an already-filtered tail; it is what scopes the view when the
+ *  backend predates `/api/logs?session=` and returns every session's lines. */
+export function sessionRecordLines(lines: readonly string[], session: string): string[] {
+  let keep = false
+
+  return lines.filter(line => {
+    keep = STAMPED_LINE.test(line) ? line.includes(session) : keep
+
+    return keep
+  })
+}
+
 export function LogsPane() {
   const { t } = useI18n()
   const sessionId = useStore($focusedStoredSessionId)
@@ -67,10 +83,17 @@ export function LogsPane() {
   // tail to lines tagged with the focused session's id (`/api/logs?session=`).
   const [scope, setScope] = useState<LogsScope>('all')
   const session = scope === 'session' && sessionId ? sessionId : undefined
+  // The focused chat may be a Bot or another profile's tile: read ITS backend's log.
+  const sessions = useStore($sessions)
+  const owner = session ? profileScopeForSessionOwner(knownSessionOwner(sessions, session)) : undefined
 
   const { data, error } = useQuery({
-    queryKey: ['contrib-logs-tail', session ?? null],
-    queryFn: () => getLogs({ lines: 300, session }),
+    queryKey: ['contrib-logs-tail', session ?? null, owner ?? null],
+    queryFn: async () => {
+      const res = await getLogs({ lines: 300, owner, session })
+
+      return session ? { ...res, lines: sessionRecordLines(res.lines, session) } : res
+    },
     refetchInterval: 5000
   })
 
@@ -126,22 +149,8 @@ export function LogsPane() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {sessionId && (
-        <div className="flex shrink-0 gap-1 px-2.5 pt-1.5" role="tablist">
-          {scopes.map(item => (
-            <button
-              aria-selected={scope === item.id}
-              className={cn(
-                'rounded-md px-1.5 py-0.5 text-[0.66rem] text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
-                scope === item.id && 'bg-(--ui-bg-quaternary) text-(--ui-text-secondary)'
-              )}
-              key={item.id}
-              onClick={() => setScope(item.id)}
-              role="tab"
-              type="button"
-            >
-              {item.label}
-            </button>
-          ))}
+        <div className="shrink-0 px-2.5 pt-1.5">
+          <SegmentedControl onChange={setScope} options={scopes} sizing="content" value={scope} />
         </div>
       )}
       <pre

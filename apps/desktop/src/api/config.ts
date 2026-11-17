@@ -97,6 +97,9 @@ export function getLogs(params: {
   file?: string
   level?: string
   lines?: number
+  /** The backend that owns `session` (a Bot chat or another profile's tile);
+   *  omitted = the ambient profile + connection. */
+  owner?: ProfileScope
   search?: string
   session?: string
 }): Promise<LogsResponse> {
@@ -129,7 +132,7 @@ export function getLogs(params: {
   const suffix = query.toString()
 
   return hermesApi<LogsResponse>({
-    ...profileScoped(),
+    ...(params.owner ? capabilityScoped(params.owner) : profileScoped()),
     path: suffix ? `/api/logs?${suffix}` : '/api/logs'
   })
 }

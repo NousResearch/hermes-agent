@@ -187,14 +187,31 @@ class GatewayTurnPersistenceMixin:
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
         # if the binding still points at the session this run was launched against.
         if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
-            if session_entry.session_id == _run_start_session_id:
-                session_entry.session_id = agent_result["session_id"]
+            from gateway.session_split import is_compression_continuation, restore_route
+            new_session_id = agent_result["session_id"]
+            if session_entry.session_id == _run_start_session_id and not await asyncio.to_thread(
+                    is_compression_continuation, self.session_store, session_key,
+                    _run_start_session_id, new_session_id):
+                # Another conversation's session (#154994), not this one's compression child.
+                logger.warning(
+                    "Skipping agent-result session split sync for %s: %s is not a compression "
+                    "continuation of %s", session_key or "?", new_session_id, _run_start_session_id,
+                )
+            elif session_entry.session_id == _run_start_session_id:
+                session_entry.session_id = new_session_id
                 # The held turn lease follows the rotation (persistence writes to the NEW id).
                 self._rebind_turn_lease(_quick_key, run_generation, session_entry.session_id)
-                await self.async_session_store._save()
-                await self.async_session_store._record_gateway_session_peer(
-                    session_entry.session_id, session_key, source,
-                )
+                try:
+                    await self.async_session_store._save()
+                    await self.async_session_store._record_gateway_session_peer(
+                        session_entry.session_id, session_key, source,
+                    )
+                except Exception:
+                    # Same rule as _sync_session_after_run: a failed publication leaves the route as it was.
+                    await asyncio.to_thread(restore_route, self.session_store, session_entry,
+                                            published_id=new_session_id, restored_id=_run_start_session_id)
+                    self._rebind_turn_lease(_quick_key, run_generation, _run_start_session_id)
+                    raise
                 await asyncio.to_thread(
                     self._sync_telegram_topic_binding, source, session_entry, reason="agent-result-compression",
                 )

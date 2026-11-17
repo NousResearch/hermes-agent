@@ -1469,7 +1469,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
         """Redirect a resume target to the descendant holding the messages: follow the compression chain to
         the live tip (lineage-aware, so delegate/branch children never hijack it), then walk
         ``parent_session_id`` forward to the DEEPEST node with messages (a continuation may hold newer
-        turns), skipping branch/delegate/reset/tool children. Unchanged when nothing has messages; depth cap 32.
+        turns), skipping branch/delegate/reset/tool children and a non-subagent's subagent children. Unchanged
+        when nothing has messages; depth cap 32.
 
         Context compression ends the current session and forks a new child session (linked via
         ``parent_session_id``). The flush cursor is reset, so the child is where new messages actually land
@@ -1497,6 +1498,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin, 
                         f"  AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                         f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
                         "  AND COALESCE(child.source, '') != 'tool' "
+                        # A subagent row is another conversation even without its ``_delegate_from``
+                        # marker (#154994: async batch children stored without it). Only a subagent's
+                        # own continuation (parent is a subagent too, or sourceless) stays walkable.
+                        "  AND (COALESCE(child.source, '') != 'subagent' OR EXISTS ("
+                        "    SELECT 1 FROM sessions AS parent WHERE parent.id = child.parent_session_id"
+                        "      AND COALESCE(parent.source, '') IN ('subagent', ''))) "
                         "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()
                 except Exception:
                     return session_id

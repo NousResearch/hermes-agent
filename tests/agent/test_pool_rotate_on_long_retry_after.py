@@ -109,3 +109,21 @@ def test_message_only_long_reset_rotates_on_first_429():
     _, rotated = _hit(header_agent, 5, "Rate limit reached. Resets in 3 minutes.")
     assert not rotated
     assert header_agent._credential_pool_entry_id == "acct1"
+
+
+def test_top_level_retry_after_beside_error_rotates_on_first_429():
+    """Use a top-level body cooldown even when a nested error object is present."""
+    agent = _Agent(_pool())
+    err = _RateLimited(168)
+    err.response.headers = {}
+    err.body = {
+        "retry_after": 168,
+        "error": {"type": "rate_limit_error", "message": _MSG},
+    }
+    classified = classify_api_error(err, provider=agent.provider, model=agent.model)
+    retry_now, rotated = recover_after_classification(
+        agent, err, classified, TurnRetryState(), status_code=429,
+        error_context={"message": _MSG}, messages=[], api_messages=[],
+    )
+    assert retry_now and rotated
+    assert agent._credential_pool_entry_id == "acct2"

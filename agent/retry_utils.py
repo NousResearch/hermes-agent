@@ -192,4 +192,7 @@ def provider_retry_after_seconds(error: Any) -> Optional[float]:
         if isinstance(body, dict):
             nested = body.get("error")
             value = parse_retry_after_seconds((nested if isinstance(nested, dict) else body).get("retry_after"))
+            if value is None and isinstance(nested, dict):
+                # A top-level retry_after can coexist with a nested error object.
+                value = parse_retry_after_seconds(body.get("retry_after"))
     return value if value is not None and value > 0 else None

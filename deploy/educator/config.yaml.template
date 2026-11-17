@@ -1,0 +1,222 @@
+# Educator — Product Education teammate profile config.
+#
+# Rendered to ~/.hermes/profiles/educator/config.yaml by
+#   python deploy/educator/render_config.py values.yaml > <profile>/config.yaml
+# Every double-brace placeholder is a quoted string; render_config.py refuses to
+# write a file with one left unfilled. Values: ROLLOUT.md "Values to collect".
+#
+# Validated by tests/deploy/test_educator_config_template.py through the real
+# boundary / guard / budget / github_pr / RBAC readers.
+#
+# This file is the teammate's boundary. agent_write_guard (below) stops the
+# agent editing it; an admin changes it, then restarts the gateway (guards
+# are sticky until restart — see CLAUDE.md "Boundary enforcement").
+
+# ── model ────────────────────────────────────────────────────────────────
+model:
+  default: "{{MODEL}}"                 # a capable writing model (design: "Budget")
+  provider: "{{MODEL_PROVIDER}}"       # e.g. openai; key in .env
+
+# Required by the cost budget: without a rate the budget is a lower bound and
+# every alert says so. USD per million tokens.
+pricing:
+  overrides:
+    "{{MODEL}}":
+      input: "{{MODEL_INPUT_USD_PER_M}}"
+      output: "{{MODEL_OUTPUT_USD_PER_M}}"
+      cache_read: "{{MODEL_CACHE_READ_USD_PER_M}}"
+      cache_write: "{{MODEL_CACHE_WRITE_USD_PER_M}}"
+
+# ── self-modification guard (multiplex fix 4e) ───────────────────────────
+# The agent's file tools cannot write this config, SOUL.md, cron/, scripts/,
+# .env*, workspace/checkouts/ or the external skill dirs. Required by
+# notion.write_guard, zendesk_create_draft and gated posting.
+agent_write_guard: true
+
+# ── tools ────────────────────────────────────────────────────────────────
+# Exactly the design's set ("The profile → Tools"). An explicit list shadows
+# every default, so anything not here does not exist for this bot. Never add
+# terminal, code_execution, jira_write, messaging, cronjob, delegation or any
+# MCP toolset (a secondary profile gets no MCP under multiplex anyway).
+platform_toolsets:
+  slack:
+    - web
+    - browser
+    - file
+    - vision
+    - session_search
+    - memory
+    - skills
+    - todo
+    - clarify
+    - notion
+    - jira
+    - zendesk
+    - zendesk_write
+    - github_pr
+    - github_pr_write
+    - slack
+    - slack_post
+    - ownership
+    - video_frames
+    - pdf_pages
+    - cost_budget
+
+skills:
+  # Read-only clones refreshed by the release-watch script. External dirs are
+  # read-only for every agent write; skill changes go through PRs.
+  external_dirs:
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/release-comms/skills"
+    - "{{EDUCATOR_HOME}}/workspace/checkouts/product-skills/plugins/product-education/skills"
+
+cron:
+  allow_agent_shell: false      # fork policy: cron agents never get a shell
+  script_timeout_seconds: 600   # release-watch fetches two repos + Notion + Jira
+
+# ── Slack ────────────────────────────────────────────────────────────────
+slack:
+  # RBAC (its own, separate from the default bot's). Presence of user_roles
+  # activates it: anyone not listed is denied.
+  user_roles:
+    "{{ADMIN_SLACK_USER_ID}}": admin
+    "{{PRODUCT_TEAM_SLACK_USER_ID}}": educator_user
+    # one line per product-team member: "Uxxxxxxxx": educator_user
+  user_names:
+    "{{ADMIN_SLACK_USER_ID}}": "{{ADMIN_NAME}}"
+    "{{PRODUCT_TEAM_SLACK_USER_ID}}": "{{PRODUCT_TEAM_MEMBER_NAME}}"
+  allow_admin_from:
+    - "{{ADMIN_SLACK_USER_ID}}"
+  roles:
+    educator_user:
+      toolsets: [web, browser, file, vision, session_search, memory, skills, todo, clarify,
+                 notion, jira, zendesk, zendesk_write, github_pr, github_pr_write,
+                 slack, slack_post, ownership, video_frames, pdf_pages, cost_budget]
+
+  # Home channel: free-response (no @mention needed); replies to its own
+  # posts and cron digests reach it. Everywhere else it speaks when mentioned.
+  free_response_channels: "{{HOME_CHANNEL_ID}}"
+  require_mention: true
+  wake_in_bot_authored_threads: true
+  home_channel_prompt: false
+
+  # Posting allowlist (prompt-injection guard). Channel IDS only.
+  # Shadow week: remove {{RELEASE_UPDATES_CHANNEL_ID}} from
+  # post_allowed_channels (ROLLOUT.md step 9).
+  post_allowed_channels:
+    - "{{HOME_CHANNEL_ID}}"
+    - "{{RELEASE_UPDATES_CHANNEL_ID}}"
+  # No free text ever: only slack_post_thread(chat_id=…, release_asset_row_id=…)
+  # after the row is Approved and every PRD ticket is Done. The bot also
+  # ignores inbound messages there.
+  post_gated_channels:
+    - "{{RELEASE_UPDATES_CHANNEL_ID}}"
+
+# ── Notion boundary (5a) ─────────────────────────────────────────────────
+# Data source ids are bare UUIDs (the guard rejects "collection://…").
+notion:
+  write_guard:
+    enabled: true
+    release_kits:
+      data_sources:
+        - 6f1611b4-c204-4944-a0c7-026e67604c77   # Releases
+        - c7436811-d26d-4a73-8c60-69437f3fcb16   # Release Assets
+      status_property: Status
+      draft_status: Draft
+      # The Releases → PRD relation. Releases has none today: ROLLOUT.md step 2
+      # adds a ONE-WAY relation named "PRD" to Detailed Bucket Features. (A
+      # two-way relation also needs prds.back_relation_property.)
+      prd_relation_property: PRD
+    prds:
+      data_sources:
+        - 2daff849-6e1b-4e4f-960a-a07acfbc2a1b   # Detailed Bucket Features
+      property: Release Comms Status
+      transitions:
+        Not started: [In progress]
+        In progress: [Done]
+    ideas:
+      data_sources:
+        - "{{NOTION_IDEAS_DATA_SOURCE_ID}}"      # notion-ideas-database.md
+      status_property: Status
+      create_status: Proposed
+      own_transitions:
+        Accepted: [In progress]
+        In progress: [Done]
+      human_statuses: [Accepted, Rejected, Parked]
+      human_properties: [Decision note]
+    writable_pages:
+      - "{{NOTION_HOME_PAGE_ID}}"                # its own parent page + descendants
+
+# ── gated #release-updates posting (5b) ──────────────────────────────────
+release_updates:
+  release_assets_data_source_id: c7436811-d26d-4a73-8c60-69437f3fcb16
+  asset_type_property: Asset type
+  asset_type_value: Slack post      # the real Release Assets option (code default: "Slack update")
+  status_property: Status
+  approved_statuses: [Approved]
+  pre_approval_statuses: [Draft, In review]
+  hold_statuses: [Hold]             # add a "Hold" option to Release Assets before using veto
+  published_status: Published
+  published_url_property: Published URL
+  prd_relation_path: [Release, PRD] # asset → Release row → PRD (must end with the guard's PRD relation)
+  prd_jira_property: JIRA           # a URL property; keys are regex-extracted
+  prd_status_property: Release Comms Status
+  prd_active_status: In progress
+  jira_done_statuses: [Done]
+
+# ── Zendesk drafts (draft-only, OAuth client credentials) ────────────────
+zendesk:
+  release_assets_data_source_id: c7436811-d26d-4a73-8c60-69437f3fcb16
+  approved_statuses: [Approved]
+  hold_statuses: [Hold]
+  default_permission_group_id: "{{ZENDESK_PERMISSION_GROUP_ID}}"
+  # default_user_segment_id: unset = visible to everyone. Set an id to restrict.
+
+# ── autonomy levels (v1, exactly as designed) ────────────────────────────
+# Quote "off": a bare YAML off parses as false.
+autonomy:
+  paused: false                       # true caps every action at signoff
+  announce_channel: "{{HOME_CHANNEL_ID}}"
+  veto_wait_working_hours: 4
+  veto_expiry_hours: 72
+  working_hours:
+    timezone: "{{WORKING_HOURS_TIMEZONE}}"   # e.g. Asia/Jerusalem
+    start: 9
+    end: 18
+    days: [sun, mon, tue, wed, thu]          # adjust to the team's week
+  actions:
+    post_release_update: signoff
+    zendesk_create_draft: signoff
+    zendesk_publish: "off"            # not built
+    advance_asset_status: "off"       # never approves its own drafts in v1
+    ideas_accept_own: "off"
+    merge_skill_pr: "off"             # not built; a human merges
+
+# ── GitHub (narrow PR tool, fine-grained token) ──────────────────────────
+github_pr:
+  repos:
+    everafterai/product-skills:
+      actions: [read_pr, read_commits, create_branch, commit_files, open_pr]
+      branch_prefix: educator/
+    everafterai/ea-monorepo:
+      actions: [read_pr, read_commits]
+
+# ── cost budget ──────────────────────────────────────────────────────────
+# Fail-closed: every job is discretionary (skipped over budget) except
+# release-watch. Fill RELEASE_WATCH_JOB_ID after apply_cron_jobs.py prints it.
+cost_budget:
+  daily_usd: "{{DAILY_BUDGET_USD}}"
+  monthly_usd: "{{MONTHLY_BUDGET_USD}}"
+  per_run_usd: "{{PER_RUN_BUDGET_USD}}"
+  alert_at: [0.5, 0.8]
+  alert_channel: "slack:{{HOME_CHANNEL_ID}}"
+  alert_mention: "{{BUDGET_ALERT_MENTION}}"   # e.g. <@U0123> or <!subteam^S0123>; "" for none
+  default_discretionary: true
+  essential_jobs:
+    - "{{RELEASE_WATCH_JOB_ID}}"
+
+# ── audit + ownership (fork defaults, stated explicitly) ─────────────────
+data_access_audit:
+  enabled: true
+automation_ownership:
+  enabled: true
+  notify_owner: true

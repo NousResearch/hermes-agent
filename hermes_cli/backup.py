@@ -39,7 +39,7 @@ from hermes_cli.backup_restore import (
     _detect_prefix,
     _extract_member_atomically,
     _get_config_path_value,
-    _import_db_member,
+    _import_db_member, _member_publication,
     _restore_auth_json,
     _restore_destination_epoch,
     _restore_snapshot_entry,
@@ -999,8 +999,7 @@ def _import_members_exclusive(
             skipped_runtime.append(rel)
             continue
 
-        # Older archives may contain PM selections pointing at another machine.
-        # Match their home-root paths; a plugin's own facts.json is user data.
+        # Older archives may hold PM selections for another machine (facts.json is user data).
         if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS:
             skipped_runtime.append(rel)
             continue
@@ -1035,7 +1034,8 @@ def _import_members_exclusive(
                 if before and after and after[1] < before[1]:
                     db_shrunk.append((rel, before, after))
             elif keep_host is None or not keep_host.publish(zf, member, parts, target, new_file_mode):
-                _extract_member_atomically(zf, member, target, new_file_mode)
+                with _member_publication(target):  # memory files: under the store's lock
+                    _extract_member_atomically(zf, member, target, new_file_mode)
             if target.name == "config.yaml":  # extraction keeps the live file's mode
                 drop_other_access(target)
             if target.name in _SECRET_FILE_NAMES:

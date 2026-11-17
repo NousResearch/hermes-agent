@@ -16,13 +16,14 @@ import stat
 import sys
 import tempfile
 import zipfile
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from hermes_state_holders import read_only_db_uri
 from hermes_cli.backup_sqlite import _safe_copy_db
 from hermes_cli.config_backend import drop_other_access
+from tools.memory_tool_store import MemoryStore
 from utils import (
     atomic_replace, mkstemp_beside, preserve_file_mode, preserve_file_owner, restore_file_mode,
     restore_file_owner,
@@ -575,6 +576,18 @@ def _extract_member_atomically(
         except OSError:
             pass
         raise
+
+
+_MEMORY_STORE_FILES = frozenset({"MEMORY.md", "USER.md"})
+
+
+def _member_publication(target: Path):
+    """Context to restore one HERMES_HOME member in: a built-in memory file publishes under the
+    memory store's own lock, so a session writing memory cannot rewrite its older snapshot over
+    the restored file (the store re-reads under that lock before every write)."""
+    if target.name in _MEMORY_STORE_FILES and target.parent.name == "memories":
+        return MemoryStore.publication(target)
+    return nullcontext()
 
 
 def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:

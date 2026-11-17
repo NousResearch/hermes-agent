@@ -58,6 +58,7 @@
         "tools.browser_supervisor",
         "tools.browser_supervisor_capture",
         "tools.computer_use.backend",
+        "tools.memory_tool_store:MemoryStore",
         "tools.registry"
       ]
     },

@@ -151,39 +151,62 @@ class TestMemoryFileLockPermissions:
 
 
 class TestMemoryStoreResetAndImportLocking:
-    def test_reset_waits_for_an_inflight_add_before_deleting(self, store, tmp_path, monkeypatch):
-        """A reset after an add's read cannot let that add recreate the old snapshot."""
-        store.add("memory", "before reset")
-        path = tmp_path / "MEMORY.md"
-        original_write = MemoryStore._write_file
-        add_ready = threading.Event()
-        allow_add_publish = threading.Event()
-        reset_finished = threading.Event()
+    def test_cli_reset_during_an_inflight_add_never_resurrects_reset_entries(self, monkeypatch):
+        """`hermes memory reset` racing an add paused after its locked read: the result is a
+        serial outcome (empty), never the add's pre-reset snapshot A + B written back."""
+        from argparse import Namespace
 
-        def pause_add_publish(write_path, entries):
-            if entries == ["before reset", "concurrent add"]:
-                add_ready.set()
-                assert allow_add_publish.wait(timeout=5)
+        from hermes_cli.main_agent_cmds import _cmd_memory_reset
+        from hermes_constants import get_hermes_home
+
+        mem_dir = get_hermes_home() / "memories"
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: mem_dir)
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+        assert store.add("memory", "entry A")["success"]
+        original_write = MemoryStore._write_file
+        add_read_done, resume_add = threading.Event(), threading.Event()
+
+        def pause_after_locked_read(write_path, entries):
+            if entries == ["entry A", "entry B"]:
+                add_read_done.set()
+                assert resume_add.wait(timeout=10)
             original_write(write_path, entries)
 
-        monkeypatch.setattr(MemoryStore, "_write_file", staticmethod(pause_add_publish))
-        add_thread = threading.Thread(target=lambda: store.add("memory", "concurrent add"))
-        add_thread.start()
-        assert add_ready.wait(timeout=5)
+        monkeypatch.setattr(MemoryStore, "_write_file", staticmethod(pause_after_locked_read))
+        adder = threading.Thread(target=lambda: store.add("memory", "entry B"))
+        adder.start()
+        assert add_read_done.wait(timeout=10)
+        resetter = threading.Thread(target=lambda: _cmd_memory_reset(Namespace(target="memory", yes=True)))
+        resetter.start()
+        resetter.join(timeout=0.5)  # main: the unlocked unlink finished here; head: it waits on the lock
+        resume_add.set()
+        adder.join(timeout=10)
+        resetter.join(timeout=10)
 
-        def reset():
-            assert MemoryStore.reset_file(path)
-            reset_finished.set()
+        assert not adder.is_alive() and not resetter.is_alive()
+        assert MemoryStore._read_file(mem_dir / "MEMORY.md") == []
 
-        reset_thread = threading.Thread(target=reset)
-        reset_thread.start()
-        assert not reset_finished.wait(timeout=0.1)
-        allow_add_publish.set()
-        add_thread.join(timeout=5)
-        reset_thread.join(timeout=5)
+    def test_a_write_after_another_session_changed_the_file_merges_and_reports_the_change(self, store, tmp_path):
+        """Another session adds and removes entries after this one read: this session's write lands
+        on the CURRENT file (nothing lost, nothing resurrected) and its result names what changed."""
+        assert store.add("memory", "old deploy note")["success"]
+        other = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        other.load_from_disk()
+        assert other.add("memory", "deploy target is staging-2")["success"]
+        assert other.apply_batch("memory", [{"action": "remove", "old_text": "old deploy note"}])["success"]
 
-        assert reset_finished.is_set()
-        assert not path.exists()
+        result = json.loads(memory_tool(target="memory", store=store, operations=[
+            {"action": "add", "content": "prefers short answers"}]))
+
+        assert result["success"] is True
+        assert result["external_changes"]["added"] == ["deploy target is staging-2"]
+        assert result["external_changes"]["removed"] == ["old deploy note"]
+        assert "changed on disk since this session last read it" in result["external_changes"]["note"]
+        assert MemoryStore._read_file(tmp_path / "MEMORY.md") == [
+            "deploy target is staging-2", "prefers short answers"]
+        # Once reported, the next write by this session carries no stale notice.
+        assert "external_changes" not in store.add("memory", "uses vim")
 
     def test_import_merge_rereads_a_committed_memory_mutation(self, store, tmp_path):
         """An import publishes against the current store, not an earlier preview snapshot."""

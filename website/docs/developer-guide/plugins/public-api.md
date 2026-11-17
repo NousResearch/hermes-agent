@@ -66,6 +66,7 @@ with a name allows that one name only.
 | `tools.browser_supervisor` | whole module | developer-guide / plugins docs |
 | `tools.browser_supervisor_capture` | whole module | developer-guide / plugins docs |
 | `tools.computer_use.backend` | whole module | developer-guide / plugins docs |
+| `tools.memory_tool_store` | `MemoryStore` | developer-guide / plugins docs |
 | `tools.registry` | whole module | developer-guide / plugins docs |
 | `agent.context_references` | whole module | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.plugin_llm` | whole module | PluginContext (hermes_cli/plugins_context.py) |

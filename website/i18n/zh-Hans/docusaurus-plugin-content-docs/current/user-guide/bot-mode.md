@@ -228,6 +228,26 @@ gateway 的生命周期与 Desktop 窗口无关。关闭窗口或退出 Desktop 
 
 **设置 → Connections** 中的远程 gateway、SSH 主机和 Hermes Cloud 实例是独立的主机，拥有各自的进程；它们的 Bot 运行在那台机器上（参见上文*跨机器的 Bot*），而不是本机的 gateway 上。
 
+## 让 Bot 退出队友网络
+
+通常每个 Bot 都是其他所有 Bot 的队友：它会带着标题和描述出现在它们的名单里，任何一个都可以给它发消息。下面两个开关可以让某个 Bot 退出这个网络，它照常运行，你也照样可以完整地和它对话。
+
+- **单个 Bot** — 在该 profile 的 `profile.yaml` 里，desktop 已经管理的那个元数据块中：
+
+  ```yaml
+  ui_meta:
+    hermes-bots:
+      private: true
+  ```
+
+  私有 Bot 会从本机其他所有 Bot 的名单中移除，也不再能作为 `message_agent` 的目标被解析——队友找它时得到的回答，和找一个不存在的名字完全一样。通过 Desktop relay 传来、带有 `private` 标记的条目也会同样被丢弃。私有 Bot 自己的名单不变：它仍然能看到队友，你和它的对话也和以前一样。
+
+- **整个安装** — 在**根** `config.yaml`（不是某个 profile 的）中设置 `bots.force_private: true`，会让所有 Bot 一次性退出网络，不管它们各自的标记是什么。适用于 Bot 之间绝不能互相通信的机器。
+
+两个标记都是失败即开放（fail open）：只有 `true`、`yes`、`on` 或 `1` 才算数，其他任何值都让 Bot 保持公开，所以一个拼写错误不会悄悄地把正在工作的队友移除。
+
+这和 [desktop](./desktop.md) 里的**隐藏 Bot** 不同：隐藏只是把一行收进你自己的侧边栏，其他 Bot 看到的内容完全不变。
+
 ## 关闭它
 
 Bot 模式是一个内置的桌面插件。在 **Capabilities → Plugins → Bots** 中关闭它的 **Desktop** 开关——花名册、Routines 面板和输入框中间件会实时注销，无需重启。无论开关状态如何，你的 profile、会话和 cron 任务都不受影响；Bot 模式从不拥有你的数据，它只是负责渲染。

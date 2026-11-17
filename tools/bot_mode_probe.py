@@ -128,6 +128,44 @@ def _bots_meta(data: dict | None) -> dict | None:
     return bots if isinstance(bots, dict) else None
 
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _boolish(value: object) -> bool:
+    """Truth for a hand-edited YAML flag (bool, int 1, or a quoted word); anything unrecognised
+    is False, so a typo never quietly removes an agent from the mesh."""
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return value is True or value == 1
+
+
+def _force_private(root: Path) -> bool:
+    """``bots.force_private`` from the SHARED root config: a per-profile key cannot outrank its
+    own profile, and this switch takes every agent out of the mesh at once."""
+    def _read() -> bool:
+        from hermes_cli.config_backend import read_config_doc_readonly
+        doc = read_config_doc_readonly(root / "config.yaml")
+        bots = doc.get("bots") if isinstance(doc, dict) else None
+        return _boolish(bots.get("force_private")) if isinstance(bots, dict) else False
+
+    return _swallow(_read, False)
+
+
+def _is_private(profile_dir: Path) -> bool:
+    """True when this agent left the teammate mesh: neither advertised to other agents nor
+    addressable by them, while it keeps running and stays reachable by the human."""
+    meta = _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) or {}
+    return _boolish(meta.get("private"))
+
+
+def _visible_roster(root: Path) -> list[tuple[str, Path]]:
+    """``_roster`` minus agents that left the mesh. Not folded into ``_roster``: that one also
+    feeds ``_any_managed``, and an all-private install must not look unmanaged."""
+    if _force_private(root):
+        return []
+    return [(name, d) for name, d in _roster(root) if not _is_private(d)]
+
+
 def _is_bot_managed(profile_dir: Path) -> bool:
     return _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) is not None
 
@@ -291,7 +329,7 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster = _roster(root)
+    roster = _visible_roster(root)
     names = [name for name, _d in roster]
     roster_lines = [_bullet(f"@{_handle(name, names)}", _profile_role(d)) for name, d in roster if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
@@ -453,6 +491,8 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         # Roles are part of the messaging surface: renaming a bot or editing a
         # description must refresh the roster block teammates pick recipients from.
         surface["roster_roles"] = sorted(f"{n}:{_profile_role(d)}" for n, d in roster)
+        # The roster block lists the mesh, not the disk: a teammate going private must refresh it.
+        surface["visible_roster"] = sorted(n for n, _ in _visible_roster(root))
     except Exception:
         surface["roster"] = []
     # Protocol-text version salt: bumping it refreshes every eternal Bot Chat

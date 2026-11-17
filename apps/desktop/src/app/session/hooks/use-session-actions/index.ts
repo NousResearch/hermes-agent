@@ -3220,8 +3220,11 @@ export function useSessionActions({
     ]
   )
 
+  // `leaveTo` replaces the fresh draft an archived OPEN session normally falls
+  // back to — Settle uses it to move straight on to the next chat. It runs
+  // exactly where the draft would, so the route never flashes /new.
   const archiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, options: { leaveTo?: () => void } = {}) => {
       clearNotifications()
 
       const listed = findListedSession(storedSessionId)
@@ -3254,7 +3257,11 @@ export function useSessionActions({
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
-        startFreshSessionDraft(true)
+        if (options.leaveTo) {
+          options.leaveTo()
+        } else {
+          startFreshSessionDraft(true)
+        }
       }
 
       try {

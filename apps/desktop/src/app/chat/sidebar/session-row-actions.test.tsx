@@ -62,6 +62,7 @@ vi.mock('@/i18n', () => ({
           renameTitle: 'Rename session',
           renamed: 'Renamed',
           sessionActions: 'Session actions',
+          settle: 'Settle',
           sessionRunning: 'Running',
           unpin: 'Unpin',
           untitledPlaceholder: 'Untitled',
@@ -196,5 +197,50 @@ describe('SidebarSessionRow actions', () => {
 
     expect(onArchive).toHaveBeenCalledTimes(1)
     expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('settles without also resuming the row (card=%s)', card => {
+    const onResume = vi.fn()
+    const onSettle = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        card={card}
+        isPinned={false}
+        isSelected
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+        onPin={vi.fn()}
+        onResume={onResume}
+        onSettle={onSettle}
+        onToggleUnread={vi.fn()}
+        session={session}
+        unread={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settle' }))
+
+    expect(onSettle).toHaveBeenCalledTimes(1)
+    expect(onResume).not.toHaveBeenCalled()
+  })
+
+  it('offers no Settle on an archived row', () => {
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+        onPin={vi.fn()}
+        onResume={vi.fn()}
+        onSettle={vi.fn()}
+        onToggleUnread={vi.fn()}
+        session={{ ...session, archived: true }}
+        unread={false}
+      />
+    )
+
+    expect(screen.queryByRole('button', { name: 'Settle' })).toBeNull()
   })
 })

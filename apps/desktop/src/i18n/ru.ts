@@ -2528,6 +2528,7 @@ export const ruOverrides = {
       openInSplit: 'Открыть в сплит-виде',
       copyIdFailed: 'Не удалось скопировать ID сеанса',
       sessionActions: 'Действия с сеансом',
+      settle: 'Завершить — архивировать и дальше',
       sessionRunning: 'Сеанс выполняется',
       needsInput: 'Нужен ваш ввод',
       waitingForAnswer: 'Ждёт вашего ответа',

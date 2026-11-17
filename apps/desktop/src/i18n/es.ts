@@ -3723,6 +3723,7 @@ export const esOverrides = {
       openInSplit: 'Abrir en vista dividida',
       copyIdFailed: 'No se pudo copiar el ID de sesión',
       sessionActions: 'Acciones de sesión',
+      settle: 'Resolver — archivar y seguir',
       sessionRunning: 'Sesión en ejecución',
       needsInput: 'Necesita tu respuesta',
       waitingForAnswer: 'Esperando tu respuesta',

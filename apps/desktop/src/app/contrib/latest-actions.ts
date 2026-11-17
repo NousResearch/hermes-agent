@@ -70,6 +70,7 @@ export function latestSidebarActions(actions: SidebarActions): SidebarActions {
     onNewSessionInWorkspace: (...args) => actions.onNewSessionInWorkspace(...args),
     onNewSessionSplit: (...args) => actions.onNewSessionSplit(...args),
     onResumeSession: (...args) => actions.onResumeSession(...args),
+    onSettleSession: latestOptional(() => actions.onSettleSession),
     onTriggerCronJob: (...args) => actions.onTriggerCronJob(...args)
   }
 }

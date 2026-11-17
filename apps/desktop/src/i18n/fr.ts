@@ -3742,6 +3742,7 @@ export const frOverrides = {
       openInSplit: 'Ouvrir en split',
       copyIdFailed: "Impossible de copier l'ID de session",
       sessionActions: 'Actions de session',
+      settle: 'Régler — archiver et passer à la suite',
       sessionRunning: 'Session en cours',
       needsInput: 'Nécessite votre saisie',
       waitingForAnswer: 'En attente de votre réponse',

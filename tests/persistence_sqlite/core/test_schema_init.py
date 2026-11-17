@@ -121,7 +121,7 @@ class TestAsyncDelegationsSchemaAgreement:
         from unittest.mock import patch
 
         with patch.object(async_delegation, "_db_path", lambda: db_path):
-            async_delegation.mark_completion_delivered("schema-probe")
+            async_delegation.claim_completion_delivery("schema-probe", "schema-claim")
 
     def _legacy_db(self, db_path):
         """A database created before origin_session_id existed, carrying a

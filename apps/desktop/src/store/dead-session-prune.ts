@@ -148,8 +148,10 @@ function collectCandidates(): string[] {
     }
   }
 
+  // A fresh-chat key can hold a follow-up queued while session.create is still in flight; it is not a
+  // stored session id, so probing it would 404 and clear that follow-up before the first send migrates it.
   for (const key of Object.keys($queuedPromptsBySession.get())) {
-    if (!covered.has(key)) {
+    if (!covered.has(key) && !isFreshDraftScope(key)) {
       candidates.add(key)
     }
   }

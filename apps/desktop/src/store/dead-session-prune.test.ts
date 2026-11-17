@@ -143,6 +143,16 @@ describe('__runDeadSessionPrunePass', () => {
     expect(getQueuedPrompts('live-queue-session')).toHaveLength(1)
   })
 
+  it('never drops a follow-up queued under a fresh-chat key while the chat is still being created', async () => {
+    $sessions.set([row('unrelated')])
+    enqueueQueuedPrompt('__new__:abc-123', { text: 'follow-up', attachments: [] })
+    getSessionMock.mockRejectedValue(notFound())
+
+    await __runDeadSessionPrunePass()
+
+    expect(getQueuedPrompts('__new__:abc-123')).toHaveLength(1)
+  })
+
   it('skips ids already covered by loaded sidebar rows', async () => {
     $sessions.set([row('covered', { _lineage_root_id: 'root-covered' })])
     $pinnedSessionIds.set(['covered', 'root-covered', 'rowless-pin'])

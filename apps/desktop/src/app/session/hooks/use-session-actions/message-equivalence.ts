@@ -163,8 +163,9 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
 // Optional flags, unset meaning false. `interim` gates the action footer, so
 // flipping it must repaint (e.g. a previewed final settling onto a sealed
 // interim bubble restores the bar); `queuedTurnStarted` must reach the view's
-// copy because resume seeds session state from it.
-const FLAG_FIELDS = ['interim', 'queuedTurnStarted'] as const
+// copy because resume seeds session state from it; `continued` is set once, at
+// the continuation's start, so a resume waiting meanwhile must keep it.
+const FLAG_FIELDS = ['interim', 'queuedTurnStarted', 'continued'] as const
 
 const flagsDiffer = (a: ChatMessage, b: ChatMessage) =>
   FLAG_FIELDS.some(field => (a[field] ?? false) !== (b[field] ?? false))

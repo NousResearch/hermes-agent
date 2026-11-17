@@ -40,13 +40,13 @@ def _note_user_input(session: dict) -> None:
 
 def _note_turn_pause(session: dict, resume: bool) -> None:
     """``resume``: the caller pauses the running turn and continues it itself, so its completion says ``paused``
-    (``prompt_turn._complete_turn_payload``). A plain interrupt (the user's Stop) for the same turn wins. Keyed to
-    the turn's inflight record, so a mark the turn never consumed cannot reach a later turn."""
+    (``prompt_turn._complete_turn_payload``). A plain interrupt (the user's Stop) for the same turn wins. Kept on
+    the turn's inflight record (``_pause``; never in ``_inflight_snapshot``): a copy of the record (an accepted
+    steer or redirect) carries it, and a mark the turn never consumed cannot reach a later turn."""
     with session["history_lock"]:
         turn = session.get("inflight_turn") if session.get("running") else None
-        held = session.get("_turn_pause")
-        if turn is not None and not (resume and held is not None and held[0] is turn):
-            session["_turn_pause"] = (turn, resume)
+        if isinstance(turn, dict) and not (resume and "_pause" in turn):
+            turn["_pause"] = resume
 
 
 def _recover_unreachable_compute_host_turn(sid: str, session: dict, inflight_at_interrupt) -> None:

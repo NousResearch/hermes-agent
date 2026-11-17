@@ -17,7 +17,7 @@ import {
   withQueueDrainClaim
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
-import { usePausedChats } from '@/store/paused-replies'
+import { pausedKey, usePausedChats } from '@/store/paused-replies'
 import {
   $sessionProfilesTruncated,
   $sessions,
@@ -254,7 +254,8 @@ export function useBackgroundQueueDrain({
 
       // A reply paused for its continuation holds the queue like a running turn (store/paused-replies.ts).
       const isBusy =
-        Boolean(pausedChats[sessionKey]) || working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
+        Boolean(pausedKey(pausedChats, sessionKey, sessions)) ||
+        working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
 
       if (
         isSelected ||

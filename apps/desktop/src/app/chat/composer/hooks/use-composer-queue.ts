@@ -30,7 +30,7 @@ import {
 } from '@/store/composer-queue'
 import { activeGateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
-import { useReplyPaused } from '@/store/paused-replies'
+import { isReplyPaused, useReplyPaused } from '@/store/paused-replies'
 import { $sessionsLoading } from '@/store/session'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -662,6 +662,20 @@ export function useComposerQueue({
     [activeQueueSessionKey, busy, onSteer, queueEditRef, t.composer]
   )
 
+  // A message held for a paused reply's continuation (store/paused-replies.ts) stays queued until that has
+  // completed. Whatever sends or steers one row gets these two: the queue panel's row buttons (the hook returns
+  // them as sendQueuedNow / steerQueuedNow) and a second Enter. They ask the store as they run: a pause can
+  // begin after the render that handed them out, or while a steer is still being answered.
+  const sendQueuedUnlessPaused = useCallback(
+    (id: string) => !isReplyPaused(activeQueueSessionKey, sessionId) && sendQueuedNow(id),
+    [activeQueueSessionKey, sendQueuedNow, sessionId]
+  )
+
+  const steerQueuedUnlessPaused = useCallback(
+    async (id: string) => !isReplyPaused(activeQueueSessionKey, sessionId) && steerQueuedNow(id),
+    [activeQueueSessionKey, sessionId, steerQueuedNow]
+  )
+
   // Double-Enter while busy. The entry usually sits in the queue because the
   // first Enter's steer didn't land, so retry that: the words join the live
   // turn as a bubble, with no interrupt and no settle wait. A payload a steer
@@ -673,15 +687,10 @@ export function useComposerQueue({
 
   const deliverQueuedNow = useCallback(
     async (id: string) => {
-      // Held for a paused reply's continuation: never steered into it or sent as an interrupt of it.
-      if (replyPaused) {
-        return false
-      }
-
       const entry = activeQueueSessionKey ? getQueuedPrompts(activeQueueSessionKey).find(e => e.id === id) : undefined
 
       if (!busy || !entry || entry.displayKind || entry.displayText || !isSteerableEntry(entry)) {
-        return sendQueuedNow(id)
+        return sendQueuedUnlessPaused(id)
       }
 
       // A repeat Enter mid-steer must not interrupt the turn about to take it.
@@ -690,15 +699,17 @@ export function useComposerQueue({
       }
 
       steeringIdsRef.current.add(id)
-      const steered = await steerQueuedNow(id).finally(() => steeringIdsRef.current.delete(id))
+      const steered = await steerQueuedUnlessPaused(id).finally(() => steeringIdsRef.current.delete(id))
 
       // Settled while we asked: the idle auto-drain already owns the entry.
       return (
         steered ||
-        (busyRef.current && getQueuedPrompts(activeQueueSessionKey!).some(e => e.id === id) && sendQueuedNow(id))
+        (busyRef.current &&
+          getQueuedPrompts(activeQueueSessionKey!).some(e => e.id === id) &&
+          sendQueuedUnlessPaused(id))
       )
     },
-    [activeQueueSessionKey, busy, replyPaused, sendQueuedNow, steerQueuedNow]
+    [activeQueueSessionKey, busy, sendQueuedUnlessPaused, steerQueuedUnlessPaused]
   )
 
   // Edge-independent auto-drain: send the head whenever the session is idle and
@@ -840,8 +851,8 @@ export function useComposerQueue({
     queueEdit,
     queueParked,
     queuedPrompts,
-    sendQueuedNow,
-    steerQueuedNow,
+    sendQueuedNow: sendQueuedUnlessPaused,
+    steerQueuedNow: steerQueuedUnlessPaused,
     stepQueuedEdit
   }
 }

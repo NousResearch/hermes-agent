@@ -126,7 +126,9 @@ def test_a_turn_that_finished_before_the_pause_landed_is_not_paused(sid, complet
     payload, status = complete(session, {"final_response": "done"})
     assert status == "complete"
     assert "paused" not in payload
-    assert "_turn_pause" not in session
+    # Consumed with that turn all the same: a later completion of the record cannot report it.
+    payload, _ = complete(session, {"final_response": "", "interrupted": True})
+    assert "paused" not in payload
 
 
 def test_a_pause_left_by_an_earlier_turn_does_not_reach_the_next_one(sid, complete):
@@ -145,4 +147,43 @@ def test_a_resume_interrupt_on_an_idle_session_marks_nothing(sid, complete):
 
     interrupt(sid, resume=True)
 
-    assert "_turn_pause" not in session
+    assert not session.get("inflight_turn")
+    payload, _ = complete(session, {"final_response": "", "interrupted": True})
+    assert "paused" not in payload
+
+
+def correct(sid: str, verb: str) -> dict:
+    return server.handle_request(
+        {"jsonrpc": "2.0", "id": 2, "method": f"session.{verb}", "params": {"session_id": sid, "text": "and the appendix"}})
+
+
+@pytest.mark.parametrize("verb", ["steer", "redirect"])
+def test_a_correction_the_paused_turn_takes_keeps_the_pause(sid, complete, verb):
+    """An accepted steer or redirect replaces the turn's inflight record with a copy (``_record_inflight_correction``);
+    it is the same turn, so its completion still says ``paused``."""
+    session = running(sid)
+    session["agent"] = SimpleNamespace(steer=lambda text: True, redirect=lambda text: True,
+                                       _supports_active_turn_redirect=True)
+    before = session["inflight_turn"]
+
+    interrupt(sid, resume=True)
+    response = correct(sid, verb)
+
+    assert response.get("result", {}).get("status") in ("queued", "redirected"), response
+    assert session["inflight_turn"] is not before and session["inflight_turn"]["corrections"] == ["and the appendix"]
+    payload, status = complete(session, {"final_response": "", "interrupted": True})
+    assert (status, payload.get("paused")) == ("interrupted", True)
+
+
+def test_the_users_stop_after_a_correction_still_wins(sid, complete):
+    session = running(sid)
+    session["agent"] = SimpleNamespace(steer=lambda text: True)
+
+    interrupt(sid, resume=True)
+    correct(sid, "steer")
+    interrupt(sid)
+    interrupt(sid, resume=True)
+
+    payload, status = complete(session, {"final_response": "", "interrupted": True})
+    assert status == "interrupted"
+    assert "paused" not in payload

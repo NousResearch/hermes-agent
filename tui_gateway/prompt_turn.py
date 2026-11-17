@@ -919,9 +919,9 @@ def _persisted_turn_receipt(st: _TurnRun, raw: Any, status: str) -> dict | None:
 def _pause_mark(session: dict, status: str) -> dict:
     """``{"paused": True}`` for an interrupted turn its interrupter continues itself (``session.interrupt``
     ``resume``: ``methods_session_interrupt._note_turn_pause``). Consumes the turn's mark either way."""
-    pause = session.pop("_turn_pause", None)
-    paused = status == "interrupted" and bool(pause) and pause[1] and pause[0] is session.get("inflight_turn")
-    return {"paused": True} if paused else {}
+    turn = session.get("inflight_turn")
+    pause = turn.pop("_pause", None) if isinstance(turn, dict) else None
+    return {"paused": True} if status == "interrupted" and pause is True else {}
 
 
 def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):

@@ -278,6 +278,31 @@ describe('useBackgroundQueueDrain', () => {
 
   // A send held for a paused reply (store/paused-replies.ts) waits for the
   // continuation to complete even when the user switched to another chat.
+  // The queue is keyed by the chat's lineage root; the pause was marked under the id its runtime showed
+  // (a compression tip).
+  it('holds a compressed chat\'s background queue while its reply is paused under its tip id', async () => {
+    const runtimeMap = { current: new Map([['lineage-root', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    setSessions([lineageSession({ _lineage_root_id: 'lineage-root', id: 'compression-tip' })])
+    enqueueQueuedPrompt('lineage-root', { text: 'after the continuation', attachments: [] })
+    clearAllSessionStates()
+    markReplyPaused('compression-tip')
+
+    try {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      expect(submitText).not.toHaveBeenCalled()
+
+      act(() => endReplyPause('compression-tip'))
+
+      await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    } finally {
+      endReplyPause('compression-tip')
+    }
+  })
+
   it('holds a background queue while its reply is paused, then drains it', async () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)

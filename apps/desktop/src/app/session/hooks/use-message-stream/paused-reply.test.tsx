@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { endReplyPause, isReplyAwaitingContinuation, isReplyPaused, PAUSE_CAP_MS } from '@/store/paused-replies'
+import { $sessions, resolveComposerSessionKey } from '@/store/session'
+import type { SessionInfo } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -24,7 +26,7 @@ let stream: MessageStreamHarness
 const emit = (sessionId: string, event: Omit<GatewayEvent, 'session_id'>) =>
   act(() => stream.handleEvent({ ...event, session_id: sessionId }))
 
-const chatState = (): ClientSessionState => ({ ...createClientSessionState(), storedSessionId: CHAT })
+const chatState = (storedSessionId = CHAT): ClientSessionState => ({ ...createClientSessionState(), storedSessionId })
 
 function mountRunningTurn() {
   vi.useFakeTimers()
@@ -42,6 +44,7 @@ describe('a reply paused for an automatic continuation', () => {
   afterEach(() => {
     cleanup()
     endReplyPause(CHAT)
+    $sessions.set([])
     vi.useRealTimers()
   })
 
@@ -61,6 +64,34 @@ describe('a reply paused for an automatic continuation', () => {
 
     emit(AFTER, { payload: { status: 'complete', text: 'Read it.' }, type: 'message.complete' })
     expect(isReplyPaused(CHAT)).toBe(false)
+  })
+
+  // A compressed chat has several ids: the runtime shows its newest (the compression tip), while the composer
+  // and the queue are keyed by its lineage root (resolveComposerSessionKey). The pause is the conversation's.
+  it('holds a compressed chat under every id of its lineage, to its continuation on another of them', () => {
+    const ROOT = 'paused-reply-lineage-root'
+    const TIP = 'paused-reply-compression-tip'
+    $sessions.set([{ _lineage_root_id: ROOT, id: TIP } as SessionInfo])
+    vi.useFakeTimers()
+    stream = renderMessageStream(BEFORE, {
+      states: new Map([
+        [BEFORE, chatState(TIP)],
+        [AFTER, chatState(ROOT)]
+      ])
+    })
+    emit(BEFORE, { payload: {}, type: 'message.start' })
+
+    emit(BEFORE, { payload: { paused: true, status: 'interrupted', text: '' }, type: 'message.complete' })
+    expect(isReplyPaused(resolveComposerSessionKey(TIP, $sessions.get()))).toBe(true)
+    expect(isReplyAwaitingContinuation(TIP)).toBe(true)
+    expect(isReplyPaused(CHAT)).toBe(false)
+
+    emit(AFTER, { payload: {}, type: 'message.start' })
+    expect(isReplyAwaitingContinuation(TIP)).toBe(false)
+    expect(isReplyPaused(ROOT)).toBe(true)
+
+    emit(AFTER, { payload: { status: 'complete', text: 'Read it.' }, type: 'message.complete' })
+    expect(isReplyPaused(ROOT, TIP)).toBe(false)
   })
 
   it('is paused again when the continuation itself is paused (a second grant)', () => {

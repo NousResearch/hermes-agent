@@ -57,6 +57,27 @@ def _read_proc_argv(pid: int) -> Optional[list[str]]:
         return None
 
 
+def _python_c_bootstrap_target(argv: Sequence[str]) -> Optional[tuple[str, list[str]]]:
+    """``(script, args after it)`` for cron's ``python -c`` script bootstrap, else None.
+
+    ``cron/scheduler_script.py`` starts a job's ``.py`` script on a managed install as
+    ``python -c <bootstrap> <repo> <script> ...``; the bootstrap's contract is
+    ``repo, script = sys.argv[1], sys.argv[2]``, so the script is the third operand after ``-c``.
+    An 80-character cut of that command line is the bootstrap's own imports and names nothing a
+    person can act on.
+    """
+    for index, token in enumerate(argv[:-3]):
+        if token != "-c":
+            continue
+        program = argv[index + 1]
+        # The shape, not the wording: only a program that reads both argv[1] (repo) and argv[2]
+        # (script) can be this launcher, so a reworded bootstrap keeps being named.
+        if "sys.argv[1]" not in program or "sys.argv[2]" not in program:
+            return None
+        return argv[index + 3], list(argv[index + 4:])
+    return None
+
+
 def describe_holder_pid(pid: int) -> str:
     """``PID 123 (hermes gateway run)`` for operator-facing holder lists; /proc argv first, psutil elsewhere."""
     argv = _read_proc_argv(pid)
@@ -65,7 +86,14 @@ def describe_holder_pid(pid: int) -> str:
             argv = psutil.Process(pid).cmdline() or None
         except Exception:
             argv = None
-    who = " ".join(" ".join([os.path.basename(argv[0]), *argv[1:]]).split())[:80] if argv else "command line unavailable"
+    if not argv:
+        return f"PID {pid} (command line unavailable)"
+    bootstrap = _python_c_bootstrap_target(argv)
+    if bootstrap is not None:
+        script, extra = bootstrap
+        program = os.path.basename(argv[0]).removesuffix(".exe")
+        return f"PID {pid} ({' '.join(['cron script', script, *extra, f'(via {program})'])})"
+    who = " ".join(" ".join([os.path.basename(argv[0]), *argv[1:]]).split())[:80]
     return f"PID {pid} ({who})"
 
 

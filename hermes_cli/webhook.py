@@ -192,6 +192,15 @@ def _route_signature(args, existing: dict, is_update: bool) -> dict:
     return {"signature": existing["signature"]} if "signature" in existing else {}
 
 
+def _route_identity(args, existing: dict) -> dict:
+    """The ``identity`` key for the saved route: ``--identity`` when given (``none`` included), else the
+    route's current one, so re-running subscribe never drops a source."""
+    spec = getattr(args, "identity", None)
+    if spec is None:
+        spec = existing.get("identity")
+    return {"identity": spec} if spec else {}
+
+
 def _is_known_delivery_target(target: object) -> bool:
     """Whether the gateway can dispatch ``target``; plugin platforms register only after discovery."""
     from gateway.webhook_targets import is_dispatchable_target
@@ -223,9 +232,12 @@ def _repair_command(name: str, route: dict) -> str:
     return " ".join(parts)
 
 
-def _subscribe_input_error(name: str, deliver: str) -> str | None:
+def _subscribe_input_error(name: str, deliver: str, identity: object = None) -> str | None:
+    from gateway.platforms.webhook_identity import parse_identity
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         return f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores."
+    if identity is not None and (error := parse_identity(identity)[1]):
+        return f"Error: {error}"
     if not _is_known_delivery_target(deliver):
         return (f"Error: Unknown delivery target '{deliver}'. Use a platform name such as 'telegram'; "
                 "pass its chat ID separately with --deliver-chat-id.")
@@ -234,7 +246,7 @@ def _subscribe_input_error(name: str, deliver: str) -> str | None:
 
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
-    if error := _subscribe_input_error(name, args.deliver or "log"):
+    if error := _subscribe_input_error(name, args.deliver or "log", getattr(args, "identity", None)):
         print(error)
         return 1
 
@@ -275,6 +287,7 @@ def _cmd_subscribe(args):
         "deliver": args.deliver or "log",
         "profile": profile,
         **_route_signature(args, existing, is_update),
+        **_route_identity(args, existing),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -327,6 +340,7 @@ def _cmd_subscribe(args):
     print(f"  Secret: {mask_secret(secret)} (full value in {display_hermes_home()}/{_SUBSCRIPTIONS_FILENAME})")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Signature: {route.get('signature', 'any supported scheme (unpinned)')!s}")
+    print(f"  Identity: {route.get('identity', 'delivery-id headers (default)')}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
@@ -383,6 +397,8 @@ def _cmd_list(args):
         print(f"    Profile: {profile}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if route.get("identity"):
+            print(f"    Identity: {route['identity']}")
         if invalid_delivery:
             print(f"    Fix:     {_repair_command(name, route)}")
             print("             (subscribe replaces the whole route; adjust the platform and chat ID as needed)")

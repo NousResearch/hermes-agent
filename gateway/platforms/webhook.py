@@ -42,7 +42,7 @@ from gateway.platforms._shared import secrets_match, timestamp_fresh
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
-from gateway.platforms import webhook_receipts as receipts
+from gateway.platforms import webhook_identity, webhook_receipts as receipts
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.platforms.webhook_mcp_events import (
@@ -315,6 +315,9 @@ class WebhookAdapter(BasePlatformAdapter):
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
                                  f"an existing cron job (which handles its own delivery).")
         validate_coalesce_config(name, route)
+        _source, identity_error = webhook_identity.parse_identity(route.get("identity"))
+        if identity_error:
+            raise ValueError(f"[webhook] Route '{name}': {identity_error}")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
@@ -430,7 +433,7 @@ class WebhookAdapter(BasePlatformAdapter):
         seen_at = self._seen_deliveries.get(identity)
         if seen_at is not None and now - seen_at < self._idempotency_ttl:
             return False
-        row_id = await asyncio.to_thread(self._receipts.claim, identity, event_type, now)
+        row_id = await asyncio.to_thread(self._receipts.claim, identity, event_type, now, receipt.body_digest)
         if row_id is None:
             return False
         receipt.claim_row = row_id
@@ -489,6 +492,10 @@ class WebhookAdapter(BasePlatformAdapter):
             validate_coalesce_config(name, route)
         except ValueError as e:
             logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, e)
+            return False
+        _source, identity_error = webhook_identity.parse_identity(route.get("identity"))
+        if identity_error:
+            logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, identity_error)
             return False
         return True
 
@@ -765,6 +772,22 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Skill loading failed: %s", e)
         return prompt
 
+    @staticmethod
+    def _configured_delivery_id(route_config: dict, headers, payload: Any, raw_body: bytes,
+                                receipt: receipts.DeliveryReceipt) -> Optional[str]:
+        """The delivery id the route's ``identity`` source names (webhook_identity.py), else None so the
+        fixed header chain applies. ``none`` gives every request a fresh id. A sender-chosen header id
+        records the body digest so a reuse with another body can be refused."""
+        source, _error = webhook_identity.parse_identity(route_config.get("identity"))
+        if source is None:
+            return None
+        if source.kind == webhook_identity.NONE:
+            return uuid.uuid4().hex
+        value = webhook_identity.resolve_identity(source, headers, payload)
+        if value and source.compares_body:
+            receipt.body_digest = webhook_identity.body_digest(raw_body)
+        return value
+
     async def _gave_up_response(self, identity: _WebhookDeliveryIdentity, route_config: dict,
                                 now: float) -> Optional[web.Response]:
         """A terminal 200 once this delivery has failed ``max_delivery_attempts`` times, so the provider stops
@@ -824,7 +847,9 @@ class WebhookAdapter(BasePlatformAdapter):
         mcp_control = await handle_mcp_event_control(self, route_name, route_config, payload, profile)
         if mcp_control is not None:
             return mcp_control
-        delivery_id = mcp_event_delivery_id(route_config, payload) or delivery_id
+        delivery_id = (mcp_event_delivery_id(route_config, payload)
+                       or self._configured_delivery_id(route_config, headers, payload, raw_body, receipt)
+                       or delivery_id)
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         receipt.delivery_id, receipt.event_type = delivery_id, event_type
@@ -870,6 +895,10 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.info("[webhook] Delivery %s on route %s gave up after repeated failures", delivery_id, route_name)
             receipt.ref = receipts.GAVE_UP_REF
             return gave_up
+        if receipt.body_digest and await asyncio.to_thread(
+                self._receipts.conflicting_body, delivery_identity, receipt.body_digest, now):
+            logger.warning("[webhook] Delivery %s on route %s reused with a different body", delivery_id, route_name)
+            return _json_error("This delivery id was already used with a different body", 409)
         if non_durable and not await self._record_delivery_id(delivery_identity, now, receipt, event_type):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)

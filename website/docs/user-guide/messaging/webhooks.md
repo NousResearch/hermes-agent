@@ -81,6 +81,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
 | `signature` | No | Pin the route to one signature scheme: `generic` (`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`, or Standard Webhooks / Svix headers), `github` (`X-Hub-Signature-256`), `gitlab` (`X-Gitlab-Token`, or a GitLab signing token sent as Standard Webhooks headers) or `linear` (`Linear-Signature`). Every other header family gets the same `404` as an unknown route. Omit it to accept every supported scheme (the behaviour before this key existed). `hermes webhook subscribe` writes `signature: generic` for new routes. Recommended; see [Pin the signature scheme](#pin-the-signature-scheme). |
+| `identity` | No | Where the delivery ID is read, so a provider retry is a duplicate: `header:<Name>` (a header the sender sets, such as an `Idempotency-Key`; the same ID with a different body is refused with `409`), `body:<json-pointer>` (a field of the JSON body, e.g. `body:/data/event/event_id`; a re-serialized retry still matches), or `none` (every request runs). Omit it for the default header chain. See [Delivery identity](#delivery-identity). |
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. Dynamic subscriptions set it with `hermes webhook subscribe <name> --route-profile coder`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
@@ -657,6 +658,28 @@ Requests exceeding the limit receive a `429 Too Many Requests` response.
 ### Idempotency
 
 Delivery IDs (from `X-GitHub-Delivery`, `svix-id`, `webhook-id`, `X-Request-ID`, or a random per-request ID) are scoped to the route and profile. Duplicate deliveries (e.g. webhook retries) are skipped with a `200` response, preventing duplicate agent runs. Agent routes dedupe through the session admission ledger; `deliver_only`, `cron_job` and coalesced routes dedupe through the delivery receipts below, so a retry that arrives after a gateway restart, or days later, is still a duplicate. A delivery that failed with a retryable error (`503`, or a target that rejected the message) is not remembered as delivered, so the sender's retry runs.
+
+#### Delivery identity {#delivery-identity}
+
+The default header chain does not fit every provider. Some put a per-request ID in `X-Request-ID` that changes on every retry, so each retry runs again. Others put the stable event ID in the body. Set the route's `identity` to the value that stays the same across retries and differs between events:
+
+```yaml
+routes:
+  sentry-alerts:
+    identity: "body:/data/event/event_id"   # RFC 6901 JSON pointer into the body
+  acme:
+    identity: "header:Acme-Event-Id"        # a header the sender sets
+  firehose:
+    identity: none                          # no dedupe: every request runs
+```
+
+```bash
+hermes webhook subscribe sentry-alerts --identity body:/data/event/event_id
+```
+
+- `body:` reads a string or integer field. A provider that re-serializes the body on retry still matches, so the body is not compared.
+- `header:` is a key the sender chose. If the sender reuses it for a different body, the request is refused with `409` and recorded in the history as `failed` (`same delivery id, different body`). Signature, timestamp and transport headers (`X-Webhook-Timestamp`, `X-Hub-Signature-256`, `Content-Type`, `Host` and the like) change on every attempt or belong to the transport, so they are refused when the route loads.
+- A request that does not carry the named value falls back to the default header chain.
 
 ### Delivery history {#delivery-history}
 

@@ -46,6 +46,12 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').")
     wh_sub.add_argument(
+        "--identity", default=None,
+        help="Where the delivery id is read, so a provider retry is a duplicate: 'header:<Name>' "
+        "(a reused id with a different body is refused with 409), 'body:/json/pointer' "
+        "(e.g. body:/data/event/event_id), or 'none' (every request runs). Default: the "
+        "X-GitHub-Delivery / svix-id / webhook-id / X-Request-ID headers.")
+    wh_sub.add_argument(
         "--mirror-to-session", action="store_true",
         help="Also write each delivered message into the target chat's session, so replying to it "
         "in that chat has context. Only for sources whose content you trust in your conversation.")

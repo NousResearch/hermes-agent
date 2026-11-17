@@ -9,5 +9,6 @@ export const jaWebhookTest: Partial<WebhookTestCopy> = {
   sending: '送信中…',
   accepted: (status, deliveryId) => `テストを配信しました（${status}）· ${deliveryId}`,
   rejected: (status, detail) => `受信側の応答 ${status}: ${detail}`,
+  ignored: '配信されましたが、サブスクリプションが無視しました（イベントまたはフィルターのルールがテストイベントを除外しています）',
   failed: 'テストを送信できませんでした'
 }

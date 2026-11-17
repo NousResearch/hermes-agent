@@ -9,5 +9,6 @@ export const frWebhookTest: Partial<WebhookTestCopy> = {
   sending: 'Envoi…',
   accepted: (status, deliveryId) => `Test livré (${status}) · ${deliveryId}`,
   rejected: (status, detail) => `Le récepteur a répondu ${status} : ${detail}`,
+  ignored: "Livré, mais l'abonnement l'a ignoré (ses règles d'événements ou de filtre écartent un événement de test)",
   failed: "Le test n'a pas pu être envoyé"
 }

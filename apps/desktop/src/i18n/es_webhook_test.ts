@@ -9,5 +9,6 @@ export const esWebhookTest: Partial<WebhookTestCopy> = {
   sending: 'Enviando…',
   accepted: (status, deliveryId) => `Prueba entregada (${status}) · ${deliveryId}`,
   rejected: (status, detail) => `El receptor respondió ${status}: ${detail}`,
+  ignored: 'Entregado, pero la suscripción lo ignoró (sus reglas de eventos o filtros descartan un evento de prueba)',
   failed: 'No se pudo enviar la prueba'
 }

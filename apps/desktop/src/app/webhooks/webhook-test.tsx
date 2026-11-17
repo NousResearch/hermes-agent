@@ -1,9 +1,9 @@
 import { webhookTestCurl } from '@hermes/shared'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { CopyButton } from '@/components/ui/copy-button'
-import { sendWebhookTest, type WebhookRoute } from '@/hermes'
+import { sendWebhookTest, type WebhookRoute, type WebhookTestResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Send } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
@@ -35,10 +35,33 @@ export function WebhookTestCommand({ secret, sub }: WebhookTestCommandProps) {
   )
 }
 
-/** Detail-pane test block: the curl plus a Send test the backend signs with the stored secret. */
+type TestCopy = ReturnType<typeof useI18n>['t']['webhooks']['test']
+
+function resultNotice(w: TestCopy, result: WebhookTestResponse) {
+  if (result.ok) {
+    return { kind: 'success' as const, message: w.accepted(result.status, result.delivery_id) }
+  }
+
+  return { kind: 'error' as const, message: result.outcome === 'ignored' ? w.ignored : w.rejected(result.status, result.response) }
+}
+
+/** Detail-pane test block: the curl plus a Send test the backend signs with the stored secret.
+ *  The parent keys it by (profile, subscription), so a pending test belongs to the row that sent it. */
 export function WebhookTestPanel({ profile, sub }: { profile: string; sub: WebhookRoute }) {
   const w = useI18n().t.webhooks.test
   const [sending, setSending] = useState(false)
+  const ownerActive = useRef(true)
+
+  // Same StrictMode-safe ownership flag as the page: a completion after this row unmounts (another
+  // row selected, profile switched) must not toast into the new owner's view.
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle ownership flag, not an atom mirror
+  useEffect(() => {
+    ownerActive.current = true
+
+    return () => {
+      ownerActive.current = false
+    }
+  }, [])
 
   const send = useCallback(async () => {
     setSending(true)
@@ -46,15 +69,17 @@ export function WebhookTestPanel({ profile, sub }: { profile: string; sub: Webho
     try {
       const result = await sendWebhookTest(sub.name, profile)
 
-      notify(
-        result.ok
-          ? { kind: 'success', message: w.accepted(result.status, result.delivery_id) }
-          : { kind: 'error', message: w.rejected(result.status, result.response) }
-      )
+      if (ownerActive.current) {
+        notify(resultNotice(w, result))
+      }
     } catch (err) {
-      notifyError(err, w.failed)
+      if (ownerActive.current) {
+        notifyError(err, w.failed)
+      }
     } finally {
-      setSending(false)
+      if (ownerActive.current) {
+        setSending(false)
+      }
     }
   }, [profile, sub.name, w])
 

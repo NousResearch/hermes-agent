@@ -135,21 +135,20 @@ function SignatureField({
 
 interface SubscriptionCardProps {
   sub: WebhookRoute;
-  testing: boolean;
   toggling: boolean;
-  onSendTest: () => void;
+  showToast: (message: string, kind: "success" | "error") => void;
   onToggle: () => void;
   onDelete: () => void;
 }
 
 function SubscriptionCard({
   sub,
-  testing,
   toggling,
-  onSendTest,
+  showToast,
   onToggle,
   onDelete,
 }: SubscriptionCardProps) {
+  const { testing, sendTest } = useSendTest(sub.name, showToast);
   return (
     <Card>
       <CardContent className="flex items-start gap-4 py-4">
@@ -207,7 +206,7 @@ function SubscriptionCard({
             className="uppercase"
             disabled={!sub.enabled || testing}
             prefix={testing ? <Spinner /> : <Send className="h-4 w-4" />}
-            onClick={onSendTest}
+            onClick={() => void sendTest()}
           >
             {testing ? "Sending…" : "Send test"}
           </Button>
@@ -284,29 +283,29 @@ function CreatedResult({ created, onDone }: { created: CreatedWebhook; onDone: (
   );
 }
 
-// Send test: the backend signs with the stored secret and reports the receiver's answer.
-function useSendTest(showToast: (message: string, kind: "success" | "error") => void) {
-  const [testingName, setTestingName] = useState<string | null>(null);
-  const sendTest = useCallback(
-    async (subName: string) => {
-      setTestingName(subName);
-      try {
-        const result = await api.sendWebhookTest(subName);
-        showToast(
-          result.ok
-            ? `Test delivered (${result.status}) · ${result.delivery_id}`
+// Send test, owned by one card: the backend signs with the stored secret and reports the
+// receiver's answer. Each card keeps its own pending state, so two tests never share a spinner.
+function useSendTest(subName: string, showToast: (message: string, kind: "success" | "error") => void) {
+  const [testing, setTesting] = useState(false);
+  const sendTest = useCallback(async () => {
+    setTesting(true);
+    try {
+      const result = await api.sendWebhookTest(subName);
+      showToast(
+        result.ok
+          ? `Test delivered (${result.status}) · ${result.delivery_id}`
+          : result.outcome === "ignored"
+            ? "Delivered, but the subscription ignored it (its event or filter rules drop a test event)"
             : `Receiver answered ${result.status}: ${result.response}`,
-          result.ok ? "success" : "error",
-        );
-      } catch (e) {
-        showToast(`Test could not be sent: ${errorMessage(e)}`, "error");
-      } finally {
-        setTestingName(null);
-      }
-    },
-    [showToast],
-  );
-  return { testingName, sendTest };
+        result.ok ? "success" : "error",
+      );
+    } catch (e) {
+      showToast(`Test could not be sent: ${errorMessage(e)}`, "error");
+    } finally {
+      setTesting(false);
+    }
+  }, [subName, showToast]);
+  return { testing, sendTest };
 }
 
 export default function WebhooksPage() {
@@ -470,7 +469,6 @@ export default function WebhooksPage() {
   };
 
   const [togglingName, setTogglingName] = useState<string | null>(null);
-  const { testingName, sendTest: handleSendTest } = useSendTest(showToast);
 
   const handleToggleEnabled = useCallback(
     async (subName: string, nextEnabled: boolean) => {
@@ -764,9 +762,8 @@ export default function WebhooksPage() {
           <SubscriptionCard
             key={sub.name}
             sub={sub}
-            testing={testingName === sub.name}
             toggling={togglingName === sub.name}
-            onSendTest={() => void handleSendTest(sub.name)}
+            showToast={showToast}
             onToggle={() => handleToggleEnabled(sub.name, !sub.enabled)}
             onDelete={() => webhookDelete.requestDelete(sub.name)}
           />

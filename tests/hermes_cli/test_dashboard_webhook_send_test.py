@@ -16,15 +16,16 @@ from gateway.platforms.webhook import WebhookAdapter, _header_delivery_id
 def receiver():
     """A loopback HTTP receiver that records each POST's path, headers and body and answers 202."""
     seen = []
+    answer = {"code": 202, "body": b'{"status": "accepted"}'}
 
     class _Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             seen.append((self.path, CIMultiDict(self.headers.items()), body))
-            self.send_response(202)
+            self.send_response(answer["code"])
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"status": "accepted"}')
+            self.wfile.write(answer["body"])
 
         def log_message(self, *args):
             pass
@@ -32,7 +33,7 @@ def receiver():
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    yield server.server_address[1], seen
+    yield server.server_address[1], seen, answer
     server.shutdown()
     server.server_close()
 
@@ -46,7 +47,7 @@ def client(_isolate_hermes_home, receiver):
     from hermes_cli.config import load_config, save_config
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
-    port, _ = receiver
+    port, _, _ = receiver
     cfg = load_config()
     cfg.setdefault("platforms", {})["webhook"] = {"enabled": True, "extra": {"host": "127.0.0.1", "port": port}}
     save_config(cfg)
@@ -67,7 +68,7 @@ def _adapter_accepts(route: dict, headers, body: bytes) -> bool:
 def test_send_test_posts_a_signed_unique_delivery(client, receiver, pin):
     from hermes_cli.webhook import _load_subscriptions
 
-    _, seen = receiver
+    _, seen, _ = receiver
     assert client.post("/api/webhooks", json={"name": "deploy", "signature": pin}).status_code == 200
 
     first = client.post("/api/webhooks/deploy/test")
@@ -95,3 +96,16 @@ def test_send_test_reports_unknown_route_and_unreachable_receiver(client, receiv
     r = client.post("/api/webhooks/deploy/test")
     assert r.status_code == 502
     assert "gateway" in r.json()["detail"].lower()
+
+
+def test_send_test_reports_an_ignored_event_as_not_delivered(client, receiver):
+    """The adapter answers 200 ``ignored`` when the route's event filter drops ``test``: nothing ran."""
+    _, _, answer = receiver
+    answer.update(code=200, body=b'{"status": "ignored", "event": "test"}')
+    assert client.post("/api/webhooks", json={"name": "deploy", "events": ["push"]}).status_code == 200
+
+    r = client.post("/api/webhooks/deploy/test").json()
+
+    assert r["status"] == 200
+    assert r["outcome"] == "ignored"
+    assert r["ok"] is False

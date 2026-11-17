@@ -5621,6 +5621,7 @@
     "webhooks.test.copyCommand",
     "webhooks.test.failed",
     "webhooks.test.hint",
+    "webhooks.test.ignored",
     "webhooks.test.placeholderHint",
     "webhooks.test.rejected",
     "webhooks.test.send",

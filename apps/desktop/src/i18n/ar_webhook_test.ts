@@ -9,5 +9,6 @@ export const arWebhookTest: Partial<WebhookTestCopy> = {
   sending: 'جارٍ الإرسال…',
   accepted: (status, deliveryId) => `تم تسليم الاختبار (${status}) · ${deliveryId}`,
   rejected: (status, detail) => `ردّ المستقبِل ${status}: ${detail}`,
+  ignored: 'تم التسليم، لكن الاشتراك تجاهله (قواعد الأحداث أو التصفية لديه تستبعد حدث الاختبار)',
   failed: 'تعذّر إرسال الاختبار'
 }

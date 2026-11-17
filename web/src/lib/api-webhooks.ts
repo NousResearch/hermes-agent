@@ -46,9 +46,11 @@ export interface WebhookCreate {
   signature?: WebhookSignature;
 }
 
-// POST /api/webhooks/{name}/test: the backend signs and sends one test event; `ok` is a 2xx answer.
+// POST /api/webhooks/{name}/test: the backend signs and sends one test event. `ok` is a 2xx answer
+// that the receiver did not ignore; `outcome` is the receiver's own status (accepted, ignored, ...).
 export interface WebhookTestResponse {
   ok: boolean;
+  outcome: string | null;
   url: string;
   delivery_id: string;
   status: number;

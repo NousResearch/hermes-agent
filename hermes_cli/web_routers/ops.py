@@ -7,6 +7,7 @@ reached through the late-binding seam (cycle-safe).
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
@@ -322,8 +323,19 @@ async def send_webhook_test(name: str, profile: Optional[str] = None):
             ) from exc
 
     result = await config_scoped_to_thread(profile, _run)
-    return {"ok": 200 <= result.status < 300, "url": result.url, "delivery_id": result.delivery_id,
-            "status": result.status, "response": result.body}
+    outcome = _receiver_outcome(result.body)
+    # A 200 "ignored" (event filter, route filter, script) means nothing ran: not a passing test.
+    return {"ok": 200 <= result.status < 300 and outcome != "ignored", "outcome": outcome, "url": result.url,
+            "delivery_id": result.delivery_id, "status": result.status, "response": result.body}
+
+
+def _receiver_outcome(body: str) -> Optional[str]:
+    """The webhook receiver's ``status`` field (accepted / ignored / duplicate / ...), if it sent one."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    return parsed.get("status") if isinstance(parsed, dict) else None
 
 
 # --- Gateway lifecycle: spawn the real `hermes gateway <verb>` so behaviour

@@ -199,6 +199,7 @@ describe('WebhooksView test delivery', () => {
     mocks.sendWebhookTest.mockResolvedValue({
       delivery_id: 'hermes-test-abc',
       ok: true,
+      outcome: 'accepted',
       response: '{"status":"accepted"}',
       status: 202,
       url: route.url
@@ -218,5 +219,25 @@ describe('WebhooksView test delivery', () => {
         expect.objectContaining({ kind: 'success', message: expect.stringContaining('hermes-test-abc') })
       )
     )
+  })
+
+  it('drops a test completion after the row that sent it is no longer shown', async () => {
+    const other = { ...route, name: 'other', url: 'http://localhost:8644/webhooks/other' }
+    const pending = deferred<unknown>()
+    mocks.getWebhooks.mockResolvedValue({ enabled: true, subscriptions: [route, other] })
+    mocks.sendWebhookTest.mockReturnValue(pending.promise)
+    renderView()
+
+    fireEvent.click(await screen.findByRole('button', { name: /send test/i }))
+    await waitFor(() => expect(mocks.sendWebhookTest).toHaveBeenCalledWith('deploy', 'alpha'))
+    expect(screen.getByRole('button', { name: /sending/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByText('other'))
+    expect(await screen.findByRole('button', { name: /send test/i })).toBeTruthy()
+
+    await act(async () =>
+      pending.resolve({ delivery_id: 'late', ok: true, outcome: 'accepted', response: '', status: 202, url: route.url })
+    )
+    expect(mocks.notify).not.toHaveBeenCalled()
   })
 })

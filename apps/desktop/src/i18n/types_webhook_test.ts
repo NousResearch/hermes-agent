@@ -8,5 +8,6 @@ export interface WebhookTestCopy {
   sending: string
   accepted: (status: number, deliveryId: string) => string
   rejected: (status: number, detail: string) => string
+  ignored: string
   failed: string
 }

@@ -708,7 +708,7 @@ function WebhookDetail({ profile, sub }: { profile: string; sub: WebhookRoute })
         </div>
       ) : null}
 
-      <WebhookTestPanel profile={profile} sub={sub} />
+      <WebhookTestPanel key={`${profile}:${sub.name}`} profile={profile} sub={sub} />
     </PanelDetail>
   )
 }

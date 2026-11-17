@@ -9,5 +9,6 @@ export const zhHantWebhookTest: Partial<WebhookTestCopy> = {
   sending: '傳送中…',
   accepted: (status, deliveryId) => `測試已投遞（${status}）· ${deliveryId}`,
   rejected: (status, detail) => `接收端回應 ${status}：${detail}`,
+  ignored: '已投遞，但訂閱忽略了它（其事件或篩選規則會捨棄測試事件）',
   failed: '無法傳送測試'
 }

@@ -9,5 +9,6 @@ export const deWebhookTest: Partial<WebhookTestCopy> = {
   sending: 'Wird gesendet…',
   accepted: (status, deliveryId) => `Test zugestellt (${status}) · ${deliveryId}`,
   rejected: (status, detail) => `Empfänger antwortete ${status}: ${detail}`,
+  ignored: 'Zugestellt, aber das Abonnement hat es ignoriert (seine Ereignis- oder Filterregeln verwerfen ein Testereignis)',
   failed: 'Test konnte nicht gesendet werden'
 }

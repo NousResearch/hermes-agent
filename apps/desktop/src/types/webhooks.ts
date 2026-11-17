@@ -54,10 +54,12 @@ export interface WebhookEnableResponse {
   restart_started?: boolean
 }
 
-// POST /api/webhooks/{name}/test: the backend signs and sends one test event; `ok` is a 2xx answer.
+// POST /api/webhooks/{name}/test: the backend signs and sends one test event. `ok` is a 2xx answer
+// that the receiver did not ignore; `outcome` is the receiver's own status (accepted, ignored, ...).
 export interface WebhookTestResponse {
   delivery_id: string
   ok: boolean
+  outcome: null | string
   response: string
   status: number
   url: string

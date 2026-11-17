@@ -9,5 +9,6 @@ export const ruWebhookTest: Partial<WebhookTestCopy> = {
   sending: 'Отправка…',
   accepted: (status, deliveryId) => `Тест доставлен (${status}) · ${deliveryId}`,
   rejected: (status, detail) => `Получатель ответил ${status}: ${detail}`,
+  ignored: 'Доставлено, но подписка проигнорировала его (её правила событий или фильтров отбрасывают тестовое событие)',
   failed: 'Не удалось отправить тест'
 }

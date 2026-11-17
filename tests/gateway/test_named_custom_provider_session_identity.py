@@ -87,6 +87,23 @@ def test_named_custom_resolver_sync_row_reader_and_canonical_projection_keep_own
         db.close()
 
 
+def test_the_synced_route_names_its_model_so_resume_pairs_them_after_a_fallback(tmp_path):
+    """The model column is rewritten by whatever served the next call; the synced route keeps its own model."""
+    from hermes_cli.config import atomic_config_write, get_config_path
+    from persistence.gateway.routing import resume_route
+
+    atomic_config_write(get_config_path(), CONFIG)
+    db = open_persistence(profile_scope(home=tmp_path))
+    try:
+        seed_session(db, "s1", "telegram", model="old-model")
+        GatewayTurnPrepareMixin._sync_session_model_from_agent(_runner(db), "s1", _agent())
+        record = db.sessions.get("s1")
+        model, route = resume_route(record.model_config, model="fallback-model")
+        assert (model, route.provider) == ("beta-model", "custom:beta")
+    finally:
+        db.close()
+
+
 @pytest.mark.parametrize("requested", ["", "auto", "custom"])
 def test_bare_custom_sync_uses_canonical_endpoint_fallback(tmp_path, monkeypatch, requested):
     """Legacy/bare runtime shapes keep the existing URL-based fallback semantics."""

@@ -6,6 +6,7 @@ sandbox that driver is an exec stream which keeps the sandbox awake (and billed)
 from __future__ import annotations
 
 import json
+import threading
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -53,10 +54,18 @@ def backends(tmp_path, monkeypatch):
         def __init__(self, mode):
             super().__init__()
             self.stopped = False
+            self.stopped_in = None
+            self.during_call = lambda: None
             created.append(self)
 
         def stop(self):
-            self.stopped = True
+            from hermes_constants import get_hermes_home_override
+            self.stopped, self.stopped_in = True, get_hermes_home_override()
+
+        def list_apps(self):
+            self.during_call()
+            assert not self.stopped, "the backend was stopped during its own call"
+            return []
 
     reset_backend()
     monkeypatch.setattr(cu, "_new_backend", Backend)
@@ -99,3 +108,31 @@ def test_each_profile_keeps_its_own_idle_window(backends, tmp_path):
     assert len(released) == 1 and released[0].startswith("s@")
     kept, gone = backends
     assert not kept.stopped and gone.stopped
+
+
+def test_a_call_running_past_the_window_keeps_its_backend(backends):
+    """A long action is use, not idleness: retiring its backend mid-call would let the next call start a
+    second driver for the same session while the first action still runs."""
+    _call()
+    first = backends[0]
+    inside, finish = threading.Event(), threading.Event()
+    first.during_call = lambda: (inside.set(), finish.wait(10))
+    worker = threading.Thread(target=_call, daemon=True)
+    worker.start()
+    try:
+        assert inside.wait(10)
+        assert cu.release_idle_backends(now=time.monotonic() + 3600) == []
+        assert not first.stopped
+    finally:
+        finish.set()
+        worker.join(10)
+    assert len(backends) == 1
+
+
+def test_teardown_runs_in_the_owning_profile(backends, tmp_path):
+    """The sweep runs outside any profile; the driver's stop reads profile state, so it must see its own."""
+    other = _home(tmp_path / "other", 1)
+    with _profile(other):
+        _call()
+    assert len(cu.release_idle_backends(now=time.monotonic() + 3600)) == 1
+    assert backends[0].stopped_in == str(other)

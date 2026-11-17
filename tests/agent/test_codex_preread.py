@@ -35,7 +35,7 @@ def _npm_install(root: Path) -> tuple[Path, Path]:
     return shim, native
 
 
-def _write_config(home: Path, *, runtime: str, codex_bin: Path) -> None:
+def _write_config(home: Path, *, runtime: str, codex_bin: Path | str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         f"model:\n  provider: openai-codex\n  openai_runtime: {runtime}\n  codex_bin: {codex_bin}\n", encoding="utf-8")
@@ -91,3 +91,21 @@ def test_profiles_off_the_codex_runtime_read_nothing(tmp_path, monkeypatch, read
     start_codex_preread(multiplex=True).join(timeout=30)
 
     assert str(native.resolve()) not in reads
+
+
+@pytest.mark.platforms("posix")
+def test_each_served_profile_resolves_codex_bin_from_its_own_env(tmp_path, monkeypatch, reads):
+    """``codex_bin: ${CODEX_BINARY}`` expands per profile: the secondary's binary is warmed too."""
+    monkeypatch.delenv("CODEX_BINARY", raising=False)
+    shim_a, native_a = _npm_install(tmp_path / "prefix-a")
+    shim_b, native_b = _npm_install(tmp_path / "prefix-b")
+    default = Path(os.environ["HERMES_HOME"])
+    secondary = default / "profiles" / "work"
+    for home, shim in ((default, shim_a), (secondary, shim_b)):
+        _write_config(home, runtime="codex_app_server", codex_bin="${CODEX_BINARY}")
+        (home / ".env").write_text(f"CODEX_BINARY={shim}\n", encoding="utf-8")
+
+    start_codex_preread(multiplex=True).join(timeout=30)
+
+    assert reads.get(str(native_a.resolve()), 0) >= len(NATIVE)
+    assert reads.get(str(native_b.resolve()), 0) >= len(NATIVE)

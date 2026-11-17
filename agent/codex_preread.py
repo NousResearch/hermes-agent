@@ -20,6 +20,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from agent.memory_provider import spawn_context_thread
+from agent.runtime_scope import bind_profile_scope
 from hermes_cli.codex_runtime_switch import get_configured_codex_binary, get_current_runtime
 from hermes_cli.config_effective import load_user_config_effective
 from hermes_cli.profiles import profiles_to_serve
@@ -77,10 +78,14 @@ def native_binaries(codex_bin: str) -> list[Path]:
 
 
 def configured_codex_bins(profile_homes: Iterable[Path]) -> list[str]:
-    """``model.codex_bin`` of every profile home whose config selects the codex app-server runtime."""
+    """``model.codex_bin`` of every profile home whose config selects the codex app-server runtime.
+
+    Each config is read inside its own profile's scope, so ``${VAR}`` refs expand against that
+    profile's ``.env``, not the launch profile's."""
     bins: dict[str, None] = {}
     for home in profile_homes:
-        config = load_user_config_effective(Path(home) / "config.yaml")
+        with bind_profile_scope(home, hydrate_secrets=False):
+            config = load_user_config_effective(Path(home) / "config.yaml")
         if get_current_runtime(config) == "codex_app_server":
             bins[get_configured_codex_binary(config)] = None
     return list(bins)

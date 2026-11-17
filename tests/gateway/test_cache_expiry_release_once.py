@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.run_watchers import drain_pending_cache_releases
+
 
 class _Edge:
     def __init__(self, action):
@@ -46,7 +48,7 @@ async def test_an_evicted_agent_is_released_exactly_once(fate):
     runner, agent = _runner(action=None)
     assert runner._compact_then_release("k1", agent) is True
     if fate == "loop_never_ran_it":
-        runner._drain_pending_cache_releases()  # shutdown, before the loop ran the callback
+        drain_pending_cache_releases(runner)  # shutdown, before the loop ran the callback
     else:
         await asyncio.sleep(0)  # the loop runs the callback: the job task now exists
         (task,) = runner._cache_expiry_jobs.values()
@@ -54,7 +56,7 @@ async def test_an_evicted_agent_is_released_exactly_once(fate):
             task.cancel()  # what _stop_release_runtime_state does to every background task
         await asyncio.gather(task, return_exceptions=True)
         await asyncio.sleep(0)
-        runner._drain_pending_cache_releases()
+        drain_pending_cache_releases(runner)
     await asyncio.sleep(0)
     assert runner.released == ["k1"]
     if fate != "loop_never_ran_it":

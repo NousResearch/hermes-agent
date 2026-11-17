@@ -8,6 +8,7 @@ new symbol from an older cached ``auxiliary_client`` module.
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import logging
 import os
@@ -85,29 +86,35 @@ def codex_account_headers(access_token: str) -> dict[str, str]:
     return headers
 
 
-def _codex_compression_opted_in() -> bool:
-    """``agent.codex_request_compression: true``, ignored under ``--ignore-user-config``."""
+def _codex_compression_enabled() -> bool:
+    """``agent.codex_request_compression`` (default on); built-in default under ``--ignore-user-config``."""
     if os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
-        return False
+        return True
     from hermes_cli.config_backend import ConfigBackendUnavailable
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
-        return cfg_get(load_config_readonly(), "agent", "codex_request_compression", default=False) is True
+        return cfg_get(load_config_readonly(), "agent", "codex_request_compression", default=True) is not False
     # The caller drops its whole HTTP client on an exception, and a refused backend read is a
-    # SystemExit that would end the gateway turn worker; plain JSON is the safe default for both.
+    # SystemExit that would end the gateway turn worker; plain JSON is the safe answer for both.
     except (Exception, ConfigBackendUnavailable):  # health: allow BLE001 -- unreadable config keeps plain JSON
         logger.warning("Could not read agent.codex_request_compression; sending plain JSON", exc_info=True)
         return False
 
 
+# Request extensions: the raw JSON a zstd body was made from, and "never compress this one".
+_RAW_BODY_EXT = "hermes_codex_raw_body"
+_PLAIN_BODY_EXT = "hermes_codex_plain_body"
+
+
 def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) -> dict[str, list] | None:
     """httpx ``event_hooks`` that zstd-compress Responses request bodies for the official Codex backend.
 
-    Opt-in only: the official backend rejects some valid zstd bodies with an opaque HTTP 400
-    (NousResearch/hermes-agent#148898). Use plain JSON by default so a turn needs no replay.
-    Compression requires the stdlib codec (Python 3.14+) and never applies to custom endpoint URLs.
+    Parity with the official Codex client (zstd on ``/responses`` with ChatGPT auth, default since
+    openai/codex#10102). The backend rejects some valid frames with a bare 400 (#148898), so the
+    raw body rides along for :func:`codex_zstd_replay_client_cls` to resend once as plain JSON.
+    Uses the stdlib codec (Python 3.14+); custom endpoint URLs always get plain JSON.
     """
-    if not is_official_codex_base_url(base_url) or not _codex_compression_opted_in():
+    if not is_official_codex_base_url(base_url) or not _codex_compression_enabled():
         return None
     try:
         from compression import zstd
@@ -117,11 +124,13 @@ def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) 
 
     def compress(request: httpx.Request) -> None:
         if (request.method != "POST" or not request.url.path.endswith("/responses")
-                or "content-encoding" in request.headers):
+                or "content-encoding" in request.headers or request.extensions.get(_PLAIN_BODY_EXT)):
             return
-        body = zstd.compress(request.read())
+        raw = request.read()
+        body = zstd.compress(raw)
         request.stream = httpx.ByteStream(body)
         request._content = body
+        request.extensions[_RAW_BODY_EXT] = raw
         request.headers["Content-Encoding"] = "zstd"
         request.headers["Content-Length"] = str(len(body))
 
@@ -132,6 +141,67 @@ def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) 
         compress(request)
 
     return {"request": [compress_async]}
+
+
+def _is_bare_bad_request(response: Any) -> bool:
+    try:
+        return response.status_code == 400 and json.loads(response.content) == {"detail": "Bad Request"}
+    except ValueError:
+        return False
+
+
+def _plain_json_request(request: Any, raw: bytes) -> Any:
+    import httpx
+    headers = httpx.Headers(request.headers)
+    del headers["content-encoding"]
+    del headers["content-length"]
+    extensions = {k: v for k, v in request.extensions.items() if k != _RAW_BODY_EXT}
+    extensions[_PLAIN_BODY_EXT] = True
+    return httpx.Request(request.method, request.url, headers=headers, content=raw, extensions=extensions)
+
+
+def _log_plain_json_replay(request: Any) -> None:
+    logger.warning("Codex answered a zstd request body with a bare 400; resending it once as plain JSON "
+                   "(%d bytes, #148898)", len(request.extensions[_RAW_BODY_EXT]))
+
+
+@functools.cache
+def codex_zstd_replay_client_cls(async_mode: bool = False) -> type:
+    """httpx client class that resends a zstd body once as plain JSON on the bare 400 (#148898).
+
+    Only requests the compression hook encoded carry the raw body, so nothing else is resent. A
+    second rejection of the plain body is returned as is and classified like any other 400.
+    """
+    import httpx
+
+    if async_mode:
+        class _CodexZstdReplayAsyncClient(httpx.AsyncClient):
+            async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+                response = await super().send(request, **kwargs)
+                if _RAW_BODY_EXT not in request.extensions or response.status_code != 400:
+                    return response
+                await response.aread()
+                if not _is_bare_bad_request(response):
+                    return response
+                await response.aclose()
+                _log_plain_json_replay(request)
+                return await super().send(_plain_json_request(request, request.extensions[_RAW_BODY_EXT]), **kwargs)
+
+        return _CodexZstdReplayAsyncClient
+
+    class _CodexZstdReplayClient(httpx.Client):
+        def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+            response = super().send(request, **kwargs)
+            if _RAW_BODY_EXT not in request.extensions or response.status_code != 400:
+                return response
+            response.read()
+            if not _is_bare_bad_request(response):
+                return response
+            response.close()
+            _log_plain_json_replay(request)
+            return super().send(_plain_json_request(request, request.extensions[_RAW_BODY_EXT]), **kwargs)
+
+    return _CodexZstdReplayClient
 
 
 def apply_required_codex_headers(client_kwargs: dict[str, Any], *, access_token: str, base_url: str) -> None:

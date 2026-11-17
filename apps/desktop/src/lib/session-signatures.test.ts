@@ -21,6 +21,13 @@ describe('sameCronSignature', () => {
     expect(sameCronSignature(populated, [session('a', 't', { [field]: 'workspace' })])).toBe(true)
   })
 
+  it('swaps the rows when only the effective route changed', () => {
+    const route = { active: true, at: 1, effective: { model: 'b', provider: 'p' }, requested: { model: 'a', provider: 'p' }, route_source: 'fallback' as const }
+
+    expect(sameCronSignature([session('a', 't')], [session('a', 't', { effective_route: route })])).toBe(false)
+    expect(sameCronSignature([session('a', 't', { effective_route: route })], [session('a', 't', { effective_route: { ...route } })])).toBe(true)
+  })
+
   it('is true when ids and titles match in order', () => {
     const a = [session('a', 'one'), session('b', 'two')]
     const b = [session('a', 'one'), session('b', 'two')]

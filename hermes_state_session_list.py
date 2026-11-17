@@ -31,6 +31,10 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
         ):
             if key in tip_row:
                 merged[key] = tip_row[key]
+        # The tip's own requested-vs-effective record, or none: the root's would name a stale route.
+        merged.pop("effective_route", None)
+        if isinstance(tip_row.get("effective_route"), dict):
+            merged["effective_route"] = tip_row["effective_route"]
         if merged.get("title") is None:
             # The title is carried root->tip AFTER the publish transaction; a rotation cut off in
             # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->

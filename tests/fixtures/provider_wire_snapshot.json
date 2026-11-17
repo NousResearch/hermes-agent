@@ -8222,7 +8222,7 @@
      "role": "user"
     }
    ],
-   "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+   "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
    "timeout": 1800.0,
    "tools": [
     {
@@ -8245,7 +8245,7 @@
     }
    ]
   },
-  "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+  "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
   "off": {
    "max_tokens": 16384,
    "messages": [
@@ -8281,7 +8281,7 @@
      "role": "user"
     }
    ],
-   "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+   "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
    "timeout": 1800.0,
    "tools": [
     {
@@ -8339,7 +8339,7 @@
      "role": "user"
     }
    ],
-   "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+   "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
    "timeout": 1800.0,
    "tools": [
     {

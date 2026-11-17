@@ -39,7 +39,7 @@ from cron.jobs_tristate import normalize_catch_up as _normalize_catch_up, normal
 from cron.jobs_model_pin import _main_model_pin
 from cron.jobs_normalize import (
     _normalize_base_url, _normalize_context_from, _normalize_failure_deliver, _normalize_job_optional_text,
-)
+    _normalize_output_schema)
 from cron import jobs_time
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import extra_fire, jobs_error_text, store_health
@@ -1731,7 +1731,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
-    "wrap_response": normalize_wrap_response,
+    "wrap_response": normalize_wrap_response, "output_schema": _normalize_output_schema,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1746,7 +1746,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
-    "wrap_response": normalize_wrap_response,
+    "wrap_response": normalize_wrap_response, "output_schema": _normalize_output_schema,
 }
 
 
@@ -1801,7 +1801,7 @@ def create_job(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
-    wrap_response: Optional[bool] = None,
+    wrap_response: Optional[bool] = None, output_schema: Optional[dict[str, Any] | str] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1905,7 +1905,7 @@ def create_job(
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
         ("timezone", f["timezone"]), ("grace_minutes", f["grace_minutes"]),
-        ("catch_up", f["catch_up"]), ("wrap_response", f["wrap_response"]),
+        ("catch_up", f["catch_up"]), ("wrap_response", f["wrap_response"]), ("output_schema", f["output_schema"]),
     ):
         if value is not None:
             job[key] = value

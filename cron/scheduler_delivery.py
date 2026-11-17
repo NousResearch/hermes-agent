@@ -178,7 +178,7 @@ def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
     return bool(is_dm or user_id)
 
 
-def _redact_cron_payload(text: str, what: str) -> str:
+def _redact_cron_payload(text: str, what: str, job: Optional[dict] = None) -> str:
     """Fail-closed secret redaction for anything a cron job emits outward.
 
     Every outward lane — chat message, session mirror, bot-chat turn — must apply the same policy,
@@ -191,6 +191,11 @@ def _redact_cron_payload(text: str, what: str) -> str:
     if not text:
         return text
     try:
+        if isinstance((job or {}).get("output_schema"), dict):
+            # An output_schema job delivers JSON: redact it value by value (delegation's structured
+            # projection), because a text pass can swallow delimiters and break a valid answer.
+            from tools.delegation_redaction import redact_summary
+            return redact_summary(text, True, True)
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(text, force=True)
     except Exception as e:
@@ -721,7 +726,7 @@ def bot_chat_message(job: dict, content: str) -> str:
     message and the session mirror; the admitted record carries the scrubbed copy, never the raw
     output.
     """
-    content = _redact_cron_payload(content, "bot-chat payload")
+    content = _redact_cron_payload(content, "bot-chat payload", job)
     job_name = _redact_cron_payload(job.get("name", job.get("id", "?")), "job name")
     return (
         f'[Cronjob "{job_name}" output — '
@@ -1789,7 +1794,7 @@ def _deliver_result(
     # Shell-job stdout/stderr is already redacted where it is captured, but an LLM cron job's
     # response text reaches delivery unscanned — so a job that surfaced a credential (echoed a
     # failing curl with an API key, summarised a config file) sent it verbatim to the chat.
-    cleaned_delivery_content = _redact_cron_payload(cleaned_delivery_content, "delivery content")
+    cleaned_delivery_content = _redact_cron_payload(cleaned_delivery_content, "delivery content", job)
     requested_media = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.
@@ -1812,7 +1817,7 @@ def _deliver_result(
     # Derived from the raw `content`, so it does NOT inherit the redaction above. Without this,
     # enabling the mirror writes an unredacted credential into the session transcript even though
     # the chat message itself was clean — and a transcript outlives the message.
-    mirror_text = _redact_cron_payload((mirror_text or "").strip(), "mirror payload")
+    mirror_text = _redact_cron_payload((mirror_text or "").strip(), "mirror payload", job)
 
     try:
         config = load_gateway_config()

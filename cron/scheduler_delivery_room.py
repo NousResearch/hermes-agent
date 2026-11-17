@@ -103,7 +103,7 @@ def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool 
         event = post_scheduled_message(
             store, room_id=room_id, job_id=job_id,
             job_name=_redact_cron_payload(str(job.get("name") or job_id), "job name"),
-            run_key=run_key, text=_redact_cron_payload(content, "room payload"), notice=for_failure)
+            run_key=run_key, text=_redact_cron_payload(content, "room payload", job), notice=for_failure)
         logger.info("Job '%s': %s Group Chat %s (seq %s)", job_id,
                     "already posted this run to" if event.get("idempotent") else "posted to", room_id, event.get("seq"))
         return None

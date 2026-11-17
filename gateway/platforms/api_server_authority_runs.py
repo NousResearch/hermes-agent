@@ -93,9 +93,13 @@ def run_projection(adapter, run_id):
         pending = list(live.controls.snapshot(row['target_session_id'], row['generation']))
         if any(prompt.get('kind') == 'approval' for prompt in pending):
             status = 'waiting_for_approval'  # the documented run state main's run store reports
+    from gateway.platforms.api_server_runs import structured_run_fields
+    schema = ((row.get('payload') or {}).get('api_turn_v1') or {}).get('output_schema')
     return {**progress, 'pending_controls': pending, 'run_id': run_id, 'status': status, 'session_id': row['target_session_id'],
             'admission_id': row['admission_id'], 'execution_generation': row['generation'],
-            'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {}}
+            'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {},
+            # Derived from the durable admission, so a poll after a restart still has it.
+            **(structured_run_fields(schema, result.get('final_response') or '') if status == 'completed' else {})}
 
 
 async def send_clarify(adapter, *, chat_id, **kwargs):

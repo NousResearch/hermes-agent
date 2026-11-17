@@ -736,6 +736,7 @@ def _action_create(a: dict[str, Any]) -> str:
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             catch_up=a["catch_up"], wrap_response=_wrap_response_override(a["wrap_response"]),
+            output_schema=a["output_schema"],  # CLI/REST lane (not in CRONJOB_SCHEMA), like reasoning_effort
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -912,6 +913,9 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
     if a["interpreter"] is not None:
         # CLI-only lane like reasoning_effort; update_job trims, empty string clears.
         updates["interpreter"] = a["interpreter"]
+    if a["output_schema"] is not None:
+        # CLI/REST lane like interpreter; update_job validates, empty string clears.
+        updates["output_schema"] = a["output_schema"]
     # Re-validate the EFFECTIVE provider/base_url on EVERY update: a job persisted before
     # this guard may hold an unsafe pair, and editing an unrelated field must not leave it
     # schedulable. Merging this update over the stored job lets an operator remediate.
@@ -1094,7 +1098,8 @@ def cronjob(
     pinned: Optional[bool] = None,
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
-    grace_minutes: Optional[int | str] = None) -> str:
+    grace_minutes: Optional[int | str] = None,
+    output_schema: Optional[dict[str, Any] | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     try:

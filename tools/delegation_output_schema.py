@@ -1,17 +1,19 @@
-"""Structured-output schema helpers for delegate_task.
+"""Structured-output schema helpers shared by delegate_task, cron jobs and /v1/runs.
 
-Optional per-task ``output_schema`` (a JSON Schema object): the child gets an
-OUTPUT CONTRACT block appended to its context, the parent validates the final
-answer with jsonschema, and on failure sends exactly ONE bounded retry turn
-carrying the validation errors verbatim (more retries make frontier models
-drop fields that were right the first time; the schema is never re-pasted).
+Optional ``output_schema`` (a JSON Schema object): the agent gets an OUTPUT
+CONTRACT block appended to its task, the host validates the final answer with
+jsonschema, and on failure sends exactly ONE bounded retry turn carrying the
+validation errors verbatim (more retries make frontier models drop fields that
+were right the first time). ``settle_output`` is that validate-retry-validate
+step for any host that can run one more turn.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -114,3 +116,43 @@ def build_retry_message(errors: list[str]) -> str:
             "validator. Validation errors:\n" f"{error_block}\n\n"
             "Reply with ONLY the corrected JSON object matching the OUTPUT "
             "CONTRACT schema from your task context. No prose, no explanations.")
+
+
+def parse_validated_output(text: str, schema: dict[str, Any]) -> tuple[Any, list[str]]:
+    """``(value, [])`` with the parsed JSON value that satisfies *schema*, else ``(None, errors)``."""
+    valid, errors = validate_output(text, schema)
+    if not valid:
+        return None, errors
+    return json.loads(extract_json_candidate(text or "")), []
+
+
+@dataclass(frozen=True)
+class SettledOutput:
+    """Verdict of ``settle_output``: ``text`` is the answer the caller keeps, ``value`` its parsed
+    JSON when ``valid``."""
+
+    valid: bool
+    text: str
+    value: Any = None
+    errors: list[str] = field(default_factory=list)
+    retries: int = 0
+
+
+def settle_output(
+    text: str, schema: dict[str, Any], retry: Optional[Callable[[str], Optional[str]]],
+) -> SettledOutput:
+    """Validate *text*; when it fails and is non-empty, run ONE correction turn through ``retry``.
+
+    ``retry(message)`` sends *message* (errors verbatim + the contract re-pasted: a compaction of a
+    long first turn can leave the original only in a summary) as the next user turn of the same
+    conversation and returns its final text, or ``None`` when no turn ran. A blank retry answer
+    keeps the first text but is the verdict. ``retry=None`` (interrupted run) only validates.
+    """
+    value, errors = parse_validated_output(text, schema)
+    if not errors or not (text or "").strip() or retry is None:
+        return SettledOutput(not errors, text, value, errors)
+    retried = retry(append_output_contract(build_retry_message(errors), schema))
+    if not isinstance(retried, str):
+        return SettledOutput(False, text, None, errors, 1)
+    value, errors = parse_validated_output(retried, schema)
+    return SettledOutput(not errors, retried if retried.strip() else text, value, errors, 1)

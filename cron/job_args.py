@@ -523,6 +523,8 @@ def _format_job(job: dict[str, Any]) -> dict[str, Any]:
         result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
+    if isinstance(job.get("output_schema"), dict):  # ``{}`` is a valid (accept-any-JSON) schema
+        result["output_schema"] = job["output_schema"]
     return result
 
 

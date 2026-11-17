@@ -566,33 +566,26 @@ def _validate_child_output_schema(
     _output_schema = getattr(child, "_delegate_output_schema", None)
     if not isinstance(_output_schema, dict):
         return _SchemaOutcome(_output_schema, None, [], 0)
-    from tools.delegation_output_schema import append_output_contract, build_retry_message, validate_output
-    _first_text = result.get("final_response") or ""
-    _schema_valid, _schema_errors = validate_output(_first_text, _output_schema)
-    if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
-        return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
-
-    # Exactly one retry turn, continuing the child's conversation. The contract is pasted again:
-    # it lives in the first user turn, which a compaction of a long first turn summarises away.
-    _retry_result = None
+    from tools.delegation_output_schema import settle_output
     _history = result.get("messages") if isinstance(result.get("messages"), list) else None
-    try:
+
+    def _retry(message: str) -> Optional[str]:
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
         # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
         from agent.delegation_context import delegated_child_context
         from tools.delegate_tool_routes import child_profile_scope
-        with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
-            _retry_result = child.run_conversation(
-                user_message=append_output_contract(build_retry_message(_schema_errors), _output_schema),
-                task_id=child_task_id,
-                stream_callback=relay_child_text, conversation_history=_history,
-            )
-    except Exception as _retry_exc:
-        logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
-    if isinstance(_retry_result, dict):
+        try:
+            with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                _retry_result = child.run_conversation(
+                    user_message=message, task_id=child_task_id,
+                    stream_callback=relay_child_text, conversation_history=_history,
+                )
+        except Exception as _retry_exc:
+            logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc, exc_info=True)
+            return None
+        if not isinstance(_retry_result, dict):
+            return None
         _retry_text = _retry_result.get("final_response") or ""
-        if _retry_text.strip():
-            result["final_response"] = _retry_text
         try:
             result["api_calls"] = int(result.get("api_calls", 0) or 0) + int(_retry_result.get("api_calls", 0) or 0)
         except (TypeError, ValueError):
@@ -605,8 +598,14 @@ def _validate_child_output_schema(
             if not isinstance(_start, int):
                 _start = max((i for i, m in enumerate(_retry_messages) if m.get("role") == "user"), default=0)
             result["messages"] = _history + _retry_messages[_start:]
-        _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
-    return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
+        return _retry_text
+
+    # Exactly one retry turn, continuing the child's conversation (none for an interrupted child).
+    settled = settle_output(result.get("final_response") or "", _output_schema,
+                            None if result.get("interrupted", False) else _retry)
+    if settled.text.strip():
+        result["final_response"] = settled.text
+    return _SchemaOutcome(_output_schema, settled.valid, settled.errors, settled.retries)
 
 def _build_tool_trace(messages: Any) -> list[dict[str, Any]]:
     """Tool trace from the child's conversation messages, pairing parallel

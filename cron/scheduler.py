@@ -43,6 +43,7 @@ from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
+from cron.scheduler_output_schema import settle_cron_result, with_output_contract
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     load_config, load_config_readonly)
@@ -1934,7 +1935,7 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
 
 def _run_agent_with_watchdog(
     agent, prompt: str, job: dict, job_id: str, job_name: str, task_id: str, cancel_event,
-    worker_state: Optional[dict] = None,
+    worker_state: Optional[dict] = None, history: Optional[list] = None,
 ) -> dict:
     """Run ``agent.run_conversation`` on a worker thread under the inactivity (not wall-clock)
     watchdog: default 600s, override HERMES_CRON_TIMEOUT, 0 = unlimited."""
@@ -1981,7 +1982,7 @@ def _run_agent_with_watchdog(
     # Carry scheduler-scoped ContextVar state (e.g. env passthrough) into the worker thread.
     _cron_context = contextvars.copy_context()
     _cron_future = _cron_pool.submit(
-        _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
+        _cron_context.run, agent.run_conversation, prompt, task_id=task_id, **({"conversation_history": history} if history else {}))
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
@@ -2542,9 +2543,6 @@ def run_job(
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
 ) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job. Returns (success, full_output_doc, final_response, error).
-    ``defer_agent_teardown``: if a list, the live agent is appended instead of torn down; the caller
-    MUST call ``_teardown_cron_agent(agent)`` AFTER delivery (a torn-down async client can't
-    deliver). ``extra_prompt``: per-fire context, never persisted.
 
     ``defer_agent_teardown``: when a caller passes a list, ``run_job`` skips the agent's async-resource
     teardown (``agent.close()`` + ``cleanup_stale_async_clients()``) in its ``finally`` block and instead
@@ -2604,12 +2602,14 @@ def run_job(
             session_db=_session_db)
         _audit = _FireAudit(job, job_id, model)
 
-        result = _run_agent_with_watchdog(
-            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
-            worker_state=_worker_state)
-        final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        result = _run_agent_with_watchdog(agent, with_output_contract(job, prompt), job, job_id, job_name, scope.task_id,
+                                          cancel_event, worker_state=_worker_state)
+        final_response = settle_cron_result(job, _final_response_from_result(result, job_id, job_name, AIAgent), result,
+            lambda msg, hist: _run_agent_with_watchdog(agent, msg, job, job_id, job_name, scope.task_id, cancel_event,
+                                                       worker_state=_worker_state, history=hist),
+            lambda turn: _final_response_from_result(turn, job_id, job_name, AIAgent))
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
-                and _cron_failure_marker_error(final_response) is None):
+                and _cron_failure_marker_error(final_response) is None and not isinstance(job.get("output_schema"), dict)):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
             # agent-declared failure marker keep their first-line/whole-response contract.
             final_response = f"{setup.fallback_notice}\n\n{final_response}"

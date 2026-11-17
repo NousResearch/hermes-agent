@@ -589,6 +589,7 @@ class _RunLaunch:
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
     admission: Any = None
     walked_from: Optional[str] = None  # the swept stored session the chain moved past (``bind_api_steps``)
+    output_schema: Optional[dict[str, Any]] = None  # opt-in JSON Schema for the final answer
 
     @property
     def approval_session_key(self) -> str:
@@ -728,6 +729,34 @@ def _run_user_message(raw_input, _openai_error) -> tuple:
     return user_message, None
 
 
+def _run_request_message(body, _openai_error) -> tuple:
+    """POST /v1/runs ``input`` + optional ``output_schema`` -> ``(user_message, schema, error)``: a
+    schema run's message carries the output contract; a bad schema is refused before any work."""
+    from tools.delegation_output_schema import append_output_contract, coerce_output_schema
+    user_message, error = _run_user_message(body.get("input"), _openai_error)
+    if error is not None:
+        return None, None, error
+    schema, schema_error = coerce_output_schema(body.get("output_schema"))
+    if schema_error:
+        return None, None, _json_error(_openai_error, schema_error, code="invalid_output_schema", status=400)
+    if schema is not None:
+        # Multimodal content (a parts list) takes the contract as one more text part.
+        user_message = (append_output_contract(user_message, schema) if isinstance(user_message, str)
+                        else [*user_message, {"type": "text", "text": append_output_contract("", schema)}])
+    return user_message, schema, None
+
+
+def structured_run_fields(schema: Optional[dict[str, Any]], output: str) -> dict[str, Any]:
+    """``result`` / ``schema_valid`` / ``schema_errors`` for a schema run's completed answer;
+    ``{}`` without a schema, so a legacy run's record and events keep their exact shape."""
+    if not isinstance(schema, dict):
+        return {}
+    from tools.delegation_output_schema import parse_validated_output
+    value, errors = parse_validated_output(output, schema)
+    return {"result": value, "schema_valid": True} if not errors else {
+        "result": None, "schema_valid": False, "schema_errors": errors}
+
+
 async def _admit_run_to_authority(
     self, launch, run_id, session_history_delivery, _declared_selected,
     idempotency_scope, idempotency_key, _openai_error,
@@ -746,7 +775,7 @@ async def _admit_run_to_authority(
                 history_from_session=session_history_delivery,
                 session_history_delivery='1' if session_history_delivery else '',
                 bind_declared_conversation=_declared_selected, walked_from=launch.walked_from,
-                **launch.agent_kwargs)
+                output_schema=launch.output_schema, **launch.agent_kwargs)
     except Exception as exc:  # health: allow BLE001 -- answered below; a committed admission is kept
         # A storage failure after the admission committed (a later media-release write) still
         # owns that run: forgetting it would let a keyed retry admit the same work twice.
@@ -791,7 +820,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     idempotency_scope, idempotency_fingerprint = _run_idempotency_identity(
         self, request, body, gateway_session_key, idempotency_key)
     raw_input = body.get("input")
-    user_message, input_err = _run_user_message(raw_input, _openai_error)
+    user_message, output_schema, input_err = _run_request_message(body, _openai_error)
     if input_err is not None:
         return input_err
     try:
@@ -874,7 +903,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
-        turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
+        turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None,
+        output_schema=output_schema)
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
@@ -1045,7 +1075,8 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: dict[
             return
         if record["status"] == "settled":
             _finish("completed", completed=True, partial=False, interrupted=False,
-                    output=record.get("reply") or "", usage={})
+                    output=record.get("reply") or "", usage={},
+                    **structured_run_fields(run.output_schema, record.get("reply") or ""))
         elif record["status"] == "cancelled":
             _finish("cancelled", completed=False, partial=False, interrupted=True)
         else:
@@ -1165,7 +1196,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
-            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
+            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime,
+                    **(structured_run_fields(run.output_schema, result.get("final_response") or "")
+                       if status == "completed" else {}))
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

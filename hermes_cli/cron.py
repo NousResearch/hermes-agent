@@ -342,10 +342,15 @@ def cron_tick():
     return 0
 
 
-def cron_runs(job_id: Optional[str] = None, limit: int = 20):
-    """Show indexed durable cron execution history."""
+def cron_runs(job_id: Optional[str] = None, limit: int = 20, as_json: bool = False):
+    """Show indexed durable cron execution history (``as_json``: rows as JSON, ``result`` parsed)."""
     from cron.executions import list_executions
     records = list_executions(job_id=job_id, limit=limit)
+    if as_json:
+        print(json.dumps([{**{k: v for k, v in r.items() if k != "result_json"},
+                           "result": json.loads(r["result_json"]) if r.get("result_json") else None}
+                          for r in records], indent=2, ensure_ascii=False))
+        return
     if not records:
         print("No cron execution attempts recorded.")
         return
@@ -786,9 +791,18 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("wrap_response", "wrap_response"))
 
 
+def _read_output_schema(path: Optional[str]) -> Optional[str]:
+    """``--output-schema FILE`` -> the file's JSON text; ``""`` passes through (clear on edit). The
+    store validates the schema itself, so a bad file fails the create with the validator's text."""
+    if not path:
+        return path
+    return Path(path).expanduser().read_text(encoding="utf-8-sig")
+
+
 def _job_api_kwargs(args) -> dict[str, Any]:
     """Collect the create/update kwargs shared by ``cron create`` and ``cron edit``."""
-    return {api_key: getattr(args, attr, None) for api_key, attr in _JOB_ARG_FIELDS}
+    return {**{api_key: getattr(args, attr, None) for api_key, attr in _JOB_ARG_FIELDS},
+            "output_schema": _read_output_schema(getattr(args, "output_schema", None))}
 
 
 _JOB_DETAIL_LINES = (
@@ -799,13 +813,14 @@ _JOB_DETAIL_LINES = (
     ("continuity", "  Continuity: on (each run sees the previous run's output)"),
     ("timezone", "  Timezone: {} (schedule runs on this zone's wall clock)"),
     ("workdir", "  Workdir: {}"),
-    ("interpreter", "  Python: {}"))
+    ("interpreter", "  Python: {}"),
+    ("output_schema", "  Output schema: on (each run's answer is validated JSON)"))
 
 
 def _print_job_details(job_data: dict[str, Any]) -> None:
     """Print the optional Script/Monitor/Mode/Continuity/Workdir lines of a job record."""
     for key, template in _JOB_DETAIL_LINES:
-        if job_data.get(key):
+        if job_data.get(key) or (key == "output_schema" and isinstance(job_data.get(key), dict)):
             print(template.format(job_data[key]))
 
 
@@ -1022,7 +1037,8 @@ _CRON_SUBCOMMANDS = {
     "status": lambda a: cron_status() or 0,
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),
-    "runs": lambda a: cron_runs(getattr(a, "job_id", None), getattr(a, "limit", 20)) or 0,
+    "runs": lambda a: cron_runs(getattr(a, "job_id", None), getattr(a, "limit", 20),
+                                getattr(a, "json_output", False)) or 0,
     "incidents": lambda a: cron_incidents(a),
     "notepad": lambda a: cron_notepad(a),
     "create": lambda a: cron_create(a),

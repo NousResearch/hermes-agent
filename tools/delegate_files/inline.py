@@ -141,13 +141,23 @@ def _read_lines(resolved: Path, start: int, end: Optional[int], budget: int) -> 
 
 
 def _render_one(spec: FileSpec, resolved: Path, budget: int) -> tuple[str, InlinedFile]:
+    body_budget = budget - len(spec.path) - 128
+    text, span = _render_within(spec, resolved, body_budget)
+    # A long backtick run in the body widens both fences past the reserve; each pass drops at least one row.
+    while (over := len(text.encode("utf-8")) - budget) > 0 and body_budget > 0:
+        body_budget -= over
+        text, span = _render_within(spec, resolved, body_budget)
+    return text, span
+
+
+def _render_within(spec: FileSpec, resolved: Path, body_budget: int) -> tuple[str, InlinedFile]:
     from agent.redact import _is_secret_file_arg, redact_sensitive_text
     from tools.file_tools_read_tracking import _file_metadata
 
     label = spec.path if spec.start is None else f"{spec.path}:{spec.start}-{spec.end}"
     start = spec.start or 1
     before = _file_metadata(str(resolved))
-    rows, wanted, digest = _read_lines(resolved, start, spec.end, budget - len(label) - 128)
+    rows, wanted, digest = _read_lines(resolved, start, spec.end, body_budget - (len(label) - len(spec.path)))
     if spec.start is not None and wanted == 0:
         raise ValueError(f"'files' entry {label!r} starts beyond the end of the file.")
     stable = before is not None and _file_metadata(str(resolved)) == before

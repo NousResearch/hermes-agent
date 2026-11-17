@@ -153,6 +153,15 @@ def test_skipped_names_stay_inside_the_cap(tmp_path, monkeypatch):
     assert err is None and "not inlined" in files[0].block and len(files[0].block.encode()) <= 2000
 
 
+def test_long_backtick_fences_stay_inside_the_cap(tmp_path, monkeypatch):
+    """A body holding a long backtick run widens both fences; the entry still fits the total cap."""
+    monkeypatch.setattr(dtf, "MAX_TOTAL_BYTES", 2000)
+    ws = _workspace(tmp_path)
+    (ws / "ticks.md").write_text("".join(f"{'`' * 300} {n}\n" for n in range(1, 50)), encoding="utf-8")
+    _ws, files, err, _msg = _brief(tmp_path, ["ticks.md"])
+    assert err is None and len(files[0].block.encode()) <= 2000
+
+
 def test_cut_files_stay_unmarked_and_denied_or_binary_files_fail_the_call(tmp_path):
     from tools.file_tools import read_file_tool
 

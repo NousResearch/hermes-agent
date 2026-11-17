@@ -5,6 +5,7 @@ across an edit, and ``reset_cache()`` has no production caller. A gateway that r
 before ``hermes config set timezone ...`` ran in another process kept the old zone until restart,
 so unpinned cron jobs fired at the wrong wall-clock hour.
 """
+import os
 from datetime import datetime
 
 import pytest
@@ -47,3 +48,16 @@ def test_unpinned_cron_job_follows_the_edited_zone(config_path):
     assert after.utcoffset().total_seconds() == 9 * 3600
     assert (after.hour, after.minute) == (14, 0)
 
+
+def test_gateway_bridge_follows_config_timezone_edits(config_path, monkeypatch):
+    # The gateway normally bridges its startup config to process env. In a
+    # standalone gateway that used to freeze this key as an env override.
+    from gateway.run import _bridge_config_to_env
+
+    monkeypatch.setattr(os, "environ", os.environ.copy())
+    config_path.write_text("timezone: UTC\n", encoding="utf-8")
+    _bridge_config_to_env({"timezone": "UTC"})
+    assert hermes_time.get_timezone_name() == "UTC"
+
+    config_path.write_text("timezone: Asia/Tokyo\n", encoding="utf-8")
+    assert hermes_time.get_timezone_name() == "Asia/Tokyo"

@@ -8,6 +8,12 @@ from typing import Any, NamedTuple
 _HEADER = re.compile(r"([0-9]{1,20}) ([0-9]{1,20}) (?:(run)|exit:([0-9]{0,9}))")
 
 
+def env_job_paths(temp_dir: str, session_id: str) -> tuple[str, str, str]:
+    """The log, pid and exit files of one sandbox background job."""
+    stem = f"{temp_dir}/hermes_bg_{session_id}"
+    return f"{stem}.log", f"{stem}.pid", f"{stem}.exit"
+
+
 #: ``$0`` of the supervisor shell: names the job in ``ps`` and marks the launch exec.
 LAUNCH_NAME = "hermes-bg"
 
@@ -53,7 +59,7 @@ def log_delta_command(quoted_log_path: str, offset: int, quoted_pid_path: str, q
 
     Prints one header line ``"<size> <offset> <status>"`` then the bytes in
     [offset, size). The status is ``run`` while ``kill -0`` on the pid file
-    succeeds, else ``exit:<code>`` (``exit:`` with no digits when the exit file
+    succeeds (the supervisor's PID, or ``-<pgid>`` once a kill has begun), else ``exit:<code>`` (``exit:`` with no digits when the exit file
     is missing or unreadable). It sits in the header line, ahead of the delta, so
     log content cannot forge it.
 

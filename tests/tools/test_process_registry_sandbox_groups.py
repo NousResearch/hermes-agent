@@ -42,9 +42,10 @@ def _alive(proc):
         return False
 
 
-def _writer_command(tmp_path, progress, *, ignore_term):
+def _writer_command(tmp_path, progress, *, ignore_term, shell_ignores_term=None):
     """A shell that runs a Python writer as its child, so the writer is a grandchild of
     the recorded PID (a kill of that PID alone leaves it writing)."""
+    shell_ignores_term = ignore_term if shell_ignores_term is None else shell_ignores_term
     writer = tmp_path / "writer.py"
     writer.write_text(
         "import signal, time\n"
@@ -54,7 +55,7 @@ def _writer_command(tmp_path, progress, *, ignore_term):
         "        output.write('tick\\n')\n"
         "        time.sleep(0.05)\n",
         encoding="utf-8")
-    trap = "trap '' TERM; " if ignore_term else ""
+    trap = "trap '' TERM; " if shell_ignores_term else ""
     return f"{trap}{shlex.quote(sys.executable)} {shlex.quote(str(writer))} & wait"
 
 
@@ -108,35 +109,62 @@ def test_kill_stops_the_workload_and_its_descendants(tmp_path, ignore_term):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass
-def test_survivors_are_reported_by_pid_and_the_session_stays_killable(tmp_path):
+@pytest.mark.parametrize("shell_ignores_term", [True, False])
+def test_survivors_are_reported_by_pid_and_the_session_stays_killable(tmp_path, shell_ignores_term):
     registry = ProcessRegistry()
     progress = tmp_path / "progress"
     tree = []
-    grace = {"value": 0.0}  # 0 = no SIGKILL escalation, so the TERM-ignoring tree survives
+    grace = {"value": 0.0}  # 0 = no SIGKILL escalation, so the TERM-ignoring writer survives
+    command = _writer_command(tmp_path, progress, ignore_term=True, shell_ignores_term=shell_ignores_term)
     with patch.object(registry, "_write_checkpoint"), _grace(grace):
-        session = registry.spawn_via_env(BashEnv(tmp_path), _writer_command(tmp_path, progress, ignore_term=True))
+        session = registry.spawn_via_env(BashEnv(tmp_path), command)
         try:
             wait_until(lambda: progress.exists() and progress.stat().st_size > 0, what="writer started")
             root = psutil.Process(session.pid)
             tree = [root, *root.children(recursive=True)]
+            writer = next(proc for proc in tree if proc.name() != "bash")
 
             partial = registry.kill_process(session.id)
 
             assert partial["status"] == "error" and partial["process_running"] is True, partial
-            # The supervisor traps TERM and waits on the TERM-ignoring command, so all of it lives.
-            assert set(partial["survivors"]) == {proc.pid for proc in tree}
-            assert all(_alive(proc) for proc in tree)
+            if shell_ignores_term:
+                # The supervisor traps TERM and waits on the TERM-ignoring shell, so all of it lives.
+                assert set(partial["survivors"]) == {proc.pid for proc in tree}
+            else:
+                # The shell died and the supervisor recorded its exit; only the writer survives.
+                assert partial["survivors"] == [writer.pid]
+                exit_file = tmp_path / f"hermes_bg_{session.id}.exit"
+                wait_until(lambda: exit_file.exists() and exit_file.stat().st_size > 0, what="supervisor exit")
+                # health: allow HX013 -- spans two poller ticks (2 s each) after the supervisor exited
+                threading.Event().wait(4.5)
+            assert _alive(writer)
             assert registry.get(session.id) is session and not session.exited
 
             grace["value"] = 0.3
             assert registry.kill_process(session.id)["status"] == "killed"
             _assert_quiet(progress)
+            assert not _alive(writer)
         finally:
             for proc in tree:
                 if _alive(proc):
                     proc.kill()
             session.exited = True
             _join_poller(session)
+
+
+def test_a_survivor_the_sandbox_cannot_list_is_reported_as_the_group():
+    registry = ProcessRegistry()
+    env = MagicMock()
+    env.get_temp_dir.return_value = "/tmp"
+    env.execute.return_value = {"returncode": 1, "output": "__HERMES_PROCESS_SURVIVORS__\n"}
+    session = ProcessSession(id="proc_unlisted", command="writer", task_id="task",
+                             pid=4321, pid_scope="sandbox", env_ref=env)
+    registry._running[session.id] = session
+
+    result = registry.kill_process(session.id)
+
+    assert result["status"] == "error" and result["survivors"] == [4321], result
+    assert registry.get(session.id) is session and not session.exited
 
 
 @pytest.mark.parametrize("reply", [
@@ -189,7 +217,7 @@ def test_only_esrch_proves_the_group_gone(diagnostic, gone):
     # A shell function stands in for the kill builtin, so no real process is signalled.
     script = (
         "kill() { printf '%s\\n' " + shlex.quote("bash: kill: (-4321) - " + diagnostic)
-        + " >&2; return 1; }; " + env_group_kill_command(4321, 0.1))
+        + " >&2; return 1; }; " + env_group_kill_command(4321, 0.1, "/dev/null"))
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10, check=False)
     assert (result.returncode == 0) is gone
     assert ("__HERMES_PROCESS_TERMINATED__" in result.stdout.splitlines()) is gone
@@ -198,4 +226,4 @@ def test_only_esrch_proves_the_group_gone(diagnostic, gone):
 @pytest.mark.parametrize("pgid", [0, 1, -1, True])
 def test_kill_command_refuses_group_ids_that_reach_other_processes(pgid):
     with pytest.raises(ValueError):
-        env_group_kill_command(pgid, 1.0)
+        env_group_kill_command(pgid, 1.0, "/dev/null")

@@ -42,7 +42,7 @@ from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import (
-    env_launch_command, fallback_exit_code, log_delta_command, parse_log_delta_reply)
+    env_job_paths, env_launch_command, fallback_exit_code, log_delta_command, parse_log_delta_reply)
 from tools.process_registry_wsl import _is_wsl_launcher_command
 from tools.process_registry_wait import max_wait_timeout, process_deadline_floor
 
@@ -1280,7 +1280,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
                                     persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
-        log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
+        log_path, pid_path, exit_path = env_job_paths(temp_dir, session.id)
         bg_command = env_launch_command(temp_dir, command, log_path, pid_path, exit_path)
         result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False)
         output = result.get("output", "").strip()

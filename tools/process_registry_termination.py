@@ -3,6 +3,7 @@
 import logging
 import math
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -10,6 +11,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from tools.process_registry_env_log import env_job_paths
 
 if TYPE_CHECKING:
     from tools.process_registry import ProcessSession
@@ -23,10 +25,13 @@ _ENV_TICK = 0.05
 _ENV_KILL_TRANSPORT_SECONDS = 10.0
 
 
-def env_group_kill_command(pgid: int, grace: float) -> str:
+def env_group_kill_command(pgid: int, grace: float, pid_path: str) -> str:
     """Shell command that stops sandbox process group *pgid* and proves it is gone.
 
-    SIGTERM, then after *grace* seconds SIGKILL (no SIGKILL when *grace* is 0,
+    It first rewrites the job's *pid_path* to ``-<pgid>``, so the poller's ``kill -0``
+    liveness probe follows the whole group from then on: a member that outlives the
+    signals keeps the session running (and killable again) after the supervisor exits.
+    Then SIGTERM, then after *grace* seconds SIGKILL (no SIGKILL when *grace* is 0,
     matching ``terminal.daemon_term_grace_seconds``). Prints ``ENV_GONE_MARKER`` once
     ``kill -0`` fails with ESRCH; any other failure (EPERM: the member belongs to
     another user) still counts as alive. When the group outlives every signal,
@@ -39,7 +44,7 @@ def env_group_kill_command(pgid: int, grace: float) -> str:
     gone_exit = f"{{ echo {ENV_GONE_MARKER}; exit 0; }}"
     escalate = f'kill -KILL -- "-$g" 2>/dev/null; wait_gone 20 && {gone_exit}; ' if grace else ""
     return (
-        f"g={pgid}; "
+        f"g={pgid}; printf '%s\\n' \"-$g\" 2>/dev/null > {shlex.quote(pid_path)}; "
         'gone() { local e; e=$(LC_ALL=C kill -0 -- "-$g" 2>&1) && return 1; [[ $e == *"No such process"* ]]; }; '
         f'wait_gone() {{ local i; for ((i = 0; i < $1; i++)); do gone && return 0; sleep {_ENV_TICK}; done; gone; }}; '
         f'kill -TERM -- "-$g" 2>/dev/null; wait_gone {term_ticks} && {gone_exit}; '
@@ -53,16 +58,18 @@ def env_group_kill_command(pgid: int, grace: float) -> str:
     )
 
 
-def parse_env_group_kill(result: dict) -> "list[int] | None":
-    """Survivors of an ``env_group_kill_command`` run: ``[]`` when the group is proven
-    gone, the listed PIDs when it outlived the signals, ``None`` when the reply proves
-    neither (transport failure, no bash)."""
+def parse_env_group_kill(result: dict, pgid: int) -> "list[int] | None":
+    """Survivors of an ``env_group_kill_command`` run on group *pgid*: ``[]`` when the
+    group is proven gone, the listed PIDs when it outlived the signals (``[pgid]`` when
+    the sandbox could not list them), ``None`` when the reply proves neither (transport
+    failure, no bash)."""
     lines = str(result.get("output", "")).splitlines()
     if result.get("returncode") == 0 and ENV_GONE_MARKER in lines:
         return []
     for line in lines:
         if line.startswith(ENV_SURVIVORS_MARKER):
-            return [int(tok) for tok in line[len(ENV_SURVIVORS_MARKER):].split() if tok.isascii() and tok.isdigit()]
+            listed = [int(tok) for tok in line[len(ENV_SURVIVORS_MARKER):].split() if tok.isascii() and tok.isdigit()]
+            return listed or [pgid]
     return None
 
 
@@ -194,9 +201,10 @@ class ProcessTerminationMixin:
         """Stop a sandbox job's process group from inside the sandbox. None once the group
         is proven gone; else the error result, with the session left running and killable."""
         grace = self._daemon_term_grace_seconds()
+        _, pid_path, _ = env_job_paths(self._env_temp_dir(session.env_ref), session.id)
         result = session.env_ref.execute(
-            env_group_kill_command(session.pid, grace), timeout=grace + _ENV_KILL_TRANSPORT_SECONDS)
-        survivors = parse_env_group_kill(result)
+            env_group_kill_command(session.pid, grace, pid_path), timeout=grace + _ENV_KILL_TRANSPORT_SECONDS)
+        survivors = parse_env_group_kill(result, session.pid)
         if survivors == []:
             return None
         if survivors is None:
@@ -206,7 +214,6 @@ class ProcessTerminationMixin:
                 "error": (f"Kill unconfirmed: the sandbox did not report process group {session.pid} "
                           f"gone (exit {result.get('returncode')}); session running"),
                 "session_id": session.id, "process_running": True}
-        survivors = survivors or [session.pid]  # no /proc to list members: the group itself
         alive = ", ".join(map(str, survivors))
         logger.warning("Kill incomplete for %s: sandbox process(es) still alive (%s)", session.id, alive)
         return {

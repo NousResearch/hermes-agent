@@ -425,9 +425,9 @@ def build_origin_check_js(expected_origin: str) -> str:
     in-page origin assertion the JS fill path has: if the page navigated between the origin
     pre-check and the keystrokes, nothing is typed.
     """
-    return ("(() => { if (window.location.origin !== %s) "
+    return ("(() => { if (window.location.origin !== " + json.dumps(expected_origin) + ") "
             "return JSON.stringify({ refused: 'origin_changed', found: window.location.origin }); "
-            "return JSON.stringify({ ok: true }); })()" % json.dumps(expected_origin))
+            "return JSON.stringify({ ok: true }); })()")
 
 
 def build_unstamp_js(nonce: str = "") -> str:

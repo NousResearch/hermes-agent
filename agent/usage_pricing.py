@@ -303,23 +303,26 @@ _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = _snap(
 # GPT-6 Sol / Luna (the 5.6 Sol/Luna successors): same 272K whole-request tier as Astra
 # (2x input + cache, 1.5x output). Cache write = 1.25x input, cache read = 0.10x input.
 # Terra has no published model page yet, so it deliberately has no row.
-for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above in (
-    ("gpt-6-sol", "2.00", "10.00", "0.20", "2.50", "4.00", "15.00", "0.40", "5.00"),
+for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above, _version in (
+    ("gpt-6-sol", "2.00", "10.00", "0.20", "2.50", "4.00", "15.00", "0.40", "5.00", "openai-gpt-6-tiers-2026-09"),
     # 6.1 Sol: same input/output as 6 Sol, but cached input is 0.05x input (not 0.10x).
-    ("gpt-6.1-sol", "2.00", "10.00", "0.10", "2.50", "4.00", "15.00", "0.20", "5.00"),
-    ("gpt-6-luna", "0.10", "0.50", "0.01", "0.125", "0.20", "0.75", "0.02", "0.25"),
+    ("gpt-6.1-sol", "2.00", "10.00", "0.10", "2.50", "4.00", "15.00", "0.20", "5.00", "openai-gpt-6-tiers-2026-09"),
+    ("gpt-6-luna", "0.10", "0.50", "0.01", "0.125", "0.20", "0.75", "0.02", "0.25", "openai-gpt-6-tiers-2026-09"),
+    # GPT-6.2: the same tier rule, cached input 0.05x input like 6.1 Sol.
+    ("gpt-6.2-sol", "2.00", "10.00", "0.10", "2.50", "4.00", "15.00", "0.20", "5.00", "openai-gpt-6.2-2026-11"),
+    ("gpt-6.2-astra", "8.00", "40.00", "0.40", "10.00", "16.00", "60.00", "0.80", "20.00", "openai-gpt-6.2-2026-11"),
 ):
     _OFFICIAL_DOCS_PRICING[("openai", _slug)] = _snap(
         _inp, _out, _read, _write,
         url=f"https://developers.openai.com/api/docs/models/{_slug}",
-        version="openai-gpt-6-tiers-2026-09",
+        version=_version,
         tier_threshold_tokens=272_000,
         input_cost_per_million_above=Decimal(_inp_above),
         output_cost_per_million_above=Decimal(_out_above),
         cache_read_cost_per_million_above=Decimal(_read_above),
         cache_write_cost_per_million_above=Decimal(_write_above),
     )
-del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above
+del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above, _version
 
 # OpenAI Ultrafast (``service_tier: "ultrafast"``): 6x Standard on every bucket, same 272K
 # whole-request tier. Selected by the tier the response reports it was SERVED at (a request asking

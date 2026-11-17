@@ -38,6 +38,22 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
     assert below.amount_usd < above.amount_usd
 
 
+@pytest.mark.parametrize("model", ["gpt-6.2-sol", "gpt-6.2-astra"])
+def test_gpt62_long_requests_bill_the_whole_request_at_the_long_context_rate(model):
+    """OpenAI's GPT-6.2 model pages: above 272K input tokens, input and cache rates double and output
+    costs 1.5x the short-context rate, for the full request."""
+    def cost(prompt, output=0):
+        usage = CanonicalUsage(input_tokens=prompt // 2, output_tokens=output,
+                               cache_read_tokens=prompt // 4, cache_write_tokens=prompt // 4)
+        result = estimate_usage_cost(model, usage, provider="openai")
+        assert result.source == "official_docs_snapshot" and result.amount_usd is not None, result
+        return result.amount_usd
+
+    short, long_ = 200_000, 400_000
+    assert cost(long_) == 2 * 2 * cost(short)
+    assert cost(long_, 10_000) - cost(long_) == Decimal("1.5") * (cost(short, 10_000) - cost(short))
+
+
 _MODELS_DEV_REGISTRY = {
     "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
     "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},

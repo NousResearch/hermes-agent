@@ -149,6 +149,8 @@ def _handoff_completions(sub_text: str, sub_lower: str):
     completed, partial = _split_args(sub_text)
     if completed:
         return
+    if "desktop".startswith(partial.lower()):
+        yield _completion("desktop", partial, "desktop", "open this session in Hermes Desktop")
     try:
         from gateway.config import load_gateway_config
         gw = load_gateway_config()

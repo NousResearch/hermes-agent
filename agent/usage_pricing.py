@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
+from agent.reasoning_effort import GPT62_MODEL_IDS
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
@@ -321,6 +322,21 @@ for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _writ
     )
 del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above
 
+# https://developers.openai.com/api/docs/models/gpt-6.2-astra (and gpt-6.2-sol).
+for _slug, (_inp, _out, _read, _write) in {
+    "gpt-6.2-astra": ("8.00", "40.00", "0.40", "10.00"),
+    "gpt-6.2-sol": ("2.00", "10.00", "0.10", "2.50"),
+}.items():
+    _OFFICIAL_DOCS_PRICING[("openai", _slug)] = _snap(
+        _inp, _out, _read, _write, url=f"https://developers.openai.com/api/docs/models/{_slug}",
+        version="openai-gpt-6.2-2026-11", tier_threshold_tokens=272_000,
+        input_cost_per_million_above=Decimal(_inp) * 2,
+        output_cost_per_million_above=Decimal(_out) * Decimal("1.5"),
+        cache_read_cost_per_million_above=Decimal(_read) * 2,
+        cache_write_cost_per_million_above=Decimal(_write) * 2,
+    )
+del _slug, _inp, _out, _read, _write
+
 # OpenAI Ultrafast (``service_tier: "ultrafast"``): 6x Standard on every bucket, same 272K
 # whole-request tier. Selected by the tier the response reports it was SERVED at (a request asking
 # for Ultrafast can be served at ``default``, and is then billed at Standard).
@@ -520,6 +536,18 @@ def with_served_service_tier(usage: CanonicalUsage, response: Any) -> CanonicalU
 
 def _served_openai_tier(usage: CanonicalUsage) -> Optional[str]:
     return usage.raw_usage.get("service_tier") if isinstance(usage.raw_usage, dict) else None
+
+
+def _openai_served_tier_entry(model: str, tier: Optional[str]) -> Optional[PricingEntry]:
+    """GPT-6.2's launch Ultrafast discount expires March 1, 2027, Pacific time; older tiers stay fixed."""
+    if model not in GPT62_MODEL_IDS:
+        return _OPENAI_ULTRAFAST_PRICING.get(model) if tier == "ultrafast" else None
+    entry = _OFFICIAL_DOCS_PRICING[("openai", model)]
+    multiplier = 2 if tier == "priority" else (
+        3 if _UTC_NOW() < datetime(2027, 3, 1, 8, tzinfo=UTC) else 6)
+    rates = {field.name: value * multiplier for field in fields(PricingEntry)
+             if "cost_per_million" in field.name and (value := getattr(entry, field.name)) is not None}
+    return replace(entry, **rates, pricing_version=f"{entry.pricing_version}-{tier}-{multiplier}x")
 
 
 def _served_fast(usage: CanonicalUsage) -> bool:
@@ -757,9 +785,11 @@ def estimate_usage_cost(
         entry = _anthropic_fast_mode_entry(route.model)
         if not entry:
             return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
-    if route.provider == "openai" and _served_openai_tier(usage) == "ultrafast":
-        entry = _OPENAI_ULTRAFAST_PRICING.get(route.model)
-        if not entry:
+    if route.provider == "openai" and _served_openai_tier(usage) in {"ultrafast", "priority"}:
+        served_entry = _openai_served_tier_entry(route.model, _served_openai_tier(usage))
+        if served_entry:
+            entry = served_entry
+        elif _served_openai_tier(usage) == "ultrafast":
             return _unknown_cost("official_docs_snapshot", "ultrafast pricing unavailable for model")
     if not entry:
         return _unknown_cost("none")

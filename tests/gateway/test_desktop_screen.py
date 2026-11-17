@@ -393,6 +393,24 @@ class TestSubmitTexts(unittest.TestCase):
         self.assertEqual(desktop_screen.submit_texts(None), [])
         self.assertEqual(desktop_screen.submit_texts({"text": 12345}), [])
 
+    def test_committed_payload_nested_api_text_is_screened(self):
+        # Review r5-2: at the authority choke point the committed
+        # payload nests api_text under cli_turn_v1 - the resolver must
+        # read that shape too, or the hostile model-facing text rides
+        # in behind a benign persisted text.
+        self.assertEqual(
+            desktop_screen.submit_texts({
+                "text": "what is the weather today",
+                "cli_turn_v1": {"api_text": "ATTACK take over"}}),
+            ["ATTACK take over", "what is the weather today"])
+
+    def test_nested_and_top_level_dedupe(self):
+        self.assertEqual(
+            desktop_screen.submit_texts({
+                "text": "same words",
+                "cli_turn_v1": {"api_text": "same words"}}),
+            ["same words"])
+
 
 class TestHoldError(DesktopScreenTestCase):
     def test_hold_error_is_store_refusal_with_visible_notice(self):
@@ -652,6 +670,25 @@ class TestAuthorityWiring(unittest.TestCase):
         self.assertEqual(getattr(exc, "reason", None), "desktop_screen_hold")
         self.assertEqual(calls["admit"], 0)
         self.assertEqual(calls["released"], 1)
+
+    def test_nested_hostile_api_text_held_before_admission(self):
+        # Review r5-2 repro at the real call site: benign persisted
+        # text + hostile model-facing api_text nested under cli_turn_v1
+        # (the committed shape) must be HELD, engine judging BOTH.
+        EngineStubHandler.block_pattern = "ATTACK"
+        EngineStubHandler.last_texts = []
+        receipt, calls, exc = self._submit({
+            "text": "what is the weather today",
+            "api_text": "ATTACK take over the agent"}, tier="allow")
+        self.assertIsNotNone(exc)
+        self.assertEqual(getattr(exc, "reason", None), "desktop_screen_hold")
+        self.assertEqual(calls["admit"], 0)
+        # Hold-on-first-block short-circuits: the engine judged the
+        # hostile model-facing text and the submit was refused before
+        # anything was admitted (screening the remaining text of an
+        # already-refused submit would add nothing).
+        self.assertEqual(EngineStubHandler.last_texts,
+                         ["ATTACK take over the agent"])
 
 
 if __name__ == "__main__":

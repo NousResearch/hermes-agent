@@ -256,17 +256,25 @@ async def drain_outcome_tasks(timeout: float = 5.0) -> None:
 
 
 def submit_texts(params) -> list:
-    """Every model-visible text of one submit-shaped params dict, in
-    deterministic order, deduplicated: the canonical contract's
-    ``api_text`` (this turn's model-facing text) AND the persisted
-    ``text`` (the user row later turns load as model history - review
-    N1: screening only one of the two moved the blind spot to the
-    other; a hostile persisted row defeats the gate with a one-turn
-    delay). Identical values are screened once. Empty list when there
-    is nothing to screen."""
+    """Every model-visible text of one submit-shaped params/payload
+    dict, in deterministic order, deduplicated. Reads BOTH the raw
+    submit shape (top-level ``api_text`` / ``text``) AND the committed
+    admission shape, where ``admit_cli_turn`` nests ``api_text`` under
+    ``cli_turn_v1`` (review r5-2: the authority gate receives the
+    COMMITTED payload, so a resolver that only reads top-level
+    ``api_text`` is dead code at the only real call site - the hostile
+    model-facing text rode in unscreened behind a benign ``text``).
+    Identical values are screened once. Empty list when there is
+    nothing to screen."""
     texts: list = []
-    for key in ("api_text", "text"):
-        value = params.get(key) if isinstance(params, dict) else None
+    candidates = []
+    if isinstance(params, dict):
+        candidates.append(params.get("api_text"))
+        cli = params.get("cli_turn_v1")
+        if isinstance(cli, dict):
+            candidates.append(cli.get("api_text"))
+        candidates.append(params.get("text"))
+    for value in candidates:
         if isinstance(value, str) and value.strip() and value not in texts:
             texts.append(value)
     return texts

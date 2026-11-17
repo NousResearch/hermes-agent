@@ -25,6 +25,7 @@ def _no_delegations():
     from gateway import plugin_cards
     delegation._reset_for_tests()
     plugin_cards._recent.clear()  # the per-(plugin, session) rate window is process-wide
+    plugin_cards._posting.clear()  # and so are its per-(plugin, session) posting locks
     yield
     delegation._reset_for_tests()
 
@@ -250,6 +251,56 @@ async def test_same_id_is_one_card_and_other_content_is_a_conflict(tmp_path, mon
         assert changed['ok'] is False and changed['error'] == 'card_conflict', changed
         await authority._drain(ref)
         assert len(_cards(authority, target)) == 1
+    finally:
+        close_stores_under(authority.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_exact_replays_get_one_queued_and_spend_one_slot(tmp_path, monkeypatch):
+    """Seven concurrent posts of one card: the receipt comes from the admission's created-versus-existing
+    outcome, so exactly one is ``queued`` and six are ``duplicate``, one row lands, and the rate window
+    holds one stamp (replays spend nothing)."""
+    from gateway import plugin_cards
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        _serve(runner, monkeypatch)
+        _no_turns(runner)
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        ctx = _ctx()
+        results = await asyncio.gather(*[_post(ctx, _CARD, session_key=route) for _ in range(7)])
+        statuses = sorted(r.get('status', r.get('error')) for r in results)
+        assert statuses == ['duplicate'] * 6 + ['queued'], results
+        assert len(plugin_cards._recent[('cwplug', route)]) == 1, 'one slot for the one admission that created the row'
+        await authority._drain(ref)
+        assert len(_cards(authority, target)) == 1
+
+        conflicting = [{**_CARD, 'id': 'share-9', 'text': f'version {n}'} for n in range(7)]
+        results = await asyncio.gather(*[_post(ctx, card, session_key=route) for card in conflicting])
+        assert sorted(r.get('status', r.get('error')) for r in results) == ['card_conflict'] * 6 + ['queued'], results
+        await authority._drain(ref)
+        assert len(_cards(authority, target)) == 2
+        assert len(plugin_cards._recent[('cwplug', route)]) == 2, 'a refused conflict spends nothing either'
+    finally:
+        close_stores_under(authority.persistence.scope.profile_dir)
+
+
+@pytest.mark.asyncio
+async def test_a_full_rate_window_still_answers_an_exact_replay(tmp_path, monkeypatch):
+    from gateway import plugin_cards
+    runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
+    try:
+        _serve(runner, monkeypatch)
+        _no_turns(runner)
+        route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
+        ctx = _ctx()
+        for n in range(plugin_cards.RATE_LIMIT[0]):
+            assert (await _post(ctx, {**_CARD, 'id': f'c-{n}'}, session_key=route))['status'] == 'queued'
+        assert (await _post(ctx, {**_CARD, 'id': 'c-new'}, session_key=route))['error'] == 'rate_limited'
+        again = await _post(ctx, {**_CARD, 'id': 'c-0'}, session_key=route)
+        assert again == {'ok': True, 'card_id': 'c-0', 'status': 'duplicate'}, again
+        assert len(plugin_cards._recent[('cwplug', route)]) == plugin_cards.RATE_LIMIT[0]
+        await authority._drain(ref)
+        assert len(_cards(authority, target)) == plugin_cards.RATE_LIMIT[0]
     finally:
         close_stores_under(authority.persistence.scope.profile_dir)
 

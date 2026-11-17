@@ -38,6 +38,7 @@ _PLUGIN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@:-]{0,127}")
 _NAME_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")  # transcript-directives.ts SEGMENT_RE
 _ATTR_RE = re.compile(r"[a-z][A-Za-z0-9_-]{0,63}")
 _recent: dict[tuple[str, str], deque] = {}
+_posting: dict[tuple[str, str], Any] = {}  # one asyncio.Lock per (plugin, session): posts to one session serialize
 
 
 def _err(code: str, detail: str = "") -> dict:
@@ -98,16 +99,22 @@ def model_line(plugin_id: str, card_id: str) -> str:
     return f"[{plugin_id} posted a card {card_id}]"
 
 
-def _rate_limited(plugin_id: str, session_key: str) -> bool:
-    count, window = RATE_LIMIT
-    now = time.monotonic()
+def _rate_window(plugin_id: str, session_key: str) -> deque:
+    """The (plugin, session) window's live stamps. The caller appends one when, and only when, its
+    admission created a row: an exact replay spends nothing."""
     stamps = _recent.setdefault((plugin_id, session_key), deque())
-    while stamps and now - stamps[0] > window:
+    now = time.monotonic()
+    while stamps and now - stamps[0] > RATE_LIMIT[1]:
         stamps.popleft()
-    if len(stamps) >= count:
-        return True
-    stamps.append(now)
-    return False
+    return stamps
+
+
+def _posting_lock(plugin_id: str, session_key: str):
+    import asyncio
+    lock = _posting.get((plugin_id, session_key))
+    if lock is None:
+        lock = _posting[(plugin_id, session_key)] = asyncio.Lock()
+    return lock
 
 
 def _resolve(runner, *, session_key: str, origin, plugin_home, plugin_id: str):
@@ -147,33 +154,43 @@ async def post(runner, card: Any, *, plugin_id: str, plugin_home, session_key: s
     if refusal is not None:
         return refusal
     from gateway.session_authorities import authority_for_home
-    from gateway.session_automation import admit_route_wake
+    from gateway.session_automation import AdmissionReplay, admit_route_wake
     from gateway.session_persistence import authority_persistence
     from persistence.core.errors import AuthorityRefusal
     authority = authority_for_home(runner, plugin_home) if plugin_home is not None else None
     if authority is None:
         return _err("no_conversation", "no session authority serves this plugin's profile")
     request_id = f"{plugin_id}:{normalized['card_id']}"
-    identity = json.dumps([PRODUCER, key, request_id], separators=(",", ":"))
-    seen = await asyncio.to_thread(authority_persistence(authority).admissions.find, principal_id="automation:" + key,
-                                   session_id=authority.logical_owner(entry.session_id), request_id=identity)
-    if seen is None and _rate_limited(plugin_id, key):
-        return _err("rate_limited", f"more than {RATE_LIMIT[0]} cards in {RATE_LIMIT[1]:.0f}s for this session")
     stored = {k: v for k, v in normalized.items() if k != "text"}
     metadata = {"display_kind": DISPLAY_KIND, "display_text": normalized["text"], "plugin_card": stored}
     adapter = (runner._adapter_for_source(source) if source.platform == Platform.LOCAL
                else runner._delivery_adapter_for(source))
-    try:
-        async with runner._plugin_injection_scope(source, plugin_home):
-            admitted = await admit_route_wake(runner, adapter, source, model_line(plugin_id, normalized["card_id"]),
-                                              PRODUCER, metadata, request_id=request_id)
-    except AuthorityRefusal as exc:
-        if exc.reason == "admission_conflict":
-            return _err("card_conflict", f"card {normalized['card_id']!r} was posted with different content")
-        logger.warning("plugin_card plugin=%s session=%s refused: %s", plugin_id, key, exc.reason)
-        return _err("refused", exc.reason)
-    if not admitted:
-        return _err("no_conversation", "the conversation has no committed turn to post into yet")
-    logger.info("plugin_card plugin=%s session=%s card=%s %s", plugin_id, key, normalized["card_id"],
-                "duplicate" if seen is not None else "queued")
-    return {"ok": True, "card_id": normalized["card_id"], "status": "duplicate" if seen is not None else "queued"}
+    replay = AdmissionReplay()
+    async with _posting_lock(plugin_id, key):
+        stamps = _rate_window(plugin_id, key)
+        if len(stamps) >= RATE_LIMIT[0]:
+            # A full window refuses a new card. An exact replay of a card already admitted is not new:
+            # it goes on to the admission, which answers it as a duplicate without spending anything.
+            identity = json.dumps([PRODUCER, key, request_id], separators=(",", ":"))
+            seen = await asyncio.to_thread(authority_persistence(authority).admissions.find,
+                                           principal_id="automation:" + key,
+                                           session_id=authority.logical_owner(entry.session_id), request_id=identity)
+            if seen is None:
+                return _err("rate_limited", f"more than {RATE_LIMIT[0]} cards in {RATE_LIMIT[1]:.0f}s for this session")
+        try:
+            async with runner._plugin_injection_scope(source, plugin_home):
+                admitted = await admit_route_wake(runner, adapter, source, model_line(plugin_id, normalized["card_id"]),
+                                                  PRODUCER, metadata, request_id=request_id, replay=replay)
+        except AuthorityRefusal as exc:
+            if exc.reason == "admission_conflict":
+                return _err("card_conflict", f"card {normalized['card_id']!r} was posted with different content")
+            logger.warning("plugin_card plugin=%s session=%s refused: %s", plugin_id, key, exc.reason)
+            return _err("refused", exc.reason)
+        if not admitted:
+            return _err("no_conversation", "the conversation has no committed turn to post into yet")
+        if replay.created:
+            stamps.append(time.monotonic())  # the one call that queued the row spends the slot
+    # The receipt is the admission's own created-versus-existing outcome, never a read before it.
+    status = "queued" if replay.created else "duplicate"
+    logger.info("plugin_card plugin=%s session=%s card=%s %s", plugin_id, key, normalized["card_id"], status)
+    return {"ok": True, "card_id": normalized["card_id"], "status": status}

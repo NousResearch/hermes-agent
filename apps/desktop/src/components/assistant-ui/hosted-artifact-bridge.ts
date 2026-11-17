@@ -3,7 +3,6 @@ import { JSONRPCMessageSchema } from '@modelcontextprotocol/core'
 import { AppBridge } from '@modelcontextprotocol/ext-apps/app-bridge'
 import { type RefObject, useEffect, useLayoutEffect, useRef } from 'react'
 
-import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { uiMessageToPrompt } from '@/lib/hosted-artifacts'
 
 /**
@@ -65,8 +64,9 @@ export interface HostedArtifactBridgeOptions {
   resultText: string
   /** Height the view asks for (`ui/notifications/size-changed`). */
   onHeight?: (height: number) => void
-  /** Submit a user message; defaults to the active composer. */
-  submit?: (text: string) => boolean
+  /** Offer a message the view asks to send for the user to confirm; false when it cannot be
+   *  offered. Never sends on its own: without it every `ui/message` is refused. */
+  offerMessage?: (text: string) => boolean
   now?: () => number
 }
 
@@ -112,8 +112,9 @@ export interface HostedArtifactBridgeHandle {
 
 /**
  * Wire one AppBridge: answers `ui/initialize`, sends the tool input and result
- * once the view is initialized, maps `ui/message` to a user message through
- * the composer's normal submit path, and follows the view's size requests.
+ * once the view is initialized, offers a `ui/message` to the user (an artifact
+ * may come from another user, so it never sends on its own), and follows the
+ * view's size requests.
  */
 export function createHostedArtifactBridge(
   target: Window,
@@ -139,10 +140,13 @@ export function createHostedArtifactBridge(
       return { isError: true }
     }
 
-    lastAcceptedAt = now
-    const submit = current.submit ?? ((text: string) => requestComposerSubmit(text, { target: 'active' }))
+    if (!current.offerMessage?.(decision.text)) {
+      return { isError: true }
+    }
 
-    return submit(decision.text) ? {} : { isError: true }
+    lastAcceptedAt = now
+
+    return {}
   }
 
   bridge.oninitialized = () => {

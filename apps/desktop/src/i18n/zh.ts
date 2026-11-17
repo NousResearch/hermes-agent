@@ -3072,7 +3072,10 @@ export const zhOverrides = {
     newerVersion: version => `有新版本 ${version}`,
     openViewer: '在查看器中打开',
     linkOnly: '打开查看器以查看此工件。',
-    frameTitle: title => `工件：${title}`
+    frameTitle: title => `工件：${title}`,
+    messagePrompt: '工件想发送这条消息：',
+    messageSend: '发送',
+    messageDismiss: '忽略'
   },
   artifactCard: {
     kind: { code: '代码', html: '交互页面', svg: '图形' },

@@ -9,4 +9,8 @@ export interface HostedArtifactCopy {
   /** Shown instead of the live frame (expired ticket, or a build that does not frame). */
   linkOnly: string
   frameTitle: (title: string) => string
+  /** Above a message an artifact asks to send; the user must confirm it. */
+  messagePrompt: string
+  messageSend: string
+  messageDismiss: string
 }

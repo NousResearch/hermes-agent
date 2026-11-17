@@ -175,7 +175,10 @@ export const zhHantOverrides = {
     newerVersion: version => `有新版本 ${version}`,
     openViewer: '在檢視器中開啟',
     linkOnly: '開啟檢視器以查看此成品。',
-    frameTitle: title => `成品：${title}`
+    frameTitle: title => `成品：${title}`,
+    messagePrompt: '成品想傳送這則訊息：',
+    messageSend: '傳送',
+    messageDismiss: '略過'
   },
   artifactCard: zhHantArtifacts.artifactCard,
   artifactPreview: zhHantArtifacts.artifactPreview,

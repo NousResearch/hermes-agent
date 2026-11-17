@@ -3608,7 +3608,10 @@ export const deOverrides = {
     newerVersion: version => `Version ${version} verfügbar`,
     openViewer: 'Im Viewer öffnen',
     linkOnly: 'Öffne den Viewer, um dieses Artefakt zu sehen.',
-    frameTitle: title => `Artefakt: ${title}`
+    frameTitle: title => `Artefakt: ${title}`,
+    messagePrompt: 'Das Artefakt möchte diese Nachricht senden:',
+    messageSend: 'Senden',
+    messageDismiss: 'Verwerfen'
   },
   artifactCard: {
     kind: {

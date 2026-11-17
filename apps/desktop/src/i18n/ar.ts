@@ -124,7 +124,10 @@ export const arOverrides = {
     newerVersion: version => `الإصدار ${version} متاح`,
     openViewer: 'فتح في العارض',
     linkOnly: 'افتح العارض لعرض هذا العنصر.',
-    frameTitle: title => `عنصر: ${title}`
+    frameTitle: title => `عنصر: ${title}`,
+    messagePrompt: 'يريد العنصر إرسال هذه الرسالة:',
+    messageSend: 'إرسال',
+    messageDismiss: 'تجاهل'
   },
   artifactCard: arArtifacts.artifactCard,
   artifactPreview: arArtifacts.artifactPreview,

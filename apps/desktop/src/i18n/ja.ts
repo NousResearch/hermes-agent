@@ -2151,7 +2151,10 @@ export const jaOverrides = {
     newerVersion: version => `バージョン ${version} があります`,
     openViewer: 'ビューアで開く',
     linkOnly: 'このアーティファクトはビューアで表示できます。',
-    frameTitle: title => `アーティファクト: ${title}`
+    frameTitle: title => `アーティファクト: ${title}`,
+    messagePrompt: 'アーティファクトがこのメッセージを送信しようとしています:',
+    messageSend: '送信',
+    messageDismiss: '閉じる'
   },
   artifactCard: {
     kind: { code: 'コード', html: 'インタラクティブページ', svg: 'グラフィック' },

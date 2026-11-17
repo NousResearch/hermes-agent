@@ -1,7 +1,8 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { I18nProvider } from '@/i18n'
 import { isCardTool } from '@/lib/tool-render-class'
@@ -20,6 +21,8 @@ const ORIGIN = `http://${ID}.artifacts.localhost:8787`
 const CONTENT_URL = `${ORIGIN}/__av?t=ticket`
 const VIEWER_URL = `https://portal.example/a/${ID}`
 const DEV = { dev: true }
+const TILE = 'tile:origin'
+const SURFACE = 'surface-origin'
 
 const created = (extra: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -43,9 +46,14 @@ function mount(
     ...props
   } as unknown as ToolCallMessagePartProps & { framePolicy?: { dev: boolean } }
 
+  // The conversation that renders the card: a session tile, not the active main composer.
   return render(
     <I18nProvider>
-      <HostedArtifactToolPart {...part} fallback={Fallback} />
+      <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, target: TILE }}>
+        <ComposerSurfaceProvider value={SURFACE}>
+          <HostedArtifactToolPart {...part} fallback={Fallback} />
+        </ComposerSurfaceProvider>
+      </ComposerScopeProvider>
     </I18nProvider>
   )
 }
@@ -168,33 +176,68 @@ describe('hosted artifact bridge', () => {
     expect(posted.every(entry => entry.targetOrigin === ORIGIN)).toBe(true)
   })
 
-  it('submits a ui/message as a user message through the composer', async () => {
-    const { fromView, responseTo } = await connected()
+  const prompt = () => screen.queryByRole('group')
 
-    await fromView({
-      id: 2,
-      method: 'ui/message',
-      params: { content: [{ text: 'Make the bars blue', type: 'text' }], role: 'user' }
+  const click = (name: 'Dismiss' | 'Send') =>
+    act(async () => {
+      fireEvent.click(screen.getByRole('button', { name }))
     })
 
+  const ask = (text: string) => ({ content: [{ text, type: 'text' }], role: 'user' })
+
+  it('never submits a ui/message on its own: it asks the user first', async () => {
+    const { fromView, responseTo } = await connected()
+
+    await fromView({ id: 2, method: 'ui/message', params: ask('Make the bars blue') })
+
     await waitFor(() => expect(responseTo(2)).toBeDefined())
-    expect(submit).toHaveBeenCalledWith('Make the bars blue', { target: 'active' })
     expect(responseTo(2)!.message.result).toEqual({})
+    expect(submit).not.toHaveBeenCalled()
+    expect(prompt()?.textContent).toContain('Make the bars blue')
   })
 
-  it('reports an undeliverable or throttled ui/message as an error instead of dropping it', async () => {
+  it('sends a confirmed message to the conversation that rendered the frame, never the active one', async () => {
     const { fromView, responseTo } = await connected()
-    const message = { content: [{ text: 'again', type: 'text' }], role: 'user' }
 
-    submit.mockImplementationOnce(() => false)
-    await fromView({ id: 2, method: 'ui/message', params: message })
+    await fromView({ id: 2, method: 'ui/message', params: ask('Make the bars blue') })
     await waitFor(() => expect(responseTo(2)).toBeDefined())
-    expect(responseTo(2)!.message.result).toEqual({ isError: true })
+    await click('Send')
 
-    await fromView({ id: 3, method: 'ui/message', params: message })
+    expect(submit).toHaveBeenCalledOnce()
+    expect(submit).toHaveBeenCalledWith('Make the bars blue', { surfaceId: SURFACE, target: TILE })
+    expect(prompt()).toBeNull()
+  })
+
+  it('drops a dismissed message, and keeps the prompt when its conversation cannot take it', async () => {
+    const { fromView, responseTo } = await connected()
+
+    await fromView({ id: 2, method: 'ui/message', params: ask('first') })
+    await waitFor(() => expect(responseTo(2)).toBeDefined())
+    await click('Dismiss')
+    expect(prompt()).toBeNull()
+    expect(submit).not.toHaveBeenCalled()
+
+    await act(async () => new Promise(resolve => setTimeout(resolve, 1100)))
+    await fromView({ id: 3, method: 'ui/message', params: ask('second') })
     await waitFor(() => expect(responseTo(3)).toBeDefined())
+    submit.mockImplementationOnce(() => false)
+    await click('Send')
+    expect(prompt()?.textContent).toContain('second')
+  })
+
+  it('refuses a second message while one waits for the user', async () => {
+    const { fromView, responseTo } = await connected()
+
+    await fromView({ id: 2, method: 'ui/message', params: ask('one') })
+    await waitFor(() => expect(responseTo(2)).toBeDefined())
+    await act(async () => new Promise(resolve => setTimeout(resolve, 1100))) // past the burst throttle
+    await fromView({ id: 3, method: 'ui/message', params: ask('two') })
+    await waitFor(() => expect(responseTo(3)).toBeDefined())
+
     expect(responseTo(3)!.message.result).toEqual({ isError: true })
-    expect(submit).toHaveBeenCalledTimes(1)
+    expect(prompt()?.textContent).toContain('one')
+    expect(prompt()?.textContent).not.toContain('two')
+    expect(submit).not.toHaveBeenCalled()
   })
 
   it('ignores messages from another origin or another window', async () => {

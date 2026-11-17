@@ -2411,7 +2411,10 @@ export const ruOverrides = {
     newerVersion: version => `Доступна версия ${version}`,
     openViewer: 'Открыть в просмотрщике',
     linkOnly: 'Откройте просмотрщик, чтобы увидеть этот артефакт.',
-    frameTitle: title => `Артефакт: ${title}`
+    frameTitle: title => `Артефакт: ${title}`,
+    messagePrompt: 'Артефакт хочет отправить это сообщение:',
+    messageSend: 'Отправить',
+    messageDismiss: 'Отклонить'
   },
   artifactCard: {
     kind: { code: 'Код', html: 'Интерактивная страница', svg: 'Графика' },

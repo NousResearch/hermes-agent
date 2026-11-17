@@ -2,7 +2,10 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, useEffect, useMemo, useRef, useState } from 'react'
 
+import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { useComposerScope, useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
+import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import {
@@ -126,25 +129,87 @@ function HostedArtifactFrame({
 }) {
   const frame = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
+  const [offered, setOffered] = useState<string | null>(null)
+  const offeredRef = useRef<string | null>(null)
+
+  const offer = (text: string | null) => {
+    offeredRef.current = text
+    setOffered(text)
+  }
 
   useHostedArtifactBridge(frame, {
     args,
+    // One message waits for the user at a time; the view hears that a second one was refused.
+    offerMessage: text => {
+      if (offeredRef.current !== null) {
+        return false
+      }
+
+      offer(text)
+
+      return true
+    },
     onHeight: next => setHeight(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(next)))),
     origin,
     resultText
   })
 
   return (
-    <iframe
-      className="mt-1.5 block w-full rounded-md border border-border/60 bg-transparent"
-      data-slot="aui_hosted-artifact-frame"
-      ref={frame}
-      referrerPolicy="no-referrer"
-      sandbox="allow-scripts allow-same-origin"
-      src={contentUrl}
-      style={{ height }}
-      title={title}
-    />
+    <>
+      <iframe
+        className="mt-1.5 block w-full rounded-md border border-border/60 bg-transparent"
+        data-slot="aui_hosted-artifact-frame"
+        ref={frame}
+        referrerPolicy="no-referrer"
+        sandbox="allow-scripts allow-same-origin"
+        src={contentUrl}
+        style={{ height }}
+        title={title}
+      />
+      {offered !== null && <HostedArtifactMessagePrompt onDone={() => offer(null)} text={offered} />}
+    </>
+  )
+}
+
+/**
+ * The confirmation an artifact's `ui/message` needs before it reaches the agent. An artifact can
+ * be shared by another user, so its message is shown, never sent on its own, and Send delivers it
+ * to the conversation that rendered this frame (its composer target and mounted surface), never to
+ * whichever composer is active; when that surface is gone the send fails and the prompt stays.
+ */
+export function HostedArtifactMessagePrompt({ onDone, text }: { onDone: () => void; text: string }) {
+  const { t } = useI18n()
+  const copy = t.hostedArtifact
+  const { target } = useComposerScope()
+  const surfaceId = useComposerSurfaceId()
+
+  const send = () => {
+    if (requestComposerSubmit(text, { surfaceId, target })) {
+      onDone()
+    }
+  }
+
+  return (
+    <div
+      className={cn(WIDGET_SHELL_CLASS, 'mt-1.5 flex w-full flex-col gap-1.5')}
+      data-slot="aui_hosted-artifact-message"
+      role="group"
+    >
+      <span className="text-[length:var(--conversation-tool-font-size)] text-muted-foreground">
+        {copy.messagePrompt}
+      </span>
+      <span className="whitespace-pre-wrap break-words text-[length:var(--conversation-text-font-size)] text-foreground">
+        {text}
+      </span>
+      <span className="flex justify-end gap-1.5">
+        <Button data-slot="aui_hosted-artifact-message-dismiss" onClick={onDone} size="sm" variant="ghost">
+          {copy.messageDismiss}
+        </Button>
+        <Button data-slot="aui_hosted-artifact-message-send" onClick={send} size="sm">
+          {copy.messageSend}
+        </Button>
+      </span>
+    </div>
   )
 }
 

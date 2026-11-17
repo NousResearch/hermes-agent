@@ -3596,7 +3596,10 @@ export const esOverrides = {
     newerVersion: version => `Versión ${version} disponible`,
     openViewer: 'Abrir en el visor',
     linkOnly: 'Abre el visor para ver este artefacto.',
-    frameTitle: title => `Artefacto: ${title}`
+    frameTitle: title => `Artefacto: ${title}`,
+    messagePrompt: 'El artefacto quiere enviar este mensaje:',
+    messageSend: 'Enviar',
+    messageDismiss: 'Descartar'
   },
   artifactCard: {
     kind: {

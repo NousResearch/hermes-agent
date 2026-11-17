@@ -360,8 +360,11 @@ class SSHEnvironment(BaseEnvironment):
         for socket in self._control_sockets():
             if not socket.exists():
                 continue
+            # `-O stop`, not `-O exit`: every env on the same user@host:port shares this master, so
+            # `exit` (the idle reaper's cleanup of one stale env) killed the commands of every other
+            # live env with a bare exit 255. `stop` only closes the listener; running sessions finish.
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "exit", f"{self.user}@{self.host}"]
+                cmd = ["ssh", "-o", f"ControlPath={socket}", "-O", "stop", f"{self.user}@{self.host}"]
                 subprocess.run(cmd, capture_output=True, timeout=5, stdin=subprocess.DEVNULL, check=False)
             with contextlib.suppress(OSError):
                 socket.unlink()

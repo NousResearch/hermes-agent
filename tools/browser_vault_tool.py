@@ -632,6 +632,86 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     return {"ok": True, "filled": filled + len(type_fills)}
 
 
+def _typing_channel(task_id: str) -> tuple[Any, Any, Any]:
+    """The trusted-typing channel for a task: ``(supervisor, insert_text, page_backend)``.
+
+    A plugin or preview page backend owns the page and has no CDP channel: asking the supervisor for
+    one would attach a managed browser to a preview-only session. When no supervisor is reachable the
+    first two are None and the caller stays on the JS path.
+    """
+    page_backend = _page_backend(task_id)
+    if page_backend is not None:
+        return None, None, page_backend
+    try:
+        supervisor = _ensure_supervisor(task_id)
+    except Exception as exc:  # health: allow BLE001 -- a missing supervisor is not a fill failure
+        logger.debug("vault fill: supervisor unavailable for trusted typing (%s)", exc)
+        return None, None, None
+    return supervisor, getattr(supervisor, "insert_text", None), None
+
+
+def _js_write(task_id: str, fills: list[dict[str, Any]], page_origin: str, nonce: str,
+              secret: dict[str, str]) -> dict[str, Any]:
+    """Write the fields with the JS fill script (no CDP channel: page/plugin backends).
+
+    Returns ``{"success": True}`` or a refusal dict ready to be serialised: the caller does not have
+    to interpret anything. Every error string is scrubbed of the secret before it leaves.
+    """
+    from agent.vault_login_classifier import build_fill_js
+    from agent.vault_store import scrub_secret_from_text
+
+    try:
+        fill_result = _eval_js_secret(
+            task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
+        )
+    except Exception as exc:  # health: allow BLE001 -- any CDP failure becomes a typed result; its text is scrubbed of the secret
+        return {"success": False, "error": scrub_secret_from_text(str(exc), secret)}
+    if not fill_result.get("success"):
+        out = {"success": False, "error": scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)}
+        if fill_result.get("error_type"):
+            out["error_type"] = fill_result["error_type"]
+        return out
+    parsed = _parse_json_result(fill_result.get("result"))
+    if isinstance(parsed, str):
+        parsed = _parse_json_result(parsed)
+    if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
+        return {"success": False, "error_type": "origin_changed",
+                "error": ("Refused: the page navigated away from the bound origin "
+                          f"({page_origin}) before the fill could run "
+                          f"(now on {parsed.get('found') or 'unknown'}). Nothing was written.")}
+    wrote = int(parsed.get("filled", 0) or 0) if isinstance(parsed, dict) else 0
+    if not wrote:
+        return {"success": False, "error_type": "fill_not_written", "filled_fields": 0,
+                "error": "No field accepted the write: nothing was filled on this page."}
+    return {"success": True}
+
+
+def _read_back(task_id: str, fills: list[dict[str, Any]], nonce: str) -> dict[str, Any]:
+    """Read every filled control back one page turn later; counts only, never a value.
+
+    The fill's own count is a claim about the write. This is the claim about the page: a controlled
+    input (React/Vue/MUI) reverts a value it did not accept, and a re-rendered field is gone with
+    its stamp. Returns ``{"success": True, "landed": n}`` or a refusal dict.
+    """
+    from agent.vault_login_classifier import build_fill_verify_js
+
+    time.sleep(_FILL_VERIFY_DELAY_S)
+    verify = _eval_js_secret(task_id, build_fill_verify_js(fills, nonce=nonce))
+    verified = _parse_json_result(verify.get("result")) if verify.get("success") else {}
+    if isinstance(verified, str):
+        verified = _parse_json_result(verified)
+    if not isinstance(verified, dict):
+        return {"success": False, "error_type": "fill_unverified", "filled_fields": 0,
+                "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."}
+    landed = int(verified.get("landed", 0) or 0)
+    if landed <= 0:
+        reverted = int(verified.get("reverted", 0) or 0)
+        return {"success": False, "error_type": "fill_reverted", "filled_fields": 0,
+                "error": (f"The page rejected the value: {reverted} field(s) reverted after the input event. "
+                          "Nothing is filled.")}
+    return {"success": True, "landed": landed}
+
+
 def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str,
                      with_identifier: bool = False) -> str:
     """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
@@ -705,16 +785,7 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     # JS value write. ``Input.insertText`` types into whatever holds focus, so the focus is
     # asserted immediately before every single keystroke (build_focus_js) and the value is read
     # back after it. A page backend (plugin browser) has no CDP channel: that path stays on JS.
-    supervisor = None
-    # A plugin/preview page backend owns the page: there is no CDP channel to type into, and asking
-    # the supervisor for one would attach a managed browser to a preview-only session.
-    page_backend = _page_backend(effective_task_id)
-    if page_backend is None:
-        try:
-            supervisor = _ensure_supervisor(effective_task_id)
-        except Exception as exc:  # health: allow BLE001 -- a missing supervisor is not a fill failure
-            logger.debug("vault fill: supervisor unavailable for trusted typing (%s)", exc)
-    insert_text = getattr(supervisor, "insert_text", None) if supervisor is not None else None
+    supervisor, insert_text, page_backend = _typing_channel(effective_task_id)
     # The trusted path types into the SUPERVISOR's page: only use it when that page is the page the
     # inspection stamped (no plugin page backend in front of it).
     trusted = bool(callable(insert_text)) and page_backend is None
@@ -723,69 +794,22 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
                   if f["index"] in type_by_index
                   and type_by_index[f["index"]] not in ("select", "checkbox", "radio")]
     js_fills = [f for f in fills if f not in type_fills]
-    trusted = trusted and bool(type_fills)
 
-    wrote = 0
-    if trusted:
+    if trusted and type_fills:
         typed = _trusted_typing_fill(supervisor, effective_task_id, type_fills, js_fills,
                                      page_origin, nonce, secret)
         if not typed.get("ok"):
             return json.dumps({k: v for k, v in typed.items() if k != "ok"})
-        wrote = len(fills)
     else:
-        try:
-            fill_result = _eval_js_secret(
-                effective_task_id, build_fill_js(fills, expected_origin=page_origin, nonce=nonce)
-            )
-        except Exception as exc:  # health: allow BLE001 -- any CDP failure becomes a typed result; its text is scrubbed of the secret
-            return json.dumps(
-                {"success": False, "error": scrub_secret_from_text(str(exc), secret)}
-            )
-        if not fill_result.get("success"):
-            err = scrub_secret_from_text(str(fill_result.get("error") or "fill failed"), secret)
-            out = {"success": False, "error": err}
-            if fill_result.get("error_type"):
-                out["error_type"] = fill_result["error_type"]
-            return json.dumps(out)
+        written = _js_write(effective_task_id, fills, page_origin, nonce, secret)
+        if not written.get("success"):
+            return json.dumps(written)
 
-        parsed = _parse_json_result(fill_result.get("result"))
-        if isinstance(parsed, str):
-            parsed = _parse_json_result(parsed)
-        if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
-            return json.dumps(
-                {
-                    "success": False,
-                    "error_type": "origin_changed",
-                    "error": (
-                        "Refused: the page navigated away from the bound origin "
-                        f"({page_origin}) before the fill could run "
-                        f"(now on {parsed.get('found') or 'unknown'}). "
-                        "Nothing was written."
-                    ),
-                }
-            )
-        wrote = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
-    if not wrote:
-        return json.dumps({"success": False, "error_type": "fill_not_written", "filled_fields": 0,
-                           "error": "No field accepted the write: nothing was filled on this page."})
+    checked = _read_back(effective_task_id, fills, nonce)
+    if not checked.get("success"):
+        return json.dumps(checked)
+    landed = int(checked["landed"])
 
-    # Read the page back one turn of the event loop later. The count above says what was dispatched;
-    # this says what stayed. A controlled input (React/Vue/MUI) reverts a write it did not accept,
-    # so trusting the dispatch is how a fill reports success over an empty field.
-    time.sleep(_FILL_VERIFY_DELAY_S)
-    verify = _eval_js_secret(effective_task_id, build_fill_verify_js(fills, nonce=nonce))
-    verified = _parse_json_result(verify.get("result")) if verify.get("success") else {}
-    if isinstance(verified, str):
-        verified = _parse_json_result(verified)
-    if not isinstance(verified, dict):
-        return json.dumps({"success": False, "error_type": "fill_unverified", "filled_fields": 0,
-                           "error": "The page could not be read back; treating the fill as failed rather than claiming it landed."})
-    landed = int(verified.get("landed", 0) or 0)
-    reverted = int(verified.get("reverted", 0) or 0)
-    if landed <= 0:
-        return json.dumps({"success": False, "error_type": "fill_reverted", "filled_fields": 0,
-                           "error": (f"The page rejected the value: {reverted} field(s) reverted after the input event. "
-                                     "Nothing is filled.")})
 
     out = {"success": True, "filled_fields": landed, "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}

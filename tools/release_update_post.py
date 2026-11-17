@@ -479,6 +479,7 @@ async def post_once(spec: dict, cfg: dict, level: str, *, require_approved: bool
         m = await materialize(spec, cfg, require_approved=require_approved)
         if expected_sha and m["sha"] != expected_sha:
             raise _ContentChanged("The row's content changed after the veto announcement.")
+        gate.require_slack_token()  # a missing token must not leave the row in flight
         if pending_id:
             autonomy.update_pending(ACTION, pending_id, status="executing")
         # In flight BEFORE the call: if anything fails after it starts (a

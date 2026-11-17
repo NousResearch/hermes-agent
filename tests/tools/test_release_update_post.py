@@ -94,6 +94,7 @@ class World:
         monkeypatch.setattr(gate, "veto_reactions", self.reactions)
         monkeypatch.setattr(gate, "update_page_properties", self.writeback)
         monkeypatch.setattr(gate, "permalink", self.permalink)
+        monkeypatch.setattr(gate, "require_slack_token", lambda: None)
 
         async def free_post(token, channel, thread_ts, text):
             self.free_posts.append((channel, thread_ts, text))
@@ -601,3 +602,19 @@ def test_slack_rejection_clears_and_can_retry(w):
     assert "not_in_channel" in _call(_gated())["error"]
     assert au.ledger_get(rup.ACTION, ROW_KEY) is None
     assert _call(_gated())["ok"] is True and len(w.release_posts) == 1
+
+
+
+def test_internal_error_keeps_the_row_in_flight(w):
+    w.post_error = gate.GateError("Slack chat.postMessage failed (HTTP 200, internal_error).")
+    assert "error" in _call(_gated())
+    assert au.ledger_get(rup.ACTION, ROW_KEY)["state"] == "in_flight"
+    assert "outcome is unknown" in _call(_gated())["error"]
+
+
+def test_missing_token_does_not_leave_row_in_flight(w, monkeypatch):
+    def no_token():
+        raise gate.GateError("Slack bot token not configured (SLACK_BOT_TOKEN).")
+    monkeypatch.setattr(gate, "require_slack_token", no_token)
+    assert "SLACK_BOT_TOKEN" in _call(_gated())["error"]
+    assert au.ledger_get(rup.ACTION, ROW_KEY) is None and w.posts == []

@@ -236,3 +236,30 @@ def test_permalink_with_fallback(monkeypatch, slack_tok):
         return 200, {"ok": False, "error": "missing_scope"}
     monkeypatch.setattr(g, "_http_json", bad)
     assert _run_async(g.permalink("C1", "1.2")) == "https://slack.com/archives/C1/p12"
+
+
+@pytest.mark.parametrize("status,body,rejected", [
+    (200, {"ok": False, "error": "not_in_channel"}, True),
+    (200, {"ok": False, "error": "ratelimited"}, True),
+    (200, {"ok": False, "error": "internal_error"}, False),
+    (200, {"ok": False, "error": "fatal_error"}, False),
+    (502, {}, False),                                   # proxy error page (non-JSON → {})
+    (500, {"ok": False, "error": "not_in_channel"}, False),
+    (200, {}, False),                                    # no `ok` at all
+])
+def test_only_definite_failures_are_rejections(monkeypatch, slack_tok, status, body, rejected):
+    async def fake(method, url, headers, **kw):
+        return status, body
+    monkeypatch.setattr(g, "_http_json", fake)
+    with pytest.raises(g.GateError) as exc:
+        _run_async(g.post_announcement("C1", "hello"))
+    assert isinstance(exc.value, g.SlackRejected) is rejected
+
+
+def test_non_json_body_is_not_a_rejection(monkeypatch, slack_tok):
+    async def fake(method, url, headers, **kw):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")  # json() on an HTML 502
+    monkeypatch.setattr(g, "_http_json", fake)
+    with pytest.raises(g.GateError) as exc:
+        _run_async(g.post_announcement("C1", "hello"))
+    assert not isinstance(exc.value, g.SlackRejected)

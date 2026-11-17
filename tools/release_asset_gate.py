@@ -34,8 +34,20 @@ class GateError(RuntimeError):
 
 
 class SlackRejected(GateError):
-    """Slack answered ``ok: false`` — the call definitely did nothing (unlike
-    a timeout or connection error, after which a post may have landed)."""
+    """Slack DEFINITELY did nothing: HTTP 200, a JSON object, ``ok: false``
+    and an error in ``DEFINITE_SLACK_FAILURES``. Anything else — a timeout,
+    a proxy's error page, ``internal_error`` / ``fatal_error`` — may have
+    partly succeeded, so it is a plain ``GateError``."""
+
+
+# Errors Slack returns before it does anything (validation, auth, channel
+# access, rate limiting). internal_error / fatal_error / request_timeout are
+# deliberately absent: the message may have been posted.
+DEFINITE_SLACK_FAILURES = frozenset({
+    "not_in_channel", "channel_not_found", "is_archived", "msg_too_long", "no_text",
+    "invalid_blocks", "restricted_action", "not_authed", "invalid_auth",
+    "account_inactive", "token_revoked", "missing_scope", "ratelimited",
+})
 
 
 class RowStopped(GateError):
@@ -220,6 +232,11 @@ async def fetch_block_tree(page_id: str) -> list[dict]:
 
 # ── Slack ────────────────────────────────────────────────────────────────
 
+def require_slack_token() -> None:
+    """Raise GateError now when no bot token is configured."""
+    _slack_headers()
+
+
 def _slack_headers() -> dict:
     token = _secret("SLACK_BOT_TOKEN")
     if not token:
@@ -230,12 +247,15 @@ def _slack_headers() -> dict:
 async def _slack(method: str, api: str, **kw) -> dict:
     headers = _slack_headers()
     try:
-        _status, data = await _http_json(method, f"https://slack.com/api/{api}", headers, **kw)
+        status, data = await _http_json(method, f"https://slack.com/api/{api}", headers, **kw)
     except Exception as e:
         raise GateError(f"Slack {api} failed: {e}") from e
-    if not data.get("ok"):
-        raise SlackRejected(f"Slack {api} error: {data.get('error', 'unknown')}")
-    return data
+    if status == 200 and data.get("ok") is True:
+        return data
+    error = str(data.get("error") or "")
+    if status == 200 and data.get("ok") is False and error in DEFINITE_SLACK_FAILURES:
+        raise SlackRejected(f"Slack {api} error: {error}")
+    raise GateError(f"Slack {api} failed (HTTP {status}, {error or 'no error code'}).")
 
 
 async def post_announcement(channel: str, text: str, thread_ts: str = "") -> str:

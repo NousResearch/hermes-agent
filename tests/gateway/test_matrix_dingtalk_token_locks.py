@@ -70,6 +70,38 @@ class TestMatrixAccountLock:
             await adapter.disconnect()
         assert not lock_path.exists()
 
+    @pytest.mark.asyncio
+    async def test_case_variant_homeserver_cannot_start_second_gateway(self, monkeypatch):
+        # DNS hostnames are case-insensitive; a different spelling is still the same Matrix account.
+        held = set()
+
+        def acquire(scope, identity, metadata=None):
+            key = (scope, identity)
+            if key in held:
+                return False, dict(_FOREIGN_HOLDER)
+            held.add(key)
+            return True, None
+
+        monkeypatch.setattr(gateway_status, "acquire_scoped_lock", acquire)
+        first = _matrix_adapter()
+        second = matrix_mod.MatrixAdapter(PlatformConfig(enabled=True, token="another_token", extra={
+            "homeserver": "https://MATRIX.EXAMPLE.ORG", "user_id": "@bot:example.org"}))
+        first._encryption = second._encryption = False
+        mods = _make_fake_mautrix()
+        mods["mautrix.client"].Client = MagicMock(side_effect=[_fake_matrix_client(), _fake_matrix_client()])
+        with patch.dict("sys.modules", mods), \
+                patch.object(matrix_mod, "_create_matrix_session", return_value=MagicMock()), \
+                patch.object(matrix_mod.MatrixAdapter, "_refresh_dm_cache", AsyncMock()), \
+                patch.object(matrix_mod.MatrixAdapter, "_sync_loop", AsyncMock(return_value=None)):
+            try:
+                assert await first.connect() is True
+                assert await second.connect() is False
+                assert second._fatal_error_code == "matrix-account_lock"
+            finally:
+                await first.disconnect()
+                await second.disconnect()
+
+
 
 def _dingtalk_adapter(monkeypatch):
     import plugins.platforms.dingtalk.adapter as dingtalk

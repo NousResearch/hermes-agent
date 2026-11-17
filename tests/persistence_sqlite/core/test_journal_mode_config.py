@@ -325,7 +325,7 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     finally:
         session_db.close()
 
-    async_delegation.mark_completion_delivered("journal-mode-probe")
+    async_delegation.claim_completion_delivery("journal-mode-probe", "journal-mode-claim")
     ledger_conn = sqlite3.connect(async_delegation._db_path())
     try:
         observed["async_delegation"] = ledger_conn.execute("PRAGMA journal_mode").fetchone()[0].lower()

@@ -113,7 +113,8 @@ export const libTextEn = {
       /** {0} = question */
       clarifyUnanswered: (question: string) => `· ${question} (no answer)`,
       /** {0} = why the batch ended */
-      clarifyReason: (reason: string) => `(${reason})`
+      clarifyReason: (reason: string) => `(${reason})`,
+      clarifyCancelled: 'cancelled'
     },
 
     // lib/agentRows.ts — docked agents panel row fallbacks.

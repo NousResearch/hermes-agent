@@ -55,7 +55,6 @@ class SkillsShSource(SkillSource):
     # Standard skill sub-paths tried before any tree/discovery walk.
     _STANDARD_BASE_PATHS = ("skills/", ".agents/skills/", ".claude/skills/")
 
-    _strip_html = staticmethod(_strip_html)
     SOURCE_ID = "skills-sh"
 
     def __init__(self, auth: GitHubAuth):

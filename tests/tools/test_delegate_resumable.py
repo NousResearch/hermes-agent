@@ -147,8 +147,9 @@ def test_a_resumable_childs_isolation_worktree_survives_its_stop_and_continue_ru
     (repo / "a.txt").write_text("a")
     _git("add", "a.txt", cwd=repo)
     _git("commit", "-qm", "init", cwd=repo)
-    monkeypatch.setattr("tools.delegate_tool._get_worktree_isolation", lambda: True)
+    monkeypatch.setattr("tools.delegate_tool_child_run._get_worktree_isolation", lambda: True)
     monkeypatch.setattr("tools.delegate_tool._resolve_workspace_hint", lambda _p: str(repo))
+    monkeypatch.setattr("tools.delegate_tool_child_run._resolve_workspace_hint", lambda _p: str(repo))
     started, release = threading.Event(), threading.Event()
     model = _ScriptedModel()
 

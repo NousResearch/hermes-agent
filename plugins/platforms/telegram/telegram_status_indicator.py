@@ -111,7 +111,7 @@ async def set_status_indicator(adapter: TelegramAdapter, online: bool) -> None:
     text = _status_text(adapter, online)
     try:
         await bot.set_my_short_description(short_description=text)
-        logger.info("[%s] Set bot status indicator to %r", adapter.name, text)
+        logger.info("[%s] Set bot status indicator to %r", adapter.name, text)  # health: allow HX017 -- configured status string
     except Exception as e:  # health: allow BLE001 -- best-effort profile text; never blocks connect/disconnect
         logger.debug("[%s] Failed to set bot status indicator to %r: %s", adapter.name, text,
                      _redact_telegram_error_text(e), exc_info=True)

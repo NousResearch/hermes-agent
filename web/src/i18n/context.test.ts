@@ -21,6 +21,11 @@ afterEach(() => {
 })
 
 describe('Dashboard i18n framework', () => {
+  it('keeps historical Traditional Chinese protocol inputs on their independent catalog', () => {
+    for (const input of ['zh-tw', 'zh-hk', 'zh-mo', ' ZH_TW ', ' ZH_HK ', ' ZH_MO ']) {
+      expect(normalizeLocale(input)).toBe('zh-hant')
+    }
+  })
   it('keeps Simplified Chinese complete for every English catalog leaf', () => {
     const missing: string[] = []
     const visit = (base: unknown, overlay: unknown, path: string[] = []) => {

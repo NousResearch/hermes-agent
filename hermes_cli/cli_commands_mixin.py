@@ -406,7 +406,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_rollback_command(self, command: str):
         """Handle /rollback [diff] <N> [<file>|--all] — list, diff, or restore checkpoints.
         A restore also undoes the last chat turn; ``--all`` overwrites user hand-edits too."""
-        from tools.checkpoint_manager import format_checkpoint_list
+        from agent.checkpoints.manager import format_checkpoint_list
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
             # Checkpoints are taken by the gateway's tools: list/diff/restore are the owner's.
@@ -933,7 +933,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         try:
             new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
             branch_title = branch_name or self._session_db.get_next_title_in_lineage(
-                self._session_db.get_session_title(self.session_id) or "branch")
+                self._session_db.get_session_title(self._title_session_id()) or "branch")
             parent_session_id = self.session_id
             parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
             if not isinstance(parent_prompt, str) or not parent_prompt:
@@ -2089,16 +2089,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /debug, /update, /voice, /wake ---------------------------------------------------
     def _handle_debug_command(self, cmd_original: str = ""):
-        """Handle /debug [nous|local] — upload debug report + logs and print share URLs.
-        Default: public paste service; ``nous``: Nous-internal (staff-only); ``local``: render to
-        stdout, no upload. ``local`` wins if both are given (never touches the network)."""
-        from hermes_cli.debug import run_debug_share
-        from types import SimpleNamespace
-        words = {w.lower() for w in cmd_original.split()[1:]}
-        local = "local" in words
-        # Typing /debug is the upload consent (yes=True); input() would hang in prompt_toolkit anyway.
-        run_debug_share(SimpleNamespace(
-            lines=200, expire=7, local=local, nous="nous" in words and not local, yes=True))
+        """Handle /debug [upload|nous upload|local] (see ``hermes_cli.debug.run_debug_slash``)."""
+        from hermes_cli.debug import run_debug_slash
+        run_debug_slash(cmd_original)
 
     def _handle_update_command(self) -> bool:
         """Handle /update — exit the session and relaunch as ``hermes update``. Returns True when

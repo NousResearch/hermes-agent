@@ -121,6 +121,12 @@ def test_normalize_language_uses_only_registered_aliases():
     assert i18n._normalize_lang("zh-extra") == "en"
 
 
+def test_historical_traditional_chinese_inputs_keep_their_catalog():
+    """Fixed protocol inputs protect compatibility independently of registry contents."""
+    for value in ("zh-tw", "zh-hk", "zh-mo", " ZH_TW ", " ZH_HK ", " ZH_MO "):
+        assert i18n._normalize_lang(value) == "zh-hant"
+
+
 
 
 

@@ -512,14 +512,18 @@ def _transform_sudo_command(
     if has_configured_password or sudo_password:
         from tools.terminal_tool_sudo_askpass import (
             SUDO_ASKPASS_TIMEOUT_TOKEN, build_prologue, has_background_sudo, has_own_stdin_or_askpass,
+            sudo_command_words,
         )
         # sudo -S reads one line per invocation: compound `sudo a && sudo b` needs one line each.
         # The askpass form gets the same lines: its prologue takes them off stdin once the helper
         # is set up, and leaves them for ``-S`` when setup fails at run time.
         password_lines = (sudo_password + "\n") * sudo_count
         if askpass_supported is not None and not has_own_stdin_or_askpass(command) and askpass_supported():
-            askpass_command = _rewrite_real_sudo_invocations(command, askpass=True)[0]
-            prologue = build_prologue(sudo_count, SUDO_ASKPASS_TIMEOUT_TOKEN, has_background_sudo(command))
-            return prologue + askpass_command, password_lines
+            sudo_words = sudo_command_words(command)  # None: a word cannot be checked, stdin form
+            if sudo_words is not None:
+                askpass_command = _rewrite_real_sudo_invocations(command, askpass=True)[0]
+                prologue = build_prologue(sudo_count, SUDO_ASKPASS_TIMEOUT_TOKEN, has_background_sudo(command),
+                                          sudo_words=sudo_words)
+                return prologue + askpass_command, password_lines
         return transformed, password_lines
     return command, None

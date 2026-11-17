@@ -56,11 +56,12 @@ from tui_gateway.user_messages import (
     resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
 _hermes_home = _HERMES_HOME_AT_IMPORT = get_hermes_home()
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / ".env")
 
 
 # ── Panic logger: crashes otherwise leave no forensics (stdout is the JSON-RPC pipe, stderr doesn't
@@ -1215,7 +1216,7 @@ def _write_config_changes(sets: dict, unsets: tuple = ()) -> None:
     applied when it raises. The file backend keeps its raw round-trip (callers branch on
     ``supports_file_tooling()``)."""
     try:
-        _config_backend.get_config_backend().write_changes(_active_config_path().parent, Changes(set=dict(sets), unset=tuple(unsets)))
+        _config_backend.write_changes(_active_config_path(), Changes(set=dict(sets), unset=tuple(unsets)))
     finally:
         _drop_cfg_cache()
 

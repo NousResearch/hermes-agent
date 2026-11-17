@@ -80,7 +80,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
-| `signature` | No | Pin the route to one signature scheme: `generic` (`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`, or Standard Webhooks / Svix headers), `github` (`X-Hub-Signature-256`), `gitlab` (`X-Gitlab-Token`, or a GitLab signing token sent as Standard Webhooks headers) or `linear` (`Linear-Signature`). Every other header family gets `401`. Omit it to accept every supported scheme (the behaviour before this key existed). `hermes webhook subscribe` writes `signature: generic` for new routes. Recommended; see [Pin the signature scheme](#pin-the-signature-scheme). |
+| `signature` | No | Pin the route to one signature scheme: `generic` (`X-Webhook-Signature-V2` + `X-Webhook-Timestamp`, or Standard Webhooks / Svix headers), `github` (`X-Hub-Signature-256`), `gitlab` (`X-Gitlab-Token`, or a GitLab signing token sent as Standard Webhooks headers) or `linear` (`Linear-Signature`). Every other header family gets the same `404` as an unknown route. Omit it to accept every supported scheme (the behaviour before this key existed). `hermes webhook subscribe` writes `signature: generic` for new routes. Recommended; see [Pin the signature scheme](#pin-the-signature-scheme). |
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. Dynamic subscriptions set it with `hermes webhook subscribe <name> --route-profile coder`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
@@ -432,9 +432,8 @@ hermes webhook subscribe antenna-matches \
 |--------|---------|
 | `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
 | `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
-| `401 Unauthorized` | HMAC signature invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |
-| `404 Not Found` | Unknown route name. |
+| `404 Not Found` | Unknown route name, or HMAC signature invalid or missing (same response, so route names can't be probed). |
 | `413 Payload Too Large` | Body exceeded `max_body_bytes`. |
 | `429 Too Many Requests` | Route rate limit exceeded. |
 | `502 Bad Gateway` | Target adapter rejected the message or raised. The error is logged server-side; the response body is a generic `Delivery failed` to avoid leaking adapter internals. |
@@ -513,9 +512,11 @@ hermes webhook subscribe github-issues \
   --description "Triage new GitHub issues"
 ```
 
-This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.
+This returns the webhook URL and a masked form of the auto-generated HMAC secret; the full secret is stored under the route's name in `~/.hermes/webhook_subscriptions.json` (pass `--secret` to choose your own). Configure your service to POST to that URL.
 
-New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab` or `linear` for a provider that signs its own way. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route keeps its pin too, and MCP event subscriptions are pinned to `generic` when first created.
+New subscriptions are pinned to `--signature generic` (timestamp-bound V2 or Standard Webhooks) unless you pass `--signature github`, `gitlab` or `linear` for a provider that signs its own way. Updating an existing subscription keeps its pin. A dashboard re-save of an existing route that omits `signature` keeps its pin too (an explicit pick replaces it), and MCP event subscriptions are pinned to `generic` when first created.
+
+The dashboard's **New subscription** form (web dashboard and desktop app) has the same choice as a **Signature** select, defaulting to `generic`; pick GitHub, GitLab or Linear for routes those services deliver to. Through the API, `POST /api/webhooks` takes an optional `signature` (`generic`, `github`, `gitlab` or `linear`; anything else is a `422`): a new route without it is pinned to `generic`, and a re-POST without it keeps the stored pin.
 
 ### List subscriptions
 
@@ -588,7 +589,7 @@ For dynamic subscriptions, add the `toolsets` key by editing `~/.hermes/webhook_
 
 Behavior and safety properties:
 
-- The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged).
+- The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged). An explicit empty list (`toolsets: []`) is an override too: that route gets no platform toolsets and no MCP servers, the same as `platform_toolsets.webhook: []`.
 - Names are validated through the same path as `platform_toolsets` config — unknown names and platform-restricted toolsets are dropped.
 - `hermes webhook subscribe` deliberately does **not** accept a toolsets flag. Granting elevated tools is a manual config-file edit, so an agent creating its own subscription at runtime cannot self-grant `terminal`.
 - Only grant elevated toolsets to routes whose senders you fully control, with a real HMAC secret. Anyone who can POST a validly-signed payload to that route is effectively running an agent with those tools.
@@ -607,7 +608,7 @@ The adapter validates incoming webhook signatures using the appropriate method f
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
-- **Generic (V1, rejected)**: `X-Webhook-Signature` signs only the body, so a captured request remains valid after the delivery-ID cache expires. V1-only requests receive `401 Unauthorized`, including on loopback. Switch senders to the timestamp-bound V2 format above; the gateway logs migration instructions once per route.
+- **Generic (V1, rejected)**: `X-Webhook-Signature` signs only the body, so a captured request remains valid after the delivery-ID cache expires. V1-only requests receive the same `404` as an unknown route, including on loopback. Switch senders to the timestamp-bound V2 format above; the gateway logs migration instructions once per route.
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
 
@@ -698,8 +699,8 @@ This is the same trust model that applies to everything the agent reads: web pag
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
 - For generic senders, use `X-Webhook-Signature-V2` and `X-Webhook-Timestamp`; body-only V1 signatures are rejected
-- A route with `signature` set rejects every other scheme with `401` (look for `is pinned to signature` in the gateway log); a subscription created by `hermes webhook subscribe` without `--signature` is pinned to `generic`
-- Check gateway logs for `Invalid signature` warnings
+- A route with `signature` set rejects every other scheme with the same `404 Unknown route` as a missing route (look for `is pinned to signature` in the gateway log); a subscription created by `hermes webhook subscribe` without `--signature` is pinned to `generic`
+- A bad signature returns the same `404 Unknown route` as a missing route; check gateway logs for `Invalid signature` warnings to tell them apart
 
 ### Event being ignored
 

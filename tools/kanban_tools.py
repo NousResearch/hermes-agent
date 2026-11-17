@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
+from agent.delegation_context import owned_kanban_task
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
@@ -230,7 +231,7 @@ def _require_task_id(args: dict) -> str:
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
-    return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
+    return os.environ.get(var) if task_id and owned_kanban_task() == task_id else None
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """This worker's dispatcher run id when it is scoped to task_id."""
@@ -247,6 +248,17 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
 
 
+def _reject_inherited_task_mutation(tid: str, env_tid: Optional[str] = None) -> None:
+    """Refuse a mutation of the card whose ``HERMES_KANBAN_TASK`` this execution inherited
+    without owning it; naming it explicitly must not stand in for the dispatcher's grant."""
+    env_tid = env_tid if env_tid is not None else (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if env_tid and tid == env_tid and not owned_kanban_task():
+        raise _Reject(
+            f"refusing to mutate task {tid}: this run inherited it from the Kanban worker that "
+            "fired it and does not own it. Report findings in this run's output or file a new "
+            "card with kanban_create; only the card's own worker may change it.")
+
+
 def _enforce_worker_task_ownership(tid: str) -> None:
     """A dispatcher-spawned worker may only mutate its own HERMES_KANBAN_TASK; a
     prompt-injected ``task_id`` must not corrupt sibling/cross-tenant runs.
@@ -256,7 +268,12 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     a buggy or prompt-injected worker that passed an explicit ``task_id`` for some other task could corrupt
     sibling or cross-tenant runs (see #19534).
     """
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    env_tid = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if env_tid and not owned_kanban_task():
+        # Inherited, not owned (cron run fired from the worker): the worker's card is
+        # read-only here, while other cards keep the orchestrator path.
+        _reject_inherited_task_mutation(tid, env_tid)
+        return
     if env_tid and tid != env_tid:
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
@@ -284,7 +301,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
     _enforce_worker_task_ownership(tid)
     if (
         tool_name in _RUN_LIFECYCLE_TOOLS
-        and os.environ.get("HERMES_KANBAN_TASK")
+        and owned_kanban_task()
         and _worker_run_id(tid) is None
     ):
         raise _Reject(
@@ -353,12 +370,10 @@ def _redact_opt(value: Any) -> Any:
     return _redact(value) if value else value
 
 
-def _redact_metadata(metadata: dict) -> Optional[dict]:
-    """Redact via a JSON round-trip; None if the result can't be re-parsed."""
-    try:
-        return json.loads(redact_sensitive_text(json.dumps(metadata), force=True))
-    except json.JSONDecodeError:
-        return None
+def _redact_metadata(metadata: dict) -> dict:
+    """Redact leaf-by-leaf: a whole-JSON pass can eat a string's closing quote and fail to re-parse."""
+    from agent.redact_structured import redact_structured
+    return redact_structured(metadata)
 
 
 def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):
@@ -572,6 +587,10 @@ def heartbeat_current_worker_from_env() -> bool:
         # An in-process delegate child's activity is not the worker's liveness; checked before
         # stamping the window so a chatty child cannot starve the worker's own heartbeat.
         return False
+    if not _is_dispatcher_owned_worker() and not _delegation_ctx(
+            "is_delegated_child_process_context", False):
+        # A cron run fired in-process from the worker is not the worker's liveness either.
+        return False
     _auto_heartbeat_last_attempt = now
     try:
         from hermes_cli import kanban_db_dispatch as kbd
@@ -730,8 +749,7 @@ def _handle_complete(args: dict, **kw) -> str:
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")
     if isinstance(metadata, dict):
-        # Keep the unredacted dict if the redacted JSON cannot be re-parsed.
-        metadata = _redact_metadata(metadata) or metadata
+        metadata = _redact_metadata(metadata)
     created_cards = _coerce_str_list(
         args.get("created_cards"), "created_cards", "task ids", strip=True)
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
@@ -881,7 +899,6 @@ def _handle_request_review(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     if metadata is not None:
         metadata = _redact_metadata(metadata)
-        _check(metadata is not None, "metadata could not be safely serialized")
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
     if artifacts:
         metadata = _merge_artifacts(metadata, artifacts)
@@ -958,6 +975,7 @@ def _handle_comment(args: dict, **kw) -> str:
             "task_id is required: comments are per-task and this session has no "
             "dispatcher-assigned task to default to. Discover task ids with "
             "kanban_list, or pass the task id you mean.")
+    _reject_inherited_task_mutation(str(tid))
     body = _redact(_require_text(args, "body"))
     # Author comes from the worker's runtime identity (``_persisted_identity``), never
     # caller args: comments are injected into future workers' system prompts, so an
@@ -1131,7 +1149,8 @@ def _handle_create(args: dict, **kw) -> str:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
         new_tid = kb.create_task(
-            conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
+            conn, title=_redact(str(title).strip()), body=_redact_opt(args.get("body")),
+            assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
             priority=_opt_int(args.get("priority"), 0),
             workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,

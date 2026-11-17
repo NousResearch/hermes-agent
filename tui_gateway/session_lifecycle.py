@@ -217,6 +217,85 @@ def _canonical_ledger_refusal(session: dict):
 def _attach_lease(session: dict, lease) -> None:
     session["active_session_lease"] = lease
     session.pop("_lease_taken_over", None)  # owning again: its finalize ends the row like any owner
+    session.pop("_lease_idle_released", None)
+
+
+def _reclaim_idle_released_lease(session: dict):
+    """Re-claim a lease the idle reaper released; None when this record owns the chat again, else the refusal.
+
+    Caller holds ``history_lock``, which the reaper's release also takes, so a rewind cannot interleave with a
+    release. Claim-only: a detached-runtime takeover takes the resume lock, which nests outside history_lock."""
+    if not (sid := session.get("_lease_idle_released")) or session.get("active_session_lease") is not None:
+        return None
+    if (refusal := _canonical_ledger_refusal(session)) is not None:
+        return refusal
+    lease, refusal = _claim_active_session_slot(
+        str(session.get("session_key") or ""), live_session_id=sid, surface=_session_source(session),
+        profile_home=session.get("profile_home"))
+    if refusal is None:
+        _attach_lease(session, lease)
+    return refusal
+
+
+class SessionNotOwned(RuntimeError):
+    """An off-turn transcript writer found its idle-released lease taken: nothing was written.
+    Handlers let it through their catch-alls; dispatch answers it ``4090`` like a refused submit."""
+
+    def __init__(self, refusal):
+        super().__init__(str(refusal))
+        self.refusal = refusal
+        self.reason = getattr(refusal, "reason", None) or "SESSION_NOT_OWNED"
+
+
+def _require_transcript_owner(session: dict) -> None:
+    """Gate for every off-turn writer of this record's transcript (rewind, model-switch marker, manual compress),
+    under ``history_lock``: re-claim an idle-released lease or raise ``SessionNotOwned``. A write counts as activity,
+    so the idle reaper cannot release the lease again before the writer finishes."""
+    if (refusal := _reclaim_idle_released_lease(session)) is not None:
+        raise SessionNotOwned(refusal)
+    session["last_active"] = time.time()
+
+
+# Upper bound on one held claim: the compute-host supervisor drops an unanswered late-ack handler after its
+# _LATE_CONTROL_TTL_SECS (1800s), so a claim whose release can never fire stops pinning the lease then.
+_TRANSCRIPT_CLAIM_MAX_S = 1800.0
+
+
+def _hold_transcript_claim(session: dict):
+    """``_require_transcript_owner`` plus a busy claim the idle reaper honours until the returned (idempotent)
+    release runs. For off-turn writers that leave ``running`` False while they work — a model switch, a
+    compute-host ``/compress`` or ``/model`` whose host may outlast the idle window — so the reaper cannot free
+    the lease between the ownership check and the write."""
+    token = object()
+    with session.get("history_lock") or contextlib.nullcontext():
+        _require_transcript_owner(session)
+        claims = session.setdefault("_transcript_claims", {})
+        now = time.time()
+        for stale in [t for t, deadline in claims.items() if deadline <= now]:
+            claims.pop(stale, None)
+        claims[token] = now + _TRANSCRIPT_CLAIM_MAX_S
+
+    def release() -> None:
+        with session.get("history_lock") or contextlib.nullcontext():
+            session.get("_transcript_claims", {}).pop(token, None)
+    return release
+
+
+@contextlib.contextmanager
+def _transcript_claim(session: dict):
+    release = _hold_transcript_claim(session)
+    try:
+        yield
+    finally:
+        release()
+
+
+def _session_holds_transcript_claim(session: dict, now: float) -> bool:
+    return any(deadline > now for deadline in list((session.get("_transcript_claims") or {}).values()))
+
+
+def _session_not_owned_err(rid, exc: SessionNotOwned) -> dict:
+    return _err(rid, 4090, str(exc), {"reason": exc.reason})
 
 
 def _detached_lease_holder(session: dict, key: str) -> tuple[str, dict] | None:

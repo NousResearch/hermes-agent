@@ -6,7 +6,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
-import type { WebhookRoute, WebhooksResponse } from "@/lib/api";
+import type { WebhookRoute, WebhookSignature, WebhooksResponse } from "@/lib/api";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -67,8 +67,49 @@ function webhookRestartMessage(
   return format(template, { code: error.code ?? "", detail: error.detail ?? "", error: error.message ?? "" });
 }
 
+function SignatureField({
+  value,
+  onChange,
+}: {
+  value: WebhookSignature;
+  onChange: (value: WebhookSignature) => void;
+}) {
+  const { t } = useI18n();
+  const signatureOptions: ReadonlyArray<readonly [WebhookSignature, string]> = [
+    ["generic", t.webhooks.signatureGeneric],
+    ["github", "GitHub"],
+    ["gitlab", "GitLab"],
+    ["linear", "Linear"],
+  ];
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor="webhook-signature">{t.webhooks.signature}</Label>
+      <Select
+        id="webhook-signature"
+        value={value}
+        onValueChange={(v) => onChange(v as WebhookSignature)}
+      >
+        {signatureOptions.map(([scheme, label]) => (
+          <SelectOption key={scheme} value={scheme}>{label}</SelectOption>
+        ))}
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        {t.webhooks.signatureHint}
+      </p>
+    </div>
+  );
+}
+
 export default function WebhooksPage() {
   const { format, t } = useI18n();
+  const deliverOptions: ReadonlyArray<readonly [string, string]> = [
+    ["log", t.webhooks.log],
+    ["telegram", "Telegram"],
+    ["discord", "Discord"],
+    ["slack", "Slack"],
+    ["email", t.webhooks.email],
+    ["github_comment", t.webhooks.githubComment],
+  ];
   const [data, setData] = useState<WebhooksResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [enabling, setEnabling] = useState(false);
@@ -88,6 +129,7 @@ export default function WebhooksPage() {
   const [events, setEvents] = useState("");
   const [deliver, setDeliver] = useState("log");
   const [deliverOnly, setDeliverOnly] = useState(false);
+  const [signature, setSignature] = useState<WebhookSignature>("generic");
   const [prompt, setPrompt] = useState("");
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<CreatedWebhook | null>(null);
@@ -191,6 +233,7 @@ export default function WebhooksPage() {
     setEvents("");
     setDeliver("log");
     setDeliverOnly(false);
+    setSignature("generic");
     setPrompt("");
   }, []);
 
@@ -211,6 +254,7 @@ export default function WebhooksPage() {
         events: eventsList.length ? eventsList : undefined,
         deliver,
         deliver_only: deliverOnly,
+        signature,
         prompt: prompt.trim() || undefined,
       });
       showToast(t.webhooks.created, "success");
@@ -401,13 +445,14 @@ export default function WebhooksPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="grid gap-2">
                     <Label htmlFor="webhook-deliver">{t.webhooks.deliverTo}</Label>
-                    <Select id="webhook-deliver" value={deliver} onValueChange={(v) => setDeliver(v)}>
-                      <SelectOption value="log">{t.webhooks.log}</SelectOption>
-                      <SelectOption value="telegram">Telegram</SelectOption>
-                      <SelectOption value="discord">Discord</SelectOption>
-                      <SelectOption value="slack">Slack</SelectOption>
-                      <SelectOption value="email">{t.webhooks.email}</SelectOption>
-                      <SelectOption value="github_comment">{t.webhooks.githubComment}</SelectOption>
+                    <Select
+                      id="webhook-deliver"
+                      value={deliver}
+                      onValueChange={(v) => setDeliver(v)}
+                    >
+                      {deliverOptions.map(([value, label]) => (
+                        <SelectOption key={value} value={value}>{label}</SelectOption>
+                      ))}
                     </Select>
                   </div>
 
@@ -424,6 +469,8 @@ export default function WebhooksPage() {
                     </label>
                   </div>
                 </div>
+
+                <SignatureField value={signature} onChange={setSignature} />
 
                 <div className="grid gap-2">
                   <Label htmlFor="webhook-prompt">{t.webhooks.prompt}</Label>

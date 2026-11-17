@@ -101,7 +101,12 @@ class GatewaySessionAgentMixin:
             return out
         with cache_lock:
             cached = cache.get(ctx.session_key)
-            if not (cached and cached[1] == sig):
+            if not cached:
+                return out
+            if cached[1] != sig:
+                # Another route (a one-turn /moa, a refreshed credential): the fresh build replaces
+                # this entry, so release the displaced agent instead of orphaning its clients.
+                out.evicted = self._pop_cached_agent_for_eviction()
                 return out
             # cached[2] = message_count at cache time (stale when a second process appended rows);
             # cached[3] = the session_id the snapshot was taken for.
@@ -165,7 +170,7 @@ class GatewaySessionAgentMixin:
             ephemeral_system_prompt=combined_ephemeral or None,
             prefill_messages=(session_prefill(active_authority(runner), policy, src.chat_id) if policy
                               else runner._prefill_messages) or None,
-            reasoning_config=reasoning_config, service_tier=runner._service_tier,
+            reasoning_config=reasoning_config, service_tier=turn_route.get("service_tier"),
             request_overrides=turn_route.get("request_overrides"),
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),

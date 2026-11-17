@@ -146,6 +146,21 @@ def _still_names(path: Path, fd: int) -> bool:
         return False
 
 
+# Homes whose gateway.lock a ProfileOwnership in THIS process holds right now, with the pid that
+# took it. A forked child answers False here, but it shares the flock's open file description and
+# the inherited process_ownership, so runtime_lock_held_elsewhere() still answers False for it too.
+_held_here: dict[Path, int] = {}
+_held_here_mutex = threading.Lock()
+
+
+def held_by_this_process(home: Path) -> bool:
+    """Whether a reservation in this process (any :class:`ProfileOwnership`: the gateway, a served
+    secondary, a maintenance reservation) holds *home*'s ``gateway.lock`` now. Unlike the lock
+    record, which outlives :meth:`ProfileOwnership.release`, this is cleared on release."""
+    with _held_here_mutex:
+        return _held_here.get(canonical_home(home)) == os.getpid()
+
+
 class ProfileOwnership:
     def __init__(self):
         self._handles: dict[Path, object] = {}
@@ -186,6 +201,8 @@ class ProfileOwnership:
                         handle.close()
                         raise
                     self._handles[home] = handle
+                    with _held_here_mutex:
+                        _held_here[home] = os.getpid()
                     added.append(home)
             except BaseException:
                 for home in reversed(added):
@@ -201,6 +218,8 @@ class ProfileOwnership:
         with self._mutex:
             handle = self._handles.pop(canonical_home(home), None)
             if handle is not None:
+                with _held_here_mutex:
+                    _held_here.pop(canonical_home(home), None)
                 _release_file_lock(handle)
                 handle.close()
 

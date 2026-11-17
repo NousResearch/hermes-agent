@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { clarifySettledRows } from '../app/clarifyTranscript.js'
+import { toTranscriptMessages } from '../domain/messages.js'
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
+
+afterEach(resetLocale)
 
 describe('clarifySettledRows', () => {
   it("writes main's `question → answer` bubble and the `1 question` tool row for one card (row 8)", () => {
@@ -13,5 +19,58 @@ describe('clarifySettledRows', () => {
 
   it('reads a blank answer as skipped', () => {
     expect(clarifySettledRows([{ qid: 'p1', question: 'Name?' }], { p1: ' ' }).userText).toMatch(/^Name\? → /)
+  })
+
+  it('localizes cancellation on resume while preserving the original question and answer', () => {
+    activateZh()
+    const content = JSON.stringify({ outcome: 'cancelled', responses: [{ question: 'Sizes?', user_response: 'M' }] })
+    const [, line] = toTranscriptMessages([{ role: 'tool', name: 'clarify', content }])
+    expect(line?.text).toContain('Sizes? → M')
+    expect(line?.text).toContain('已取消')
+    expect(line?.text).not.toContain('cancelled')
+  })
+
+  it('shows the stored answers again when the session is resumed', () => {
+    const content = JSON.stringify({
+      outcome: 'submitted',
+      responses: [
+        { question: 'Pick a colour?', status: 'answered', user_response: 'red' },
+        { question: 'Sizes?', status: 'answered', user_response: ['S', 'M'] }
+      ]
+    })
+
+    const rows = toTranscriptMessages([
+      { role: 'user', text: 'paint it' },
+      { content, context: '2 questions', name: 'clarify', role: 'tool' },
+      { role: 'assistant', text: 'done' }
+    ])
+
+    expect(rows.map(row => [row.role, row.text])).toEqual([
+      ['user', 'paint it'],
+      ['system', ''],
+      ['user', 'Pick a colour? → red\nSizes? → S, M'],
+      ['assistant', 'done']
+    ])
+  })
+
+  it.each([
+    ['cancelled', '(cancelled)'],
+    ['timed_out', '(timed out)']
+  ])('shows a %s form as the abandoned-form line it showed live, not as skips', (outcome, reason) => {
+    const content = JSON.stringify({
+      outcome,
+      responses: [
+        { question: 'Pick a colour?', status: 'answered', user_response: 'red' },
+        { question: 'Sizes?', status: 'unanswered', user_response: null }
+      ]
+    })
+
+    const [, line] = toTranscriptMessages([{ content, context: '2 questions', name: 'clarify', role: 'tool' }])
+
+    expect(line?.role).toBe('system')
+    expect(line?.text).toContain('✓ Pick a colour? → red')
+    expect(line?.text).toContain('· Sizes? (no answer)')
+    expect(line?.text).toContain(reason)
+    expect(line?.text).not.toContain('(skipped)')
   })
 })

@@ -618,6 +618,9 @@ export const settingsEn: Pick<
     setupNotes: 'Setup notes'
   },
   webhooks: {
+    signature: 'Signature',
+    signatureGeneric: 'Generic (timestamped)',
+    signatureHint: 'The only signature scheme this route accepts. GitHub, GitLab and Linear deliveries need their own pin.',
     copy: 'Copy',
     loadFailed: 'Failed to load webhooks',
     restartExit: 'Gateway restart failed with exit {code}.',
@@ -986,10 +989,12 @@ export const settingsEn: Pick<
       restorePath: 'Restore path',
       shareTitle: 'Share debug report',
       shareDescription:
-        'Uploads system info and logs to a public paste service and returns links to send the Hermes team. Pastes auto-delete after 6 hours.',
+        'Uploads a summary (versions, config key names, error counts; no log lines or message text) to a public paste and returns a link for the Hermes team. Pastes auto-delete after 6 hours. Full logs go only to private storage via hermes debug share --nous.',
+      shareConfirmTitle: 'Upload debug report to a public paste?',
+      shareConfirmDescription: 'Uploads a summary to a public paste service: Hermes, Python and OS versions, connected platform and toolset names, config key names (no values) and warning/error counts. It contains no log lines or message text. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.',
+      upload: 'Upload',
       uploading: 'Uploading…',
       generateShareLink: 'Generate share link',
-      redactBeforeUpload: 'Redact credential-shaped tokens before upload (recommended)',
       uploaded: 'Uploaded',
       redacted: 'Redacted',
       notRedacted: 'Not redacted',

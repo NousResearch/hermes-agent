@@ -551,6 +551,8 @@ class GatewayAgentCacheMixin:
             return
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
+        from gateway.run_plugin_injection import person_input_joined_turn
+        person_input_joined_turn(self, session_key)  # /stop, /new: a plugin turn's wait ends at once
         _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )

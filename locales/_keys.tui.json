@@ -687,6 +687,7 @@
   "libText.terminalSetup.summaryIn",
   "libText.text.argsLabel",
   "libText.text.clarifyAnswered",
+  "libText.text.clarifyCancelled",
   "libText.text.clarifyHead",
   "libText.text.clarifyReason",
   "libText.text.clarifyUnanswered",

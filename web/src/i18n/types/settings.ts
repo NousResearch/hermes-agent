@@ -592,6 +592,9 @@ export interface SettingsTranslations {
   }
 
   webhooks: {
+    signature: string
+    signatureGeneric: string
+    signatureHint: string
     copy: string
     loadFailed: string
     restartExit: string
@@ -955,9 +958,11 @@ export interface SettingsTranslations {
       restorePath: string
       shareTitle: string
       shareDescription: string
+      shareConfirmTitle: string
+      shareConfirmDescription: string
+      upload: string
       uploading: string
       generateShareLink: string
-      redactBeforeUpload: string
       uploaded: string
       redacted: string
       notRedacted: string

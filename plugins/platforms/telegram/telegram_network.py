@@ -551,3 +551,23 @@ def _request_with_connect_budget(request: httpx.Request, connect_budget: float) 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
     return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+
+
+def bot_api_urls(extra: Optional[dict]) -> dict:
+    """``base_url``/``base_file_url`` kwargs for ``Bot``/``Application.builder`` from ``extra``.
+
+    PTB appends the token straight to these, so a bare server URL (``http://127.0.0.1:8081``)
+    became ``…8081123456:AA…`` and httpx read the token's secret half as a port (#81787). Only a
+    BARE server URL (no path) gets the Bot API's ``/bot`` / ``/file/bot`` path; any configured path
+    (a reverse proxy's ``/telegram/``, ``…/bot``, PTB's ``{token}`` placeholder) is used as written.
+    ``base_file_url`` defaults to ``base_url`` as before."""
+    from urllib.parse import urlsplit
+
+    def norm(url, suffix):
+        url = str(url).strip()
+        return url.rstrip("/") + suffix if urlsplit(url).path in ("", "/") else url
+    base_url = (extra or {}).get("base_url")
+    if not base_url:
+        return {}
+    return {"base_url": norm(base_url, "/bot"),
+            "base_file_url": norm((extra or {}).get("base_file_url") or base_url, "/file/bot")}

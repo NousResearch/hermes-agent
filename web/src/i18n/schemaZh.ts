@@ -1,6 +1,9 @@
 // Chinese labels for config schema keys used by AutoField.
 
 export const SCHEMA_ZH_LABEL: Record<string, string> = {
+  'voice.auto_tts_mode': '语音 → 自动朗读范围',
+  'security.redact_phone_numbers': '安全 → 隐藏回复中的电话号码',
+  'gateway.sessiondb_loop_guard': '网关 → 事件循环中的会话数据库调用检查',
   'agent.daybreak': 'Agent → Daybreak',
   'approvals.approvers': '审批 → 审批人',
   'auxiliary.group_router.api_key': '辅助 → 群聊路由 → API 密钥',

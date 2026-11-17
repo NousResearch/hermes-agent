@@ -1224,6 +1224,8 @@ def build_turn_context(
     # After recovery, so the bot-to-bot chain is keyed by the session id this turn's sends use.
     from agent.bot_chain import on_turn_start as _bot_chain_turn_start
     _bot_chain_turn_start(agent, turn_author, persist_user_display_kind, persist_user_message or user_message)
+    # Set every turn so a cached agent never carries a wake turn's kind into the human turn after it.
+    agent._turn_display_kind = persist_user_display_kind
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.
@@ -1237,6 +1239,13 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    from agent.fallback_notice import fallback_notice_hidden, surface_hidden_fallback
+    surface_hidden_fallback(agent)
+    if getattr(agent, "_pending_fallback_notice", None) and not fallback_notice_hidden(agent):
+        # A switch decided before this turn (primary credentials failed at build) is announced before the
+        # turn starts, like an in-turn switch is announced when it happens: never after the answer. A
+        # background wake turn leaves it pending for the next turn the user is watching.
+        agent._emit_pending_fallback_notice()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

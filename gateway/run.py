@@ -420,7 +420,7 @@ def _ensure_windows_gateway_venv_imports() -> None:
     if sys.platform != "win32":
         return
 
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(project_root_str())
     from pm.environments import committed_venv, venv_python_version
 
     # A PM install's store Python was already activated onto the committed generation by
@@ -562,10 +562,10 @@ def _gateway_loop_exception_handler(
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
-    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed). See #23810."""
-    from agent.redact import redact_for_egress
+    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed; #23810, #68911)."""
+    from agent.redact_phone_policy import redact_for_chat_egress
 
-    return redact_for_egress(text)
+    return redact_for_chat_egress(text)
 
 
 def _redact_approval_command(cmd: str | None) -> str:
@@ -657,7 +657,7 @@ def _gateway_provider_error_reply(text: str) -> str:
 _PROVIDER_ERROR_MARKERS = (
     r"api\s+(?:call\s+)?failed", r"provider\s+authentication\s+failed", r"non-retryable\s+error",
     r"rate\s+limited\s+after\s+\d+\s+(?:retries|attempts?)\b", r"error\s+code\s*:", r"http\s*\d{3}\b",
-    r"incorrect\s+api\s+key", r"invalid\s+api\s+key")
+    r"incorrect\s+api\s+key", r"invalid\s+api\s+key", r"unexpected\s+status\s+\d{3}\s+(?:[A-Za-z][\w' -]{0,40}|<unknown status code>):")
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     + "|".join(_PROVIDER_ERROR_MARKERS + _CONNECTION_ERROR_MARKERS[:8] + (r"all\s+connection\s+attempts\s+failed",))
@@ -1566,9 +1566,10 @@ from hermes_constants import get_hermes_home, get_hermes_home_override, get_proc
 _hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import bridge_config_scalars, load_hermes_dotenv
+from hermes_cli._startup_fast import project_root_str
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
 
 
 def _reload_runtime_env_preserving_config_authority() -> None:
@@ -1578,8 +1579,7 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     every profile; it still honors the max_turns bridge."""
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
-        load_hermes_dotenv(
-            hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+        load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
     _bridge_max_turns_from_config(_hermes_home)
 
 
@@ -2042,9 +2042,7 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
 
 def _bridge_config_to_env(_cfg: dict) -> None:
     """Export config.yaml settings to the env vars os.getenv() consumers read."""
-    for _key, _val in _cfg.items():  # top-level scalars: fallback only, never override .env
-        if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-            os.environ[_key] = str(_val)
+    bridge_config_scalars(_cfg, os.environ)  # top-level scalars: fallback only, never override .env
     _terminal_cfg = _cfg.get("terminal", {})
     if _terminal_cfg and isinstance(_terminal_cfg, dict):
         _bridge_terminal_config_to_env(_terminal_cfg)
@@ -2280,10 +2278,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
     if fallback_entry is not None:
-        # The entry's model is the one this agent must send (#112600). Carry the fallback notice so the
-        # gateway can surface a user-visible provider switch (#74349); the caller must pop
-        # ``_fallback_notice`` before forwarding kwargs to AIAgent.
+        # The entry's model is what this agent sends (#112600); the caller pops the notice (#74349).
+        from agent.primary_auth_fallback import RUNTIME_KEY  # and the primary's failed login (#147212)
         return {**_runtime_agent_kwargs(runtime), "model": fallback_entry["model"],
+                RUNTIME_KEY: runtime.get(RUNTIME_KEY),
                 "_fallback_notice": pre_agent_fallback_notice(
                     _primary_provider, _primary_model,
                     runtime.get("provider") or fallback_entry.get("provider") or "unknown",
@@ -2803,7 +2801,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 
         # Check optional skills (shipped with repo but not installed)
         from hermes_constants import get_optional_skills_dir
-        repo_root = Path(__file__).resolve().parent.parent
+        repo_root = Path(project_root_str())
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
             for skill_md in optional_dir.rglob("SKILL.md"):
@@ -3603,10 +3601,10 @@ class GatewayRunner(
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
-        return build_session_key(
-            source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-            profile=_profile)
+        from gateway.session_dm_threads import dm_thread_key_source, telegram_extra_for
+        return build_session_key(dm_thread_key_source(source, telegram_extra_for(source, config), self._sync_session_db),
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False), profile=_profile)
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
@@ -4148,40 +4146,9 @@ class GatewayRunner(
         return None
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> Path:
-        """Resolve which profile's HERMES_HOME serves this source: the pinned identity's runtime
-        home, else ``source.profile``, then ``_profile_name_for_source`` (sources bypassing
-        ``build_source``), then the active profile."""
-        from gateway.profile_routing import ProfileRouteRejected
-        from gateway.session_identity import identity_of
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
-        from hermes_constants import get_hermes_home
-        identity = identity_of(source)
-        if identity is not None:
-            return identity.runtime_home
-        explicit_profile = None  # explicitly requested (source or routing) vs. default fallback
-        try:
-            name = (source.profile or "").strip() or self._profile_name_for_source(source)
-            explicit_profile = name or None
-            if not name:
-                name = get_active_profile_name() or "default"
-            profile_dir = get_profile_dir(name)
-            if explicit_profile and not profile_exists(name):
-                logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
-                    explicit_profile, source.platform.value, source.chat_id,
-                    getattr(source, "guild_id", None))
-                return get_hermes_home()
-            return profile_dir
-        except ProfileRouteRejected:
-            raise
-        except Exception:
-            logger.warning(
-                "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
-                "falling back to global HERMES_HOME: %s",
-                source.platform.value, source.chat_id, getattr(source, "guild_id", None),
-                explicit_profile or "(no profile)", exc_info=True)
-            return get_hermes_home()
+        """Profile HERMES_HOME serving *source*; see ``gateway.run_profile_home``."""
+        from gateway.run_profile_home import resolve_profile_home_for_source
+        return resolve_profile_home_for_source(self, source)
 
     @dataclasses.dataclass
     class _RunAgentDisplay:
@@ -4301,10 +4268,10 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
 
 
-def _housekeeping_curator() -> None:
-    """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
-    from agent.curator import maybe_run_curator
-    maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
+def _housekeeping_curator(idle_fence=None) -> None:
+    """The idle poll: the curator (gated by curator.interval_hours), then plugin idle tasks (their own intervals)."""
+    from hermes_cli.plugins_idle_tasks import run_idle_jobs
+    run_idle_jobs(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg), fence=idle_fence)
 
 
 def _housekeeping_plugin_update_check() -> None:
@@ -4402,7 +4369,7 @@ def _housekeeping_checkpoint_prune() -> None:
     """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
     ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
     ``git gc`` can block for tens of seconds on a large store."""
-    from tools.checkpoint_maintenance import auto_prune_from_config
+    from agent.checkpoints.maintenance import auto_prune_from_config
     auto_prune_from_config()
 
 
@@ -4425,9 +4392,9 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get(profile_name)
             if (profile_name is not None and adapters
                     and not sched_preflight.has_credential_platform(profile_adapters, owned)):
-                routes = sched_preflight._primary_profile_routes_for_current_home()
-                if routes:
-                    profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)
+                shared = sched_preflight.shared_route_adapters_for_current_home(adapters)
+                if shared:
+                    profile_adapters = shared
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
 
 
@@ -4441,6 +4408,7 @@ def _start_gateway_housekeeping(
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from hermes_cli.plugins_idle_tasks import IdleTaskFence
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4464,9 +4432,8 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        # Per served profile: each profile has its own skills tree, curator state, Nous login
-        # and state.db.
-        (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
+        # Per served profile: each has its own skills tree, curator state, Nous login and state.db.
+        (60, "Curator tick", profile_scoped_chore(runner, lambda: _housekeeping_curator(idle_fence))),
         (60, "state.db maintenance tick", profile_scoped_chore(
             runner,
             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
@@ -4493,14 +4460,14 @@ def _start_gateway_housekeeping(
             served_homes, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner))
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
-    tick_count = 0
+    tick_count, idle_fence = 0, IdleTaskFence(stop_event)
     while not stop_event.is_set():
         tick_count += 1
         for every, label, fn in chores:
             if tick_count % every == 0:
                 _housekeeping_chore(label, fn)
         wait_for_next_tick(stop_event, interval, queue_watch, _housekeeping_chore)
-    logger.info("Gateway housekeeping stopped")
+    logger.info("Gateway housekeeping stopped (idle-task runs settled: %s)", idle_fence.close())
 
 
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):

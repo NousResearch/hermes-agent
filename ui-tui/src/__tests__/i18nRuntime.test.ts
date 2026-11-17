@@ -85,6 +85,11 @@ describe('TUI i18n runtime', () => {
 })
 
 describe('TUI i18n loader', () => {
+  it('keeps historical Traditional Chinese protocol inputs on their independent catalog', () => {
+    for (const input of ['zh-tw', 'zh-hk', 'zh-mo', ' ZH_TW ', ' ZH_HK ', ' ZH_MO ']) {
+      expect(normalizeLanguageId(input)).toBe('zh-hant')
+    }
+  })
   it('normalizes display.language like the backend', () => {
     expect(normalizeLanguageId(' PT_BR ')).toBe('pt-br')
     expect(normalizeLanguageId('')).toBe('en')

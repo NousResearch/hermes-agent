@@ -252,31 +252,34 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
 
 
 def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot):
-    """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts."""
-    try:
-        agent.switch_model(
-            new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
-            base_url=result.base_url, api_mode=result.api_mode,
-            capabilities=getattr(result, "runtime_capabilities", None))
-    except Exception as exc:
-        # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
-        # restart, persist, marker, override, config write) or the session pins a broken model.
-        # Abort the commit: do NOT restart the slash worker, persist runtime, append the switch marker, set
-        # a session model_override, or persist to config — all of which would otherwise leave the session
-        # pinned to a broken model and kill the conversation on the next turn (#50163). A failed switch is a
-        # no-op; surface a clean error to the client.
-        logger.warning("In-place model switch failed for TUI agent: %s", exc)
-        raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
-                         f"staying on {getattr(agent, 'model', current_model)}.") from exc
-    _restart_slash_worker(sid, session)
-    _persist_live_session_runtime(session)
-    _persist_live_session_system_prompt(session)
-    _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
-    _emit_session_info(sid, session)
-    if snapshot is not None:
-        session["one_turn_model_restore"] = snapshot
-    else:
-        session.pop("one_turn_model_restore", None)
+    """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts. The transcript
+    claim is held for the whole commit (the marker writes the chat's transcript), so the idle reaper cannot
+    release the lease between the ownership check and the marker."""
+    with _transcript_claim(session):
+        try:
+            agent.switch_model(
+                new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
+                base_url=result.base_url, api_mode=result.api_mode,
+                capabilities=getattr(result, "runtime_capabilities", None))
+        except Exception as exc:
+            # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
+            # restart, persist, marker, override, config write) or the session pins a broken model.
+            # Abort the commit: do NOT restart the slash worker, persist runtime, append the switch marker, set
+            # a session model_override, or persist to config — all of which would otherwise leave the session
+            # pinned to a broken model and kill the conversation on the next turn (#50163). A failed switch is a
+            # no-op; surface a clean error to the client.
+            logger.warning("In-place model switch failed for TUI agent: %s", exc)
+            raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
+                             f"staying on {getattr(agent, 'model', current_model)}.") from exc
+        _restart_slash_worker(sid, session)
+        _persist_live_session_runtime(session)
+        _persist_live_session_system_prompt(session)
+        _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
+        _emit_session_info(sid, session)
+        if snapshot is not None:
+            session["one_turn_model_restore"] = snapshot
+        else:
+            session.pop("one_turn_model_restore", None)
 
 
 LARGE_MODEL_NOTICE_KEY = "model.large_notice"
@@ -383,21 +386,23 @@ def _reset_session_model_override(sid: str, session: dict) -> dict:
     through the config-sync switch (no new pin, never written back), and persist the row so
     ``session.resume`` cannot restore the old pin. History is kept."""
     from agent.i18n import t
-    had_override = bool(session.get("model_override"))
-    session.pop("model_override", None)
-    session.pop("one_turn_model_restore", None)
-    session.pop("config_model_seen", None)  # the pinned sync recorded the target without adopting it
-    if "composer_override_profile" in session:
-        session["composer_override_profile"] = None  # persisted as a removal
-    model, provider = _config_model_target()
-    agent = session.get("agent")
-    if model and agent is not None and (
-            model != getattr(agent, "model", "") or (provider and provider != getattr(agent, "provider", ""))):
-        _apply_model_switch(
-            sid, session, f"{model} --provider {provider}" if provider else model,
-            confirm_expensive_model=True, pin_session_override=False, persist_override=False,
-            count_switch=False)
-    _persist_live_session_runtime(session)
+    # Gate first: a chat another surface took refuses with its pin, --once restore and composer profile intact.
+    with _transcript_claim(session):
+        had_override = bool(session.get("model_override"))
+        session.pop("model_override", None)
+        session.pop("one_turn_model_restore", None)
+        session.pop("config_model_seen", None)  # the pinned sync recorded the target without adopting it
+        if "composer_override_profile" in session:
+            session["composer_override_profile"] = None  # persisted as a removal
+        model, provider = _config_model_target()
+        agent = session.get("agent")
+        if model and agent is not None and (
+                model != getattr(agent, "model", "") or (provider and provider != getattr(agent, "provider", ""))):
+            _apply_model_switch(
+                sid, session, f"{model} --provider {provider}" if provider else model,
+                confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+                count_switch=False)
+        _persist_live_session_runtime(session)
     _emit_session_info(sid, session)
     shown = model or getattr(agent, "model", "") or t("gateway.shared.unknown_value")
     return {"value": shown, "warning": t("gateway.model.reset_done" if had_override else "gateway.model.reset_none",

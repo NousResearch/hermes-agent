@@ -193,6 +193,20 @@ def _resolve_local_name(target: str, roster: list[str], root: Path | None = None
     return next(iter(hits)) if len(hits) == 1 else None
 
 
+def _local_claims(target: str, roster: list[str], root: Path) -> set[str]:
+    """Every local folder id ``target`` could name: its exact folder id, or every bot whose
+    friendly name forms match. Unlike ``_resolve_local_name`` an ambiguous friendly name still
+    counts, so two bots titled like a peer cannot hand the bare name to the peer route."""
+    exact = _resolve_local_name(target, roster)  # no root: folder ids only, so aliases are read once
+    if exact is not None:
+        return {exact}
+    from tools.bot_mode_probe import alias_forms, local_alias_map
+
+    want = target.strip().lower()
+    aliases = local_alias_map(root)
+    return set().union(*(aliases.get(form, set()) for form in alias_forms(want) | {want}))
+
+
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
     from tools.bot_failure_reasons import classify_agent_error
 
@@ -312,6 +326,19 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         peer_name, peer_profile = peer_match.groups() if peer_match else (raw_target.lower(), None)
         if peer_name not in peers:
             return sender.roster_err(f"No registered peer named '{peer_name}'.")
+        # A bare name that also resolves to a local teammate is ambiguous (#145241): the peer
+        # route crosses an identity/privacy boundary, so neither side may take it silently.
+        # Refuse and name both routes — 'peer/<agent>' still reaches the peer, a friendly
+        # name / @-slug still reaches the local bot. A name that only matches the caller's
+        # own profile stays peer-bound: local delivery to yourself is refused anyway.
+        claims = _local_claims(raw_target, roster, root) - {me} if peer_match is None else set()
+        if claims:
+            # A friendly-name claim is reachable by its folder handle; an exact folder id only by a friendly name.
+            handles = sorted(h for h in (_handle(n, roster) for n in claims) if h.lower() not in peers)
+            local = " or ".join(f"@{h}" for h in handles) if handles else "a friendly name of the local bot that no peer uses"
+            return sender.roster_err(
+                f"'{raw_target}' is ambiguous: it names both a local profile and a registered peer. "
+                f"Use '{peer_name}/<agent>' for the peer, or {local} to reach it on this install.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
         from agent.turn_author import bot_author_id, local_origin
@@ -842,8 +869,9 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
     try:
         from tools.terminal_tool import terminal_tool
 
+        from hermes_cli._startup_fast import project_root_str
         raw = terminal_tool(command, background=True, notify_on_complete=wake != "none", task_id=task_id,
-                            workdir=str(Path(__file__).resolve().parent.parent), _host_local=True,
+                            workdir=project_root_str(), _host_local=True,
                             _completion_output_chars=completion_chars)
         try:
             parsed = json.loads(raw)
@@ -1028,8 +1056,13 @@ def _session_title(agent: Any) -> str:
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
     # Spawned as a script with the sender's sys.executable, which under PM is the bare store
     # interpreter (dependencies are activated in-process, never inherited), so boot like every
-    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is this file's
+    # folder, where a subfolder named like an installed package would be imported in its place:
+    # the checkout root takes that entry.
+    _script_dir = Path(__file__).resolve().parent
+    if Path(sys.path[0]).resolve() == _script_dir:
+        del sys.path[0]
+    sys.path.insert(0, str(_script_dir.parent))
     # Only the delivery lane boots: the reply waiter is stdlib only and its stdout is the
     # sender's wake-up, and any other argv exits 2 before a Hermes import.
     if sys.argv[1:2] == ["--run-delivery"]:

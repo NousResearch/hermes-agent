@@ -189,6 +189,44 @@ def test_status_maps_to_finish_reason(gemini, status, finish):
     assert out.choices[0].finish_reason == finish
 
 
+CALL_STEP = {"type": "function_call", "id": "fc_1", "name": "write_file", "arguments": {"content": "half"}}
+
+
+@pytest.mark.parametrize(("status", "finish"), [
+    ("incomplete", "length"), ("budget_exceeded", "length"), ("requires_continuation", "length"),
+    ("completed", "tool_calls"), ("requires_action", "tool_calls"),
+])
+def test_a_call_claims_tool_calls_only_on_a_clean_stop(gemini, status, finish):
+    """#144949: a truncated interaction carrying a call must report length, so truncation recovery runs
+    instead of executing the cut-off call."""
+    _, wire = gemini
+    out = wire.translate_interaction([{"id": "i", "status": status, "steps": [CALL_STEP]}], "m")
+    assert out.choices[0].finish_reason == finish
+    assert out.choices[0].message.tool_calls[0].function.name == "write_file"
+
+
+@pytest.mark.parametrize(("status", "finish"), [("incomplete", "length"), ("budget_exceeded", "length"), ("requires_action", "tool_calls")])
+def test_streamed_call_keeps_a_truncated_status(gemini, config, status, finish):
+    config["providers"] = {"gemini": {"gemini_api": "interactions"}}
+    events = [{"event_type": "interaction.created", "interaction": {"id": "i"}},
+              {"event_type": "step.start", "index": 0, "step": CALL_STEP}, {"event_type": "step.stop", "index": 0},
+              {"event_type": "interaction.completed", "interaction": {"id": "i", "status": status, "usage": {"total_tokens": 3}}}]
+    client = _client(gemini, lambda request: httpx.Response(200, content=_sse(*events)))
+    _, _, calls, got, _ = _collect(client.chat.completions.create(model="gemini-3.8-flash", messages=[{"role": "user", "content": "x"}], stream=True))
+    assert calls[0]["name"] == "write_file" and got == finish
+
+
+def test_hop_ceiling_cuts_a_streamed_call_short_as_length(gemini, config):
+    """A long decode that still wants continuation with nothing to continue from ends as length, even with a call."""
+    config["providers"] = {"gemini": {"gemini_api": "interactions"}}
+    events = [{"event_type": "interaction.created", "interaction": {"id": "h1"}},
+              {"event_type": "step.start", "index": 0, "step": CALL_STEP}, {"event_type": "step.stop", "index": 0},
+              {"event_type": "interaction.completed", "interaction": {"id": "h1", "status": "requires_continuation", "usage": {"total_tokens": 3}}}]
+    client = _client(gemini, lambda request: httpx.Response(200, content=_sse(*events)))
+    _, _, calls, finish, _ = _collect(client.chat.completions.create(**LONG))
+    assert calls[0]["name"] == "write_file" and finish == "length"
+
+
 def test_failed_interaction_raises_a_classified_error(gemini):
     _, wire = gemini
     with pytest.raises(GeminiAPIError) as raised:

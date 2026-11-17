@@ -50,7 +50,7 @@ export const settingsZh: TranslationOverride<
     installBtn: '安装',
     installHeading: '从 GitHub / Git 地址安装',
     installHint:
-      '可使用 owner/repo 简写或完整的 https:// / git@ 克隆地址。如果插件位于子目录，请追加路径：owner/repo/path/to/plugin（或 <url>#path/to/plugin）。',
+      '使用 owner/repo 简写或完整的 https:// / git@ 克隆地址。',
     memoryProviderLabel: "记忆提供方",
     missingEnvWarn: '在「密钥」页面设置以下变量后再运行插件：',
     noDashboardTab: "无仪表盘标签",
@@ -609,6 +609,9 @@ export const settingsZh: TranslationOverride<
     setupNotes: '设置说明'
   },
   webhooks: {
+    signature: '签名方式',
+    signatureGeneric: '通用签名（含时间戳）',
+    signatureHint: '此路由仅接受选定的签名方式。接收 GitHub、GitLab 或 Linear 的投递时，需分别指定对应方式。',
     copy: '复制',
     loadFailed: '无法加载 Webhook',
     restartExit: '网关重启失败，退出码为 {code}。',
@@ -970,10 +973,12 @@ export const settingsZh: TranslationOverride<
       restorePath: '从路径恢复',
       shareTitle: '分享调试报告',
       shareDescription:
-        '将系统信息和日志上传到公开的文本分享服务，并生成可发送给 Hermes 团队的链接。内容会在 6 小时后自动删除。',
+        '将版本、配置键名和错误数量等摘要上传到公开的文本分享服务，并生成可发送给 Hermes 团队的链接；不包含日志行或消息正文。内容会在 6 小时后自动删除。完整日志仅能通过 hermes debug share --nous 上传至私有存储。',
+      shareConfirmTitle: '将调试报告上传至公开的文本分享服务？',
+      shareConfirmDescription: '上传内容包括 Hermes、Python 和操作系统版本，已连接的平台及工具集名称，配置键名（不含值），以及警告和错误数量；不包含日志行或消息正文。内容会在 6 小时后自动删除；若 paste.rs 不可用，备用服务 dpaste.com 会将内容公开保留 1 天，且无法提前删除。',
+      upload: '上传',
       uploading: '正在上传…',
       generateShareLink: '生成分享链接',
-      redactBeforeUpload: '上传前对疑似凭据的内容进行脱敏（推荐）',
       uploaded: '已上传',
       redacted: '已脱敏',
       notRedacted: '未脱敏',

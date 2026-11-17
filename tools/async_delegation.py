@@ -26,6 +26,7 @@ from hermes_constants import get_hermes_home, hermes_home_key
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 from tools.async_delegation_worker import worker_ledger, require_ledger_owner
+from tools.delegate_tool_progress import SUBAGENT_FAILURE_STATUSES
 from tools.delegation_redaction import redact_child_result, redact_completion_event
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,11 @@ _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
+# Database path -> ((device, inode), schema_version) last reconciled by this process.
+# Per connection the replay ran ~30 PRAGMA table_info plus the DDL on every ledger call,
+# three times per 30 s orphan sweep (after #135351).
+_SCHEMA_READY: dict[str, tuple[tuple[int, int], int]] = {}
+_SCHEMA_READY_LOCK = threading.Lock()
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
 # Startup replay runs once per process, so a completion whose owner died while THIS process was
@@ -134,19 +140,49 @@ def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
 
     mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
+    identity = _db_identity(path)
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label=db_label, busy_timeout_ms=10_000,
-                   wal=False, row_factory=None, initialize=_initialize_schema)
-    _secure_state_db_files(path)
+                   wal=False, row_factory=None,
+                   initialize=lambda conn: _initialize_schema(conn, identity=identity))
+    try:
+        _secure_state_db_files(path)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
-def _initialize_schema(conn: sqlite3.Connection) -> None:
+def _db_identity(path) -> tuple[int, int] | None:
+    """Stat only: opening/closing another fd would release SQLite's POSIX locks."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
+def _initialize_schema(conn: sqlite3.Connection, *, identity: tuple[int, int] | None = None) -> None:
     from hermes_state_repair import apply_durability_barriers
     from hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)
+    # schema_version is a per-file DDL counter, not an identity: different files can share it.
+    # Pair it with the inode to detect replacements, retaining the version for recycled empty
+    # files and same-file migrations. In-place restores must be done offline with a process
+    # restart: neither an inode nor a DDL counter identifies arbitrary overwritten bytes.
+    row = conn.execute("PRAGMA database_list").fetchone()
+    key = os.path.normcase(os.path.abspath(row[2])) if row and row[2] else None
+    # Match a stat taken BEFORE open to one after it; never associate an old connection's
+    # schema with a replacement path. Unnamed, unstatable or unverified connections don't cache.
+    if key is None or identity is None or _db_identity(key) != identity:
+        reconcile_state_schema(conn)
+        return
+    version = conn.execute("PRAGMA schema_version").fetchone()[0]
+    with _SCHEMA_READY_LOCK:
+        if _SCHEMA_READY.get(key) == (identity, version):
+            return
     # Single durable-shape authority: the canonical SCHEMA_SQL drives both
     # table creation and column backfill (reconcile_state_schema replays the
     # canonical DDL and reuses SessionDB's declarative reconciliation). This
@@ -155,6 +191,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # nullability/defaults depending on which authority touched the database
     # first (#94691).
     reconcile_state_schema(conn)
+    if _db_identity(key) == identity:
+        with _SCHEMA_READY_LOCK:  # version AFTER replay; don't mark a replacement as reconciled
+            _SCHEMA_READY[key] = (identity, conn.execute("PRAGMA schema_version").fetchone()[0])
 
 
 def _transaction():
@@ -213,20 +252,20 @@ def _prune_durable_records() -> None:
         conn.execute(
             "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?" + keep, (cutoff,))
         terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')" + keep).fetchone()[0]
+            "SELECT COUNT(*) FROM async_delegations WHERE state!='running'" + keep).fetchone()[0]
         if terminal_count > _MAX_RETAINED_COMPLETED:
             conn.execute(f"""DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing'){keep}
+                     WHERE state!='running'{keep}
                      ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
                               updated_at ASC LIMIT ?
                    )""", (terminal_count - _MAX_RETAINED_COMPLETED,))
         pending_count = conn.execute("""SELECT COUNT(*) FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'""").fetchone()[0]
+               WHERE state!='running' AND delivery_state='pending'""").fetchone()[0]
         if pending_count > _MAX_DURABLE_PENDING:
             conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                     WHERE state!='running' AND delivery_state='pending'
                      ORDER BY updated_at ASC LIMIT ?
                    )""", (pending_count - _MAX_DURABLE_PENDING,))
 
@@ -313,7 +352,7 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, result_json, state
-               FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
+               FROM async_delegations WHERE state='running'""").fetchall()
         for row in rows:
             delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row
             if alive(pid, started):
@@ -547,7 +586,7 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
                       owner_pid, owner_started_at, delivery_attempts, updated_at
                FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+               WHERE state!='running' AND delivery_state='pending'
                  AND event_json IS NOT NULL AND updated_at < ?
                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
                ORDER BY completed_at, delegation_id""", (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S)).fetchall()
@@ -595,15 +634,6 @@ def _update_delivery(sql: str, params: tuple) -> bool:
     """Run one UPDATE on the ledger; True iff exactly one row changed."""
     with _DB_LOCK, _transaction() as conn:
         return conn.execute(sql, params).rowcount == 1
-
-
-def mark_completion_delivered(delegation_id: str) -> bool:
-    """Atomically acknowledge successful injection of a durable completion."""
-    require_ledger_owner()
-    now = time.time()
-    return _update_delivery(
-        """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
-           WHERE delegation_id=? AND delivery_state!='delivered'""", (now, now, delegation_id))
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
@@ -778,7 +808,7 @@ def get_durable_delegation(delegation_id: str) -> Optional[dict[str, Any]]:
         "delivery_attempts": row[6], "origin_session_id": row[7] or ""}
 
 
-_FAILED_TASK_STATES = frozenset({"error", "failed", "failure", "timeout", "stalled", "unknown", "interrupted"})
+_FAILED_TASK_STATES = SUBAGENT_FAILURE_STATUSES | {"stalled", "unknown", "interrupted"}
 _FAILURE_SURFACE_WINDOW_S = 24 * 3600.0
 
 
@@ -809,7 +839,7 @@ def failed_delegations_for_session(
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             f"""SELECT delegation_id, state, dispatched_at, completed_at, task_json, result_json FROM async_delegations
-                WHERE ({owner_sql}) AND state NOT IN ('running','finalizing') AND completed_at >= ?
+                WHERE ({owner_sql}) AND state!='running' AND completed_at >= ?
                 ORDER BY completed_at DESC LIMIT ?""",
             (*(val for _, val in selectors), cutoff, limit)).fetchall()
     failed: list[dict[str, Any]] = []
@@ -931,8 +961,7 @@ def _batch_crash(error: str, duration: float) -> dict[str, Any]:
 def _batch_status(combined: dict[str, Any]) -> str:
     """Batch status: completed unless every child errored/was interrupted."""
     child_results = combined.get("results") or []
-    ok = ("completed", "success")
-    return "error" if child_results and all(r.get("status") not in ok for r in child_results) else "completed"
+    return "error" if child_results and all(r.get("status") != "completed" for r in child_results) else "completed"
 
 
 def _dispatch(**kwargs) -> dict[str, Any]:
@@ -1561,3 +1590,5 @@ def _reset_for_tests() -> None:
         _reoffered_at.clear()
     with _held_lock:
         _held_copies.clear()
+    with _SCHEMA_READY_LOCK:
+        _SCHEMA_READY.clear()

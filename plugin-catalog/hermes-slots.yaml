@@ -1,0 +1,23 @@
+name: hermes-slots
+repo: https://github.com/tuancookiez-hub/hermes-slots
+sha: c672c9653936244ac5217fd9a17376a048ba799e
+version: "0.1.0"
+title: Slot Pet
+description: "A grimy little slot machine pet for Hermes Desktop, drawn as low-resolution pixel art. It sits in the bottom right corner above the app, like the Hermes pet, takes no layout space and can be dragged anywhere. Drag its lever down and let go, or click the machine, to spin a five by three screen for play coins. Three in a line pays across, down or diagonally on 20 lines, so about three pulls in four pay something, and a line of sevens pays 100 times the bet. Bet any whole number of coins. A piggy bank beside it keeps coins safe and pays 1% interest an hour, worked out from saved timestamps, and its panel also holds the pay table and the sound switch. Reachable from the status bar, the command palette and the keyboard. Disclosure: coins are play money inside the plugin and cannot be bought, sold or cashed out; no network requests, no model calls and no background processes; spins use the browser's random numbers and the published pay table; sound effects are CC0 clips by Kenney built into the bundle, played only after a click or key press; the game is kept in Desktop plugin storage on this machine; the plugin adds its own floating element to the page (Hermes has no SDK area for one) and removes it on unload, without reading or changing core markup."
+maintainer: tuancookiez-hub
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/tuancookiez-hub/hermes-slots/tree/c672c9653936244ac5217fd9a17376a048ba799e
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-slots/c672c9653936244ac5217fd9a17376a048ba799e/docs/images/machine.png
+screenshots:
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-slots/c672c9653936244ac5217fd9a17376a048ba799e/docs/images/machine.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-slots/c672c9653936244ac5217fd9a17376a048ba799e/docs/images/bank.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "The machine's first position is the bottom right corner, the same place Hermes Plant starts. With both installed, drag one aside; each remembers where it was put."

@@ -19,6 +19,7 @@ const apiMocks = vi.hoisted(() => ({
   getCurator: vi.fn(),
   getPortal: vi.fn(),
   getGatewayMigratePlan: vi.fn(),
+  runDebugShare: vi.fn(),
   checkHermesUpdate: vi.fn()
 }))
 
@@ -92,4 +93,26 @@ it('keeps a forward-update count while a language change refreshes its copy with
   const check = [...container.querySelectorAll('button')].find(button => button.textContent === copy.host.checkUpdates)
   await act(async () => check!.click())
   expect(document.body.textContent).toContain(formatTranslation(copy.toast.updateBehind, { count: 3 }))
+})
+
+it.each(['en', 'zh'] as const)('keeps public debug upload behind localized consent in %s', async locale => {
+  apiMocks.runDebugShare.mockResolvedValue({ urls: { report: 'https://example.test/report' }, failures: [] })
+  await render(locale)
+  const copy = resolveTranslations(locale)
+  const click = async (label: string) => {
+    const button = [...document.querySelectorAll('button')].find(element => element.textContent === label)
+    expect(button).toBeDefined()
+    await act(async () => button!.click())
+  }
+
+  await click(copy.systemPage.operations.generateShareLink)
+  expect(document.body.textContent).toContain(copy.systemPage.operations.shareConfirmTitle)
+  expect(document.body.textContent).toContain(copy.systemPage.operations.shareConfirmDescription)
+  expect(apiMocks.runDebugShare).not.toHaveBeenCalled()
+  await click(copy.common.cancel)
+  expect(apiMocks.runDebugShare).not.toHaveBeenCalled()
+  await click(copy.systemPage.operations.generateShareLink)
+  await click(copy.systemPage.operations.upload)
+  expect(apiMocks.runDebugShare).toHaveBeenCalledTimes(1)
+  expect(apiMocks.runDebugShare).toHaveBeenCalledWith()
 })

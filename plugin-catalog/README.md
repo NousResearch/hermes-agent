@@ -23,7 +23,10 @@ meaningful:
    self-updater lets an installed copy move to a commit nobody reviewed.
    Updates reach users only through a SHA-bump PR here plus
    `hermes plugins update <name>`. Keep the updater in the standalone
-   distribution if you want one; strip it from the catalog build.
+   distribution if you want one; strip it from the catalog build. Downloading
+   a separate third-party tool pinned by checksum is not a self-updater; a
+   maintainer allows such a file by repo, pinned sha and file hash in
+   `scripts/ci/catalog_self_updater_allowlist.json`.
 4. **SHA bumps are new PRs.** Updating an entry's pin is a new PR whose diff
    (old SHA → new SHA) is re-reviewed like any other change — reviewers are
    expected to look at the upstream commit range being adopted.
@@ -176,6 +179,14 @@ meaningful:
    however clean its code. A general-purpose tool such as a browser, downloader
    or media player is fine; one that ships with those sources built in, or whose
    description points users at them, is not.
+20. **No coin or token promotion.** A plugin built around one coin, token or
+   NFT collection that is not a broadly adopted asset (its price, trading,
+   launch, airdrop, holder rewards or promotion), and a plugin used to promote
+   its maker's own token, is declined. Memecoin boards, coin launchpads and
+   airdrop or free-mint farming tools fall under this rule. Fine: stablecoins
+   such as USDC, payments (x402 and similar), multi-coin wallets, exchanges and
+   markets, price tickers, safety and scam checks, and broadly adopted assets
+   such as Bitcoin, Ethereum and Solana.
 <!-- admission-rules:end -->
 
 The step-by-step submission guide, with the same rules and what reviewers check,

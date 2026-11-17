@@ -5,6 +5,11 @@ import { LOCALE_METADATA, localeDirection, LOCALES, normalizeLocaleInput } from 
 import registry from '../locales/registry.json'
 
 describe('shared locale boundary', () => {
+  it('preserves historical Traditional Chinese protocol inputs independently of registry data', () => {
+    for (const input of ['zh-tw', 'zh-hk', 'zh-mo', ' ZH_TW ', ' ZH_HK ', ' ZH_MO ']) {
+      expect(normalizeLocaleInput(input)).toBe('zh-hant')
+    }
+  })
   it('normalizes every registered identity and alias while rejecting inherited object keys', () => {
     for (const [input, expected] of Object.entries({
       ...Object.fromEntries(LOCALES.map(locale => [locale, locale])),

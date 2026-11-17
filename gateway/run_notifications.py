@@ -23,9 +23,11 @@ from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.run_profile_home import completion_event_scope_or_refuse
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
+from gateway.run_notifications_restart import GatewayRestartNoticeMixin
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -171,7 +173,7 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     return metadata
 
 
-class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotificationOwnershipMixin):
+class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotificationOwnershipMixin, GatewayRestartNoticeMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
@@ -415,59 +417,6 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 getattr(result, "error", None) or "no result")
         return result
 
-    async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
-        """Notify the chat that initiated /restart that the gateway is back."""
-        from gateway.delivery import resolve_delivery_transport
-        from gateway.run import _hermes_home, _non_conversational_metadata
-        notify_path = _hermes_home / ".restart_notify.json"
-        if not notify_path.exists():
-            return None
-        try:
-            data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
-            platform_str = data.get("platform")
-            chat_id = data.get("chat_id")
-            thread_id = data.get("thread_id")
-            if not platform_str or not chat_id:
-                return None
-            platform = Platform(platform_str)
-            # Relay-aware transport over the REQUESTER'S profile adapter map; ``self.adapters`` is the
-            # default profile's, so a secondary's "restarted" notice would leave through the wrong bot.
-            transport = resolve_delivery_transport(
-                platform, self.config, self._adapters_for_profile(self._marker_profile(data)))
-            if transport is None:
-                logger.debug("Restart notification skipped: no live transport for %s", platform_str)
-                return None
-            platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
-                logger.info(
-                    "Restart notification suppressed: %s has gateway_restart_notification=false", platform_str
-                )
-                return None
-            metadata = self._pending_marker_metadata(platform, chat_id, data, transport.adapter)
-            if data.get("delivered_via_upstream_relay") is True:
-                metadata = dict(metadata or {})
-                for field in ("user_id", "scope_id"):
-                    if data.get(field):
-                        metadata[field] = str(data[field])
-            result = await transport.send(
-                platform, str(chat_id), t("gateway.startup.restarted"),
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
-            # adapter.send() catches provider errors (e.g. "Chat not found") and returns
-            # SendResult(success=False) rather than raising, so inspect the result before claiming success.
-            if _send_failed(result):
-                logger.warning(
-                    "Restart notification to %s:%s was not delivered: %s", platform_str, chat_id, _send_error(result),
-                )
-                return None
-            logger.info("Sent restart notification to %s:%s", platform_str, chat_id)
-            return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
-        except Exception as e:
-            logger.warning("Restart notification failed: %s", e)
-            return None
-        finally:
-            notify_path.unlink(missing_ok=True)
-
     def _home_channel_transports(self):
         """Yield ``(platform, platform_cfg, home, transport)`` for every home channel with a live transport."""
         for platform, platform_cfg in self.config.platforms.items():
@@ -548,6 +497,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from gateway.run import _planned_restart_notification_path
         from utils import atomic_json_write
 
+        self._note_restart_notice_boot()
         if self._planned_restart_notice_lock is None:
             self._planned_restart_notice_lock = asyncio.Lock()
         async with self._planned_restart_notice_lock:
@@ -758,7 +708,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # instead of re-attempting admission every 2 s (#140899).
                 completion_queue.put(evt)
                 continue
-            async with self._completion_event_scope(evt):
+            scope = await completion_event_scope_or_refuse(self, evt, "watch notification")
+            if scope is None:
+                continue  # only this event: the rest of the batch still delivers
+            async with scope:
                 from tools.process_registry_notifications import should_surface_notification
                 if not should_surface_notification(evt):
                     continue
@@ -1173,12 +1126,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         key = (getattr(source, "profile", None), platform) if source is not None else None
         if adapter is None:
             # The watcher requeues silently every tick; say once per outage which lane has no transport.
+            evt["_no_transport"] = True  # stays durable; a restart wait does not hold for it
             if key is not None and key not in warned:
                 warned.add(key)
                 logger.warning("Async completion held: %s", _held_reason(
                     source, platform, getattr(getattr(self, "config", None), "multiplex_profiles", False)))
             return False
         warned.discard(key)
+        evt.pop("_no_transport", None)
         if not adapter_supports_push(adapter):
             ensure = getattr(adapter, "_ensure_session_db", None)
             try:
@@ -1300,7 +1255,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         True means adapter admission, not model execution; None means deduplicated or
         terminal. False remains retryable. Claims are settled together for every sibling.
         """
-        async with self._completion_event_scope(evt):
+        scope = await completion_event_scope_or_refuse(self, evt, "completion notification")
+        if scope is None:
+            return None  # terminal: never retried
+        async with scope:
             return await self._deliver_completion_notification_scoped(
                 synth_text, evt, sibling_claims=sibling_claims)
 
@@ -1491,7 +1449,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Fan in policy-admitted process completions with compatible pinned owners."""
         # Filter each event before it can contaminate (or suppress) a foreground batch.
         # The shared queue may be drained outside the owning profile's runtime scope.
-        async with self._completion_event_scope(evt):
+        scope = await completion_event_scope_or_refuse(self, evt, "process completion")
+        if scope is None:
+            return None
+        async with scope:
             from tools.process_registry_notifications import should_surface_notification
             if not should_surface_notification(evt):
                 return None
@@ -1545,7 +1506,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         their claims are acked only after adapter acceptance). True after acceptance, False to requeue
         the group, None when nothing is deliverable here (retry siblings requeued)."""
         # The group shares one session_key, hence one profile: scope the pre-checks and sibling claims too.
-        async with self._completion_event_scope(group[0]):
+        scope = await completion_event_scope_or_refuse(self, group[0], "async delegation completions")
+        if scope is None:
+            return None  # dropped from the queue, not requeued: no retry storm
+        async with scope:
             return await self._deliver_async_delegation_group_scoped(group)
 
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
@@ -1702,25 +1666,34 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # fan-out of background subagents finishing together). Events for different sessions never
                 # coalesce. See #70300.
                 groups: dict[tuple[str, ...], list[dict]] = {}
-                for evt in async_events:
-                    self._enrich_async_delegation_routing(evt)
-                    groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
-                for group in groups.values():
-                    if any(evt.get("_watch_next_retry_at", 0) > time.monotonic() for evt in group):
-                        for evt in group:
-                            _pr.completion_queue.put(evt)
-                        continue
-                    try:
-                        delivered = await self._deliver_async_delegation_group(group)
-                        if delivered is False:
-                            self._back_off_refused_completions(group)
-                            for evt in group:
-                                _pr.completion_queue.put(evt)
-                    except Exception as e:
-                        for evt in group:
-                            _pr.completion_queue.put(evt)
-                        logger.error("Async delegation injection error: %s", e)
+                # Dequeued but not yet admitted: a restart waiting for idle still counts these.
+                self._async_notices_in_delivery = list(async_events)
+                try:
+                    for evt in async_events:
+                        self._enrich_async_delegation_routing(evt)
+                        groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
+                    await self._deliver_async_delegation_groups(groups, _pr)
+                finally:
+                    self._async_notices_in_delivery = []
             await asyncio.sleep(interval)
+
+    async def _deliver_async_delegation_groups(self, groups: dict, _pr) -> None:
+        """Deliver each route group as one turn; a refused or failed group goes back on the queue."""
+        for group in groups.values():
+            if any(evt.get("_watch_next_retry_at", 0) > time.monotonic() for evt in group):
+                for evt in group:
+                    _pr.completion_queue.put(evt)
+                continue
+            try:
+                delivered = await self._deliver_async_delegation_group(group)
+                if delivered is False:
+                    self._back_off_refused_completions(group)
+                    for evt in group:
+                        _pr.completion_queue.put(evt)
+            except Exception as e:
+                for evt in group:
+                    _pr.completion_queue.put(evt)
+                logger.error("Async delegation injection error: %s", e, exc_info=True)
 
     @staticmethod
     def _back_off_refused_completions(group: list[dict]) -> None:
@@ -1862,8 +1835,17 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Run :meth:`_watch_process` inside the owning profile's scope, start to finish. A watcher starts
         in an empty context (live-armed from a tool thread, or recovered at startup), and the output it
         prepares runs that profile's own ``transform_terminal_output`` hooks before any delivery."""
-        async with self._completion_event_scope(watcher):
-            await self._watch_process(watcher)
+        # A restart waits for these: the process's completion delivers a new turn (restart_when_idle).
+        live = self.__dict__.setdefault("_live_process_watchers", set())
+        live.add(watcher["session_id"])
+        try:
+            scope = await completion_event_scope_or_refuse(self, watcher, "process watcher")
+            if scope is None:
+                return
+            async with scope:
+                await self._watch_process(watcher)
+        finally:
+            live.discard(watcher["session_id"])
 
     async def _watch_process(self, watcher: dict) -> None:
         """Poll a background process and push updates until it exits. Mode

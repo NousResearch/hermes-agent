@@ -368,7 +368,7 @@ export const formatAbandonedClarify = (
   return [
     t('libText.text.clarifyHead', questions.length),
     ...lines,
-    `  ${t('libText.text.clarifyReason', reason)}`
+    `  ${t('libText.text.clarifyReason', reason === 'cancelled' ? t('libText.text.clarifyCancelled') : reason)}`
   ].join('\n')
 }
 

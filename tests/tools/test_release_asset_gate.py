@@ -200,3 +200,39 @@ def test_fetch_block_tree_error_raises(monkeypatch):
     monkeypatch.setattr(g, "_http_json", fake)
     with pytest.raises(g.GateError, match="404"):
         _run_async(g.fetch_block_tree(DS))
+
+
+def test_update_page_properties_patches_fixed_body(monkeypatch):
+    import agent.secret_scope as ss
+    monkeypatch.setattr(ss, "get_secret", lambda n, d=None: "tok" if n == "NOTION_API_KEY" else None)
+    seen = {}
+
+    async def fake(method, url, headers, **kw):
+        seen.update(method=method, url=url, body=kw.get("json"))
+        return 200, {"object": "page"}
+
+    monkeypatch.setattr(g, "_http_json", fake)
+    props = {"Published URL": {"url": "https://x"}, "Status": {"select": {"name": "Published"}}}
+    _run_async(g.update_page_properties(DS, props))
+    assert seen == {"method": "PATCH", "url": f"https://api.notion.com/v1/pages/{DS.replace('-', '')}",
+                    "body": {"properties": props}}
+
+    async def fail(method, url, headers, **kw):
+        return 409, {"message": "conflict"}
+    monkeypatch.setattr(g, "_http_json", fail)
+    with pytest.raises(g.GateError, match="409"):
+        _run_async(g.update_page_properties(DS, props))
+    with pytest.raises(g.GateError):
+        _run_async(g.update_page_properties("not-an-id", props))
+
+
+def test_permalink_with_fallback(monkeypatch, slack_tok):
+    async def ok(method, url, headers, **kw):
+        return 200, {"ok": True, "permalink": "https://acme.slack.com/archives/C1/p12"}
+    monkeypatch.setattr(g, "_http_json", ok)
+    assert _run_async(g.permalink("C1", "1.2")) == "https://acme.slack.com/archives/C1/p12"
+
+    async def bad(method, url, headers, **kw):
+        return 200, {"ok": False, "error": "missing_scope"}
+    monkeypatch.setattr(g, "_http_json", bad)
+    assert _run_async(g.permalink("C1", "1.2")) == "https://slack.com/archives/C1/p12"

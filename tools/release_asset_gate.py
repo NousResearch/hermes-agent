@@ -104,7 +104,9 @@ def _select_name(prop: dict) -> str:
     return ""
 
 
-def row_state(page: dict, expected_parent: str) -> RowState:
+def row_state(page: dict, expected_parent: str, *, status_property: str = "Status",
+              asset_type_property: str = "Asset type",
+              config_key: str = "zendesk.release_assets_data_source_id") -> RowState:
     """Read Status / Asset type / Destination from a Release Assets row.
 
     Raises ``GateError`` unless the page's parent data source (or database)
@@ -113,7 +115,7 @@ def row_state(page: dict, expected_parent: str) -> RowState:
     want = _hex_id(expected_parent)
     if not want:
         raise GateError(
-            "zendesk.release_assets_data_source_id is not configured — cannot verify "
+            f"{config_key} is not configured — cannot verify "
             "the sign-off row belongs to Release Assets.")
     parent = page.get("parent") if isinstance(page.get("parent"), dict) else {}
     have = {_hex_id(str(parent.get(k) or "")) for k in ("data_source_id", "database_id")}
@@ -129,12 +131,36 @@ def row_state(page: dict, expected_parent: str) -> RowState:
                             if isinstance(t, dict)).strip()
             break
     return RowState(
-        status=_select_name(props.get("Status")),
-        asset_type=_select_name(props.get("Asset type")),
+        status=_select_name(props.get(status_property)),
+        asset_type=_select_name(props.get(asset_type_property)),
         destination=_select_name(props.get("Destination")),
         url=str(page.get("url") or ""),
         title=title,
     )
+
+
+async def update_page_properties(page_id: str, properties: dict) -> dict:
+    """PATCH a page's properties directly (not through ``notion_api``).
+
+    The ONE Notion write that bypasses the write guard (5a's exception): only
+    ``tools/release_update_post.py`` calls it, with a fixed body (``Published
+    URL`` + ``Status=Published``) after it has posted a Slack-update row.
+    """
+    hexid = _hex_id(page_id)
+    if not re.fullmatch(r"[0-9a-f]{32}", hexid):
+        raise GateError(f"{page_id!r} is not a Notion page id.")
+    token = _secret("NOTION_API_KEY", "NOTION_API_TOKEN")
+    if not token:
+        raise GateError("Notion not configured (NOTION_API_KEY) — cannot update the row.")
+    headers = {"Authorization": f"Bearer {token}", "Notion-Version": NOTION_VERSION}
+    try:
+        status, data = await _http_json("PATCH", f"https://api.notion.com/v1/pages/{hexid}",
+                                        headers, json={"properties": properties})
+    except Exception as e:
+        raise GateError(f"Notion request failed: {e}") from e
+    if status != 200:
+        raise GateError(f"Notion API error (HTTP {status}): {str(data.get('message', ''))[:200]}")
+    return data
 
 
 _MAX_BLOCKS = 2000
@@ -214,6 +240,18 @@ async def post_announcement(channel: str, text: str, thread_ts: str = "") -> str
         payload["thread_ts"] = thread_ts
     data = await _slack("POST", "chat.postMessage", json=payload)
     return str(data.get("ts") or "")
+
+
+async def permalink(channel: str, ts: str) -> str:
+    """The message's permalink; falls back to the canonical archive URL."""
+    try:
+        data = await _slack("GET", "chat.getPermalink", params={"channel": channel, "message_ts": ts})
+        link = str(data.get("permalink") or "")
+        if link.startswith("https://"):
+            return link
+    except GateError as e:
+        logger.debug("permalink lookup failed: %s", e)
+    return f"https://slack.com/archives/{channel}/p{ts.replace('.', '')}"
 
 
 async def veto_reactions(channel: str, ts: str) -> list[str]:

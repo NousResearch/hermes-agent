@@ -199,6 +199,20 @@ def _declared_env_names(manifest: Mapping[str, Any]) -> set[str]:
     return names
 
 
+def _same_profile_plugin(left: Path, right: Path) -> bool:
+    """Copies under the launch/bound homes share their relative directory identity.
+
+    Never trust manifest names (an unrelated directory can claim one), or collapse
+    category paths to their leaf name. Bundled/project claimants stay independent.
+    """
+    from hermes_constants import get_hermes_home, get_process_hermes_home
+
+    roots = {(home / "plugins").resolve() for home in (get_hermes_home(), get_process_hermes_home())}
+    owners = [(root, left.relative_to(root)) for root in roots if left != root and left.is_relative_to(root)]
+    return any(right != root and right.is_relative_to(root) and right.relative_to(root) == key
+               for owner, key in owners for root in roots if root != owner)
+
+
 def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path, manifest: Mapping[str, Any]) -> list[str]:
     """Check every claimant, not discovery winners or the manifest's self-reported name.
 
@@ -224,7 +238,7 @@ def _foreign_client_env_problems(clients: list[OAuthClient], plugin_dir: Path, m
     for other in collect_directory_manifests():
         directory = Path(other.path)
         resolved = directory.resolve()
-        if resolved == requester:
+        if resolved == requester or _same_profile_plugin(requester, resolved):
             continue
         if not (requester_is_platform or other.kind == "platform" or resolved in platform_dirs):
             continue

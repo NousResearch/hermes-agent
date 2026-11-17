@@ -97,6 +97,23 @@ class TestFetchModelsBaseUrlOverride:
         finally:
             server.shutdown()
 
+    def test_anthropic_messages_base_does_not_shadow_catalog(self):
+        """An .../apps/anthropic inference base has no /models. Catalog stays on models_url."""
+        server, port = _start_server([{"id": "qwen3.8-max"}])
+        try:
+            profile = ProviderProfile(
+                name="alibaba-token-plan",
+                base_url="http://127.0.0.1:1/compatible-mode/v1",
+                models_url=f"http://127.0.0.1:{port}/models",
+            )
+            result = profile.fetch_models(
+                api_key="test-key",
+                base_url="https://token-plan.example/apps/anthropic",
+            )
+            assert result == ["qwen3.8-max"]
+        finally:
+            server.shutdown()
+
 
 
 

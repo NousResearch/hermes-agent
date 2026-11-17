@@ -7,10 +7,13 @@ non-empty and nothing spawned. A queue parked at
 counting those ticks produced an 80-tick ``dispatcher stuck: ... Check profile
 health (venv, PATH, credentials)`` streak on a perfectly healthy fleet. The
 held-back buckets (``skipped_per_profile_capped``, ``respawn_guarded``,
-``rate_limited``, ``skipped_locked``, ``memory_pressure``) must read as
-"correctly idle", exactly like the control-plane ``claim_task`` lanes the
-readiness probe already excludes — while a genuinely unexplained zero-spawn
-tick must still warn, and its message must name any partial hold.
+``rate_limited``, ``skipped_locked``, ``memory_pressure`` at ``critical``)
+must read as "correctly idle", exactly like the control-plane ``claim_task``
+lanes the readiness probe already excludes — while a genuinely unexplained
+zero-spawn tick must still warn, and its message must name any partial hold.
+Elevated pressure is NOT one of these holds: it still permits one spawn
+(:func:`_tick_spawn_budget`), so a failed spawn under elevated keeps the
+queue visible to the counter — only ``critical`` stops all spawns.
 """
 from __future__ import annotations
 
@@ -118,6 +121,46 @@ def test_whole_tick_hold_does_not_count_bad_ticks(isolated_kanban_home_with_prof
     assert "dispatcher stuck" not in err
 
 
+def test_elevated_pressure_failed_spawn_still_warns(
+    isolated_kanban_home_with_profiles, monkeypatch, capsys,
+):
+    """Elevated pressure is not a whole-tick hold (PR 155323 review): the
+    guard still permits ONE spawn, so when that spawn fails the ready queue
+    is unexplained again and the stuck warning must fire. Only ``critical``
+    (zero permitted spawns) reads as correctly idle."""
+    kb = isolated_kanban_home_with_profiles
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+    # Synthetic sample drives the real classifier into the elevated tier:
+    # 2 GiB of 16 GiB available = 12.5% — above the critical floor, below
+    # the 15% elevated fraction (see gateway.memory_status tiers).
+    monkeypatch.setattr(
+        kbd, "_system_memory_sample",
+        lambda: {"mem_available_kib": 2 * 1024 * 1024,
+                 "mem_total_kib": 16 * 1024 * 1024},
+    )
+
+    def _failing_spawn(*args, **kwargs):
+        raise RuntimeError("worker venv is gone")
+
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        kb.create_task(conn, title="a0", assignee="alpha")
+
+    # One real tick: the guard records elevated and permits one spawn; that
+    # spawn fails, so the task returns to ready with zero spawned.
+    with kbc.connect_closing() as conn:
+        res = kbd.dispatch_once(conn, spawn_fn=_failing_spawn, failure_limit=5)
+    assert res.memory_pressure == "elevated"
+    assert not res.spawned
+
+    on_tick = _daemon_on_tick(monkeypatch)
+    for _ in range(8):  # well past HEALTH_WINDOW=6
+        on_tick(res)
+    err = capsys.readouterr().err
+    assert "dispatcher stuck" in err
+
+
 def test_unexplained_zero_spawn_still_warns(isolated_kanban_home_with_profiles, monkeypatch, capsys):
     """Positive control: the fix must not silence the real signal. Ready,
     spawnable, unclaimed work with a zero-spawn tick and NO hold recorded is
@@ -196,6 +239,8 @@ def test_held_ready_task_ids_and_whole_tick_hold():
     assert not kbd.whole_tick_hold(per_task)
     assert kbd.whole_tick_hold(kbd.DispatchResult(skipped_locked=True))
     assert kbd.whole_tick_hold(kbd.DispatchResult(memory_pressure="critical"))
+    # Elevated permits one spawn — never a whole-tick hold.
+    assert not kbd.whole_tick_hold(kbd.DispatchResult(memory_pressure="elevated"))
     assert not kbd.whole_tick_hold(kbd.DispatchResult())
     assert not kbd.whole_tick_hold(None)
     # The stuck warning's suppression line must name the cap too.

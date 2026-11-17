@@ -1205,7 +1205,7 @@ def resolve_pre_tool_block(
     tool_name: str, args: Optional[dict[str, Any]], **hook_kwargs: Any
 ) -> Optional[str]:
     """Resolve the pre_tool_call directive to a final block message (or ``None`` to proceed),
-    running the human-approval gates. See :func:`tools.approval_tool_gate.resolve_pre_tool_block`."""
+    running the human-approval gates. See :func:`tools.approval_gate.gate.resolve_pre_tool_block`."""
     return _dispatch_pre_tool_call_hooks(tool_name, args, **hook_kwargs)[0]
 
 
@@ -1214,7 +1214,7 @@ def _dispatch_pre_tool_call_hooks(
 ) -> tuple[Optional[str], Optional[dict[str, Any]]]:
     """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
     block/approve/tool-gate message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
-    from tools.approval_tool_gate import resolve_pre_tool_block as _resolve_verdict
+    from tools.approval_gate import resolve_pre_tool_block as _resolve_verdict
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     block_msg = _resolve_verdict(details, tool_name, args, **{
         k: hook_kwargs.get(k, "") for k in ("task_id", "turn_id", "tool_call_id", "session_id")})

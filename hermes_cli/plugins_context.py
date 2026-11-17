@@ -282,7 +282,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
 
         ``preview(args) -> str`` / ``apply(args, decision_id=...)`` declare an approval tool: the
         user sees ``preview``'s text on the approval card and ``apply`` runs once from the exact
-        approved args (``handler`` may then be omitted). See tools/approval_decisions.py."""
+        approved args (``handler`` may then be omitted). See tools/approval_gate/decisions.py."""
         handler = handler or apply
         if override and not self._tool_override_allowed(name):
             raise _facade().PluginToolOverrideError(

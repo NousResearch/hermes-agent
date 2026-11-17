@@ -59,7 +59,7 @@ from agent.tool_dispatch_helpers import (
     emit_blocked_progress,
     make_tool_result_message,
 )
-from tools.approval_tool_gate import pop_record as pop_approval_record
+from tools.approval_gate import pop_record as pop_approval_record
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (

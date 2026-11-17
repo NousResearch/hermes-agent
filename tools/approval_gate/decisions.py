@@ -1,7 +1,7 @@
 """Exact-args commit protocol for tools that declare ``apply`` at registration.
 
 A tool registered with ``preview=`` and ``apply=`` is an approval tool by its own declaration: the
-approval gate (:mod:`tools.approval_tool_gate`) renders the card from ``preview(args)``, and once a
+approval gate (:mod:`tools.approval_gate.gate`) renders the card from ``preview(args)``, and once a
 human (or a bypass the user configured) approves, it mints a *decision* bound to a digest of the
 exact approved arguments. Dispatch then runs ``apply(args, decision_id=...)`` through
 :func:`apply_approved`, never the plain handler, and only when the dispatched args hash to the

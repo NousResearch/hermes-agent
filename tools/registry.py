@@ -241,7 +241,7 @@ class ToolEntry:
     # its own arguments and config. The executor floors its generic tool deadline by this so a
     # tool's own timeout is the one that fires — see get_deadline_floor.
     deadline_floor: Optional[Callable] = None
-    # Approval-tool contract (opt-in; see tools/approval_decisions.py). ``preview(args) -> str`` is
+    # Approval-tool contract (opt-in; see tools/approval_gate/decisions.py). ``preview(args) -> str`` is
     # the approval card text; ``apply(args, decision_id=...)`` replaces the handler and runs only
     # from a human-approved decision for the exact args, at most once per decision.
     preview: Optional[Callable] = None
@@ -1094,7 +1094,7 @@ class ToolRegistry:
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
             # plugin handler is not broken by every field the dispatcher injects (#68318).
             if entry.apply is not None:
-                from tools.approval_decisions import apply_approved
+                from tools.approval_gate import apply_approved
                 return flag_unknown_args(apply_approved(
                     entry, args, kwargs, lambda result: self._normalize_handler_result(name, result)),
                     name, unknown, valid)

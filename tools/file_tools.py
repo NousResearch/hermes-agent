@@ -1149,7 +1149,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 # Schemas + Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
-from tools.approval_tool_gate_preview import patch_preview, take_planned_sha256, write_file_preview
+from tools.approval_gate import patch_preview, take_planned_sha256, write_file_preview
 
 
 def _check_file_reqs():

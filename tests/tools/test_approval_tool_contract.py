@@ -11,7 +11,8 @@ import pytest
 import hermes_cli.config as hc
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from model_tools import handle_function_call
-from tools import approval, approval_decisions
+from tools import approval
+from tools.approval_gate import decisions as approval_decisions
 from tools.approval_context import (
     reset_current_session_key, reset_hermes_interactive_context, set_current_session_key,
     set_hermes_interactive_context,

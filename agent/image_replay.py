@@ -27,6 +27,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Any, Optional
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,6 @@ DEFAULT_REPLAY_RECENT_IMAGES = 3
 _HINT_RE = re.compile(r"^\[Image attached(?P<local> at)?: (?P<ref>.+)\]$")
 # ``session_rules.turns._image_marker``: the live part's ``detail`` rides on its marker.
 _MARKER_RE = re.compile(r"^\[screenshot(?: detail=(?P<detail>low|high|auto))?\]$")
-_IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 
 
 def resolve_replay_recent_images(cfg: dict) -> int:

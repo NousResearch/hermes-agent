@@ -18,6 +18,7 @@ from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, h
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 from session_rules.turns import _tc_field, coalesce_tool_call_id
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -357,9 +358,6 @@ def serialized_messages_bytes(messages: list) -> int:
         return len(json.dumps(messages, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
     except (TypeError, ValueError):
         return sum(len(str(m)) for m in messages)
-
-
-_IMAGE_PART_TYPES = {"image_url", "image", "input_image"}
 
 
 def _strip_images_from_messages(messages: list) -> bool:

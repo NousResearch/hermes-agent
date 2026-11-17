@@ -13,6 +13,17 @@ from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
 from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
+from session_rules.turns import (
+    _AUTO_LOAD_HEADER_RE,
+    _AUTO_LOAD_PREFIX,
+    _AUTO_LOAD_SUFFIX_RE,
+    _BUNDLE_MARKER,
+    _SINGLE_SKILL_INSTRUCTION,
+    _SINGLE_SKILL_MARKER,
+    _SKILL_INVOCATION_PREFIX,
+    _SKILL_NAME_RE,
+    _SUPPORTING_FILES_END,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,27 +52,6 @@ _publish_lock = threading.Lock()
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
-# Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
-# model-facing message embedding the full skill body; memory providers storing
-# the raw user turn would capture the body instead of what the user asked, so
-# ``extract_user_instruction_from_skill_message`` recovers just the instruction.
-# The markers MUST stay byte-identical to the builders (``_build_skill_message``,
-# ``_scaffold_header``).
-_SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
-_SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
-_SINGLE_SKILL_INSTRUCTION = "The user has provided the following instruction alongside the skill invocation: "
-_BUNDLE_MARKER = " skill bundle,"
-
-# The skill name sits in the first quoted span of the activation note, for both
-# the single-skill and the bundle header ("work" / "/clean /work").
-_SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
-
-# Gateway auto-load scaffold (gateway/run_turn.py ``_hmwa_auto_load_skills``): a channel-bound
-# skill prepended to the user's text on a NEW session. Unlike the invocation scaffolds above it
-# carries no instruction marker — the user's text simply follows the payload blocks — so the
-# describer strips the header + body and renders the typed request (session previews, titles).
-_AUTO_LOAD_PREFIX = '[IMPORTANT: The "'
-_AUTO_LOAD_SUFFIX_RE = re.compile(r'" skill is auto-loaded\. Follow its instructions for this session\.\]')
 
 # SQL LIKE pattern for listing queries that recognize scaffolding before the row
 # reaches Python (no LIKE wildcards in the prefix, so no ESCAPE clause needed).
@@ -107,7 +97,6 @@ def append_user_instruction(parts: list, instruction: str) -> str:
     return stable_prefix
 
 
-_AUTO_LOAD_HEADER_RE = re.compile(re.escape(_AUTO_LOAD_PREFIX) + r'([^"]*)' + _AUTO_LOAD_SUFFIX_RE.pattern)
 _BUNDLE_LOADED_RE = re.compile(r"^Skills loaded: (.+)$", re.MULTILINE)
 
 
@@ -247,8 +236,6 @@ _SKILL_DIR_NOTE = (
     "`templates/config.yaml`) against that directory, then run them "
     "with the terminal tool using the absolute path."
 )
-# Closing text of the supporting-files block _build_skill_message appends after the directory note.
-_SUPPORTING_FILES_END = "/scripts/foo.js`)."
 _SETUP_SKIPPED_NOTE = (
     "Required environment setup was skipped. Continue loading the skill "
     "and explain any reduced functionality if it matters."

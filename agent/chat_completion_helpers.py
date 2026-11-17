@@ -54,6 +54,7 @@ from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
+from session_rules.turns import _IMAGE_PART_TYPES
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
@@ -365,9 +366,6 @@ def _provider_stream_error_from_text(text: str, finish_reason: Optional[str], *,
     if text.strip():
         return _error({}, None)
     return None
-
-
-_IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
 def _image_part_chars(part: dict[str, Any], image_cost: int) -> int:

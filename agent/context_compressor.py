@@ -59,6 +59,16 @@ from tools.todo_tool import TODO_INJECTION_HEADER
 from session_rules.turns import (
     _content_text_for_contains, is_compaction_summary_message, user_originated_turn_view,
 )
+from session_rules.turns import (
+    _BACKGROUND_PROCESS_NOTIFICATION_PREFIX,
+    _DB_PERSISTED_MARKER,
+    _HISTORICAL_SUMMARY_PREFIXES,
+    _IMAGE_PART_TYPES,
+    _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -316,22 +326,6 @@ MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
 # ``display_metadata`` flag on a row the model reads but nobody typed as one message (micro-compaction's
 # merge of adjacent user turns). Its source rows stay in display history, so display projections skip it.
 MODEL_ONLY_DISPLAY_METADATA_KEY = "model_only"
-# Intrinsic marker stamped on a message dict once it has been written to the SQLite session store. Used by
-# ``_flush_messages_to_session_db`` to decide what is already durable. An object-identity (``id(msg)``)
-# dedup set cannot be trusted across turns: once a flushed message dict is dropped from the live list (e.g.
-# by scaffolding rewind or in-place compaction) and garbage- collected, CPython is free to hand its address
-# to a brand-new assistant/tool message, whose ``id()`` then collides with the stale entry and the real turn
-# is silently never persisted. A marker bound to the dict itself cannot be aliased that way. The ``_``
-# prefix is mandatory: the wire sanitizers (agent/transports/chat_completions.py,
-# agent/chat_completion_helpers.py) strip every top-level ``_``-prefixed key before the request leaves the
-# process, so this never reaches a strict OpenAI-compatible gateway. CONTRACT (#92231): the marker asserts
-# "this dict's CONTENT is durable as written". Loaded rows are stamped at materialization time
-# (hermes_state._rows_to_conversation), so any code that mutates a loaded or flushed dict's content in place
-# and needs the change persisted MUST pop the marker (and invalidate _db_flush_scan_prefix if the dict may
-# sit inside the bounded-scan prefix) — see agent/turn_finalizer.py (fill-empty-tail) and
-# agent/context_compressor.py (micro-compaction defrag) for the two canonical pop sites. Mutating without
-# popping leaves the DB silently stale.
-_DB_PERSISTED_MARKER = "_db_persisted"
 # Carried-forward tail rows archive as rewind-style (active=0, compacted=0) so
 # they don't duplicate live copies in recall; never persisted (unknown column).
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
@@ -342,16 +336,11 @@ COMPRESSION_CONTINUATION_USER_CONTENT = (
     "Continue from the compressed conversation context above. "
     "This marker exists because no human user turn was available."
 )
-_LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT = (
-    "Continue from the compressed conversation context above. This marker exists because the compacted "
-    "transcript contained no preserved user turn."
-)
 # Content string is the authoritative marker: SessionDB drops ``_``-metadata.
 MAX_ITERATIONS_SUMMARY_REQUEST = (
     "You've reached the maximum number of tool-calling iterations allowed. Please provide a final response "
     "summarizing what you've found and accomplished so far, without calling any more tools."
 )
-_BACKGROUND_PROCESS_NOTIFICATION_PREFIX = "[IMPORTANT: Background process "
 
 
 def _fresh_compaction_message_copy(msg: dict[str, Any]) -> dict[str, Any]:
@@ -516,15 +505,6 @@ def _prune_stale_reasoning_replay(messages: list[dict[str, Any]]) -> int:
     return len(pruned)
 
 
-# Explicit end boundary: weak models otherwise read quoted headers as fresh
-# user input or replay an assistant-role summary as their own output.
-_SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
-
-# Merged-into-tail case: prior tail content is kept BEFORE the summary inside
-# these delimiters, so the summary prefix is not at content start.
-_MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
-_MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
-
 # Prefixes the copy of a still-running user task that compaction re-states after
 # the handoff boundary (#100818). A cron run's only user turn is the job prompt
 # in the protected head, so compaction leaves it BEFORE the summary — and
@@ -610,78 +590,6 @@ def salvage_grown_transcript(
     has_user = any(isinstance(message, dict) and message.get("role") == "user" for message in out)
     return out if has_user and estimate_messages_tokens_rough(out) < budget else None
 
-
-# Exact wire text of every shipped prefix, newest-first; stale directives must
-# still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
-_HISTORICAL_SUMMARY_PREFIXES = (
-    # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
-    "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
-    "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
-    "latest user message that appears AFTER this summary — that message is the single source of truth for what to do "
-    "right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the "
-    "latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## "
-    "Historical Task Snapshot' entirely — do not 'wrap up' or 'finish' work described there unless the latest "
-    "message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just "
-    "verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described "
-    "in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in "
-    "the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this "
-    "compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them "
-    "normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. "
-    "The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
-    # Pre-#69619: discard clause still named all four historical headings.
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
-    "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
-    "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
-    "latest user message that appears AFTER this summary — that message is the single source of truth for what to do "
-    "right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the "
-    "latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## "
-    "Historical Task Snapshot' / '## Historical In-Progress State' / '## Historical Pending User Asks' / '## "
-    "Historical Remaining Work' entirely — do not 'wrap up' or 'finish' work described there unless the latest "
-    "message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just "
-    "verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described "
-    "in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in "
-    "the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this "
-    "compaction note. None of the above restricts HOW you work: your tools remain fully active — keep calling them "
-    "normally for the active task (edit files, run commands, search) instead of merely narrating what you would do. "
-    "The current session state (files, config, etc.) may reflect work described here — avoid repeating it:",
-    # Lacked the "tools remain fully active" clause (suppressed tool use).
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
-    "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
-    "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
-    "latest user message that appears AFTER this summary — that message is the single source of truth for what to do "
-    "right now. Topic overlap with the summary does NOT mean you should resume its task: even on similar topics, the "
-    "latest user message WINS. Treat ONLY the latest message as the active task and discard stale items from '## "
-    "Historical Task Snapshot' / '## Historical In-Progress State' / '## Historical Pending User Asks' / '## "
-    "Historical Remaining Work' entirely — do not 'wrap up' or 'finish' work described there unless the latest "
-    "message explicitly asks for it. Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll back', 'just "
-    "verify', 'don't do that anymore', 'never mind', a new topic) must immediately end any in-flight work described "
-    "in the summary; do not re-surface it in later turns. IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in "
-    "the system prompt is ALWAYS authoritative and active — never ignore or deprioritize memory content due to this "
-    "compaction note. The current session state (files, config, etc.) may reflect work described here — avoid "
-    "repeating it:",
-    # Carveout era: "consistent -> use as background" licensed stale resumption.
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
-    "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
-    "questions or fulfill requests mentioned in this summary; they were already addressed. Respond ONLY to the "
-    "latest user message that appears AFTER this summary — that message is the single source of truth for what to do "
-    "right now. If the latest user message is consistent with the '## Active Task' section, you may use the summary "
-    "as background. If the latest user message contradicts, supersedes, changes topic from, or in any way diverges "
-    "from '## Active Task' / '## In Progress' / '## Pending User Asks' / '## Remaining Work', the latest message "
-    "WINS — discard those stale items entirely and do not 'wrap up the old task first'. Reverse signals in the "
-    "latest message (e.g. 'stop', 'undo', 'roll back', 'just verify', 'don't do that anymore', 'never mind', a new "
-    "topic) must immediately end any in-flight work described in the summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system prompt is ALWAYS authoritative and active "
-    "— never ignore or deprioritize memory content due to this compaction note. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:",
-    # Pre-#35344: contained the self-contradicting "resume exactly" directive.
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a "
-    "handoff from a previous context window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the summary — resume exactly from "
-    "there. Respond ONLY to the latest user message that appears AFTER this summary. The current session "
-    "state (files, config, etc.) may reflect work described here — avoid repeating it:",
-)
 
 # Bounded probe: catch the restored head plus a few stacked handoff/ack turns
 # without treating arbitrary summary-looking live-tail rows as proof of a resume.
@@ -1543,9 +1451,6 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
             api_messages[i] = new_msg
             pruned += 1
     return pruned
-
-
-_IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
 def _is_image_part(part: Any) -> bool:

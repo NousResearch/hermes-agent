@@ -25,23 +25,11 @@ from agent.message_metadata import (
 from session_rules.turns import message_uid_or_none, _durable_content, _is_ephemeral_scaffolding
 from agent.transcript_repair import sync_flushed_message_markers
 from persistence.conversation.messages import NewMessage, RowDisposition
+from session_rules.turns import _EPHEMERAL_SCAFFOLDING_FLAGS, _IMAGE_PART_TYPES
 
 
 logger = logging.getLogger("run_agent")  # origin module's name: log records / caplog filters unchanged
 
-# Flags marking ephemeral recovery scaffolding the loop pops before appending the real response.
-# Persistence must skip them or a resumed session replays synthetic turns / breaks prefix-cache reuse.
-_EPHEMERAL_SCAFFOLDING_FLAGS = (
-    "_empty_recovery_synthetic",
-    "_empty_terminal_sentinel",
-    "_thinking_prefill",
-    "_verification_stop_synthetic",  # verify-on-stop nudge; the assistant candidate itself is NOT synthetic
-    "_pre_verify_synthetic",
-    "_kanban_stop_synthetic",  # kanban worker stop-guard
-    "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
-)
-
-_IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
 # Reasoning/codex fields are role-gated (assistant-only) inside _insert_message_rows.
 _ROW_REASONING_KEYS = ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items")
 _PERSIST_AFTER_ADMISSION_INTERRUPT = "_persist_after_admission_interrupt"
@@ -365,7 +353,6 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
         return
     from agent.agent_init_session import agent_interface
     guards = {
-        "compression_lock_holder": getattr(agent, "_active_compression_lock_holder", None),
         "turn_lease_holder": getattr(agent, "_active_session_turn_lease_holder", None),
         "turn_lease_ttl_seconds": getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
     }
@@ -387,7 +374,9 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
         )
         from persistence import CompressionClosed, DeletedWalGeneration, StoreQuarantined, StoreReplaced
         try:
-            agent._session_db.append_messages_batch(session_id=agent.session_id, messages=batch_rows, **guards)
+            agent._session_db.append_messages_batch(
+                session_id=agent.session_id, messages=batch_rows,
+                compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None), **guards)
         except DeletedWalGenerationError as exc:
             raise DeletedWalGeneration(str(exc)) from exc
         except StateDbReplacedError as exc:

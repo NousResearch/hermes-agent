@@ -76,10 +76,16 @@ def protected_roots(home: Optional[Path] = None) -> Optional[List[Tuple[str, boo
     if not enabled:
         return None
     home_real = _real(home)
-    roots: List[Tuple[str, bool]] = [
-        (os.path.join(home_real, name), False) for name in _PROTECTED_FILES
-    ]
-    roots += [(os.path.join(home_real, name), True) for name in _PROTECTED_DIRS]
+    # Each protected name both as the path inside the home AND resolved: a
+    # symlinked config.yaml (or cron/ dir) must protect its real target too,
+    # since targets are compared by realpath.
+    roots: List[Tuple[str, bool]] = []
+    for name in _PROTECTED_FILES:
+        joined = os.path.join(home_real, name)
+        roots += [(joined, False), (_real(joined), False)]
+    for name in _PROTECTED_DIRS:
+        joined = os.path.join(home_real, name)
+        roots += [(joined, True), (_real(joined), True)]
     try:
         from agent.skill_utils import get_external_skills_dirs
 
@@ -118,5 +124,9 @@ def write_guard_denial(path) -> Optional[str]:
             "secrets and externally owned skills). Ask an operator to change it."
         )
     except Exception:
-        logger.debug("agent_write_guard check failed for %s", path, exc_info=True)
-        return None
+        # Fail closed: a guard that can't be evaluated must not wave writes through.
+        logger.warning("agent_write_guard check failed for %s; denying", path, exc_info=True)
+        return (
+            f"Write denied: '{path}' could not be checked against this profile's "
+            "agent_write_guard. Ask an operator."
+        )

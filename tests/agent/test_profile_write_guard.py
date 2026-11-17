@@ -129,3 +129,25 @@ def test_denial_audited(guarded):
         log = home / "audit" / "data-access.log"
         lines = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
     assert any(l["action"] == "write_guard_denied" for l in lines)
+
+
+def test_symlinked_config_target_is_protected(tmp_path):
+    home, _ext = _home(tmp_path, "edu-link", "agent_write_guard: true\n")
+    real = tmp_path / "shared" / "edu-config.yaml"
+    real.parent.mkdir()
+    real.write_text((home / "config.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    (home / "config.yaml").unlink()
+    (home / "config.yaml").symlink_to(real)
+    with _As(home):
+        assert pwg.write_guard_denial(str(home / "config.yaml"))
+        assert pwg.write_guard_denial(str(real))
+
+
+def test_evaluation_error_denies(tmp_path, monkeypatch):
+    home, _ext = _home(tmp_path, "edu-err", "agent_write_guard: true\n")
+
+    def boom(home=None):
+        raise RuntimeError("x")
+    monkeypatch.setattr(pwg, "protected_roots", boom)
+    with _As(home):
+        assert "could not be checked" in pwg.write_guard_denial(str(home / "notes.md"))

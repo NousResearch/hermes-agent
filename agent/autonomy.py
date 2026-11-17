@@ -98,6 +98,8 @@ def resolve_level(action: str, config: Optional[dict] = None) -> str:
     built = _built(action)
     actions = block.get("actions") if isinstance(block.get("actions"), dict) else {}
     raw = actions.get(action)
+    if raw is False:
+        raw = "off"  # YAML 1.1 reads a bare `off` (as the design writes it) as False
     if raw is None:
         level = DEFAULT_LEVEL if DEFAULT_LEVEL in built else "off"
     else:

@@ -291,3 +291,13 @@ def test_run_pending_refuses_tampered():
     rec["signed"]["announce_channel"] = "CEVIL"
     path.write_text(_json.dumps(rec))
     assert "integrity" in d.run(pid, T0 + timedelta(hours=5))["error"]
+
+
+def test_bare_yaml_off_is_off():
+    import yaml
+    cfg = yaml.safe_load("autonomy:\n  actions:\n    advance_asset_status: off\n    post_release_update: off\n")
+    assert cfg["autonomy"]["actions"]["advance_asset_status"] is False
+    assert au.resolve_level("advance_asset_status", cfg) == "off"
+    assert au.resolve_level("post_release_update", cfg) == "off"
+    with pytest.raises(au.AutonomyConfigError):  # bare `on` (True) is still not a level
+        au.resolve_level("post_release_update", yaml.safe_load("autonomy: {actions: {post_release_update: on}}"))

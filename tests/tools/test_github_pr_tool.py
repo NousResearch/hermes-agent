@@ -853,3 +853,10 @@ def test_transport_small_body_not_truncated(monkeypatch):
                                          json_body={"x": 1}, max_bytes=20))
     assert resp == {"status": 307, "text": "moved", "truncated": False}
     assert seen["allow_redirects"] is False
+
+
+def test_unparseable_config_is_config_error(monkeypatch):
+    from agent.boundary_config import UnreadableConfig
+    _cfg(monkeypatch, UnreadableConfig("/x/config.yaml", "bad yaml"))
+    policy, err = gh._load_repo_policy()
+    assert policy == {} and "could not be parsed" in err

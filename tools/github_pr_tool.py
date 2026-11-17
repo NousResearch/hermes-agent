@@ -91,9 +91,11 @@ _PATH_SEGMENT_RE = re.compile(r"^[^\x00-\x1f\\]+$")
 # ── config ────────────────────────────────────────────────────────────────
 
 def _raw_config() -> dict:
-    """The active profile's config.yaml (mtime-cached, profile-aware)."""
-    from hermes_cli.config import read_raw_config_readonly
-    return read_raw_config_readonly() or {}
+    """The active profile's config.yaml, read strictly
+    (``agent.boundary_config.read_boundary_config``): an unparseable file never
+    reads as "no github_pr block" — the last good version, else a deny sentinel."""
+    from agent.boundary_config import read_boundary_config
+    return read_boundary_config()
 
 
 def _autonomy_error(cfg: dict) -> str | None:
@@ -118,6 +120,9 @@ def _load_repo_policy() -> tuple[dict[str, dict], str | None]:
     typo can never silently widen or narrow what the tool does.
     """
     cfg = _raw_config()
+    from agent.boundary_config import is_unreadable, unreadable_message
+    if is_unreadable(cfg):
+        return {}, unreadable_message(cfg)
     err = _autonomy_error(cfg)
     if err:
         return {}, err

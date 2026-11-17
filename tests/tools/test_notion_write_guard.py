@@ -561,3 +561,30 @@ def test_create_parent_with_matching_type_ok(lk):
 def test_synced_blocks_denied(lk):
     body = {"children": [{"type": "synced_block", "synced_block": {"synced_from": {"block_id": "x"}}}]}
     assert "synced" in check(lk, "PATCH", f"v1/blocks/{'a' * 32}/children", body)
+
+
+def test_design_example_bare_off_levels_keep_guard_valid():
+    import yaml
+    config = cfg()
+    config.update(yaml.safe_load("autonomy:\n  actions:\n    advance_asset_status: off\n    ideas_accept_own: off\n"))
+    assert g.load_guard(config).error == ""
+
+
+@pytest.mark.parametrize("md", [
+    '<page url="x">Sub</page>', "<Database>rows</Database>", "<data-source url='x'/>",
+    "< synced_block>x</synced_block>", '<mention-page url="x"/>', "<data_source/>",
+])
+def test_markdown_object_tags_refused(lk, md):
+    assert "markdown" in check(lk, "PATCH", f"v1/pages/{HOME}/markdown",
+                               {"type": "insert_content", "insert_content": {"content": md}})
+    assert "markdown" in check(lk, "POST", "v1/pages", {"parent": {"page_id": HOME}, "properties": {},
+                                                       "markdown": md})
+
+
+def test_plain_markdown_allowed(lk):
+    md = "# Title\n\n**bold** and a [link](https://x.com) and `<code>` and a <br> tag"
+    assert check(lk, "PATCH", f"v1/pages/{HOME}/markdown",
+                 {"type": "insert_content", "insert_content": {"content": md}}) is None
+    # property text is not markdown: a title mentioning "<page" is fine
+    assert check(lk, "PATCH", f"v1/pages/{'7' * 32}",
+                 {"properties": {"title": {"title": [{"text": {"content": "<page> docs"}}]}}}) is None

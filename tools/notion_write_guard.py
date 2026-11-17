@@ -70,6 +70,12 @@ _PAGE_UPDATE_KEYS = frozenset({"properties", "icon", "cover"})
 _PAGE_CREATE_KEYS = frozenset({"parent", "properties", "children", "markdown", "icon", "cover"})
 _MAX_WALK = 12
 _PARENT_KEYS = ("data_source_id", "database_id", "page_id", "block_id", "workspace")
+# Notion's enhanced markdown has tags that create or mirror OBJECTS rather than
+# text: child pages, databases / data sources, synced blocks, live mentions.
+# Not verified tag-by-tag against Notion's spec, so the rule is conservative:
+# any such tag anywhere in a markdown write is refused.
+_MARKDOWN_OBJECT_TAG = re.compile(
+    r"<\s*/?\s*(page|database|data[-_]source|synced|mention-)", re.IGNORECASE)
 _BLOCK_TTL = 3600.0
 _SCHEMA_TTL = 600.0
 _GUARD_KEYS = frozenset({"enabled", "release_kits", "prds", "ideas", "writable_pages"})
@@ -734,6 +740,18 @@ def _comment(body: dict, guard: GuardConfig, lookup) -> None:
     _content_rule(_classify_page(page, guard, lookup), guard, lookup)
 
 
+def _strings(value, depth: int = 0) -> list[str]:
+    if depth > 40:
+        return ["<page"]  # too deep to check: treat as refused
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v, depth + 1)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v, depth + 1)]
+    return []
+
+
 def _dangerous_nested(body, depth: int = 0) -> Optional[str]:
     """Deletes and schema creation hidden inside a body: the markdown
     endpoint's ``allow_deleting_content`` (replace_content may trash child
@@ -790,6 +808,12 @@ def check_request(method: str, path: str, body, *, cfg: dict, lookup=None) -> Op
     nested = _dangerous_nested(body)
     if nested:
         return nested
+    markdown_strings = (_strings(body.get("markdown")) if ep.kind == "create"
+                        else _strings(body) if ep.kind == "page_content" else [])
+    if any(_MARKDOWN_OBJECT_TAG.search(text) for text in markdown_strings):
+        return ("Notion write refused: the markdown contains a tag that creates or mirrors a page, "
+                "database, synced block or mention (<page>, <database>, <data-source>, <synced…>, "
+                "<mention-…>) — write plain markdown only.")
     lookup = lookup or NotionLookup()
     try:
         if ep.kind == "create":

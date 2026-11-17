@@ -1,0 +1,93 @@
+# Desktop intake screen - W1 auto-hold (16 Nov 2026)
+
+Owner order 16 Nov 2026 (W1 build queue, CBA section 4): the same
+Phase 2 intake-screen pattern that guards the gateway platforms
+(`gateway/guardrail.py`, 14 Nov) extended to the Desktop App Chat -
+the surface the Phase 2 roll-out missed. ENV-GATED and DEFAULT
+INERT: nothing changes for any deployment that does not set the
+enable variable.
+
+## What it does
+
+Every interactive viewer submit on a desktop-launched session
+(`prompt.submit`, plus the queued-edit verbs `prompt.steer_queued`
+and `prompt.replace_queued`) is screened through the local RNR
+Judgement Engine (`POST /v1/screen`, caller `hermes-desktop`,
+purpose `desktop-screen`) BEFORE the submit is durably admitted - no
+session turn runs for a held message:
+
+| Engine tier   | Action                                            |
+|---------------|---------------------------------------------------|
+| allow         | proceeds; outcome `accepted` reported             |
+| review        | proceeds, logged; outcome `escalated`             |
+| block         | HELD - the submit is refused with a visible notice (the refused RPC's error message); logged; outcome `escalated` |
+| chain_down    | proceeds (engine already applied its fail_mode); logged |
+| unreachable   | proceeds (deliberate fail-open: a dead engine must never lock the owner out of his own desktop); logged |
+
+The sender on this surface IS the local owner, so the refused
+submit's error message is the alert; every verdict is also logged
+for the owner dashboard (default `~/.hermes/logs/desktop-screen.log`).
+
+## Scope (what is and is NOT screened)
+
+Screened: interactive viewer submits on sessions whose frozen launch
+source is a desktop surface (`gui` or `desktop` - the label a
+Desktop chat migrated from main keeps), on the model-facing text:
+the contract's `api_text` override when present, else the persisted
+`text` (a benign `text` with a hostile `api_text` is held - the
+engine judges what the model will see). Verbs: `prompt.submit` and
+`prompt.replace_queued` (the edit is a fresh submit). The TUI/CLI/ACP
+labels can be added later by env alone, no code change.
+
+NOT screened, structurally (machine producers never pass through the
+interactive control plane): kanban cards, hosted-room tasks, a2a
+forwards, automation envelopes (plugin injection, delegation
+completions, watch notices, heartbeat), and gateway platform
+messages (already screened by Phase 2). Bot-relay and hosted-room
+peers writing into a gui-sourced Desktop Bot Chat are Phase 2's
+territory, not this gate's. `prompt.steer_queued` carries no text by
+contract (the transfer re-delivers the queued row's already-screened
+text). Attachments and `voice_context` are not screened this cycle
+(media triage is use case A6, later in the queue).
+
+Judge philosophy unchanged: the judge advises, it never replaces
+owner gates. The gate is one engine call, hard-capped (timeout + 1s
+deadline), fail-open, and can never raise past the control plane's
+error frame.
+
+## Enablement (per deployment)
+
+```
+HERMES_DESKTOP_SCREEN=1                            # "" = off (default)
+HERMES_DESKTOP_SCREEN_ENDPOINT=http://127.0.0.1:8201/v1/screen
+HERMES_DESKTOP_SCREEN_TIMEOUT_S=4.0
+HERMES_DESKTOP_SCREEN_CALLER=hermes-desktop
+HERMES_DESKTOP_SCREEN_PURPOSE=desktop-screen
+HERMES_DESKTOP_SCREEN_SOURCES=gui,desktop          # "all" = every interactive source
+HERMES_DESKTOP_SCREEN_HOLD_NOTICE=                 # "" = default notice text
+HERMES_DESKTOP_SCREEN_LOG=~/.hermes/logs/desktop-screen.log
+```
+
+## Deployment coupling
+
+The `X-Judge-Purpose` header needs the engine-side `/v1/screen`
+purpose override (RNR-Judgement-Engine branch
+`hermes/judgement-engine-integrator/w1-screen-purpose-override`).
+Without it the screen still works; its decisions just attribute
+under `gateway-screen` in /metrics instead of `desktop-screen`.
+Deploy the engine change first (or same window). Enablement order:
+engine live -> gateway/desktop runtime carries this code -> set
+`HERMES_DESKTOP_SCREEN=1` -> one benign desktop submit (expect a
+normal answer) and one pasted attack string (expect the hold notice
++ a `block` line in the screen log) -> confirm /metrics shows the
+`desktop-screen` purpose bucket.
+
+## Turn-on for this deployment (owner steps, after merge)
+
+1. Engine: pull install, restart both units (SOP verify).
+2. Runtime checkout carries the merged code (the live lineage pull).
+3. Add `HERMES_DESKTOP_SCREEN=1` to `~/.hermes/.env` (or the service
+   env), restart the runtime once.
+4. Verify: benign message answers normally; attack paste is held
+   with the notice; `grep block ~/.hermes/logs/desktop-screen.log`;
+   dashboard /metrics carries purpose `desktop-screen`.

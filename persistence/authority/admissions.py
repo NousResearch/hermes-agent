@@ -2,12 +2,12 @@
 
 ``AdmissionRepository`` offers the admission operations and the admission reads the gateway makes. Records keep the ``session_admissions`` row keys and these string vocabularies: statuses ``queued``, ``started``, ``unknown``, ``terminal``; outcomes ``completed``, ``interrupted``, ``rejected``, ``failed``, ``cancelled``, ``steering``, ``steered``. Refusals are ``AuthorityRefusal`` with a reason code (``FenceStale``, ``UnknownExecution``, ``ProofRejected`` for the fixed ones).
 
-Owner-memory checks arrive as data: ``gate`` is the ``GateRefusal`` the caller decided just before the write, or ``None``; the verb raises its refusal at a fixed point inside the write (``admit`` after the queue cap, ``claim`` right after the epoch fence), and exact replays bypass it. The SQL-bearing hooks callers pass into ``admit`` are typed parameters (``replaces``, ``supersedes``, ``api_target``, ``rewrite``, ``hosted``) run inside the same write after the gate, before the row is inserted.
+Owner-memory checks arrive as data: ``gate`` is the ``GateRefusal`` the caller decided, ``None``, or a zero-argument callable over owner memory that answers one of those at a fixed point inside the write, on every attempt, as main re-checks its drain inside the write; the verb raises the refusal at that point (``admit`` after the queue cap, ``claim`` right after the epoch fence), and exact replays bypass it. The SQL-bearing hooks callers pass into ``admit`` are typed parameters (``replaces``, ``supersedes``, ``api_target``, ``rewrite``, ``hosted``) run inside the same write after the gate, before the row is inserted.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any, Literal, NewType, Protocol, runtime_checkable
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ANY_HEAD",
     "ActiveReplace",
+    "AdmissionGate",
     "AdmissionId",
     "AdmissionIntent",
     "AdmissionOutcome",
@@ -40,6 +41,7 @@ __all__ = [
     "TranscriptRewrite",
     "TurnBoundary",
     "UnheldMedia",
+    "raise_gate",
     "steer_replayed",
 ]
 
@@ -138,6 +140,19 @@ class GateRefusal:
         return AuthorityRefusal(self.reason, field=self.field, detail=self.detail)
 
 
+#: A verb's ``gate``: the refusal the caller decided, ``None`` (open), or a zero-argument callable answering either at the
+#: gate's point inside the write, on every attempt, so a drain that began while the write waited still refuses it. The
+#: callable reads owner memory only: it never touches the store or its connection.
+AdmissionGate = GateRefusal | Callable[[], GateRefusal | None] | None
+
+
+def raise_gate(gate: AdmissionGate) -> None:
+    """Raise ``gate``'s refusal when it is one, or when the callable answers one now; return when open."""
+    decided = gate() if callable(gate) else gate
+    if decided is not None:
+        raise decided.refusal()
+
+
 @dataclass(frozen=True, slots=True)
 class TurnBoundary:
     """The discarded-turn closer ``settle`` runs: ``notice`` is the boundary copy, ``replace_after`` the claim's transcript mark, ``display_metadata`` the error card the boundary carries."""
@@ -233,17 +248,17 @@ class AdmissionRepository(Protocol):
 
     # Writes
 
-    def admit(self, *, epoch: int, principal_id: str, session_id: str, request_id: str, payload: Mapping[str, Any], intent: Literal['queue', 'steer', 'redirect'] = 'queue', gate: GateRefusal | None = None, replaces: QueuedReplacement | None = None, supersedes: str | None = None, api_target: ApiTargetClaim | None = None, rewrite: TranscriptRewrite | None = None, hosted: HostedMemberGuard | None = None, fold: QueuedFold | None = None) -> tuple[AdmissionRecord, bool]:
+    def admit(self, *, epoch: int, principal_id: str, session_id: str, request_id: str, payload: Mapping[str, Any], intent: Literal['queue', 'steer', 'redirect'] = 'queue', gate: AdmissionGate = None, replaces: QueuedReplacement | None = None, supersedes: str | None = None, api_target: ApiTargetClaim | None = None, rewrite: TranscriptRewrite | None = None, hosted: HostedMemberGuard | None = None, fold: QueuedFold | None = None) -> tuple[AdmissionRecord, bool]:
         """Admit one input; the bool is ``created``.
 
-        Order: identity texts, intent and payload encoding (``invalid_params``); the tombstone read on a retired target (epoch fence; an exact retry replays its tombstone with ``created`` False, an unseen identity is ``not_found``, another digest ``admission_conflict`` with :data:`ADMITTED_REQUEST_CONFLICT`); then one write: epoch, session (``not_found``), the (principal, target, request) row (another digest ``admission_conflict`` with :data:`ADMITTED_REQUEST_CONFLICT`; an exact live replay runs only the ``replaces`` check and returns ``created`` False), the queue cap (``queue_full`` at :data:`ADMISSION_QUEUE_MAX` queued rows), ``gate`` (its refusal is raised when given), then the typed extras: ``replaces`` (the replaced row must still be queued, else ``admission_started``; it is cancelled and bound to this identity), ``supersedes`` (that queued row on this target is cancelled, else ``stale_generation``), ``api_target`` (another target holds this API request id, live or, for a client key, tombstoned: ``admission_conflict``; the settings are stored), ``rewrite`` (the ``/retry`` rewrite; a failure other than a refusal is ``RetryRewriteRefused``), ``hosted`` (the hosted member check, ``permission_denied``), ``fold`` (the folded row must still be queued on this target with no later queued row outside ``skip_ids``, else ``stale_generation``; it is cancelled and its payload becomes ``session_rules.automation.folded_payload`` of it); then the queued insert.
+        Order: identity texts, intent and payload encoding (``invalid_params``); the tombstone read on a retired target (epoch fence; an exact retry replays its tombstone with ``created`` False, an unseen identity is ``not_found``, another digest ``admission_conflict`` with :data:`ADMITTED_REQUEST_CONFLICT`); then one write: epoch, session (``not_found``), the (principal, target, request) row (another digest ``admission_conflict`` with :data:`ADMITTED_REQUEST_CONFLICT`; an exact live replay runs only the ``replaces`` check and returns ``created`` False), the queue cap (``queue_full`` at :data:`ADMISSION_QUEUE_MAX` queued rows), ``gate`` (its refusal is raised when given; a callable is answered here, on every attempt), then the typed extras: ``replaces`` (the replaced row must still be queued, else ``admission_started``; it is cancelled and bound to this identity), ``supersedes`` (that queued row on this target is cancelled, else ``stale_generation``), ``api_target`` (another target holds this API request id, live or, for a client key, tombstoned: ``admission_conflict``; the settings are stored), ``rewrite`` (the ``/retry`` rewrite; a failure other than a refusal is ``RetryRewriteRefused``), ``hosted`` (the hosted member check, ``permission_denied``), ``fold`` (the folded row must still be queued on this target with no later queued row outside ``skip_ids``, else ``stale_generation``; it is cancelled and its payload becomes ``session_rules.automation.folded_payload`` of it); then the queued insert.
         """
         ...
 
-    def claim(self, *, epoch: int, session_id: str, gate: GateRefusal | None = None, head: str | None | AnyHead = ANY_HEAD) -> ClaimedAdmission | Literal[False] | None:
+    def claim(self, *, epoch: int, session_id: str, gate: AdmissionGate = None, head: str | None | AnyHead = ANY_HEAD) -> ClaimedAdmission | Literal[False] | None:
         """Start the FIFO head under the next execution generation.
 
-        Order: epoch, ``gate`` (its refusal is raised when given), session (``not_found``); an ``unknown`` admission or worker on the session is ``unknown_execution``; a started admission or a live worker is ``None``; ``head`` other than :data:`ANY_HEAD` must name the current head (``None``: none queued) else ``False``; an empty queue is ``None``. The claim bumps ``runtime_generation`` and starts the row under ``epoch``.
+        Order: epoch, ``gate`` (its refusal is raised when given; a callable is answered here, on every attempt), session (``not_found``); an ``unknown`` admission or worker on the session is ``unknown_execution``; a started admission or a live worker is ``None``; ``head`` other than :data:`ANY_HEAD` must name the current head (``None``: none queued) else ``False``; an empty queue is ``None``. The claim bumps ``runtime_generation`` and starts the row under ``epoch``.
         """
         ...
 

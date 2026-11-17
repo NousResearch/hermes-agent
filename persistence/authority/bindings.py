@@ -2,7 +2,7 @@
 
 A local session's row, its gateway route and its frozen launch policy are reserved in ONE write; the stored receipt (``gateway.local_policy.v1:<id>``) is the session's identity, and its ``entry['session_id']`` is the current physical transcript, which compression and ``/new`` resets advance along ``lineage`` behind the boundary. An API session binds its route, its declared conversation key and its receipt in one write. The history-control check for unbound legacy history is one read.
 
-Owner-memory checks arrive as data, never as callables: ``bind_api(gate=)`` is the admission gate the gateway decided, raised right after the epoch check; ``authorize_history(native_transport=)`` is the native transport registry's answer; ``owner=`` is the :class:`persistence.authority.vocabulary.OwnerRule` stored owners and client labels are read by (``session_rules.legacy_local``: without one only an equal stamp or the subject's own login label is its owner, and no label is a client app's). Refusals are :class:`persistence.AuthorityRefusal` with a reason code (``stale_epoch`` as :class:`persistence.FenceStale`, ``permission_denied`` as :class:`persistence.ProofRejected`).
+Owner-memory checks arrive as data, never as callables that touch the store: ``bind_api(gate=)`` is the admission gate (a decided ``GateRefusal``, ``None``, or a callable over owner memory answered right after the epoch check); ``authorize_history(native_transport=)`` is the native transport registry's answer; ``owner=`` is the :class:`persistence.authority.vocabulary.OwnerRule` stored owners and client labels are read by (``session_rules.legacy_local``: without one only an equal stamp or the subject's own login label is its owner, and no label is a client app's). Refusals are :class:`persistence.AuthorityRefusal` with a reason code (``stale_epoch`` as :class:`persistence.FenceStale`, ``permission_denied`` as :class:`persistence.ProofRejected`).
 
 The pure identity derivations the gateway, the backend's generation walks and its export share live here: :func:`local_session_id`, :func:`cron_request_id`, :func:`cron_run_from_request`, :func:`legacy_cron_run_job`, :func:`api_generation_id`, :func:`room_session_id`, :func:`generation_request_id`.
 """
@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Optional, Protocol, runtime_checkable
 
 from ..core.identity import JsonValue, SessionId
-from .admissions import GateRefusal
+from .admissions import AdmissionGate
 from .vocabulary import CRON_REQUEST_PREFIX, OwnerRule
 
 __all__ = [
@@ -277,8 +277,8 @@ class SessionBindingRepository(Protocol):
         """Stamp ``ended_at`` and ``reason`` on the open ``target_id`` only while ``session_id`` has no queued, started or unknown admission and neither id a live worker; returns the rows stamped."""
         ...
 
-    def bind_api(self, *, epoch: int, binding: NewApiBinding, gate: GateRefusal | None = None, walked_from: SessionId | None = None) -> None:
-        """Bind an API route in one write, in order: epoch; ``gate`` raised as ``AuthorityRefusal``; a retired id is ``not_found``; with ``walked_from`` every generation of ``api_generation_id(walked_from, n)`` before the id must still be retired (its sweep expiry is dropped), else ``chain_moved``; a stored binding of another storage source is ``permission_denied``, one with another declared key ``admission_conflict``, else nothing is written; the declared key held by another session is ``admission_conflict``, else reserved; a row of another source is ``permission_denied``; a ``bot_room`` title that differs or another session holds is ``admission_conflict``; a row on another session key adopts only the caller's declared or legacy key (registered, stamped into the receipt), else ``admission_conflict``; the route held by another session that has its own binding is ``admission_conflict``. Then the row (inserted if absent, hidden for ``bot_room``), its route columns, the routing entry and the receipt."""
+    def bind_api(self, *, epoch: int, binding: NewApiBinding, gate: AdmissionGate = None, walked_from: SessionId | None = None) -> None:
+        """Bind an API route in one write, in order: epoch; ``gate`` (a callable answered here) raised as ``AuthorityRefusal``; a retired id is ``not_found``; with ``walked_from`` every generation of ``api_generation_id(walked_from, n)`` before the id must still be retired (its sweep expiry is dropped), else ``chain_moved``; a stored binding of another storage source is ``permission_denied``, one with another declared key ``admission_conflict``, else nothing is written; the declared key held by another session is ``admission_conflict``, else reserved; a row of another source is ``permission_denied``; a ``bot_room`` title that differs or another session holds is ``admission_conflict``; a row on another session key adopts only the caller's declared or legacy key (registered, stamped into the receipt), else ``admission_conflict``; the route held by another session that has its own binding is ``admission_conflict``. Then the row (inserted if absent, hidden for ``bot_room``), its route columns, the routing entry and the receipt."""
         ...
 
     def release_handed_off_receipts(self, *, epoch: int, lanes: frozenset[str]) -> dict[str, tuple[str, str]]:

@@ -13,14 +13,15 @@ from typing import Any, Mapping
 
 from persistence.authority.admissions import (
     ActiveReplace,
+    AdmissionGate,
     AdmissionRecord,
     ApiTargetClaim,
     CarrierRewind,
-    GateRefusal,
     QueuedFold,
     QueuedReplacement,
     RetryRewriteRefused,
     TranscriptRewrite,
+    raise_gate,
 )
 from persistence.authority.vocabulary import ADMISSION_QUEUE_MAX, ADMITTED_REQUEST_CONFLICT, admission_fingerprint
 from persistence.conversation.messages import NewMessage, ReplaceMode, RewindPlan
@@ -70,7 +71,7 @@ class AdmitMixin:
         canonical = rows.encode(payload)
         return self._tombstone_replay(self._state().snapshot, epoch, principal_id, session_id, request_id, canonical, intent)
 
-    def admit(self, *, epoch: int, principal_id: str, session_id: str, request_id: str, payload: Mapping[str, Any], intent: str = "queue", gate: GateRefusal | None = None,
+    def admit(self, *, epoch: int, principal_id: str, session_id: str, request_id: str, payload: Mapping[str, Any], intent: str = "queue", gate: AdmissionGate = None,
               replaces: QueuedReplacement | None = None, supersedes: str | None = None, api_target: ApiTargetClaim | None = None,
               rewrite: TranscriptRewrite | None = None, hosted: Any = None, fold: QueuedFold | None = None) -> tuple[AdmissionRecord, bool]:
         for value in (principal_id, session_id, request_id):
@@ -98,8 +99,7 @@ class AdmitMixin:
                 return rows.record(old), False
             if sum(1 for row in rows.session_rows(authority, session_id) if row["status"] == "queued") >= ADMISSION_QUEUE_MAX:
                 raise AuthorityRefusal("queue_full")
-            if gate is not None:
-                raise gate.refusal()
+            raise_gate(gate)
             self._run_extras(authority, principal_id, session_id, request_id, replaces, supersedes, api_target, rewrite, hosted, fold)
             authority = state.snapshot
             meta = authority["meta"]

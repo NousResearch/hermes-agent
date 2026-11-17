@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 
 from persistence import AuthorityRefusal, ProofRejected, SessionId
-from persistence.authority.admissions import GateRefusal
+from persistence.authority.admissions import AdmissionGate, raise_gate
 from persistence.authority.bindings import ApiBinding, NewApiBinding, api_generation_id
 from persistence.conversation.sessions import SessionLineageKind
 from persistence.core.canonical import canonical_json
@@ -57,13 +57,12 @@ class ApiBindingVerbs:
     def _state(self) -> Any:
         raise NotImplementedError
 
-    def bind_api(self, *, epoch: int, binding: NewApiBinding, gate: GateRefusal | None = None, walked_from: SessionId | None = None) -> None:
+    def bind_api(self, *, epoch: int, binding: NewApiBinding, gate: AdmissionGate = None, walked_from: SessionId | None = None) -> None:
         sid, storage_source = str(binding.session_id), binding.storage_source
         state = self._state()
         with state.transaction() as staged:
             state.require_epoch(staged.authority, epoch)
-            if gate is not None:
-                raise AuthorityRefusal(gate.reason, field=gate.field, detail=gate.detail)
+            raise_gate(gate)
             if sid in staged.authority["retired"]:
                 raise AuthorityRefusal("not_found")
             if walked_from and not _keep_passed_fences(staged.authority["retired"], str(walked_from), sid):

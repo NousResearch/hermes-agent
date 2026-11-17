@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Literal, Mapping
 
-from persistence.authority.admissions import ANY_HEAD, AdmissionRecord, CapturedResult, ClaimedAdmission, GateRefusal, TurnBoundary, steer_replayed
+from persistence.authority.admissions import ANY_HEAD, AdmissionRecord, CapturedResult, AdmissionGate, ClaimedAdmission, TurnBoundary, raise_gate, steer_replayed
 from persistence.authority.vocabulary import STEERING
 from persistence.core.errors import AuthorityRefusal
 
@@ -24,13 +24,12 @@ SETTLE_FAILPOINT = "admissions.between-retire-and-terminal"
 class AdmissionWritesMixin:
     """The lifecycle writes; mixed into ``InMemoryAdmissionRepository``."""
 
-    def claim(self, *, epoch: int, session_id: str, gate: GateRefusal | None = None, head: Any = ANY_HEAD) -> ClaimedAdmission | Literal[False] | None:
+    def claim(self, *, epoch: int, session_id: str, gate: AdmissionGate = None, head: Any = ANY_HEAD) -> ClaimedAdmission | Literal[False] | None:
         state = self._state()
         with state.transaction() as staged:
             authority = staged.authority
             state.require_epoch(authority, epoch)
-            if gate is not None:
-                raise gate.refusal()
+            raise_gate(gate)
             rows.require_session(staged.scope, session_id)
             session_rows = rows.session_rows(authority, session_id)
             blocked = [row for row in session_rows if row["status"] in ("started", "unknown")]

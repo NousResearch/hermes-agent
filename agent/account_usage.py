@@ -623,9 +623,10 @@ def fetch_account_usage(
             snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
     except Exception:
         snapshot = None
-    if snapshot is None or not snapshot.windows:
+    if (snapshot is None or not snapshot.windows) and not (api_key or identity_id):
         # A codex app-server login lives in codex's own home, where the usage API cannot reach it;
         # the windows codex pushed on its last turn are the account's (agent/codex_runtime_rate_limits.py).
+        # Only the provider-wide read gets them: a named credential's windows are its own account's.
         return _recent_app_server_usage(slug) or snapshot
     # Every fetch (``/usage``, the per-turn ``session.usage``) keeps the picker's cache current.
     # A per-credential fetch is remembered under its account slot only; the provider-wide fetch

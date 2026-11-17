@@ -14,6 +14,7 @@ import pytest
 
 from agent import account_usage, account_usage_cache
 from agent.codex_runtime import make_codex_app_server_event_bridge, run_codex_app_server_turn
+from agent.turn_recovery import activate_codex_app_server_fallback
 
 LIMIT_MESSAGE = ("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase "
                  "more credits or try again at 7:33 AM.")
@@ -90,3 +91,8 @@ def test_usage_limit_failure_names_the_reset_and_hands_it_to_the_cooldown():
     assert result["error"].startswith("Codex usage limit reached — it resets in 2h 1")
     assert LIMIT_MESSAGE in result["error"]
     assert result["rate_limit_reset_at"] == float(reset)
+    # The reset reaches the fallback cooldown, not the 60 s exponential default.
+    agent.provider, agent.model, agent.log_prefix = "openai-codex", "gpt-5.5", ""
+    agent._has_pending_fallback.return_value = True
+    assert activate_codex_app_server_fallback(agent, result) is True
+    assert agent._try_activate_fallback.call_args.kwargs["reset_at"] == float(reset)

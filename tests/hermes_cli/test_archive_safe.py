@@ -9,6 +9,7 @@ guarantee the desktop gateway-download path already has.
 
 from __future__ import annotations
 
+import os
 import sys
 import tarfile
 from pathlib import Path
@@ -75,3 +76,50 @@ def test_make_targz_overwrites_existing_file_on_success(tmp_path):
 
     with tarfile.open(archive_path, "r:gz") as tf:
         assert "src/inner/file.txt" in {m.name for m in tf.getmembers()}
+
+
+@pytest.mark.platforms("posix")  # directory fsync is a no-op on Windows
+def test_make_targz_syncs_complete_archive_before_publishing(tmp_path, monkeypatch):
+    """A crash right after the rename must not leave a zero-tailed export under the final name."""
+    _stage_source(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    events: list[tuple] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def spy_fsync(fd):
+        st = os.fstat(fd)
+        events.append(("fsync", st.st_ino, st.st_size))
+        return real_fsync(fd)
+
+    def spy_replace(src, dst):
+        events.append(("replace", os.stat(src).st_ino))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(os, "replace", spy_replace)
+    archive = Path(make_targz(str(out_dir / "export"), str(tmp_path), "src"))
+
+    st = archive.stat()
+    replace_at = events.index(("replace", st.st_ino))
+    assert ("fsync", st.st_ino, st.st_size) in events[:replace_at]
+    dir_ino = out_dir.stat().st_ino
+    assert any(e[0] == "fsync" and e[1] == dir_ino for e in events[replace_at:])
+
+
+def test_make_targz_keeps_previous_archive_when_sync_fails(tmp_path, monkeypatch):
+    _stage_source(tmp_path)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    archive = out_dir / "export.tar.gz"
+    archive.write_bytes(b"previous export")
+
+    def failing_fsync(fd):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with pytest.raises(OSError):
+        make_targz(str(out_dir / "export"), str(tmp_path), "src")
+
+    assert archive.read_bytes() == b"previous export"
+    assert list(out_dir.iterdir()) == [archive]

@@ -9,6 +9,8 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from utils import fsync_directory
+
 
 def normalize_archive_parts(member_name: str) -> list[str]:
     """Return safe path parts for an archive member, or raise ``ValueError``.
@@ -30,16 +32,20 @@ def normalize_archive_parts(member_name: str) -> list[str]:
 def make_targz(base: str, root_dir: str, base_dir: str) -> str:
     """Create ``<base>.tar.gz`` of ``root_dir/base_dir`` in GNU tar format.
 
-    Writes to a sibling temp file and renames onto the archive path only after it is fully written.
+    Writes to a sibling temp file and renames onto the archive path only after it is fully written
+    and fsynced, so a crash after the rename cannot leave a zero-tailed archive in its place.
     """
     archive_path = f"{base}.tar.gz"
     dest_dir = os.path.dirname(archive_path) or "."
     fd, tmp_path = tempfile.mkstemp(dir=dest_dir, prefix=".archive_", suffix=".tar.gz.tmp")
     try:
-        with os.fdopen(fd, "wb") as f, \
-                tarfile.open(fileobj=f, mode="w:gz", format=tarfile.GNU_FORMAT) as tf:
-            tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
+        with os.fdopen(fd, "wb") as f:
+            with tarfile.open(fileobj=f, mode="w:gz", format=tarfile.GNU_FORMAT) as tf:
+                tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, archive_path)
+        fsync_directory(dest_dir)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)

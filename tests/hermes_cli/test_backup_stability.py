@@ -54,6 +54,52 @@ def test_atomic_output_keeps_previous_file_after_failure(tmp_path) -> None:
     assert not partial.exists()
 
 
+@pytest.mark.platforms("posix")
+def test_atomic_output_syncs_archive_data_before_publishing(tmp_path, monkeypatch) -> None:
+    """A crash after publish must not leave a zero-tailed zip (no EOCD) under the final name."""
+    final = tmp_path / "out" / "backup.zip"
+    final.parent.mkdir()
+    events: list[tuple[str, object]] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def spy_fsync(fd):
+        events.append(("fsync", os.fstat(fd).st_ino))
+        return real_fsync(fd)
+
+    def spy_replace(src, dst):
+        events.append(("replace", os.stat(src).st_ino))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(os, "replace", spy_replace)
+    with _atomic_output_path(final) as partial:
+        partial.write_bytes(b"complete")
+
+    published_inode = final.stat().st_ino
+    replace_at = events.index(("replace", published_inode))
+    assert ("fsync", published_inode) in events[:replace_at]
+    dir_inode = final.parent.stat().st_ino
+    assert ("fsync", dir_inode) in events[replace_at:]
+
+
+def test_atomic_output_publishes_nothing_when_sync_fails(tmp_path, monkeypatch) -> None:
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    final = out_dir / "backup.zip"
+    final.write_bytes(b"previous")
+
+    def failing_fsync(fd):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with pytest.raises(OSError):
+        with _atomic_output_path(final) as partial:
+            partial.write_bytes(b"unsynced")
+
+    assert final.read_bytes() == b"previous"
+    assert list(out_dir.iterdir()) == [final]
+
+
 def test_quick_snapshot_is_published_with_manifest(tmp_path, monkeypatch) -> None:
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -141,3 +187,68 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"
     assert list(tmp_path.glob(".*.partial")) == []
+
+
+@pytest.mark.platforms("posix")  # directory fsync is a no-op on Windows
+def test_quick_snapshot_files_are_synced_before_publish(tmp_path, monkeypatch) -> None:
+    """Update auto-restore trusts a published snapshot: its files must be durable before it appears."""
+    home = tmp_path / ".hermes"
+    (home / "cron").mkdir(parents=True)
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    (home / "cron" / "jobs.json").write_text('{"jobs": []}\n', encoding="utf-8")
+    synced: set[int] = set()
+    unsynced_at_publish: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def spy_fsync(fd):
+        synced.add(os.fstat(fd).st_ino)
+        return real_fsync(fd)
+
+    def spy_replace(src, dst):
+        src_path = Path(src)
+        if src_path.name.endswith(".partial"):
+            for path in (src_path, *src_path.rglob("*")):
+                if path.stat().st_ino not in synced:
+                    unsynced_at_publish.append(path.relative_to(src_path).as_posix() or ".")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(os, "replace", spy_replace)
+    snapshot_id = create_quick_snapshot(hermes_home=home)
+
+    assert snapshot_id is not None
+    assert unsynced_at_publish == []
+    assert (home / "state-snapshots").stat().st_ino in synced
+
+
+def test_quick_snapshot_is_not_published_when_sync_fails(tmp_path, monkeypatch) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    def failing_fsync(fd):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with pytest.raises(OSError):
+        create_quick_snapshot(hermes_home=home)
+
+    assert list_quick_snapshots(hermes_home=home) == []
+    assert list((home / "state-snapshots").iterdir()) == []
+
+
+@pytest.mark.platforms("windows")  # copy2 keeps the read-only attribute; the sync opens O_RDWR
+def test_quick_snapshot_captures_read_only_source_files(tmp_path) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text("model: {}\n", encoding="utf-8")
+    os.chmod(config, stat.S_IREAD)
+    try:
+        snapshot_id = create_quick_snapshot(hermes_home=home)
+    finally:
+        os.chmod(config, stat.S_IREAD | stat.S_IWRITE)
+
+    assert snapshot_id is not None
+    copied = home / "state-snapshots" / snapshot_id / "config.yaml"
+    assert copied.read_text(encoding="utf-8") == "model: {}\n"

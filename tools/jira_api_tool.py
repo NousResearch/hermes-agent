@@ -119,21 +119,22 @@ def _jira_creds() -> tuple[str, str, str]:
 
     A headless cron/worker process may never have loaded the dotenv, so load it
     if any var is missing (mirrors notion_api/_ntn_env and slack_react).
+
+    Under ``gateway.multiplex_profiles`` the values come from the owning
+    profile's secret scope only and the self-heal is skipped (it would load
+    into the default profile's ``os.environ``) — see ``agent.fork_secrets``.
     """
+    from agent.fork_secrets import heal_dotenv, read_secret
+
     def _read() -> tuple[str, str, str]:
         return (
-            os.getenv("JIRA_BASE_URL", "").strip().rstrip("/"),
-            os.getenv("JIRA_EMAIL", "").strip(),
-            os.getenv("JIRA_API_TOKEN", "").strip(),
+            read_secret("JIRA_BASE_URL", tool="jira_api").rstrip("/"),
+            read_secret("JIRA_EMAIL", tool="jira_api"),
+            read_secret("JIRA_API_TOKEN", tool="jira_api"),
         )
 
     base, email, token = _read()
-    if not (base and email and token):
-        try:
-            from hermes_cli.env_loader import load_hermes_dotenv
-            load_hermes_dotenv()
-        except Exception:
-            pass
+    if not (base and email and token) and heal_dotenv():
         base, email, token = _read()
     return base, email, token
 

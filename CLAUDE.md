@@ -64,7 +64,15 @@ Structural changes from that sync that affect where fork work goes:
   `_fetch_thread_parent_text(strip_bot_mention=False)` returned text with the
   mention already stripped, because `_render_message_text` removes it
   unconditionally — so check 5 only ever worked when check 4 had warmed the
-  thread-context cache. Both are covered by
+  thread-context cache. The same flag also gates **cron deliveries arming
+  check 1**: a live-adapter cron send (`metadata["job_id"]`, stamped by
+  `DeliveryRouter`) used to record its ts in `_bot_message_ts`, so every item
+  a feed job posted woke the bot on every un-mentioned reply until restart
+  (seen 2026-09-23 under the customer news radar: the bot called `turn_end` —
+  a no-op outside quiet channels — then explained its silence). With the flag
+  off, `send()` skips that registration for cron posts; conversational sends
+  are unchanged, and continuable cron threads still wake via their seeded
+  session (check 3). All of these are covered by
   [tests/gateway/test_slack_wake_bot_authored_threads_optin.py](tests/gateway/test_slack_wake_bot_authored_threads_optin.py)
   and guarded in `tests/test_fork_feature_inventory.py`.
 
@@ -142,8 +150,11 @@ demoting/deleting removes them.
 ### Fork-added toolsets — Notion, Jira, Slack thread posting, Webflow assets, video frames
 
 Five fork-only integrations, each registered as its **own** registry toolset so RBAC
-gates them independently. The four API-backed ones self-heal `~/.hermes/.env` for
-cron/delegation runs that never loaded it (the same pattern), so they work headless.
+gates them independently. The four API-backed ones read credentials through
+[agent/fork_secrets.py](agent/fork_secrets.py) `read_secret` and, **single-profile
+only**, self-heal `~/.hermes/.env` (`heal_dotenv`) for cron/delegation runs that never
+loaded it, so they work headless. Under multiplex they read only the owning profile's
+secret scope and never self-heal (see "Multiplex" below).
 
 - **`notion_api` (`notion` toolset)** — [tools/notion_api_tool.py](tools/notion_api_tool.py).
   Wraps the `ntn` CLI (`ntn api <v1/...> -X <METHOD>`, JSON body via **stdin**,
@@ -581,6 +592,49 @@ merged or reported anything. Design:
   signature (the incident is then `alerted`; a new error text alerts again).
   `blocked_config`/drift alerts keep their own alert-once markers.
 
+### Multiplex — one gateway, several bots ([design](docs/superpowers/specs/2026-11-16-multiplex-fork-hardening-design.md))
+
+Under `gateway.multiplex_profiles: true` one process serves several profiles
+(the default + e.g. `educator`, each its own Slack app). Upstream's
+`_profile_runtime_scope` gives each turn its profile's home and secret scope,
+but **`os.environ` stays the default profile's** — so any fork code that reads
+`os.getenv`, `self.adapters[...]` or a path-less cache acts as the default bot.
+Rules for fork code that reads credentials or platform settings:
+
+- Credentials: `agent.fork_secrets.read_secret(name, tool=...)` (or
+  `agent.secret_scope.get_secret`), never `os.getenv`. A scoped miss is a miss;
+  `UnscopedSecretError` → WARNING + "not configured". No `.env` self-heal under
+  multiplex (`heal_dotenv`). Child processes: `scoped_subprocess_env()`.
+- Platform settings: the adapter's own `extra` / `_slack_setting`, or
+  `gateway.authz_mixin._platform_gate_env` — never `os.getenv`. The Slack
+  plugin's `_apply_yaml_config` returns the profile's `slack:` block as
+  `extra["profile_settings"]` and skips its `os.environ` writes under multiplex.
+- The adapter for an inbound source: `self._adapter_for_source(source)` /
+  `_multiplex_adapter_for`, never `self.adapters[...]`; per-source config:
+  `_gateway_config_for_source` (slash admins, ignored channels).
+- Caches of per-profile data are keyed by path/home (`_load_config_cached`,
+  Drive credentials), and module-level `get_hermes_home()` captures resolve per
+  call (cron notepad/suggestions, auxiliary `auth.json`).
+- Guards ([gateway/multiplex_guard.py](gateway/multiplex_guard.py),
+  [agent/multiplex_file_guard.py](agent/multiplex_file_guard.py)): a secondary
+  profile gets **no** MCP toolset (MCP processes are process-wide and keyed by
+  server name, so even a server it declares would be the default's) —
+  resolver + cron + fail-closed dispatch backstop; file tools (including every
+  `search_files` hit) deny paths in another **served** profile's home. Opt-in
+  `agent_write_guard: true` ([agent/profile_write_guard.py](agent/profile_write_guard.py))
+  stops a profile's agent writing its own config/SOUL/cron/scripts/.env*/external
+  skill dirs.
+- Every multiplex branch is gated on `is_multiplex_active()`; with it off the
+  legacy code path runs unchanged (`.env` still beats `config.yaml` for the
+  Slack keys that were env-only). Under multiplex `config.yaml` wins; startup
+  WARNs per profile for each env-only key the two disagree on. Guards fail
+  closed under multiplex (a failed scoped config load → deny-all slash policy).
+  Cron child processes (scripts, Bot Chat delivery) get the owning profile's
+  env and `-p`. Acceptance test:
+  [tests/gateway/test_multiplex_fork_features.py](tests/gateway/test_multiplex_fork_features.py);
+  cron: [tests/cron/test_multiplex_cron_per_profile.py](tests/cron/test_multiplex_cron_per_profile.py).
+- Known limitation: `terminal.cwd` is bridged once from the default's config.
+
 ### Cron delivery format — [cron/scheduler.py](cron/scheduler.py) `_deliver_result`
 
 Upstream wraps every delivered cron response in `Cronjob Response: <name>` /
@@ -667,6 +721,105 @@ gateway) and never migrates it; a store not write-opened since a past schema
 migration prints a hint naming `hermes costs --reprice --dry-run` (a write-open that
 migrates but changes no cost) and exits 1. Design:
 [docs/superpowers/specs/2026-09-17-cost-attribution-design.md](docs/superpowers/specs/2026-09-17-cost-attribution-design.md).
+
+### Cost budget + alerts — [agent/cost_budget.py](agent/cost_budget.py)
+
+Opt-in per profile through a top-level `cost_budget:` block in that profile's
+`config.yaml`. **Without the block nothing changes**: every entry point
+returns after a cached config read — no store opened, no state file, no ledger
+difference (the `cost_budget_status` tool then reports `configured: false`
+and reads nothing).
+
+```yaml
+cost_budget:
+  daily_usd: 5                    # any of daily/monthly/per_run activates the block
+  monthly_usd: 100
+  alert_at: [0.5, 0.8]            # fractions (0.8 = 80%); 1.0 is always added; >5 is rejected
+  per_run_usd: 1.5                # cron runs only (a cron root + its lineage)
+  alert_channel: slack:C0123ABCD  # deliver-target syntax; a bare C… id means slack:; local/origin rejected
+  alert_mention: "<!subteam^S123>"  # optional, prefixed to LOUD alerts only
+  discretionary_jobs: [3f9a1c2d4e5b]  # job ids only; or `discretionary: true` on the job
+  default_discretionary: false    # true = EVERY job is skippable unless listed below
+  essential_jobs: [a1b2c3d4e5f6]  # job ids that always run (win over every other marker)
+  cache_seconds: 300              # spend snapshot TTL (min 30)
+```
+
+- **Spend is booked when it happens.** `session_model_usage` rows are
+  cumulative upserts with no per-call timestamp, so windowing on
+  `sessions.started_at` (what `hermes costs` does) would miss a long-lived
+  session — a Slack channel root never resets — that keeps spending: a fail-
+  open budget. Each scan reads the usage rows touched since the last scan,
+  books the growth of each row's cumulative cost to the local day of its
+  `last_seen`, and keeps the per-row values and per-day totals in
+  `${HERMES_HOME}/cost_budget/spend.json` (flock + atomic write; 40-day
+  retention). The **first scan** baselines rows last seen before this month
+  (no booking) and books rows active this month whole, flagging those days
+  **upper bound** (`spend_is_upper_bound`) when the row began earlier — fail
+  closed. A session idle beyond the retention that revives is booked whole the
+  same way. Unpriced tokens are never $0: a daily alert, `spend_is_lower_bound`,
+  and the tool returns `remaining_usd: null`. Resolved through
+  `get_hermes_home()` per call (one multiplexed gateway ticks several homes),
+  cached per home; a failed scan is cached for 60s (`SpendUnavailable`) so a
+  locked store is not re-queried every preflight. **Prerequisite:** a
+  `pricing.overrides` entry for the profile's model. **Known limit:** day and
+  month boundaries use `hermes_time`'s process-wide timezone, not a
+  per-profile one.
+- **Enforcement** — `preflight_cron_job`, called from `_run_one_job_body`
+  ([cron/scheduler.py](cron/scheduler.py)) after the secret scope is set and
+  before `run_job`, so before the job's script *or* agent. A discretionary
+  job over its daily or monthly budget is skipped via
+  `cron.jobs.mark_job_skipped`, which is **not a run**: `last_status =
+  skipped_budget` + `last_skip_reason`, but `failure_streak`, `last_error`
+  and `repeat.completed` are untouched; a recurring job moves to its next
+  occurrence, and a one-shot gets its `claim_dispatch` pre-claim back and
+  re-arms when the exceeded budget resets. The ledger row is `completed`
+  with `error = "skipped: over budget (daily $X of $Y)"`
+  (`finish_execution(note=…)`, [cron/executions.py](cron/executions.py)); a
+  lost fire claim is recorded as such, like the normal path. Non-
+  discretionary jobs run. No bypass for manual runs: the agent could
+  otherwise `cronjob(action='run')` around its own budget. The `cronjob`
+  tool takes `discretionary: true` (set-only — clearing it frees a job from
+  the budget, so that is an operator edit of `jobs.json` or the config list).
+  **Fail-closed mode (`default_discretionary: true`, opt-in):** every job of
+  the profile is discretionary unless its id is in `essential_jobs` — so a
+  job the agent creates without the flag still cannot escape the budget.
+  Both keys live only in `config.yaml`; the `cronjob` tool has no way to mark
+  a job essential, and a job-level `discretionary: false`/`essential` field is
+  ignored. With the profile write guard (`agent_write_guard`) on, the agent
+  cannot edit config.yaml either. An essential id wins over every other
+  marker. Default `false` keeps the list/flag behaviour above. The educator
+  profile uses `default_discretionary: true` with `essential_jobs:
+  [<release-watch job id>]`.
+- **Alerts** — `watch()` from `tick()` after the dispatch gate, and every
+  over-budget preflight. `tick` already runs inside each profile's home
+  override with **that profile's own adapters** (the multiplex ticker), so
+  alerts leave through the owning profile's bot. Sent through
+  `cron.scheduler._deliver_result` with a pseudo job (`id: cost_budget`, so
+  the bold header reads "Cost budget"), after checking the target resolves —
+  an alert that went nowhere is not marked sent. Keys (in
+  `${HERMES_HOME}/cost_budget/alerts.json`): `daily:<day>:<t>` /
+  `monthly:<month>:<t>` — a jump past several thresholds sends only the
+  highest, and `…:1` is **the** over-budget alert for the period (loud, says
+  discretionary jobs are skipped, names the job that tripped it whether
+  `watch` or a preflight got there first); `run:<root>` — per-run
+  overspends since tracking began, batched into one message per check;
+  `unpriced:<day>`. Keys are **claimed under the lock and delivered after it
+  is released, on a daemon thread that carries the caller's context** (home
+  override) and adapters — neither the state lock nor the tick lock is held
+  across a network send; a failed send releases its claim and retries later.
+  No usable `alert_channel` → logged once per process, not recorded.
+- **`cost_budget_status` tool (`cost_budget` toolset, NOT a floor)** —
+  [tools/cost_budget_tool.py](tools/cost_budget_tool.py): today/month spent,
+  budget, remaining (null when unpriced tokens make it unknown), over-budget,
+  skip state, lower/upper-bound flags, `config_warnings`, the month's five
+  costliest cron runs. **Deployment:** grant `cost_budget` to the role, list
+  it in `platform_toolsets.slack`, and for cron use give the job an owner
+  whose role grants it (the cron RBAC ceiling).
+
+Design: "Dependencies → 3. Cost budget + alerts" in
+[docs/superpowers/specs/2026-11-16-product-education-teammate-design.md](docs/superpowers/specs/2026-11-16-product-education-teammate-design.md).
+Plan:
+[docs/superpowers/plans/2026-11-16-cost-budget-alerts.md](docs/superpowers/plans/2026-11-16-cost-budget-alerts.md).
 
 ### Slack quiet channels + `slack_react`
 

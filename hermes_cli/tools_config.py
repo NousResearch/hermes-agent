@@ -127,6 +127,7 @@ CONFIGURABLE_TOOLSETS = [
     ("github_pr_write", "🐙  GitHub PR write",         "create a branch, commit files & open a PR (never merge)"),
     ("webflow_assets",  "🖼️  Webflow assets",         "upload local files to the Webflow CDN"),
     ("slack_post",      "💬  Slack thread post",       "post a message into a specific Slack thread"),
+    ("cost_budget",     "💰  Cost budget",             "read this profile's own spend and budget"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),

@@ -69,6 +69,25 @@ def _ntn_env() -> dict:
     Self-heal for delegation sub-agents / workers that never loaded
     ~/.hermes/.env (mirrors slack_react's token self-heal).
     """
+    from agent.secret_scope import is_multiplex_active
+
+    if is_multiplex_active():
+        # The ntn child must carry THIS profile's token and none of the
+        # default profile's secrets: os.environ minus the default's .env,
+        # overlaid with the profile scope. No self-heal (agent.fork_secrets).
+        from agent.fork_secrets import read_secret, scoped_subprocess_env
+
+        env = scoped_subprocess_env()
+        env.pop("NOTION_API_TOKEN", None)
+        env.pop("NOTION_API_KEY", None)
+        token = read_secret("NOTION_API_TOKEN", tool="notion_api") or read_secret(
+            "NOTION_API_KEY", tool="notion_api"
+        )
+        if token:
+            env["NOTION_API_TOKEN"] = token
+        env.setdefault("NOTION_KEYRING", "0")
+        return env
+
     env = dict(os.environ)
     if not env.get("NOTION_API_TOKEN") and not env.get("NOTION_API_KEY"):
         try:

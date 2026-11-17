@@ -223,7 +223,7 @@ def test_user_directory_reads_real_config(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("gateway.tool_access._config_cache", {"fp": None, "config": None})
+    monkeypatch.setattr("gateway.tool_access._config_cache", {})
     monkeypatch.setattr(ot, "_user_directory", _real_user_directory)  # undo the autouse stub
 
     assert ot._user_directory("slack") == {"U_ALICE": "Alice", "U_NONAME": ""}

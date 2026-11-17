@@ -623,7 +623,40 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         return None
 
 
+def _cron_multiplex_active() -> bool:
+    """True when this process is a profile multiplexer (fork)."""
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        return is_multiplex_active()
+    except Exception:
+        return False
+
+
 def _cron_enabled_toolsets_with_ceiling(job: dict, cfg: dict) -> list[str] | None:
+    """RBAC-capped toolsets (below), minus the default profile's MCP servers
+    when the job belongs to a secondary profile under multiplex (4c). The
+    multiplex filter is a no-op single-profile and for the default profile."""
+    toolsets = _cron_enabled_toolsets_rbac_capped(job, cfg)
+    try:
+        from gateway.multiplex_guard import (
+            filter_foreign_mcp_toolsets,
+            is_secondary_profile_context,
+        )
+
+        if not is_secondary_profile_context():
+            return toolsets
+        if toolsets is None:
+            from toolsets import get_all_toolsets
+
+            toolsets = sorted(get_all_toolsets())
+        return filter_foreign_mcp_toolsets(toolsets)
+    except Exception as exc:  # the dispatch backstop still fails closed
+        logger.debug("Job '%s': multiplex MCP filter skipped (%s)", job.get("id"), exc)
+        return toolsets
+
+
+def _cron_enabled_toolsets_rbac_capped(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the cron job's enabled toolsets, then cap them to the creator's
     current RBAC role (see cron/rbac_ceiling). Fail-open: any error returns the
     uncapped resolution so a transient failure can't strip a legitimate job's
@@ -2825,7 +2858,25 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         except Exception:
             return "bot-chat delivery failed: hermes CLI not resolvable"
 
-    env = os.environ.copy()
+    if _cron_multiplex_active():
+        # Fork (multiplex): the child must run as the profile that owns this
+        # job. os.environ (and its HERMES_HOME) is the DEFAULT profile's, so
+        # name the owning profile explicitly and hand the child that
+        # profile's scoped environment, never the default's credentials.
+        from agent.fork_secrets import scoped_subprocess_env
+
+        env = scoped_subprocess_env()
+        if not profile:
+            try:
+                from agent.file_safety import _resolve_active_profile_name
+
+                owner = _resolve_active_profile_name()
+            except Exception:
+                return "bot-chat delivery failed: could not resolve the job's profile"
+            if owner and owner != "default":
+                profile = owner
+    else:
+        env = os.environ.copy()
     if profile:
         argv += ["-p", profile]
         # -p owns profile resolution in the child; a leftover HERMES_HOME
@@ -4565,7 +4616,17 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace",
             }
-        env = build_subprocess_env()
+        from agent.secret_scope import is_multiplex_active
+
+        if is_multiplex_active():
+            # Fork (multiplex 4f): the script runs as the profile that owns
+            # the job — its .env over the global environment, never the
+            # default profile's credentials (os.environ is the default's).
+            from agent.fork_secrets import scoped_subprocess_env
+
+            env = build_subprocess_env(base=scoped_subprocess_env())
+        else:
+            env = build_subprocess_env()
         env.update(env_overlay)
         if extra_env:
             env.update(extra_env)
@@ -5909,14 +5970,22 @@ def run_job(
         # no_agent jobs — every deliver=telegram/all script job failed with
         # "no delivery target resolved". load_hermes_dotenv does not override
         # already-set vars, so the gateway's in-process tick is unaffected.
-        try:
-            from hermes_cli.env_loader import load_hermes_dotenv
+        #
+        # Fork (multiplex): skipped under gateway.multiplex_profiles. The
+        # reload writes into os.environ — the DEFAULT profile's environment —
+        # so a secondary profile's job would leak its credentials into the
+        # default bot. The job already runs inside its profile's secret scope
+        # (_run_one_job_body installs build_profile_secret_scope(home), built
+        # from the same .env), and the script env comes from that scope (4f).
+        if not _cron_multiplex_active():
+            try:
+                from hermes_cli.env_loader import load_hermes_dotenv
 
-            load_hermes_dotenv(hermes_home=_get_hermes_home())
-        except Exception:
-            logger.debug(
-                "Job '%s': no_agent .env reload failed", job_id, exc_info=True
-            )
+                load_hermes_dotenv(hermes_home=_get_hermes_home())
+            except Exception:
+                logger.debug(
+                    "Job '%s': no_agent .env reload failed", job_id, exc_info=True
+                )
 
         script_path = job.get("script")
         # Legacy/hand-edited records can still carry no_agent with a missing or
@@ -6363,7 +6432,13 @@ def run_job(
             reset_secret_source_cache,
         )
         reset_secret_source_cache()
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        # Fork (multiplex): never under gateway.multiplex_profiles — with
+        # override=True (plus clearing known keys the .env lacks) it rewrote
+        # the process-wide os.environ with THIS profile's .env, so every
+        # secondary-profile run handed its credentials to the default bot.
+        # The run is already inside its profile's secret scope.
+        if not _cron_multiplex_active():
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
@@ -7705,6 +7780,25 @@ def _run_one_job_body(
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
         )
+        # Fork: cost budget (agent/cost_budget.py). A discretionary job is
+        # skipped while this profile is over budget, before its script or
+        # agent runs; None (always, without a cost_budget: block) runs it.
+        from agent import cost_budget as _cost_budget
+
+        _budget_skip = _cost_budget.preflight_cron_job(job, adapters=adapters, loop=loop)
+        if _budget_skip is not None:
+            # Not a run: no failure streak, no repeat consumed (cron.jobs).
+            from cron.jobs import mark_job_skipped
+
+            if mark_job_skipped(job["id"], "skipped_budget", _budget_skip.reason,
+                                retry_at=_budget_skip.resets_at,
+                                expected_fire_owner=fire_owner):
+                finish_execution(execution_id, success=True, note=_budget_skip.reason,
+                                 delivery_outcome="suppressed")
+            else:
+                finish_execution(execution_id, success=False,
+                                 error="Fire claim ownership lost before terminal completion.")
+            return True
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -8306,6 +8400,16 @@ def tick(
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
+
+        # Fork: cost budget alerts for THIS profile (tick runs inside the
+        # profile's home override, with its own adapters). Returns at once
+        # without a cost_budget: block; throttled and fail-open otherwise.
+        try:
+            from agent import cost_budget as _cost_budget
+
+            _cost_budget.watch(adapters=adapters, loop=loop)
+        except Exception as _budget_exc:
+            logger.debug("Cost budget watch failed: %s", _budget_exc)
 
         # Dead-owner claim reclaim (#86721): execution rows carry their owner
         # pid + process start time, but recovery previously ran only at

@@ -795,6 +795,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["unattended_approved_tools"] = job["unattended_approved_tools"]
     if job.get("required_toolsets"):
         result["required_toolsets"] = job["required_toolsets"]
+    if job.get("discretionary") is True:
+        result["discretionary"] = True
     if job.get("post_script"):
         result["post_script"] = job["post_script"]
     if job.get("workdir"):
@@ -1647,6 +1649,7 @@ def cronjob(
     post_script: Optional[str] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    discretionary: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
@@ -1846,6 +1849,8 @@ def cronjob(
                 _extra_fields["required_toolsets"] = list(required_toolsets)
             if post_script:
                 _extra_fields["post_script"] = _normalize_optional_job_value(post_script)
+            if discretionary:
+                _extra_fields["discretionary"] = True
             if _extra_fields:
                 # create_job() has no dedicated params for these fields; merge
                 # them onto the freshly-created record via the generic update path.
@@ -2178,6 +2183,17 @@ def cronjob(
                 updates["unattended_approved_tools"] = unattended_approved_tools or None
             if required_toolsets is not None:
                 updates["required_toolsets"] = required_toolsets or None
+            if discretionary is not None:
+                # Fork (cost budget): set-only. Clearing it would let an agent
+                # free its own job from the budget; that is an operator edit.
+                if not discretionary:
+                    return tool_error(
+                        "discretionary can only be turned on here. Clearing it releases the job "
+                        "from the cost budget, so an operator must do that (jobs.json or "
+                        "cost_budget.discretionary_jobs).",
+                        success=False,
+                    )
+                updates["discretionary"] = True
             if post_script is not None:
                 # Pass empty string to clear an existing post_script
                 if post_script:
@@ -2381,6 +2397,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "description": f"Optional script run after each successful agent run to APPLY the agent's decision deterministically (e.g. read a plan file the agent wrote with the file tools, validate it, write the sheet / post the report). Cron agents have no shell, so this — not terminal — is how a job runs code on the agent's output. The agent's final response is in the file named by $HERMES_CRON_RESPONSE_FILE; cwd is workdir when set; stdout is appended to the delivery; non-zero exit fails the run. Same path rules and role gate as script. On update, '' clears."
             },
+            "discretionary": {
+                "type": "boolean",
+                "description": "Mark the job as optional work under this profile's cost budget: while the profile is over its daily or monthly budget the scheduler skips it (release/required work keeps running). Set-only — true marks it; only an operator can clear it."
+            },
             "required_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -2475,6 +2495,7 @@ def _cronjob_handler(args, **kw):
         post_script=args.get("post_script"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        discretionary=args.get("discretionary"),
         attach_to_session=args.get("attach_to_session"),
         monitor_script=_mon_script,
         monitor_url=_mon_url,

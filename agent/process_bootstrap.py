@@ -293,10 +293,10 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
-        from agent.codex_headers import codex_request_compression_hooks
+        from agent.codex_headers import codex_request_compression_hooks, codex_zstd_replay_client_cls
         hooks = codex_request_compression_hooks(base_url, async_mode=async_mode)
         if hooks:
-            client_cls = functools.partial(client_cls, event_hooks=hooks)
+            client_cls = functools.partial(codex_zstd_replay_client_cls(async_mode), event_hooks=hooks)
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
             # One pool serves every agent in the process, so its ceiling must cover a whole

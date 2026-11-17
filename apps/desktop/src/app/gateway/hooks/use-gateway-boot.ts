@@ -5,6 +5,7 @@ import {
   isStableOpen,
   JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
+  LOCAL_CONNECTION_ID,
   reconnectBackoffDelayMs
 } from '@hermes/shared'
 import { useEffect, useRef } from 'react'
@@ -278,22 +279,37 @@ interface GatewayBootOptions {
  * page never blanks and the window stays on the profile it shows. Which socket
  * serves the profile is this window's own record; main's primary can differ
  * after a renderer reload. False: run the full switch instead.
+ *
+ * The profile is one of THIS computer's. `otherGateway`: the window's primary
+ * socket is a registered gateway's, whose profile of the same name did not
+ * move. That socket and whatever the window shows through it stay as they are;
+ * only a socket the window dialed for the local profile itself is redialed.
  */
 async function redialMovedProfile(
   profile: string,
-  redialPrimary: (profile: string) => Promise<boolean>
+  redialPrimary: (profile: string) => Promise<boolean>,
+  otherGateway: boolean
 ): Promise<boolean> {
   try {
-    if (profile === normalizeProfileKey(primaryGatewayProfile())) {
+    if (!otherGateway && profile === normalizeProfileKey(primaryGatewayProfile())) {
       return await redialPrimary(profile)
     }
 
-    await redialProfileGateway(profile, { shown: normalizeProfileKey($activeGatewayProfile.get()) === profile })
+    const shown = normalizeProfileKey($activeGatewayProfile.get()) === profile
+
+    await redialProfileGateway(profile, { shown: shown && !(otherGateway && isActivePrimary()) })
   } catch (error) {
     console.warn(`[gateway] redial of "${profile}" after its backend moved failed`, error)
   }
 
   return true
+}
+
+/** A registered gateway on another machine, not this computer's own backend ("This device"). */
+function isOtherGateway(connection: HermesConnection | null): boolean {
+  return Boolean(
+    connection?.registryScoped && connection.connectionId && connection.connectionId !== LOCAL_CONNECTION_ID
+  )
 }
 
 export function useGatewayBoot({
@@ -929,7 +945,14 @@ export function useGatewayBoot({
 
       // Only one profile's backend moved. Any other apply raises its switch
       // barrier in this same tick.
-      if (detail?.profile && (await redialMovedProfile(normalizeProfileKey(detail.profile), redialPrimaryInPlace))) {
+      if (
+        detail?.profile &&
+        (await redialMovedProfile(
+          normalizeProfileKey(detail.profile),
+          redialPrimaryInPlace,
+          isOtherGateway(primaryConnection)
+        ))
+      ) {
         return
       }
 

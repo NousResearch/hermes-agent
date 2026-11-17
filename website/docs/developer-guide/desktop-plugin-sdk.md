@@ -1506,7 +1506,9 @@ already connects to a remote host or runs through another plugin. It resolves
   profile stays on this computer's backend until then. A Cancel never calls
   `prepare`; if it throws, nothing changes and the error propagates.
 - On a switch, only that profile's chats reconnect, in place, in every open
-  window; each window stays on the profile it shows. The profile rail marks it
+  window; each window stays on the profile it shows. A window connected to
+  another gateway is left as it is, also when the profile it shows there has
+  the same name. The profile rail marks it
   Sandboxed, the app lists profiles from this computer for it, and it stops
   copying desktop plugins out of that profile's home.
 - `host.clearProfileBackend()` routes the profile back after the same kind of

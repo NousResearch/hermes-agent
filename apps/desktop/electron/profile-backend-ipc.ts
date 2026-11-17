@@ -149,7 +149,10 @@ export function registerProfileBackendIpc(ipcMain: IpcMain, deps: ProfileBackend
 
   // Every window dials the profile on its own socket, and a plugin's page runs
   // in any of them: each one is told that the profile's route moved (and only
-  // that profile's), not the main window alone.
+  // that profile's), not the main window alone. The profile is this computer's.
+  // Whether a window is concerned is the window's own decision, by the sockets
+  // it holds: main records only the route a window has in front, and a window
+  // on another gateway can still hold a socket of the local profile.
   const sendApplied = (profile: string) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed() && !win.webContents.isDestroyed()) {

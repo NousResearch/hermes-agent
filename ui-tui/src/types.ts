@@ -150,6 +150,9 @@ export interface Msg {
   // file overwritten in place): the tool call id that produced a kind 'image'
   // row, or a per-turn id for a user turn's attachments.
   imageRevision?: string
+  // A kind 'event' row's link target: a hosted artifact's viewer page, which
+  // the terminal cannot render, so the row is the user's way to it.
+  linkUrl?: string
   panelData?: PanelData
   /** Payloads behind this user row's paste chips, expandable in the transcript. */
   pastes?: PasteSection[]

@@ -317,3 +317,81 @@ def session_has_artifacts(tool_names: Any) -> bool:
     """True when a session's tool names include the hosted artifacts tools."""
     names = set(tool_names or ())
     return bool(names & contract_tool_names())
+
+
+
+# ── Viewer links for surfaces that cannot render artifacts inline ─────────────────────────────
+
+# Tools whose successful result names one artifact the user can open.
+LINK_TOOLS = ("artifact_create", "artifact_update", "artifact_show", "artifact_get")
+_TITLE_MAX_CHARS = 120
+
+
+@dataclass(frozen=True)
+class ViewerLink:
+    """The shareable viewer page of one artifact, and its title when the result carried one."""
+
+    url: str
+    title: Optional[str] = None
+
+    def as_payload(self) -> dict[str, str]:
+        return {"url": self.url, **({"title": self.title} if self.title else {})}
+
+    def text(self) -> str:
+        """One plain line naming the artifact and its viewer page."""
+        return f"Artifact \u201c{self.title}\u201d: {self.url}" if self.title else f"Artifact: {self.url}"
+
+
+def _printable(value: str) -> bool:
+    return all(ch.isprintable() and not ch.isspace() for ch in value)
+
+
+def _clean_title(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    title = " ".join("".join(ch if ch.isprintable() else " " for ch in value).split())
+    if len(title) > _TITLE_MAX_CHARS:
+        title = title[:_TITLE_MAX_CHARS - 1].rstrip() + "\u2026"
+    return title or None
+
+
+def _result_bodies(result: Any) -> list[Any]:
+    """The JSON objects a tool result may carry the artifact in: the handler envelope itself, its
+    ``result`` (JSON text or an object) and its ``structuredContent``."""
+    import json
+
+    def _load(value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except ValueError:
+                return None
+        return value
+
+    envelope = _load(result)
+    if not isinstance(envelope, dict):
+        return []
+    return [envelope, _load(envelope.get("result")), envelope.get("structuredContent")]
+
+
+def viewer_link(tool_name: Any, result: Any) -> Optional[ViewerLink]:
+    """The viewer link of a successful create/update/show/get result, else None.
+
+    Only ``viewer_url`` is ever returned: ``content_url`` is a short-lived ticket for an embedded
+    frame and must not be printed or sent. A result that reports an error, a URL that is not a
+    plain http(s) link (or that equals the ticket URL) and anything unparsable yield None."""
+    from tools.mcp_tool_schema import mcp_prefixed_tool_name
+
+    if not isinstance(tool_name, str) or tool_name not in {
+            mcp_prefixed_tool_name(SERVER_NAME, tool) for tool in LINK_TOOLS}:
+        return None
+    for body in _result_bodies(result):
+        if not isinstance(body, dict):
+            continue
+        if "error" in body:
+            return None
+        url = body.get("viewer_url")
+        if (isinstance(url, str) and _printable(url) and _origin(url) is not None
+                and url != body.get("content_url")):
+            return ViewerLink(url, _clean_title(body.get("title")))
+    return None

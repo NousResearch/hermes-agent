@@ -1,4 +1,10 @@
-import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
+import type {
+  ArtifactLink,
+  MessageCompletePayload,
+  SubagentEventPayload,
+  ToolCompletePayload,
+  ToolLabel
+} from '@hermes/shared/gateway-events'
 import type { SessionInterruptResponse } from '@hermes/shared/gateway-types'
 
 import {
@@ -71,6 +77,9 @@ const diffSegmentBody = (msg: Msg): null | string => {
 
   return m ? m[1]! : null
 }
+
+export const artifactLinkText = (link: ArtifactLink): string =>
+  link.title ? `Artifact \u201c${link.title}\u201d: ${link.url}` : `Artifact: ${link.url}`
 
 const hasDetails = (msg: Msg): boolean => Boolean(msg.thinking || msg.tools?.length || msg.toolTokens)
 
@@ -639,6 +648,27 @@ class TurnController {
       { images: [path], kind: 'image', role: 'system', text: '', ...(toolId && { imageRevision: toolId }) }
     ]
     patchTurnState({ streamSegments: this.segmentMessages })
+  }
+
+  // A hosted artifact's viewer page, hung under the tool row that made,
+  // changed or showed it: the terminal cannot render the artifact itself.
+  pushArtifactLinkSegment(link?: ArtifactLink | null) {
+    if (!link?.url || this.interrupted) {
+      return
+    }
+
+    this.flushStreamingSegment()
+    this.segmentMessages = [
+      ...this.segmentMessages,
+      { kind: 'event', linkUrl: link.url, role: 'system', text: artifactLinkText(link) }
+    ]
+    patchTurnState({ streamSegments: this.segmentMessages })
+  }
+
+  // What a finished call hangs under its row: a hosted artifact's viewer link, then its image.
+  pushToolResultSegments(payload: Pick<ToolCompletePayload, 'artifact_link' | 'image_path' | 'tool_id'>) {
+    this.pushArtifactLinkSegment(payload.artifact_link)
+    this.pushImageSegment(payload.image_path, payload.tool_id)
   }
 
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {

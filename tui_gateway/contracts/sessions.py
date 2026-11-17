@@ -555,6 +555,8 @@ class PromptCacheWindow(Result):
     coverage: dict[str, float] = {}
     #: A keep-alive missed on this route: nothing is warmed again this session.
     warming_off: bool = False
+    #: A rule learned from this route's own usage (``no-cache`` | ``write-on-hit`` | ``short-lived``).
+    learned: str | None = None
 
 
 class SessionContextBreakdownResult(Result):

@@ -443,6 +443,7 @@ gateway:
     cache_unknown_runtime: "Taisce an phróimpte: anaithnid (socraíonn an timpeallacht rite seo a roghanna taisce féin, nach féidir le Hermes a fheiceáil)."
     cache_unknown_storage: "Taisce an phróimpte: anaithnid (níorbh fhéidir stór an tseisiúin a léamh)."
     cache_warming_off: "Coimeád beo: múchta (chaill ceann)."
+    cache_learned: "Foghlamtha: {rule}."
     cache_confidence:
       proven: "cruthaithe"
       declared: "fógartha"

@@ -391,6 +391,33 @@ def _moa_destination(agent: Any) -> tuple[Optional[dict], Optional[dict]]:
     return route, attempt if isinstance(attempt, dict) else None
 
 
+def _learn(previous: Optional[CacheEvent], provider: str, base_url: str, model: str, attempt: dict[str, Any],
+           read: int, write: int, at: float) -> None:
+    """Feed the cross-session route store (``agent.prompt_cache_routes``) with this response: its gap
+    since the same prefix was last touched, against the tier the clock held for it."""
+    from agent.prompt_cache_routes import observe
+
+    tier_s = TTL_SECONDS.get(previous.tier or "") if previous is not None else None
+    observe(provider=provider, base_url=base_url, model=model, explicit=attempt.get("marker_ttl") is not None,
+            read=read, write=write, gap_s=(at - previous.sent_at) if previous is not None else None, tier_s=tier_s)
+
+
+def _learn_silent_miss(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,
+                       attempt: Optional[dict[str, Any]]) -> None:
+    """An automatic cache that reports nothing at all on a miss (no read, no write) still taught us
+    something when the same prefix, big enough to cache, was cached moments ago on this route."""
+    from agent.prompt_cache_lifecycle import MIN_CACHEABLE_PREFIX_TOKENS
+
+    previous = getattr(agent, "_prompt_cache_clock", None)
+    if (not isinstance(previous, CacheEvent) or previous.confidence == UNKNOWN or _moa_destination(agent)[0]
+            or int(getattr(usage, "prompt_tokens", 0) or 0) < max(MIN_CACHEABLE_PREFIX_TOKENS, previous.read_tokens)
+            or previous.destination != _route_key(provider, base_url, model)
+            or _agent_invalid_reason(agent, previous, _agent_generation(agent))):
+        return
+    attempt = attempt or getattr(agent, "_prompt_cache_attempt", None) or {}
+    _learn(previous, provider, base_url, model, attempt, 0, 0, float(attempt.get("sent_at") or time.time()))
+
+
 def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, base_url: str,
                           api_mode: str, attempt: Optional[dict[str, Any]] = None,
                           witness: Optional[tuple[str, Optional[int], int, tuple[str, str, str]]] = None,
@@ -403,6 +430,7 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     Returns the new event, or None when the response touched no cache (the previous window stands)."""
     read, write = int(getattr(usage, "cache_read_tokens", 0) or 0), int(getattr(usage, "cache_write_tokens", 0) or 0)
     if read + write <= 0:
+        _learn_silent_miss(agent, usage, model=model, provider=provider, base_url=base_url, attempt=attempt)
         return None
     moa_route, moa_attempt = _moa_destination(agent)
     if moa_route is not None:
@@ -425,6 +453,7 @@ def record_cache_response(agent: Any, usage: Any, *, model: str, provider: str, 
     if previous is not None and (previous.destination != destination or previous.route_class != ctx.route_class):
         previous = None
     at = float(attempt.get("sent_at") or time.time())
+    _learn(previous, provider, base_url, model, attempt, read, write, at)
     coverage, carried = _fold_coverage(previous, verdict, ctx.route_class, at, read, write)
     guaranteed, estimated = _ends(coverage)
     confidence, reason = _confidence(verdict, previous, carried, write)
@@ -604,11 +633,15 @@ def stored_cache_window(raw_clock: Any, *, session_id: str, generation: Optional
 def cache_window_payload(agent: Any) -> Optional[dict[str, Any]]:
     """``cache_window`` as the JSON shape surfaces carry (``PromptCacheWindow`` contract)."""
     from agent.prompt_cache_lifecycle import prompt_cache_warming_disabled
+    from agent.prompt_cache_routes import display_rule, rule_for
 
     window = cache_window(agent)
     if window is None:
         return None
-    return {**asdict(window), "warming_off": prompt_cache_warming_disabled(agent)}
+    learned = display_rule(rule_for(getattr(agent, "provider", ""), getattr(agent, "base_url", ""),
+                                    getattr(agent, "model", ""), bool(getattr(agent, "_use_prompt_caching", False)),
+                                    tier_s=TTL_SECONDS.get(window.tier or "")))
+    return {**asdict(window), "warming_off": prompt_cache_warming_disabled(agent), "learned": learned}
 
 
 def _field(window: Any, name: str) -> Any:
@@ -661,6 +694,8 @@ def render_prompt_cache_line(window: Optional[dict[str, Any]], *, now: Optional[
         return None
     estimated = window.get("estimated_until")
     line = _cache_line(window, estimated, now)
+    if window.get("learned"):
+        line = f"{line} {t('gateway.context.cache_learned', rule=window['learned'])}"
     return f"{line} {t('gateway.context.cache_warming_off')}" if window.get("warming_off") else line
 
 

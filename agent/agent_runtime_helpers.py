@@ -1396,8 +1396,8 @@ def anthropic_prompt_cache_policy(
             return False, False
     if is_native_anthropic:
         return True, True
-    from agent.prompt_caching import catalog_cache_markers  # a catalog route (Nous) decides by its rates
-    if eff_api_mode == "chat_completions" and (catalog := catalog_cache_markers(
+    from agent.prompt_caching import learned_or_catalog_markers  # learned use, then a catalog route's rates
+    if eff_api_mode == "chat_completions" and (catalog := learned_or_catalog_markers(
             eff_provider, eff_base_url, eff_model, getattr(agent, "api_key", "") or "")) is not None:
         return catalog, False
     # Envelope layout is OpenAI-wire only; Portal Claude on native Messages must fall through to the

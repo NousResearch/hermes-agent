@@ -443,6 +443,7 @@ gateway:
     cache_unknown_runtime: "ذاكرة الموجه المؤقتة: غير معروفة (بيئة التشغيل هذه تضبط خيارات التخزين المؤقت بنفسها ولا يستطيع Hermes رصدها)."
     cache_unknown_storage: "ذاكرة التخزين المؤقت للموجه: غير معروفة (تعذّرت قراءة مخزن الجلسة)."
     cache_warming_off: "إبقاء النشاط: متوقف (فشل أحدها)."
+    cache_learned: "مُتعلَّم: {rule}."
     cache_confidence:
       proven: "مُثبَت"
       declared: "مُعلَن"

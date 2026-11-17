@@ -186,6 +186,12 @@ WIRING = [
     ("Multiplex 4g: cron .env reload", "cron/scheduler.py", "        if not _cron_multiplex_active():\n            load_hermes_dotenv(hermes_home=_get_hermes_home())", "agent path skips reload"),
     ("Multiplex 4g: cron .env reload", "cron/scheduler.py", "        if not _cron_multiplex_active():\n            try:\n                from hermes_cli.env_loader import load_hermes_dotenv", "no_agent path skips reload"),
     ("Multiplex 4g: import-time .env", "run_agent.py", "_hermes_home = _import_time_env_home()", "process home under multiplex"),
+    ("Multiplex 4h: slash fail-closed", "gateway/run.py", "return _deny_all_slash_config(getattr(source, \"platform\", None))", "deny-all on failed load"),
+    ("Multiplex 4h: allow_bots per bot", "gateway/authz_mixin.py", '_reader = getattr(_bot_adapter, "_slack_allow_bots", None)', "gate asks the source adapter"),
+    ("Multiplex 4h: bot chat child", "cron/scheduler.py", "owner = _resolve_active_profile_name()", "-p <owning profile>"),
+    ("Multiplex 4h: checkpoints", "tools/checkpoint_manager.py", "def _checkpoint_base", "per-call home"),
+    ("Multiplex 4h: process registry", "tools/process_registry.py", "def _checkpoint_path", "per-call home"),
+    ("Multiplex 6: precedence warning", "gateway/run.py", "_warn_slack_precedence_flips(profile_homes)", "startup warning wired"),
 ]
 
 

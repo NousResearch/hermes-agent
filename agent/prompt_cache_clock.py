@@ -743,3 +743,24 @@ def _cache_line(window: dict[str, Any], estimated: Any, now: Optional[float]) ->
         return t("gateway.context.cache_maybe_warm", until=_clock(estimated), remaining=_duration(float(estimated) - now),
                  **facts)
     return t("gateway.context.cache_expired", ago=_duration(now - float(estimated)), **facts)
+
+
+def prompt_cache_is_cold(agent: Any, *, now: float | None = None) -> bool:
+    """Whether the provider prompt cache has certainly expired, so a history rewrite breaks nothing.
+
+    The prune's ONLY cold-cache reading (both call sites), from the shared cache clock: past the
+    window's estimated end only. An unknown window (no cache touched yet, an unreadable store, a
+    route switch, or a compaction or prune since the last response) or one that may still be warm
+    answers False. The clock restores a resumed session's window from the store itself.
+
+    Only a proven or declared window prunes. An assumed one includes the window the clock rebuilds for a
+    pre-clock session from TODAY's TTL and route: a session cached for 1h (or on another route) then
+    reads cold while still warm. The /context line keeps showing that estimate.
+
+    A route switch (``/model``, a fallback, any change of provider, endpoint or model since the last
+    response) is cold too: the new route has never seen this prefix, so the first request there writes
+    it whole and an offload before it breaks nothing."""
+    window = cache_window(agent)
+    if window is not None and window.reason == "route_changed":
+        return True
+    return window is not None and window.confidence in (PROVEN, DECLARED) and cache_certainly_cold(window, now=now)

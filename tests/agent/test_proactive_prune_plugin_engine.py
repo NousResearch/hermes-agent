@@ -49,7 +49,7 @@ def _drive_route(engine, route):
     turn_start = len(messages)
     messages.append({"role": "user", "content": "next question"})
     original = deepcopy(messages)
-    with patch("agent.turn_proactive_prune.prompt_cache_is_cold", return_value=True):
+    with patch("agent.prompt_cache_clock.prompt_cache_is_cold", return_value=True):
         if route == "after_tool":
             out = compress_after_tool_results(
                 agent, messages=messages, system_message="sys", user_message="next question",

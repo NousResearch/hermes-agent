@@ -785,22 +785,13 @@ class PromptCacheWarmer:
         """One keep-alive attempt between ``pre_auxiliary_call`` and ``post_auxiliary_call``
         (``aux_task="cache_warm"``), so observers that meter auxiliary spend see every refresh.
         The observers read the request; the bytes sent are unchanged."""
-        from agent.auxiliary_hooks import finish_aux_call_hooks, start_aux_call_hooks
+        from agent.auxiliary_hooks import run_with_aux_hooks
 
-        b = run.billing
-        hooks = start_aux_call_hooks(
-            aux_task="cache_warm", metadata={"api_request_id": f"cache-warm-{uuid.uuid4().hex}"}, client=client,
-            kwargs=kwargs, provider=str(b["provider"] or ""), model=str(run.model or ""), api_mode=run.api_mode,
-            streaming=False,
+        return run_with_aux_hooks(
+            call, aux_task="cache_warm", metadata={"api_request_id": f"cache-warm-{uuid.uuid4().hex}"},
+            client=client, kwargs=kwargs, provider=str(run.billing["provider"] or ""), model=str(run.model or ""),
+            api_mode=run.api_mode, normalized=lambda message: self._hook_view(run, message),
         )
-        try:
-            message = call()
-        except BaseException as exc:
-            finish_aux_call_hooks(hooks, error=exc)
-            raise
-        if hooks is not None:
-            finish_aux_call_hooks(hooks, message, normalized=self._hook_view(run, message))
-        return message
 
     @staticmethod
     def _hook_view(run: _Run, message: Any) -> tuple[Any, Any, Optional[dict[str, Any]]]:
@@ -896,7 +887,7 @@ class PromptCacheWarmer:
         event is stamped with the arm-time witness, so a rewrite committing even now leaves the
         clock unknown rather than vouching for the new prefix."""
         from agent.prompt_cache_clock import attempt_facts, record_cache_response
-        from agent.turn_usage import _cache_clock_column
+        from agent.turn_usage import cache_clock_column
 
         agent, b = self.agent, run.billing
         with self._lock:
@@ -906,20 +897,17 @@ class PromptCacheWarmer:
             event = record_cache_response(agent, canonical, model=b["model"], provider=b["provider"],
                                           base_url=b["base_url"], api_mode=b["api_mode"], attempt=attempt,
                                           witness=run.witness)
-        return _cache_clock_column(event)
+        return cache_clock_column(event)
 
     def _add_to_session_totals(self, canonical: Any, amount: Optional[float]) -> None:
         # Not session_api_calls: that counter is the conversation's request sequence (and the
         # warmer's own currency token); a replay is accounted, not a turn.
+        from agent.turn_usage import add_session_usage
+
         agent = self.agent
         agent.session_cache_warm_calls = getattr(agent, "session_cache_warm_calls", 0) + 1
-        agent.session_prompt_tokens += canonical.prompt_tokens
-        agent.session_completion_tokens += canonical.output_tokens
-        agent.session_total_tokens += canonical.total_tokens
-        agent.session_input_tokens += canonical.input_tokens
-        agent.session_output_tokens += canonical.output_tokens
-        agent.session_cache_read_tokens += canonical.cache_read_tokens
-        agent.session_cache_write_tokens += canonical.cache_write_tokens
+        add_session_usage(agent, canonical, prompt_tokens=canonical.prompt_tokens,
+                          completion_tokens=canonical.output_tokens, total_tokens=canonical.total_tokens)
         if amount is not None:
             agent.session_estimated_cost_usd += amount
 
@@ -988,10 +976,10 @@ class PromptCacheWarmer:
 
     def _billing_snapshot(self) -> dict[str, Any]:
         agent = self.agent
-        from agent.turn_usage import _agent_session_source
+        from agent.turn_usage import agent_session_source
 
         return {
-            "session_id": getattr(agent, "session_id", None), "source": _agent_session_source(agent),
+            "session_id": getattr(agent, "session_id", None), "source": agent_session_source(agent),
             "provider": agent.provider, "base_url": agent.base_url, "model": agent.model,
             "api_mode": agent.api_mode, "api_key": getattr(agent, "api_key", ""),
             "reset_epoch": getattr(agent, "_session_reset_epoch", 0),
@@ -1042,11 +1030,10 @@ def _compressor_blocked(agent: Any) -> Optional[str]:
 
 
 def _rough_tokens(agent: Any, messages: Optional[list] = None) -> int:
-    from agent.model_metadata import estimate_request_tokens_rough
+    from agent.conversation_compression_manual import estimate_request_tokens
 
-    msgs = list(getattr(agent, "_session_messages", None) or ()) if messages is None else messages
-    return estimate_request_tokens_rough(msgs, system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
-                                         tools=getattr(agent, "tools", None) or None)
+    return estimate_request_tokens(agent, list(getattr(agent, "_session_messages", None) or ())
+                                   if messages is None else messages)
 
 
 def _compaction_baseline(agent: Any) -> int:
@@ -1133,7 +1120,7 @@ def _offload_reason(agent: Any, warmer: PromptCacheWarmer, now: float) -> str:
     """Why step 3's offload does not run now (``"due"`` when it does): the chat is idle and its cache
     is over (past the clock's proven/declared end, or its route changed). Once per stretch; the cold
     prune applies its own gates (protected tail, >= 16k reclaim). Caller holds ``warmer._lock``."""
-    from agent.turn_proactive_prune import prompt_cache_is_cold
+    from agent.prompt_cache_clock import prompt_cache_is_cold
 
     if warmer._offloaded:
         return "offloaded_this_stretch"

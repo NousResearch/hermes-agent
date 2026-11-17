@@ -123,7 +123,7 @@ def test_a_resumed_session_reads_the_stored_cache_clock(home):
     from types import SimpleNamespace
 
     from agent.prompt_cache_clock import CacheEvent, _route_key, event_to_json
-    from agent.turn_proactive_prune import prompt_cache_is_cold
+    from agent.prompt_cache_clock import prompt_cache_is_cold
     from hermes_state import SessionDB
 
     route = ("openrouter", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.6")

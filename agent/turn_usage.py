@@ -22,14 +22,28 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_serve
 logger = logging.getLogger("agent.conversation_loop")
 
 
-def _agent_session_source(agent: Any) -> str:
+def add_session_usage(agent: Any, usage: Any, *, prompt_tokens: int, completion_tokens: int,
+                      total_tokens: int) -> None:
+    """Fold one reply's tokens into the agent's running session totals (the caller holds
+    ``session_totals_lock``): a conversation response and a cache keep-alive alike."""
+    agent.session_prompt_tokens += prompt_tokens
+    agent.session_completion_tokens += completion_tokens
+    agent.session_total_tokens += total_tokens
+    agent.session_input_tokens += usage.input_tokens
+    agent.session_output_tokens += usage.output_tokens
+    agent.session_cache_read_tokens += usage.cache_read_tokens
+    agent.session_cache_write_tokens += usage.cache_write_tokens
+    agent.session_reasoning_tokens += usage.reasoning_tokens
+
+
+def agent_session_source(agent: Any) -> str:
     """The surface the agent's own row create would stamp (``_ensure_db_session``), so an
     accounting guard that wins the row-creation race never mints an anonymous session."""
     from agent.session_source import session_source_for
     return session_source_for(getattr(agent, "platform", None))
 
 
-def _cache_clock_column(event: Any) -> dict[str, str]:
+def cache_clock_column(event: Any) -> dict[str, str]:
     """``prompt_cache_clock`` kwarg for the token batch: only when this response moved the clock."""
     if event is None:
         return {}
@@ -42,14 +56,14 @@ def _queue_usage(agent: Any, **counts: Any) -> None:
     from agent.agent_init_session import agent_interface
     store = agent_interface(agent)
     if store is None:
-        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts)
+        agent._session_db.queue_token_counts(agent.session_id, source=agent_session_source(agent), **counts)
         return
     from persistence.conversation.usage import BillingRoute, TokenCounts, UsageDelta
     tokens = TokenCounts(**{key: counts.pop(key, 0) for key in (
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")})
     route = {key: counts.pop(key, None) for key in ("model", "billing_provider", "billing_base_url", "billing_mode")}
     delta = UsageDelta(tokens=tokens, route=BillingRoute(**route) if route["model"] else None,
-                       source=_agent_session_source(agent), **counts)
+                       source=agent_session_source(agent), **counts)
     store.usage.queue_usage(agent.session_id, delta)
 
 
@@ -233,14 +247,8 @@ def record_response_usage(
     from agent.prompt_cache_lifecycle import session_totals_lock
 
     with session_totals_lock(agent):  # a keep-alive reply landing now adds to these too
-        agent.session_prompt_tokens += prompt_tokens
-        agent.session_completion_tokens += completion_tokens
-        agent.session_total_tokens += total_tokens
-        agent.session_input_tokens += canonical_usage.input_tokens
-        agent.session_output_tokens += canonical_usage.output_tokens
-        agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
-        agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
-        agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
+        add_session_usage(agent, canonical_usage, prompt_tokens=prompt_tokens,
+                          completion_tokens=completion_tokens, total_tokens=total_tokens)
     # Rolling history for status-bar averages (last 10).
     with suppress(Exception):
         hist = getattr(agent, "_api_latency_history", None)
@@ -336,7 +344,7 @@ def record_response_usage(
                 model=agent.model,
                 api_call_count=1,
                 task=getattr(agent, "_turn_route_task", "") or "",
-                **_cache_clock_column(_cache_event),
+                **cache_clock_column(_cache_event),
             )
         except Exception as e:  # silent loss here undercounts analytics
             logger.debug(

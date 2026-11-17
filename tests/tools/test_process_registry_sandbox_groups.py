@@ -238,7 +238,7 @@ def test_a_supervisor_probe_that_raced_a_kill_is_repeated_on_the_group(monkeypat
 
     class Env:
         def execute(self, command, **_kwargs):
-            group_probes.append('kill -0 "-$(cat' in command)
+            group_probes.append('kill -0 "-$_hp"' in command)
             if len(group_probes) == 1:
                 session.group_liveness = True  # a kill begins while this supervisor probe runs
                 return {"output": "0 0 exit:\n"}  # ...and has already stopped the supervisor
@@ -253,3 +253,26 @@ def test_a_supervisor_probe_that_raced_a_kill_is_repeated_on_the_group(monkeypat
 
     assert group_probes == [False, True, True]
     assert session.exit_code == 143
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("shell", ["bash", "sh"])
+@pytest.mark.parametrize("diagnostic,status", [
+    ("No such process", "exit:143"), ("Operation not permitted", "run"), (None, "run")])
+def test_the_group_poll_reads_only_esrch_as_gone(tmp_path, shell, diagnostic, status):
+    from tools.process_registry_env_log import log_delta_command, parse_log_delta_reply
+
+    (tmp_path / "bg.pid").write_text("4321\n", encoding="utf-8")
+    (tmp_path / "bg.exit").write_text("143\n", encoding="utf-8")
+    (tmp_path / "bg.log").write_text("", encoding="utf-8")
+    # A shell function stands in for the kill builtin, so no real process is signalled.
+    fake_kill = ("kill() { return 0; }; " if diagnostic is None else
+                 "kill() { echo " + shlex.quote("kill: (-4321) - " + diagnostic) + " >&2; return 1; }; ")
+    quoted = {name: shlex.quote(str(tmp_path / f"bg.{name}")) for name in ("log", "pid", "exit")}
+    command = fake_kill + log_delta_command(quoted["log"], 0, quoted["pid"], quoted["exit"], group=True)
+
+    result = subprocess.run([shell, "-c", command], capture_output=True, text=True, timeout=10, check=False)
+
+    reply = parse_log_delta_reply(result.stdout)
+    assert reply is not None, result
+    assert reply.exit_code == (None if status == "run" else 143)

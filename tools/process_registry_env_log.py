@@ -53,9 +53,15 @@ class LogDelta(NamedTuple):
 
 def _alive_probe(quoted_pid_path: str, group: bool) -> str:
     """``kill -0`` on the job's supervisor, or on its whole process group (``-<pgid>``) once
-    a kill has begun, so a member that outlives the supervisor keeps the job running."""
-    sign = "-" if group else ""
-    return f'kill -0 "{sign}$(cat {quoted_pid_path} 2>/dev/null)" 2>/dev/null'  # no "--": dash rejects it
+    a kill has begun, so a member that outlives the supervisor keeps the job running.
+
+    The group form, like the kill's own check, reads only ESRCH as gone: a member the
+    sandbox user may not signal (EPERM) is still running. ``--`` is left out because
+    dash's kill rejects it; bash and dash both read ``-N`` after the signal as a group."""
+    if not group:
+        return f'kill -0 "$(cat {quoted_pid_path} 2>/dev/null)" 2>/dev/null'
+    return (f'{{ _hp=$(cat {quoted_pid_path} 2>/dev/null); [ -n "$_hp" ] && '
+            f'{{ _he=$(LC_ALL=C kill -0 "-$_hp" 2>&1) || case "$_he" in *"No such process"*) false;; esac; }}; }}')
 
 
 def log_delta_command(quoted_log_path: str, offset: int, quoted_pid_path: str, quoted_exit_path: str,

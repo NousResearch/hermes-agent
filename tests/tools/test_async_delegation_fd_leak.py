@@ -86,7 +86,7 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     assert set(opened) == set(closed)
 
     opened = _track_connections(monkeypatch)
-    ad.mark_completion_delivered("nope")
+    ad.claim_completion_delivery("nope", "claim-2")
 
     assert opened, "expected at least one connection to be opened"
     assert _still_open(opened) == []
@@ -142,7 +142,7 @@ def test_schema_init_failure_still_closes_connection(monkeypatch, tmp_path):
     opened = _track_connections(monkeypatch, failing_schema)
 
     with pytest.raises(PermanentStoreError, match="simulated schema init failure") as raised:
-        ad.mark_completion_delivered("nope")
+        ad.claim_completion_delivery("nope", "claim-1")
 
     assert isinstance(raised.value.__cause__, sqlite3.OperationalError)
     assert len(opened) == 1
@@ -171,7 +171,7 @@ def test_post_open_hardening_failure_closes_connection(monkeypatch, tmp_path):
     monkeypatch.setattr(_holder, "_secure_state_db_files", secure_then_fail_after_open)
 
     with pytest.raises(OSError, match="simulated swapped-in sidecar link") as raised:
-        ad.mark_completion_delivered("nope")
+        ad.claim_completion_delivery("nope", "claim-1")
 
     assert raised.value.errno == errno.ELOOP
     assert len(opened) == 1

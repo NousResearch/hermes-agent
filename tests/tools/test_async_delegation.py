@@ -76,7 +76,7 @@ def test_ledger_write_keeps_configured_state_db_journal_mode(tmp_path, monkeypat
         assert conn.execute(f"PRAGMA journal_mode={mode}").fetchone()[0] == mode
         conn.execute("CREATE TABLE seed (x)")
 
-    ad.mark_completion_delivered("nope")
+    ad.claim_completion_delivery("nope", "claim-1")
 
     with closing(sqlite3.connect(tmp_path / "state.db")) as conn:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == mode
@@ -1162,7 +1162,7 @@ def test_ledger_write_creates_state_db_0o600_under_permissive_umask(tmp_path, mo
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     old_umask = os.umask(0o022)
     try:
-        ad.mark_completion_delivered("nope")
+        ad.claim_completion_delivery("nope", "claim-1")
     finally:
         os.umask(old_umask)
 

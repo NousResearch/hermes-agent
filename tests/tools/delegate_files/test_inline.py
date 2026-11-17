@@ -160,6 +160,7 @@ def test_long_backtick_fences_stay_inside_the_cap(tmp_path, monkeypatch):
     (ws / "ticks.md").write_text("".join(f"{'`' * 300} {n}\n" for n in range(1, 50)), encoding="utf-8")
     _ws, files, err, _msg = _brief(tmp_path, ["ticks.md"])
     assert err is None and len(files[0].block.encode()) <= 2000
+    assert f"1|{'`' * 300} 1\n" in files[0].block and "not inlined" not in files[0].block
 
 
 def test_fence_refit_drops_a_row_per_pass(tmp_path, monkeypatch):
@@ -208,6 +209,17 @@ def test_a_label_longer_than_the_remaining_budget_is_skipped_not_rendered(tmp_pa
     _ws, files, err, _msg = _brief(tmp_path, ["wide.txt", long_path])
     assert err is None and len(files[0].block.encode()) <= dtf.MAX_TOTAL_BYTES
     assert "not inlined" in files[0].block and "1|ok" not in files[0].block
+
+
+def test_chunked_reads_keep_the_unterminated_last_line_and_a_bom_crlf_row_that_fits(tmp_path):
+    ws = _workspace(tmp_path)
+    # A last line with no newline, spanning a chunk boundary, is still a row.
+    (ws / "tail.txt").write_bytes(b"a\n" + b"b" * (dtf._CHUNK + 5))
+    rows, wanted, _sha = dtf._read_lines(ws / "tail.txt", 2, 2, 1 << 20)
+    assert wanted == 1 and rows == [f"2|{'b' * (dtf._CHUNK + 5)}\n"]
+    # Line 1 is 8 bytes on disk (BOM + CRLF) but its row "1|abc\n" is 6: it fits a 6-byte budget.
+    (ws / "bom.txt").write_bytes(b"\xef\xbb\xbfabc\r\n")
+    assert dtf._read_lines(ws / "bom.txt", 1, 1, 6)[0] == ["1|abc\n"]
 
 
 def test_cut_files_stay_unmarked_and_denied_or_binary_files_fail_the_call(tmp_path):

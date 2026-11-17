@@ -123,3 +123,14 @@ async def test_a_delivery_that_keeps_failing_gets_a_terminal_answer_and_is_query
     assert [r["outcome"] for r in rows] == ["failed"] * 2  # the two terminal answers; the trimmed rows are gone
     assert {r["delivery_id"] for r in rows} == {"d-9"}
     assert "gave up after 2 failed attempts" in rows[0]["reason"]
+
+
+def test_each_failure_leaves_the_retry_window_on_its_own(tmp_path):
+    from gateway.platforms.webhook import _WebhookDeliveryIdentity
+    from gateway.platforms.webhook_receipts import FAILED, WebhookReceipts
+    store = WebhookReceipts(tmp_path / "r.db", retention_days=1 / 24)  # a one-hour window
+    identity = _WebhookDeliveryIdentity.from_parts(None, "alerts", "d-1")
+    for minute in (0, 40, 80):
+        store.record(identity, "push", FAILED, "target rejected", "", 1_000_000 + minute * 60)
+    # At minute 90 the failure from minute 0 is outside the window; the other two are inside.
+    assert store.failed_attempts(identity, 1_000_000 + 90 * 60) == 2

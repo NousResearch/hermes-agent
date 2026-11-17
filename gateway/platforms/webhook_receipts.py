@@ -90,10 +90,9 @@ CREATE TABLE IF NOT EXISTS failed_attempts (
     profile TEXT NOT NULL,
     route TEXT NOT NULL,
     delivery_id TEXT NOT NULL,
-    failures INTEGER NOT NULL,
-    last_failed_at REAL NOT NULL,
-    PRIMARY KEY (profile, route, delivery_id)
+    failed_at REAL NOT NULL
 );
+CREATE INDEX IF NOT EXISTS failed_attempts_delivery ON failed_attempts(profile, route, delivery_id, failed_at);
 """
 
 
@@ -152,22 +151,20 @@ class WebhookReceipts:
             return cursor.lastrowid
 
     def failed_attempts(self, identity, now: float) -> int:
-        """How many times this delivery was tried and failed inside the retention window. Kept in its own
-        keyed table, so the history cap never lowers it."""
+        """How many times this delivery was tried and failed inside the retention window. One row per
+        failure in its own table, so each failure expires on its own and the history cap never lowers it."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT failures FROM failed_attempts WHERE profile = ? AND route = ? AND delivery_id = ?"
-                " AND last_failed_at >= ?",
+                "SELECT COUNT(*) FROM failed_attempts WHERE profile = ? AND route = ? AND delivery_id = ?"
+                " AND failed_at >= ?",
                 (identity.profile, identity.route, identity.delivery_id, now - self.retention_seconds),
             ).fetchone()
-        return int(row[0]) if row else 0
+        return int(row[0])
 
     @staticmethod
     def _count_failure(conn: sqlite3.Connection, profile: str, route: str, delivery_id: str, now: float) -> None:
-        conn.execute(
-            "INSERT INTO failed_attempts (profile, route, delivery_id, failures, last_failed_at) VALUES (?, ?, ?, 1, ?)"
-            " ON CONFLICT (profile, route, delivery_id) DO UPDATE SET failures = failures + 1,"
-            " last_failed_at = excluded.last_failed_at", (profile, route, delivery_id, now))
+        conn.execute("INSERT INTO failed_attempts (profile, route, delivery_id, failed_at) VALUES (?, ?, ?, ?)",
+                     (profile, route, delivery_id, now))
 
     def is_claimed(self, identity) -> bool:
         with self._connect() as conn:
@@ -245,7 +242,7 @@ class WebhookReceipts:
             return
         self._next_prune_at = now + _PRUNE_INTERVAL_SECONDS
         conn.execute("DELETE FROM receipts WHERE received_at < ?", (now - self.retention_seconds,))
-        conn.execute("DELETE FROM failed_attempts WHERE last_failed_at < ?", (now - self.retention_seconds,))
+        conn.execute("DELETE FROM failed_attempts WHERE failed_at < ?", (now - self.retention_seconds,))
         # Live claims are bounded by the per-route rate limit over the retention window; the cap only
         # trims history rows, so trimming never re-opens a delivery to a replay.
         conn.execute(

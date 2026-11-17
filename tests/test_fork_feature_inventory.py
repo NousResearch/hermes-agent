@@ -56,6 +56,17 @@ WIRING = [
     ("pricing overrides", "agent/usage_pricing.py", "pricing_override_for(model_name, route)", "override consulted first"),
     ("relevance gate accounting", "gateway/run.py", "def _relevance_gate_accounting_token", "classifier usage booked to the channel session"),
     ("relevance gate accounting", "gateway/run.py", 'task="relevance_gate"', "aux task tag"),
+    # ── Cost budget + alerts ──────────────────────────────────────────────
+    ("cost budget", "agent/cost_budget.py", "def preflight_cron_job", "skip decision + overrun alert"),
+    ("cost budget", "agent/cost_budget.py", "def watch", "per-tick threshold/run/unpriced alerts"),
+    ("cost budget", "cron/scheduler.py", "_cost_budget.preflight_cron_job(job, adapters=adapters, loop=loop)", "pre-run skip in the shared run body"),
+    ("cost budget", "cron/scheduler.py", 'mark_job_skipped(job["id"], "skipped_budget"', "skip recorded without consuming a run"),
+    ("cost budget", "cron/jobs.py", "def mark_job_skipped", "skip keeps streak/repeat, re-arms one-shots"),
+    ("cost budget", "agent/cost_budget.py", "if job_id in cfg.essential_jobs:", "essential ids always run; default_discretionary fail-closed mode"),
+    ("cost budget", "tools/cronjob_tools.py", 'updates["discretionary"] = True', "set-only discretionary flag"),
+    ("cost budget", "cron/scheduler.py", "_cost_budget.watch(adapters=adapters, loop=loop)", "tick watches this profile's budget"),
+    ("cost budget", "cron/executions.py", "note: Optional[str] = None", "ledger records the skip on a completed row"),
+    ("cost_budget_status", "tools/cost_budget_tool.py", 'toolset="cost_budget"', "own non-floor toolset"),
     # ── Drive per-user access check ───────────────────────────────────────
     ("Drive access check", "plugins/google_drive_sa/access.py", "def require_access", "gate"),
     ("Drive access check", "plugins/google_drive_sa/access.py", "def filter_listing", "listing filter"),
@@ -223,7 +234,7 @@ def test_fork_toolsets_are_registered():
 
     all_toolsets = set(toolsets.get_all_toolsets())
     for name in ("notion", "jira", "jira_write", "slack_post", "webflow_assets",
-                 "ownership", "slack", "video_frames", "pdf_pages"):
+                 "ownership", "slack", "video_frames", "pdf_pages", "cost_budget"):
         assert name in all_toolsets, (
             f"toolset '{name}' is not registered — RBAC cannot gate it, and any "
             f"role granting it becomes a no-op."

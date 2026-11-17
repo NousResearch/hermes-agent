@@ -7780,6 +7780,25 @@ def _run_one_job_body(
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
         )
+        # Fork: cost budget (agent/cost_budget.py). A discretionary job is
+        # skipped while this profile is over budget, before its script or
+        # agent runs; None (always, without a cost_budget: block) runs it.
+        from agent import cost_budget as _cost_budget
+
+        _budget_skip = _cost_budget.preflight_cron_job(job, adapters=adapters, loop=loop)
+        if _budget_skip is not None:
+            # Not a run: no failure streak, no repeat consumed (cron.jobs).
+            from cron.jobs import mark_job_skipped
+
+            if mark_job_skipped(job["id"], "skipped_budget", _budget_skip.reason,
+                                retry_at=_budget_skip.resets_at,
+                                expected_fire_owner=fire_owner):
+                finish_execution(execution_id, success=True, note=_budget_skip.reason,
+                                 delivery_outcome="suppressed")
+            else:
+                finish_execution(execution_id, success=False,
+                                 error="Fire claim ownership lost before terminal completion.")
+            return True
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -8381,6 +8400,16 @@ def tick(
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
+
+        # Fork: cost budget alerts for THIS profile (tick runs inside the
+        # profile's home override, with its own adapters). Returns at once
+        # without a cost_budget: block; throttled and fail-open otherwise.
+        try:
+            from agent import cost_budget as _cost_budget
+
+            _cost_budget.watch(adapters=adapters, loop=loop)
+        except Exception as _budget_exc:
+            logger.debug("Cost budget watch failed: %s", _budget_exc)
 
         # Dead-owner claim reclaim (#86721): execution rows carry their owner
         # pid + process start time, but recovery previously ran only at

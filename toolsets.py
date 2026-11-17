@@ -408,6 +408,14 @@ TOOLSETS = {
         "includes": [],
     },
 
+    # Fork: the agent's read-only view of its own spend and budget
+    # (agent/cost_budget.py). Non-floor: spend is granted per role.
+    "cost_budget": {
+        "description": "Read-only view of this profile's own LLM spend and cost budget",
+        "tools": ["cost_budget_status"],
+        "includes": [],
+    },
+
     "ownership": {
         "description": "Automation ownership (claim, transfer, collaborators) without a shell",
         "tools": ["ownership"],

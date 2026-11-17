@@ -651,6 +651,105 @@ migration prints a hint naming `hermes costs --reprice --dry-run` (a write-open 
 migrates but changes no cost) and exits 1. Design:
 [docs/superpowers/specs/2026-09-17-cost-attribution-design.md](docs/superpowers/specs/2026-09-17-cost-attribution-design.md).
 
+### Cost budget + alerts — [agent/cost_budget.py](agent/cost_budget.py)
+
+Opt-in per profile through a top-level `cost_budget:` block in that profile's
+`config.yaml`. **Without the block nothing changes**: every entry point
+returns after a cached config read — no store opened, no state file, no ledger
+difference (the `cost_budget_status` tool then reports `configured: false`
+and reads nothing).
+
+```yaml
+cost_budget:
+  daily_usd: 5                    # any of daily/monthly/per_run activates the block
+  monthly_usd: 100
+  alert_at: [0.5, 0.8]            # fractions (0.8 = 80%); 1.0 is always added; >5 is rejected
+  per_run_usd: 1.5                # cron runs only (a cron root + its lineage)
+  alert_channel: slack:C0123ABCD  # deliver-target syntax; a bare C… id means slack:; local/origin rejected
+  alert_mention: "<!subteam^S123>"  # optional, prefixed to LOUD alerts only
+  discretionary_jobs: [3f9a1c2d4e5b]  # job ids only; or `discretionary: true` on the job
+  default_discretionary: false    # true = EVERY job is skippable unless listed below
+  essential_jobs: [a1b2c3d4e5f6]  # job ids that always run (win over every other marker)
+  cache_seconds: 300              # spend snapshot TTL (min 30)
+```
+
+- **Spend is booked when it happens.** `session_model_usage` rows are
+  cumulative upserts with no per-call timestamp, so windowing on
+  `sessions.started_at` (what `hermes costs` does) would miss a long-lived
+  session — a Slack channel root never resets — that keeps spending: a fail-
+  open budget. Each scan reads the usage rows touched since the last scan,
+  books the growth of each row's cumulative cost to the local day of its
+  `last_seen`, and keeps the per-row values and per-day totals in
+  `${HERMES_HOME}/cost_budget/spend.json` (flock + atomic write; 40-day
+  retention). The **first scan** baselines rows last seen before this month
+  (no booking) and books rows active this month whole, flagging those days
+  **upper bound** (`spend_is_upper_bound`) when the row began earlier — fail
+  closed. A session idle beyond the retention that revives is booked whole the
+  same way. Unpriced tokens are never $0: a daily alert, `spend_is_lower_bound`,
+  and the tool returns `remaining_usd: null`. Resolved through
+  `get_hermes_home()` per call (one multiplexed gateway ticks several homes),
+  cached per home; a failed scan is cached for 60s (`SpendUnavailable`) so a
+  locked store is not re-queried every preflight. **Prerequisite:** a
+  `pricing.overrides` entry for the profile's model. **Known limit:** day and
+  month boundaries use `hermes_time`'s process-wide timezone, not a
+  per-profile one.
+- **Enforcement** — `preflight_cron_job`, called from `_run_one_job_body`
+  ([cron/scheduler.py](cron/scheduler.py)) after the secret scope is set and
+  before `run_job`, so before the job's script *or* agent. A discretionary
+  job over its daily or monthly budget is skipped via
+  `cron.jobs.mark_job_skipped`, which is **not a run**: `last_status =
+  skipped_budget` + `last_skip_reason`, but `failure_streak`, `last_error`
+  and `repeat.completed` are untouched; a recurring job moves to its next
+  occurrence, and a one-shot gets its `claim_dispatch` pre-claim back and
+  re-arms when the exceeded budget resets. The ledger row is `completed`
+  with `error = "skipped: over budget (daily $X of $Y)"`
+  (`finish_execution(note=…)`, [cron/executions.py](cron/executions.py)); a
+  lost fire claim is recorded as such, like the normal path. Non-
+  discretionary jobs run. No bypass for manual runs: the agent could
+  otherwise `cronjob(action='run')` around its own budget. The `cronjob`
+  tool takes `discretionary: true` (set-only — clearing it frees a job from
+  the budget, so that is an operator edit of `jobs.json` or the config list).
+  **Fail-closed mode (`default_discretionary: true`, opt-in):** every job of
+  the profile is discretionary unless its id is in `essential_jobs` — so a
+  job the agent creates without the flag still cannot escape the budget.
+  Both keys live only in `config.yaml`; the `cronjob` tool has no way to mark
+  a job essential, and a job-level `discretionary: false`/`essential` field is
+  ignored. With the profile write guard (`agent_write_guard`) on, the agent
+  cannot edit config.yaml either. An essential id wins over every other
+  marker. Default `false` keeps the list/flag behaviour above. The educator
+  profile uses `default_discretionary: true` with `essential_jobs:
+  [<release-watch job id>]`.
+- **Alerts** — `watch()` from `tick()` after the dispatch gate, and every
+  over-budget preflight. `tick` already runs inside each profile's home
+  override with **that profile's own adapters** (the multiplex ticker), so
+  alerts leave through the owning profile's bot. Sent through
+  `cron.scheduler._deliver_result` with a pseudo job (`id: cost_budget`, so
+  the bold header reads "Cost budget"), after checking the target resolves —
+  an alert that went nowhere is not marked sent. Keys (in
+  `${HERMES_HOME}/cost_budget/alerts.json`): `daily:<day>:<t>` /
+  `monthly:<month>:<t>` — a jump past several thresholds sends only the
+  highest, and `…:1` is **the** over-budget alert for the period (loud, says
+  discretionary jobs are skipped, names the job that tripped it whether
+  `watch` or a preflight got there first); `run:<root>` — per-run
+  overspends since tracking began, batched into one message per check;
+  `unpriced:<day>`. Keys are **claimed under the lock and delivered after it
+  is released, on a daemon thread that carries the caller's context** (home
+  override) and adapters — neither the state lock nor the tick lock is held
+  across a network send; a failed send releases its claim and retries later.
+  No usable `alert_channel` → logged once per process, not recorded.
+- **`cost_budget_status` tool (`cost_budget` toolset, NOT a floor)** —
+  [tools/cost_budget_tool.py](tools/cost_budget_tool.py): today/month spent,
+  budget, remaining (null when unpriced tokens make it unknown), over-budget,
+  skip state, lower/upper-bound flags, `config_warnings`, the month's five
+  costliest cron runs. **Deployment:** grant `cost_budget` to the role, list
+  it in `platform_toolsets.slack`, and for cron use give the job an owner
+  whose role grants it (the cron RBAC ceiling).
+
+Design: "Dependencies → 3. Cost budget + alerts" in
+[docs/superpowers/specs/2026-11-16-product-education-teammate-design.md](docs/superpowers/specs/2026-11-16-product-education-teammate-design.md).
+Plan:
+[docs/superpowers/plans/2026-11-16-cost-budget-alerts.md](docs/superpowers/plans/2026-11-16-cost-budget-alerts.md).
+
 ### Slack quiet channels + `slack_react`
 
 For low-noise "hidden assistant" channels. Config under the top-level `slack:`

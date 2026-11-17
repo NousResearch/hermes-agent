@@ -106,3 +106,20 @@ async def test_refused_and_deleted_api_images_are_collected_once_nothing_owns_th
         deleted = await client.delete('/api/sessions/chat')
         assert deleted.status == 200 and (await deleted.json())['deleted'] is True
     assert len(_retained(None)) == 1 and Path(restore_native_media([kept])[0]).exists()
+
+
+def test_admitted_api_image_never_scans_history_inside_admission(api, owner, monkeypatch):
+    # The admission's closing release names its own image, which the committed row now holds: it
+    # must not scan every transcript row while the serialized admission lock is held.
+    from gateway import session_ingress_media
+    scans = []
+    real = session_ingress_media._history_mentions
+    monkeypatch.setattr(session_ingress_media, '_history_mentions',
+                        lambda *a, **k: scans.append(a) or real(*a, **k))
+    _, _, row = admit_api_turn(api, session_id='scan-free', request_id='scan-free',
+        user_message=_image(PNG + b'scan-free'), conversation_history=[])
+    reference = row['payload']['api_turn_v1']['media'][0]
+    assert scans == []
+    assert Path(reference['path']).exists()
+    assert session_ingress_media.release_unheld_media(owner.db, [reference]) == 0
+    assert scans == []

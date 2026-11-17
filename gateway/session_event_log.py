@@ -13,6 +13,7 @@ Storage is a sibling ``session_events.db`` in the owning profile's home, not a `
 it is append-only, written by one background thread off the event loop, never joins the
 transcript's writer lock or migrations, and deleting the file loses nothing the transcript needs.
 """
+import atexit
 import json
 import logging
 import queue
@@ -22,6 +23,8 @@ import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_CLOSE = object()
 
 FILE_NAME = 'session_events.db'
 # Streaming fragments: each one's text arrives again in the completion record that ends it.
@@ -69,10 +72,14 @@ class EventLog:
         self._queue.put((str(session_id), None, None, None, None))
 
     def head(self, session_id):
-        """The highest committed ``seq`` for *session_id* (0 when it has none)."""
-        if session_id not in self.committed and self.path.exists():
-            self.committed.setdefault(session_id, self.read(session_id, 0, limit=0)[1])
-        return self.committed.get(session_id, 0)
+        """The highest committed ``seq`` for *session_id* (0 when it has none). Reads the file only
+        for a session not seen since this process started; only sessions with events are cached."""
+        if session_id not in self.committed:
+            last = self.read(session_id, 0, limit=0)[1]
+            if last:
+                self.committed.setdefault(session_id, last)
+            return last
+        return self.committed[session_id]
 
     def flush(self, timeout=2.0):
         """Wait (bounded) until every appended event is committed; True when the queue drained."""
@@ -96,14 +103,33 @@ class EventLog:
                     batch.append(self._queue.get_nowait())
                 except queue.Empty:
                     break
+            closing = batch[-1] is _CLOSE
+            batch = [item for item in batch if item is not _CLOSE]
+            self._commit(conn, batch)
+            for _ in range(len(batch) + closing):
+                self._queue.task_done()
+            if closing:
+                conn.close()
+                return
+
+    def _commit(self, conn, batch):
+        """Commit *batch* in order, retrying a failed write: dropping it would leave a hole the
+        numbering hides (the next event takes the lost one's ``seq``)."""
+        delay = 0.05
+        while batch:
             try:
                 self._write(conn, batch)
+                return
             except sqlite3.Error:
-                logger.warning('session event log write failed for %s', self.path, exc_info=True)
-                self._next.clear()  # re-read the head: a failed batch committed nothing
-            finally:
-                for _ in batch:
-                    self._queue.task_done()
+                logger.warning('session event log write failed for %s; retrying', self.path, exc_info=True)
+                self._next.clear()  # a failed batch committed nothing: re-read each head
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
+
+    def close(self, timeout=5.0):
+        """Commit what is queued, then stop the writer and close the file."""
+        self._queue.put(_CLOSE)
+        self._thread.join(timeout)
 
     def _write(self, conn, batch):
         touched = set()
@@ -139,8 +165,9 @@ class EventLog:
         if turn_id:
             where.append('turn_id=?')
             args.append(turn_id)
-        conn = sqlite3.connect(f'file:{self.path}?mode=ro', uri=True, timeout=10)
+        conn = sqlite3.connect(f'file:{self.path}?mode=ro', uri=True, timeout=10, isolation_level=None)
         try:
+            conn.execute('BEGIN')  # rows and bounds from one snapshot
             rows = conn.execute(
                 f'SELECT seq, type, turn_id, created_at, payload_json FROM session_events WHERE {" AND ".join(where)}'
                 ' ORDER BY seq LIMIT ?', (*args, limit)).fetchall()
@@ -185,6 +212,26 @@ def log_for_home(home, enabled):
         if key not in _LOGS:
             _LOGS[key] = EventLog(key)
         return _LOGS[key]
+
+
+def release_home(home):
+    """Close *home*'s log (its profile stopped being served); a later ``log_for_home`` reopens it."""
+    with _LOGS_LOCK:
+        log = _LOGS.pop(str(Path(home).resolve()), None)
+    if log is not None:
+        log.close()
+
+
+def close_all():
+    """Gateway shutdown: commit every queued event before the process exits."""
+    with _LOGS_LOCK:
+        logs = list(_LOGS.values())
+        _LOGS.clear()
+    for log in logs:
+        log.close()
+
+
+atexit.register(close_all)
 
 
 def enabled_in_home(home):

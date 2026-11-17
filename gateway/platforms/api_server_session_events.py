@@ -42,6 +42,13 @@ def _log(adapter):
     return getattr(getattr(authority, 'sessions', None), 'log', None)
 
 
+def _canonical(adapter, session_id):
+    """The id the log keys a session by: its compression lineage root, as the authority admits it."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(adapter.gateway_runner)
+    return authority.logical_owner(session_id) if authority is not None else session_id
+
+
 def _disabled():
     return web.json_response({'error': {
         'message': 'The session event log is off for this profile (config.yaml sessions.event_log: true)',
@@ -49,11 +56,13 @@ def _disabled():
 
 
 async def _wait_for_head(log, session_id, past, deadline):
-    """Wait until the log's committed head for *session_id* passes *past*, or *deadline*."""
-    await asyncio.to_thread(log.head, session_id)  # a first read of the file stays off the loop
-    while log.head(session_id) <= past and time.monotonic() < deadline:
+    """Wait until the log's committed head for *session_id* passes *past*, or *deadline*. The file
+    is read once, off the loop; the wait itself watches the writer's in-memory ``committed`` map."""
+    head = await asyncio.to_thread(log.head, session_id)
+    while head <= past and time.monotonic() < deadline:
         await asyncio.sleep(_POLL_S)
-    return log.head(session_id)
+        head = log.committed.get(session_id, head)
+    return head
 
 
 async def handle_session_events(adapter, request):
@@ -68,6 +77,7 @@ async def handle_session_events(adapter, request):
     log = _log(adapter)
     if log is None:
         return _disabled()
+    session_id = await asyncio.to_thread(_canonical, adapter, session_id)
     after = _int_param(request, 'after', 0, 2 ** 62)
     limit = _int_param(request, 'limit', 100, MAX_LIMIT)
     wait_ms = _int_param(request, 'wait_ms', 0, MAX_WAIT_MS)
@@ -108,22 +118,21 @@ async def wait_for_run(adapter, request, load):
     targets, deadline = _run_targets(request), time.monotonic() + wait_ms / 1000
     while status.get('status') not in targets and time.monotonic() < deadline:
         await asyncio.sleep(0.25)
-        status, err = load()
+        status, err = await asyncio.to_thread(load)  # the re-reads hit state.db: keep them off the loop
         if err is not None:
             return status, err
     return status, None
 
 
-def _write_session_id(adapter, request, body):
-    session_id = request.match_info.get('session_id') or body.get('session_id')
-    run_id = body.get('run_id')
-    if not session_id and run_id:
-        session_id = (adapter._run_statuses.get(run_id) or {}).get('session_id')
-        if not session_id:
-            from gateway.platforms.api_server_authority_runs import run_admission
-            owned = run_admission(adapter, run_id)
-            session_id = owned[1]['target_session_id'] if owned is not None else None
-    return session_id
+def _write_session_id(adapter, session_id, run_id):
+    """The canonical session a write landed in: a run's admission target, else the path's session."""
+    if run_id:
+        from gateway.platforms.api_server_authority_runs import run_admission
+        owned = run_admission(adapter, run_id)
+        if owned is not None:
+            return owned[1]['target_session_id']
+        session_id = session_id or (adapter._run_statuses.get(run_id) or {}).get('session_id')
+    return _canonical(adapter, session_id) if session_id else None
 
 
 def event_seq_middleware(adapter):
@@ -131,12 +140,14 @@ def event_seq_middleware(adapter):
     async def middleware(request, handler):
         log = _log(adapter)
         session_id = request.match_info.get('session_id')
-        if log is not None and request.method == 'GET' and session_id and 'min_seq' in request.query:
+        if (log is not None and request.method == 'GET' and session_id and 'min_seq' in request.query
+                and adapter._check_auth(request) is None):  # an unauthenticated read waits for nothing
             target = _int_param(request, 'min_seq', 0, 2 ** 62)
             if target is None:
                 return web.json_response({'error': {'message': 'min_seq must be a non-negative integer',
                                                     'code': 'invalid_params'}}, status=400)
-            await _wait_for_head(log, session_id, target - 1, time.monotonic() + MIN_SEQ_WAIT_S)
+            canonical = await asyncio.to_thread(_canonical, adapter, session_id)
+            await _wait_for_head(log, canonical, target - 1, time.monotonic() + MIN_SEQ_WAIT_S)
         response = await handler(request)
         if (log is None or request.method != 'POST' or not isinstance(response, web.Response)
                 or response.status >= 300 or response.content_type != 'application/json'
@@ -144,10 +155,13 @@ def event_seq_middleware(adapter):
                 or request.match_info.route.resource.canonical.rsplit('/', 1)[-1] not in ('chat', 'runs')):
             return response
         body = json.loads(response.text or 'null')
-        session_id = _write_session_id(adapter, request, body) if isinstance(body, dict) else None
-        if not session_id:
+        if not isinstance(body, dict):
             return response
-        await asyncio.to_thread(log.flush)
+        session_id = await asyncio.to_thread(
+            _write_session_id, adapter, session_id or body.get('session_id'), body.get('run_id'))
+        # No ``seq`` rather than a stale one when the write's events have not committed in time.
+        if not session_id or not await asyncio.to_thread(log.flush):
+            return response
         body['seq'] = await asyncio.to_thread(log.head, session_id)
         response.headers['X-Hermes-Event-Seq'] = str(body['seq'])
         response.body = json.dumps(body).encode()

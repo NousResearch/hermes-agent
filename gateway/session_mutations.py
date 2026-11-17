@@ -425,6 +425,10 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
     release_session_workspaces(authority, session_ids)
     log = getattr(authority.sessions, 'log', None)
     for sid in session_ids if log is not None else ():
+        # Detach first: the delete's own ``session.updated`` publishes on this stream afterwards.
+        stream = getattr(authority.sessions.get(sid), 'event_stream', None)
+        if stream is not None:
+            stream.log = None
         log.forget(sid)
     from tools.async_delegation import allow_for_session
     from gateway.session_vault_prompt import release_unlocks

@@ -30,7 +30,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
     "busy_ack_reaction": False,  # react to the follow-up (⏩ steer, ⏳ queue, …) instead of a bubble
-    # After a steer/redirect, the turn's next text and tool lines start new messages below it.
+    # After a steer/redirect, the turn's next tool lines start a new progress bubble below it.
     "busy_continue_below": False,
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.

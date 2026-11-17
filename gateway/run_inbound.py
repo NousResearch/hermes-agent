@@ -888,7 +888,8 @@ class GatewayInboundMixin(
             return None
         if effective_busy_input_mode == "steer":
             # Priority steers post no ack bubble; an opted-in reaction still marks the message.
-            if (self._hm_busy_steer(event, running_agent, _quick_key) and self._busy_steer_ack_enabled(event, _quick_key)
+            if (self._hm_busy_steer(event, running_agent, _quick_key) and self._busy_ack_enabled(_quick_key)
+                    and self._busy_steer_ack_enabled(event, _quick_key)
                     and (adapter := self._delivery_adapter_for(source))):
                 await self._try_busy_reaction_ack(event, adapter, _quick_key, "steer")
             return None

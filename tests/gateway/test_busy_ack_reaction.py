@@ -211,8 +211,8 @@ async def test_each_steered_message_gets_its_own_reaction_and_no_bubble(monkeypa
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [True, False], ids=["continue-below", "legacy"])
 async def test_steer_continues_output_below_the_steering_message(monkeypatch, enabled) -> None:
-    """busy_continue_below: a steer closes the turn's streamed message and progress bubble, so the
-    next text and tool lines land under the steer; off, the turn keeps editing the bubble above."""
+    """busy_continue_below: a steer closes the turn's tool-progress bubble, so the next tool lines
+    land under the steer; off, the turn keeps editing the bubble above."""
     import queue
 
     from gateway.turn_context import TurnContext
@@ -226,8 +226,6 @@ async def test_steer_continues_output_below_the_steering_message(monkeypatch, en
     runner._running_agents[sk] = parent
     runner.adapters[event.source.platform] = adapter
     ctx = TurnContext(progress_queue=queue.Queue())
-    consumer = MagicMock()
-    ctx.stream_consumer_holder[0] = consumer
     turn = runner._session_state(sk).turn
     turn.agent, turn.ctx = parent, ctx
 
@@ -236,4 +234,3 @@ async def test_steer_continues_output_below_the_steering_message(monkeypatch, en
     parent.steer.assert_called_once()
     queued = [ctx.progress_queue.get_nowait() for _ in range(ctx.progress_queue.qsize())]
     assert queued == ([("__reset__",)] if enabled else [])
-    assert consumer.on_segment_break.call_count == (1 if enabled else 0)

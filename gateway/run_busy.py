@@ -834,8 +834,10 @@ class GatewayBusySessionMixin:
 
     def _continue_turn_below(self, turn, event: MessageEvent) -> None:
         """``display.platforms.<p>.busy_continue_below``: the folded-in message now sits under the
-        turn's streamed reply and tool-progress bubble, so close both; the turn's next text and tool
-        lines start new messages below it instead of editing the ones above."""
+        turn's tool-progress bubble, so close it; the next tool lines start a new bubble below it
+        instead of editing the one above. Streamed text needs no break here: a steer reaches the
+        model after the next tool call, and that tool boundary already starts a new message
+        (breaking mid-stream would split one answer, and its final would repeat the head)."""
         from gateway.run import _load_gateway_config, _platform_config_key
         from gateway.display_config import resolve_display_setting
         ctx = turn.ctx
@@ -845,9 +847,6 @@ class GatewayBusySessionMixin:
             return
         if ctx.progress_queue is not None:
             ctx.progress_queue.put(("__reset__",))
-        consumer = ctx.stream_consumer_holder[0]
-        if consumer is not None:
-            consumer.on_segment_break()
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point.
@@ -856,6 +855,15 @@ class GatewayBusySessionMixin:
             running_agent.interrupt(self._busy_interrupt_text(event))
         except Exception:
             pass  # don't let interrupt failure block the ack
+
+    @staticmethod
+    def _busy_ack_enabled(session_key: str) -> bool:
+        """``display.busy_ack_enabled`` (bridged to the env at startup): False silences every busy
+        ack, text or reaction; the input is still handled."""
+        enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        if not enabled:
+            logger.debug("Busy ack suppressed for session %s", session_key)
+        return enabled
 
     def _busy_steer_ack_enabled(self, event: MessageEvent, session_key: str) -> bool:
         # Some mobile chat setups want silent steering — keep the behavior, drop the bubble.
@@ -1071,8 +1079,7 @@ class GatewayBusySessionMixin:
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.
-        if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
-            logger.debug("Busy ack suppressed for session %s", session_key)
+        if not self._busy_ack_enabled(session_key):
             return  # input still processed, just no ack sent
 
         ack_mode = ("steer" if is_steer_mode else "redirect" if is_redirect_mode

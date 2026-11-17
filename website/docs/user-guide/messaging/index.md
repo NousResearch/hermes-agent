@@ -552,11 +552,11 @@ display:
   platforms:
     slack:
       busy_ack_reaction: true    # react ⏩ to a steered message instead of posting "Steered into current run"
-      busy_continue_below: true  # after a steer, the turn's next text and tool lines start a new message below it
+      busy_continue_below: true  # after a steer, the turn's next tool lines start a new bubble below it
 ```
 
 - **`busy_ack_reaction`** replaces the busy-ack bubble with a reaction on your message: ⏩ steered, ↪️ redirected, ⏳ queued, ⚡ interrupting. Every steered message gets its own reaction (the bubble is sent at most once per 30 seconds). It needs an adapter that can react (Slack, Buzz) and the platform's reactions left on (Slack: `SLACK_REACTIONS`); otherwise, or when the platform refuses the reaction, the text bubble is sent as before.
-- **`busy_continue_below`** closes the turn's streamed reply and tool-progress bubble when a steer or redirect lands, so the rest of the answer appears under your message instead of editing a message above it.
+- **`busy_continue_below`** closes the turn's tool-progress bubble when a steer or redirect lands, so later tool lines appear under your message instead of editing a bubble above it. Streamed text already starts a new message after each tool call, which is when a steer reaches the agent.
 - **`busy_steer_ack_enabled: false`** still silences steer acks entirely, reaction included. It is read from `config.yaml` only (globally or per platform); the old `HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED` environment override is no longer read.
 
 ## Clarify Questions (Multi-Select)

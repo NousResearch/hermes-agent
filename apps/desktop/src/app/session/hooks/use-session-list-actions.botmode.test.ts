@@ -24,16 +24,13 @@
 
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  $workspaceMode,
-  $workspaceNewSessionTarget,
-} from '@/components/pane-shell/workspace-scope'
+import { $workspaceMode, $workspaceNewSessionTarget } from '@/components/pane-shell/workspace-scope'
 import {
   $messagingSessions,
   $sessions,
   ownerLookupSessionRows,
   setConnection,
-  setMessagingSessions,
+  setMessagingSessions
 } from '@/store/session'
 
 import { botModeFetchScope } from './bot-mode-fetch-scope'
@@ -43,7 +40,7 @@ const telegramRow = (id: string, profile = 'mybot') =>
     id,
     profile,
     source: 'telegram',
-    title: `Telegram ${id}`,
+    title: `Telegram ${id}`
   }) as never
 
 const desktopRow = (id: string, profile = 'default') =>
@@ -51,7 +48,7 @@ const desktopRow = (id: string, profile = 'default') =>
     id,
     profile,
     source: 'desktop',
-    title: `Desk ${id}`,
+    title: `Desk ${id}`
   }) as never
 
 beforeEach(() => {
@@ -68,7 +65,7 @@ describe('botModeFetchScope', () => {
     $workspaceMode.set('sessions')
     $workspaceNewSessionTarget.set({
       kind: 'route',
-      route: { connectionId: 'local', mode: 'local', profile: 'mybot' },
+      route: { connectionId: 'local', mode: 'local', profile: 'mybot' }
     } as never)
     expect(botModeFetchScope('default')).toBeNull()
 
@@ -87,7 +84,7 @@ describe('botModeFetchScope', () => {
     $workspaceMode.set('bots')
     $workspaceNewSessionTarget.set({
       kind: 'route',
-      route: { connectionId: 'local', mode: 'local', profile: 'mybot', targetProfile: 'mybot' },
+      route: { connectionId: 'local', mode: 'local', profile: 'mybot', targetProfile: 'mybot' }
     } as never)
 
     expect(botModeFetchScope('default')).toEqual({ displayProfile: 'mybot', fetchProfile: 'mybot' })
@@ -97,7 +94,7 @@ describe('botModeFetchScope', () => {
     $workspaceMode.set('bots')
     $workspaceNewSessionTarget.set({
       kind: 'route',
-      route: { connectionId: 'remote-a', mode: 'remote', profile: 'moxie', targetProfile: 'default' },
+      route: { connectionId: 'remote-a', mode: 'remote', profile: 'moxie', targetProfile: 'default' }
     } as never)
     // The window is on the bot's source: its list reads land where the bot lives.
     setConnection({ connectionId: 'remote-a', mode: 'remote' } as never)
@@ -116,15 +113,12 @@ describe('messaging rows stay resolvable across slices (#126732)', () => {
     expect(ownerLookupSessionRows().find(s => (s as { id: string }).id === 'tg-1')).toMatchObject({
       id: 'tg-1',
       profile: 'mybot',
-      source: 'telegram',
+      source: 'telegram'
     })
   })
 
   it('keeps distinct DM-topic threads as distinct rows (lane isolation)', () => {
-    setMessagingSessions([
-      telegramRow('tg-topic-2'),
-      telegramRow('tg-topic-3'),
-    ] as never)
+    setMessagingSessions([telegramRow('tg-topic-2'), telegramRow('tg-topic-3')] as never)
 
     const rows = ownerLookupSessionRows().filter(s => (s as { source: string }).source === 'telegram')
 

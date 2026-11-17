@@ -6,9 +6,14 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { relativeTime } = await import('@/lib/time')
 
-  return { ...await (await import('./group-test-utils')).pluginSdkMock({}), relativeTime, en,
+  return {
+    ...(await (await import('./group-test-utils')).pluginSdkMock({})),
+    relativeTime,
+    en,
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
-    Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
+    Codicon: () => <span />,
+    Tip: ({ children }: { children: ReactNode }) => <>{children}</>
+  }
 })
 vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
@@ -33,12 +38,17 @@ it('says what a deferred turn means instead of printing its reason code', () => 
   expect(screen.getByText('Turn deferred')).toBeTruthy()
 })
 
-it.each([[[{ action: 'retry' }], null], [[], { kind: 'settled' }]])('calls a discussion settled only when no turn waits on a person: %j', (pending, cycle) => {
+it.each([
+  [[{ action: 'retry' }], null],
+  [[], { kind: 'settled' }]
+])('calls a discussion settled only when no turn waits on a person: %j', (pending, cycle) => {
   const events = [
     { seq: 1, kind: 'message.user', event_id: 'user:d', payload: { thread_id: 'd' } },
     { seq: 2, kind: 'room.activity', payload: { status: 'settled', discussion_event_id: 'user:d', thread_id: 'd' } }
   ]
 
-  const { result } = renderHook(() => useCanonicalRoomLive(events as never, { pending_actions: pending } as never, members))
+  const { result } = renderHook(() =>
+    useCanonicalRoomLive(events as never, { pending_actions: pending } as never, members)
+  )
   expect(result.current.cycle).toEqual(cycle)
 })

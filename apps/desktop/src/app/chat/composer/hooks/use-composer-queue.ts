@@ -94,11 +94,13 @@ interface UseComposerQueueArgs {
 }
 
 /** Text kept in the composer, followed by the draft a queued-row edit interrupted (when it differs). */
-const withPreEditDraft = (text: string, draft: string) => (draft.trim() && draft !== text ? `${text}\n\n${draft}` : text)
+const withPreEditDraft = (text: string, draft: string) =>
+  draft.trim() && draft !== text ? `${text}\n\n${draft}` : text
 
 /** The owner answered with a named refusal: nothing was replaced. Anything else (a lost reply, a
  *  dropped connection) leaves the outcome unknown. */
-const isOwnerRefusal = (error: unknown) => typeof (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'string'
+const isOwnerRefusal = (error: unknown) =>
+  typeof (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'string'
 
 /**
  * The composer's queue engine — everything about queued turns: the per-session
@@ -335,7 +337,8 @@ export function useComposerQueue({
             // Cancelled, or cancelled and reopened: that later edit is not this save's to settle.
             const open = queueEditRef.current === save.edit
             // A known outcome spends the identity; an unknown one keeps it for the open edit's retry.
-            unconfirmedRef.current = outcome === 'unconfirmed' && open ? { admissionId: entryId, edited, submissionId } : null
+            unconfirmedRef.current =
+              outcome === 'unconfirmed' && open ? { admissionId: entryId, edited, submissionId } : null
 
             if (!open) {
               return
@@ -404,84 +407,87 @@ export function useComposerQueue({
 
   // `submissionId` names the restored send this draft retries: the admission (or the local entry that
   // drains under its id) keeps it, so the owner never runs the interrupted original a second time.
-  const queueCurrentDraft = useCallback((submissionId?: string) => {
-    const text = draftRef.current
+  const queueCurrentDraft = useCallback(
+    (submissionId?: string) => {
+      const text = draftRef.current
 
-    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
-      return false
-    }
+      if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
+        return false
+      }
 
-    // Slash commands cannot ride alongside attachments — the drain path would
-    // reject the entry on every attempt (submitText warns + returns false) and
-    // the queue would livelock. Refuse to enqueue it in the first place.
-    if (isSlashCommandText(text) && attachments.length) {
-      notify({
-        kind: 'warning',
-        title: t.desktop.slashCommandIgnoredTitle,
-        message: t.desktop.slashCommandIgnoredBody
-      })
+      // Slash commands cannot ride alongside attachments — the drain path would
+      // reject the entry on every attempt (submitText warns + returns false) and
+      // the queue would livelock. Refuse to enqueue it in the first place.
+      if (isSlashCommandText(text) && attachments.length) {
+        notify({
+          kind: 'warning',
+          title: t.desktop.slashCommandIgnoredTitle,
+          message: t.desktop.slashCommandIgnoredBody
+        })
 
-      return false
-    }
+        return false
+      }
 
-    // Freeze `@terminal:` chips at enqueue. Persist the chip form; keep the
-    // fenced selection in the runtime map so drain never re-resolves the live
-    // label map and localStorage never stores terminal CONTENTS (#77078).
-    const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
+      // Freeze `@terminal:` chips at enqueue. Persist the chip form; keep the
+      // fenced selection in the runtime map so drain never re-resolves the live
+      // label map and localStorage never stores terminal CONTENTS (#77078).
+      const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
 
-    if (!frozen) {
-      return false
-    }
+      if (!frozen) {
+        return false
+      }
 
-    // Canonical (gateway-owned) sessions admit busy input straight into the
-    // durable gateway FIFO; the row comes back as a server-owned queue entry.
-    // `fromQueue` submits skip the transport freeze, so send the frozen text.
-    if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
-      return Promise.resolve(
-        onSubmit(frozen.frozenTransport ?? frozen.text, {
-          attachments: cloneAttachments(attachments),
+      // Canonical (gateway-owned) sessions admit busy input straight into the
+      // durable gateway FIFO; the row comes back as a server-owned queue entry.
+      // `fromQueue` submits skip the transport freeze, so send the frozen text.
+      if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
+        return Promise.resolve(
+          onSubmit(frozen.frozenTransport ?? frozen.text, {
+            attachments: cloneAttachments(attachments),
+            ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+            fromQueue: true,
+            sessionId: sessionId ?? null,
+            storedSessionId: activeQueueSessionKey,
+            ...(submissionId ? { submission_id: submissionId } : {})
+          })
+        )
+          .then(accepted => {
+            if (accepted !== true) {
+              return false
+            }
+
+            if (currentQueueKeyRef.current === activeQueueSessionKey && draftRef.current === text) {
+              clearDraft()
+              scope.attachments.removeOccurrences(attachments)
+            }
+
+            return true
+          })
+          .catch(() => false)
+      }
+
+      if (
+        !enqueueQueuedPrompt(activeQueueSessionKey, {
+          ...(submissionId ? { id: submissionId } : {}),
+          text: frozen.text,
+          attachments,
           ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
-          fromQueue: true,
-          sessionId: sessionId ?? null,
-          storedSessionId: activeQueueSessionKey,
-          ...(submissionId ? { submission_id: submissionId } : {})
+          ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
         })
-      )
-        .then(accepted => {
-          if (accepted !== true) {
-            return false
-          }
+      ) {
+        return false
+      }
 
-          if (currentQueueKeyRef.current === activeQueueSessionKey && draftRef.current === text) {
-            clearDraft()
-            scope.attachments.removeOccurrences(attachments)
-          }
+      clearDraft()
+      // Queue entry retains blob: previews; revoke when the entry is discarded
+      // or drained into a submit that takes ownership (see composer-queue).
+      scope.attachments.clear({ retainPreviewUrls: true })
+      triggerHaptic('selection')
 
-          return true
-        })
-        .catch(() => false)
-    }
-
-    if (
-      !enqueueQueuedPrompt(activeQueueSessionKey, {
-        ...(submissionId ? { id: submissionId } : {}),
-        text: frozen.text,
-        attachments,
-        ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
-        ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
-      })
-    ) {
-      return false
-    }
-
-    clearDraft()
-    // Queue entry retains blob: previews; revoke when the entry is discarded
-    // or drained into a submit that takes ownership (see composer-queue).
-    scope.attachments.clear({ retainPreviewUrls: true })
-    triggerHaptic('selection')
-
-    return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, sessionId, t.composer])
+      return true
+    },
+    [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, sessionId, t.composer]
+  )
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the

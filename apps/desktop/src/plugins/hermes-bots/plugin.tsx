@@ -592,11 +592,7 @@ export default {
           // a selected row too orphaned to route (setBotsWorkspaceOwner's
           // blocked target).
           if (group) {
-            setBotsWorkspaceOwner(
-              groupWorkspaceOwnerKey(group),
-              null,
-              botsText().group.startInComposer()
-            )
+            setBotsWorkspaceOwner(groupWorkspaceOwnerKey(group), null, botsText().group.startInComposer())
           } else if (selected) {
             setBotsWorkspaceOwner(botWorkspaceOwnerKey(selected), selected)
           }

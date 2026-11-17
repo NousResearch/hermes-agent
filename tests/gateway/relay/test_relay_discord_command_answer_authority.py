@@ -70,7 +70,7 @@ async def gateway(tmp_path, monkeypatch):
         yield runner, transport, adapter
     finally:
         approval._gateway_queues.clear()
-        authority.db.close()
+        authority.persistence.close()
 
 
 def _thread_session_key(runner):

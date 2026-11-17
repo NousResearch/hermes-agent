@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, touch_activity_if_due
 from tools.interrupt import is_interrupted
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.terminal_tool_sudo_askpass import fill_timeout_token
@@ -79,12 +79,13 @@ class ManagedModalEnvironment(BaseEnvironment):
         self._sandbox_id = self._create_sandbox()
 
     def execute(self, command: str, cwd: str = "", *, timeout: int | None = None, stdin_data: str | None = None,
-                rewrite_compound_background: bool = True, bounded_capture: bool = False) -> dict:
+                rewrite_compound_background: bool = True, bounded_capture: bool = False,
+                allow_cwd_fallback: bool = False) -> dict:
         # Signature parity with BaseEnvironment.execute only: the gateway runs commands
         # explicitly (no shell background rewriting) and returns the remote result in one
         # payload, so streaming-time bounding does not apply (the terminal tool's final
-        # truncation still caps it).
-        del rewrite_compound_background, bounded_capture
+        # truncation still caps it), and the gateway resolves the cwd itself.
+        del rewrite_compound_background, bounded_capture, allow_cwd_fallback
         exec_command, sudo_stdin = self._prepare_command(command)
         if sudo_stdin is not None:
             # Password lines lead the request's stdin, merged as in BaseEnvironment.execute.
@@ -122,13 +123,7 @@ class ManagedModalEnvironment(BaseEnvironment):
             if time.monotonic() >= deadline:
                 self._cancel_exec(exec_id)
                 return _result(f"Managed Modal exec timed out after {timeout}s", 124)
-            # Periodic activity touch so the gateway knows we're alive (lazy import:
-            # tests stub tools.environments.base with only BaseEnvironment)
-            try:
-                from tools.environments.base import touch_activity_if_due
-                touch_activity_if_due(_activity_state, "modal command running")
-            except Exception:
-                pass
+            touch_activity_if_due(_activity_state, "modal command running")
             time.sleep(0.25)
 
     @staticmethod

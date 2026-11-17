@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "utilizzo del provider + stima dei nuovi messaggi"
     source_line: "Fonte: {source}; i conteggi per categoria sono stime locali."
     hint_all: "Usa /context all per i costi per skill e per toolset."
+    cache_warm: "Cache del prompt: attiva fino alle {until} (restano {remaining}; {ttl}, {confidence})."
+    cache_expired: "Cache del prompt: scaduta {ago} fa ({ttl}, {confidence}); il prossimo messaggio rielabora l'intero prompt."
+    cache_maybe_warm: "Cache del prompt: potrebbe essere ancora attiva fino alle {until} (al massimo altri {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Cache del prompt: sconosciuta (percorso, sessione o contesto sono cambiati dall'ultima richiesta in cache)."
+    cache_unknown_route: "Cache del prompt: sconosciuta (questo provider non pubblica la conservazione della cache)."
+    cache_unknown_runtime: "Cache del prompt: sconosciuta (questo runtime imposta le proprie opzioni di cache, che Hermes non può osservare)."
+    cache_unknown_storage: "Cache del prompt: sconosciuta (impossibile leggere l'archivio della sessione)."
+    cache_confidence:
+      proven: "provato"
+      declared: "dichiarato"
+      assumed: "presunto"
   status:
     header: "📊 **Stato del Gateway Hermes**"
     matrix_scope_header: "**Ambito Matrix:**"
@@ -4010,7 +4021,7 @@ plan_usage:
   large_notice_limit_stops: "Modello grande: hai raggiunto il limite {name} ({resets}), quindi non funzionerà fino ad allora."
   large_notice_percent: "Modello grande: usa più utilizzo del tuo piano per messaggio. Limite mensile dei modelli grandi: {percent} usato."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ File modificati nei turni annullati: {files}. Esegui /rollback per elencare i checkpoint e ripristinarne uno."
     more: "+{count} altri"

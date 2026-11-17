@@ -468,7 +468,7 @@ using the default listener's existing credentials.
   is enabled only on a secondary profile. A shared-bot satellite (no bot of
   its own, reached through `profile_routes`) delivers through the shared bot
   only to a chat a route maps to it, the same rule as its cron jobs and its
-  `send_message` sends and reactions; any other target, including an unrouted
+  `send_message` sends; any other target, including an unrouted
   home channel, fails (502). On every platform except Telegram, Slack, Matrix
   and Mattermost (whose thread ids are scoped to a chat), a `thread_id` target
   needs a route that names that `thread_id`; a chat-only route does not cover
@@ -631,7 +631,7 @@ are resolved per profile as well. Kanban, profile-scoped skills/memory/SOUL, and
 model routing all behave per-profile exactly as they do with separate gateways.
 
 Outbound identity is per profile too. A turn running for profile `P` that calls
-the `send_message` tool (send, react, media) posts through `P`'s own bot;
+the `send_message` tool (send, media) posts through `P`'s own bot;
 so do the "Gateway shutting down/restarted" and `/update` notices for `P`'s
 sessions, `/loop` wakeups set from `P`'s chats, and the Discord
 unauthorized-slash operator alert of `P`'s Discord bot (to `P`'s home
@@ -883,7 +883,7 @@ delivery to that user's DM without an extra route. The routed profile does not n
 own `platforms.<platform>` block for this: the shared bot's authorization comes
 from the route, not from the satellite's config.
 
-A routed profile's `send_message` sends and reactions, and plugin
+A routed profile's `send_message` sends, and plugin
 `ctx.platform_actions`, follow the same target rule, with one addition: during a
 turn, the conversation that turn came from also qualifies whenever the inbound
 route matcher would hand it to that profile. That covers guild-only routes, a

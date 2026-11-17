@@ -435,6 +435,17 @@ gateway:
       provider_usage_plus_estimate: "verskaffer-gebruik + geskatte nuwe boodskappe"
     source_line: "Bron: {source}; kategorietellings is plaaslike skattings."
     hint_all: "Gebruik /context all vir koste per vaardigheid en per gereedskapstel."
+    cache_warm: "Prompt-kas: warm tot {until} ({remaining} oor; {ttl}, {confidence})."
+    cache_expired: "Prompt-kas: {ago} gelede verval ({ttl}, {confidence}); die volgende boodskap verwerk die volle prompt weer."
+    cache_maybe_warm: "Prompt-kas: mag nog warm wees tot {until} (hoogstens nog {remaining}; {ttl}, {confidence})."
+    cache_unknown_moved: "Prompt-kas: onbekend (die roete, sessie of konteks het sedert die laaste gekaste versoek verander)."
+    cache_unknown_route: "Prompt-kas: onbekend (hierdie verskaffer publiseer nie sy kasretensie nie)."
+    cache_unknown_runtime: "Prompt-kas: onbekend (hierdie looptyd stel sy eie kasopsies wat Hermes nie kan sien nie)."
+    cache_unknown_storage: "Prompt-kas: onbekend (die sessiestoor kon nie gelees word nie)."
+    cache_confidence:
+      proven: "bewys"
+      declared: "verklaar"
+      assumed: "aanvaar"
   status:
     header: "📊 **Hermes Gateway-status**"
     matrix_scope_header: "**Matrix-omvang:**"
@@ -4010,7 +4021,7 @@ plan_usage:
   large_notice_limit_stops: "Groot model: {name} bereik ({resets}), dit sal nie tot dan loop nie."
   large_notice_percent: "Groot model: gebruik meer van jou plan per boodskap. Maandelikse limiet vir groot modelle: {percent} gebruik."
 shared:
-  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  # /undo's line naming the files the undone turns changed (agent/checkpoints/undo_hint.py).
   undo_rollback:
     list: "↶ Lêers wat in die ongedane beurte verander is: {files}. Voer /rollback uit om kontrolepunte te lys en een te herstel."
     more: "+{count} meer"

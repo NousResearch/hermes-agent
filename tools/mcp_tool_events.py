@@ -27,7 +27,6 @@ from tools.registry import tool_error
 
 logger = logging.getLogger("tools.mcp_tool")
 
-EVENT_UTILITY_KEYS = ("list_event_types", "subscribe_event", "unsubscribe_event")
 _DEFAULT_TTL_MS = 24 * 3600 * 1000
 # Refresh once this share of the granted lifetime has elapsed (never later than 60s before expiry).
 _REFRESH_AT_FRACTION = 0.8

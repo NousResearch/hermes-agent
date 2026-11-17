@@ -443,6 +443,23 @@ class TestGenerateCommandTts:
         # BOM-less alike (repo policy: reads utf-8-sig).
         assert out.read_text(encoding="utf-8-sig") == "hello world"
 
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
+    @pytest.mark.parametrize("template", [
+        "sh -c 'cp {input_path} {output_path}'",
+        'sh -c "cp {input_path} {output_path}"',
+        "sh -c 'cp {input_path} `echo {output_path}`'",
+    ])
+    def test_model_chosen_output_path_never_reaches_the_shell(self, tmp_path, template):
+        """A template that re-parses its placeholders (``sh -c '...'``) cannot be protected by
+        quoting, so the caller's ``output_path`` is never put in the command: the command writes
+        a Hermes-named file that is moved to the requested path afterwards."""
+        marker = tmp_path / "pwned"
+        out = tmp_path / f"x$(touch {marker}).mp3"
+        result = _generate_command_tts("hello world", str(out), "nested-sh", {"command": template}, {})
+        assert not marker.exists()
+        assert result == str(out)
+        assert out.read_text(encoding="utf-8-sig") == "hello world"
+
 
     @pytest.mark.platforms("posix")  # POSIX-only timeout semantics
     def test_timeout_raises_runtime(self, tmp_path):
@@ -491,6 +508,18 @@ class TestTextToSpeechToolWithCommandProvider:
         assert data["provider"] == "py-copy"
         assert data["voice_compatible"] is False
         assert Path(data["file_path"]).exists()
+
+    @pytest.mark.platforms("posix")  # POSIX sh execution proof
+    def test_tool_output_path_with_shell_syntax_does_not_execute(self, tmp_path):
+        marker = tmp_path / "pwned"
+        cfg = {"provider": "nested", "providers": {"nested": {
+            "type": "command", "command": "sh -c 'cp {input_path} {output_path}'", "output_format": "mp3"}}}
+        out = tmp_path / f"x$(touch {marker}).mp3"
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            data = json.loads(text_to_speech_tool(text="hi", output_path=str(out)))
+        assert not marker.exists()
+        assert data["success"] is True, data
+        assert data["file_path"] == str(out) and out.exists()
 
     def test_voice_compatible_opt_in_toggles_flag(self, tmp_path):
         """voice_compatible=true is reflected in the response when the

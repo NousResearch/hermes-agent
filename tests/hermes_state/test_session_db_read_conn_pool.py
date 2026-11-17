@@ -616,6 +616,31 @@ def test_fd_soft_limit_fails_open_for_importable_resource_stub(monkeypatch):
     assert hermes_state_readpool._fd_headroom_ok() is True
 
 
+def test_fd_soft_limit_remembers_a_missing_resource_module(monkeypatch):
+    """Where ``resource`` does not exist (Windows), the failed import is attempted once.
+
+    Python does not cache a failed import, so re-trying it on every read-connection
+    checkout walked sys.path under the import lock from every reader thread (#143256)."""
+    import builtins
+
+    real_import = builtins.__import__
+    attempts = []
+
+    def no_resource(name, *args, **kwargs):
+        if name == "resource":
+            attempts.append(name)
+            raise ModuleNotFoundError("No module named 'resource'", name="resource")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(hermes_state_readpool, "_resource_unavailable", False)
+    monkeypatch.setattr(builtins, "__import__", no_resource)
+
+    for _ in range(50):
+        assert hermes_state_readpool._fd_soft_limit() is None
+    assert attempts == ["resource"]
+    assert hermes_state_readpool._fd_headroom_ok() is True
+
+
 @pytest.mark.requires_wal
 def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     """The one-shot warning must identify earlier holders, not just the last opener."""

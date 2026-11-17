@@ -23,6 +23,7 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
     "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--cpu-profile",
+    "--on-approval", "--timeout", "--format",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
@@ -143,6 +144,28 @@ For more help on a command:
 """
 
 
+_EXIT_CODE_DOC = "website/docs/reference/cli-commands.md (Exit codes for one-shot runs)"
+
+
+def _add_scripting_flags(add, *, default) -> None:
+    """``-z`` / ``chat -q`` scripting flags, on the top-level parser (``default=None``) and the chat
+    subparser (``default=SUPPRESS``, so a value given before ``chat`` survives)."""
+    from hermes_cli.oneshot_contract import ON_APPROVAL_CHOICES, positive_seconds
+    add("--on-approval", choices=ON_APPROVAL_CHOICES, default=default, dest="on_approval", help=(
+        "One-shot runs (-z, chat -q): what to do when a command needs approval. deny / approve "
+        "override approvals.single_query_mode for this run; wait holds until someone answers from "
+        "another surface (hermes --resume <id>, then /approve); fail denies it, stops the run and "
+        f"exits 5 with the pending approval in the result. Default: -z approves, chat -q follows "
+        f"approvals.single_query_mode. Exit codes: {_EXIT_CODE_DOC}."))
+    add("--timeout", type=positive_seconds, default=default, dest="run_timeout", metavar="SECONDS", help=(
+        "One-shot runs (-z, chat -q): interrupt the turn after SECONDS and exit 124."))
+    add("--format", choices=["text", "stream-json", "json"], default="text" if default is None else default,
+        dest="output_format", help=(
+        "Output format for one-shot runs (-z, chat -q). 'text' prints the final response as plain text "
+        "(default). 'stream-json' emits newline-delimited JSON events (JSONL); 'json' writes only the final "
+        "result object. Both imply --quiet and cannot be combined with --tui."))
+
+
 def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     """Top-level (pre-subcommand) flags; ``-m/--provider`` pair with ``-z`` without ``chat``."""
     add, inherited = parser.add_argument, _inherited_flag
@@ -158,6 +181,7 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(estimated cost, token counts, model, api_calls) to PATH. "
         "The report is written even when the run fails, so pipelines "
         "can always account for spend. No effect outside -z/--oneshot."))
+    _add_scripting_flags(add, default=None)
     add("--cpu-profile", metavar="PATH", default=None, help=(
         "Profile this process with cProfile and write PATH (pstats) plus PATH.txt (top functions) "
         "on exit. A relative PATH goes under the profile's logs/profiles/. Adds overhead for as "
@@ -274,9 +298,7 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("-v", "--verbose", action="store_true", default=SUPPRESS, help="Verbose output")
     add("-Q", "--quiet", action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info.")
-    add("--format", choices=["text", "stream-json"], default="text", dest="output_format", help=(
-        "Output format for single-query mode (-q). 'text' prints the final response as plain text (default). "
-        "'stream-json' emits newline-delimited JSON events (JSONL), implies --quiet, and cannot be combined with --tui."))
+    _add_scripting_flags(add, default=SUPPRESS)
     add("--resume", "-r", metavar="SESSION_ID", default=SUPPRESS, help=(
         "Resume a previous session by ID (shown on exit), or 'latest' "
         "for the most recent session"))

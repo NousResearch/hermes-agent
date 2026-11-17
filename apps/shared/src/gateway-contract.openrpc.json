@@ -11695,6 +11695,23 @@
             "title": "Unattended",
             "type": "boolean"
           },
+          "on_approval": {
+            "anyOf": [
+              {
+                "enum": [
+                  "deny",
+                  "approve",
+                  "ask"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "On Approval"
+          },
           "surface": {
             "anyOf": [
               {

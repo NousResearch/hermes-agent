@@ -3,6 +3,7 @@
 CI runners and orchestrators consume a one-shot run without scraping human-formatted text:
 ``system/init`` → ``text`` deltas / ``tool_use`` / ``tool_result`` → one terminal ``result``
 envelope (exit code, final text, token stats). Diagnostics and ``session_id`` stay on stderr.
+``--format json`` writes only that ``result`` envelope (``ResultOnlyEmitter``).
 """
 
 from __future__ import annotations
@@ -16,15 +17,16 @@ _TOOL_OUTPUT_CAP = 5000
 
 
 def stream_json_requested(args) -> bool:
-    """True when ``--format stream-json`` was passed; exits 2 on the combinations the protocol forbids
-    (no query to answer, or the interactive TUI transport) and forces quiet mode on ``args``."""
-    if getattr(args, "output_format", "text") != "stream-json":
+    """True when ``--format stream-json`` or ``--format json`` was passed; exits 2 on the combinations
+    the protocol forbids (no query to answer, or the interactive TUI transport) and forces quiet mode."""
+    fmt = getattr(args, "output_format", "text")
+    if fmt not in EMITTERS:
         return False
     if not (getattr(args, "query", None) or getattr(args, "query_file", None)):
-        print("Error: --format stream-json requires -q/--query.", file=sys.stderr)
+        print(f"Error: --format {fmt} requires -q/--query.", file=sys.stderr)
         raise SystemExit(2)
     if getattr(args, "tui", False):
-        print("Error: --format stream-json cannot be used with --tui.", file=sys.stderr)
+        print(f"Error: --format {fmt} cannot be used with --tui.", file=sys.stderr)
         raise SystemExit(2)
     args.quiet = True
     return True
@@ -84,6 +86,10 @@ class StreamJsonEmitter:
                         "output": output if len(output) <= _TOOL_OUTPUT_CAP else output[:_TOOL_OUTPUT_CAP] + "...",
                         "duration_ms": int(float(duration) * 1000), "is_error": bool(kwargs.get("is_error", False))})
 
+    def on_approval_request(self, prompt: dict) -> None:
+        """``--on-approval wait``: the run is holding on this approval until another surface answers."""
+        self._emit({"type": "approval_request", **{key: prompt.get(key) for key in ("prompt_id", "command", "description")}})
+
     def emit_result(self, result: Any, session_id: str = "", exit_code: int = 0) -> int:
         """Write the terminal ``result`` record (once) and return the process exit code it reports."""
         data = result if isinstance(result, dict) else {"final_response": "" if result is None else str(result)}
@@ -99,6 +105,8 @@ class StreamJsonEmitter:
         if data.get("replay_gap"):
             # The viewer fell behind and re-attached: ``text`` events stopped there; ``text`` is the whole reply.
             payload["replay_gap"] = True
+        # Why an --on-approval fail / --timeout run stopped (exit 5 / 124).
+        payload.update({key: data[key] for key in ("pending_approval", "timed_out") if data.get(key)})
         self._emit(payload)
         print(f"\nsession_id: {session_id or self._session_id}", file=sys.stderr)  # same stderr contract as -Q
         return exit_code
@@ -109,3 +117,14 @@ class StreamJsonEmitter:
             sys.stdout.flush()
         except (BrokenPipeError, OSError):
             pass  # consumer closed the pipe — nothing left to report to
+
+
+class ResultOnlyEmitter(StreamJsonEmitter):
+    """``--format json``: the same terminal ``result`` envelope, and nothing else on stdout."""
+
+    def _emit(self, obj: dict) -> None:
+        if obj.get("type") == "result":
+            super()._emit(obj)
+
+
+EMITTERS = {"stream-json": StreamJsonEmitter, "json": ResultOnlyEmitter}

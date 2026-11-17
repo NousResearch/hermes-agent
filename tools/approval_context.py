@@ -217,20 +217,32 @@ def _is_single_query_approval_context() -> bool:
     carries the same fact as the submission's ``finite`` flag (``hermes -z`` / ``chat -q``
     over the daemon): the viewer detaches on the first prompt, so nobody answers there either."""
     try:
-        from gateway.session_finite import finite_turn_required
+        from gateway.session_finite import finite_approval, finite_turn_required
     except ImportError:  # install without the gateway package: no admitted turn to carry the flag
         pass
     else:
         if finite_turn_required() is True:
-            return True
+            # ``--on-approval wait|fail``: the viewer stays attached to answer for (or stop) the run,
+            # so the approval reaches it as a normal gateway prompt instead of resolving headless.
+            return finite_approval() != "ask"
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
 
 
 def _no_user_can_answer() -> bool:
     """True in single-query (-q), cron and unattended-platform sessions. `hermes chat -q` still registers the
     CLI panel callback, so a prompt that only checks for a callback would wait the full timeout for nobody."""
-    return (_is_single_query_approval_context() or _is_cron_approval_context()
+    return (_is_single_query_approval_context() or _finite_viewer_turn() or _is_cron_approval_context()
             or _is_unattended_platform_approval_context())
+
+
+def _finite_viewer_turn() -> bool:
+    """A gateway-admitted ``chat -q`` / ``-z`` turn. Its viewer answers approval prompts at most
+    (``--on-approval wait|fail``), never a password, vault or staged-write prompt."""
+    try:
+        from gateway.session_finite import finite_turn_required
+    except ImportError:  # install without the gateway package: no admitted turn
+        return False
+    return finite_turn_required() is True
 
 
 def _is_gateway_approval_context() -> bool:
@@ -382,7 +394,15 @@ def _get_cron_approval_mode() -> str:
 
 
 def _get_single_query_approval_mode() -> str:
-    """Read the single-query (-q) approval mode from config. Returns 'deny' or 'approve'."""
+    """The single-query (-q) approval mode: a finite turn's ``--on-approval deny|approve``, else
+    ``approvals.single_query_mode``. Returns 'deny' or 'approve'."""
+    try:
+        from gateway.session_finite import finite_approval
+    except ImportError:  # install without the gateway package: no admitted turn to carry the flag
+        pass
+    else:
+        if finite_approval() in ("deny", "approve"):
+            return finite_approval()
     return _binary_approval_mode("single_query_mode")
 
 

@@ -254,6 +254,9 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     attachments: list[CanonicalAttachment] | None = None
     finite: bool = False
     unattended: bool = False
+    # Finite only (``chat -q --on-approval``): ``deny`` / ``approve`` override ``approvals.single_query_mode``
+    # for this turn; ``ask`` sends flagged actions to the viewer as approval prompts (``wait`` / ``fail``).
+    on_approval: Literal['deny', 'approve', 'ask'] | None = None
     surface: str | None = None
     voice_context: str | None = None
     interrupted: bool = False

@@ -134,7 +134,9 @@ Common options:
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
-| `--format stream-json` | Emit structured JSONL for a `-q` / `--query` invocation. Implies `--quiet`; cannot be combined with `--tui`. |
+| `--format stream-json` / `--format json` | Machine-readable output for a `-q` / `--query` (or `hermes -z`) run: `stream-json` emits JSONL events, `json` writes only the final `result` object. Both imply `--quiet`; neither can be combined with `--tui`. |
+| `--on-approval deny\|approve\|wait\|fail` | One-shot runs only: what happens when a command needs approval. Overrides `approvals.single_query_mode` (and `-z`'s auto-approval) for this run. See [one-shot approvals](#--on-approval--approvals-in-one-shot-runs). |
+| `--timeout <seconds>` | One-shot runs only: interrupt the turn after this many seconds and exit `124`. |
 | `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
@@ -189,19 +191,60 @@ Once a conversation starts, its terminal record is always `result` — including
 `exit_code: 130` when it is interrupted with Ctrl-C. Treat that record as the
 completion signal; the process exit code matches its `exit_code`.
 
+### `--format json` — one result object
+
+`--format json` is `stream-json` with every event but the last dropped: stdout holds exactly one
+JSON object, the same `result` envelope (`exit_code`, `text`, `tokens`, `session_id`,
+`duration_ms`, plus `error` / `pending_approval` / `timed_out` when they apply). It works on
+`hermes chat -q` and on `hermes -z`:
+
+```bash
+hermes -z "List the TODOs in src/" --format json | jq -r .text
+```
+
+### `--on-approval` — approvals in one-shot runs
+
+Nobody is at the keyboard during a one-shot run, so a command that needs approval is resolved
+without a prompt. By default `hermes -z` approves it and `hermes chat -q` follows
+`approvals.single_query_mode` (default `deny`). `--on-approval` picks the behavior for one run:
+
+| Value | What happens |
+|---|---|
+| `deny` | The command is refused; the agent is told and looks for another way. |
+| `approve` | The command runs. Only the session's own local CLI launch may ask for this. |
+| `wait` | The run holds until someone answers from another surface: `hermes --resume <session>`, then `/approve <id> once` (or `deny`). The `approvals.timeout` still fails it closed. With `--format stream-json` an `approval_request` event names it. |
+| `fail` | The command is denied, the turn is stopped, and the run exits `5`. The `result` object carries `pending_approval` (`prompt_id`, `command`, `description`), so a script can show a person exactly what needed approval. |
+
+```bash
+hermes chat -q "Clean the build dir" --on-approval fail --format json
+# exit 5, {"type": "result", "exit_code": 5, "pending_approval": {"command": "rm -rf build/", ...}, ...}
+```
+
+`--timeout <seconds>` bounds a one-shot run: when it runs out the turn is interrupted (as `/stop`
+would) and the run exits `124`, with `"timed_out": true` in the `result` object.
+
 #### Exit codes for one-shot runs
 
 When chat answers and exits (`-Q`, `chat --oneshot`, or a query with non-TTY
 stdio) the process exit code reports the turn's outcome, on both the quiet and
-the non-quiet path: `0` the turn completed; `1` it failed, stopped partway
-(`partial`), hit the iteration budget, or never ran (credentials / agent init
-failed); `130` it was interrupted. A Kanban dispatcher-spawned worker
-(`HERMES_KANBAN_TASK` set) whose turn failed only because the provider was
-rate-limited, overloaded, returning 5xx, timing out, or the account hit a
-billing/quota wall, exits
-`75` (`EX_TEMPFAIL`) so the dispatcher requeues the task without counting a
-failure. With `--format stream-json` the terminal `result` record carries the
-same `exit_code`.
+the non-quiet path. `hermes -z` uses the same table, but `1` and `2` mean
+different things there (below). With `--format stream-json` / `json` the
+`result` object carries the same `exit_code`.
+
+| Code | Meaning |
+|---|---|
+| `0` | The turn completed. |
+| `1` | `chat -q`: the turn failed, stopped partway (`partial`), hit the iteration budget, or never ran (credentials / agent init failed). `-z`: it completed but produced no text. |
+| `2` | A usage error (bad flags) before the run started. `-z`: also a turn that failed or stopped partway. |
+| `3` | The session needs a person (a pending prompt, or a lost turn ahead of this one); the run detached without cancelling anything. |
+| `5` | `--on-approval fail`: a command needed approval; it was denied and the run stopped. |
+| `75` | Kanban workers only (`HERMES_KANBAN_TASK` set): the provider was rate-limited, overloaded, returning 5xx, timing out, or hit a billing/quota wall (`EX_TEMPFAIL`), so the dispatcher requeues the task without counting a failure. |
+| `78` | Kanban workers only: a provider failure that needs an operator (auth, missing model); the dispatcher parks the task. |
+| `124` | `--timeout`: the run did not finish in time and was interrupted. |
+| `130` | The turn was interrupted (Ctrl-C, `/stop`, a gateway restart). |
+
+Outside Kanban, provider authentication and retryable provider failures exit `1`
+(`chat -q`) or `2` (`-z`); the `result` object's `error` says which.
 
 #### Delegation in finite chat runs
 
@@ -244,7 +287,9 @@ for usage errors (bad flags) before the run starts. These codes intentionally
 differ from `chat -q`/`-Q` above (which exit `1` for failed/partial/budget and
 `0` for a completed turn with no text): `-z` reserves `1` for "answered nothing".
 Judge the run by the exit code (or the `--usage-file` flags), not by whether
-stdout is non-empty.
+stdout is non-empty. `-z` also takes `--on-approval`, `--timeout` (exit `5` /
+`124`) and `--format json` / `stream-json`; see
+[the exit-code table](#exit-codes-for-one-shot-runs).
 
 #### `--usage-file` — JSON usage report for pipelines
 

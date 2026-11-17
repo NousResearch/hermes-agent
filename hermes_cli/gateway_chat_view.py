@@ -6,8 +6,14 @@ import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.oneshot_contract import RunPolicy
+from hermes_cli.turn_exit import ExitCode
 
 logger = logging.getLogger(__name__)
+
+# After ``--timeout`` interrupts the turn, how long the run still waits for the owner to settle it
+# (so the usage ledger and the result envelope carry its tokens) before exiting 124 without them.
+_STOP_SETTLE_GRACE_S = 15.0
 
 
 _PREVIEW_CHARS = 80
@@ -107,6 +113,14 @@ class GatewayChatView:
         self.launch_api_key = None  # `--api-key` of this terminal's launch; never durable (/new reuses it)
         self.finite_admission = None
         self._finite_events = []
+        # ``--on-approval`` / ``--timeout`` of a finite run; the stop they caused (exit 5 / 124) and the
+        # approval that stopped it. ``prompt_owner``: which admission raised each live prompt.
+        self.policy = RunPolicy()
+        self.stop_reason = None
+        self.pending_approval = None
+        self.prompt_owner = {}
+        self._acted = set()
+        self._deadline = None
         self.streams = {}
         self.completions = {}
         # ``gateway_replay_gap``: admission -> the reply segment shown when a gap cut it; own unsettled turns.
@@ -332,6 +346,7 @@ class GatewayChatView:
 
     def _request(self, admission, payload):
         self.prompts[payload["prompt_id"]] = payload
+        self.prompt_owner[payload["prompt_id"]] = admission
         # Finite invocations only need the session-blocking state so they can
         # detach cleanly; do not print another admission's control details.
         if not self.finite:
@@ -346,7 +361,7 @@ class GatewayChatView:
         receipt = await self.client.rpc("prompt.submit", session_id=self.session_id,
                                         input_id=uuid.uuid4().hex, text=text,
                                         **({"finite": True} if self.finite else {}),
-                                        **({"unattended": True} if self.finite and self.unattended else {}))
+                                        **(self.policy.submit_fields(oneshot_z=self.unattended) if self.finite else {}))
         if (receipt or {}).get("voice_stopped") is True:
             # TUI-26: a bare stop phrase typed into this LOCAL session's voice chat (another viewer
             # turned it on) ended the chat on the owner; nothing was admitted and no turn follows.
@@ -482,9 +497,70 @@ class GatewayChatView:
             return ("This chat is paused behind a turn whose ending Hermes couldn't confirm. "
                     "Your message is saved and will run once you resume this session and /discard "
                     "that turn; don't send it again.")
-        if self.prompts and (own or not self.gaps):  # a control blocks only a turn still pending
+        if self._foreign_prompts(admission) and (own or not self.gaps):  # a control blocks only a turn still pending
             return "Input required; detached without cancelling. Resume this session interactively."
         return None
+
+    def _own_approvals(self, admission):
+        """This run's own approval prompts, which ``--on-approval wait|fail`` handles instead of detaching."""
+        if self.policy.on_approval not in _OWN_APPROVAL_ACTIONS:
+            return {}
+        return {pid: p for pid, p in self.prompts.items()
+                if p.get("kind") == "approval" and self.prompt_owner.get(pid) == admission}
+
+    def _foreign_prompts(self, admission):
+        own = self._own_approvals(admission)
+        return [pid for pid in self.prompts if pid not in own]
+
+    async def _act_on_own_approvals(self, admission):
+        for prompt_id, prompt in self._own_approvals(admission).items():
+            if prompt_id not in self._acted:  # each prompt is acted on once
+                self._acted.add(prompt_id)
+                await _OWN_APPROVAL_ACTIONS[self.policy.on_approval](self, admission, prompt)
+
+    async def _announce_approval(self, admission, prompt):
+        """``--on-approval wait``: say what is waiting and how another surface answers it; keep waiting
+        (the gateway's ``approvals.timeout`` still fails it closed)."""
+        print(f"\nApproval needed: {prompt.get('description') or 'flagged action'}\n  {prompt.get('command') or ''}\n"
+              f"Waiting for an answer. From another terminal: hermes --resume {self.session_id}, then "
+              f"/approve {prompt['prompt_id']} once (or deny).", file=sys.stderr, flush=True)
+        if self.emitter is not None:
+            self.emitter.on_approval_request(prompt)
+
+    async def _fail_on_approval(self, admission, prompt):
+        """``--on-approval fail``: deny the action, stop the turn, exit 5 naming what needed approval."""
+        self.pending_approval = {key: prompt.get(key) for key in ("prompt_id", "command", "description")}
+        print(f"Approval needed: {prompt.get('description') or 'flagged action'}\n  {prompt.get('command') or ''}\n"
+              "Denied and stopping (--on-approval fail).", file=sys.stderr, flush=True)
+        with suppress(GatewayClientError):  # already settled (answered elsewhere, or timed out)
+            await self.client.rpc("approval.respond", session_id=self.session_id,
+                                  execution_generation=prompt["execution_generation"],
+                                  prompt_id=prompt["prompt_id"], choice="deny")
+        await self._stop(ExitCode.APPROVAL_PENDING, admission)
+
+    async def _stop(self, reason, admission):
+        """End this run's turn (``prompt.cancel`` retires a queued one, interrupts a started one) and
+        record why; the owner's settlement still arrives so the ledger stays exact."""
+        self.stop_reason = self.stop_reason or reason
+        self._deadline = asyncio.get_running_loop().time() + _STOP_SETTLE_GRACE_S
+        with suppress(GatewayClientError):  # it settled meanwhile
+            await self.client.rpc("prompt.cancel", session_id=self.session_id, admission_id=admission)
+
+    async def _wait_changed(self, admission):
+        """Wait for the next event; at the ``--timeout`` deadline stop the turn (exit 124), and once
+        the settle grace after a stop runs out, settle it here as cancelled."""
+        if self._deadline is None:
+            await self.changed.wait()
+            return
+        remaining = self._deadline - asyncio.get_running_loop().time()
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self.changed.wait(), max(remaining, 0))
+            return
+        if self.stop_reason is None:
+            print(f"Timed out after {self.policy.timeout:g}s (--timeout); stopping the turn.", file=sys.stderr, flush=True)
+            await self._stop(ExitCode.TIMEOUT, admission)
+        else:
+            self.completions.setdefault(admission, {"outcome": "cancelled", "text": ""})
 
     async def _settled_result(self, admission):
         """The structured result the owner committed with this admission's settlement — the same
@@ -532,6 +608,63 @@ class GatewayChatView:
         failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
         _write_usage_file(self.usage_file, result, failure=failure)
 
+    async def _run_finite(self, receipt):
+        """Wait for this one-shot's own admission to settle and exit with its outcome."""
+        admission = _oneshot_admission(receipt)
+        if admission is None:
+            return 0  # the voice chat ended; no turn was admitted, so none is awaited
+        self.finite_admission = admission
+        for kind, event_admission, payload in self._finite_events:
+            if event_admission == admission and admission not in self.completions:
+                self._dispatch_event(kind, event_admission, payload)
+        self._finite_events.clear()
+        self.changed.set()
+        while admission not in self.completions:
+            self.changed.clear()
+            if self.failure:
+                raise self.failure
+            await self._act_on_own_approvals(admission)
+            blocked = self._finite_block(admission)
+            if blocked:
+                return self._detach(blocked)
+            if admission not in self.completions:
+                await self._wait_changed(admission)
+        return await self._finish_finite(admission)
+
+    async def _finish_finite(self, admission):
+        terminal = self.completions[admission]
+        outcome = terminal.get("outcome")
+        text = terminal.get("text") or terminal.get("content") or ""
+        # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
+        # 'completed' with ``completed: False`` in its committed result. Judge both with the
+        # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
+        # A stop this run asked for (--on-approval fail, --timeout) exits with its own code.
+        from hermes_cli.oneshot import _oneshot_exit_code
+        from hermes_cli.turn_exit import turn_exit_code
+        recovered = terminal.get("_receipt")
+        result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
+        result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
+                      interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
+        exit_code = int(self.stop_reason) if self.stop_reason else (
+            _oneshot_exit_code(text, result) if self.unattended else turn_exit_code(result, kanban_worker=False))
+        if self.usage_file:
+            self._write_usage_file(result, outcome)
+        if self.emitter is not None:
+            return self.emitter.emit_result({**result, "final_response": text,
+                                             "replay_gap": bool(terminal.get("replay_gap")),
+                                             "pending_approval": self.pending_approval,
+                                             "timed_out": self.stop_reason == ExitCode.TIMEOUT},
+                                            session_id=self.session_id, exit_code=exit_code)
+        if not self.stop_reason:
+            self._report_silent_interrupt(text, result)
+        print(text, flush=True)
+        self._report_no_reply(exit_code)
+        # Same stderr exit contract as the legacy -Q path: automation wrappers read the
+        # durable id from this line, and it names the physical row (a compaction may have
+        # advanced it past the row printed at start).
+        self._print_exit_ids()
+        return exit_code
+
     async def run(self, query=None, *, oneshot=False):
         self.quiet = self.quiet or oneshot
         self.finite = oneshot
@@ -544,56 +677,13 @@ class GatewayChatView:
             return self._detach(f"Your message was not sent. To continue, run `hermes sessions discard "
                                 f"{self.session_id} --yes`, or resume this session in an interactive chat "
                                 "and /discard the paused turn there; then send it again.")
+        if oneshot and self.policy.timeout is not None:
+            self._deadline = asyncio.get_running_loop().time() + self.policy.timeout
         renderer = asyncio.create_task(self.render())
         try:
             receipt = await self.submit(query) if query else None
             if oneshot:
-                admission = _oneshot_admission(receipt)
-                if admission is None:
-                    return 0  # the voice chat ended; no turn was admitted, so none is awaited
-                self.finite_admission = admission
-                for kind, event_admission, payload in self._finite_events:
-                    if event_admission == admission and admission not in self.completions:
-                        self._dispatch_event(kind, event_admission, payload)
-                self._finite_events.clear()
-                self.changed.set()
-                while admission not in self.completions:
-                    self.changed.clear()
-                    if self.failure:
-                        raise self.failure
-                    blocked = self._finite_block(admission)
-                    if blocked:
-                        return self._detach(blocked)
-                    if admission not in self.completions:
-                        await self.changed.wait()
-                terminal = self.completions[admission]
-                outcome = terminal.get("outcome")
-                text = terminal.get("text") or terminal.get("content") or ""
-                # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
-                # 'completed' with ``completed: False`` in its committed result. Judge both with the
-                # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
-                from hermes_cli.oneshot import _oneshot_exit_code
-                from hermes_cli.turn_exit import turn_exit_code
-                recovered = terminal.get("_receipt")
-                result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
-                result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
-                              interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
-                exit_code = (_oneshot_exit_code(text, result) if self.unattended
-                             else turn_exit_code(result, kanban_worker=False))
-                if self.usage_file:
-                    self._write_usage_file(result, outcome)
-                if self.emitter is not None:
-                    return self.emitter.emit_result({**result, "final_response": text,
-                                                     "replay_gap": bool(terminal.get("replay_gap"))},
-                                                    session_id=self.session_id, exit_code=exit_code)
-                self._report_silent_interrupt(text, result)
-                print(text, flush=True)
-                self._report_no_reply(exit_code)
-                # Same stderr exit contract as the legacy -Q path: automation wrappers read the
-                # durable id from this line, and it names the physical row (a compaction may have
-                # advanced it past the row printed at start).
-                self._print_exit_ids()
-                return exit_code
+                return await self._run_finite(receipt)
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
             from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
@@ -630,6 +720,10 @@ class GatewayChatView:
             renderer.cancel()
             with suppress(asyncio.CancelledError):
                 await renderer
+
+
+# ``--on-approval`` values that keep this run's own approval prompts at the viewer (``ask`` on the wire).
+_OWN_APPROVAL_ACTIONS = {"wait": GatewayChatView._announce_approval, "fail": GatewayChatView._fail_on_approval}
 
 
 def _oneshot_admission(receipt):

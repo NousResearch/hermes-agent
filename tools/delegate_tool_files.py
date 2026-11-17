@@ -115,7 +115,7 @@ def _render_one(spec: FileSpec, resolved: Path, budget: int) -> tuple[str, Inlin
     from tools.file_tools_read_tracking import _file_metadata
 
     version = _file_metadata(str(resolved))
-    lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = resolved.read_text(encoding="utf-8-sig", errors="replace").splitlines()
     start = spec.start or 1
     end = min(spec.end or len(lines), len(lines))
     wanted = lines[start - 1:end] if start <= len(lines) else []

@@ -986,7 +986,7 @@ Manage dynamic webhook subscriptions for event-driven agent activation. Requires
 | `list` / `ls` | Show all agent-created subscriptions. |
 | `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
 | `test` | Send a test POST to verify a subscription is working. |
-| `history` | Show recent deliveries, newest first: `accepted` (with the run it started), `duplicate`, `ignored` (with why: event type, `filter`, `script`) or `failed` (with the reason). `--route <name>` keeps one route, `--limit N` (default 20). See [Delivery history](../user-guide/messaging/webhooks.md#delivery-history). |
+| `history` | Show recent deliveries, newest first: `accepted` (with the run it started), `duplicate`, `ignored` (with why: event type, `filter`, `script`) or `failed` (with the reason). `--route <name>` keeps one route, `--delivery <id>` one delivery, `--outcome accepted|duplicate|ignored|failed` one outcome, `--limit N` (default 20), `--json` prints the receipts as a JSON array. See [Delivery history](../user-guide/messaging/webhooks.md#delivery-history). |
 
 ### `hermes webhook subscribe`
 

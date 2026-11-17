@@ -39,6 +39,8 @@ MAX_HISTORY_ROWS = 10_000
 _PRUNE_INTERVAL_SECONDS = 600.0
 
 ACCEPTED, DUPLICATE, IGNORED, FAILED = "accepted", "duplicate", "ignored", "failed"
+# ``ref`` of a terminal answer to an exhausted delivery: not an attempt, so it never counts as one.
+GAVE_UP_REF = "gave_up"
 
 @dataclass
 class DeliveryReceipt:
@@ -141,6 +143,17 @@ class WebhookReceipts:
                 return None
             return cursor.lastrowid
 
+    def failed_attempts(self, identity, now: float) -> int:
+        """How many times this delivery was tried and failed inside the retention window."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM receipts WHERE profile = ? AND route = ? AND delivery_id = ?"
+                " AND outcome = ? AND ref != ? AND received_at >= ?",
+                (identity.profile, identity.route, identity.delivery_id, FAILED, GAVE_UP_REF,
+                 now - self.retention_seconds),
+            ).fetchone()
+        return int(row[0])
+
     def is_claimed(self, identity) -> bool:
         with self._connect() as conn:
             row = conn.execute(
@@ -218,13 +231,17 @@ class WebhookReceipts:
             " (SELECT id FROM receipts WHERE claim = 0 ORDER BY id DESC LIMIT ?)", (MAX_HISTORY_ROWS,))
 
 
-def read_history(path: Path, route: Optional[str] = None, limit: int = 20) -> list[dict[str, Any]]:
+def read_history(path: Path, route: Optional[str] = None, limit: int = 20, *, delivery_id: Optional[str] = None,
+                 outcome: Optional[str] = None) -> list[dict[str, Any]]:
     """Newest-first receipts for ``hermes webhook history``; read-only, empty when nothing was recorded."""
     if not Path(path).exists():
         return []
+    filters = [(column, value) for column, value in
+               (("route", route), ("delivery_id", delivery_id), ("outcome", outcome)) if value]
+    where = " WHERE " + " AND ".join(f"{column} = ?" for column, _ in filters) if filters else ""
     query = ("SELECT profile, route, delivery_id, event_type, outcome, reason, ref, received_at FROM receipts"
-             + (" WHERE route = ?" if route else "") + " ORDER BY id DESC LIMIT ?")
-    params = ((route,) if route else ()) + (max(int(limit), 1),)
+             + where + " ORDER BY id DESC LIMIT ?")
+    params = tuple(value for _, value in filters) + (max(int(limit), 1),)
     with closing(sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute(query, params)]
@@ -261,6 +278,8 @@ def outcome_for_response(status: int, body_text: str) -> tuple[str, str]:
     if not isinstance(body, dict):
         body = {}
     state = body.get("status")
+    if state == FAILED and body.get("terminal"):
+        return FAILED, f"gave up after {body.get('attempts')} failed attempts"
     if state == DUPLICATE:
         return DUPLICATE, ""
     if state == IGNORED:

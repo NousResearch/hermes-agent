@@ -451,7 +451,11 @@ def _cmd_history(args):
 
     from gateway.platforms.webhook_receipts import read_history, receipts_path
     from hermes_constants import get_hermes_home
-    rows = read_history(receipts_path(get_hermes_home()), route=args.route, limit=args.limit)
+    rows = read_history(receipts_path(get_hermes_home()), route=args.route, limit=args.limit,
+                        delivery_id=getattr(args, "delivery", None), outcome=getattr(args, "outcome", None))
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+        return
     if not rows:
         scope = f" for route '{args.route}'" if args.route else ""
         print(f"  No webhook deliveries recorded{scope}.")

@@ -21,9 +21,10 @@ ROUTES = {
 }
 
 
-def _gateway(sent: list, reject: bool = False) -> WebhookAdapter:
+def _gateway(sent: list, reject: bool = False, **extra) -> WebhookAdapter:
     """A fresh adapter process: same HERMES_HOME, empty memory, a recording Telegram target."""
-    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 0, "routes": ROUTES}))
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 0, "routes": ROUTES,
+                                                                 **extra}))
     target = AsyncMock()
 
     async def send(chat_id, content, **_kw):
@@ -39,14 +40,15 @@ def _gateway(sent: list, reject: bool = False) -> WebhookAdapter:
     return adapter
 
 
-async def _post(adapter, delivery_id, event="push", n=1):
+async def _post(adapter, delivery_id, event="push", n=1, full=False):
     app = web.Application()
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     async with TestClient(TestServer(app)) as client:
         response = await client.post("/webhooks/alerts", data=json.dumps({"n": n}),
                                      headers={"X-GitHub-Delivery": delivery_id, "X-GitHub-Event": event,
                                               "Content-Type": "application/json"})
-        return response.status, (await response.json()).get("status")
+        body = await response.json()
+        return (response.status, body) if full else (response.status, body.get("status"))
 
 
 def _history(**kw):
@@ -93,3 +95,27 @@ async def test_ignored_and_failed_deliveries_leave_receipts_with_the_reason():
         webhook_command(SimpleNamespace(webhook_action="history", route="alerts", limit=5))
     text = out.getvalue()
     assert "ignored" in text and "skip-1" in text and "deliver:telegram" in text
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_that_keeps_failing_gets_a_terminal_answer_and_is_queryable():
+    sent = []
+    for _ in range(2):  # the target refuses twice, across a restart
+        assert await _post(_gateway(sent, reject=True, max_delivery_attempts=2), "d-9") == (502, "error")
+    for _ in range(2):  # every later retry gets the same terminal answer
+        status, body = await _post(_gateway(sent, max_delivery_attempts=2), "d-9", full=True)
+        assert (status, body["status"], body["terminal"], body["attempts"]) == (200, "failed", True, 2)
+    assert len(sent) == 2  # the healthy target was never tried a third time
+    assert await _post(_gateway(sent, max_delivery_attempts=2), "d-10") == (200, "delivered")  # fresh id runs
+
+    from contextlib import redirect_stdout
+    from io import StringIO
+    from hermes_cli.webhook import webhook_command
+    out = StringIO()
+    with redirect_stdout(out):
+        webhook_command(SimpleNamespace(webhook_action="history", route=None, limit=20, delivery="d-9",
+                                        outcome=None, json=True))
+    rows = json.loads(out.getvalue())
+    assert [r["outcome"] for r in rows] == ["failed"] * 4
+    assert {r["delivery_id"] for r in rows} == {"d-9"}
+    assert "gave up after 2 failed attempts" in rows[0]["reason"]

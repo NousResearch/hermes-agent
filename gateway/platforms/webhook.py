@@ -272,6 +272,8 @@ class WebhookAdapter(BasePlatformAdapter):
         from hermes_constants import get_hermes_home
         self._receipts = receipts.WebhookReceipts(receipts.receipts_path(get_hermes_home()), float(
             extra.get("receipt_retention_days", receipts.DEFAULT_RETENTION_DAYS)))
+        # Failed tries of one delivery before its next retry is answered as a terminal failure; 0 = unbounded.
+        self._max_delivery_attempts: int = int(extra.get("max_delivery_attempts", 0))
         self._rate_counts: dict[str, deque[float]] = {}  # per-route hit timestamps in a fixed window
         self._rate_limit: int = int(extra.get("rate_limit", 30))  # per minute
         self._max_body_bytes: int = int(extra.get("max_body_bytes", 1_048_576))  # 1MB
@@ -763,6 +765,19 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Skill loading failed: %s", e)
         return prompt
 
+    async def _gave_up_response(self, identity: _WebhookDeliveryIdentity, route_config: dict,
+                                now: float) -> Optional[web.Response]:
+        """A terminal 200 once this delivery has failed ``max_delivery_attempts`` times, so the provider stops
+        retrying it; None while it may still be tried. Recovery is a resend under a fresh delivery id."""
+        limit = int(route_config.get("max_delivery_attempts", self._max_delivery_attempts) or 0)
+        if limit <= 0:
+            return None
+        attempts = await asyncio.to_thread(self._receipts.failed_attempts, identity, now)
+        if attempts < limit:
+            return None
+        return web.json_response({"status": "failed", "terminal": True, "attempts": attempts,
+                                  "delivery_id": identity.delivery_id}, status=200)
+
     async def _handle_webhook(self, request: web.Request) -> web.Response:
         """POST /webhooks/{route_name} — receive and process a webhook event, then file its receipt."""
         # _process_webhook sets the receipt once the delivery is authenticated; awaited directly, so
@@ -851,6 +866,10 @@ class WebhookAdapter(BasePlatformAdapter):
                            or isinstance(coalesce, dict))
         if route_config.get("deliver_only"):
             receipt.ref = f"deliver:{route_config.get('deliver', 'log')}"
+        if non_durable and (gave_up := await self._gave_up_response(delivery_identity, route_config, now)):
+            logger.info("[webhook] Delivery %s on route %s gave up after repeated failures", delivery_id, route_name)
+            receipt.ref = receipts.GAVE_UP_REF
+            return gave_up
         if non_durable and not await self._record_delivery_id(delivery_identity, now, receipt, event_type):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)

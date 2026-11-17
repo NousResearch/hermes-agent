@@ -673,6 +673,8 @@ Every authenticated delivery leaves a receipt in `~/.hermes/webhook_receipts.db`
 hermes webhook history                    # 20 most recent deliveries, newest first
 hermes webhook history --route github-pr  # one route
 hermes webhook history --limit 100
+hermes webhook history --delivery d-123 --json   # every receipt for one delivery, as JSON
+hermes webhook history --outcome failed
 ```
 
 Receipts are kept for 7 days (and at most 10,000 history rows). Change the retention, which is also how long a delivery ID is remembered for dedupe:
@@ -683,6 +685,19 @@ platforms:
     extra:
       receipt_retention_days: 14
 ```
+
+#### Bounded retries
+
+A provider retries a delivery that failed (`5xx`). By default every retry is tried again. To stop a delivery that keeps failing, set `max_delivery_attempts` (globally, or per route with the same key); `0`, the default, means no limit:
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      max_delivery_attempts: 5
+```
+
+Once a delivery has failed that many times inside the retention window, its next retry is answered `200 {"status": "failed", "terminal": true, "attempts": 5, "delivery_id": "..."}` without running again, so the provider stops retrying. The answer is in the history as `failed` with the reason `gave up after 5 failed attempts`. To run it again, resend the payload under a new delivery ID. The limit applies to `deliver_only`, `cron_job` and coalesced routes; agent routes are deduped by the session admission ledger.
 
 ### Body size limits
 

@@ -846,6 +846,8 @@ When on, web tools, the browser, vision URL fetches, gateway media downloads, cr
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 
+The [managed scope](./managed-scope.md) can pin this key (or the legacy `browser.allow_private_urls`). A pinned value decides this guard in either direction: `HERMES_ALLOW_PRIVATE_URLS` and the profile's own keys are read only when the managed scope pins neither. Cloud and CDP browsers also read `browser.allow_private_urls` as their own switch, so pin that key as well to hold them.
+
 #### What `allow_private_urls` covers, and what it doesn't
 
 The setting guards the fetches Hermes makes or hands to a remote browser; it does

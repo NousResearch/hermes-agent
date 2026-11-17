@@ -89,28 +89,42 @@ def test_current_policy_controls_existing_session_egress(tmp_path, monkeypatch, 
 ])
 def test_http_dispatch_preserves_policy_and_direct_alerts(tmp_path, monkeypatch, content, direct, expected):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    a, target = _adapter()
-    _subscriptions(tmp_path, {"incident": _route(response_policy="urgent_only", prompt=content, deliver_only=direct)})
+    a = WebhookAdapter(PlatformConfig(enabled=True, extra={
+        "host": "127.0.0.1", "port": 0,
+        "routes": {"incident": _route(response_policy="urgent_only", prompt=content, deliver_only=direct)}}))
     captured = []
 
     async def handle(event):
         captured.append(event)
-        assert (await a.send(event.source.chat_id, content)).success
 
     a.handle_message = handle
+    target = AsyncMock()
+    target.send.return_value = SendResult(success=True)
+    mock_runner = MagicMock()
+    mock_runner._profile_name_for_source.return_value = None
+    mock_runner.adapters = {Platform.DISCORD: target}
+    mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
+    mock_runner.config.get_home_channel.return_value = None
+    a.gateway_runner = mock_runner
 
     async def exercise():
+        # Current main routes agent-run admission through the durable producer, so the
+        # route-authority fixture (tests/gateway/fixtures/webhook_route_authority.py)
+        # must mount a real runner/authority — a bare MagicMock runner cannot admit.
         app = web.Application()
+        from tests.gateway.fixtures.webhook_route_authority import mount_authority
+        mount_authority(app, a)
         app.router.add_post("/webhooks/{route_name}", a._handle_webhook)
         async with TestClient(TestServer(app)) as client:
-            response = await client.post("/webhooks/incident", json={"type": "alert"}, headers={"X-Request-ID": "test-dispatch"})
+            response = await client.post("/webhooks/incident", json={"type": "alert"},
+                                         headers={"X-GitHub-Delivery": "test-dispatch"})
             assert response.status == (200 if direct else 202)
-            if a._background_tasks:
-                await asyncio.gather(*list(a._background_tasks))
-        assert target.send.await_count == expected
         if not direct:
-            info = a._delivery_info[captured[0].source.chat_id]
-            assert info.get("response_policy") == "urgent_only"
+            # The admitted session's reply leg is subject to the route policy.
+            chat_id = captured[0].source.chat_id
+            assert (await a.send(chat_id, content)).success
+            assert a._delivery_policies.get(chat_id) == "urgent_only"
+        assert target.send.await_count == expected
         with pytest.raises(ValueError, match="response_policy"):
             a._validate_route("invalid", _route(response_policy="urgent_ony"))
 

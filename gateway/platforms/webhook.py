@@ -225,6 +225,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # Keyed by session chat_id; read by EVERY send() (interim status messages AND the final
         # response) so never pop on send(). TTL-pruned on each POST.
         self._delivery_info: dict[str, dict] = {}
+        # Route response_policy per admitted session, OUTSIDE _delivery_info: destination
+        # snapshots validate a strict key allowlist, so the policy must not ride that dict.
+        self._delivery_policies: dict[str, str | None] = {}
         self._delivery_info_created: dict[str, float] = {}
         self._delivery_info_order: deque[tuple[float, str]] = deque()
         self.gateway_runner = None  # set externally; needed for cross-platform delivery
@@ -330,7 +333,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._reload_dynamic_routes()
         parts = str(chat_id).split(":", 2)
         route = self._routes.get(parts[1], {}) if len(parts) == 3 and parts[0] == "webhook" else {}
-        policy = route.get("response_policy", self._delivery_info.get(chat_id, {}).get("response_policy"))
+        policy = route.get("response_policy", self._delivery_policies.get(chat_id))
         try:
             validate_response_policy(policy)
         except ValueError as exc:
@@ -372,6 +375,7 @@ class WebhookAdapter(BasePlatformAdapter):
             created_at, key = order.popleft()
             if created.get(key) == created_at:
                 self._delivery_info.pop(key, None)
+                self._delivery_policies.pop(key, None)
                 created.pop(key, None)
 
     def _prune_seen_deliveries(self, now: float) -> None:
@@ -830,10 +834,12 @@ class WebhookAdapter(BasePlatformAdapter):
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
-            "response_policy": route_config.get("response_policy"),
             "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
             "route": route_name,
             "mirror": route_config.get("mirror_to_session") is True}
+        # response_policy lives beside (not inside) the destination dict: validate_destination
+        # enforces a strict key allowlist on _delivery_info entries and persisted envelopes.
+        self._delivery_policies[session_chat_id] = route_config.get("response_policy")
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)

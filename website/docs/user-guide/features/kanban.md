@@ -581,7 +581,8 @@ therefore exits non-zero: `1` for an ordinary failure, `75`
 requeues the task without counting a failure, so a quota window is never
 booked as a protocol violation — and `78` (`EX_CONFIG`) when the provider
 rejected something a retry cannot fix: the profile's credential (401/403,
-revoked or invalid key), the model (404 / model not found) or the TLS chain.
+revoked or invalid key), the model (404 / model not found), the TLS chain, or a streaming
+reply that repeated its loop again after the worker's one automatic resume.
 That **terminal provider error** trips the circuit breaker on the first
 occurrence: the dispatcher records the run as `crashed` with
 `exit_kind: terminal_provider`, emits `gave_up` with `terminal_provider: true`
@@ -598,6 +599,15 @@ last line of its own log (`[kanban-worker-exit] rc=<code>`), so a per-tick
 read its exit status — books the same death the same way the gateway-embedded
 dispatcher does; a worker killed before it reaches that line is a plain
 `crashed` (`pid <n> not alive`).
+
+**A repetition cut resumes once.** When the repetition guard cuts a worker's streamed reply
+mid-loop, the partial text is already discarded and the transcript is intact; the abort copy tells
+a reader to resend the message, which a one-shot worker cannot do. So the worker re-issues the call
+once in the SAME session, after a hidden interrupt placeholder and one short user note naming the
+discarded loop (never the looped bytes: replaying them re-seeds the loop). A second cut on the same
+transcript ends the run with `failure_reason: model_repetition`, which books the terminal provider
+exit above - one spawn, the card parked with the model's own words. An interactive turn keeps the
+abort and its resend copy.
 
 **Agent-side prevention:** Before the worker exits, Hermes injects up to two
 synthetic nudges when it detects the model is about to stop without a terminal

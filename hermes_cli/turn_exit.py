@@ -8,8 +8,12 @@ TRANSIENT_PROVIDER_REASONS = frozenset({
     "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
 })
 # These failures need an operator change; the dispatcher parks the task immediately.
+# ``model_repetition`` is here for the same reason: the worker already re-issued its turn once on
+# the same transcript and the model looped again, so every later spawn would spend the card's
+# whole failure budget on the same wall.
 TERMINAL_PROVIDER_REASONS = frozenset({
     "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
+    "model_repetition",
 })
 
 

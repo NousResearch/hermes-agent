@@ -153,9 +153,9 @@ events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
 
 `blacksmith-*` labels are Blacksmith runners (`4vcpu` for small jobs,
 `32vcpu` for test suites and builds, `-arm` for native arm64). `macos-15`,
-`windows-latest-32-core` and `windows-latest-32-arm-core` are GitHub-hosted.
-The Windows install/update legs (`install-e2e-windows-run.yml`'s `e2e` job) run on the
-standard `windows-latest`, which is free on a public repository; larger runners are billed.
+`windows-latest` (standard, free on a public repository), `windows-latest-32-core`
+and `windows-latest-32-arm-core` (larger, billed) are GitHub-hosted. The Windows
+install/update legs (`install-e2e-windows-run.yml`'s `e2e` job) use `windows-latest`.
 No workflow runs on Intel macOS. Some publish jobs run on `ubuntu-latest` on purpose:
 `docker buildx imagetools` cannot commit manifest lists to Docker Hub from
 Blacksmith.

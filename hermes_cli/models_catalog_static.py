@@ -226,7 +226,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
     "openai": list(_OPENAI_CHAT_MODELS),
     "openai-api": [
-        "gpt-6.2-astra", "gpt-6.2-sol",
+        "gpt-6.2-sol", "gpt-6.2-astra",
         "gpt-6.1-sol", "gpt-6.1-sol-pro", "gpt-6-sol", "gpt-6-sol-pro", "gpt-6-luna", "gpt-6-luna-pro",
         "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro", "gpt-5.6-luna",
         "gpt-5.6-luna-pro", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",

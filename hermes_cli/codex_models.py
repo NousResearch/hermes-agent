@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 # choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
 # up automatically.
 DEFAULT_CODEX_MODELS: list[str] = [
-    "gpt-6.2-astra",
     "gpt-6.2-sol",
+    "gpt-6.2-astra",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-5.6-sol",

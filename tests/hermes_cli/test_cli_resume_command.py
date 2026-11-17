@@ -37,6 +37,52 @@ class TestCliResumeCommand:
         assert "Coding" in output
         assert "Research" in output
 
+    def test_show_recent_sessions_aligns_cjk_titles(self, capsys):
+        # CJK characters are double-width in terminals; padding by character
+        # count shifts every column to their right (#44199). The ID column
+        # must start at the same display column in every row.
+        from wcwidth import wcswidth
+
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {"id": "sess_002", "title": "整理论文和更新README #4",
+             "preview": "我更新了paper/和其他文件，然后继续整理论文的其余部分", "last_active": None},
+            {"id": "sess_001", "title": "Research", "preview": "read docs",
+             "last_active": None},
+        ])
+
+        shown = cli_obj._show_recent_sessions(reason="resume")
+        output = capsys.readouterr().out
+
+        assert shown is True
+        id_columns = {
+            wcswidth(line.split(sid)[0])
+            for line in output.splitlines()
+            for sid in ("sess_001", "sess_002")
+            if sid in line
+        }
+        assert len(id_columns) == 1
+
+    def test_show_recent_sessions_aligns_translated_cjk_headers(self, capsys):
+        # Translated column labels (zh/zh-hant/ja/ko locales) are double-width
+        # too: the header's ID label must line up with the rows' ID column.
+        from wcwidth import wcswidth
+
+        labels = {"cli.session.column_title": "标题", "cli.session.column_preview": "预览",
+                  "cli.session.column_last_active": "最近活动", "cli.session.column_id": "ID"}
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {"id": "sess_001", "title": "Research", "preview": "read docs", "last_active": None},
+        ])
+
+        with patch("hermes_cli.cli_session_mixin.t", side_effect=lambda key, **kw: labels.get(key, key)):
+            cli_obj._show_recent_sessions(reason="resume")
+        lines = capsys.readouterr().out.splitlines()
+
+        header = next(line for line in lines if "标题" in line)
+        row = next(line for line in lines if line.endswith("sess_001"))
+        assert wcswidth(header.rsplit("ID", 1)[0]) == wcswidth(row.split("sess_001")[0])
+
 
 
     def test_handle_resume_by_index_switches_to_numbered_session(self):

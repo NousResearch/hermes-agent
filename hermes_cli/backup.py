@@ -131,7 +131,7 @@ _SQLITE_SIDECAR_SUFFIXES = (".db-wal", ".db-shm", ".db-journal")
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", *_SQLITE_SIDECAR_SUFFIXES)
 
 # File names to skip (runtime state that's meaningless on another machine)
-_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "MEMORY.md.lock", "USER.md.lock"}
 
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;
@@ -148,10 +148,12 @@ _EXCLUDED_PREFIXES = (
 # Files ``hermes import`` must never overwrite, matched by basename so root and named profiles are
 # both covered. They hold runtime state namespaced to the SOURCE machine: ``gateway_state.json``
 # drives the container-boot reconciler (a foreign value leaves the gateway stuck "starting" and
-# disconnected from the Nous portal); PID/lock/registry files reference source PIDs. Mirrors
+# disconnected from the Nous portal); PID/lock/registry files reference source PIDs, and replacing a
+# memory store's lock inode would let a save holding the old one race the restore. Mirrors
 # ``container_boot._STALE_RUNTIME_FILES``; import filters too because older backups predate the
 # backup-side exclusions.
-_IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
+_IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json",
+                      "MEMORY.md.lock", "USER.md.lock"}
 
 try:  # zipfile already imports lzma (free); it is absent only from Pythons built without liblzma
     import lzma
@@ -1004,12 +1006,9 @@ def _import_members_exclusive(
             skipped_runtime.append(rel)
             continue
 
-        # A ``.db`` member is page-restored into the live file below; a
-        # WAL/SHM/journal member from the archive describes a different
-        # database image, and installing it beside the restored file (over
-        # a live sidecar, via os.replace) would replay a foreign WAL on
-        # the next open. Current backups never ship these
-        # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
+        # A ``.db`` member is page-restored into the live file below; an archived WAL/SHM/journal
+        # describes a different image, and installing it beside the restored file would replay a
+        # foreign WAL on next open. Current backups never ship these; older archives might.
         if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
             skipped_runtime.append(rel)
             continue

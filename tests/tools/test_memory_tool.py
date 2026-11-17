@@ -174,18 +174,31 @@ class TestMemoryStoreResetAndImportLocking:
             original_write(write_path, entries)
 
         monkeypatch.setattr(MemoryStore, "_write_file", staticmethod(pause_after_locked_read))
+        reset_reached_store = threading.Event()  # the reset reached its MEMORY.md deletion step
+        real_exists, reset_thread = Path.exists, []
+
+        def watch_reset(path, *a, **kw):
+            if threading.current_thread() in reset_thread and path.name == "MEMORY.md":
+                reset_reached_store.set()
+            return real_exists(path, *a, **kw)
+
+        monkeypatch.setattr(Path, "exists", watch_reset)
         adder = threading.Thread(target=lambda: store.add("memory", "entry B"))
         adder.start()
         assert add_read_done.wait(timeout=10)
         resetter = threading.Thread(target=lambda: _cmd_memory_reset(Namespace(target="memory", yes=True)))
+        reset_thread.append(resetter)
         resetter.start()
-        resetter.join(timeout=0.5)  # main: the unlocked unlink finished here; head: it waits on the lock
+        assert reset_reached_store.wait(timeout=10)
+        resetter.join(timeout=2)  # main: the unlocked unlink completes here; head: it waits on the lock
+        reset_ran_during_add = not resetter.is_alive()
         resume_add.set()
         adder.join(timeout=10)
         resetter.join(timeout=10)
 
         assert not adder.is_alive() and not resetter.is_alive()
         assert MemoryStore._read_file(mem_dir / "MEMORY.md") == []
+        assert not reset_ran_during_add
 
     def test_a_write_after_another_session_changed_the_file_merges_and_reports_the_change(self, store, tmp_path):
         """Another session adds and removes entries after this one read: this session's write lands

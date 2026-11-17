@@ -70,11 +70,21 @@ def test_memory_tool_counts_each_operation_with_its_outcome_and_origin(home):
     }
 
 
-def test_stale_source_failure_class_is_preserved():
+def test_stale_source_memory_row_validates_against_the_published_schema(tmp_path):
+    """A conditional batch refused as ``stale_source`` keeps its class and exports a package
+    the published v4 schema accepts (the Python set and the schema enum must agree)."""
+    jsonschema = pytest.importorskip("jsonschema")
     fields = loop.memory_op_fields(
         op="batch", provider="builtin", outcome="failed", origin="foreground", failure_class="stale_source",
     )
     assert fields["failure_class"] == "stale_source"
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_counter("hermes.memory.op.count", fields, {
+        "architecture": "x86_64", "hermes_version": "test", "install_method": "git", "os_family": "linux"})
+    [package_path] = store.create_and_export_package()
+    schema = Path(loop.__file__).parent / "schemas" / "hermes.shared_metrics.v4.schema.json"
+    jsonschema.Draft202012Validator(json.loads(schema.read_text(encoding="utf-8"))).validate(
+        json.loads(package_path.read_text(encoding="utf-8")))
 
 
 def test_memory_failure_class_names_each_store_refusal_and_never_its_text(home):

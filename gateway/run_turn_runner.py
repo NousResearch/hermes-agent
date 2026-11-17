@@ -152,9 +152,9 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
-from gateway.run_turn_progress import GatewayTurnProgressMixin
+from gateway.run_turn_progress import GatewayTurnProgressMixin, note_text_boundary
 from gateway.session_execution import GatewaySessionAgentMixin
-from gateway.run_turn_runner_thinking import TurnRunnerThinkingMixin
+from gateway.run_turn_runner_thinking import TurnRunnerThinkingMixin, thinking_reasoning_callback
 
 
 def _settle_api_runtime_lock(agent, result, captured):
@@ -317,7 +317,7 @@ class TurnRunner(TurnRunnerThinkingMixin, TaskCardMixin, GatewayTurnProgressMixi
         # The thinking card subsumes the interim lane on Slack: capture must stay ON even when
         # interim MESSAGES are off, or the card would have nothing to render.
         want_interim_messages = (
-            (bool(ctx.interim_assistant_messages_enabled) or ctx._native_slack_thinking_cards)
+            (bool(ctx.interim_assistant_messages_enabled) or getattr(ctx, "_native_slack_thinking_cards", False))
             and not ctx.scheduled_heartbeat and not held and not _finite_viewer_turn()
         )
         if want_stream_deltas or want_interim_messages:
@@ -368,7 +368,7 @@ class TurnRunner(TurnRunnerThinkingMixin, TaskCardMixin, GatewayTurnProgressMixi
                     return
                 delivered = bool(delta_sinks)
                 if text:
-                    self._note_text_boundary()
+                    note_text_boundary(self)
                 if text is not None:
                     delivered = self._publish_execution("message.delta", {"text": text}) or delivered
                 elif local_viewer_route:
@@ -388,7 +388,7 @@ class TurnRunner(TurnRunnerThinkingMixin, TaskCardMixin, GatewayTurnProgressMixi
             if not ctx._run_still_current():
                 return
             if str(text or "").strip():
-                self._note_text_boundary()
+                note_text_boundary(self)
             # Thinking-card sink: narration replaces per-segment thread replies (Option A).
             if self._route_interim_narration(text, already_streamed=already_streamed):
                 return
@@ -562,7 +562,7 @@ class TurnRunner(TurnRunnerThinkingMixin, TaskCardMixin, GatewayTurnProgressMixi
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, (
             self._local_notice_callback_sync if local_viewer_turn(self) else self._notice_callback_sync)
         # Per turn: a reused agent never keeps an earlier API turn's sink.
-        agent.reasoning_callback = card_reasoning_callback(self) or self._thinking_reasoning_callback()
+        agent.reasoning_callback = card_reasoning_callback(self) or thinking_reasoning_callback(self)
         if self._approval_owner is not None:
             from gateway.session_api_turn import api_execution, wire_api_observers
             if api_execution.get() is not None:

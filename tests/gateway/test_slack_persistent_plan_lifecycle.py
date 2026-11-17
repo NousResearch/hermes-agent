@@ -3,6 +3,11 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+
+# The rich publisher drives the real slack_sdk/aiohttp error types; CI installs them in the
+# messaging job (.github/workflows/tests.yml "messaging-gated gateway cases").
+pytest.importorskip("slack_sdk")
+pytest.importorskip("aiohttp")
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.slack_response import SlackResponse
 

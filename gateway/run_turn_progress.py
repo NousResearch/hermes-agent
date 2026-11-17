@@ -155,6 +155,21 @@ def publish_worker_tool_event(authority, session_id, generation, frame) -> bool:
     return True
 
 
+def note_text_boundary(runner: Any) -> None:
+    """Assistant text arrived: the live run of tool steps ends here (rollup cards only).
+
+    One ``text.boundary`` per gap between tool calls; it also ends an open reasoning block.
+    """
+    ctx = runner._ctx
+    if not getattr(ctx, "_native_slack_task_cards", False) or getattr(runner, "_text_since_tool", False):
+        return
+    if runner._native_card_gate():
+        runner._text_since_tool = True
+        ctx.progress_queue.put({"type": "text.boundary"})
+        if getattr(ctx, "thinking_queue", None) is not None:
+            ctx.thinking_queue.put({"type": "reasoning.end"})
+
+
 class GatewayTurnProgressMixin:
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -679,15 +694,6 @@ class GatewayTurnProgressMixin:
         ctx = self._ctx
         stage(ctx.source.chat_id, title=title, tasks=rows, reply_to=ctx._progress_reply_to,
               metadata=ctx._progress_metadata)
-
-    def _note_text_boundary(self) -> None:
-        """Assistant text arrived: the live run of tool steps ends here (rollup cards only)."""
-        ctx = self._ctx
-        if ctx._native_slack_task_cards and not getattr(self, "_text_since_tool", False) and self._native_card_gate():
-            self._text_since_tool = True
-            ctx.progress_queue.put({"type": "text.boundary"})
-            if getattr(ctx, "thinking_queue", None) is not None:
-                ctx.thinking_queue.put({"type": "reasoning.end"})
 
     async def _send_native_task_card_progress(self, adapter) -> None:
         """Drain progress into native cards; supported destinations retain editable fallback.

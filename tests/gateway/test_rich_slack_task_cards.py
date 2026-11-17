@@ -3,6 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
+# The rich publisher drives the real slack_sdk/aiohttp error types; CI installs them in the
+# messaging job (.github/workflows/tests.yml "messaging-gated gateway cases").
+pytest.importorskip("slack_sdk")
+pytest.importorskip("aiohttp")
+
 from gateway.config import Platform
 from gateway.display_config import resolve_display_setting
 from gateway.run import GatewayRunner

@@ -61,6 +61,20 @@ def reasoning_tail(notes: str, limit: int = REASONING_TAIL_CHARS) -> str:
     return text if len(text) <= limit else "…" + text[-limit:]
 
 
+def thinking_reasoning_callback(runner: Any):
+    """``agent.reasoning_callback`` for "Thinking…" rows: thinking card AND show_reasoning on."""
+    ctx = runner._ctx
+    resolve = getattr(runner._runner, "_show_reasoning_for_source", None)
+    if not (getattr(ctx, "_native_slack_thinking_cards", False) and getattr(ctx, "thinking_queue", None) is not None
+            and callable(resolve) and resolve(ctx.source)):
+        return None
+
+    def _reasoning(text):
+        if text and ctx._run_still_current() and not runner._agent_interrupted():
+            ctx.thinking_queue.put({"type": "reasoning", "text": str(text), "at": time.monotonic()})
+    return _reasoning
+
+
 @dataclasses.dataclass
 class _ReasoningBlock:
     """One live reasoning block: when it started, its notes, and whether its row is on the card."""
@@ -118,7 +132,7 @@ class TurnRunnerThinkingMixin:
         narration, and is left to the existing segment-break path.
         """
         ctx = self._ctx
-        if not (ctx._native_slack_thinking_cards and ctx.thinking_queue is not None):
+        if not (getattr(ctx, "_native_slack_thinking_cards", False) and getattr(ctx, "thinking_queue", None) is not None):
             return False
         if not already_streamed and str(text or "").strip():
             ctx.thinking_queue.put({"type": "thinking", "text": text})
@@ -149,19 +163,6 @@ class TurnRunnerThinkingMixin:
         if callable(enabled) and enabled():
             ctx._native_slack_thinking_cards = True
             ctx.thinking_queue = queue.Queue()
-
-    def _thinking_reasoning_callback(self):
-        """``agent.reasoning_callback`` for "Thinking…" rows: thinking card AND show_reasoning on."""
-        ctx = self._ctx
-        resolve = getattr(self._runner, "_show_reasoning_for_source", None)
-        if not (ctx._native_slack_thinking_cards and ctx.thinking_queue is not None and callable(resolve)
-                and resolve(ctx.source)):
-            return None
-
-        def _reasoning(text):
-            if text and ctx._run_still_current() and not self._agent_interrupted():
-                ctx.thinking_queue.put({"type": "reasoning", "text": str(text), "at": time.monotonic()})
-        return _reasoning
 
     async def _reasoning_row(self, st: _ThinkingCardState, *, done: bool) -> None:
         block = st.block

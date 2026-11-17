@@ -402,7 +402,7 @@ def _run_task_turns(agent, frame, history, context):
         nonlocal result
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
-                                        agent._session_db.get_messages_as_conversation(agent.session_id),
+                                        agent._session_db.get_messages_as_conversation(agent.session_id, include_row_ids=True),
                                         turn_author=KANBAN_TURN_AUTHOR)
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
@@ -425,7 +425,10 @@ def _run_task_turns(agent, frame, history, context):
             kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
-        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
+        # With row ids, as the first turn loads it (agent/managed_worker.py): a held row compaction
+        # cannot name by id is sent whole in the archive, and a long session's archive outgrows the journal.
+        result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(
+            agent.session_id, include_row_ids=True),
                                         turn_author=KANBAN_TURN_AUTHOR)
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,

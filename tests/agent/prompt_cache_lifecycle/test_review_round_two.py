@@ -64,7 +64,15 @@ def test_a_malformed_route_store_entry_is_dropped_never_raised(tmp_path, monkeyp
         routes.route_key("nous", "https://x/v1", "n", True): {"updated": 1e12, "miss_gaps": ["a"]},
         routes.route_key("nous", "https://x/v1", "o", True): {"updated": 1e12, "reads": "lots"},
     }), encoding="utf-8")
-    for model in ("m", "n", "o"):
+    # Valid JSON that decodes to infinity / NaN (``1e999``, ``NaN``): int() of either raises in rule_for.
+    raw = path.read_text(encoding="utf-8")[:-1] + ", " + ", ".join(
+        f'"{routes.route_key("nous", "https://x/v1", model, True)}": {body}' for model, body in (
+            ("p", '{"updated": 1e12, "attempts": 1e999, "reads": 0, "miss_gaps": [5, 5], "miss_gaps_sessions": ["a", "b"]}'),
+            ("q", '{"updated": 1e12, "write_on_hit": NaN}'),
+            ("r", '{"updated": 1e12, "hit_gaps": [1e999]}'),
+            ("s", '{"updated": 1e999}'))) + "}"
+    path.write_text(raw, encoding="utf-8")
+    for model in ("m", "n", "o", "p", "q", "r", "s"):
         assert routes.rule_for("nous", "https://x/v1", model, True, tier_s=3600, now=1e12) is None
         routes.observe(provider="nous", base_url="https://x/v1", model=model, explicit=True, read=0, write=0,
                        gap_s=10, tier_s=3600, now=1e12, session_id="s")

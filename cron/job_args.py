@@ -470,7 +470,7 @@ def _validate_context_from_refs(refs: list[Any]) -> Optional[str]:
 # Optional fields echoed by _format_job only when truthy (order = JSON key order).
 _FORMAT_JOB_OPTIONAL_KEYS = (
     "script", "reasoning_effort", "monitor_script", "monitor_url",
-    "monitor_state", "no_agent", "enabled_toolsets", "workdir", "interpreter", "timezone", "output_schema")
+    "monitor_state", "no_agent", "enabled_toolsets", "workdir", "interpreter", "timezone")
 
 
 def _format_job(job: dict[str, Any]) -> dict[str, Any]:
@@ -523,6 +523,8 @@ def _format_job(job: dict[str, Any]) -> dict[str, Any]:
         result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
+    if isinstance(job.get("output_schema"), dict):  # ``{}`` is a valid (accept-any-JSON) schema
+        result["output_schema"] = job["output_schema"]
     return result
 
 

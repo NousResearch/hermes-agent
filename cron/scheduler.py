@@ -2606,9 +2606,10 @@ def run_job(
                                           cancel_event, worker_state=_worker_state)
         final_response = settle_cron_result(job, _final_response_from_result(result, job_id, job_name, AIAgent), result,
             lambda msg, hist: _run_agent_with_watchdog(agent, msg, job, job_id, job_name, scope.task_id, cancel_event,
-                                                       worker_state=_worker_state, history=hist))
+                                                       worker_state=_worker_state, history=hist),
+            lambda turn: _final_response_from_result(turn, job_id, job_name, AIAgent))
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
-                and _cron_failure_marker_error(final_response) is None and not job.get("output_schema")):
+                and _cron_failure_marker_error(final_response) is None and not isinstance(job.get("output_schema"), dict)):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
             # agent-declared failure marker keep their first-line/whole-response contract.
             final_response = f"{setup.fallback_notice}\n\n{final_response}"

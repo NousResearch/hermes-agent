@@ -72,3 +72,13 @@ def test_job_without_schema_keeps_free_text_and_one_turn(tmp_path):
     assert len(prompts) == 1 and "OUTPUT CONTRACT" not in str(prompts[0])
     assert execution["status"] == "completed" and execution["result_json"] is None
     assert "There are three files." in doc
+
+
+def test_schema_job_delivery_redacts_secrets_without_breaking_the_json():
+    from cron.scheduler_delivery import _redact_cron_payload
+
+    answer = json.dumps({"env": "OPENAI_API_KEY=sk-abcdefghijklmnop1234567890", "count": 2}, indent=2)
+    delivered = _redact_cron_payload(f"Cronjob Response: probe\n\n{answer}\n\nTo stop", "delivery", {"output_schema": _SCHEMA})
+
+    body = json.loads(delivered[delivered.index("{"):delivered.rindex("}") + 1])
+    assert body["count"] == 2 and "sk-abcdefghijklmnop" not in delivered

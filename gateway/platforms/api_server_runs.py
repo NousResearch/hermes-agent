@@ -465,9 +465,7 @@ def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, An
         # retained run record still names the object, the requested model and the served runtime.
         retained = self._run_statuses.get(run_id) or {}
         return {"object": "hermes.run", **{key: retained[key] for key in ("model", "runtime", "created_at")
-                                           if key in retained}, **canonical,
-                # A schema run's verdict on the answer it completed with (``_structured_run_fields``).
-                **{key: retained[key] for key in ("result", "schema_valid", "schema_errors") if key in retained}}
+                                           if key in retained}, **canonical}
     status = self._run_statuses.get(run_id)
     if status is not None:
         if run_id in self._run_idempotency_ids:
@@ -748,13 +746,13 @@ def _run_request_message(body, _openai_error) -> tuple:
     return user_message, schema, None
 
 
-def _structured_run_fields(run: "_RunLaunch", output: str) -> dict[str, Any]:
+def structured_run_fields(schema: Optional[dict[str, Any]], output: str) -> dict[str, Any]:
     """``result`` / ``schema_valid`` / ``schema_errors`` for a schema run's completed answer;
     ``{}`` without a schema, so a legacy run's record and events keep their exact shape."""
-    if run.output_schema is None:
+    if not isinstance(schema, dict):
         return {}
     from tools.delegation_output_schema import parse_validated_output
-    value, errors = parse_validated_output(output, run.output_schema)
+    value, errors = parse_validated_output(output, schema)
     return {"result": value, "schema_valid": True} if not errors else {
         "result": None, "schema_valid": False, "schema_errors": errors}
 
@@ -777,7 +775,7 @@ async def _admit_run_to_authority(
                 history_from_session=session_history_delivery,
                 session_history_delivery='1' if session_history_delivery else '',
                 bind_declared_conversation=_declared_selected, walked_from=launch.walked_from,
-                **launch.agent_kwargs)
+                output_schema=launch.output_schema, **launch.agent_kwargs)
     except Exception as exc:  # health: allow BLE001 -- answered below; a committed admission is kept
         # A storage failure after the admission committed (a later media-release write) still
         # owns that run: forgetting it would let a keyed retry admit the same work twice.
@@ -1078,7 +1076,7 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: dict[
         if record["status"] == "settled":
             _finish("completed", completed=True, partial=False, interrupted=False,
                     output=record.get("reply") or "", usage={},
-                    **_structured_run_fields(run, record.get("reply") or ""))
+                    **structured_run_fields(run.output_schema, record.get("reply") or ""))
         elif record["status"] == "cancelled":
             _finish("cancelled", completed=False, partial=False, interrupted=True)
         else:
@@ -1199,7 +1197,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
             _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime,
-                    **(_structured_run_fields(run, result.get("final_response") or "") if status == "completed" else {}))
+                    **(structured_run_fields(run.output_schema, result.get("final_response") or "")
+                       if status == "completed" else {}))
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

@@ -7,6 +7,7 @@ into a live one (profile distributions) import this rather than duplicating the 
 from typing import Any, Dict
 
 from cron.jobs import _apply_schedule_update, _jobs_lock, is_job_runnable, load_jobs, parse_schedule, save_jobs
+from cron.jobs_normalize import _normalize_output_schema
 from cron.jobs_time import normalize_timezone, prune_inherited_knobs
 from cron.quota_hold import clear_state as _clear_quota_hold
 from hermes_time import now as _hermes_now
@@ -16,7 +17,7 @@ JOB_DEFINITION_FIELDS = frozenset({
     "script", "no_agent", "monitor_script", "monitor_url", "context_from",
     "schedule", "schedule_display", "deliver", "origin", "enabled_toolsets",
     "workdir", "attach_to_session", "reasoning_effort", "failure_deliver",
-    "timezone", "grace_minutes", "catch_up", "wrap_response",
+    "timezone", "grace_minutes", "catch_up", "wrap_response", "output_schema",
 })
 
 
@@ -36,6 +37,8 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
     if "timezone" in merged:
         merged["timezone"] = normalize_timezone(merged["timezone"])
         prune_inherited_knobs(merged)
+    if "output_schema" in merged:  # a shipped schema passes the same gate as create_job's
+        merged["output_schema"] = _normalize_output_schema(merged["output_schema"])
 
     if isinstance(merged.get("schedule"), str):
         merged["schedule"] = parse_schedule(merged["schedule"])

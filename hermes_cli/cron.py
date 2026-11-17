@@ -820,7 +820,7 @@ _JOB_DETAIL_LINES = (
 def _print_job_details(job_data: dict[str, Any]) -> None:
     """Print the optional Script/Monitor/Mode/Continuity/Workdir lines of a job record."""
     for key, template in _JOB_DETAIL_LINES:
-        if job_data.get(key):
+        if job_data.get(key) or (key == "output_schema" and isinstance(job_data.get(key), dict)):
             print(template.format(job_data[key]))
 
 

@@ -13,7 +13,7 @@ from gateway.platforms._shared import request_never_left
 from gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from gateway.outbound.senders import _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS, _VOICE_EXTS, _error, _success
 
-logger = logging.getLogger("tools.send_message_tool")
+logger = logging.getLogger("gateway.outbound.send")
 
 
 def _qqbot_media_file_type(media_path: str, is_voice: bool) -> int:

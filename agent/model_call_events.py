@@ -59,9 +59,10 @@ def _emit(agent: Any, event: str, payload: dict[str, Any]) -> None:
         logger.debug("%s callback failed", event, exc_info=True)
 
 
-def _attempt_timing(agent: Any, api_duration: float) -> tuple[Optional[int], int]:
-    """``(first_token_ms, duration_ms)`` for the attempt that produced this response. First token is
-    known only when the attempt streamed; duration falls back to the turn-loop's measure."""
+def attempt_timing(agent: Any, api_duration: float) -> tuple[Optional[int], int]:
+    """``(first_token_ms, duration_ms)`` for the attempt that produced the response just received.
+    Call it before any accounting (a cold pricing lookup must not count as model time). First token
+    is known only when the attempt streamed; duration falls back to the turn-loop's measure."""
     started = getattr(agent, "_last_api_attempt_started_at", None)
     first_chunk = getattr(agent, "_last_api_first_chunk_at", None)
     if not isinstance(started, (int, float)):
@@ -71,11 +72,12 @@ def _attempt_timing(agent: Any, api_duration: float) -> tuple[Optional[int], int
 
 
 def emit_usage_recorded(
-    agent: Any, usage: Any, *, used_tokens: int, cost_usd: Optional[float], api_duration: float,
+    agent: Any, usage: Any, *, used_tokens: int, cost_usd: Optional[float], timing: tuple[Optional[int], int],
 ) -> None:
     """``usage.recorded`` for the call just folded by ``record_response_usage``; ``usage`` is its
-    canonical (MoA-folded) usage, ``used_tokens`` the context prompt now in the window."""
-    first_token_ms, duration_ms = _attempt_timing(agent, api_duration)
+    canonical (MoA-folded) usage, ``used_tokens`` the context prompt now in the window, ``timing``
+    the :func:`attempt_timing` taken when the response arrived."""
+    first_token_ms, duration_ms = timing
     window = int(getattr(getattr(agent, "context_compressor", None), "context_length", 0) or 0)
     _emit(agent, USAGE_RECORDED, {
         "call_index": int(agent.session_api_calls),
@@ -103,6 +105,6 @@ def emit_rate_limited(
 
 
 __all__ = [
-    "EVENT_FIELDS", "MODEL_RATE_LIMITED", "USAGE_RECORDED", "emit_rate_limited", "emit_usage_recorded",
+    "EVENT_FIELDS", "MODEL_RATE_LIMITED", "USAGE_RECORDED", "attempt_timing", "emit_rate_limited", "emit_usage_recorded",
     "model_call_payload", "note_attempt_started",
 ]

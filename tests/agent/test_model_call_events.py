@@ -21,7 +21,7 @@ def test_rate_limited_then_streamed_call_emits_wait_and_usage(tmp_path, monkeypa
             if replies.pop(0) == "429":
                 body = json.dumps({"error": {"message": "slow down", "type": "rate_limit_error"}}).encode()
                 self.send_response(429)
-                self.send_header("Retry-After", "1")
+                self.send_header("Retry-After", "3")
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -71,7 +71,7 @@ def test_rate_limited_then_streamed_call_emits_wait_and_usage(tmp_path, monkeypa
     assert [name for name, _ in model_calls] == ["model.rate_limited", "usage.recorded"]
 
     waited = model_calls[0][1]
-    assert waited["retry_after_ms"] == 1000
+    assert waited["retry_after_ms"] == 3000
     assert waited["attempt"] == 1 and waited["max_attempts"] >= 1
     assert waited["model"] == "test-model" and waited["provider"] == "custom"
 
@@ -79,6 +79,6 @@ def test_rate_limited_then_streamed_call_emits_wait_and_usage(tmp_path, monkeypa
     assert usage["call_index"] == 1
     assert (usage["input_tokens"], usage["cache_read_tokens"], usage["output_tokens"]) == (20, 100, 7)
     assert usage["used_tokens"] == 120 and usage["window_tokens"] == 128000
-    # The streamed attempt's own timing, not the turn-long span that included the 1 s wait.
+    # The streamed attempt's own timing, not the turn-long span that included the 3 s wait.
     assert isinstance(usage["first_token_ms"], int) and 0 <= usage["first_token_ms"] <= usage["duration_ms"]
-    assert usage["duration_ms"] < 1000
+    assert usage["duration_ms"] < 3000

@@ -490,9 +490,13 @@ class SignalAdapter(BasePlatformAdapter):
             with suppress(ValueError, OSError):
                 timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
         # raw_message keeps sender + timestamp_ms so processing hooks can build sendReaction targets.
+        # A Signal message is identified by its send timestamp (a quote's ``id`` is that same value),
+        # so it is also the event's platform message id: dedupe of a retried turn, the turn's owner
+        # identity and busy-path tracking all key on ``event.message_id``.
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp,
+            message_id=str(ts_ms) if ts_ms else None,
             raw_message={"sender": sender, "timestamp_ms": ts_ms, "quote": quote_data if quote_data else None},
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
             reply_to_author_id=reply_to_author,

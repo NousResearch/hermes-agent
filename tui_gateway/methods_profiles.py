@@ -107,7 +107,11 @@ def _latest_message_preview(db, session_id):
                 (session_id,)).fetchone()
     except Exception:
         return ""
-    text = " ".join(str(row[0] or "").split()).strip() if row else ""
+    return _excerpt(row[0]) if row else ""
+
+
+def _excerpt(content) -> str:
+    text = " ".join(str(content or "").split())
     return text[:80] + "..." if len(text) > 80 else text
 
 
@@ -147,6 +151,27 @@ def _live_count_field(db, session_id) -> dict:
         return {}
 
 
+def _local_lineage_activity(db, session_id, tip, tip_row, started):
+    """``(preview, last_active)`` for the canonical chat across its whole LOCAL conversation.
+
+    A compression-exhaustion auto-reset (or a canonical ``/new``) keeps the Bot Chat's logical id but
+    moves the transcript to reset children recorded in the local receipt's ``lineage``. The
+    compression tip never crosses that reset boundary, so the roster kept previewing the last
+    message from before the reset (and dated the row from it) while the conversation went on in
+    the children. Preview = newest non-empty message past the tip, last_active = freshest segment
+    (``reset_segment_activity``, shared with the gateway's roster). Non-local or receipt-less chats
+    keep the tip semantics.
+    """
+    def later_segments():
+        from hermes_state_local import reset_segment_activity
+        with db._read_ctx() as conn:
+            return reset_segment_activity(conn, session_id, tip)
+
+    content, active = _try(later_segments, None) or (None, 0)
+    last_active = tip_row.get("last_activity_at") or tip_row.get("started_at") or started
+    return _excerpt(content) or _latest_message_preview(db, tip), max(last_active or 0, active)
+
+
 def _canonical_session_row(db, profile_path):
     """Summary of the profile's canonical "Bot Chat" row (identity is the NAME), or None.
     Lineages via ``get_compression_tip`` (NOT the resume walker's unmarked-child fallback);
@@ -174,11 +199,12 @@ def _canonical_session_row(db, profile_path):
         tip = _try(lambda: db.get_compression_tip(session_id), None) or session_id
         tip_row = db.get_session(tip) or row
         started = row.get("started_at") or 0
+        preview, last_active = _local_lineage_activity(db, session_id, tip, tip_row, started)
         return {
             "id": session_id, "resolved_id": tip, "root_title": row.get("title") or "",
-            "title": tip_row.get("title") or "", "preview": _latest_message_preview(db, tip),
+            "title": tip_row.get("title") or "", "preview": preview,
             "started_at": tip_row.get("started_at") or started,
-            "last_active": tip_row.get("last_activity_at") or tip_row.get("started_at") or started,
+            "last_active": last_active,
             "message_count": tip_row.get("message_count") or 0, **_live_count_field(db, tip)}
     except Exception:
         return None

@@ -159,17 +159,23 @@ def _fsync_dir(path: Path) -> None:
 def _atomic_json(path: Path, value: Any, *, durability: DurabilityAdapter | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(fd, canonical_json(value) + b"\n")
-        if durability:
-            durability.checkpoint(f"{path.name}-before-fsync")
-        os.fsync(fd)
-        if durability:
-            durability.checkpoint(f"{path.name}-after-fsync")
-    finally:
-        os.close(fd)
-    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            payload = canonical_json(value) + b"\n"
+            offset = 0
+            while offset < len(payload):
+                written = os.write(fd, payload[offset:])
+                if written <= 0:
+                    raise OSError("short atomic JSON write")
+                offset += written
+            if durability:
+                durability.checkpoint(f"{path.name}-before-fsync")
+            os.fsync(fd)
+            if durability:
+                durability.checkpoint(f"{path.name}-after-fsync")
+        finally:
+            os.close(fd)
         if durability:
             durability.checkpoint(f"{path.name}-before-rename")
         os.replace(temporary, path)

@@ -601,6 +601,31 @@ def test_reader_status_short_write_never_publishes_partial_final(tmp_path, monke
     assert not list(status.iterdir())
 
 
+@pytest.mark.parametrize("first_progress", [0, 2])
+def test_atomic_json_short_write_never_publishes_partial_pointer(
+    tmp_path, monkeypatch, first_progress
+):
+    from hermes_cli.kanban_generation import write_pointer
+    real_write = os.write
+    calls = 0
+
+    def partial_then_stop(fd, payload):
+        nonlocal calls
+        calls += 1
+        if calls == 1 and first_progress:
+            return real_write(fd, payload[:first_progress])
+        return 0
+
+    monkeypatch.setattr(os, "write", partial_then_stop)
+    with pytest.raises(OSError, match="short atomic JSON write"):
+        write_pointer(tmp_path, {
+            "format_version": 1, "generation_id": "g1",
+            "generation_nonce": "n1", "ready_sha256": "a" * 64,
+        })
+    assert not (tmp_path / "generation.current").exists()
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
 def test_imported_attachment_resolution_authenticates_final_target_id(tmp_path):
     source, target = tmp_path / "source.db", tmp_path / "target.db"
     _db(source, "imported")

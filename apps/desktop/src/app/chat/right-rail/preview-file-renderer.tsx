@@ -1,10 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useMemo, useRef } from 'react'
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from 'react'
 
 import { $apiRequestScope } from '@/api/client'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { useContributions } from '@/contrib'
-import { DesktopFileMissingError, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { DesktopFileMissingError, fileEditScopeKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { downloadBlob } from '@/lib/download'
 import {
   comparableMimeType,
@@ -12,12 +12,12 @@ import {
   type FilePreviewFile,
   type FilePreviewReadResult,
   type FilePreviewRendererContribution,
+  type FilePreviewRendererProps,
   resolveFilePreviewClaim
 } from '@/lib/file-preview-renderers'
+import { filePathForTarget } from '@/lib/local-preview'
 import type { PreviewTarget } from '@/store/preview'
 import { $connection } from '@/store/session'
-
-import { fileEditScopeKey, filePathForTarget } from './preview-file'
 
 interface FilePreviewSlotProps {
   /** The built-in viewer, mounted only when no plugin claims the file. */
@@ -54,6 +54,18 @@ export function FilePreviewSlot({ fallback, sessionId, target }: FilePreviewSlot
 
   current.current = file
 
+  // Layout, not passive: StrictMode's replay re-runs this before any child's
+  // passive effect, so a renderer that reads on mount never sees a retired handle.
+  useLayoutEffect(() => {
+    current.current = file
+
+    return () => {
+      if (current.current === file) {
+        current.current = null
+      }
+    }
+  }, [file])
+
   if (!match) {
     return <>{fallback}</>
   }
@@ -74,7 +86,17 @@ function FilePreviewLeaf({
   file: FilePreviewFile
   render: FilePreviewRendererContribution['render']
 }) {
-  return <>{render({ fallback, file }) ?? fallback}</>
+  // One component per callback: a replaced renderer starts with fresh hooks,
+  // and its own state updates re-run it.
+  const Host = useMemo(
+    () =>
+      function FilePreviewRendererHost(props: FilePreviewRendererProps) {
+        return <>{render(props) ?? props.fallback}</>
+      },
+    [render]
+  )
+
+  return <Host fallback={fallback} file={file} />
 }
 
 const baseName = (value: string) => value.split(/[\\/]/).filter(Boolean).pop() ?? ''
@@ -144,9 +166,16 @@ function decodeDataUrl(dataUrl: string): FilePreviewReadResult {
     return { ok: false, error: 'io-error', message: 'The file reader returned no data.' }
   }
 
+  const binary = atob(match[2] ?? '')
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
   return {
     ok: true,
-    bytes: Uint8Array.from(atob(match[2] ?? ''), char => char.charCodeAt(0)),
+    bytes,
     mimeType: match[1] || 'application/octet-stream'
   }
 }

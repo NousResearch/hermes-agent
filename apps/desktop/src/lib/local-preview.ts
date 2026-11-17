@@ -234,6 +234,14 @@ export async function openPreviewTargetInBrowser(target: PreviewTarget): Promise
   await bridge.openPreviewInBrowser(pathToFileUrl(filePath))
 }
 
+export function filePathForTarget(target: PreviewTarget) {
+  if (target.path) {
+    return target.path
+  }
+
+  return fileUrlToNativePath(target.url) ?? target.url
+}
+
 export function localPreviewTarget(rawTarget: string, cwd?: string | null): PreviewTarget | null {
   const raw = rawTarget.trim().replace(/^`|`$/g, '')
 

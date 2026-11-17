@@ -1,5 +1,5 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
-import { useEffect, useState } from 'react'
+import { StrictMode, useEffect, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setSessionOwnerResolver } from '@/api/client'
@@ -92,6 +92,29 @@ function Sheet({ file, onFile }: { file: FilePreviewFile; onFile?: (file: FilePr
     </div>
   )
 }
+
+function Counter({ onMount }: { onMount: () => void }) {
+  const [count, setCount] = useState(0)
+
+  useEffect(() => onMount(), [onMount])
+
+  return (
+    <button data-testid="counter" onClick={() => setCount(value => value + 1)} type="button">
+      {`count: ${count}`}
+    </button>
+  )
+}
+
+function ReadOnMount({ file, results }: { file: FilePreviewFile; results: FilePreviewReadResult[] }) {
+  useEffect(() => {
+    void file.read().then(result => results.push(result))
+  }, [file, results])
+
+  return <span>reader</span>
+}
+
+const textTarget = (path: string) => fileTarget(path, { binary: false, mimeType: 'text/plain', previewKind: 'text' })
+const htmlTarget = (path: string) => fileTarget(path, { binary: false, mimeType: 'text/html', previewKind: 'html' })
 
 async function renderPane(target: PreviewTarget, sessionId?: string) {
   let view!: ReturnType<typeof render>
@@ -417,5 +440,193 @@ describe('file preview renderers in the preview pane', () => {
     // Assert
     expect(clicks).toEqual([{ download: 'edited.xlsx', href: 'blob:copy' }])
     expect(writeTextFile).not.toHaveBeenCalled()
+  })
+
+  it('gives a replaced render callback fresh hook state', async () => {
+    // Arrange
+    function First() {
+      const [state] = useState('old state')
+
+      return <span data-testid="host">{`first: ${state}`}</span>
+    }
+
+    function Second() {
+      const [state] = useState('new state')
+
+      return <span data-testid="host">{`second: ${state}`}</span>
+    }
+
+    stubBridge({ readFileDataUrl: async () => XLSX_DATA_URL })
+    registerRenderer('grid', { extensions: ['xlsx'], render: First })
+    await renderPane(fileTarget('/work/book.xlsx'))
+
+    // Act
+    await act(async () => registerRenderer('grid', { extensions: ['xlsx'], render: Second }))
+
+    // Assert
+    expect(screen.getByTestId('host').textContent).toBe('second: new state')
+  })
+
+  it('re-renders a render callback that calls hooks when its own state changes', async () => {
+    // Arrange
+    let bump!: () => void
+
+    function Counting() {
+      const [count, setCount] = useState(0)
+      bump = () => setCount(value => value + 1)
+
+      return <span data-testid="host">{`count: ${count}`}</span>
+    }
+
+    stubBridge({ readFileDataUrl: async () => XLSX_DATA_URL })
+    registerRenderer('grid', { extensions: ['xlsx'], render: Counting })
+    await renderPane(fileTarget('/work/book.xlsx'))
+
+    // Act
+    act(() => bump())
+
+    // Assert
+    expect(screen.getByTestId('host').textContent).toBe('count: 1')
+  })
+
+  it('keeps an unchanged renderer mounted while other contributions change', async () => {
+    // Arrange
+    const mounts = vi.fn()
+    const readFileText = vi.fn(async () => ({ binary: false, byteSize: 5, path: '/work/notes.txt', text: 'hello' }))
+    stubBridge({ readFileDataUrl: async () => XLSX_DATA_URL, readFileText })
+    registerRenderer('grid', { extensions: ['xlsx'], render: () => <Counter onMount={mounts} /> })
+    registerRenderer('sheets', { extensions: ['ods'], render: () => <span>first</span> })
+    await renderPane(fileTarget('/work/book.xlsx'))
+    await renderPane(textTarget('/work/notes.txt'))
+    await waitFor(() => expect(readFileText).toHaveBeenCalledTimes(1))
+    act(() => screen.getByTestId('counter').click())
+
+    // Act
+    await act(async () => registerRenderer('csv', { extensions: ['csv'], render: () => <span>csv</span> }))
+    await act(async () => registerRenderer('sheets', { extensions: ['ods'], render: () => <span>second</span> }))
+
+    // Assert
+    expect(screen.getByTestId('counter').textContent).toBe('count: 1')
+    expect(mounts).toHaveBeenCalledTimes(1)
+    expect(readFileText).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the file and the renderer through a file-watch refresh', async () => {
+    // Arrange
+    let changed!: (payload: { id: string; path: string; url: string }) => void
+    const mounts = vi.fn()
+    const seen: FilePreviewFile[] = []
+    const watchPreviewFile = vi.fn(async () => ({ id: 'watch-1', path: '/work/book.xlsx' }))
+    stubBridge({
+      onPreviewFileChanged: (callback: typeof changed) => {
+        changed = callback
+
+        return () => {}
+      },
+      readFileDataUrl: async () => XLSX_DATA_URL,
+      watchPreviewFile
+    })
+    registerRenderer('grid', {
+      extensions: ['xlsx'],
+      render: props => {
+        seen.push(props.file)
+
+        return <Counter onMount={mounts} />
+      }
+    })
+    await renderPane(fileTarget('/work/book.xlsx'))
+    await waitFor(() => expect(watchPreviewFile).toHaveBeenCalled())
+    await act(async () => {})
+
+    // Act
+    act(() => changed({ id: 'watch-1', path: '/work/book.xlsx', url: 'file:///work/book.xlsx' }))
+    await act(async () => new Promise(resolve => setTimeout(resolve, 300)))
+    const result = await seen[0]?.read()
+
+    // Assert
+    expect(new Set(seen).size).toBe(1)
+    expect(mounts).toHaveBeenCalledTimes(1)
+    expect(result).toEqual(expect.objectContaining({ ok: true }))
+  })
+
+  it('retires the old handle when the tab switches to a rendered HTML file', async () => {
+    // Arrange
+    const readFileDataUrl = vi.fn(async (_path: string) => XLSX_DATA_URL)
+    const seen: FilePreviewFile[] = []
+    stubBridge({ readFileDataUrl })
+    registerRenderer('grid', {
+      extensions: ['xlsx'],
+      render: props => {
+        seen.push(props.file)
+
+        return <span>claimed</span>
+      }
+    })
+    const view = await renderPane(fileTarget('/work/book.xlsx'))
+
+    // Act
+    await act(async () => {
+      view.rerender(<PreviewPane target={htmlTarget('/work/page.html')} />)
+    })
+    const stale = await seen[0]?.read()
+
+    // Assert
+    expect(screen.queryByText('claimed')).toBeNull()
+    expect(stale).toEqual(expect.objectContaining({ error: 'scope-changed', ok: false }))
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('answers scope-changed for a read in flight when the tab switches to a rendered HTML file', async () => {
+    // Arrange
+    let release!: (value: string) => void
+
+    const pending = new Promise<string>(resolve => {
+      release = resolve
+    })
+
+    const seen: FilePreviewFile[] = []
+    stubBridge({ readFileDataUrl: () => pending })
+    registerRenderer('grid', {
+      extensions: ['xlsx'],
+      render: props => {
+        seen.push(props.file)
+
+        return <span>claimed</span>
+      }
+    })
+    const view = await renderPane(fileTarget('/work/book.xlsx'))
+    const inFlight = seen[0]?.read()
+
+    // Act
+    await act(async () => {
+      view.rerender(<PreviewPane target={htmlTarget('/work/page.html')} />)
+    })
+    await act(async () => release(XLSX_DATA_URL))
+
+    // Assert
+    expect(await inFlight).toEqual(expect.objectContaining({ error: 'scope-changed', ok: false }))
+  })
+
+  it('lets a renderer read on mount under StrictMode', async () => {
+    // Arrange
+    const results: FilePreviewReadResult[] = []
+    stubBridge({ readFileDataUrl: async () => XLSX_DATA_URL })
+    registerRenderer('grid', {
+      extensions: ['xlsx'],
+      render: props => <ReadOnMount file={props.file} results={results} />
+    })
+
+    // Act
+    await act(async () => {
+      render(
+        <StrictMode>
+          <PreviewPane target={fileTarget('/work/book.xlsx')} />
+        </StrictMode>
+      )
+    })
+    await waitFor(() => expect(results.length).toBeGreaterThanOrEqual(2))
+
+    // Assert
+    expect(results.map(result => result.ok)).toEqual(results.map(() => true))
   })
 })

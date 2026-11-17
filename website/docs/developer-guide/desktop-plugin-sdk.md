@@ -1276,10 +1276,10 @@ it.
 
 ### File preview renderers — draw a file the preview rail opens {#file-preview-renderers}
 
-A plugin can show a file type the built-in viewer refuses as binary, or draw
-a known type its own way. Claim the file by extension, and optionally by MIME
-type. When the user opens a matching file in the preview rail, your component
-replaces the built-in viewer:
+A plugin can draw a file type the built-in viewer refuses as binary, or draw
+a known type its own way. Claim files by extension, and optionally by MIME
+type. Your component then replaces the built-in viewer for a matching file
+tab:
 
 ```javascript
 import * as sdk from '@hermes/plugin-sdk'
@@ -1317,8 +1317,8 @@ function SheetPreview({ file, fallback }) {
 
 | Field | What it is |
 |-------|------------|
-| `extensions` | File-name extensions, case-insensitive, with or without the dot. Only the last dot segment of the file name counts. A literal `#` or `?` in a native path is kept when the literal extension is claimed; otherwise a trailing `#fragment` or `?query` is dropped first. |
-| `mimeTypes` | Exact MIME types, case-insensitive, compared to the type the host reports for the tab. That type comes from the extension and is often unknown (`application/octet-stream`, which never matches), so claim extensions first. |
+| `extensions` | File-name extensions, case-insensitive, with or without the dot. Only the last dot segment of the file name counts. In a native path, a trailing `#fragment` or `?query` is ignored unless the literal extension is claimed. |
+| `mimeTypes` | Exact MIME types, case-insensitive, compared to the type the host reports for the tab. That type is often unknown (`application/octet-stream`, which never matches), so claim extensions first. |
 | `render` | Called with `{ file, fallback }`. Return `fallback`, `null` or `undefined` to show the built-in viewer. |
 
 `file` is `{ path, name, extension, mimeType, sessionId, read(), saveCopy(data, name?) }`:
@@ -1326,29 +1326,26 @@ function SheetPreview({ file, fallback }) {
 | Member | What it does |
 |--------|--------------|
 | `path` | The path on the **backend's** machine, as the tab names it. Never open it yourself: use `read()`. |
-| `read()` | Resolves `{ ok: true, bytes, mimeType }` (`bytes` is a `Uint8Array` of the whole file) or `{ ok: false, error, message }`, and never rejects. It reads through the route the built-in viewer uses: the Desktop file reader for a local backend, `GET /api/fs/read-data-url` on the backend and profile that own the tab's chat for a remote one. `error` is `missing`, `too-large` (over the data-URL read cap: 16 MB by default for local files, configurable in Settings → Chat; 16 MB for a remote backend), `scope-changed`, `unavailable` or `io-error`. |
+| `read()` | Reads the whole file through the backend and profile that own the tab, subject to host size limits. Never rejects: resolves `{ ok: true, bytes, mimeType }` (`bytes` is a `Uint8Array`) or `{ ok: false, error, message }`. `error` is `missing`, `too-large`, `scope-changed`, `unavailable` or `io-error`. |
 | `saveCopy(data, name?)` | Hands a `Blob` or `Uint8Array` to the OS save dialog, under `name` reduced to a basename (default: the file's own name). It never writes to `path`, and it cannot report whether the user saved or cancelled. |
 
 What the host guarantees:
 
 - **A claim wins for any file tab it matches,** before the built-in viewer's
-  binary or size refusal. The host reads nothing to decide: no content
-  sniffing. Several matching claims resolve by lowest `order`, then by
-  contribution id, so plugin load order does not matter. URL tabs, artifacts
-  and HTML files in rendered mode never reach this area.
-- **Unclaimed files are unchanged** and cost no extra read.
-- **`file` is bound to one file, chat and connection.** A tab that moves to
-  another file, or a window that switches connection or profile, gives your
-  component a new `file` object (depend on it in `useEffect`). A read on the
-  old object, including one still in flight at the switch, resolves
-  `{ ok: false, error: 'scope-changed' }`.
+  binary or size refusal. Matching reads no content. Lowest `order` wins,
+  then contribution id. URL tabs, artifacts and HTML files in rendered mode
+  never reach this area. Unclaimed files are unchanged and cost no extra
+  read.
+- **`file` is bound to one file, chat and connection.** Another file, chat,
+  connection or profile gives your component a new `file` object (depend on
+  it in `useEffect`). A read on the old object, including one in flight,
+  resolves `{ ok: false, error: 'scope-changed' }`.
 - **External changes do not remount your component,** so editor state
   survives them. Call `read()` again to load the current file.
-- **Fail-safe:** a renderer that throws, a disabled or removed plugin, and a
-  `null` render all show the built-in viewer.
+- **Fail-safe:** a renderer that throws, or a disabled or removed plugin,
+  shows the built-in viewer.
 
-There is no in-place save. Binary writes have no backend route and no
-conflict check yet, so an editor offers **Save a copy** through `saveCopy`.
+There is no in-place save; use `saveCopy`.
 
 ### Mount-scoped chrome (`Contribute`)
 

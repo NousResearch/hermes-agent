@@ -1,8 +1,9 @@
 # Pipedream Apps (Desktop plugin)
 
-Adds an **Apps** tab to **Capabilities**, in the place of the built-in
-**Connectors** tab. Old `?tab=connectors` links open Apps instead. It is a
-runtime plugin — copy the folder, no app rebuild for the plugin itself:
+Adds a **Connectors** tab backed by the Pipedream apps catalog to
+**Capabilities**, replacing the built-in Connectors tab. Old `?tab=connectors`
+links open it instead. It is a runtime plugin — copy the folder, no app rebuild
+for the plugin itself:
 
 ```powershell
 Copy-Item -Recurse desktop-plugins\pipedream-apps $HOME\.hermes\desktop-plugins\pipedream-apps
@@ -31,7 +32,7 @@ enables MCP server configuration after a successful connect.
   `pipedream_<slug>` through the Dashboard MCP API when an MCP proxy base is configured.
   Disconnecting the last account for an app disables the entry instead of deleting it.
   There is no live reload; tools become available in a new chat/session.
-- Replaces the Capabilities Connectors tab: the row always shows Skills, Plugins,
-  Apps, Tools, and `?tab=connectors` links open Apps.
+- Replaces the built-in Capabilities Connectors tab: the row always shows Skills,
+  Plugins, Connectors, Tools, and `?tab=connectors` links open this catalog.
 
 Enable/disable it in **Capabilities → Plugins**; it ships on by default.

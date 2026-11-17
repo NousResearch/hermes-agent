@@ -42,11 +42,11 @@ const NO_SESSION = atom({ user: null })
 
 export const LOCALES = {
   en: {
-    title: 'Apps',
+    title: 'Connectors',
     all: 'All',
     onThisDevice: 'On this device',
     available: 'Available',
-    search: 'Search apps…',
+    search: 'Search connectors…',
     category: 'Category',
     allCategories: 'All categories',
     connect: 'Connect',
@@ -61,13 +61,13 @@ export const LOCALES = {
     cancel: 'Cancel',
     retry: 'Try again',
     connectedState: 'Connected',
-    noApps: 'No apps found',
+    noApps: 'No connectors found',
     noAppsHint: 'Try another search or category.',
-    noAccounts: 'No apps connected yet',
-    noAccountsHint: 'Browse the catalog and connect your first app.',
-    browseApps: 'Browse apps',
-    loading: 'Loading apps…',
-    errorTitle: 'Could not load apps',
+    noAccounts: 'No connectors connected yet',
+    noAccountsHint: 'Browse the catalog and connect your first connector.',
+    browseApps: 'Browse connectors',
+    loading: 'Loading connectors…',
+    errorTitle: 'Could not load connectors',
     accountsUnavailable: 'Connected accounts are temporarily unavailable.',
     unconfiguredTitle: 'Pipedream is not configured',
     unconfiguredHint:
@@ -77,13 +77,13 @@ export const LOCALES = {
     previous: 'Previous',
     next: 'Next',
     page: (page, total) => `Page ${page} of ${total}`,
-    appConnected: 'App connected',
+    appConnected: 'Connector connected',
     appConnectedMessage: () => 'Connected successfully. Tools will be available in a new chat.',
     connectFailedTitle: name => `Could not connect ${name}`,
-    missingApp: 'This app is missing a name slug.',
+    missingApp: 'This connector is missing a name slug.',
     disconnectTitle: name => `Disconnect ${name}?`,
     disconnectBody: 'The agent will lose access to this account. You can reconnect it later.',
-    appDisconnected: 'App disconnected',
+    appDisconnected: 'Connector disconnected',
     accountHealthy: 'Healthy',
     accountUnhealthy: 'Needs attention',
     accountDead: 'Expired',
@@ -92,12 +92,12 @@ export const LOCALES = {
     created: date => `Added ${date}`,
     timeoutTitle: name => `Still waiting for ${name}`,
     timeoutBody: 'The connection has not completed yet. Finish the sign-in in your browser, then refresh.',
-    mcpWarningTitle: 'App connected, tools not registered',
-    mcpWarning: reason => `The app is connected, but its tools could not be registered: ${reason}`,
+    mcpWarningTitle: 'Connector connected, tools not registered',
+    mcpWarning: reason => `The connector is connected, but its tools could not be registered: ${reason}`,
     authOauth: 'OAuth',
     authKeys: 'API key',
     authNone: 'No authentication',
-    unknownApp: 'App'
+    unknownApp: 'Connector'
   }
 }
 
@@ -1141,7 +1141,7 @@ export function PipedreamAppsTab({ api, fallbackExternalUserId, openExternal, co
 export default {
   id: ID,
   name: 'Pipedream Apps',
-  description: 'Browse Pipedream apps and manage connected accounts from Capabilities.',
+  description: 'Browse Pipedream connectors and manage connected accounts from Capabilities.',
   register(ctx) {
     ctx.i18n.register(LOCALES)
 

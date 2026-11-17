@@ -127,7 +127,7 @@ describe('pipedream apps runtime plugin', () => {
     )
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith(
-        'App connected',
+        'Connector connected',
         'Connected successfully. Tools will be available in a new chat.'
       )
     )
@@ -182,8 +182,8 @@ describe('pipedream apps runtime plugin', () => {
 
     await waitFor(() =>
       expect(toast.warning).toHaveBeenCalledWith(
-        'App connected, tools not registered',
-        'The app is connected, but its tools could not be registered: dashboard rejected the server'
+        'Connector connected, tools not registered',
+        'The connector is connected, but its tools could not be registered: dashboard rejected the server'
       )
     )
   })

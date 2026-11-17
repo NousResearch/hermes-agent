@@ -430,6 +430,12 @@ class LoopManager:
         if s.status == "active":
             remaining = s.remaining_label()
             tail = ", wakeup running" if s.awaiting_response else (f", {remaining}" if remaining else "")
+            # A loop the idle watcher cannot deliver reports "due now" forever (#144966): the
+            # claimed ticks either never release or never fire. If nothing has ever fired and
+            # the due date is already in the past, say so instead of keeping the countdown.
+            if not s.awaiting_response and s.ticks_fired == 0 and 0 < s.next_due_at < time.time():
+                tail = (f", overdue {format_interval(time.time() - s.next_due_at)} — the watcher "
+                        "has not fired it (check agent.log for 'loop wakeup')")
             return f"↻ Loop (active, {meta}{tail}): {s.prompt}"
         if s.status == "paused":
             return f"⏸ Loop (paused, {meta}{_dash(s.paused_reason)}): {s.prompt}"

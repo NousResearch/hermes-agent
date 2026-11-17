@@ -678,3 +678,42 @@ class TestListMetaPrefix:
 
         db = SessionDB()
         assert db.list_meta_prefix("") == []
+
+# ──────────────────────────────────────────────────────────────────────
+# status_line — honest overdue report when the watcher never fired a tick
+# (#144966: a loop the idle watcher can no longer inject reported
+# "active, due now" forever while the wake was silently dropped).
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestStatusLine:
+    def test_overdue_never_fired_loop_names_the_watcher(self, hermes_home):
+        from hermes_cli.loops import LoopManager, load_loop, save_loop
+
+        mgr = LoopManager(session_id="stuck")
+        mgr.set("poll the build", interval_seconds=300)
+        state = load_loop("stuck")
+        state.ticks_fired = 0
+        state.next_due_at = time.time() - 600.0
+        save_loop("stuck", state)
+        mgr.refresh()
+
+        line = mgr.status_line()
+        assert "overdue 10m" in line, line
+        assert "watcher has not fired" in line, line
+        assert "loop wakeup" in line, line
+        assert "poll the build" in line, line
+
+    def test_never_fired_but_not_due_is_not_reported_overdue(self, hermes_home):
+        from hermes_cli.loops import LoopManager, load_loop, save_loop
+
+        mgr = LoopManager(session_id="fresh")
+        mgr.set("poll the build", interval_seconds=300)
+        state = load_loop("fresh")
+        state.next_due_at = time.time() + 120.0
+        save_loop("fresh", state)
+        mgr.refresh()
+
+        line = mgr.status_line()
+        assert "overdue" not in line, line
+        assert "next in" in line, line

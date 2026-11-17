@@ -1,5 +1,6 @@
 """Messaging-chat workspaces: ``/workspace DIR`` binds a chat, and opt-in per-thread forks give every
 thread its own git worktree of each repository in it (real git repositories under tmp_path)."""
+import asyncio
 import os
 import subprocess
 from pathlib import Path
@@ -156,6 +157,35 @@ async def test_a_thread_fork_heals_and_its_repos_answer_references_and_diff(tmp_
     runner._fenced_truncated_diff = GatewaySlashCommandsMixin._fenced_truncated_diff
     reply = await GatewaySlashCommandsMixin._handle_diff_command(runner, MessageEvent(text="/diff", source=source))
     assert "**api**" in reply and "README.md" in reply and "**web**" in reply and "Not a git repository" not in reply
+
+
+def test_a_thread_whose_tree_the_sweep_archived_gets_its_work_back(tmp_path, monkeypatch):
+    """The sweep archives an idle thread's tree and deletes its unpublished branch; the thread's next
+    turn restores the archive (commits and uncommitted edits), not a fresh checkout of the remote."""
+    from gateway.session_workspace import handle_workspace_command
+    from hermes_cli.worktree_sweep import archive_then_remove
+    project = tmp_path / "project"
+    _git(tmp_path, "clone", "-q", str(_clone(tmp_path, "api")), str(project))
+    runner = _runner(tmp_path, monkeypatch)
+    config = {"gateway": {"workspaces": {"per_thread": "worktree", "fetch_fresh_seconds": 3600}}}
+    source = _thread("1.0")
+    asyncio.run(handle_workspace_command(runner, MessageEvent(text=f"/workspace {project}", source=source)))
+    entry = runner.session_store.get_or_create_session(source)
+    root = _turn(runner, entry, config)
+    Path(root, "work.txt").write_text("committed", encoding="utf-8")
+    _git(root, "add", "work.txt")
+    _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "thread work")
+    Path(root, "README.md").write_text("uncommitted", encoding="utf-8")
+    branch = _git(root, "branch", "--show-current")
+
+    ref, kept, removed, _ = archive_then_remove(str(project), root, reason="test", max_untracked_mb=10,
+                                                unlock=True, remote_heads_fn=dict)
+    assert removed and kept is None and ref  # the branch is gone; only the archive holds the work
+
+    assert _turn(runner, entry, config) == root
+    assert Path(root, "work.txt").read_text(encoding="utf-8") == "committed"
+    assert Path(root, "README.md").read_text(encoding="utf-8") == "uncommitted"
+    assert _git(root, "branch", "--show-current") == branch
 
 
 def test_gateway_workspaces_settings_load_from_config_yaml(tmp_path):

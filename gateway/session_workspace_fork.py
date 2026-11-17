@@ -148,13 +148,37 @@ def fresh_base(repo: Path, fresh_seconds: float) -> tuple[str, str]:
     return head, f"{head} (fetched)" if fetched else f"{head} (cached; fetch failed)"
 
 
+def _restore_archived(repo: Path, tree: Path, branch: str) -> str | None:
+    """Bring back the thread's tree from the sweep's archive (``refs/hermes/archive/``: its commits,
+    edits and index) -> a label, or None when there is none to restore. Only the archive of THIS tree
+    whose head is still the branch tip (or whose branch the sweep deleted): an older snapshot never
+    replaces later commits."""
+    from hermes_cli.worktree_archive import ArchiveError, find_archive, restore_archive
+    from hermes_cli.worktree_ops import _git_out
+    arc = find_archive(str(repo), tree.name)
+    if arc is None or os.path.realpath(str(arc.meta.get("path") or "")) != os.path.realpath(tree):
+        return None
+    tip = _git_out(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], repo)
+    if tip and tip != _git_out(["rev-parse", "--verify", "--quiet", str(arc.meta.get("head") or f"{arc.sha}^1")], repo):
+        return None
+    try:
+        restore_archive(str(repo), arc.ref, str(tree))
+    except ArchiveError as exc:
+        logger.warning("Could not restore the archived thread worktree %s: %s", tree, exc)
+        return None
+    return f"its archive `{arc.ref}`"
+
+
 def _add_tree(repo: Path, tree: Path, branch: str, fresh_seconds: float) -> str | None:
-    """Create *tree* on *branch* -> the base it started from, or None when git refused."""
+    """Create *tree* on *branch* -> the base it started from, or None when git refused. A tree the
+    sweep archived is restored with its work; a branch that outlived its tree is checked out again."""
     from hermes_cli._subprocess_compat import noninteractive_repo_git_env
     from hermes_cli.worktree_ops import _ensure_worktrees_gitignored, _git, _worktree_add
     _ensure_worktrees_gitignored(str(repo))
     tree.parent.mkdir(parents=True, exist_ok=True)
     _git(["worktree", "prune"], repo, timeout=30, stdin=subprocess.DEVNULL)  # a tree deleted by hand stays registered
+    if (restored := _restore_archived(repo, tree, branch)) is not None:
+        return restored
     if _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], repo).returncode == 0:
         # The thread's branch outlived its tree (the sweep removed it): check the branch out again.
         env = noninteractive_repo_git_env(repo)

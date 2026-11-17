@@ -767,14 +767,17 @@ class GatewaySlashCommandsMixin(
         restore_all = any(tok.lower() in ("--all", "--force") for tok in tokens)
         tokens = [tok for tok in tokens if tok.lower() not in ("--all", "--force")]
         checkouts = dict(self._checkouts(event.source))
-        if len(checkouts) > 1:  # a thread fork of several repositories: /rollback <repo> [N]
-            if not tokens or tokens[0] not in checkouts:
+        if "" not in checkouts:  # a folder-of-repositories thread fork: /rollback <repo> [N]
+            if tokens and tokens[0] in checkouts:
+                cwd = checkouts[tokens.pop(0)]
+            elif len(checkouts) == 1:
+                cwd = next(iter(checkouts.values()))
+            else:
                 return "\n\n".join(f"**{label}**\n" + format_checkpoint_list(mgr.list_checkpoints(cwd), cwd)
                                     for label, cwd in checkouts.items()) + "\n\n" + t(
                     "gateway.rollback.pick_repo", repos=", ".join(checkouts))
-            cwd = checkouts[tokens.pop(0)]
         else:
-            cwd = next(iter(checkouts.values()))
+            cwd = checkouts[""]
         arg = " ".join(tokens)
         # Container-backed session: host checkpoints belong to another tree, so a restore is
         # refused; the bare listing stays visible, prefixed with the reason (same as the CLI).

@@ -12,7 +12,9 @@ choice, so a configured ``gateway.workspaces.dir`` does not come back on the nex
 
 With ``gateway.workspaces.per_thread: worktree`` the root is the thread's fork of the bound
 directory (``gateway.session_workspace_fork``), made on the first turn that finds none and rebuilt
-when the stale-worktree sweep removed a tree of it. Its trees are locked only while a turn runs.
+when the stale-worktree sweep removed a tree of it (from the sweep's archive when it took one). Its
+trees are locked only while a turn runs. The root moves on its own only when a bound folder gets its
+first repository; that drops the cached agent and cwd records like ``/workspace`` does.
 """
 from __future__ import annotations
 
@@ -98,7 +100,20 @@ def ensure_binding(runner, session_key: str | None, user_config: Any) -> dict[st
     current = _resolve_root(session_key, stored, WorkspaceSettings.from_config(user_config))
     if current != stored:
         runner.session_store.set_session_metadata(session_key, METADATA_KEY, current or None)
+        if stored.get("root") and stored.get("root") != current.get("root"):
+            _moved(runner, session_key)
     return current
+
+
+def _moved(runner, session_key: str) -> None:
+    """The chat's root moved without ``/workspace`` (the bound folder got its first repository, so it is
+    forked now): drop the chat's cwd record, its saved terminal cwd and the cached agent whose prompt
+    names the old directory, so every tool and the next prompt start in the new root together."""
+    from gateway.session_terminal_cwd import forget_turn_cwd
+    from tools.terminal_tool import clear_session_cwd
+    clear_session_cwd(session_key)
+    forget_turn_cwd(runner, session_key)
+    runner._evict_cached_agent(session_key)
 
 
 @contextmanager

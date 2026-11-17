@@ -4,7 +4,9 @@ A turn lost across an owner restart is fenced ``unknown`` and pauses its session
 only the person who sent it knows whether to resend it. An automation delivery has no such person:
 a cron run (``CRON_PRINCIPAL_ID``), a process completion or heartbeat (``automation:<route>``,
 ``local_automation_v1``, a native envelope's ``automation`` block) or a webhook delivery
-(``webhook_delivery``) or a Kanban card attempt (``kanban_card_v1``, set by the dispatcher). Pausing on it stalls every message queued behind it until an operator
+(``webhook_delivery``) or a Kanban card attempt (``kanban_card_v1``, set by the dispatcher) or a
+``-z`` one-shot turn (``unattended``, where no user is available to answer a prompt either). Pausing on
+it stalls every message queued behind it until an operator
 notices (a Bot Chat sat ten hours behind one).
 
 Such a row settles through the same fenced resolution a person's Discard uses
@@ -30,12 +32,36 @@ def is_unattended(row) -> bool:
     # A webhook delivery: the provider already got its 202 and nobody can be asked to resend it.
     # A Kanban card attempt (#134889 KB-8): the dispatcher's marker, committed only by
     # ``SessionAuthority.submit(_kanban_card=...)``; a card row main minted without it still pauses.
+    # A ``-z`` one-shot (``unattended``, committed by ``session_finite.admit_finite``): its contract is
+    # that no user is available to answer a prompt, so pausing it asks a person who is not there.
     return ('local_automation_v1' in payload or 'kanban_card_v1' in payload
+            or payload.get('unattended') is True
             or 'automation' in native or 'webhook_delivery' in native)
 
 
 def _unattended_unknown(rows):
     return [row for row in rows if row['status'] == 'unknown' and is_unattended(row)]
+
+
+def _session_platform(source) -> str:
+    """``sessions.source`` for a session (``'discord'``, ``'telegram'``, ``'oneshot'``…), or ''."""
+    return str(source or '').strip().lower()
+
+
+def _resumable_unknown(rows, sources=None):
+    """``unknown`` human turns whose chat can be told what happened.
+
+    A restart fences a person's in-flight turn ``unknown``, which pauses that session's FIFO
+    until they type ``/discard``. On a headless gateway they are not present at boot, so the chat
+    sits paused indefinitely and every message queued behind it stalls. The turn is still never
+    replayed (the GW-10 rule); it settles ``interrupted`` and the chat is told to resend, which is
+    the same outcome ``/discard`` produces minutes later, minus the wait.
+
+    ``sources`` maps ``session_id -> sessions.source`` for the caller's rows.
+    """
+    sources = sources or {}
+    return [row for row in rows if row['status'] == 'unknown' and not is_unattended(row)
+            and _session_platform(sources.get(row['target_session_id'])) != 'oneshot']
 
 
 def settle_recovered_unattended(db, epoch) -> int:
@@ -60,6 +86,39 @@ def settle_recovered_unattended(db, epoch) -> int:
         release_admission_media(db, row['admission_id'])
         settled += 1
         logger.info('Lost automation admission %s on session %s settled interrupted (not replayed)',
+                    row['admission_id'], row['target_session_id'])
+    return settled
+
+
+def settle_recovered_human(db, epoch) -> int:
+    """Settle a person's lost turn as ``interrupted`` with resend advice, instead of pausing.
+
+    Runs immediately after ``settle_recovered_unattended`` at boot. The turn is never replayed
+    (GW-10); the chat is told to resend. ``/discard`` reaches the same terminal state later, once
+    the person happens to notice — this just stops a headless gateway waiting for that.
+    """
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+    from gateway.session_ingress_media import release_admission_media
+    from gateway.session_results import close_discarded_turn
+    from hermes_state_runtime import RuntimeStoreError, _row, resolve_unknown_session_input
+    with db._read_ctx() as conn:
+        rows = [_row(r) for r in conn.execute(
+            "SELECT * FROM session_admissions WHERE status='unknown' ORDER BY seq").fetchall()]
+        sources = {r['id']: r['source'] for r in conn.execute(
+            "SELECT id, source FROM sessions WHERE id IN (SELECT target_session_id FROM "
+            "session_admissions WHERE status='unknown')").fetchall()}
+    settled = 0
+    for row in _resumable_unknown(rows, sources):
+        try:
+            resolve_unknown_session_input(
+                db, epoch=epoch, admission_id=row['admission_id'], generation=row['generation'],
+                _terminal_write=lambda conn, lost: close_discarded_turn(db, conn, lost, FAILED_TURN_NOTICE))
+        except RuntimeStoreError as exc:
+            logger.warning('Lost human admission %s left unknown: %s', row['admission_id'], exc.reason)
+            continue
+        release_admission_media(db, row['admission_id'])
+        settled += 1
+        logger.info('Lost human admission %s on session %s settled interrupted, chat told to resend',
                     row['admission_id'], row['target_session_id'])
     return settled
 

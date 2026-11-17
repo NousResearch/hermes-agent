@@ -48,7 +48,7 @@ fork feature.
 - Creating the `educator` profile, its persona, or its tools. That is step 3.
 - Fixing upstream-owned platforms other than Slack.
 - Per-profile MCP server processes. The teammate is not planned to use MCP.
-  If it later needs MCP, that becomes its own check. Fix 4c keeps the default
+  If it later needs MCP, that needs per-profile MCP processes first. Fix 4c keeps the default
   profile's MCP servers away from it in the meantime.
 
 ## Anti-goals
@@ -189,11 +189,16 @@ credentials (Webflow, Stripe, GitHub). A secondary-profile user whose role
 grants `*` (admin), or any `mcp-*` toolset, would act with the current bot's
 credentials.
 
-**Fix (designer's call):** under multiplex, a secondary profile's resolved
-toolsets exclude every MCP toolset, unless that profile's own `config.yaml`
-declares the server. Apply this in `_resolve_enabled_toolsets_for_source` and
-mirror it in the `pre_tool_call` backstop, failing closed. Per-profile MCP
-processes stay a non-goal; this guard only keeps the default's servers out.
+**Fix (designer's call, revised in PR review 2026-11-17):** under multiplex,
+a secondary profile's resolved toolsets exclude **every** MCP toolset, with no
+exemption. The first version let a profile keep a server its own
+`config.yaml` declares, but MCP servers live in one process-global registry
+keyed by server name (`tools/mcp_tool.py`) and discovery is idempotent by
+name, so a same-named server dispatched to the default's process and
+credentials. Apply this in `_resolve_enabled_toolsets_for_source`, in cron's
+toolset resolution, and in the dispatch backstop, failing closed. Per-profile
+MCP processes stay a non-goal; until they exist a secondary profile has no
+MCP.
 
 ### 4d. File tools must not cross profile homes
 
@@ -261,6 +266,19 @@ Added 2026-11-16 during implementation (approved by the designer). The
   after a default run, nothing of the default reaches an educator script or
   turn. A multiplex-off regression asserts both reloads still run.
 
+### 4h. Fixes from PR review (2026-11-17)
+
+- Slack `allow_bots` for the message gate is resolved through the source's
+  adapter under multiplex (the profile's `config.yaml`, not only its `.env`).
+- A failed scoped config load gives slash commands a deny-all policy.
+- Cron Bot Chat delivery (`_deliver_to_bot_chat`) runs the child as the
+  owning profile (`-p <profile>`, `scoped_subprocess_env()`).
+- `tools/checkpoint_manager.py` and `tools/process_registry.py` resolve their
+  home per call (module-level capture sweep).
+- `search_files` hits are checked per hit in every output mode (they already
+  were, via `_search_result_read_block_error` → `get_read_block_error`; tests
+  for both directions and all modes now pin it).
+
 ### Known limitation (not fixed here)
 
 `terminal.cwd` is bridged once into the process-wide `TERMINAL_CWD` from the
@@ -276,10 +294,22 @@ Fixing it is upstream-sized work and is deferred.
   The `not os.getenv` bridge guard means the env value wins. The shared
   helper is therefore mode-aware:
   - **Multiplex off:** today's order per key.
-  - **Multiplex on:** adapter `extra` → scoped env → default.
+  - **Multiplex on:** adapter `extra` → the profile's `config.yaml`
+    `slack:` block → scoped env → default. Once each profile owns its config,
+    `config.yaml` winning is the natural rule (confirmed in PR review).
 
   The regression tests assert today's precedence with multiplex off,
-  including a key set in both places with different values.
+  including a key set in both places with different values. Because turning
+  multiplex on can therefore silently flip the **default** bot wherever its
+  `.env` and `config.yaml` disagree on an env-only Slack key, multiplex
+  startup logs a WARNING per profile naming every such key (names only,
+  never values).
+- **Fail closed under multiplex.** A guard that cannot evaluate denies:
+  the cross-profile file guard denies the path, the MCP guard treats an
+  unresolvable context as secondary, `scoped_subprocess_env` strips every
+  non-global variable when the default's secrets cannot be enumerated, and a
+  failed scoped config load yields a deny-all slash policy (never "no
+  policy"). Inert with multiplex off.
 - **An unscoped secret read under multiplex** raises `UnscopedSecretError`
   inside `get_secret`. The fork tools catch it, log a WARNING naming the tool
   and the key, and return their normal "not configured" error. `check_fn`

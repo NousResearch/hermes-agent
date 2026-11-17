@@ -546,15 +546,20 @@ Rules for fork code that reads credentials or platform settings:
   call (cron notepad/suggestions, auxiliary `auth.json`).
 - Guards ([gateway/multiplex_guard.py](gateway/multiplex_guard.py),
   [agent/multiplex_file_guard.py](agent/multiplex_file_guard.py)): a secondary
-  profile never gets the default's MCP toolsets unless its own `config.yaml`
-  declares the server (resolver + cron + fail-closed dispatch backstop); file
-  tools deny paths in another **served** profile's home. Opt-in
+  profile gets **no** MCP toolset (MCP processes are process-wide and keyed by
+  server name, so even a server it declares would be the default's) —
+  resolver + cron + fail-closed dispatch backstop; file tools (including every
+  `search_files` hit) deny paths in another **served** profile's home. Opt-in
   `agent_write_guard: true` ([agent/profile_write_guard.py](agent/profile_write_guard.py))
   stops a profile's agent writing its own config/SOUL/cron/scripts/.env*/external
   skill dirs.
 - Every multiplex branch is gated on `is_multiplex_active()`; with it off the
   legacy code path runs unchanged (`.env` still beats `config.yaml` for the
-  Slack keys that were env-only). Acceptance test:
+  Slack keys that were env-only). Under multiplex `config.yaml` wins; startup
+  WARNs per profile for each env-only key the two disagree on. Guards fail
+  closed under multiplex (a failed scoped config load → deny-all slash policy).
+  Cron child processes (scripts, Bot Chat delivery) get the owning profile's
+  env and `-p`. Acceptance test:
   [tests/gateway/test_multiplex_fork_features.py](tests/gateway/test_multiplex_fork_features.py);
   cron: [tests/cron/test_multiplex_cron_per_profile.py](tests/cron/test_multiplex_cron_per_profile.py).
 - Known limitation: `terminal.cwd` is bridged once from the default's config.

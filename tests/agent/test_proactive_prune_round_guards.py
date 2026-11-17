@@ -124,14 +124,17 @@ def test_a_resumed_session_reads_the_stored_cache_clock(home):
 
     from agent.prompt_cache_clock import CacheEvent, _route_key, event_to_json
     from agent.prompt_cache_clock import prompt_cache_is_cold
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session, seed_usage
 
     route = ("openrouter", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.6")
-    db = SessionDB(db_path=home / "state.db")
+    db = open_persistence(profile_scope(home=home), eager=True)
 
     def resumed():
         return SimpleNamespace(provider=route[0], base_url=route[1], model=route[2], api_mode="chat_completions",
-                               session_id="s1", _session_db=db, context_compressor=SimpleNamespace(compression_count=0))
+                               session_id="s1", _session_db=db, persistence=db,
+                               context_compressor=SimpleNamespace(compression_count=0))
 
     def save(estimated_until):
         key = _route_key(*route)
@@ -139,20 +142,19 @@ def test_a_resumed_session_reads_the_stored_cache_clock(home):
                            sent_at=0.0, read_tokens=0, write_tokens=100, tier="5m", confidence="declared",
                            reason="test", coverage={"5m": estimated_until}, guaranteed_until=estimated_until,
                            estimated_until=estimated_until, session_id="s1",
-                           generation=db.prompt_cache_generation("s1"))
-        db.queue_token_counts("s1", input_tokens=1, cache_write_tokens=100, api_call_count=1,
-                              prompt_cache_clock=event_to_json(event))
-        assert db.flush_token_counts()
+                           generation=db.usage.prompt_cache_generation("s1"))
+        seed_usage(db, "s1", input_tokens=1, cache_write_tokens=100, api_call_count=1,
+                   prompt_cache_clock=event_to_json(event))
 
     try:
-        db.create_session("s1", "cli")
-        db.append_message("s1", role="user", content="q")
-        db.append_message("s1", role="assistant", content="a")
+        seed_session(db, "s1", "cli")
+        seed_messages(db, "s1", {"role": "user", "content": "q"}, {"role": "assistant", "content": "a"})
         save(time.time() + 300)
         assert prompt_cache_is_cold(resumed()) is False
         save(time.time() - 1)
         assert prompt_cache_is_cold(resumed()) is True
-        db.archive_and_compact("s1", [{"role": "user", "content": "q"}, {"role": "assistant", "content": "[pruned]"}])
+        db.messages.compact("s1", [NewMessage.from_live(m) for m in (
+            {"role": "user", "content": "q"}, {"role": "assistant", "content": "[pruned]"})])
         assert prompt_cache_is_cold(resumed()) is False  # the rewrite moved the generation: unknown, not cold
     finally:
         db.close()

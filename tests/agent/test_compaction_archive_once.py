@@ -85,7 +85,8 @@ def test_planning_and_the_prepared_pass_write_nothing_and_the_splice_archives_ea
 
 
 def test_the_committed_summary_names_every_archive_the_generated_text_omits_and_the_sweep_keeps_them(home):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
     from tools.tool_result_storage import cleanup_spillover_cache
 
     msgs = _transcript()
@@ -101,10 +102,10 @@ def test_the_committed_summary_names_every_archive_the_generated_text_omits_and_
     (summary_row,) = [m for m in compressed if m.get(COMPRESSED_SUMMARY_METADATA_KEY)]
     assert "Archived tool output" in summary_row["content"]
 
-    db = SessionDB(db_path=home / "state.db")
+    db = open_persistence(profile_scope(home=home), eager=True)
     try:
-        db.create_session("s1", "cli")
-        db.append_messages_batch("s1", [m for m in compressed if m.get("role") != "system"])
+        seed_session(db, "s1", "cli")
+        seed_messages(db, "s1", *(m for m in compressed if m.get("role") != "system"))
     finally:
         db.close()
     old = 1_000_000_000

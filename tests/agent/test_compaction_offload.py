@@ -170,19 +170,21 @@ def test_prepared_pass_summarizes_the_original_results_and_writes_nothing(home):
 
 def test_manual_compress_now_summarizes_originals_then_archives_what_it_drops(home, summarizer):
     from agent.conversation_compression_manual import compress_now, parse_compress_args
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=home / "state.db")
+    db = open_persistence(profile_scope(home=home), eager=True)
     try:
-        db.create_session("sid", "cli", model="test/model")
-        db.append_messages_batch("sid", _transcript()[1:])
+        seed_session(db, "sid", "cli", model="test/model")
+        seed_messages(db, "sid", *_transcript()[1:])
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
             agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
-                            quiet_mode=True, session_db=db, session_id="sid", skip_context_files=True,
+                            quiet_mode=True, session_db=db, persistence=db, session_id="sid", skip_context_files=True,
                             skip_memory=True)
         agent._compression_feasibility_checked = True
-        history = db.get_messages_as_conversation("sid")
+        history = conversation(db, "sid")
         originals = _originals(history)
 
         result = compress_now(agent, history, parse_compress_args(""), system_message="")

@@ -19,21 +19,24 @@ def home(tmp_path, monkeypatch):
 
 def test_an_uncertain_commit_keeps_the_archives(home):
     """A worker may commit and then lose the reply: the files its stubs point at must survive."""
-    from hermes_state import SessionDB
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    db = SessionDB(db_path=home / "state.db")
+    from persistence.conversation.messages import ConversationRequest
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import conversation
+    from tests.fixtures.storage_seed import seed_messages, seed_session
+    db = open_persistence(profile_scope(home=home), eager=True)
     try:
-        db.create_session("s1", source="cli", model="m")
+        seed_session(db, "s1", "cli", model="m")
         for i in range(6):
-            db.append_message("s1", role="assistant", content="", tool_calls=[
-                {"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}])
-            db.append_message("s1", role="tool", content=chr(65 + i) * 30_000, tool_call_id=f"c{i}")
-        live = [{"role": "system", "content": "sys"}] + db.get_messages_as_conversation("s1", include_row_ids=True)
+            seed_messages(db, "s1", {"role": "assistant", "content": "", "tool_calls": [
+                {"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+                {"role": "tool", "content": chr(65 + i) * 30_000, "tool_call_id": f"c{i}"})
+        live = [{"role": "system", "content": "sys"}] + conversation(db, "s1", ConversationRequest(include_row_ids=True))
         for m in live[1:]:
             m[_DB_PERSISTED_MARKER] = True
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="m", quiet_mode=True, protect_first_n=1, protect_last_n=2)
-        c.bind_session_state(db, "s1")
+        c.bind_session_state(db, "s1", persistence=db)
         with patch.object(c, "_rewrite_pruned_rows_in_place", side_effect=RuntimeError("reply lost")):
             out, n = c.prune_tool_results_only(live, current_tokens=100_000, cold_cache=True)
         assert (out, n) == (live, 0)

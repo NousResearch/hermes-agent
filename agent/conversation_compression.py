@@ -1482,7 +1482,7 @@ def _rebind_session_context(session_id: str) -> None:
 
 def context_engine_persistence(hook, persistence):
     """``{"persistence": persistence}`` for a context engine hook that accepts that keyword, else ``{}``."""
-    return {"persistence": persistence} if _accepts_keyword_argument(hook, "persistence") else {}
+    return {"persistence": persistence} if accepts_keyword_argument(hook, "persistence") else {}
 
 
 def context_engine_session_db(agent, session_db):

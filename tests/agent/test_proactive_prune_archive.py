@@ -14,7 +14,8 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from hermes_state import SessionDB
+from persistence.conversation.messages import ConversationRequest, NewMessage
+from persistence_assembly import open_persistence, profile_scope
 from tools.tool_result_storage import archive_compaction_drops, archive_pruned_originals, cleanup_spillover_cache
 
 
@@ -30,7 +31,7 @@ def _compressor(db=None):
                               proactive_prune_tokens=1_000, proactive_prune_min_result_chars=1_000,
                               proactive_prune_min_reclaim_tokens=1_000)
     if db is not None:
-        c.bind_session_state(session_db=db, session_id="s1")
+        c.bind_session_state(session_db=db, session_id="s1", persistence=db)
     return c
 
 
@@ -119,13 +120,16 @@ def test_the_first_turn_is_never_shortened(home):
 
 def test_pruned_archive_follows_its_session(home):
     """Referenced archives survive the age sweep; deleting the session retires them."""
-    db = SessionDB(db_path=home / "state.db")
+    from persistence.conversation.sessions import NewSession
+    from session_retention import after_sessions_removed
+
+    db = open_persistence(profile_scope(home=home), eager=True)
     try:
-        db.create_session("s1", "cli")
+        db.sessions.create(NewSession(session_id="s1", source="cli"))
         msgs = _transcript()
-        db.append_messages_batch("s1", msgs[1:])
-        stored = [{"role": "system", "content": "sys"},
-                  *db.get_messages_as_conversation("s1", include_row_ids=True)]
+        db.messages.append_batch("s1", [NewMessage.from_live(m) for m in msgs[1:]])
+        stored = [{"role": "system", "content": "sys"}, *(m.as_openai_message() for m in db.messages.read_conversation(
+            "s1", ConversationRequest(include_row_ids=True)))]
         from agent.context_compressor import _DB_PERSISTED_MARKER
         for m in stored[1:]:
             m[_DB_PERSISTED_MARKER] = True
@@ -139,7 +143,7 @@ def test_pruned_archive_follows_its_session(home):
 
         assert cleanup_spillover_cache(max_age_hours=24) == 0  # state.db still points at each
         assert all(f.exists() for f in files)
-        db.delete_session("s1")
+        after_sessions_removed(db, home, db.sessions.delete("s1", media_root=str(home / "media")), reason="delete")
         assert not any(f.exists() for f in files)
     finally:
         db.close()

@@ -169,20 +169,29 @@ def retire_local_receipts(conn, session_ids):
     conn.executemany('DELETE FROM state_meta WHERE key=?', [(key,) for key in gone])
 
 
-def moved_receipts(conn, target_ids=None):
+def moved_receipts(conn, target_ids=None, owners=None):
     """``{owner id: (moved row id, its source)}`` of local receipts whose current physical target row
     now carries another lane's route. An explicit repoint (``/handoff``, a platform ``/resume``)
     rewrote that row's routing identity, so the receipt can never restore the conversation again
     (the stored identity check in ``gateway.session_local_recovery._checked_entry``). Only the
     current target counts: an earlier ``/new`` segment that moved leaves the conversation the
     receipt guards local, and releasing it would strand that transcript. *target_ids* narrows the
-    scan to the rows one repoint rewrote."""
+    scan to the rows one repoint rewrote. *owners* names the receipts to look at, a point probe
+    each: for a caller that scanned the whole store without the write lock and re-checks what it
+    found inside the lock."""
+    if owners is None:
+        where, keys = 'm.key GLOB ?', (POLICY_PREFIX + '*',)
+    else:
+        keys = tuple(POLICY_PREFIX + owner for owner in owners)
+        if not keys:
+            return {}
+        where = f"m.key IN ({','.join('?' * len(keys))})"
     rows = conn.execute(
         "SELECT substr(m.key, ?), s.id, s.source FROM state_meta m JOIN sessions s "
         "ON s.id = CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
-        "WHERE m.key GLOB ? AND s.session_key IS NOT NULL "
+        f"WHERE {where} AND s.session_key IS NOT NULL "
         "AND s.session_key IS NOT CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.route') END",
-        (len(POLICY_PREFIX) + 1, POLICY_PREFIX + '*')).fetchall()
+        (len(POLICY_PREFIX) + 1, *keys)).fetchall()
     return {owner: (target, source) for owner, target, source in rows
             if target_ids is None or target in target_ids}
 

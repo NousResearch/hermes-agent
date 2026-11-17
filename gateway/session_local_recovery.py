@@ -455,11 +455,21 @@ def release_handed_off_receipts(db, *, epoch):
     from hermes_state_local import hand_off_conversations, moved_receipts
     from hermes_state_runtime import _epoch
 
+    def on_a_lane(rows):
+        return {owner: (target, source) for owner, (target, source) in rows.items()
+                if _messaging_platform(source) is not None}
+    # The scan joins every local receipt to its row (seconds on a large cold store). Inside the write
+    # transaction it held the state.db write lock that long on every gateway start, so it reads without
+    # the lock. Nearly every boot finds nothing and opens no write; when it finds receipts, the write
+    # re-checks just those with a point probe each.
+    with db._read_ctx() as conn:
+        found = on_a_lane(moved_receipts(conn))
+    if not found:
+        return
+
     def write(conn):
         _epoch(conn, epoch)
-        moved = {owner: (target, source) for owner, (target, source) in moved_receipts(conn).items()
-                 if _messaging_platform(source) is not None}
-        return hand_off_conversations(conn, moved)
+        return hand_off_conversations(conn, on_a_lane(moved_receipts(conn, owners=list(found))))
     for owner, (target, source) in db._execute_write(write).items():
         logging.getLogger(__name__).info(
             'Local session %s was handed off to %s (row %s); released its local receipt', owner, source, target)

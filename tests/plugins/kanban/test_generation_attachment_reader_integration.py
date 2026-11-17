@@ -35,7 +35,9 @@ def test_dashboard_style_attachment_read_uses_generation_custody(tmp_path):
 
 def _published_attachment_board(root: Path):
     from tests.hermes_cli.test_kanban_recovery_round_trip import _db
-    from hermes_cli.kanban_generation import acquire_fence, publish_prepared, release_fence
+    from hermes_cli.kanban_generation import (
+        acquire_fence, activate_first_write, publish_prepared, release_fence,
+    )
     from hermes_cli.kanban_reconcile import reconcile
 
     root.mkdir(parents=True)
@@ -53,6 +55,7 @@ def _published_attachment_board(root: Path):
     report = reconcile(source, target, seed, generation, apply=True)
     fence = acquire_fence(board, generation=report["generation_id"], owner="reader-test")
     publish_prepared(generation, expected_manifest=report["manifest_digest"], fence_token=fence["token"])
+    activate_first_write(generation, fence_epoch=fence["epoch"])
     release_fence(board, token=fence["token"])
     with sqlite3.connect(generation / "kanban.db") as conn:
         attachment_id, custody_relpath = conn.execute(

@@ -16,6 +16,8 @@ from hermes_cli.kanban_generation import (
     acquire_reader_lease,
     activate_first_write,
     build_ready,
+    bind_reader_consumer,
+    canonical_json,
     gc_generations,
     initialize_generation_db,
     publish_prepared,
@@ -24,6 +26,7 @@ from hermes_cli.kanban_generation import (
     release_reader_lease,
     manifest_digest,
     row_manifest,
+    sha256_file,
     encode_reader_frame,
     decode_reader_frame,
     discard_created_blobs,
@@ -216,6 +219,96 @@ def test_lease_stale_reclaim_requires_both_identities(tmp_path):
     assert path.exists()
     release_reader_lease(generation, replacement["lease_id"])
     release_reader_lease(generation, lease["lease_id"])
+
+
+def test_reader_lease_persists_only_closed_v1_fields(tmp_path):
+    board, generation = _published(tmp_path)
+    lease = acquire_reader_lease(
+        board, consumer="hermes-office", operation_id="not-persisted"
+    )
+    path = generation / "leases" / f"{lease['lease_id']}.json"
+    expected_fields = {
+        "lease_format_version", "lease_id", "board_slug", "generation_id",
+        "generation_nonce", "ready_sha256", "consumer", "lease_keeper_pid",
+        "lease_keeper_start_fingerprint", "consumer_pid",
+        "consumer_start_fingerprint", "consumer_kind", "created_at",
+    }
+    initial = json.loads(path.read_text())
+    assert set(initial) == expected_fields
+    assert path.read_bytes() == canonical_json(initial) + b"\n"
+
+    bind_reader_consumer(
+        generation, lease["lease_id"], pid=os.getpid(), start_token="private-token"
+    )
+    bound = json.loads(path.read_text())
+    assert set(bound) == expected_fields
+    assert path.read_bytes() == canonical_json(bound) + b"\n"
+    assert "private-token" not in path.read_text()
+    release_reader_lease(generation, lease["lease_id"])
+
+
+def test_reader_selection_retries_changed_pointer_after_durable_lease(
+    tmp_path, monkeypatch
+):
+    board, generation = _published(tmp_path)
+    other = board / "generations" / "g2"
+    other.mkdir()
+    initialize_generation_db(
+        other / "kanban.db", gid="g2", nonce="n2", control_root=board
+    )
+    with sqlite3.connect(other / "kanban.db") as conn:
+        conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT)")
+    build_ready(other, gid="g2", nonce="n2")
+    activate_first_write(other, fence_epoch=2)
+    changed_pointer = {
+        "format_version": 1,
+        "generation_id": "g2",
+        "generation_nonce": "n2",
+        "ready_sha256": sha256_file(other / "READY.json"),
+    }
+
+    from hermes_cli import kanban_generation as kg
+    real_read_pointer = kg.read_pointer
+    reads = 0
+
+    def changed_once(path):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            return changed_pointer
+        return real_read_pointer(path)
+
+    monkeypatch.setattr(kg, "read_pointer", changed_once)
+    lease = acquire_reader_lease(
+        board, consumer="hermes-office", operation_id="retry"
+    )
+    assert Path(lease["database_path"]).parent == generation
+    assert reads >= 4
+    assert [path.name for path in (generation / "leases").glob("*.json")] == [
+        f"{lease['lease_id']}.json"
+    ]
+    release_reader_lease(generation, lease["lease_id"])
+
+
+def test_reader_revalidation_failure_durably_discards_lease(tmp_path, monkeypatch):
+    board, generation = _published(tmp_path)
+    from hermes_cli import kanban_generation as kg
+    real_read_pointer = kg.read_pointer
+    reads = 0
+
+    def malformed_on_revalidation(path):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            raise GenerationError("POINTER_INVALID")
+        return real_read_pointer(path)
+
+    monkeypatch.setattr(kg, "read_pointer", malformed_on_revalidation)
+    with pytest.raises(GenerationError, match="LEASE_REVALIDATION_FAILED"):
+        acquire_reader_lease(
+            board, consumer="hermes-office", operation_id="malformed"
+        )
+    assert list((generation / "leases").glob("*.json")) == []
 
 
 def _published(tmp_path):

@@ -713,25 +713,93 @@ def acquire_reader_lease(board_dir: Path, *, consumer: str, operation_id: str,
     # Publication recovery mutates generation.current and therefore completes
     # under exclusive catalog custody before the shared selection transaction.
     recover_publication(board_dir)
-    catalog = contextlib.nullcontext() if held else _lock(board_dir / "generation.catalog-lock", exclusive=False)
-    with catalog, _lock(board_dir / "generation.activation-lock", exclusive=False):
-        db, ready = open_generation(
-            board_dir, require_activation=require_activation, recover=False
+    while True:
+        catalog = contextlib.nullcontext() if held else _lock(
+            board_dir / "generation.catalog-lock", exclusive=False
         )
-        pid = os.getpid()
-        consumer_pid = os.getpid() if consumer_pid is None else consumer_pid
-        lease_id = secrets.token_urlsafe(18)
-        lease = {"lease_format_version": 1, "lease_id": lease_id, "board_slug": board_dir.name, "generation_id": ready["generation_id"], "generation_nonce": ready["generation_nonce"], "ready_sha256": sha256_file(db.parent / "READY.json"), "consumer": consumer, "lease_keeper_pid": pid, "lease_keeper_start_fingerprint": _start_fingerprint(pid), "consumer_pid": consumer_pid, "consumer_start_fingerprint": _start_fingerprint(consumer_pid), "consumer_kind": consumer, "operation_id": operation_id, "created_at": time.time(), "reclaim_after": time.time() + LEASE_RECLAIM_GRACE_SECONDS}
-        leases = db.parent / "leases"
-        leases.mkdir(exist_ok=True)
-        _reclaim_stale_leases(leases)
-        _atomic_json(leases / f"{lease_id}.json", lease)
-        _fsync_dir(leases)
-        activated = db.parent / "ACTIVATED.json"
-        return {"database_path": str(db), "storage_mode": "generation",
-                "activated_sha256": sha256_file(activated) if activated.exists() else None,
-                "selected_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-                **{key: lease[key] for key in ("generation_id", "generation_nonce", "ready_sha256", "lease_id", "lease_keeper_pid", "lease_keeper_start_fingerprint", "consumer_pid", "consumer_start_fingerprint", "consumer_kind")}}
+        with catalog, _lock(
+            board_dir / "generation.activation-lock", exclusive=False
+        ):
+            db, ready = open_generation(
+                board_dir, require_activation=require_activation, recover=False
+            )
+            pid = os.getpid()
+            selected_consumer_pid = (
+                os.getpid() if consumer_pid is None else consumer_pid
+            )
+            lease_id = secrets.token_urlsafe(18)
+            lease = {
+                "lease_format_version": 1,
+                "lease_id": lease_id,
+                "board_slug": board_dir.name,
+                "generation_id": ready["generation_id"],
+                "generation_nonce": ready["generation_nonce"],
+                "ready_sha256": sha256_file(db.parent / "READY.json"),
+                "consumer": consumer,
+                "lease_keeper_pid": pid,
+                "lease_keeper_start_fingerprint": _start_fingerprint(pid),
+                "consumer_pid": selected_consumer_pid,
+                "consumer_start_fingerprint": _start_fingerprint(
+                    selected_consumer_pid
+                ),
+                "consumer_kind": consumer,
+                "created_at": time.time(),
+            }
+            leases = db.parent / "leases"
+            leases.mkdir(exist_ok=True)
+            _reclaim_stale_leases(leases)
+            _atomic_json(leases / f"{lease_id}.json", lease)
+            _fsync_dir(leases)
+
+            # The durable lease precedes final selection validation. A
+            # compliant publisher cannot move the pointer while these shared
+            # locks are held, but revalidation also closes corruption and
+            # non-cooperating-writer races without returning a stale path.
+            try:
+                current_db, current_ready = open_generation(
+                    board_dir,
+                    require_activation=require_activation,
+                    recover=False,
+                )
+            except GenerationError as exc:
+                release_reader_lease(db.parent, lease_id)
+                raise GenerationError("LEASE_REVALIDATION_FAILED") from exc
+            current_identity = (
+                current_db,
+                current_ready["generation_id"],
+                current_ready["generation_nonce"],
+                sha256_file(current_db.parent / "READY.json"),
+            )
+            selected_identity = (
+                db,
+                lease["generation_id"],
+                lease["generation_nonce"],
+                lease["ready_sha256"],
+            )
+            if current_identity != selected_identity:
+                release_reader_lease(db.parent, lease_id)
+                continue
+
+            activated = db.parent / "ACTIVATED.json"
+            return {
+                "database_path": str(db),
+                "storage_mode": "generation",
+                "activated_sha256": (
+                    sha256_file(activated) if activated.exists() else None
+                ),
+                "selected_at": datetime.now(UTC).isoformat().replace(
+                    "+00:00", "Z"
+                ),
+                **{
+                    key: lease[key]
+                    for key in (
+                        "generation_id", "generation_nonce", "ready_sha256",
+                        "lease_id", "lease_keeper_pid",
+                        "lease_keeper_start_fingerprint", "consumer_pid",
+                        "consumer_start_fingerprint", "consumer_kind",
+                    )
+                },
+            }
 
 
 def _reclaim_stale_leases(leases: Path) -> None:
@@ -746,7 +814,11 @@ def _reclaim_stale_leases(leases: Path) -> None:
             live = (psutil.pid_exists(pid) and _start_fingerprint(pid) == fingerprint) or (psutil.pid_exists(consumer_pid) and _start_fingerprint(consumer_pid) == consumer_fp)
         except (OSError, KeyError, TypeError, ValueError) as exc:
             raise GenerationError("LEASE_INVALID") from exc
-        if not live and ("reclaim_after" not in record or time.time() >= float(record["reclaim_after"])):
+        reclaim_after = float(record.get(
+            "reclaim_after",
+            float(record["created_at"]) + LEASE_RECLAIM_GRACE_SECONDS,
+        ))
+        if not live and time.time() >= reclaim_after:
             path.unlink(missing_ok=True)
 
 
@@ -825,9 +897,11 @@ def bind_reader_consumer(generation: Path, lease_id: str, *, pid: int, start_tok
         raise GenerationError("LEASE_INVALID") from exc
     if record.get("lease_id") != lease_id:
         raise GenerationError("LEASE_ID_MISMATCH")
-    record = {**record, "consumer_pid": int(pid),
-              "consumer_start_fingerprint": _start_fingerprint(int(pid)),
-              "start_token": start_token, "bound_at": time.time()}
+    record = {
+        **record,
+        "consumer_pid": int(pid),
+        "consumer_start_fingerprint": _start_fingerprint(int(pid)),
+    }
     _atomic_json(path, record)
     return record
 

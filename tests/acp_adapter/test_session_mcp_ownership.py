@@ -15,7 +15,7 @@ from tests.acp_adapter.test_session_mcp_policy import owner, policy
 
 
 def _editor_servers():
-    from tools.mcp_tool import _servers
+    from tools.mcp.client import _servers
     return {key: server for key, server in _servers.items() if key[-1].startswith('editor_')}
 
 

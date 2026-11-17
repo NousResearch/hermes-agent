@@ -1518,7 +1518,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
             info["skills"] = get_available_skills()
     info["mcp_servers"] = []
     with contextlib.suppress(Exception):
-        from tools.mcp_tool_discovery import get_mcp_status
+        from tools.mcp.discovery import get_mcp_status
         info["mcp_servers"] = get_mcp_status()
     with contextlib.suppress(Exception):
         info["system_prompt"] = (

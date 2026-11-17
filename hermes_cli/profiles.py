@@ -1742,7 +1742,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # The main serve process survives this deletion. Stop only this profile's MCP
     # transports and release cached stderr handles, including completed probes.
     from hermes_constants import hermes_home_key
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp.lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
 
     # Release this process's holographic memory-store connections into the profile. The
@@ -2253,7 +2253,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # delete_profile): Windows refuses to rename a directory holding an open file, and the
     # handle would otherwise stay cached under the old key after the move.
     from hermes_constants import hermes_home_key
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp.lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(old_dir))
 
     # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),

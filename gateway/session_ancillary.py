@@ -320,8 +320,8 @@ async def reload_mcp(connection, ref, params):
         raise RuntimeStoreError('permission_denied')
     if params.get('confirm') is not True:
         return {'status': 'confirm_required', 'message': 'Reloading MCP refreshes every chat of this profile.'}
-    from tools.mcp_oauth import suppress_interactive_oauth
-    from tools import mcp_tool_discovery as discovery
+    from tools.mcp.oauth import suppress_interactive_oauth
+    from tools.mcp import discovery
 
     def reconcile():
         with suppress_interactive_oauth():

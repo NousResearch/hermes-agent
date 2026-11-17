@@ -79,7 +79,7 @@ def _writers(home: Path, monkeypatch):
     from gateway import pairing
     from hermes_cli import auth as auth_mod
     from hermes_cli import process_identity
-    from tools import mcp_oauth
+    from tools.mcp import oauth as mcp_oauth
     from plugins.google_meet import cli as meet_cli
     from plugins.google_meet.node.registry import NodeRegistry
     from plugins.google_meet.node.server import NodeServer

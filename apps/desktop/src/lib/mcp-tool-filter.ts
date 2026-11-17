@@ -1,7 +1,7 @@
 // Per-tool MCP gating. A server's optional `tools.include` (whitelist) /
 // `tools.exclude` (denylist) decide which discovered tools the agent registers
 // — `include` wins, no filter means all. Mirrors `_register_server_tools` in
-// `tools/mcp_tool.py`.
+// `tools/mcp/client.py`.
 
 export interface McpToolsFilter {
   exclude?: string[]
@@ -29,7 +29,7 @@ export function isToolEnabled(server: ServerConfig | null | undefined, name: str
   const { exclude, include } = readToolsFilter(server)
 
   // An explicit `include` (even []) is a whitelist — the runtime registers nothing for `[]`
-  // (tools/mcp_tool_registration.py), so the desktop must not show every tool as enabled (#12865).
+  // (tools/mcp/registration.py), so the desktop must not show every tool as enabled (#12865).
   if (include !== undefined) {
     return include.includes(name)
   }

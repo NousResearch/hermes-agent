@@ -21,7 +21,7 @@ def _editor_tools():
 
 def test_a_broken_editor_server_is_left_out_of_the_session(server_spec, tmp_path):
     from tools.registry import registry
-    from tools.mcp_tool import _servers
+    from tools.mcp.client import _servers
     silent = {'name': 'silent', 'command': sys.executable, 'args': ['-c', 'import time; time.sleep(120)'], 'env': []}
     authority = owner()
     started = time.monotonic()

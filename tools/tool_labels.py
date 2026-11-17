@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from tools.connectors.gateway.names import parse_connector_name
-from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
+from tools.mcp.schema import MCP_TOOL_NAME_PREFIX
 
 logger = logging.getLogger("tools.tool_labels")
 

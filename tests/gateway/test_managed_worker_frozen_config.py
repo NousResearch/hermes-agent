@@ -142,7 +142,7 @@ def test_ordinary_worker_binding_freezes_readers_but_keeps_customizations(tmp_pa
         from hermes_cli.config import load_config, read_raw_config
         from hermes_cli.config_effective import load_user_config_effective
         from hermes_cli.plugins import discover_plugins
-        from tools.mcp_tool_config import _load_mcp_config
+        from tools.mcp.config import _load_mcp_config
         discover_plugins()
         from tools import approval
         approval.save_permanent_allowlist({{'echo *', 'ls *'}})

@@ -65,7 +65,7 @@ def start_flow(
     """Begin an MCP OAuth flow and return ``{session_id, auth_url, flow}``; blocks up to
     ``url_timeout`` for the authorization URL. With ``client_redirect_uri`` (invalid values
     raise ``ValueError``) no gateway-side listener is bound."""
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from tools.mcp.dashboard_oauth import DashboardOAuthFlow
     if client_redirect_uri is not None:
         client_redirect_uri = _validate_client_redirect_uri(client_redirect_uri)
     cutoff = time.time() - _SESSION_TTL_SECONDS  # opportunistic GC of expired sessions
@@ -104,7 +104,7 @@ def start_flow(
         if not auth_url:
             raise TimeoutError("Timed out waiting for MCP authorization URL")
     except Exception as exc:
-        from tools.mcp_dashboard_oauth import exception_message
+        from tools.mcp.dashboard_oauth import exception_message
         flow.mark_error(exception_message(exc))  # no-op when the worker already recorded the cause
         _shutdown_listener(rec)
         raise

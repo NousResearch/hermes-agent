@@ -102,7 +102,7 @@ docstrings); never grow them.
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
 docker, ssh, modal, daytona; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
 browser (`browser_launcher.py` + `browser_session*.py`: lifecycle, cloud, cdp, real_profile, sandbox), MCP
-client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
+client (`mcp/`: config, discovery, transport, registration, content, errors), TTS
 (`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
 `OptionalSkillSource`). Adding a backend = a new sibling or provider entry in the existing table,
 never an `elif` on a backend name (root shape rules). Remote-backend file visibility problems are
@@ -127,9 +127,9 @@ target's own secrets overlaid. `os.environ.copy()` / `dict(os.environ)` pins the
 contextvars do not cross process boundaries, so resolve before `Popen`. A child's
 `UnscopedSecretError` is a spawn-site bug, never a reason to add environ fallthrough. New threads
 from scoped code use `agent.memory_provider.spawn_context_thread` (a bare `threading.Thread`
-drops the scope). **MCP trust is a per-profile record:** `mcp_tool_registration.py::
+drops the scope). **MCP trust is a per-profile record:** `mcp/registration.py::
 _record_scope_trust` keys trust on the home; a secondary never adopts the launch profile's trust
-for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
+for a same-named server, and `mcp/handlers.py::_trust_gate_check` consults the calling
 session's profile.
 
 **Background-process teardown signals the parent first.** `process_registry_termination.py::

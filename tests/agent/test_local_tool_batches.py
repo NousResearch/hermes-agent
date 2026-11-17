@@ -22,8 +22,8 @@ def _response(calls=None):
 
 @pytest.fixture
 def mcp_server(tmp_path):
-    from tools.mcp_tool_discovery import register_mcp_servers
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp.discovery import register_mcp_servers
+    from tools.mcp.lifecycle import shutdown_mcp_servers
 
     server = tmp_path / "server.py"
     server.write_text('''import json, pathlib, sys

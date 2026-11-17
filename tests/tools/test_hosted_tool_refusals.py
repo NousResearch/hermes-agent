@@ -104,7 +104,7 @@ def test_a_cron_script_does_not_run_on_the_host(tmp_path, no_spawn):
 
 
 def test_an_mcp_stdio_server_is_not_started_on_the_host(no_spawn):
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp.client import MCPServerTask
 
     server = MCPServerTask("user-server")
     with bind_state(A), pytest.raises(HostedToolRefused):

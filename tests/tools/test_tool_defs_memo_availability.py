@@ -359,8 +359,8 @@ def test_selection_widened_by_a_late_connection_appends_with_the_generation_unch
     generation = registry._generation
     monkeypatch.setitem(connectors_mcp._LATE_ATTEMPTS, (hermes_home_key(), "late-session"),
                         {"probe_late": _ApprovedLateAttempt()})
-    monkeypatch.setattr("tools.mcp_tool_config._load_mcp_config", lambda: {"probe_late": {"command": "probe"}})
-    monkeypatch.setattr("tools.mcp_tool_discovery.register_mcp_servers", lambda servers: None)  # connected already
+    monkeypatch.setattr("tools.mcp.config._load_mcp_config", lambda: {"probe_late": {"command": "probe"}})
+    monkeypatch.setattr("tools.mcp.discovery.register_mcp_servers", lambda servers: None)  # connected already
     try:
         assert connectors_mcp.adopt_late_connections(agent) == ["probe_late"]
         assert registry._generation == generation

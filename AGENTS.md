@@ -97,7 +97,7 @@ A topic that outgrows its file becomes a folder: `<stem>/__init__.py` is the **f
 docstring names each module's job, `__all__` is the surface, PEP 562 `__getattr__` only for a
 measured startup cost or import hazard it names; no behaviour; `tools/connectors/` is the model),
 `<stem>/<topic>.py` holds the code. Flat `<stem>_<topic>.py` siblings (`gateway/run.py`,
-`tools/mcp_tool.py`) stay until touched; add none unless an area AGENTS.md still prescribes one
+`tools/delegate_tool.py`) stay until touched; add none unless an area AGENTS.md still prescribes one
 (`tui_gateway` RPC methods, `tools/` backends). A family folder keeps its ABC/Protocol, one module
 per variant and a name → variant table (`tools/environments/`, its table still in
 `terminal_tool_backends.py`). Tool folders register from `tool.py`; tests mirror folders.

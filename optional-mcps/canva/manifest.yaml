@@ -10,7 +10,7 @@ source: https://www.canva.dev/docs/mcp/
 # Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
 # process for this entry). Native OAuth 2.1 + Dynamic Client Registration
 # (verified live: RFC 9728 protected-resource metadata -> AS metadata with
-# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# registration_endpoint); Hermes's MCP client + tools.mcp.oauth_manager handle
 # discovery, PKCE, token exchange, and refresh.
 
 transport:

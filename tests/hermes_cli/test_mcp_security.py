@@ -81,9 +81,9 @@ def test_validator_flags_ssh_key_persistence_payload():
 
 
 def test_explicit_registration_skips_dangerous_entry_before_connect(monkeypatch):
-    from tools import mcp_tool
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_loop as _mcp_loop
+    from tools.mcp import client as mcp_tool
+    from tools.mcp import discovery as _mcp_discovery
+    from tools.mcp import loop as _mcp_loop
 
     monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
     monkeypatch.setattr(_mcp_loop, "_ensure_mcp_loop", lambda: None)
@@ -204,7 +204,7 @@ def test_profile_mcp_write_skips_dangerous_entry(tmp_path):
 def test_wrapped_shell_rejected_at_save_and_config_load(command, args_template, payload):
     from hermes_cli.config import load_config, save_config
     from hermes_cli.mcp_config import _save_mcp_server
-    from tools.mcp_tool_config import _load_mcp_config
+    from tools.mcp.config import _load_mcp_config
 
     args = [arg.replace("{p}", payload) for arg in args_template]
     entry = {"command": command, "args": args}
@@ -234,7 +234,7 @@ def test_wrapped_shell_rejected_at_save_and_config_load(command, args_template, 
 ])
 def test_wrapper_operands_do_not_become_shell_commands(entry):
     from hermes_cli.mcp_config import _save_mcp_server
-    from tools.mcp_tool_config import _load_mcp_config
+    from tools.mcp.config import _load_mcp_config
 
     assert _save_mcp_server("safe", entry) is True
     assert _load_mcp_config()["safe"] == entry

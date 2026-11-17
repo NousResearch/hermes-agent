@@ -23,9 +23,9 @@ import threading
 
 import pytest
 
-from tools import mcp_tool
-from tools import mcp_tool_discovery as _mcp_discovery
-from tools import mcp_tool_lifecycle as _mcp_lifecycle
+from tools.mcp import client as mcp_tool
+from tools.mcp import discovery as _mcp_discovery
+from tools.mcp import lifecycle as _mcp_lifecycle
 import tui_gateway.server as srv
 
 

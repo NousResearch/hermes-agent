@@ -23841,7 +23841,7 @@
       },
       "McpServerRuntimeRow": {
         "additionalProperties": false,
-        "description": "Safe projection of ``tools.mcp_tool_discovery.get_mcp_status`` rows.",
+        "description": "Safe projection of ``tools.mcp.discovery.get_mcp_status`` rows.",
         "properties": {
           "name": {
             "title": "Name",

@@ -343,7 +343,9 @@ class TestBuiltinDiscovery:
         tools_dir = tmp_path / "tools"
         tools_dir.mkdir()
         (tools_dir / "__init__.py").write_text("", encoding="utf-8")
-        (tools_dir / "mcp_tool.py").write_text(
+        (tools_dir / "mcp").mkdir()
+        (tools_dir / "mcp" / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "mcp" / "client.py").write_text(
             "from tools.registry import registry\nregistry.register(name='mcp_alpha', toolset='mcp-test', schema={}, handler=lambda *_a, **_k: '{}')\n",
             encoding="utf-8",
         )
@@ -701,7 +703,7 @@ class TestDeregisterAuthorization:
     def test_core_code_deregister_always_allowed(self):
         """Non-plugin callers (core Hermes code) are never gated."""
         reg = self._reg()
-        with patch.object(ToolRegistry, "_caller_module", return_value="tools.mcp_tool"):
+        with patch.object(ToolRegistry, "_caller_module", return_value="tools.mcp.client"):
             reg.deregister("protected")
         assert reg._tools.get("protected") is None
 

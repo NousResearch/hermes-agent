@@ -138,7 +138,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
     cache_dirty = False
     module_names: list[str] = []
     for path in _tool_module_candidates(tools_path):
-        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+        if path.name in {"__init__.py", "registry.py"}:
             continue
         rel_parts = path.relative_to(tools_path).with_suffix("").parts
         if len(rel_parts) > 1 and not (path.parent / "__init__.py").exists():

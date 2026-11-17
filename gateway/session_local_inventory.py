@@ -173,7 +173,7 @@ def session_inventory(authority, policy, agent, cwd):
                 from hermes_cli.banner import get_available_skills
                 info["skills"] = get_available_skills()
         with contextlib.suppress(Exception):
-            from tools.mcp_tool_discovery import get_mcp_status
+            from tools.mcp.discovery import get_mcp_status
             info["mcp_servers"] = get_mcp_status()
     with contextlib.suppress(Exception):
         from hermes_cli import __release_date__

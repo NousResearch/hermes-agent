@@ -3237,7 +3237,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
-    from tools.mcp_tool_common import drop_legacy_disabled_for_key
+    from tools.mcp.common import drop_legacy_disabled_for_key
     for _note in _dropped_shadow_notes(user_config, key, legacy_key, drop_legacy_disabled_for_key):
         print(_note)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).

@@ -79,7 +79,7 @@ class TestAtomicWritersRefuseDeletedProfileHome:
         assert not profile.exists()
 
     def test_oauth_token_write_after_delete(self, tmp_path):
-        from tools.mcp_oauth import _write_json
+        from tools.mcp.oauth import _write_json
 
         profile = _tombstoned_profile(tmp_path)
         with pytest.raises(

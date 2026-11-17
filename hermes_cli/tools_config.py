@@ -404,7 +404,7 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
     """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
     unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
     the opt-in."""
-    from tools.mcp_tool_common import mcp_server_enabled
+    from tools.mcp.common import mcp_server_enabled
 
     mcp_servers = (config or {}).get("mcp_servers") or {}
     names = {

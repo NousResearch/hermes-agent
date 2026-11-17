@@ -384,7 +384,7 @@ async def test_shutdown_mcp_servers_nonblocking_keeps_loop_responsive():
 
     hb = asyncio.create_task(heartbeat())
     try:
-        with patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers", wedged_shutdown):
+        with patch("tools.mcp.lifecycle.shutdown_mcp_servers", wedged_shutdown):
             done = await asyncio.wait_for(
                 gateway_run._shutdown_mcp_servers_nonblocking(timeout=0.5),
                 timeout=5,
@@ -401,7 +401,7 @@ async def test_shutdown_mcp_servers_nonblocking_keeps_loop_responsive():
 @pytest.mark.asyncio
 async def test_shutdown_mcp_servers_nonblocking_completes_fast_path():
     calls = []
-    with patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda **_kw: calls.append(1)):
+    with patch("tools.mcp.lifecycle.shutdown_mcp_servers", lambda **_kw: calls.append(1)):
         done = await gateway_run._shutdown_mcp_servers_nonblocking(timeout=5)
     assert done is True
     assert calls == [1]

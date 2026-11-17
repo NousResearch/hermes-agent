@@ -414,7 +414,7 @@ def _adopt_as(home, agent=None, session_id="s1"):
     registered = []
     agent = agent or SimpleNamespace(session_id=session_id, enabled_toolsets=[])
     with _as_home(home), \
-         patch("tools.mcp_tool_discovery.register_mcp_servers",
+         patch("tools.mcp.discovery.register_mcp_servers",
                side_effect=lambda servers: registered.extend(servers) or list(servers)):
         adopted = mcp.adopt_late_connections(agent)
     return adopted, registered, agent
@@ -487,7 +487,7 @@ def test_e2e_carded_oauth_park_and_adopt_stay_inside_their_profile(tmp_path):
     backend.attempts["linear"].approve(["read"])  # the browser flow lands after the card closed
 
     registered = []
-    with patch("tools.mcp_tool_discovery.register_mcp_servers",
+    with patch("tools.mcp.discovery.register_mcp_servers",
                side_effect=lambda servers: registered.extend(servers) or list(servers)):
         agent_b = SimpleNamespace(session_id="s1", enabled_toolsets=[])
         with _as_home(home_b):

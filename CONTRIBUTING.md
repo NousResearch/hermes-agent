@@ -339,7 +339,7 @@ hermes-agent/
 │   ├── vision_tools.py           # Image analysis via multimodal models
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
 │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
-│   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
+│   ├── mcp/                      # MCP client (client.py + sibling modules: config, discovery, transport, ...)
 │   ├── browser_use_cli.py        # browser_exec (Python over CDP); sessions in browser_session*.py, launcher in browser_launcher.py
 │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management

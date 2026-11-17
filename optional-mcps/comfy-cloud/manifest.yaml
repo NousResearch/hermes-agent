@@ -8,7 +8,7 @@ source: https://docs.comfy.org/agent-tools/cloud
 
 # Comfy Cloud ships a hosted remote MCP server (Streamable HTTP) with native
 # MCP OAuth 2.1 + Dynamic Client Registration — same shape as the linear
-# entry. Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE,
+# entry. Hermes's MCP client + tools.mcp.oauth_manager handle discovery, PKCE,
 # token exchange, and refresh — nothing to install locally.
 transport:
   type: http

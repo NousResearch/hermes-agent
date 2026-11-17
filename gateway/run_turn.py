@@ -467,11 +467,11 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             with _profile_runtime_scope(Path(profile_home)):
                 return await self._execute_mcp_reload(event)
         try:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
+            from tools.mcp.lifecycle import shutdown_mcp_servers
+            from tools.mcp.discovery import discover_mcp_tools
+            from tools.mcp.client import _servers, _lock, _server_visible_in_scope
             from tools.mcp_tool_agent import reprobe_tool_availability
-            from tools.mcp_tool_scope import _key_name
+            from tools.mcp.scope import _key_name
             from tools.registry import registry
 
             reload_scope = registry.current_scope_key() if multiplex else None
@@ -486,13 +486,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             reprobe_tool_availability()
             # Reconnect by discovering tools (reads config.yaml fresh). A chat command cannot finish
             # a browser OAuth flow either: an expired token parks with a `hermes mcp login` hint.
-            from tools.mcp_oauth import suppress_interactive_oauth
+            from tools.mcp.oauth import suppress_interactive_oauth
             with suppress_interactive_oauth():
                 new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
 
             connected_servers = _scoped_server_names()
             if reload_scope is not None:
-                from tools.mcp_tool import _mcp_tool_server_names
+                from tools.mcp.client import _mcp_tool_server_names
                 with _lock:
                     new_tools = [n for n in new_tools if _mcp_tool_server_names.get(n) in connected_servers]
             # (label, i18n key, names); i18n lines list reconnected first, the injected note added first.
@@ -504,7 +504,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             lines = [t("gateway.reload_mcp.header")] + [
                 t(key, names=", ".join(sorted(names))) for _label, key, names in changes if names
             ]
-            from tools.mcp_tool_discovery import mcp_servers_not_connected
+            from tools.mcp.discovery import mcp_servers_not_connected
             failed = await self._run_in_executor_with_context(mcp_servers_not_connected)
             lines.append(t("gateway.reload_mcp.none_connected") if not connected_servers else t(
                 "gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))

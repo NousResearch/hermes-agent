@@ -42,7 +42,7 @@ describe('estimateServerTokens', () => {
 })
 
 describe('name mapping', () => {
-  it('sanitizes like tools/mcp_tool.py sanitize_mcp_name_component', () => {
+  it('sanitizes like tools/mcp/client.py sanitize_mcp_name_component', () => {
     expect(sanitizeMcpNameComponent('github-mcp')).toBe('github_mcp')
     expect(sanitizeMcpNameComponent('a.b c/d')).toBe('a_b_c_d')
     expect(sanitizeMcpNameComponent('plain_ok9')).toBe('plain_ok9')

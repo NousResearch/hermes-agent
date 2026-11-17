@@ -312,7 +312,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         self, server: str, tool: str, arguments: Optional[dict[str, Any]] = None,
         timeout: float = 30,
     ) -> dict[str, Any]:
-        """Call ``tool`` on MCP ``server`` synchronously through :mod:`tools.mcp_tool`'s native client
+        """Call ``tool`` on MCP ``server`` synchronously through :mod:`tools.mcp.client`'s native client
         (same trust gates, breaker, reconnect — never a parallel connection). Servers not in
         ``plugins.entries.<plugin_id>.mcp_allowlist`` raise ``PermissionError`` (default-deny). ``timeout``
         clamps to 1–600s; results over ~64KB are truncated with a marker.
@@ -333,7 +333,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         except (TypeError, ValueError):
             timeout = 30.0
         timeout = max(1.0, min(timeout, 600.0))
-        from tools.mcp_tool_handlers import _make_tool_handler
+        from tools.mcp.handlers import _make_tool_handler
         raw = _make_tool_handler(server, tool, timeout)(dict(arguments or {}))
         _facade().logger.debug("Plugin %s called MCP %s/%s (timeout=%ss, %d chars returned)",
                                self.manifest.name, server, tool, timeout, len(raw or ""))

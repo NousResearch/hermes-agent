@@ -415,7 +415,7 @@ class McpRuntimeStatus(WireEnum):
 
 
 class McpServerRuntimeRow(Result):
-    """Safe projection of ``tools.mcp_tool_discovery.get_mcp_status`` rows."""
+    """Safe projection of ``tools.mcp.discovery.get_mcp_status`` rows."""
 
     name: str
     transport: str

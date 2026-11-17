@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+from tools.mcp.dashboard_oauth import DashboardOAuthFlow
 from tui_gateway import mcp_oauth_sessions as sessions
 
 

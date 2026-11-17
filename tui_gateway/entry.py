@@ -224,7 +224,7 @@ def wait_for_mcp_discovery(timeout: float | None = None) -> None:
     # process latched MCP-less for the session. In multi-profile processes this retry runs under the
     # CALLER's profile context (agent build binds the session profile's HERMES_HOME first), so a launch
     # profile with no mcp_servers no longer starves selected profiles of discovery (#67605). Gated on
-    # _mcp_discovery_enabled so non-MCP sessions never pay the tools.mcp_tool import on the per-agent-build
+    # _mcp_discovery_enabled so non-MCP sessions never pay the tools.mcp.client import on the per-agent-build
     # wait path.
     if not _mcp_discovery_enabled:
         return

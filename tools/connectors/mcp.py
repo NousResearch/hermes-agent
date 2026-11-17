@@ -193,7 +193,7 @@ class _CatalogBackend:
         process, so an unserialised write here drops whichever landed first."""
         from hermes_cli.config import load_config, save_config
         from hermes_cli.web_routers._common import config_write_scope
-        from tools.mcp_tool_common import write_mcp_server_enabled
+        from tools.mcp.common import write_mcp_server_enabled
 
         with config_write_scope(None):
             config = load_config()
@@ -382,8 +382,8 @@ def adopt_late_connections(agent: Any) -> list[str]:
         if snapshot["status"] != "approved" or snapshot.get("discovery_error"):
             continue
         try:
-            from tools.mcp_tool_config import _load_mcp_config
-            from tools.mcp_tool_discovery import register_mcp_servers
+            from tools.mcp.config import _load_mcp_config
+            from tools.mcp.discovery import register_mcp_servers
 
             config = _load_mcp_config().get(name)
             if isinstance(config, dict):
@@ -471,8 +471,8 @@ def _fail(operation: ConnectionOperation, target: Target, detail: str) -> None:
 def _register_connected(runner: _Runner, target: Target, name: str) -> tuple[list[str], str]:
     """Register one committed server in the current profile scope and report its callable names."""
     try:
-        from tools.mcp_tool_config import _load_mcp_config
-        from tools.mcp_tool_discovery import register_mcp_servers
+        from tools.mcp.config import _load_mcp_config
+        from tools.mcp.discovery import register_mcp_servers
 
         config = _load_mcp_config().get(name)
         if not isinstance(config, dict):
@@ -491,9 +491,9 @@ def _registered_tool_names(name: str, wait_seconds: float = 30.0) -> list[str]:
     own connect, so a large server (hundreds of tools) was reported with no tools three seconds
     before they were registered. A server that failed discovery earlier is parked with no tools
     and is woken once. A server that finished registering with no tools is a valid empty list."""
-    from tools import mcp_tool as _core
-    from tools.mcp_tool_loop import reconnect_mcp_server
-    from tools.mcp_tool_scope import _resolve_server_key
+    from tools.mcp import client as _core
+    from tools.mcp.loop import reconnect_mcp_server
+    from tools.mcp.scope import _resolve_server_key
     from tools.registry import registry
 
     key = _resolve_server_key(name)

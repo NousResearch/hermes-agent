@@ -363,8 +363,8 @@ def discover_profile_mcp(policy):
     """The owner's MCP registry never crosses into this fresh interpreter; connect the profile's
     configured servers here, filtered to the frozen toolset selection, before tool discovery snapshots
     agent.tools. Safe mode keeps its deliberate no-MCP policy (discover_mcp_tools returns [])."""
-    from tools.mcp_oauth import suppress_interactive_oauth
-    from tools.mcp_tool_discovery import discover_mcp_tools
+    from tools.mcp.oauth import suppress_interactive_oauth
+    from tools.mcp.discovery import discover_mcp_tools
     with suppress_interactive_oauth():
         discover_mcp_tools(allowed_mcp_names=list(policy.toolsets))
 

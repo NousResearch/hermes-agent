@@ -421,8 +421,8 @@ pty = []
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 #
 # mcp 2.x implements MCP revision 2026-07-28 and moved its own HTTP stack
-# from `httpx` to `httpx2`. httpx2 arrives transitively, but tools/mcp_tool.py
-# and tools/mcp_oauth_manager.py import it by name to build the client objects
+# from `httpx` to `httpx2`. httpx2 arrives transitively, but tools/mcp/client.py
+# and tools/mcp/oauth_manager.py import it by name to build the client objects
 # they hand to the SDK, so it is pinned here explicitly rather than left to
 # resolution. Hermes' own `httpx[socks]==0.28.1` in [dependencies] is
 # unaffected — the two distributions install side by side under different

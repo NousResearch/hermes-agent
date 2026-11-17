@@ -369,7 +369,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
         return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
     _mcp_agent, _mcp_lifecycle, _mcp_discovery = (
-        _tools_mod("tools.mcp_tool_agent"), _tools_mod("tools.mcp_tool_lifecycle"), _tools_mod("tools.mcp_tool_discovery"))
+        _tools_mod("tools.mcp_tool_agent"), _tools_mod("tools.mcp.lifecycle"), _tools_mod("tools.mcp.discovery"))
     global _mcp_reload_gen, _mcp_reload_loaded_rev
     # Revision the CALLER wants loaded; empty on legacy clients / manual /reload-mcp
     # (generation-only coalescing).
@@ -1486,7 +1486,7 @@ def _(rid, params: dict) -> dict:
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
     safe = ("name", "transport", "tools", "connected", "disabled", "status", "needs_auth")
-    servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
+    servers = _tools_mod("tools.mcp.discovery").get_mcp_status(configured, include_runtime=include_runtime)
     return _ok(rid, {"servers": [
         {**{k: e[k] for k in safe if k in e}, "source": "plugin" if plugins[e["name"]] is not None else "config",
          "plugin": plugins[e["name"]]} for e in servers
@@ -1886,7 +1886,7 @@ def _plugins_settings(rid, params):
         servers = _portable_server_names(Path(str(plugin_dir)), canonical)
         if servers:
             from agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
-            discovery = _tools_mod("tools.mcp_tool_discovery")
+            discovery = _tools_mod("tools.mcp.discovery")
             spawn_context_thread(discovery.restart_mcp_servers_with_new_inputs, args=(servers,),
                                  name=f"plugin-settings-mcp-{canonical}").start()
     return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})

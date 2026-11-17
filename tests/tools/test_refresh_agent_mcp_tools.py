@@ -14,7 +14,7 @@ import types
 
 import pytest
 
-from tools import mcp_tool
+from tools.mcp import client as mcp_tool
 from tools import mcp_tool_agent as _mcp_agent
 
 

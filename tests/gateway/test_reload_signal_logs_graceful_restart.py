@@ -62,7 +62,7 @@ async def test_sigusr1_handler_installed_by_start_gateway_logs_graceful_restart(
         ("gateway.status.release_gateway_runtime_lock", lambda: None),
         ("tools.skills_sync.sync_skills", lambda quiet=True: None),
         ("hermes_logging.setup_logging", lambda hermes_home, mode: None),
-        ("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None),
+        ("tools.mcp.lifecycle.shutdown_mcp_servers", lambda: None),
     ):
         monkeypatch.setattr(target, value)
     runners = []

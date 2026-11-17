@@ -83,7 +83,7 @@ class _SlashWorker:
             part for part in (module_root, env.get("PYTHONPATH", "")) if part
         )
         # spawn_owned: the worker leads its own process group (otherwise it inherits the gateway's
-        # pgid and mcp_tool's orphan sweep, racing the spawn, killpg()s the TUI parent itself), and
+        # pgid and tools.mcp's orphan sweep, racing the spawn, killpg()s the TUI parent itself), and
         # that group dies with this process however it dies: SIGKILL/OOM of the gateway used to leave
         # a quick command's shell, and anything else the worker started in its group, running forever.
         # errors="replace": bytes invalid in the system locale (GBK Windows) must not raise

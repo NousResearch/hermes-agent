@@ -104,7 +104,7 @@ hermes-agent/
 │   ├── browser_launcher.py   # Local Chromium launch, reuse and orphan reaping
 │   ├── code_execution_tool.py # execute_code sandbox
 │   ├── delegate_tool.py      # Subagent delegation
-│   ├── mcp_tool.py           # MCP client facade (+ mcp_tool_*.py siblings)
+│   ├── mcp/                  # MCP client package (client.py + sibling modules)
 │   ├── credential_files.py   # File-based credential passthrough
 │   ├── env_passthrough.py    # Env var passthrough for sandboxes
 │   ├── ansi_strip.py         # ANSI escape stripping

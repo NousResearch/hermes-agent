@@ -53,7 +53,7 @@ When `model_tools.py` is imported, it calls `discover_builtin_tools()` from `too
 def discover_builtin_tools(tools_dir=None):
     tools_path = Path(tools_dir) if tools_dir else Path(__file__).parent
     for path in sorted(tools_path.glob("*.py")):
-        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+        if path.name in {"__init__.py", "registry.py"}:
             continue
         if _module_registers_tools(path):  # AST check for top-level registry.register()
             importlib.import_module(f"tools.{path.stem}")
@@ -65,7 +65,7 @@ Each import triggers the module's `registry.register()` calls. Errors in optiona
 
 After core tool discovery, MCP tools and plugin tools are also discovered:
 
-1. **MCP tools** — `tools.mcp_tool_discovery.discover_mcp_tools()` (re-exported by the `tools.mcp_tool` facade) reads MCP server config and registers tools from external servers.
+1. **MCP tools** — `tools.mcp.discovery.discover_mcp_tools()` (re-exported by the `tools.mcp.client` facade) reads MCP server config and registers tools from external servers.
 2. **Plugin tools** — `hermes_cli.plugins.discover_plugins()` loads user/project/pip plugins that may register additional tools.
 
 ## Tool availability checking (`check_fn`)

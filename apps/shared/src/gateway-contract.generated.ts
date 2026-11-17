@@ -4403,7 +4403,7 @@ export interface McpServersStatusResult {
   servers: McpServerRuntimeRow[]
   checked_at: number
 }
-/** Safe projection of ``tools.mcp_tool_discovery.get_mcp_status`` rows. */
+/** Safe projection of ``tools.mcp.discovery.get_mcp_status`` rows. */
 export interface McpServerRuntimeRow {
   name: string
   transport: string

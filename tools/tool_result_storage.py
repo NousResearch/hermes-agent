@@ -28,7 +28,7 @@ SPILLOVER_SUBDIR = "cache/spillover"
 # retention window — see _spillover_retention_hours().
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
-# The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
+# The exact key set tools/mcp/handlers.py::_render_call_tool_result emits. A JSON object whose
 # keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
 _MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
 _ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"

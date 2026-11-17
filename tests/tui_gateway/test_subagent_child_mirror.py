@@ -146,6 +146,21 @@ def test_completed_child_http_summary_is_not_a_desktop_failure(server, emits):
     ]
 
 
+@pytest.mark.parametrize("status", ["failed", "error", "interrupted", "timeout", None])
+def test_child_that_did_not_complete_carries_no_completion_verdict(server, emits, status):
+    """Only a completed child is reported complete. Any other outcome keeps the status-less
+    frame, so the desktop still reads an error summary as a failure."""
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+    outcome = {} if status is None else {"status": status}
+
+    _relay(server, "subagent.complete", child_session_id="child-1", summary="HTTP 500 upstream", **outcome)
+
+    assert [(e, p) for e, s, p in emits if s == "live-1"] == [
+        ("message.start", None),
+        ("message.complete", {"text": "HTTP 500 upstream"}),
+    ]
+
+
 def test_window_closed_midrun_drops_state_then_fresh_turn_on_reopen(server, emits):
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")

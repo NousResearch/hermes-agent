@@ -5991,7 +5991,7 @@ export interface MessageInterimPayload {
   turn_id?: string | null
   segment?: number | null
 }
-/** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) / ``compute_host_bridge`` (``text`` + ``status``). */
+/** ``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` / ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text``, plus ``status`` for a completed child) / ``compute_host_bridge`` (``text`` + ``status``). */
 export interface MessageCompletePayload {
   text?: string | unknown
   usage?: Usage | null

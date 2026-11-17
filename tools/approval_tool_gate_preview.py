@@ -8,6 +8,9 @@ line on the first row, then only the changed lines, no diff headers.
 """
 
 import difflib
+import hashlib
+import json
+import threading
 from typing import Optional
 
 _MAX_LINES = 40
@@ -15,6 +18,14 @@ _MAX_CHARS = 4000
 _HUNK_GAP = "⋯"
 _NEWLINE_ADDED = "⏎ final newline added"
 _NEWLINE_REMOVED = "⏎ final newline removed"
+# The file a replace-mode patch card was planned on, keyed by ``(tool_call_id, patch digest)``:
+# the sha256 of its bytes, or ``_PLANNED_NO_WRITE`` when the card said nothing would be written.
+# The patch handler refuses when the file it reads no longer hashes to it, so what runs is what
+# the user saw even if another writer changed the file while the prompt was open.
+_PLANNED_NO_WRITE = "planned-no-write"
+_planned: dict[tuple[str, str], str] = {}
+_planned_lock = threading.Lock()
+_PLANNED_MAX = 256
 _DIFF_WORK = 250_000  # changed-region old x new lines above which the region is shown whole, not diffed
 
 
@@ -123,6 +134,35 @@ def write_file_preview(args: dict, task_id: str) -> str:
     return _clip([header, *changes])
 
 
+def _plan_key(path, old_string, new_string, replace_all) -> tuple[str, str]:
+    from tools.approval_context import _approval_tool_call_id
+    fields = json.dumps([path, old_string, new_string, bool(replace_all)], ensure_ascii=False, default=str)
+    return _approval_tool_call_id.get(), hashlib.sha256(fields.encode("utf-8")).hexdigest()
+
+
+def _bind_plan(args: dict, planned: str) -> None:
+    key = _plan_key(args.get("path"), args.get("old_string"), args.get("new_string"), args.get("replace_all"))
+    with _planned_lock:
+        _planned.pop(key, None)
+        _planned[key] = planned
+        while len(_planned) > _PLANNED_MAX:
+            _planned.pop(next(iter(_planned)))
+
+
+def forget_plan(args: dict) -> None:
+    """Drop the plan a refused card bound, so a later identical call cannot inherit it."""
+    key = _plan_key(args.get("path"), args.get("old_string"), args.get("new_string"), args.get("replace_all"))
+    with _planned_lock:
+        _planned.pop(key, None)
+
+
+def take_planned_sha256(path, old_string, new_string, replace_all) -> Optional[str]:
+    """What the approved card for this replace-mode patch was planned on (once), else ``None``
+    (no card was shown, e.g. a session grant covered the call)."""
+    with _planned_lock:
+        return _planned.pop(_plan_key(path, old_string, new_string, replace_all), None)
+
+
 def patch_preview(args: dict, task_id: str) -> str:
     from tools.file_operations_common import PatchResult
     if args.get("mode") == "patch":
@@ -135,6 +175,7 @@ def patch_preview(args: dict, task_id: str) -> str:
     if refusal:
         return f"patch {target} — the tool will refuse this:\n{refusal}"
     plan = file_ops.plan_patch_replace(target, old, new, bool(args.get("replace_all")))
+    _bind_plan(args, _PLANNED_NO_WRITE if isinstance(plan, PatchResult) else hashlib.sha256(plan.data).hexdigest())
     if isinstance(plan, PatchResult):
         outcome = (f"no change, the edit is already in the file: {plan.note}" if plan.success
                    else f"the patch will fail, nothing is written: {plan.error}")

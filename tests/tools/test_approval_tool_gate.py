@@ -385,3 +385,20 @@ def test_large_rewrite_card_does_not_wait_on_a_quadratic_diff(gate_env):
     _call("write_file", {"path": "generated.txt", "content": new})
     assert time.monotonic() - started < 3  # the full-file line diff took ~10s here
     assert "line 2, 5999 lines changed" in human.prompts[0][0].splitlines()[0]  # line 1 is equal
+
+
+def test_patch_refuses_when_the_file_changed_while_the_card_was_open(gate_env):
+    target = gate_env["workspace"] / "todo.txt"
+    target.write_text("item\n", encoding="utf-8")
+    shown: list[str] = []
+
+    def human(command, description, **_kwargs):
+        shown.append(command)
+        target.write_text("item\nitem\n", encoding="utf-8")  # another writer adds a match meanwhile
+        return "once"
+
+    set_approval_callback(human)
+    result = _call("patch", {"path": "todo.txt", "old_string": "item", "new_string": "done", "replace_all": True})
+    assert "1 replacement" in shown[0].splitlines()[0]
+    assert "changed after this patch was approved" in json.dumps(result)
+    assert target.read_text(encoding="utf-8") == "item\nitem\n"

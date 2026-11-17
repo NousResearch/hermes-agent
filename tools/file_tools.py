@@ -1005,7 +1005,9 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
                 _replace_target = _path_to_resolved.get(path) or path
-                result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
+                result = file_ops.patch_replace(
+                    _replace_target, old_string, new_string, replace_all,
+                    expected_sha256=take_planned_sha256(path, old_string, new_string, replace_all))
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
@@ -1147,7 +1149,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 # Schemas + Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
-from tools.approval_tool_gate_preview import patch_preview, write_file_preview
+from tools.approval_tool_gate_preview import patch_preview, take_planned_sha256, write_file_preview
 
 
 def _check_file_reqs():

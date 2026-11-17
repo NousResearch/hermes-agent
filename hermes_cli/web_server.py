@@ -782,6 +782,7 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 # templated siblings (e.g. /api/sessions/bulk-delete before /api/sessions/{id}).
 from hermes_cli.web_routers import (
     files as _files_routes,
+    files_archive as _files_archive_routes,
     git as _git_routes,
     local_models as _local_models_routes,
     status as _status_routes,
@@ -823,6 +824,7 @@ from fastapi import Depends as _Depends
 from hermes_cli.web_server_surface import route_on as _route_on
 
 app.include_router(_files_routes.router)
+app.include_router(_files_archive_routes.router)
 # The Webapp's routes exist only on the surfaces whose policy names them (404 elsewhere).
 app.include_router(_upload_routes.router, dependencies=[_Depends(_route_on("browser_files"))])
 app.include_router(_desktop_plugin_routes.router, dependencies=[_Depends(_route_on("desktop_plugins"))])

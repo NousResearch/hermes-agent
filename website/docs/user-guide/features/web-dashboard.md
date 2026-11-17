@@ -525,6 +525,24 @@ are coarse (whole MB, whole-percent) since `/api/status` is public.
 
 Directories a fresh Chat-tab session may start in: the profile's projects (with folders) and discovered git repositories (`root`, `label`, `sessions`, `last_active`), plus `default_cwd` (where a chat lands when nothing is picked) and `home`. `?scan=1` rescans `desktop.repo_scan_roots` on the host first. Pair with `/api/pty?cwd=<path>`, which fails closed on a missing directory.
 
+### GET /api/files/archive
+
+Streams a directory as a gzip tar (`?path=<dir>`, resolved like every other `/api/files` route: relative to the locked files root when one is set, absolute otherwise). Member names are relative to that directory. Credential files the Files page hides (`.env`, `auth.json`, `~/.ssh`, ...), sockets, FIFOs, devices and symlinks that point outside the directory are left out; symlinks inside it travel as links. A directory over 1 GiB of file content or 100,000 entries is refused with `413` before anything streams.
+
+```bash
+curl -H "X-Hermes-Session-Token: $TOKEN" -o project.tar.gz \
+  "http://127.0.0.1:9119/api/files/archive?path=/home/me/project"
+```
+
+### PUT /api/files/archive
+
+Unpacks a tar or tar.gz request body into `?path=<dir>` (created when missing; `POST` is accepted too). The whole archive is checked before anything is written, so a refused archive leaves the directory untouched. Files the archive names replace existing files at the same path; nothing else is deleted. Refused with `400`: absolute or `..` entry names, hard links, devices, FIFOs, symlinks pointing outside the directory, entries that pass through a symlink, and an archive that is not tar/tar.gz. A credential file name is refused with `403`, a file where a directory exists (or the reverse) with `409`, and more than 1 GiB of content or 100,000 entries with `413`. The response counts what was written: `{"ok": true, "files": N, "directories": N, "symlinks": N, "bytes": N, ...}`.
+
+```bash
+curl -X PUT -H "X-Hermes-Session-Token: $TOKEN" --data-binary @project.tar.gz \
+  "http://127.0.0.1:9119/api/files/archive?path=/home/me/project-copy"
+```
+
 ### GET /api/sessions
 
 Returns the 20 most recent sessions with metadata (model, token counts, timestamps, preview).

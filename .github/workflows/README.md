@@ -107,7 +107,9 @@ The pattern repeats across files:
   GitHub keeps only one *pending* run per group, so a newer queued run
   replaces an older queued one. `canary-e2e` and `install-e2e-red-tracker`
   therefore queue only the runs that will do work (group suffix `-auto`); a
-  run that will skip, or a dispatch, gets a group of its own.
+  run that will skip, or a dispatch, gets a group of its own. A live tracker
+  replay (`dry-run=false`) can write the issue, so it queues with the
+  automatic runs.
 
 ### "Skipped" is not "failed"
 

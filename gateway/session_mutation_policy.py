@@ -37,8 +37,7 @@ async def prepare_reasoning(authority, live, payload, prepared):
 async def prepare_workspace(authority, live, payload, prepared):
     """Move to project: execution cwd and TERMINAL_CWD move together (restore_policy's invariant)."""
     import os
-    import posixpath
-    from gateway.session_policy import restore_policy, terminal_uses_host_cwd
+    from gateway.session_policy import remote_cwd_shape, restore_policy, terminal_uses_host_cwd
     from hermes_constants import translate_cwd_for_wsl_backend
     from tui_gateway import git_probe
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
@@ -46,7 +45,7 @@ async def prepare_workspace(authority, live, payload, prepared):
     if not terminal_uses_host_cwd(terminal):
         # The folder lives on the backend's host: this host can neither stat it nor run git in it.
         cwd = payload['cwd']
-        if not isinstance(cwd, str) or not posixpath.isabs(cwd):
+        if not isinstance(cwd, str) or not remote_cwd_shape(cwd, terminal):
             raise RuntimeStoreError('invalid_params')
         terminal['TERMINAL_CWD'] = cwd
         policy = replace(old, cwd=cwd, terminal_json=json.dumps(terminal))

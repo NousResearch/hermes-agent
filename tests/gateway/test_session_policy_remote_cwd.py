@@ -95,7 +95,7 @@ async def test_move_to_project_accepts_a_remote_only_folder_on_ssh(tmp_path, mon
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cwd", ["~/project", "relative/project"])
+@pytest.mark.parametrize("cwd", ["relative/project", "~user/project"])
 async def test_move_to_project_on_ssh_still_requires_an_absolute_path(tmp_path, monkeypatch, cwd):
     from hermes_state_runtime import RuntimeStoreError
 
@@ -109,3 +109,43 @@ async def test_move_to_project_on_local_backend_still_requires_an_existing_folde
 
     with pytest.raises(RuntimeStoreError):
         await _move(tmp_path, monkeypatch, "local", "/srv/remote/project")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cwd", ["~", "~/project"])
+async def test_ssh_remote_home_cwd_kept_for_acp_create_and_move(tmp_path, monkeypatch, cwd):
+    """SSH's ~ names the remote user's home, never the gateway host's home."""
+    from dataclasses import asdict
+
+    from gateway import session_mutation_policy as mutation
+    from gateway.session_policy import build_policy, restore_policy, workspace_ready
+
+    _remote_home(tmp_path, monkeypatch, "ssh")
+    policy = build_policy({"source": "acp", "cwd": cwd, "cwd_explicit": True, "model": "m"}, {})
+    assert policy.cwd == cwd
+    assert json.loads(policy.terminal_json)["TERMINAL_CWD"] == cwd
+    assert workspace_ready(policy)
+
+    prepared = {"snapshot": {"receipt": {"policy": asdict(policy)}}}
+    monkeypatch.setattr(mutation, "_rebind", lambda authority, prepared, old, new, **extra: (new, extra))
+    moved, extra = await mutation.prepare_workspace(None, None, {"cwd": cwd}, prepared)
+    assert moved.cwd == cwd
+    assert restore_policy(asdict(moved)).cwd == cwd
+    assert json.loads(moved.terminal_json)["TERMINAL_CWD"] == cwd
+    assert extra == {"git": {"branch": "", "root": ""}}
+
+
+@pytest.mark.parametrize("backend,cwd", [("ssh", "relative/dir"), ("ssh", "   "), ("local", "/srv/remote/project"),
+                                         ("modal", "~/project")])
+def test_restore_refuses_a_stored_cwd_the_backend_would_not_accept(tmp_path, monkeypatch, backend, cwd):
+    """restore_policy applies the same backend-aware cwd rule as creation; ~ is an ssh-only spelling."""
+    from dataclasses import asdict, replace
+
+    from gateway.session_policy import build_policy, restore_policy
+
+    _remote_home(tmp_path, monkeypatch, backend)
+    start = tmp_path / "start"
+    start.mkdir()
+    stored = asdict(replace(build_policy({"source": "acp", "cwd": str(start), "model": "m"}, {}), cwd=cwd))
+    with pytest.raises(ValueError):
+        restore_policy(stored)

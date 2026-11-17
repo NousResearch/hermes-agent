@@ -104,7 +104,6 @@ _TRIGGER_EVERYTHING = {
                  "singularity_image": f"docker://{_LEGACY_IMAGE}", "vercel_runtime": "node24"},
     "security": {"tirith_enabled": True, "tirith_path": "x"},
     "browser": {"backend": "x", "extension_control": True},
-    "prompt_caching": {"cache_ttl": "5m"},
 }
 
 
@@ -146,6 +145,7 @@ _NOT_TRIGGERED_HERE = {
     21: "skips when plugins.enabled exists, which v38's trigger needs",
     31: "matches verify_on_stop None/auto; v32's trigger is the literal true",
     40: "matches ttl_hours 1; v25's trigger is 24",
+    54: "drops only the template's commented cache_ttl line; a dumped bare 5m is a user pin",
 }
 
 

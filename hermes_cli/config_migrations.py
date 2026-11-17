@@ -753,6 +753,37 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
+#: The line cli-config.yaml.example seeded (9e6f34a76e24) into every installer/Docker config. Its
+#: trailing comment intact with the value is the only byte-level proof Hermes wrote a "5m": the
+#: pre-c717be8ded71 migrations and pre-98488c4be49e save_config wrote the same bare value a user
+#: types to pin the tier, so a bare "5m" is kept.
+_TEMPLATE_CACHE_TTL_LINE = re.compile(
+    r"""^[ \t]+cache_ttl:[ \t]*(["']?)5m\1[ \t]*#[ \t]*use "1h" for long sessions with pauses between turns[ \t]*$""",
+    re.MULTILINE)
+
+
+def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
+    # 53 → 54: prompt_caching.cache_ttl defaults to "auto" (1h for human-paced sessions, 5m for
+    # machine-paced ones). A "5m" still on the template's seeded line is Hermes' copy, not a choice,
+    # and is dropped; any other "5m" may be the user's pin and stays (with a notice).
+    config = read_raw_config()
+    section = config.get("prompt_caching")
+    if not isinstance(section, dict) or section.get("cache_ttl") != "5m":
+        return
+    path = _cfg().get_config_path()
+    text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    if not _TEMPLATE_CACHE_TTL_LINE.search(text):
+        if not quiet:
+            print('  ℹ prompt_caching.cache_ttl: "5m" pins every session to the 5m cache tier; the '
+                  'default is now "auto" (1h for sessions you type into). Remove the line to follow it.')
+        return
+    del section["cache_ttl"]
+    _commit(config, results, quiet, 'removed prompt_caching.cache_ttl: "5m" (seeded by the config template)',
+            '  ✓ Removed the template-seeded prompt_caching.cache_ttl: "5m". Prompt caching now follows '
+            '"auto": the 1h tier for sessions you type into, 5m for subagents, cron and other '
+            'machine-paced runs. Set cache_ttl: "5m" to pin the old behaviour.')
+
+
 def disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None:
     """Post-migration: disable exfiltration-shaped MCP stdio entries (hand-edited or from older
     installs). The stanza is preserved for auditability but marked disabled."""
@@ -926,17 +957,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
         section="agent", key="clarify_timeout", old=3600, new=90,
         added="agent.clarify_timeout=90",
         message="  ✓ Lowered agent.clarify_timeout from 3600 to 90 seconds (unanswered questions no longer hold the chat for an hour)")),
-    # 53 → 54: prompt_caching.cache_ttl defaults to "auto" (1h for human-paced sessions, 5m for
-    # machine-paced ones). The old "5m" default was copied into config.yaml by the template seeder
-    # and `doctor --fix`, where it reads as a user choice and keeps every session on 5m. Drop only
-    # that exact value; "1h", "auto" and an off value are preserved.
-    (54, _rewrite_stale_default(
-        section="prompt_caching", key="cache_ttl", old="5m", new=None,
-        added='removed prompt_caching.cache_ttl: "5m" (the old default)',
-        message=(
-            '  ✓ Removed prompt_caching.cache_ttl: "5m" — the old default. Prompt caching now '
-            'follows "auto": the 1h tier for sessions you type into, 5m for subagents, cron and '
-            'other machine-paced runs. Set cache_ttl: "5m" to pin the old behaviour.'))),
+    # 53 → 54: prompt_caching.cache_ttl defaults to "auto" (see _migrate_to_54).
+    (54, _migrate_to_54),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

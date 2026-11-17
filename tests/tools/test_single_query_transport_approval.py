@@ -244,6 +244,16 @@ def test_non_dangerous_command_never_presents(monkeypatch):
     assert seen == []
 
 
+def test_unread_command_is_refused_before_the_transport_is_asked(monkeypatch):
+    # A command the hardline scan could not finish reading never reaches a transport
+    # approval: an approving answer must not grant a command nobody has fully scanned.
+    seen = []
+    _select(monkeypatch, _answer("once", seen))
+    monkeypatch.setattr(approval_module, "hardline_scan_incomplete", lambda _command: True)
+    assert check_all_command_guards(DANGEROUS, "local")["approved"] is False
+    assert seen == []
+
+
 def test_execute_code_uses_transport(monkeypatch):
     seen = []
     _select(monkeypatch, _answer("once", seen))

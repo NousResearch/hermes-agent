@@ -59,3 +59,36 @@ def test_inlined_range_is_marked_read_for_the_child(tmp_path):
     assert whole.get("dedup") is True
     other = json.loads(read_file_tool(str(ws / "small.py"), offset=6, limit=2, task_id="child-files-task"))
     assert "6|line 6" in other["content"]
+
+
+def test_delegate_task_passes_files_through_the_default_backend(tmp_path, monkeypatch):
+    """Real delegate_task and real task routing: the stock backend accepts ``files`` and the child is built with the
+    FILES block in its context; a refused entry fails the call before any child is built."""
+    import types
+
+    import hermes_yaml as yaml
+    from tools import delegate_tool as dt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({"delegation": {
+        "model": "pinned-model", "base_url": "http://127.0.0.1:9/v1", "api_key": "k"}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    ws = _workspace(tmp_path)
+    monkeypatch.setattr(dt, "_resolve_workspace_hint", lambda parent: str(ws))
+    built = []
+    monkeypatch.setattr(dt, "_build_child_preserving_parent_tools", lambda **kw: built.append(kw) or types.SimpleNamespace(
+        tool_progress_callback=None, model=kw.get("model")))
+    monkeypatch.setattr(dt, "_run_single_child", lambda task_index, goal, child=None, parent_agent=None, **kw: {
+        "task_index": task_index, "status": "completed", "summary": "ok", "api_calls": 1, "duration_seconds": 0})
+    parent = types.SimpleNamespace(session_id="root", model="m", provider="openrouter", tool_progress_callback=None,
+                                   _delegate_spinner=None, request_overrides={}, _safe_print=lambda line: None)
+
+    out = json.loads(dt.delegate_task(tasks=[{"goal": "edit the small module", "context": "ctx",
+                                              "files": ["small.py:1-2"]}], parent_agent=parent))
+    assert out["results"][0]["status"] == "completed", out
+    assert built[0]["context"].startswith("ctx\n\n" + dtf.FILES_HEADING) and "1|line 1\n2|line 2\n" in built[0]["context"]
+
+    refused = json.loads(dt.delegate_task(tasks=[{"goal": "edit the small module", "files": ["../x.py"]}],
+                                          parent_agent=parent))
+    assert "outside the child's workspace" in refused["error"] and len(built) == 1

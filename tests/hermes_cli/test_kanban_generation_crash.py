@@ -187,7 +187,17 @@ def test_published_activation_uses_exact_accepted_fence_epoch(tmp_path):
     assert not (board / "generation.accepted.json").exists()
 
 
-@pytest.mark.parametrize("checkpoint", ["ACTIVATED.json-before-rename", "g1-before-fsync-dir"])
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        "ACTIVATED.json-before-fsync",
+        "ACTIVATED.json-after-fsync",
+        "ACTIVATED.json-before-rename",
+        "ACTIVATED.json-after-rename",
+        "g1-before-fsync-dir",
+        "g1-after-fsync-dir",
+    ],
+)
 def test_sigkill_activation_failpoints_reopen_without_false_effect(tmp_path, checkpoint):
     board, generation, ready = _prepared(tmp_path)
     from hermes_cli.kanban_generation import acquire_fence, release_fence

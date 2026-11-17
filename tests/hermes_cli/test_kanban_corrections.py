@@ -311,6 +311,16 @@ def test_reader_revalidation_failure_durably_discards_lease(tmp_path, monkeypatc
     assert list((generation / "leases").glob("*.json")) == []
 
 
+@pytest.mark.parametrize(
+    "code",
+    ["LEASE_CREATE_FAILED", "LEASE_DURABILITY_FAILED", "LEASE_REVALIDATION_FAILED"],
+)
+def test_reader_closed_lease_failures_are_retryable_after_cleanup(code):
+    from hermes_cli.kanban_boards import _reader_is_retryable
+
+    assert _reader_is_retryable(code) is True
+
+
 def _published(tmp_path):
     board = tmp_path / "board"
     generation = board / "generations" / "g1"
@@ -364,6 +374,38 @@ def test_reader_command_uses_length_prefixed_capability_contract(tmp_path, monke
     from argparse import Namespace
     result = _cmd_with_reader_lease(Namespace(protocol_version=1, operation_id="op", board="default", consumer="hermes-office", json_status_dir=str(tmp_path / "status"), command=[sys.executable, str(script)]))
     assert result == 0
+
+
+def test_real_node_consumer_opens_authenticated_generation_over_v1(tmp_path, monkeypatch):
+    board, generation = _published(tmp_path)
+    monkeypatch.setattr("hermes_cli.kanban_boards.kb.board_dir", lambda _board: board)
+    import shutil
+    node = shutil.which("node")
+    assert node, "managed Node runtime is required for the v1 qualification"
+    proof = tmp_path / "node-proof.json"
+    script = tmp_path / "consumer.cjs"
+    script.write_text(
+        "const fs=require('fs'); const {DatabaseSync}=require('node:sqlite');\n"
+        "console.log('started');\n"
+        "const fd=Number(process.env.HERMES_READER_BOOTSTRAP_FD);\n"
+        "const h=Buffer.alloc(4); fs.readSync(fd,h,0,4,null);\n"
+        "const n=h.readUInt32BE(0), p=Buffer.alloc(n); fs.readSync(fd,p,0,n,null);\n"
+        "const cap=JSON.parse(p.toString('utf8'));\n"
+        "if(cap.protocol_version!==1||cap.storage_mode!=='generation'||!cap.lease_id) process.exit(71);\n"
+        "const db=new DatabaseSync(cap.database_path,{readOnly:true});\n"
+        "const row=db.prepare('SELECT COUNT(*) AS n FROM tasks').get(); db.close();\n"
+        "fs.writeFileSync(process.argv[2],JSON.stringify({generation_id:cap.generation_id,rows:Number(row.n)}));\n"
+    )
+    from argparse import Namespace
+    from hermes_cli.kanban_boards import _cmd_with_reader_lease
+    result = _cmd_with_reader_lease(Namespace(
+        protocol_version=1, operation_id="node-v1", board="default",
+        consumer="hermes-office", json_status_dir=str(tmp_path / "node-status"),
+        command=[node, str(script), str(proof)],
+    ))
+    assert result == 0
+    assert json.loads(proof.read_text()) == {"generation_id": "g1", "rows": 0}
+    assert not list((generation / "leases").glob("*.json"))
 
 
 def test_reader_session_uses_closed_newline_json_contract(tmp_path, monkeypatch, capsys):

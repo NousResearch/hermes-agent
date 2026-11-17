@@ -162,13 +162,19 @@ def _atomic_json(path: Path, value: Any, *, durability: DurabilityAdapter | None
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         os.write(fd, canonical_json(value) + b"\n")
+        if durability:
+            durability.checkpoint(f"{path.name}-before-fsync")
         os.fsync(fd)
+        if durability:
+            durability.checkpoint(f"{path.name}-after-fsync")
     finally:
         os.close(fd)
     try:
         if durability:
             durability.checkpoint(f"{path.name}-before-rename")
         os.replace(temporary, path)
+        if durability:
+            durability.checkpoint(f"{path.name}-after-rename")
         (durability or DurabilityAdapter()).fsync_dir(path.parent)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -233,8 +239,15 @@ def acquire_fence(board_dir: Path, *, generation: str, owner: str) -> dict[str, 
         writer_handle.close()
         catalog_handle.close()
         raise GenerationError("WRITER_FENCE_HELD")
-    record = {"board": board_dir.name, "generation_id": generation,
-              "epoch": time.time_ns(), "owner": owner, "token": secrets.token_urlsafe(24)}
+    record = {
+        "board": board_dir.name,
+        "generation_id": generation,
+        "epoch": time.time_ns(),
+        "owner": owner,
+        "owner_pid": os.getpid(),
+        "owner_start_fingerprint": _start_fingerprint(os.getpid()),
+        "token": secrets.token_urlsafe(24),
+    }
     try:
         _atomic_json(path, record)
     except BaseException:
@@ -247,24 +260,64 @@ def acquire_fence(board_dir: Path, *, generation: str, owner: str) -> dict[str, 
     return record
 
 
-def adopt_fence(board_dir: Path, *, token: str, owner: str) -> dict[str, Any]:
+def adopt_fence(
+    board_dir: Path,
+    *,
+    token: str,
+    owner: str,
+    expected_epoch: int,
+    expected_generation: str,
+) -> dict[str, Any]:
     """Adopt a persisted fence after a crash without minting a second token."""
     key = str(board_dir.resolve())
-    if key in _HELD_FENCE_HANDLES:
-        custody = contextlib.nullcontext()
-    else:
+    acquired_here = key not in _HELD_FENCE_HANDLES
+    if acquired_here:
         catalog_handle = (board_dir / "generation.catalog-lock").open("a+b")
         handle = (board_dir / "generation.writer-lock").open("a+b")
         import fcntl
         fcntl.flock(catalog_handle.fileno(), fcntl.LOCK_EX)
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         _HELD_FENCE_HANDLES[key] = (catalog_handle, handle)
-        custody = contextlib.nullcontext()
-    with custody:
+    try:
         record = validate_fence(board_dir, token)
-        record = {**record, "owner": owner, "epoch": time.time_ns()}
+        if int(record.get("epoch", -1)) != expected_epoch:
+            raise GenerationError("WRITER_FENCE_EPOCH_MISMATCH")
+        if str(record.get("generation_id", "")) != expected_generation:
+            raise GenerationError("WRITER_FENCE_GENERATION_MISMATCH")
+        try:
+            owner_pid = int(record["owner_pid"])
+            owner_fingerprint = str(record["owner_start_fingerprint"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise GenerationError("WRITER_FENCE_IDENTITY_MISSING") from exc
+        try:
+            import psutil
+
+            owner_live = psutil.pid_exists(owner_pid) and (
+                _start_fingerprint(owner_pid) == owner_fingerprint
+            )
+        except (OSError, ValueError):
+            owner_live = False
+        if owner_live:
+            raise GenerationError("WRITER_FENCE_OWNER_LIVE")
+        record = {
+            **record,
+            "owner": owner,
+            "owner_pid": os.getpid(),
+            "owner_start_fingerprint": _start_fingerprint(os.getpid()),
+            "epoch": time.time_ns(),
+        }
         _atomic_json(board_dir / "generation.writer-fence", record)
         return record
+    except BaseException:
+        if acquired_here:
+            import fcntl
+
+            catalog_handle, handle = _HELD_FENCE_HANDLES.pop(key)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(catalog_handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+            catalog_handle.close()
+        raise
 
 
 def release_fence(board_dir: Path, *, token: str) -> None:
@@ -1032,6 +1085,72 @@ def _mark_authenticated_import_journal(path: Path, marked: set[str]) -> None:
         raise GenerationError(f"IMPORT_JOURNAL_INVALID:{path.name}") from exc
 
 
+def _resolution_blob_digests(generation: Path, ready: dict[str, Any]) -> set[str]:
+    """Return blob digests referenced by current and READY snapshot rows."""
+    digests: set[str] = set()
+    with sqlite3.connect(
+        f"file:{generation / 'kanban.db'}?mode=ro", uri=True
+    ) as conn:
+        try:
+            digests.update(
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT blob_sha256 FROM recovery_attachment_resolution"
+                )
+                if row[0]
+            )
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise GenerationError("BLOB_GC_RESOLUTION_INVALID") from exc
+    try:
+        table = ready["manifest"]["tables"].get(
+            "recovery_attachment_resolution"
+        )
+        if table:
+            index = table["columns"].index("blob_sha256")
+            digests.update(str(row[index]) for row in table["rows"] if row[index])
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise GenerationError("BLOB_GC_READY_INVALID") from exc
+    return digests
+
+
+def _sweep_generation_blobs(
+    generation: Path,
+    *,
+    mark_all: bool,
+    ready: dict[str, Any],
+    grace_seconds: int,
+    dry_run: bool,
+) -> tuple[list[str], list[str]]:
+    blob_root = generation / "blobs" / "sha256"
+    if not blob_root.is_dir():
+        return [], []
+    physical = sorted(path for path in blob_root.glob("*/*") if path.is_file())
+    marked_digests = (
+        {path.name for path in physical}
+        if mark_all
+        else _resolution_blob_digests(generation, ready)
+    )
+    marked = [str(path) for path in physical if path.name in marked_digests]
+    cutoff = time.time() - grace_seconds
+    sweep = [
+        path
+        for path in physical
+        if path.name not in marked_digests and path.stat().st_mtime <= cutoff
+    ]
+    if not dry_run:
+        trash = generation / "blobs" / ".trash"
+        for path in sweep:
+            trash.mkdir(parents=True, exist_ok=True)
+            target = trash / f"{path.name}.{secrets.token_hex(8)}"
+            os.replace(path, target)
+            _fsync_dir(path.parent)
+            _fsync_dir(trash)
+            target.unlink()
+            _fsync_dir(trash)
+    return marked, [str(path) for path in sweep]
+
+
 def gc_generations(board_dir: Path, *, dry_run: bool = False, grace_seconds: int = 3600) -> dict[str, Any]:  # health: allow CC -- custody mark/sweep must remain one catalog-locked crash boundary
     with _lock(board_dir / "generation.catalog-lock", exclusive=True), _lock(board_dir / "generation.writer-lock", exclusive=True), _lock(board_dir / "generation.activation-lock", exclusive=True):
         root = board_dir / "generations"
@@ -1039,6 +1158,7 @@ def gc_generations(board_dir: Path, *, dry_run: bool = False, grace_seconds: int
         pointer = read_pointer(board_dir)
         active = pointer["generation_id"] if pointer else None
         marked = {active} if active else set()
+        leased: set[str] = set()
         reclaimable_leases: list[Path] = []
         retained = board_dir / "generation.retained.json"
         if retained.exists() or retained.is_symlink():
@@ -1070,6 +1190,7 @@ def gc_generations(board_dir: Path, *, dry_run: bool = False, grace_seconds: int
             for lease_path in lease_files:
                 if not _lease_is_reclaimable(lease_path, grace_seconds):
                     marked.add(name)
+                    leased.add(name)
                 else:
                     reclaimable_leases.append(lease_path)
             ready = generation / "READY.json"
@@ -1098,6 +1219,23 @@ def gc_generations(board_dir: Path, *, dry_run: bool = False, grace_seconds: int
                 if orphan.name not in candidates and not (root / orphan.name).exists():
                     os.replace(orphan, root / orphan.name)
             _fsync_dir(root)
+        # Authenticate every blob root before any lease, generation, or blob
+        # is removed.  Apply mode may then repeat the deterministic sweep while
+        # the same catalog/writer/activation lock stack excludes mutation.
+        for name in sorted(marked - {None}):
+            generation = root / name
+            if not generation.is_dir():
+                continue
+            ready = validate_generation(
+                generation, activated=(generation / "ACTIVATED.json").is_file()
+            )
+            _sweep_generation_blobs(
+                generation,
+                mark_all=name in leased,
+                ready=ready,
+                grace_seconds=grace_seconds,
+                dry_run=True,
+            )
         # All custody markers have now been authenticated.  Only after the
         # complete mark phase succeeds may apply mode remove reclaimable lease
         # records; malformed state therefore causes no partial GC mutation.
@@ -1116,7 +1254,32 @@ def gc_generations(board_dir: Path, *, dry_run: bool = False, grace_seconds: int
                 shutil.rmtree(trash / name)
             _fsync_dir(trash)
             _fsync_dir(root)
-        return {"active": active, "marked": sorted(marked - {None}), "sweep": sweep, "dry_run": dry_run}
+        blob_marked: list[str] = []
+        blob_sweep: list[str] = []
+        for name in sorted(marked - {None}):
+            generation = root / name
+            if not generation.is_dir():
+                continue
+            ready = validate_generation(
+                generation, activated=(generation / "ACTIVATED.json").is_file()
+            )
+            kept, removed = _sweep_generation_blobs(
+                generation,
+                mark_all=name in leased,
+                ready=ready,
+                grace_seconds=grace_seconds,
+                dry_run=dry_run,
+            )
+            blob_marked.extend(kept)
+            blob_sweep.extend(removed)
+        return {
+            "active": active,
+            "marked": sorted(marked - {None}),
+            "sweep": sweep,
+            "blob_marked": blob_marked,
+            "blob_sweep": blob_sweep,
+            "dry_run": dry_run,
+        }
 
 
 def _lease_is_reclaimable(path: Path, grace_seconds: int) -> bool:

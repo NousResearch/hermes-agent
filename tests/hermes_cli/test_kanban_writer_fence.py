@@ -1,14 +1,16 @@
 import json
+import os
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from hermes_cli.kanban_generation import GenerationError, acquire_fence, adopt_fence, board_write_guard, release_fence
 
 
-def test_fence_is_exclusive_persistent_and_adoptable(tmp_path):
+def test_fence_is_exclusive_and_live_owner_cannot_be_adopted(tmp_path):
     first = acquire_fence(tmp_path, generation="g1", owner="builder")
     entered = tmp_path / "entered"
     probe = subprocess.Popen(
@@ -18,12 +20,71 @@ def test_fence_is_exclusive_persistent_and_adoptable(tmp_path):
     from tests.waiting import wait_until
     with pytest.raises(AssertionError):
         wait_until(lambda: entered.exists(), timeout=2.0, what="fence waiter before release")
-    adopted = adopt_fence(tmp_path, token=first["token"], owner="recovered")
+    with pytest.raises(GenerationError, match="WRITER_FENCE_OWNER_LIVE"):
+        adopt_fence(
+            tmp_path,
+            token=first["token"],
+            owner="recovered",
+            expected_epoch=first["epoch"],
+            expected_generation="g1",
+        )
+    release_fence(tmp_path, token=first["token"])
+    assert probe.wait(timeout=10) == 0
+    assert not (tmp_path / "generation.writer-fence").exists()
+
+
+def _crashed_fence(board: Path) -> dict:
+    script = (
+        "import json,os,sys\n"
+        "from pathlib import Path\n"
+        "from hermes_cli.kanban_generation import acquire_fence\n"
+        "f=acquire_fence(Path(sys.argv[1]),generation='g1',owner='crashed')\n"
+        "Path(sys.argv[2]).write_text(json.dumps(f))\n"
+        "os._exit(0)\n"
+    )
+    receipt = board / "fence-receipt.json"
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(board), str(receipt)], check=False
+    )
+    assert result.returncode == 0
+    return json.loads(receipt.read_text())
+
+
+def test_fence_adoption_requires_exact_stale_identity_epoch_and_generation(tmp_path):
+    first = _crashed_fence(tmp_path)
+    with pytest.raises(GenerationError, match="WRITER_FENCE_EPOCH_MISMATCH"):
+        adopt_fence(
+            tmp_path, token=first["token"], owner="recovered",
+            expected_epoch=first["epoch"] + 1, expected_generation="g1",
+        )
+    with pytest.raises(GenerationError, match="WRITER_FENCE_GENERATION_MISMATCH"):
+        adopt_fence(
+            tmp_path, token=first["token"], owner="recovered",
+            expected_epoch=first["epoch"], expected_generation="g2",
+        )
+    adopted = adopt_fence(
+        tmp_path, token=first["token"], owner="recovered",
+        expected_epoch=first["epoch"], expected_generation="g1",
+    )
     assert adopted["token"] == first["token"]
     assert adopted["epoch"] > first["epoch"]
+    assert adopted["owner_pid"] == os.getpid()
     release_fence(tmp_path, token=adopted["token"])
-    assert probe.wait(timeout=10) == 0, probe.stderr.read()
-    assert not (tmp_path / "generation.writer-fence").exists()
+
+
+def test_fence_adoption_treats_reused_pid_fingerprint_as_stale(tmp_path):
+    first = _crashed_fence(tmp_path)
+    record_path = tmp_path / "generation.writer-fence"
+    record = json.loads(record_path.read_text())
+    record["owner_pid"] = os.getpid()
+    record["owner_start_fingerprint"] = "different-incarnation"
+    record_path.write_text(json.dumps(record))
+    adopted = adopt_fence(
+        tmp_path, token=first["token"], owner="recovered",
+        expected_epoch=first["epoch"], expected_generation="g1",
+    )
+    assert adopted["owner_pid"] == os.getpid()
+    release_fence(tmp_path, token=adopted["token"])
 
 
 def test_shared_mutation_guard_requires_current_fence_token(tmp_path):

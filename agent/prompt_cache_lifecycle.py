@@ -15,15 +15,16 @@ When a chat's cache is about to expire the controller makes ONE decision, in thi
    of the compaction threshold, and it grew since its last compaction; at most one compaction per
    idle stretch. The summary is a fresh auxiliary request, so whether the old prefix is still warm
    does not change its cost and is not checked. Nothing is sent after it until the next user message.
-   The surface that owns the chat (CLI input loop, TUI ticker, gateway watcher) runs the compaction
-   through the normal pipeline, polling :func:`claim_compaction`. A budget ends at whichever comes
-   first: its keep-alives, or the owner releasing the agent (gateway idle/LRU eviction, TUI idle reap);
-   at release the owner asks :func:`claim_compaction_at_release` and, when due, compacts first.
-3. EXPIRE + OFFLOAD: otherwise the entry dies, and the owner offloads old tool output right then
-   (:func:`claim_offload`, the same cold offload as a return after expiry), so the chat is already
-   small when the person comes back. A release past the window offloads before it releases.
+   The surface that owns the chat (CLI input loop, TUI ticker, gateway watcher) polls
+   ``PromptCacheWarmer.claim_edge`` and runs the action it returns through the normal pipeline. A
+   budget ends at whichever comes first: its keep-alives, or the owner releasing the agent (gateway
+   idle/LRU eviction, TUI idle reap); at release the owner asks ``claim_edge(releasing=True)`` and acts
+   on the answer first.
+3. EXPIRE + OFFLOAD: otherwise the entry dies, and ``claim_edge`` answers ``"offload"``: the owner
+   offloads old tool output right then (the same cold offload as a return after expiry), so the chat is
+   already small when the person comes back. A release past the window offloads before it releases.
 4. COLD RETURN lives in ``agent.turn_proactive_prune``: the next request after a proven or declared
-   expiry (or, on a route with an undocumented cache, an idle hour) offloads old tool results first.
+   expiry, or on a new route, offloads old tool results first.
 
 An unknown or assumed clock means nothing acts. A keep-alive is sent only when its read costs less
 than the rewrite it prevents, the budget's keep-alives together cost no more than one rewrite, the
@@ -34,8 +35,8 @@ reason is logged at INFO (once per change).
 
 Requests are replayed on the Anthropic Messages wire and on the Chat Completions wire (Nous Portal,
 OpenRouter and other gateways): Claude by its ``cache_control`` markers, every other model as an
-OpenAI-spec automatic cache the clock declares at 30 minutes, renewed by a read). A request whose thinking is budget-based is skipped because a one-token cap would
-change ``budget_tokens``.
+OpenAI-spec automatic cache the clock declares at 30 minutes, renewed by a read. A request whose
+thinking is budget-based is skipped because the replay's small output cap would change ``budget_tokens``.
 """
 
 from __future__ import annotations
@@ -68,7 +69,7 @@ MIN_CACHEABLE_PREFIX_TOKENS = 1024
 MIN_COMPACT_WINDOW_SECONDS = 30 * 60
 #: A chat is compacted only once its context is at least this share of the compaction threshold.
 COMPACT_CONTEXT_FRACTION = 0.5
-#: How often the surface owners poll :func:`claim_compaction`.
+#: How often the surface owners poll ``PromptCacheWarmer.claim_edge``.
 CHECK_INTERVAL_SECONDS = 30.0
 #: Telemetry trigger name for cache-edge compactions.
 TRIGGER = "cache_expiry"
@@ -130,7 +131,7 @@ def learned_window(agent: Any, window: tuple[float, float], marked: bool
 
 def has_cache_markers(api_kwargs: dict[str, Any]) -> bool:
     """True when the request carries at least one ``cache_control`` marker (system, tools or
-    messages) — without one there is no entry to keep warm."""
+    messages): Anthropic spec. Without one the route caches automatically (OpenAI spec)."""
 
     def _walk(node: Any) -> bool:
         if isinstance(node, dict):
@@ -145,7 +146,7 @@ def has_cache_markers(api_kwargs: dict[str, Any]) -> bool:
 
 
 def is_replayable(api_kwargs: dict[str, Any]) -> bool:
-    """Whether replaying with ``max_tokens=1`` leaves the cache entry untouched.
+    """Whether replaying with the small output cap (:func:`replay_output_cap`) leaves the cache entry untouched.
 
     Budget-based thinking (``{"type": "enabled", "budget_tokens": N}``) requires
     ``max_tokens > budget_tokens`` and Anthropic keys the message cache on the budget, so the
@@ -155,7 +156,7 @@ def is_replayable(api_kwargs: dict[str, Any]) -> bool:
     if isinstance(thinking, dict) and thinking.get("type") == "enabled" and "budget_tokens" in thinking:
         return False
     # Chat Completions gateways turn ``reasoning`` into a thinking budget for Claude models that
-    # predate adaptive thinking, so a one-token replay would change (or be refused for) that budget.
+    # predate adaptive thinking, so a bounded replay would change (or be refused for) that budget.
     reasoning = (api_kwargs.get("extra_body") or {}).get("reasoning")
     model = str(api_kwargs.get("model") or "")
     if ("claude" in model.lower() and isinstance(reasoning, dict) and reasoning.get("enabled", True)
@@ -260,10 +261,11 @@ def evaluate_economics(
     write = _per_token(getattr(pricing, "cache_write_cost_per_million", None))
     inp = _per_token(getattr(pricing, "input_cost_per_million", None))
     out = _per_token(getattr(pricing, "output_cost_per_million", None))
+    fee = float(getattr(pricing, "request_cost", None) or 0)  # a per-request fee the refresh pays on top
     tail_cost = uncached_tokens * inp
     hit_cost = cached_tokens * read
     miss_full = cached_tokens * (write if write > 0 else inp)
-    warm_cost = max(hit_cost + tail_cost + output_tokens * out, observed_warm_usd)
+    warm_cost = max(hit_cost + tail_cost + output_tokens * out + fee, observed_warm_usd)
     miss_cost = max(0.0, miss_full - hit_cost)
     economics_available = cached_tokens > 0 and (hit_cost > 0 or miss_full > 0)
     expected = miss_cost - warm_cost
@@ -286,7 +288,6 @@ class _Run:
     ttl_s: float
     deadline_at: float  # the clock's guaranteed-warm end for the entry this run keeps alive
     is_current: Callable[[], bool]
-    started_at: float
     #: ``prompt_cache_clock.context_witness`` when armed: the prompt (session, generation, rewrites)
     #: and route the replay carries. A refresh is sent, and its reply folded into the clock, only
     #: while the session still matches it; a compaction or route switch meanwhile makes it stale.
@@ -336,19 +337,29 @@ class _Budget:
 
 
 @dataclass(frozen=True)
+class EdgeDecision:
+    """What the cache edge calls for now: ``action`` is ``"compact"`` (step 2), ``"offload"`` (step 3)
+    or ``None``; ``compact`` / ``offload`` say why each step is or is not due (``"due"`` when it is)."""
+
+    action: Optional[str]
+    compact: str
+    offload: str
+
+
+@dataclass(frozen=True)
 class _Spent:
     """A warm budget that ran out with the entry still warm: the moment step 2 decides."""
 
     due_at: float  # when the next keep-alive would have gone out
-    deadline_at: float  # the clock's guaranteed-warm end
     tier_s: float
     witness: tuple
 
 
 class PromptCacheWarmer:
     """The per-chat lifecycle controller: keeps one prompt-cache entry alive by replaying its
-    request with a one-token output cap before the entry expires (``WARM_BUDGET`` per budget), then
-    hands the spent budget to step 2 (:func:`compaction_due`). ``start`` replaces any previous run."""
+    request with the smallest output cap the model accepts before the entry expires (``WARM_BUDGET``
+    idle keep-alives per user message), then answers the cache edge (:meth:`claim_edge`). ``start``
+    replaces any previous run."""
 
     def __init__(self, agent: Any):
         self.agent = agent
@@ -482,7 +493,7 @@ class PromptCacheWarmer:
         run = _Run(
             api_kwargs=self._replay_kwargs(api_kwargs), client=client, model=model,
             cached_tokens=cached_tokens, uncached_tokens=uncached_tokens, ttl_s=window[1],
-            deadline_at=window[0], is_current=_is_current, started_at=time.time(), api_mode=api_mode,
+            deadline_at=window[0], is_current=_is_current, api_mode=api_mode,
             witness=context_witness(agent), billing=self._billing_snapshot(),
             idle_ok=human_paced(agent), budget=budget,
         )
@@ -513,7 +524,35 @@ class PromptCacheWarmer:
         if window is None or delay is None:
             return
         deadline, tier = window
-        self._spent = _Spent(deadline - (tier - delay), deadline, tier, context_witness(self.agent))
+        self._spent = _Spent(deadline - (tier - delay), tier, context_witness(self.agent))
+
+    # -- the cache edge (steps 2 and 3) ----------------------------------------------------------
+    def edge_decision(self, *, releasing: bool = False, now: Optional[float] = None) -> EdgeDecision:
+        """The cache-edge decision without claiming it (``/context``, owners' diagnostics, tests).
+        ``releasing``: the owner is releasing the agent, which ends a live budget now."""
+        now = time.time() if now is None else now
+        with self._lock:
+            compact = _compaction_reason(self.agent, self, releasing, now)
+            offload = "compaction_due" if compact == "due" else _offload_reason(self.agent, self, now)
+        action = "compact" if compact == "due" else "offload" if offload == "due" else None
+        return EdgeDecision(action, compact, offload)
+
+    def claim_edge(self, *, releasing: bool = False, now: Optional[float] = None) -> Optional[str]:
+        """:meth:`edge_decision`, validated and latched in one step under the warmer lock: ``"compact"``
+        consumes the spent budget (the stretch compacts once; an attempt that commits nothing is not
+        retried; at a release the live run is cancelled, so no keep-alive goes out after it) and
+        ``"offload"`` marks the stretch offloaded. The owner runs that action (compact through the
+        normal pipeline, offload through ``turn_proactive_prune.offload_cold_history``); nothing is
+        sent after either until the next user message."""
+        with self._lock:
+            action = self.edge_decision(releasing=releasing, now=now).action
+            if action == "compact":
+                if releasing:
+                    self.cancel("owner releasing the agent: compacting first")
+                self._spent, self._compacted = None, True
+            elif action == "offload":
+                self._offloaded = True
+            return action
 
     # -- internals ------------------------------------------------------------------------------
     def _clear_run(self) -> Optional[_Run]:
@@ -591,7 +630,7 @@ class PromptCacheWarmer:
                 elif current is None and self._budget is run.budget:
                     self._carry_ended_budget()
                 return
-            spent = _Spent(due_at, run.deadline_at, run.ttl_s, run.witness)
+            spent = _Spent(due_at, run.ttl_s, run.witness)
             self._stop(reason)
             self._spent = spent
 
@@ -639,7 +678,9 @@ class PromptCacheWarmer:
                     self._end_budget(run, "warm budget spent", due_at=run.next_warm_at)
                     return None
                 if budget.spent_usd + decision.warm_cost > decision.miss_cost:
-                    self._stop("refreshes would cost more than the cache write they prevent")
+                    # The budget's money is spent: the same end as its count, so step 2/3 still decides.
+                    self._end_budget(run, "refreshes would cost more than the cache write they prevent",
+                                     due_at=run.next_warm_at)
                     return None
                 budget.used += 1
                 budget.spent_usd += decision.warm_cost
@@ -653,6 +694,11 @@ class PromptCacheWarmer:
         decision = self._evaluate(run)
         self._last_decision = decision
         if decision.action != "warm":
+            if decision.economics_available and not decision.within_miss and not self._tool_running():
+                with self._lock:
+                    if self._run is run:  # the idle budget's money is spent: step 2/3 decides now
+                        self._end_budget(run, decision.stop_reason, due_at=run.next_warm_at)
+                return
             self._stop_if_current(run, decision.stop_reason)
             return
         reserved = self._admit(run, decision)
@@ -705,6 +751,8 @@ class PromptCacheWarmer:
 
         b = run.billing
         with self._lock:
+            if getattr(self.agent, "_session_reset_epoch", 0) != b["reset_epoch"]:
+                return  # a miss of the session a reset ended: the new one is warmed afresh
             # The route the keep-alive was sent on: a switch since then leaves the new route warmable.
             self._missed_route = _route_key(b["provider"], b["base_url"], b["model"])
         logger.info("%sprompt cache warming disabled for session: keep-alive missed", self._prefix())
@@ -770,7 +818,7 @@ class PromptCacheWarmer:
     def _record(self, run: _Run, message: Any, decision: CacheWarmingDecision, sent_at: float,
                 reserved: float = 0.0) -> Optional[str]:
         """Fold the refresh's tokens and dollars into the session totals (never into the
-        compressor or usage anchors: a one-token replay is not a conversation turn), into the user
+        compressor or usage anchors: a bounded replay is not a conversation turn), into the user
         turn's budget (its ``reserved`` estimate replaced by the billed cost, even if ``run`` was
         replaced meanwhile), and into the prompt-cache clock (a read restarts the window). Returns why warming must stop when the refresh did not prove a cache hit at
         a known price, ``None`` when it did."""
@@ -852,7 +900,7 @@ class PromptCacheWarmer:
         with self._lock:
             if self._run is not run or self._stale_reason(run) is not None:
                 return {}
-            attempt = dict(attempt_facts(run.api_kwargs) or {}, sent_at=sent_at)
+            attempt = dict(attempt_facts(run.api_kwargs) or {}, sent_at=sent_at, replay=True)
             event = record_cache_response(agent, canonical, model=b["model"], provider=b["provider"],
                                           base_url=b["base_url"], api_mode=b["api_mode"], attempt=attempt,
                                           witness=run.witness)
@@ -896,10 +944,11 @@ class PromptCacheWarmer:
 
         agent = self.agent
         route = dict(provider=agent.provider, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""))
-        refresh = CanonicalUsage(input_tokens=uncached_tokens, output_tokens=1, cache_read_tokens=cached_tokens)
-        miss = (CanonicalUsage(input_tokens=uncached_tokens, output_tokens=1, cache_write_tokens=cached_tokens)
+        cap = replay_output_cap(agent.model)
+        refresh = CanonicalUsage(input_tokens=uncached_tokens, output_tokens=cap, cache_read_tokens=cached_tokens)
+        miss = (CanonicalUsage(input_tokens=uncached_tokens, output_tokens=cap, cache_write_tokens=cached_tokens)
                 if self._marked else
-                CanonicalUsage(input_tokens=uncached_tokens + cached_tokens, output_tokens=1))
+                CanonicalUsage(input_tokens=uncached_tokens + cached_tokens, output_tokens=cap))
         try:
             return all(estimate_usage_cost(agent.model, usage, **route).amount_usd is not None
                        for usage in (refresh, miss))
@@ -1059,96 +1108,38 @@ def _window_gate(agent: Any, spent: _Spent, now: float) -> Optional[str]:
     return None
 
 
-def compaction_due(agent: Any, *, now: Optional[float] = None) -> tuple[bool, str]:
-    """``(due, reason)``: step 2. Due only when this chat's warm budget is over (spent or missed) on a
-    proven/declared window of at least 30 minutes, its context is at least half the compaction
-    threshold and grew since the last compaction, and no compaction ran this stretch."""
-    now = time.time() if now is None else now
-    warmer = getattr(agent, "_prompt_cache_warmer", None)
-    spent = warmer._spent if warmer is not None else None
+def _compaction_reason(agent: Any, warmer: PromptCacheWarmer, releasing: bool, now: float) -> str:
+    """Why step 2 does not run now (``"due"`` when it does). Caller holds ``warmer._lock``.
+
+    Due only when this chat's warm budget is over (spent or missed; at a release, a live budget ends
+    now) on a proven/declared window of at least 30 minutes, its context is at least half the
+    compaction threshold and grew since the last compaction, and no compaction ran this stretch."""
+    spent, run = warmer._spent, warmer._run
+    if spent is None and releasing and run is not None:
+        spent = _Spent(now, run.ttl_s, run.witness)
     if spent is None:
-        return False, "budget_not_spent" if warmer is None or not warmer._compacted else "compacted_this_stretch"
+        return "compacted_this_stretch" if warmer._compacted else "budget_not_spent"
+    if releasing:
+        spent = replace(spent, due_at=min(spent.due_at, now))
     reason = _session_gate(agent) or _window_gate(agent, spent, now)
     if reason is None and not _grew_enough(agent):  # last: the estimate walks the transcript
         reason = "no_growth"
-    return reason is None, reason or "due"
+    return reason or "due"
 
 
-def claim_compaction(agent: Any, *, now: Optional[float] = None) -> bool:
-    """:func:`compaction_due`, and when due, consume the spent budget so the stretch compacts once
-    (an attempt that commits nothing is not retried). Nothing is sent after it until the next user
-    message: a compacted chat has no warm entry to keep."""
-    due, _reason = compaction_due(agent, now=now)
-    if due:
-        warmer = agent._prompt_cache_warmer
-        with warmer._lock:
-            warmer._spent, warmer._compacted = None, True
-    return due
-
-
-def release_compaction_due(agent: Any, *, now: Optional[float] = None) -> tuple[bool, str]:
-    """``(due, reason)``: step 2 at the owner's release. A budget ends at whichever comes first, its 3
-    keep-alives or the owner releasing the agent (gateway idle/LRU eviction, TUI idle reap), so a release
-    while a budget is still live (or just spent) decides step 2 now: the same gates as
-    :func:`compaction_due` (warm proven/declared window of 30 minutes or more, half the threshold, growth)
-    with the release as the decision moment."""
-    now = time.time() if now is None else now
-    warmer = getattr(agent, "_prompt_cache_warmer", None)
-    if warmer is None:
-        return False, "budget_not_spent"
-    with warmer._lock:
-        run, spent, compacted = warmer._run, warmer._spent, warmer._compacted
-    if spent is None and run is not None:
-        spent = _Spent(now, run.deadline_at, run.ttl_s, run.witness)
-    if spent is None:
-        return False, "compacted_this_stretch" if compacted else "budget_not_spent"
-    reason = _session_gate(agent) or _window_gate(agent, replace(spent, due_at=min(spent.due_at, now)), now)
-    if reason is None and not _grew_enough(agent):
-        reason = "no_growth"
-    return reason is None, reason or "due"
-
-
-def claim_compaction_at_release(agent: Any, *, now: Optional[float] = None) -> bool:
-    """:func:`release_compaction_due`, and when due, end the budget now: no keep-alive goes out after the
-    release (nor during the compaction), and the stretch compacts once. The caller compacts, then releases."""
-    due, _reason = release_compaction_due(agent, now=now)
-    if due:
-        warmer = agent._prompt_cache_warmer
-        warmer.cancel("owner releasing the agent: compacting first")
-        with warmer._lock:
-            warmer._spent, warmer._compacted = None, True
-    return due
-
-
-def offload_due(agent: Any, *, now: Optional[float] = None) -> tuple[bool, str]:
-    """``(due, reason)``: step 3's offload. The chat is idle and its cache is over: past the clock's
-    proven/declared end, or its budget ended without a compaction (spent past the window or missed) and
-    the window has since closed. Once per stretch; the cold prune itself applies its own gates (protected
-    tail, >= 16k reclaim)."""
+def _offload_reason(agent: Any, warmer: PromptCacheWarmer, now: float) -> str:
+    """Why step 3's offload does not run now (``"due"`` when it does): the chat is idle and its cache
+    is over (past the clock's proven/declared end, or its route changed). Once per stretch; the cold
+    prune applies its own gates (protected tail, >= 16k reclaim). Caller holds ``warmer._lock``."""
     from agent.turn_proactive_prune import prompt_cache_is_cold
 
-    warmer = getattr(agent, "_prompt_cache_warmer", None)
-    if warmer is None:
-        return False, "no_lifecycle"
     if warmer._offloaded:
-        return False, "offloaded_this_stretch"
+        return "offloaded_this_stretch"
     if warmer._run is not None:
-        return False, "still_warming"
-    if agent is None or not getattr(agent, "compression_enabled", False):
-        return False, "disabled"
-    if not prompt_cache_is_cold(agent, now=now):
-        return False, "not_cold"
-    return True, "due"
-
-
-def claim_offload(agent: Any, *, now: Optional[float] = None) -> bool:
-    """:func:`offload_due`, and when due, mark the stretch offloaded so it is tried once. The owner then
-    runs :func:`agent.turn_proactive_prune.offload_cold_history` on the chat's history."""
-    due, _reason = offload_due(agent, now=now)
-    if due:
-        with agent._prompt_cache_warmer._lock:
-            agent._prompt_cache_warmer._offloaded = True
-    return due
+        return "still_warming"
+    if not getattr(agent, "compression_enabled", False):
+        return "disabled"
+    return "due" if prompt_cache_is_cold(agent, now=now) else "not_cold"
 
 
 # -- agent-facing seams (each a no-op when nothing is armed) ---------------------------------------
@@ -1170,12 +1161,15 @@ def session_totals_lock(agent: Any) -> Any:
 
 
 def reset_prompt_cache_session(agent: Any) -> None:
-    """A fresh session (``/new``, a session switch): a keep-alive miss of the old one no longer stops
-    warming. Compaction keeps the session, and the miss with it."""
+    """A fresh session (``/new``, a session switch): the old one's keep-alive miss, budget and edge
+    latches no longer apply (its turn counter restarts, so a kept budget would be mistaken for the new
+    chat's). Compaction keeps the session, and the miss with it."""
     warmer = getattr(agent, "_prompt_cache_warmer", None)
     if warmer is not None:
+        warmer.cancel("session reset")
         with warmer._lock:
             warmer._missed_route = None
+            warmer._budget, warmer._spent, warmer._compacted, warmer._offloaded = None, None, False, False
 
 
 def prompt_cache_warming_disabled(agent: Any) -> bool:
@@ -1206,4 +1200,3 @@ def cancel_prompt_cache_warming(agent: Any, reason: str = "inactive") -> None:
     warmer = getattr(agent, "_prompt_cache_warmer", None)
     if warmer is not None:
         warmer.cancel(reason)
-

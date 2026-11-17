@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 import time
 from collections import Counter
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from gateway.run_auto_resume import GatewayAutoResumeMixin
 from gateway.session_stall import (
@@ -80,11 +81,11 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                 logger.debug("SessionStore prune failed: %s", e)
             self._last_session_store_prune_ts = time.time()
 
-    def _cache_expiry_due_keys(self, skip=()) -> list[tuple[str, object]]:
-        """Cached, idle, human-paced sessions at the end of a keep-alive budget (compact) or past their
-        cache window (offload), as ``(key, agent)``; the claim tags ``agent._cache_edge_action``. *skip*
-        (keys with a job in flight) is excluded before the claim, which latches the stretch."""
-        from agent.prompt_cache_lifecycle import claim_compaction, claim_offload
+    def _cache_expiry_due_keys(self, skip=()) -> list[tuple[str, object, str]]:
+        """Cached, idle, human-paced sessions at the cache edge as ``(key, agent, action)``: ``compact``
+        at the end of a keep-alive budget, ``offload`` past the cache window. *skip* (keys with a job in
+        flight) is excluded before the claim, which latches the stretch. Runs off the event loop: the
+        claim reads the clock's session generation from state.db."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         from gateway.run_agent_cache import _tuple_agent
         cache, lock = getattr(self, "_agent_cache", None), getattr(self, "_agent_cache_lock", None)
@@ -96,10 +97,10 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         for key, agent in entries:
             if agent is None or agent is _AGENT_PENDING_SENTINEL or self._is_session_running(key):
                 continue
-            action = "compact" if claim_compaction(agent) else "offload" if claim_offload(agent) else None
+            warmer = getattr(agent, "_prompt_cache_warmer", None)
+            action = warmer.claim_edge() if warmer is not None else None
             if action:
-                agent._cache_edge_action = action
-                due.append((key, agent))
+                due.append((key, agent, action))
         return due
 
     async def _compact_idle_sessions_before_cache_expiry(self) -> None:
@@ -110,15 +111,19 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         ``_CACHE_EXPIRY_CONCURRENCY`` summarising at once."""
         jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
         slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))
-        for key, live_agent in self._cache_expiry_due_keys(skip=set(jobs)):
+        for key, live_agent, action in await asyncio.to_thread(self._cache_expiry_due_keys, set(jobs)):
+            if key in jobs:  # a release claimed it while the scan ran
+                continue
             task = self._retain_background_task(
-                asyncio.create_task(self._compact_before_cache_expiry(key, live_agent, slots)))
+                asyncio.create_task(self._compact_before_cache_expiry(key, live_agent, slots, action)))
             jobs[key] = task
             task.add_done_callback(lambda _done, key=key: jobs.pop(key, None))
 
-    async def _compact_before_cache_expiry(self, key: str, live_agent, slots: asyncio.Semaphore) -> None:
-        """Compact one idle chat through the manual ``/compress`` pipeline (temporary agent,
-        compression lease, persist, evict) with an automatic trigger, in the chat's profile scope."""
+    async def _compact_before_cache_expiry(self, key: str, live_agent, slots: asyncio.Semaphore,
+                                           action: str = "compact") -> None:
+        """Run the claimed cache-edge *action* on one idle chat: ``compact`` through the manual
+        ``/compress`` pipeline (temporary agent, compression lease, persist, evict) with an automatic
+        trigger, ``offload`` through the cold prune; in the chat's profile scope."""
         claimed_session = getattr(live_agent, "session_id", None)
         async with slots:
             try:
@@ -132,7 +137,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
                     # The FIFO claim waits on ``claim_gate`` (as behind ``/compress``): a message
                     # arriving mid-summary starts its turn on the compacted history, not the old one.
                     async with live.claim_gate if live is not None else contextlib.nullcontext():
-                        await self._compact_claimed_session(key, entry, live_agent)
+                        await self._compact_claimed_session(key, entry, live_agent, action)
             except Exception as e:
                 logger.warning("Cache-expiry compaction failed for %s: %s", key, e, exc_info=True)
 
@@ -146,7 +151,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         entry = route_entry(authority, key)
         return authority, entry, authority.logical_owner(entry.session_id) if entry is not None else None
 
-    async def _compact_claimed_session(self, key: str, entry, live_agent) -> None:
+    async def _compact_claimed_session(self, key: str, entry, live_agent, action: str = "compact") -> None:
         """The compaction runs on a temporary agent and evicts the cached one, so the next turn starts
         on the compacted history with a cold cache; nothing is sent until that next user message. An
         ``offload`` claim (the cache is over, nothing compacted it) instead runs the cold prune on the
@@ -158,7 +163,7 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
         history = await self.async_session_store.load_transcript(entry.session_id)
         if len(history or ()) < MIN_MESSAGES or self._is_session_running(key):
             return
-        if live_agent.__dict__.pop("_cache_edge_action", "compact") == "offload":
+        if action == "offload":
             from agent.turn_proactive_prune import offload_cold_history
             after = await asyncio.to_thread(offload_cold_history, live_agent, history, entry.session_id)
             if after is not history:
@@ -169,47 +174,73 @@ class GatewaySessionWatchersMixin(GatewayAutoResumeMixin):
 
     def _compact_then_release(self, key: str, agent) -> bool:
         """An agent-cache eviction (idle TTL, LRU cap): a budget ends at its keep-alives or at the release,
-        whichever comes first, so a chat whose step 2 is due at release (``claim_compaction_at_release``,
-        which ends the budget: no keep-alive after it) is compacted through the cache-expiry job and its
-        evicted agent released after that. True when the gateway loop now owns the release (the decision
-        runs there: the LRU cap evicts from a turn thread under the cache lock, and the decision reads the
-        session store); False leaves the caller to release as before."""
+        whichever comes first, so a chat whose cache edge is due at release (``claim_edge(releasing=True)``
+        ends the budget: no keep-alive after it) is compacted or offloaded through the cache-expiry job and
+        its evicted agent released after that. True when the gateway loop now owns the release (the LRU cap
+        evicts from a turn thread under the cache lock); False leaves the caller to release as before.
+        Whatever happens to the job (it fails, it is cancelled before its first step, or the loop stops
+        before the callback runs), the agent is released exactly once."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         loop = getattr(self, "_gateway_loop", None)
         if (agent is None or agent is _AGENT_PENDING_SENTINEL or getattr(agent, "_prompt_cache_warmer", None) is None
                 or loop is None or loop.is_closed() or not getattr(self, "_running", False)):
             return False
-        loop.call_soon_threadsafe(self._decide_compact_then_release, key, agent)
+        release = self._release_once(key, agent)
+        try:
+            loop.call_soon_threadsafe(self._decide_compact_then_release, key, agent, release)
+        except RuntimeError:  # the loop closed between the check and the call
+            release()
         return True
 
-    def _decide_compact_then_release(self, key: str, agent) -> None:
-        from agent.prompt_cache_lifecycle import claim_compaction_at_release, claim_offload
-        jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
-        try:
-            # Compact if step 2 is due at release; else, past the window, offload before the release.
-            action = None if key in jobs else (
-                "compact" if claim_compaction_at_release(agent) else "offload" if claim_offload(agent) else None)
-            due = action is not None
-            if due:
-                agent._cache_edge_action = action
-        except Exception:
-            logger.debug("release-time compaction check failed for %s", key, exc_info=True)
-            due = False
-        if not due:
-            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}",
-                                       inline_fallback=True, session_key=key)
-            return
-        slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))
-        task = self._retain_background_task(asyncio.ensure_future(self._compact_then_release_job(key, agent, slots)))
-        jobs[key] = task
-        task.add_done_callback(lambda _done: jobs.pop(key, None))
+    def _release_once(self, key: str, agent) -> Callable[[], None]:
+        """The evicted agent's release, idempotent: the job's done-callback, the loop-closed fallback
+        and shutdown (:meth:`_drain_pending_cache_releases`, for a callback or done-callback the stopped
+        loop never ran) may all reach it."""
+        pending = self.__dict__.setdefault("_pending_cache_releases", {})
+        lock = self.__dict__.setdefault("_pending_cache_releases_lock", threading.Lock())
 
-    async def _compact_then_release_job(self, key: str, agent, slots: asyncio.Semaphore) -> None:
-        try:
-            await self._compact_before_cache_expiry(key, agent, slots)
-        finally:
+        def _release(*_args) -> None:
+            with lock:
+                if pending.get(key) is not _release:
+                    return
+                del pending[key]
             self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-release-{key[:24]}",
                                        inline_fallback=True, session_key=key)
+        previous = pending.get(key)
+        if previous is not None:
+            previous()  # never strand an earlier eviction of the same key
+        with lock:
+            pending[key] = _release
+        return _release
+
+    def _drain_pending_cache_releases(self) -> None:
+        """Shutdown: release every evicted agent whose release-time job never got to release it."""
+        for release in list(self.__dict__.get("_pending_cache_releases", {}).values()):
+            release()
+
+    def _decide_compact_then_release(self, key: str, agent, release: Callable[[], None]) -> None:
+        jobs = self.__dict__.setdefault("_cache_expiry_jobs", {})
+        if key in jobs:
+            release()
+            return
+        task = self._retain_background_task(asyncio.ensure_future(self._compact_then_release_job(key, agent)))
+        jobs[key] = task
+        task.add_done_callback(lambda _done: jobs.pop(key, None))
+        # A done-callback runs even when the task is cancelled before its first step.
+        task.add_done_callback(release)
+
+    async def _compact_then_release_job(self, key: str, agent) -> None:
+        """Claim the cache edge at release off the loop (the claim reads state.db), then run it. The
+        caller's done-callback releases the agent afterwards."""
+        try:
+            action = await asyncio.to_thread(agent._prompt_cache_warmer.claim_edge, releasing=True)
+        except Exception:
+            logger.debug("release-time compaction check failed for %s", key, exc_info=True)
+            return
+        if action is None:
+            return
+        slots = self.__dict__.setdefault("_cache_expiry_slots", asyncio.Semaphore(_CACHE_EXPIRY_CONCURRENCY))
+        await self._compact_before_cache_expiry(key, agent, slots, action)
 
     def _session_stall_timeout_seconds(self) -> float:
         """Return configured stall timeout (seconds); 0 disables the watchdog."""

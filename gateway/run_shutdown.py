@@ -1893,9 +1893,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 continue
             _task.cancel()
         # The restart orchestration task is awaiting _stop_task right now; cancelling it would propagate
-        # CancelledError into this _stop_impl and skip _shutdown_event.set() / _exit_code = 75 (#12875). It
-        # self-terminates anyway.
+        # CancelledError into this _stop_impl and skip _shutdown_event.set() / _exit_code = 75 (#12875).
         self._background_tasks.clear()
+        self._drain_pending_cache_releases()  # cache-edge jobs just cancelled (or never scheduled) owe a release
         ctx.api_live = self._active_api_run_count()
         self.adapters.clear()
         for _session_key in list(self._running_agents):

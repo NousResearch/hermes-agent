@@ -44,7 +44,7 @@ class _OpenaiBackendStub:
         self._patches = [
             patch("tools.tts_tool._import_openai_client", return_value=mock_cls),
             patch(
-                "tools.tts_tool_openai._resolve_openai_audio_client_config",
+                "speech.synthesis.openai_compatible._resolve_openai_audio_client_config",
                 return_value=(_fake_key("openai"), None, False),
             ),
             patch(

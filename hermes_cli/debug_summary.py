@@ -41,8 +41,9 @@ _MAX_SHAPE_DEPTH = 2
 _KNOWN_LOGGER_ROOTS = frozenset({
     "acp_adapter", "agent", "cli", "cron", "gateway", "hermes", "hermes_cli", "hermes_constants",
     "hermes_logging", "hermes_platform", "hermes_state", "model_tools", "pm", "plugins",
-    "providers", "run_agent", "toolsets", "tools", "tui_gateway", "asyncio", "httpx", "httpcore",
-    "openai", "anthropic", "urllib3", "websockets", "aiohttp", "uvicorn", "fastapi", "mcp"})
+    "providers", "run_agent", "speech", "toolsets", "tools", "tui_gateway", "asyncio", "httpx",
+    "httpcore", "openai", "anthropic", "urllib3", "websockets", "aiohttp", "uvicorn", "fastapi",
+    "mcp"})
 
 PUBLIC_SUMMARY_BANNER = (
     "[hermes debug share: PUBLIC SUMMARY. Allowlisted fields only (versions, config key "

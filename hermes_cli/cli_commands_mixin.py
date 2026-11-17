@@ -2144,7 +2144,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _persist_wake_word_enabled(self, enabled: bool):
         """Save ``wake_word.enabled`` so the /wake toggle sticks for future sessions."""
-        persisted = _probe("tools.wake_word", "load_wake_word_config", None)
+        persisted = _probe("speech.wake_word.listener", "load_wake_word_config", None)
         if isinstance(persisted, dict) and bool(persisted.get("enabled")) == enabled:
             return  # already persisted — don't rewrite config or re-announce
         if _save("wake_word.enabled", enabled):

@@ -1,4 +1,4 @@
-"""ffmpeg discovery for Discord voice: ``tools.transcription_audio`` owns the shared lookup
+"""ffmpeg discovery for Discord voice: ``speech.transcription.audio`` owns the shared lookup
 (PATH + Homebrew/local prefixes); this layers an explicit ``FFMPEG_PATH`` override and a
 Windows winget fallback (installs that never touch PATH) on top."""
 
@@ -12,7 +12,7 @@ from pathlib import Path
 def _shared_find_ffmpeg():
     """Delegate to the repo-wide ffmpeg discovery helper when importable."""
     try:
-        from tools.transcription_audio import _find_ffmpeg_binary
+        from speech.transcription.audio import _find_ffmpeg_binary
     except ImportError:  # standalone plugin import (tests / sandboxes)
         return shutil.which("ffmpeg")
     return _find_ffmpeg_binary()

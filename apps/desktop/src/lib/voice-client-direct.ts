@@ -8,7 +8,7 @@ import { getApiRequestConnection, getApiRequestProfile, hermesApi } from '@/herm
  * The gateway stays the single source of truth for WHICH provider and WHICH
  * credentials to use — `GET /api/audio/voice-config` returns the same
  * resolution the gateway's own relay endpoints would apply (see
- * `tools/voice_client_config.py`). This module only executes the provider
+ * `speech/voice/client_config.py`). This module only executes the provider
  * call locally. Direction of travel:
  *
  *   mic → provider (audio up, once) → text → gateway   (STT)
@@ -210,7 +210,7 @@ export function sttTimeoutSeconds(stt: Pick<DirectSttConfig, 'timeout_s'>): numb
 
 /**
  * The relay path's Whisper-silence filter (`is_whisper_hallucination`,
- * tools/voice_mode_transcript.py): empty, an exact known hallucination
+ * speech/voice_mode_transcript.py): empty, an exact known hallucination
  * (lowercased, trailing `.!` stripped), or repetitive filler like
  * "Thank you. Thank you." A client-direct transcript must agree with a
  * relayed one instead of submitting "thank you" on silence as a real turn.

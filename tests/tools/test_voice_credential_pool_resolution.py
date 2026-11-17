@@ -175,7 +175,7 @@ class TestToolWiring:
     """The tools' module-level helpers delegate to the shared resolver."""
 
     def test_transcription_tools_delegates(self):
-        from tools import transcription_tools as tt
+        from speech.transcription import transcriber as tt
 
         def fake_load_pool(pid):
             return _fake_pool("stt-pool-key" if pid == "groq" else "")

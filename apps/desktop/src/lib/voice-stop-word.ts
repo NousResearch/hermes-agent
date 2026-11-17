@@ -15,7 +15,7 @@
 // Config: a customised `voice.stop_phrases` replaces the built-in English list
 // (any language). Absent or left at the backend default, the English list below
 // is used. An explicit empty list disables spoken stop entirely — mirroring
-// `tools.voice_mode.is_voice_stop_phrase` (#117801).
+// `speech.voice.mode.is_voice_stop_phrase` (#117801).
 
 import { $voiceStopPhraseConfig, type VoiceStopPhraseConfig } from '@/store/voice-prefs'
 

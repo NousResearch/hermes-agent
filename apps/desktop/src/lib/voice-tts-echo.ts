@@ -1,5 +1,5 @@
 // TTS self-echo guard for the voice-conversation barge monitor — a port of
-// tools/voice_mode_transcript.is_tts_echo (the CLI's fix for the
+// speech/voice_mode_transcript.is_tts_echo (the CLI's fix for the
 // TTS -> STT -> TTS loop). Over speakers, Hermes' own reply bleeds into the
 // mic, trips the playback-phase barge trigger, and gets transcribed; without
 // this check the fragment is submitted as a user turn nobody spoke (#126708).
@@ -9,10 +9,10 @@
 // included), 0.6 threshold, and a transcript-sized sliding window over the
 // spoken text for fragments of long replies.
 
-/** tools/voice_mode_transcript.DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD */
+/** speech/voice_mode_transcript.DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD */
 export const DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD = 0.6
 
-/** tools/voice_mode_transcript.MIN_FRAGMENT_LENGTH_FOR_ECHO — below this a
+/** speech/voice_mode_transcript.MIN_FRAGMENT_LENGTH_FOR_ECHO — below this a
  *  genuine one-word barge ("yes") would trivially match a same-size window. */
 export const MIN_FRAGMENT_LENGTH_FOR_ECHO = 10
 

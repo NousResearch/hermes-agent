@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tts_command_provider import (
+from speech.command_provider import (
     DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH,
     DEFAULT_COMMAND_TTS_OUTPUT_FORMAT,
     DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS,
@@ -131,7 +131,7 @@ class TestCommandTtsEnv:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
+        monkeypatch.setattr("speech.command_provider.spawn_owned", fake_popen)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -601,7 +601,7 @@ class TestCommandTtsEnvPassthrough:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
+        monkeypatch.setattr("speech.command_provider.spawn_owned", fake_popen)
 
         result = _run_command_tts(
             "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
@@ -613,7 +613,7 @@ class TestCommandTtsEnvPassthrough:
         assert "OPENAI_API_KEY" not in env
 
     def test_allowlist_parsed_from_provider_config(self):
-        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
+        from speech.command_provider import command_env_passthrough as _command_provider_env_passthrough
 
         assert _command_provider_env_passthrough(
             {"env_passthrough": ["A_KEY", " B_KEY ", ""]}
@@ -624,7 +624,7 @@ class TestCommandTtsEnvPassthrough:
     def test_allowlist_refuses_hermes_provider_credentials(self):
         """Provider config cannot smuggle Hermes-managed credentials back into the
         scrubbed command child env (#138361, GHSA-rhgp-j443-p4rf policy)."""
-        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
+        from speech.command_provider import command_env_passthrough as _command_provider_env_passthrough
 
         assert _command_provider_env_passthrough(
             {"env_passthrough": ["MY_TTS_API_KEY", "OPENAI_API_KEY", "anthropic_api_key"]}
@@ -644,7 +644,7 @@ class TestCommandProviderSpawnGroupKwargs:
 
     def test_nt_branch_hides_the_console_window(self, monkeypatch):
         from hermes_cli import _subprocess_compat
-        from tools.tts_command_provider import provider_popen_group_kwargs
+        from speech.command_provider import provider_popen_group_kwargs
 
         # Pin the compat module's host probe so the nt data branch is assertable
         # on every host (the helper caches IS_WINDOWS from the real platform).
@@ -658,7 +658,7 @@ class TestCommandProviderSpawnGroupKwargs:
 
     def test_nt_branch_matches_the_shared_detach_bundle(self, monkeypatch):
         from hermes_cli import _subprocess_compat
-        from tools.tts_command_provider import provider_popen_group_kwargs
+        from speech.command_provider import provider_popen_group_kwargs
 
         monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
         assert provider_popen_group_kwargs("nt")["creationflags"] == (
@@ -666,7 +666,7 @@ class TestCommandProviderSpawnGroupKwargs:
         )
 
     def test_posix_branch_leaves_the_group_to_spawn_owned(self):
-        from tools.tts_command_provider import provider_popen_group_kwargs
+        from speech.command_provider import provider_popen_group_kwargs
 
         # spawn_owned makes the child a session/group leader (and ties the group to our life).
         assert provider_popen_group_kwargs("posix") == {}
@@ -695,7 +695,7 @@ class TestCommandProviderSpawnGroupKwargs:
             captured.update(kwargs)
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("speech.command_provider.subprocess.Popen", fake_popen)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -729,7 +729,7 @@ class TestCommandProviderSpawnGroupKwargs:
             captured.update(kwargs, purpose=purpose)
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_spawn_owned)
+        monkeypatch.setattr("speech.command_provider.spawn_owned", fake_spawn_owned)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -748,7 +748,7 @@ class TestIdleKillConsoleHidden:
 
     @pytest.mark.platforms("windows")
     def test_idle_kill_taskkill_hides_console_windows(self, monkeypatch):
-        import tools.tts_command_provider as mod
+        import speech.command_provider as mod
 
         runs = []
         real_run = subprocess.run

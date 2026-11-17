@@ -18,7 +18,7 @@ import types
 
 import pytest
 
-from tools import voice_live
+from speech.voice import live as voice_live
 from tui_gateway import server
 
 

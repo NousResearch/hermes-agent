@@ -64,7 +64,7 @@ async def test_voice_message_still_transcribed():
     event = _voice_event("/tmp/voice.ogg")
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "speech.transcription.transcriber.transcribe_audio",
         return_value={"success": True, "transcript": "hello world", "provider": "whisper"},
     ) as mock_transcribe:
         result = await runner._prepare_inbound_message_text(
@@ -92,7 +92,7 @@ async def test_audio_attachment_context_note_format():
     event = _audio_event("/tmp/cache_12345_my_song.mp3")
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "speech.transcription.transcriber.transcribe_audio",
         side_effect=AssertionError("must not be called"),
     ):
         with patch(

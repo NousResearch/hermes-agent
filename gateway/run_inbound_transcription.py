@@ -170,7 +170,7 @@ class GatewayInboundTranscriptionMixin:
             return (self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text), []
 
         try:
-            from tools.transcription_tools import (
+            from speech.transcription.transcriber import (
                 transcribe_audio, transcribe_audio_local_fallback
             )
         except ModuleNotFoundError as e:
@@ -349,7 +349,7 @@ async def transcribe_one_clip(path: str, transcribe_audio=None, transcribe_audio
     """``(transcript_or_None, note)`` for one clip via configured STT with local fallback. Also the
     adapters' group mention gate (``gateway.platforms.helpers.spoken_mention_clips``)."""
     if transcribe_audio is None:
-        from tools.transcription_tools import transcribe_audio, transcribe_audio_local_fallback
+        from speech.transcription.transcriber import transcribe_audio, transcribe_audio_local_fallback
     result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
     if not result.get("success"):
         fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)

@@ -537,7 +537,7 @@ class CLITuiRuntimeMixin:
                 self._voice_recorder.shutdown()
             self._voice_recorder = None
         with suppress(Exception):
-            from tools.voice_mode import cleanup_temp_recordings
+            from speech.voice.mode import cleanup_temp_recordings
             cleanup_temp_recordings()
         from agent.vault_backends.unlock import (lock as _vault_lock, set_code_prompt_callback,
                                                  set_save_login_prompt_callback, set_unlock_prompt_callback)

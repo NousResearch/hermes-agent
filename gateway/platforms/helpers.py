@@ -670,7 +670,7 @@ async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = Non
     results: dict = {}
     try:
         async with _gate_stt_scope(adapter, source):
-            from tools.transcription_tools import is_stt_enabled
+            from speech.transcription.transcriber import is_stt_enabled
             enabled = stt_enabled_for_turn(getattr(adapter, "gateway_runner", None)) \
                 and _sender_may_use_bot(adapter, source) and await asyncio.to_thread(is_stt_enabled)
             for path in paths if enabled else ():

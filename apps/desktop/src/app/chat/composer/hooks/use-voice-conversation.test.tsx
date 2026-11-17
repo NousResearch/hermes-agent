@@ -330,7 +330,7 @@ describe('useVoiceConversation full-duplex barge-in', () => {
 
 // #126708 — over speakers the reply bleeds into the mic and trips the
 // playback-phase barge. The CLI drops a capture that matches what it was
-// speaking (tools/voice_mode_transcript.is_tts_echo); the desktop loop must
+// speaking (speech/voice_mode_transcript.is_tts_echo); the desktop loop must
 // too, instead of submitting Hermes' own words as an "interrupting" user turn.
 describe('useVoiceConversation TTS echo guard (#126708)', () => {
   const spokenReply =

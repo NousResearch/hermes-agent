@@ -909,7 +909,7 @@ _SLACK_AUDIO_MIME_TO_EXT = {
     "audio/x-m4a": ".m4a", "audio/m4a": ".m4a", "audio/aac": ".m4a", "audio/flac": ".flac",
     "audio/x-flac": ".flac"}
 
-# Extensions Whisper-family STT accepts (in sync with tools/transcription_tools.SUPPORTED_FORMATS).
+# Extensions Whisper-family STT accepts (in sync with speech/transcription/transcriber.SUPPORTED_FORMATS).
 _SLACK_STT_SUPPORTED_EXTS = frozenset(
     {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"})
 

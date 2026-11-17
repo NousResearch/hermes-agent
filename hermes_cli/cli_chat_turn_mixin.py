@@ -137,7 +137,7 @@ class CLIChatTurnMixin:
         from cli import logger
         if turn.thinking_started:
             try:
-                from tools.voice_mode import stop_thinking_sound
+                from speech.voice.mode import stop_thinking_sound
                 stop_thinking_sound()
             except Exception:
                 pass
@@ -243,7 +243,7 @@ class CLIChatTurnMixin:
         if self._voice_tts:
             try:
                 from tools.tts_tool import check_tts_requirements
-                from tools.tts_tool_speaker import stream_tts_to_speaker
+                from speech.synthesis.speaker import stream_tts_to_speaker
                 turn.use_streaming_tts = check_tts_requirements()
             except Exception:
                 logging.debug("streaming TTS arm check failed", exc_info=True)
@@ -324,7 +324,7 @@ class CLIChatTurnMixin:
                 _taken_notes[_note_attr] = _note
                 setattr(self, _note_attr, None)
         # Barged mid-speech (VAD or record key)? Tell the model it was cut off.
-        from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
+        from speech.synthesis.streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
         if take_speech_interrupted():
             agent_message = _prepend_note_to_message(agent_message, SPEECH_INTERRUPTED_NOTE)
         _moa_cfg = getattr(self, "_pending_moa_config", None)
@@ -417,7 +417,7 @@ class CLIChatTurnMixin:
         # records or a barge capture is live. voice.thinking_sound gates it (default on).
         if self._voice_mode:
             try:
-                from tools.voice_mode import start_thinking_sound
+                from speech.voice.mode import start_thinking_sound
                 turn.thinking_started = start_thinking_sound(should_play=lambda: (
                     self._voice_tts_done.is_set() and not self._voice_recording
                     and not self._voice_barge_capture.is_set()))

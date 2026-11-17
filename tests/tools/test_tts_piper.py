@@ -14,12 +14,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools import tts_tool, tts_tool_local
+from speech.synthesis import local as tts_tool_local
+from tools import tts_tool
 from tools.tts_tool import (
     check_tts_requirements,
     text_to_speech_tool,
 )
-from tools.tts_tool_local import DEFAULT_PIPER_VOICE, _resolve_piper_voice_path
+from speech.synthesis.local import DEFAULT_PIPER_VOICE, _resolve_piper_voice_path
 
 
 # ---------------------------------------------------------------------------

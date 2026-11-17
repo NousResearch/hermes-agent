@@ -334,7 +334,8 @@ COMPONENT_PREFIXES = {
     # memory-provider profile refusals (#140058), which the operator reads in gateway.log.
     "gateway": ("gateway", "hermes_plugins", "plugins.platforms", "agent.memory_caller_scope"),
     "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
-    "tools": ("tools",),
+    # ``speech``: the voice and speech modules left ``tools/`` and stay under this component.
+    "tools": ("tools", "speech"),
     "cli": ("hermes_cli", "cli"),
     "cron": ("cron",),
     "gui": ("hermes_cli.web_server", "hermes_cli.pty_bridge", "hermes_cli.desktop", "tui_gateway", "uvicorn"),

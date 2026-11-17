@@ -47,7 +47,7 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
     monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "speech.voice.mode",
         types.SimpleNamespace(
             check_voice_requirements=lambda: {"available": True, "details": ""}
         ),

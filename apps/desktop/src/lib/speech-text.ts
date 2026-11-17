@@ -24,7 +24,7 @@ const URL_RE = /\bhttps?:\/\/\S+/gi
 // "peyton dash sample dash two zero two six..."), making clean audio sound
 // corrupted. They become silence, never a hardcoded English placeholder word
 // (#86602: the reply may be in any language). Mirrored token-for-token by
-// tools/tts_text_normalize.py (`prune_identifier_tokens_for_tts`) — keep both
+// speech/synthesis/text_normalize.py (`prune_identifier_tokens_for_tts`) — keep both
 // in lockstep and extend the shared corpus
 // (tests/fixtures/identifier_speech_corpus.json) first.
 const FILENAME_EXT_RE =

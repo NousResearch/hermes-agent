@@ -124,7 +124,7 @@ def test_media_delivery_never_attaches_a_host_file(tmp_path):
 
 def test_transcription_reads_no_host_audio(tmp_path, no_spawn):
     from tools.environments import sandbox_conformance as conformance
-    from tools.transcription_tools import transcribe_audio
+    from speech.transcription.transcriber import transcribe_audio
 
     audio = tmp_path / "voice.ogg"
     audio.write_bytes(b"OggS")

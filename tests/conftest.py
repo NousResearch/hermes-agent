@@ -1051,9 +1051,9 @@ def _wal_is_usable() -> bool:
 #    them wherever they import it from.
 #  • ``hermes_cli.voice.play_audio_file`` — the module-level binding
 #    ``speak_text`` actually plays through. Patching the binding inside
-#    ``hermes_cli.voice`` (not ``tools.voice_mode``) keeps the real function
+#    ``hermes_cli.voice`` (not ``speech.voice.mode``) keeps the real function
 #    available to the tests that legitimately exercise it with a mocked
-#    audio backend (``tests/tools/test_voice_mode.py``).
+#    audio backend (``tests/speech/test_voice_mode.py``).
 #
 # Config cannot re-open this hole: the ``tts:`` section of ``config.yaml``
 # only selects *which* provider speaks, never *whether* to speak — that gate

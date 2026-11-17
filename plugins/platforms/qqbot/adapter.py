@@ -1212,7 +1212,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         vars; None when unconfigured (QQ's built-in ASR still works). ``timeout`` (seconds,
         default 60) follows the shared STT client default so a self-hosted model's cold start
         is not cut off at 30s (#112939)."""
-        from tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number  # lazy: keep adapter light
+        from speech.transcription.settings import DEFAULT_STT_TIMEOUT, _config_number  # lazy: keep adapter light
         stt_cfg = (self.config.extra or {}).get("stt")
         if isinstance(stt_cfg, dict) and stt_cfg.get("enabled") is not False:
             base_url = stt_cfg.get("baseUrl") or stt_cfg.get("base_url", "")

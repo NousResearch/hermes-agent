@@ -551,8 +551,8 @@ class TestVoiceSubmission:
         return cli_obj
 
     def test_voice_transcript_clears_stale_attached_images(self, cli):
-        with patch("tools.voice_mode.play_beep"):
-            with patch("tools.voice_mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
+        with patch("speech.voice.mode.play_beep"):
+            with patch("speech.voice.mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
                 with patch("os.path.isfile", return_value=False):
                     with patch("cli._cprint"):
                         cli._voice_stop_and_transcribe()

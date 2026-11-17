@@ -51,7 +51,7 @@ def client(monkeypatch, isolated_profiles):
 
 @pytest.fixture(autouse=True)
 def _clean_stt_state():
-    from tools import transcription_tools
+    from speech.transcription import transcriber as transcription_tools
 
     saved_model, saved_name = transcription_tools._local_model, transcription_tools._local_model_name
     transcription_tools._local_model, transcription_tools._local_model_name = None, None
@@ -60,7 +60,7 @@ def _clean_stt_state():
 
 
 def _local_cfg(monkeypatch, model="tiny"):
-    from tools import transcription_tools
+    from speech.transcription import transcriber as transcription_tools
 
     monkeypatch.setattr(transcription_tools, "_HAS_FASTER_WHISPER", True)
     monkeypatch.setattr(
@@ -71,7 +71,7 @@ def _local_cfg(monkeypatch, model="tiny"):
 
 
 def test_active_acquires_and_warms(client, monkeypatch):
-    from tools import stt_lease
+    from speech.transcription import lease as stt_lease
 
     warmed = []
     monkeypatch.setattr(
@@ -92,7 +92,7 @@ def test_active_acquires_and_warms(client, monkeypatch):
 
 
 def test_inactive_releases_without_unloading(client, monkeypatch):
-    from tools import stt_lease, transcription_tools
+    from speech.transcription import lease as stt_lease, transcriber as transcription_tools
 
     warmed = []
     monkeypatch.setattr(
@@ -117,7 +117,7 @@ def test_inactive_releases_without_unloading(client, monkeypatch):
 
 
 def test_warm_failure_is_reported_not_an_http_error(client, monkeypatch):
-    from tools import stt_lease
+    from speech.transcription import lease as stt_lease
 
     def _boom(cfg=None, provider=None):
         raise RuntimeError("engine exploded")
@@ -137,7 +137,7 @@ def test_blank_lease_rejected(client):
 
 
 def test_warm_loads_configured_local_model_into_transcription_slot(monkeypatch):
-    from tools import stt_lease, transcription_tools
+    from speech.transcription import lease as stt_lease, transcriber as transcription_tools
 
     _local_cfg(monkeypatch, model="small")
     loaded = []
@@ -159,7 +159,7 @@ def test_warm_loads_configured_local_model_into_transcription_slot(monkeypatch):
 
 
 def test_warm_reports_cached_when_model_already_resident(monkeypatch):
-    from tools import stt_lease, transcription_tools
+    from speech.transcription import lease as stt_lease, transcriber as transcription_tools
 
     _local_cfg(monkeypatch, model="tiny")
     sentinel = object()
@@ -182,7 +182,7 @@ def test_warm_reports_cached_when_model_already_resident(monkeypatch):
 
 
 def test_warm_is_noop_for_cloud_providers(monkeypatch):
-    from tools import stt_lease, transcription_tools
+    from speech.transcription import lease as stt_lease, transcriber as transcription_tools
 
     monkeypatch.setattr(transcription_tools, "_load_stt_config", lambda: {"provider": "openai"})
     monkeypatch.setattr(transcription_tools, "_get_provider", lambda cfg: "openai")
@@ -199,7 +199,7 @@ def test_warm_is_noop_for_cloud_providers(monkeypatch):
 
 
 def test_warm_never_raises_on_engine_failure(monkeypatch):
-    from tools import stt_lease, transcription_tools
+    from speech.transcription import lease as stt_lease, transcriber as transcription_tools
 
     _local_cfg(monkeypatch)
 
@@ -225,7 +225,7 @@ def test_warm_only_load_starts_idle_unload_watcher(monkeypatch):
     executes the real acquire/load path with a fresh process-like state and
     asserts the watcher started and eventually evicts the model.
     """
-    from tools import stt_lease, transcription_tools
+    from speech.transcription import lease as stt_lease, transcriber as transcription_tools
 
     _local_cfg(monkeypatch)
     monkeypatch.setattr(
@@ -271,7 +271,7 @@ def test_warm_only_load_starts_idle_unload_watcher(monkeypatch):
 def test_warm_reacquire_after_eviction_restarts_watcher(monkeypatch):
     """After a prior watcher evicted its model and exited, a warm-up that
     reloads it must start a NEW watcher — the old thread is gone."""
-    from tools import stt_lease, transcription_tools
+    from speech.transcription import lease as stt_lease, transcriber as transcription_tools
 
     _local_cfg(monkeypatch)
     monkeypatch.setattr(
@@ -315,7 +315,7 @@ def _watch_under_profiles(monkeypatch, *owners):
     import contextvars
     import threading
 
-    from tools import transcription_tools
+    from speech.transcription import transcriber as transcription_tools
 
     class _GatedStop:
         """The watcher's first tick waits until every owner has been registered."""

@@ -45,7 +45,7 @@ interface VoiceLiveConversationOptions {
 
 /** Turn transcript fragments into the Hermes turn: `prompt` is what the user
  *  last said (the persisted user row), `context` the recent spoken exchange
- *  that rides the model input only (see tools/voice_live.py). */
+ *  that rides the model input only (see speech/voice/live.py). */
 export function delegationPrompt(context: LiveTranscriptFragment[]): { context: string; prompt: string } {
   const turns: Array<{ speaker: 'assistant' | 'user'; text: string }> = []
 

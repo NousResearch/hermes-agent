@@ -3170,7 +3170,7 @@ export interface WakeStatusResult {
   sample_rate: number
   frame_length: number
 }
-/** ``tools/wake_word.py::_describe_input_device`` — PortAudio diagnostics for the configured mic. */
+/** ``speech/wake_word/listener.py::_describe_input_device`` — PortAudio diagnostics for the configured mic. */
 export interface WakeInputDevice {
   selector?: number | string | null
   name?: string | null

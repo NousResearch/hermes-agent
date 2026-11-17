@@ -2,7 +2,7 @@
 
 Central map of registered STT providers, populated by plugins via
 :meth:`PluginContext.register_transcription_provider` and consumed by
-:mod:`tools.transcription_tools` to dispatch :func:`transcribe_audio` to the active plugin
+:mod:`speech.transcription.transcriber` to dispatch :func:`transcribe_audio` to the active plugin
 backend **when** ``stt.provider`` is not a built-in. Built-ins always win: a colliding name is
 rejected at registration with a warning (re-checked at dispatch time).
 """
@@ -13,7 +13,7 @@ import logging
 
 from agent.provider_registry import ProviderRegistry, lower_key
 from agent.transcription_provider import TranscriptionProvider
-from tools.transcription_common import BUILTIN_STT_PROVIDERS as _BUILTIN_NAMES
+from speech.transcription.settings import BUILTIN_STT_PROVIDERS as _BUILTIN_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _warn_builtin_collision(key: str) -> None:
     )
 
 
-# Case-insensitive, whitespace-tolerant keys mirror ``tools.transcription_tools``.
+# Case-insensitive, whitespace-tolerant keys mirror ``speech.transcription.transcriber``.
 _registry: ProviderRegistry[TranscriptionProvider] = ProviderRegistry(
     label="Transcription",
     provider_cls=TranscriptionProvider,

@@ -544,27 +544,27 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/transcription_audio.py",
+    "path": "speech/transcription/audio.py",
     "symbol": "_convert_caf_to_wav",
     "kind": "bare_which"
   },
   {
-    "path": "tools/transcription_audio.py",
+    "path": "speech/transcription/audio.py",
     "symbol": "_find_binary",
     "kind": "bare_which"
   },
   {
-    "path": "tools/tts_tool_delivery.py",
+    "path": "speech/synthesis/delivery.py",
     "symbol": "_concat_audio_files",
     "kind": "bare_which"
   },
   {
-    "path": "tools/tts_tool_delivery.py",
+    "path": "speech/synthesis/delivery.py",
     "symbol": "_finalize_wav_output",
     "kind": "bare_which"
   },
   {
-    "path": "tools/tts_tool_delivery.py",
+    "path": "speech/synthesis/delivery.py",
     "symbol": "_write_wav_bytes_as",
     "kind": "bare_which"
   },
@@ -574,27 +574,27 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/voice_mode.py",
+    "path": "speech/voice/mode.py",
     "symbol": "_play_audio_file_impl",
     "kind": "bare_which"
   },
   {
-    "path": "tools/voice_mode.py",
+    "path": "speech/voice/mode.py",
     "symbol": "_termux_api_app_installed",
     "kind": "bare_which"
   },
   {
-    "path": "tools/voice_mode.py",
+    "path": "speech/voice/mode.py",
     "symbol": "_termux_microphone_command",
     "kind": "bare_which"
   },
   {
-    "path": "tools/voice_mode.py",
+    "path": "speech/voice/mode.py",
     "symbol": "_wsl_powershell_player_cmd",
     "kind": "bare_which"
   },
   {
-    "path": "tools/voice_mode.py",
+    "path": "speech/voice/mode.py",
     "symbol": "_wsl_powershell_tts_available",
     "kind": "bare_which"
   },

@@ -125,7 +125,7 @@ def _shutdown_agent_memory_provider(agent) -> None:
 
 
 def _stop_cli_wake_word() -> None:
-    from tools.wake_word import stop_listening
+    from speech.wake_word.listener import stop_listening
     if _cli()._cli_wake_owner is not None:
         stop_listening(owner=_cli()._cli_wake_owner)
 

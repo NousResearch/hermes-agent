@@ -29,7 +29,8 @@ def scopes(daemon, monkeypatch):
     """Fake live providers recording (stage, home, profile secret) at each provider stage."""
     from agent.secret_scope import get_secret
     from hermes_constants import get_hermes_home
-    from tools import transcription_streaming, tts_streaming
+    from speech.synthesis import streaming as tts_streaming
+    from speech.transcription import streaming as transcription_streaming
     (daemon.beta / ".env").write_text("VOICE_KEY=beta\n")
     seen = []
 

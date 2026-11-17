@@ -37,7 +37,7 @@ if (typeof window !== 'undefined') {
 }
 
 // Backend default for `voice.stop_phrases` (DEFAULT_VOICE_STOP_PHRASES in
-// tools/voice_mode_transcript.py), used until `/api/config/defaults` answers.
+// speech/voice_mode_transcript.py), used until `/api/config/defaults` answers.
 const BACKEND_DEFAULT_STOP_PHRASES: readonly string[] = ['stop']
 
 // First configured `voice.stop_phrases` entry — drives the "Say "stop" to end

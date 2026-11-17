@@ -16,8 +16,8 @@ from hermes_cli.config import (
 from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
-from tools.transcription_common import STT_MODEL_CATALOG
-from tools.wake_word import _PROVIDER_PREFERENCE
+from speech.transcription.settings import STT_MODEL_CATALOG
+from speech.wake_word.listener import _PROVIDER_PREFERENCE
 from utils import same_base_url_origin
 
 if TYPE_CHECKING:
@@ -278,8 +278,8 @@ CONFIG_SCHEMA = _config_schema_with_virtual_fields()
 def _is_command_provider_block(value: Any) -> bool:
     """True when *value* declares a command-type voice provider.
 
-    Mirrors the runtime discriminators (``tools.tts_command_provider._is_command_provider_config`` /
-    ``tools.transcription_command._is_command_stt_provider_config``) and the desktop's
+    Mirrors the runtime discriminators (``speech.command_provider._is_command_provider_config`` /
+    ``speech.transcription.command._is_command_stt_provider_config``) and the desktop's
     ``isCommandProvider``: ``type`` is OPTIONAL and case/space-insensitive (absent or
     normalizing to ``"command"``); ``command`` MUST be a non-empty string.
     """
@@ -310,7 +310,7 @@ def _custom_provider_options(kind: str, builtin_names: list[str], cfg: dict[str,
     if kind == "tts":
         from tools.tts_tool import BUILTIN_TTS_PROVIDERS as _runtime_builtins
     else:
-        from tools.transcription_common import BUILTIN_STT_PROVIDERS as _runtime_builtins
+        from speech.transcription.settings import BUILTIN_STT_PROVIDERS as _runtime_builtins
 
     def _add(name: Any) -> None:
         stripped = name.strip() if isinstance(name, str) else ""

@@ -127,7 +127,7 @@ async def transcribe_audio_upload(
             # hallucinations and maps provider "empty transcript" errors to a
             # successful empty result — the live voice loop treats "" as silence
             # and re-listens instead of surfacing a 400 on every quiet turn.
-            from tools.voice_mode import transcribe_recording
+            from speech.voice.mode import transcribe_recording
 
             result = await _run_config_scoped(profile, lambda: transcribe_recording(temp_path))
     finally:
@@ -166,7 +166,7 @@ async def get_client_voice_config(request: Request, profile: Optional[str] = Non
     Gate: ``voice.client_direct`` in config.yaml (default true), and the
     serving surface (``client_direct_voice``: the Webapp always relays).
     """
-    from tools.voice_client_config import resolve_client_voice_config
+    from speech.voice.client_config import resolve_client_voice_config
     client_direct = policy(request.app.state).client_direct_voice
     try:
         result = await _run_config_scoped(profile, lambda: resolve_client_voice_config(client_direct))
@@ -184,7 +184,7 @@ async def get_client_voice_config(request: Request, profile: Optional[str] = Non
 async def get_voice_live_status(profile: Optional[str] = None):
     """Which voice chat mode the profile selected (``chained`` | ``gpt-live``) and whether GPT-Live
     can start. Non-secret: the desktop decides which conversation engine to mount from this."""
-    from tools.voice_live import resolve_gpt_live_status
+    from speech.voice.live import resolve_gpt_live_status
     with http_failure("GPT-Live status resolution failed", 500, "GPT-Live status failed"):
         result = await _run_config_scoped(profile, resolve_gpt_live_status)
     return {"ok": True, **result}
@@ -198,7 +198,7 @@ async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: O
     SDP answer. Client delegation is fixed at creation: every ``session.delegation.created`` the
     renderer receives becomes a Hermes turn on the session it belongs to.
     """
-    from tools.voice_live import create_webrtc_session
+    from speech.voice.live import create_webrtc_session
     # Validate emptiness only: the vendor's SDP parser needs the offer byte-exact, including the
     # trailing CRLF (a stripped offer answers 400 "failed to unmarshal SDP: EOF").
     sdp = payload.sdp or ""
@@ -368,7 +368,7 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail="lease is required")
 
     def _apply():
-        from tools.tts_tool_lifecycle import acquire_tts_lease, release_tts_lease
+        from speech.synthesis.lifecycle import acquire_tts_lease, release_tts_lease
         if payload.active:
             with _config_profile_scope(profile):
                 return acquire_tts_lease(lease)
@@ -470,7 +470,7 @@ def _wav_s16le_mono(path: str) -> tuple:
 def _ffmpeg_s16le_mono(path: str) -> tuple:
     import shutil
 
-    from tools.tts_tool_delivery import _ffmpeg_run
+    from speech.synthesis.delivery import _ffmpeg_run
 
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -503,7 +503,7 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail="lease is required")
 
     def _apply():
-        from tools.stt_lease import warm_stt_provider
+        from speech.transcription.lease import warm_stt_provider
         if not payload.active:
             return {}
         with _config_profile_scope(profile):
@@ -548,7 +548,7 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
     partials: asyncio.Queue = asyncio.Queue()
 
     def _open():
-        from tools.transcription_streaming import open_streaming_session
+        from speech.transcription.streaming import open_streaming_session
         with grant_home_scope(grant), _config_profile_scope(profile):
             return open_streaming_session(on_partial=lambda text: loop.call_soon_threadsafe(partials.put_nowait, text))
 
@@ -644,7 +644,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
     loop = asyncio.get_running_loop()
 
     def _resolve():
-        from tools.tts_streaming import resolve_streaming_provider
+        from speech.synthesis.streaming import resolve_streaming_provider
         from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
         with grant_home_scope(grant), _config_profile_scope(profile):
             cfg = _load_tts_config()
@@ -693,8 +693,8 @@ async def speak_stream_ws(ws: WebSocket) -> None:
 
     def _synthesize():
         nonlocal produced_audio, synthesis_failed
-        from tools.tts_streaming import SentenceChunker
-        from tools.tts_text_normalize import _strip_markdown_for_tts
+        from speech.synthesis.streaming import SentenceChunker
+        from speech.synthesis.text_normalize import _strip_markdown_for_tts
 
         chunker = SentenceChunker.from_config(cfg)  # the requesting profile's tts.streaming.min_len
 

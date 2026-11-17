@@ -13,7 +13,7 @@ from hermes_cli.cli_output import (
     print_warning as _print_warning)
 from hermes_cli.config import get_env_value
 from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
-from tools.transcription_common import DEFAULT_LOCAL_MODEL, STT_MODEL_CATALOG
+from speech.transcription.settings import DEFAULT_LOCAL_MODEL, STT_MODEL_CATALOG
 
 _LOCAL_STT_MODEL_SUMMARY = ", ".join(
     f"{model} (default)" if model == DEFAULT_LOCAL_MODEL else model for model in STT_MODEL_CATALOG["local"]

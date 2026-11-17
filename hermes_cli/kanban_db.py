@@ -110,9 +110,11 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
-# Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
+# Same-kind block -> unblock -> re-block cycles before loop detection.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+# A repeated unanswered human question is not a loop; its place is Blocked.
+BLOCK_LOOP_TRIAGE_EXEMPT_KINDS = frozenset({"needs_input"})
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -868,12 +870,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to ``blocked`` for a human. Preserved across unblock so a re-block for
     -- the SAME kind can be recognised as a loop.
     block_kind           TEXT,
-    -- Unblock-loop counter. Incremented each time a task is re-blocked for the
-    -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
-    -- successful completion — NOT on unblock (resetting on unblock is exactly
-    -- the amnesia that let the loop run unbounded).
+    -- Same-kind re-block counter preserved across unblock (resetting there
+    -- let the loop run unbounded). At BLOCK_RECURRENCE_LIMIT, route to triage
+    -- so a cron cannot spin forever; needs_input stays blocked for an answer.
+    -- Reset to 0 only on successful completion.
     block_recurrences    INTEGER NOT NULL DEFAULT 0
 );
 
@@ -3218,16 +3218,13 @@ def _route_block(
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
-    ``dependency`` never enters the human ``blocked`` bucket: it waits in
-    ``todo`` for ``recompute_ready``, so a cron never sees a dependency-wait
-    as something to "unblock". Callers that pass ``dependency`` with no
-    incomplete parent are re-kinded to ``needs_input`` before this runs
-    (see :func:`block_task`). Every other kind counts unblock-loop
-    recurrences: block_task only fires from running/ready (AFTER an unblock
-    returned the task to the pool), so a stored ``block_kind`` equal to the
-    incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+    ``dependency`` waits in ``todo`` for parent-gated ``recompute_ready``,
+    outside the cron unblock path. Callers re-kind it to ``needs_input``
+    when no incomplete parent exists. Other kinds count same-kind re-blocks
+    after an unblock: block_task only fires from running/ready, and untyped
+    None matches prior untyped None. At ``BLOCK_RECURRENCE_LIMIT`` they route
+    to ``triage``, except ``needs_input`` stays ``blocked`` with ``loop_detected``
+    on its ``blocked`` event: an unanswered human question is not agent churn.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
@@ -3237,6 +3234,9 @@ def _route_block(
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
+        if kind in BLOCK_LOOP_TRIAGE_EXEMPT_KINDS:
+            payload["loop_detected"] = True
+            return "blocked", "blocked", set_sql, (kind, recurrences), payload
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
 

@@ -321,7 +321,8 @@ _SPECS = [
                   "parents finish, no human); 'needs_input'/'capability' go to "
                   "blocked for a human; 'transient' marks a maybe-flaky failure. "
                   "Repeated same-kind re-blocks after unblock route the task to "
-                  "triage to break unblock loops. Omit for a generic block."),
+                  "triage to break unblock loops, except needs_input stays blocked "
+                  "awaiting the human answer. Omit for a generic block."),
     ], help="Mark one or more tasks blocked"),
     _cmd("schedule", [
         _TASK_ID,

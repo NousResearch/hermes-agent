@@ -2,7 +2,6 @@ import type { ModelOptionProvider } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Dispatch, SetStateAction } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -165,29 +164,43 @@ function refreshEmptyProviderModels(
 // (#59063). Programmatic switches (initial load, profile switch,
 // activate-key auto-select) set state directly and keep their own model
 // restore semantics.
-function switchProviderFor(
+function useMainProviderSelection(
   providers: readonly ModelOptionProvider[],
   scopeProfile: string | undefined,
   profileEpoch: { current: number },
-  setCatalogProviders: (rows: ModelOptionProvider[]) => void,
-  setSelectedProvider: Dispatch<SetStateAction<string>>,
-  setSelectedModel: Dispatch<SetStateAction<string>>
+  setCatalogProviders: (rows: ModelOptionProvider[]) => void
 ) {
-  return (slug: string) => {
-    const epoch = profileEpoch.current
+  const [selectedProvider, setSelectedProvider] = useState('')
+  const [selectedModel, setSelectedModel] = useState('')
+  const providerSelectionEpoch = useRef(0)
 
-    setSelectedProvider((prev: string) => {
-      if (prev === slug) {
-        return prev
-      }
+  const switchProvider = useCallback(
+    (slug: string) => {
+      const epoch = profileEpoch.current
+      const selectionEpoch = ++providerSelectionEpoch.current
 
-      setSelectedModel('')
+      setSelectedProvider((prev: string) => {
+        if (prev === slug) {
+          return prev
+        }
 
-      return slug
-    })
+        setSelectedModel('')
 
-    refreshEmptyProviderModels(slug, providers, scopeProfile, () => profileEpoch.current === epoch, setCatalogProviders)
-  }
+        return slug
+      })
+
+      refreshEmptyProviderModels(
+        slug,
+        providers,
+        scopeProfile,
+        () => profileEpoch.current === epoch && providerSelectionEpoch.current === selectionEpoch,
+        setCatalogProviders
+      )
+    },
+    [profileEpoch, providers, scopeProfile, setCatalogProviders, setSelectedModel, setSelectedProvider]
+  )
+
+  return { selectedProvider, selectedModel, setSelectedProvider, setSelectedModel, switchProvider }
 }
 
 // A slot is complete when both halves are chosen. Changing a slot's provider
@@ -392,8 +405,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // model added from the composer is selectable here too.
   const customModels = useStore($customModels)
   const providers = useMemo(() => withCustomModels(catalogProviders, customModels), [catalogProviders, customModels])
-  const [selectedProvider, setSelectedProvider] = useState('')
-  const [selectedModel, setSelectedModel] = useState('')
   const [auxiliary, setAuxiliary] = useState<AuxiliaryModelsResponse | null>(null)
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null)
   const [selectedMoaPreset, setSelectedMoaPreset] = useState('')
@@ -423,6 +434,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // so a request in flight when the user switches profiles can't paint profile
   // A's models/providers into profile B (or fire onMainModelChanged for A).
   const profileEpoch = useRef(0)
+
+  const { selectedProvider, selectedModel, setSelectedProvider, setSelectedModel, switchProvider } =
+    useMainProviderSelection(providers, scopeProfile, profileEpoch, setCatalogProviders)
 
   const setCaughtError = useCallback(
     (err: unknown, fallback: string) => {
@@ -517,7 +531,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         }
       }
     },
-    [m.loadFailed, scopeProfile, setCaughtError]
+    [m.loadFailed, scopeProfile, setCaughtError, setSelectedModel, setSelectedProvider]
   )
 
   useEffect(() => {
@@ -539,20 +553,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
   const mainProviderOptions = mainProviderOptionsFor(providers, selectedProvider)
-
-  // User-driven switch: never carries the old provider's model over (#59063).
-  const switchProvider = useMemo(
-    () =>
-      switchProviderFor(
-        providers,
-        scopeProfile,
-        profileEpoch,
-        setCatalogProviders,
-        setSelectedProvider,
-        setSelectedModel
-      ),
-    [providers, scopeProfile]
-  )
 
   // MoA reference/aggregator slots must never be the moa virtual provider —
   // that would create a recursive MoA tree (the backend rejects it on save).
@@ -849,7 +849,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     } finally {
       setActivating(false)
     }
-  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError])
+  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError, setSelectedModel])
 
   // OAuth / external providers can't be activated with a pasted key — hand off
   // to the shared onboarding flow scoped to this provider's real sign-in. The

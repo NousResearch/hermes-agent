@@ -27,7 +27,7 @@ def local_env(tmp_path, monkeypatch):
     env.cleanup()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_generated_script_body_is_not_in_windows_process_argv(local_env, monkeypatch):
     marker = "HERMES_ARGV_PAYLOAD_MARKER_7f2d"
     script = f"printf '%s' '{marker}'\n" + ("# padding\n" * 1200)
@@ -59,7 +59,7 @@ def test_generated_script_body_is_not_in_windows_process_argv(local_env, monkeyp
     )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_staged_script_preserves_surrogateescaped_bytes(local_env):
     script = "printf byte-transparent-\udc80\udcff\n"
 
@@ -69,7 +69,7 @@ def test_staged_script_preserves_surrogateescaped_bytes(local_env):
     local_env._discard_staged_command_script(path)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_real_git_bash_executes_payload_larger_than_cmd_limit(local_env, tmp_path):
     destination = tmp_path / "payload.bin"
     payload = "第一行 Ω\n'quoted' \"double\" C:\\path\\file\n\n末行"
@@ -87,7 +87,7 @@ def test_real_git_bash_executes_payload_larger_than_cmd_limit(local_env, tmp_pat
     assert destination.read_bytes() == payload.encode("utf-8")
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_real_git_bash_preserves_literal_heredoc(local_env, tmp_path):
     destination = tmp_path / "literal-heredoc.txt"
     payload = (
@@ -111,7 +111,7 @@ def test_real_git_bash_preserves_literal_heredoc(local_env, tmp_path):
     assert _staged_files(local_env) == before
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_real_git_bash_starts_after_deleted_cwd_recovery(local_env, tmp_path):
     vanished = tmp_path / "vanished"
     vanished.mkdir()
@@ -132,7 +132,7 @@ def test_real_git_bash_starts_after_deleted_cwd_recovery(local_env, tmp_path):
     assert _staged_files(local_env) == before
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_stdin_remains_byte_exact_and_closes_with_large_staged_program(
     local_env, tmp_path
 ):
@@ -152,7 +152,7 @@ def _staged_files(env):
     return set(Path(env.get_temp_dir()).glob("hermes-command-*.sh"))
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_process_start_failure_removes_staged_script(local_env, monkeypatch):
     before = _staged_files(local_env)
     monkeypatch.setattr(
@@ -172,7 +172,7 @@ def test_process_start_failure_removes_staged_script(local_env, monkeypatch):
     assert _staged_files(local_env) == before
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_cwd_recovery_failure_does_not_leave_staged_script(local_env, monkeypatch):
     before = _staged_files(local_env)
     owned_before = set(local_env._staged_command_scripts)
@@ -190,7 +190,7 @@ def test_cwd_recovery_failure_does_not_leave_staged_script(local_env, monkeypatc
     assert local_env._staged_command_scripts == owned_before
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("command", ["printf normal", "exit 7"])
 def test_normal_and_nonzero_completion_remove_staged_script(local_env, command):
     before = _staged_files(local_env)
@@ -200,7 +200,7 @@ def test_normal_and_nonzero_completion_remove_staged_script(local_env, command):
     assert _staged_files(local_env) == before
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_wait_exception_removes_staged_script(local_env, monkeypatch):
     path = local_env._stage_command_script("printf interrupted")
     proc = SimpleNamespace(_hermes_staged_command_script=path)
@@ -216,7 +216,7 @@ def test_wait_exception_removes_staged_script(local_env, monkeypatch):
     assert not Path(path).exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_yielded_process_keeps_script_until_process_exits(local_env, monkeypatch):
     path = local_env._stage_command_script("sleep 1\nprintf complete")
     exited = False
@@ -252,7 +252,7 @@ def test_yielded_process_keeps_script_until_process_exits(local_env, monkeypatch
     assert not Path(path).exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_environment_cleanup_removes_abandoned_staged_script(local_env):
     path = local_env._stage_command_script("printf abandoned")
 
@@ -261,7 +261,41 @@ def test_environment_cleanup_removes_abandoned_staged_script(local_env):
     assert not Path(path).exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.parametrize("outcome", ["complete", "exception", "adopted"])
+def test_staged_wait_preserves_main_process_group_ownership(local_env, monkeypatch, outcome):
+    path = local_env._stage_command_script("printf owned")
+    proc = SimpleNamespace(
+        _hermes_staged_command_script=path,
+        _hermes_owned_pgid=12345,
+        poll=lambda: 0,
+    )
+    released = []
+    monkeypatch.setattr(local_mod, "release_process_groups", released.extend)
+
+    def wait(self, process, *args, **kwargs):
+        # Newly added BaseEnvironment kwargs must survive the Local wrapper.
+        assert kwargs == {"timeout": 2, "integration_sentinel": True}
+        if outcome == "exception":
+            raise RuntimeError("wait failed")
+        if outcome == "adopted":
+            # Main's ProcessRegistry.adopt_local transfers ownership itself.
+            process._hermes_owned_pgid = None
+        return {"returncode": 0}
+
+    monkeypatch.setattr(base_mod.BaseEnvironment, "_wait_for_process", wait)
+    if outcome == "exception":
+        with pytest.raises(RuntimeError, match="wait failed"):
+            local_env._wait_for_process(proc, timeout=2, integration_sentinel=True)
+    else:
+        assert local_env._wait_for_process(
+            proc, timeout=2, integration_sentinel=True
+        ) == {"returncode": 0}
+    assert released == ([] if outcome == "adopted" else [12345])
+    assert proc._hermes_owned_pgid is None
+    assert not Path(path).exists()
+
+
+@pytest.mark.platforms("windows")
 def test_failed_unlink_remains_owned_for_cleanup_retry(local_env, monkeypatch):
     path = local_env._stage_command_script("printf retry-cleanup")
     real_unlink = local_mod.os.unlink
@@ -287,7 +321,7 @@ def test_failed_unlink_remains_owned_for_cleanup_retry(local_env, monkeypatch):
     assert path not in local_env._staged_command_scripts
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_timeout_removes_staged_script(local_env):
     before = _staged_files(local_env)
 
@@ -297,7 +331,7 @@ def test_timeout_removes_staged_script(local_env):
     assert _staged_files(local_env) == before
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_hard_wait_backstop_removes_staged_script(local_env, monkeypatch):
     before = _staged_files(local_env)
     monkeypatch.setattr(base_mod, "_EXECUTE_WAIT_BOUND_GRACE_S", 0.05)
@@ -317,7 +351,7 @@ def test_hard_wait_backstop_removes_staged_script(local_env, monkeypatch):
     assert _staged_files(local_env) == before
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_large_remote_script_reaches_fake_ssh_via_stdin_not_argv(local_env, tmp_path):
     argv_file = tmp_path / "ssh-argv.json"
     stdin_file = tmp_path / "ssh-stdin.bin"

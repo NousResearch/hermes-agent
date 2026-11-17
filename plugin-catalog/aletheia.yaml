@@ -1,0 +1,19 @@
+name: aletheia
+repo: https://github.com/ousiaresearch/aletheia
+sha: 4d250b4babb33d7217c70c8853237da5b3b9b93e
+description: "Evidence-bound scoped memory for Hermes agents, over the Weft substrate: turns are queued for a local SQLite store under the active profile by default, recall is scoped before it is ranked (deny-by-default, deterministic, never widened by anything read), and every recall returns a receipt naming the scope consulted, the ids selected and the tier. Duplicates are not re-ingested, deletions cascade, corrections preserve lineage. Registers as memory.provider: aletheia and exposes weft_recall, weft_ingest, weft_forget and weft_receipt, with recall on a worker thread so a turn's prefetch is not blocked; the built-in memory store keeps running alongside it. Disclosure — the plugin's code ships in the weft-memory PyPI package (installed as weft-memory>=1.1.1,<2, so it is outside this catalog pin); primary-agent turns are queued for storage in local SQLite under the active profile by default (the path is configurable; writes may be interrupted on process exit); no network calls, telemetry, or credentials on the Hermes path; the required bge-m3 embedder and cross-encoder reranker (~0.7 GB) must already be in the local Hugging Face cache, downloaded from their official Hugging Face repositories, and are not vendored; the Hermes provider exposes text ingest only; the separate Weft substrate supports optional image and audio adapters; macOS on Apple silicon only (mlx); AGPL-3.0, and weft-memory is AGPL-3.0 as well."
+maintainer: ousiaresearch
+tier: community
+category: memory
+docs_url: https://github.com/ousiaresearch/aletheia
+requires_hermes: ">=0.22.5"
+version: "1.1.1"
+title: "Aletheia"
+readme: true
+platforms:
+- macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

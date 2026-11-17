@@ -33,7 +33,7 @@ def _patch_codesign(monkeypatch, proc):
     monkeypatch.setattr(cua_backend.subprocess, "run", lambda *args, **kwargs: proc)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="macOS bundle paths use POSIX separators")
+@pytest.mark.platforms("posix")  # macOS bundle paths use POSIX separators
 def test_resolve_app_path_follows_real_symlink_and_is_idempotent(tmp_path):
     app = tmp_path / "CuaDriver.app"
     executable = app / "Contents" / "MacOS" / "cua-driver"
@@ -100,7 +100,7 @@ def test_driver_signature_still_requires_exact_bundle_identifier(monkeypatch):
 
 def test_driver_signature_rejects_unsigned_by_default(monkeypatch):
     _patch_codesign(monkeypatch, _codesign_proc(team_id="not set"))
-    monkeypatch.setattr(cua_backend, "_computer_use_cfg", lambda: {})
+    monkeypatch.setattr(cua_backend, "_computer_use_cfg", dict)
 
     with pytest.raises(RuntimeError, match="signed by team"):
         cua_backend_daemon._validate_cua_driver_app_signature("/Applications/CuaDriver.app")

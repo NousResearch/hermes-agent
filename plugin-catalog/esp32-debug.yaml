@@ -1,0 +1,26 @@
+name: esp32-debug
+title: ESP32 Debug
+repo: https://github.com/snakeyear/hermes-esp32-debug
+sha: 6b13b16a994187bc2d3ccbd16ab8f78fadd5d657
+description: "Read-only ESP32 debugging: find ESP32 boards on serial ports, read chip info, capture a bounded serial log, and decode panic backtraces to function and file:line against a hash-checked ELF. Disclosure — runs esptool (read-only flash-id/chip-id; resets the board, only when the call sets confirm_reset=true) and the Espressif addr2line as subprocesses with a minimal environment and the plugin data dir as working directory; opens the serial port the model names; reads the .elf path the model names and returns a few source lines around each decoded frame from the files that ELF's debug info points to; keeps the last redacted capture in <hermes home>/plugin-data/esp32-debug; no network calls."
+maintainer: snakeyear
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/snakeyear/hermes-esp32-debug#readme
+version: "0.1.3"
+readme: true
+platforms: []
+known_issues:
+  - "esp32_decode_backtrace needs the Espressif toolchain (Arduino-ESP32 core, PlatformIO or ESP-IDF) and the .elf of the flashed build."
+  - "esp32_chip_info runs esptool, which resets the board; it requires confirm_reset=true."
+  - "Close Arduino Serial Monitor / idf.py monitor first; an open port returns 'port_busy'."
+capabilities:
+  provides_tools:
+    - esp32_list_ports
+    - esp32_chip_info
+    - esp32_serial_capture
+    - esp32_decode_backtrace
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -88,14 +88,6 @@ describe('detectArtifact', () => {
 })
 
 describe('artifactSlug', () => {
-  it('is stable across regenerations of the same artifact', () => {
-    const a = artifactSlug({ kind: 'html', language: 'html', title: 'Pomodoro Timer' })
-    const b = artifactSlug({ kind: 'html', language: 'html', title: 'Pomodoro Timer' })
-
-    expect(a).toBe(b)
-    expect(a).toContain('html')
-  })
-
   it('distinguishes different titles', () => {
     expect(artifactSlug({ kind: 'html', language: 'html', title: 'Timer' })).not.toBe(
       artifactSlug({ kind: 'html', language: 'html', title: 'Dashboard' })

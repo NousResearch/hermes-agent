@@ -16,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
+import { Tip } from '@/components/ui/tooltip'
 import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
@@ -35,6 +36,7 @@ import { providerGroup, providerMeta, providerPriority } from './helpers'
 import { LocalModelsSettings } from './local-models-settings'
 import { SettingsContent, SettingsSkeleton } from './primitives'
 import { SettingsProfileScope } from './profile-scope'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
 // exists in the Electron desktop shell, not the web dashboard.
@@ -67,6 +69,8 @@ export type ProviderView = (typeof PROVIDER_VIEWS)[number]
 //   2. Desktop prefix match (`providerGroup`) — legacy fallback for provider
 //      env vars that predate the backend tagging.
 // Only entries that resolve to neither (the "Other" bucket) are skipped.
+const providerKeyElementId = (name: string) => `provider-key-${name.replace(/\W+/g, '-')}`
+
 function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGroup[] {
   const buckets = new Map<string, [string, EnvVarInfo][]>()
 
@@ -75,21 +79,40 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
-    // Prefer the backend-supplied provider label/id so the Keys tab groups by
-    // the same identity the CLI picker uses; fall back to the prefix guess.
-    const name = info.provider_label?.trim() || info.provider?.trim() || providerGroup(key)
+    // A shared credential (for example DASHSCOPE_API_KEY) can belong to more
+    // than one built-in route. Expand its provider profiles into card-scoped
+    // rows while keeping the same env-var key for save/remove operations.
+    const scopedInfos = info.provider_profiles?.length
+      ? info.provider_profiles.map(profile => ({
+          ...info,
+          description: profile.description || info.description,
+          provider: profile.provider,
+          provider_label: profile.provider_label,
+          provider_primary: profile.primary,
+          url: profile.url ?? info.url
+        }))
+      : [info]
 
-    if (name === 'Other') {
-      continue
+    for (const scopedInfo of scopedInfos) {
+      // Prefer the backend-supplied provider label/id so the Keys tab groups by
+      // the same identity the CLI picker uses; fall back to the prefix guess.
+      const name = scopedInfo.provider_label?.trim() || scopedInfo.provider?.trim() || providerGroup(key)
+
+      if (name === 'Other') {
+        continue
+      }
+
+      buckets.set(name, [...(buckets.get(name) ?? []), [key, scopedInfo]])
     }
-
-    buckets.set(name, [...(buckets.get(name) ?? []), [key, info]])
   }
 
   const groups: ProviderKeyGroup[] = []
 
   for (const [name, entries] of buckets) {
-    const primary = entries.find(([k, i]) => !i.advanced && isKeyVar(k, i)) ?? entries.find(([k, i]) => isKeyVar(k, i))
+    const primary =
+      entries.find(([k, i]) => i.provider_primary && isKeyVar(k, i)) ??
+      entries.find(([k, i]) => !i.advanced && isKeyVar(k, i)) ??
+      entries.find(([k, i]) => isKeyVar(k, i))
 
     if (!primary) {
       continue
@@ -259,7 +282,10 @@ function ConnectedProviderRow({
 
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
-      <RowButton className="min-w-0 px-3 py-2.5 text-left" onClick={() => onSelect(provider)}>
+      <RowButton
+        className="min-w-0 px-3 py-2.5 text-left"
+        onClick={() => (terminalDisconnect ? onTerminalDisconnect(provider) : onSelect(provider))}
+      >
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
           <span className="inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
@@ -275,14 +301,25 @@ function ConnectedProviderRow({
         )}
       </RowButton>
       <div className="flex items-center gap-1 pr-2">
-        <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        {terminalDisconnect ? (
+          <Button
+            aria-label={`${copy.disconnect} ${title} in terminal`}
+            onClick={() => onTerminalDisconnect(provider)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Terminal className="size-4" />
+          </Button>
+        ) : (
+          <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
+        )}
         {canDisconnect && (
           <Button
             aria-label={`${t.common.remove} ${title}`}
             disabled={disconnecting}
             onClick={() => onDisconnect(provider)}
             size="icon-xs"
-            title={`${t.common.remove} ${title}`}
             type="button"
             variant="ghost"
           >
@@ -290,16 +327,17 @@ function ConnectedProviderRow({
           </Button>
         )}
         {terminalDisconnect && (
-          <Button
-            aria-label={`${copy.disconnect} ${title}`}
-            onClick={() => onTerminalDisconnect(provider)}
-            size="icon-xs"
-            title={copy.disconnectInTerminal}
-            type="button"
-            variant="ghost"
-          >
-            <Trash2 className="size-3" />
-          </Button>
+          <Tip label={copy.disconnectInTerminal}>
+            <Button
+              aria-label={`${copy.disconnect} ${title}`}
+              onClick={() => onTerminalDisconnect(provider)}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <Trash2 className="size-3" />
+            </Button>
+          </Tip>
         )}
       </div>
     </div>
@@ -366,6 +404,32 @@ export function ProvidersSettings({
   // they launched from this page — otherwise the cards keep their stale status.
   const onboardingActive = useStore($desktopOnboarding).manual
 
+  const keyGroupByEnv = useMemo(() => {
+    const byEnv = new Map<string, string>()
+
+    for (const group of vars ? buildProviderKeyGroups(vars) : []) {
+      for (const [key] of [group.primary, ...group.advanced]) {
+        byEnv.set(key, group.name)
+      }
+    }
+
+    return byEnv
+  }, [vars])
+
+  const apiKeysShown = view === 'keys' || (oauthProviders.length === 0 && view !== 'custom-endpoints')
+
+  // Deep link from a rejected-key error card (?pview=keys&key=<ENV_KEY>):
+  // clear the filter, expand that provider's card and scroll to it.
+  useDeepLinkHighlight({
+    elementId: key => providerKeyElementId(keyGroupByEnv.get(key) ?? ''),
+    onResolve: key => {
+      setKeyQuery('')
+      setOpenProvider(keyGroupByEnv.get(key) ?? null)
+    },
+    param: 'key',
+    ready: key => apiKeysShown && keyGroupByEnv.has(key)
+  })
+
   const refreshOAuthProviders = useCallback(async () => {
     // OAuth providers are best-effort — a failure here just hides the panel.
     const { providers } = await listOAuthProviders(scopeProfile)
@@ -422,7 +486,7 @@ export function ProvidersSettings({
     runInTerminal(command)
     notify({
       kind: 'info',
-      title: t.settings.providers.removedTitle,
+      title: t.settings.providers.disconnect,
       message: t.settings.providers.removeTerminalRunning(name)
     })
   }
@@ -443,7 +507,14 @@ export function ProvidersSettings({
     setDisconnecting(provider.id)
 
     try {
-      await disconnectOAuthProvider(provider.id, scopeProfile)
+      const result = await disconnectOAuthProvider(provider.id, scopeProfile)
+
+      if (!result?.ok) {
+        notifyError(new Error('No stored credentials were removed'), t.settings.providers.failedRemove(name))
+
+        return
+      }
+
       notify({
         durationMs: 3_000,
         kind: 'success',
@@ -496,14 +567,15 @@ export function ProvidersSettings({
             {visibleGroups.length > 0 ? (
               <div className="grid gap-2">
                 {visibleGroups.map(group => (
-                  <ProviderKeyRows
-                    expanded={openProvider === group.name}
-                    group={group}
-                    key={group.name}
-                    onExpand={() => setOpenProvider(group.name)}
-                    onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
-                    rowProps={rowProps}
-                  />
+                  <div className="scroll-mt-6 rounded-[6px]" id={providerKeyElementId(group.name)} key={group.name}>
+                    <ProviderKeyRows
+                      expanded={openProvider === group.name}
+                      group={group}
+                      onExpand={() => setOpenProvider(group.name)}
+                      onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                      rowProps={rowProps}
+                    />
+                  </div>
                 ))}
               </div>
             ) : (

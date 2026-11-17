@@ -334,14 +334,12 @@ class TestProgressRouting:
 
 class TestDisplayDefaults:
 
-    def test_buzz_has_platform_defaults_entry(self):
-        from gateway.display_config import _PLATFORM_DEFAULTS
-
-        assert "buzz" in _PLATFORM_DEFAULTS
 
     def test_buzz_does_not_inherit_verbose_global_tool_progress(self):
         from gateway.display_config import resolve_display_setting
+        from hermes_cli.plugins import discover_plugins
 
+        discover_plugins()  # the tier ships on buzz's PlatformEntry (display_tier)
         # No user config: must come from the buzz platform tier, not the
         # verbose _GLOBAL_DEFAULTS ("all").
         assert resolve_display_setting({}, "buzz", "tool_progress") != "all"

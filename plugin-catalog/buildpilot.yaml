@@ -1,0 +1,21 @@
+name: buildpilot
+repo: https://github.com/Justnevo/buildpilot
+sha: 037d8eda0ba53d741e4f0bcfdc246cc6bab1dcc7
+title: BuildPilot
+description: "Project tracking and progress recovery for Hermes Agent. Create projects, manage tasks, save progress checkpoints, and retrieve project context across sessions using local SQLite storage."
+maintainer: Justnevo
+tier: community
+category: tools
+docs_url: https://github.com/Justnevo/buildpilot#readme
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - buildpilot_add_project
+    - buildpilot_list_projects
+    - buildpilot_add_task
+    - buildpilot_update_task
+    - buildpilot_checkpoint
+    - buildpilot_get_project_context
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

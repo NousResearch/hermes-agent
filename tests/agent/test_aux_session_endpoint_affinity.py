@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import auxiliary_client as aux
+from hermes_cli.runtime_provider_custom import expand_direct_api_alias
 
 SESSION = {"provider": "openai-api", "model": "gpt-5.4",
            "base_url": "https://proxy.example:8443/v1", "api_key": "sk-session"}
@@ -15,11 +16,11 @@ SESSION = {"provider": "openai-api", "model": "gpt-5.4",
 
 def test_openai_alias_prefers_configured_endpoint_over_public_default(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://llm-proxy.corp.example/v1")
-    provider, base = aux._expand_direct_api_alias("openai", None)
+    provider, base = expand_direct_api_alias("openai", None)
     assert provider == "custom"
     assert base == "https://llm-proxy.corp.example/v1"
     monkeypatch.delenv("OPENAI_BASE_URL")
-    assert aux._expand_direct_api_alias("openai", None) == ("custom", "https://api.openai.com/v1")
+    assert expand_direct_api_alias("openai", None) == ("custom", "https://api.openai.com/v1")
 
 
 @pytest.mark.parametrize("rejecting_base", [
@@ -38,6 +39,20 @@ def test_rotation_survives_at_session_origin_and_for_independent_aux_pool():
     # A separately owned aux credential at its own configured endpoint must keep rotating.
     independent = SimpleNamespace(base_url="https://api.openai.com/v1/", api_key="sk-aux-pool-1")
     assert aux._recoverable_pool_provider("openai-api", independent, main_runtime=SESSION) == "openai-api"
+
+
+@pytest.mark.parametrize("provider,runtime_base,client_base,named", [
+    ("opencode-go", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1/", False),  # Zen beside Go
+    ("opencode-go", "https://opencode.ai/zen/go", "https://opencode.ai/zen/go/v1/", True),  # Anthropic-wire base
+    ("minimax", "https://api.minimax.io/anthropic", "https://api.minimax.io/v1", True),  # dual-surface rewrite
+    ("opencode-go", "https://proxy.example:8443/zen/go/v1", "https://proxy.example:9443/zen/go/v1", False),  # port
+    ("opencode-go", "https://proxy.example/zen/go/v1", "http://proxy.example/zen/go/v1", False),  # scheme
+])
+def test_naming_the_sender_needs_the_main_runtimes_origin_and_path_and_pool_rotation_only_its_host(
+        provider, runtime_base, client_base, named):
+    client, runtime = SimpleNamespace(base_url=client_base, api_key="sk-aux"), {"provider": provider, "base_url": runtime_base}
+    assert aux._recoverable_pool_provider("custom", client, runtime, same_path=True) == (provider if named else None)
+    assert aux._recoverable_pool_provider("custom", client, runtime) == provider
 
 
 def test_named_provider_defaults_compose_under_task_overrides(monkeypatch, tmp_path):

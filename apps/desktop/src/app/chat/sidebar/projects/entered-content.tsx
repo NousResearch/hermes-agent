@@ -9,13 +9,21 @@ import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
-import { $dismissedWorktreeIds, $removedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
+import {
+  $dismissedWorktreeIds,
+  $removedWorktreeIds,
+  dismissWorktree,
+  setWorkspaceNodeOpen,
+  worktreeDismissalId
+} from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import type { AgentProfileRoute } from '@/store/profile'
 import { removeWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
-import { useWorkspaceNodeOpen } from './model'
+import { ownedNewSessionHandlers, projectOwnerRoute } from './gateway-project-rows'
+import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
   mergeRepoWorktreeGroups,
@@ -24,7 +32,7 @@ import {
   type SidebarSessionGroup,
   type SidebarWorkspaceTree
 } from './workspace-groups'
-import { WorkspaceAddButton, WorkspaceHeader } from './workspace-header'
+import { WorkspaceAddButton, WorkspaceHeader, WorkspaceShowMoreRow } from './workspace-header'
 
 // The entered project's body. Main-checkout sessions render directly — no
 // redundant repo/branch header (the breadcrumb already names the project). Only
@@ -41,7 +49,8 @@ export function EnteredProjectContent({
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
-  onNewSession?: (path: null | string) => void
+  /** `owner` is set for a project another gateway owns: the session starts there. */
+  onNewSession?: (path: null | string, owner?: AgentProfileRoute) => void
   onNewSessionSplit?: NewSessionSplitHandler
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
@@ -52,12 +61,13 @@ export function EnteredProjectContent({
   }
 
   // Home's rows aren't anchored to a folder, so there's no repo or worktree
-  // structure to show — just the chats.
+  // structure to show — just the chats, paged so a huge Home stays cheap.
   if (project.isNoProject) {
-    return <>{renderRows(project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions)))}</>
+    return <HomeSessions project={project} renderRows={renderRows} />
   }
 
   const single = project.repos.length === 1
+  const owned = ownedNewSessionHandlers(project, onNewSession, onNewSessionSplit)
 
   return (
     <>
@@ -66,14 +76,36 @@ export function EnteredProjectContent({
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
           key={repo.id}
           liveSessions={liveSessions}
-          onNewSession={onNewSession}
-          onNewSessionSplit={onNewSessionSplit}
+          onNewSession={owned.onNewSession}
+          onNewSessionSplit={owned.onNewSessionSplit}
+          owner={projectOwnerRoute(project)}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
           showHeader={!single}
         />
       ))}
+    </>
+  )
+}
+
+function HomeSessions({
+  project,
+  renderRows
+}: {
+  project: SidebarProjectTree
+  renderRows: (sessions: SessionInfo[]) => React.ReactNode
+}) {
+  const { t } = useI18n()
+  const sessions = useMemo(() => project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions)), [project])
+  const home = useRevealedRows(sessions, PROJECT_SESSION_PAGE)
+
+  return (
+    <>
+      {renderRows(home.shown)}
+      {home.more > 0 && (
+        <WorkspaceShowMoreRow label={t.sidebar.showMoreIn(home.more, project.label)} onClick={home.showMore} />
+      )}
     </>
   )
 }
@@ -86,6 +118,7 @@ function RepoFlatSection({
   onNewSessionSplit,
   discoveredWorktrees,
   liveSessions,
+  owner,
   removedSessionIds
 }: {
   repo: SidebarWorkspaceTree
@@ -95,6 +128,8 @@ function RepoFlatSection({
   onNewSessionSplit?: NewSessionSplitHandler
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
+  /** Another gateway's project: its worktrees are removed and switched on that gateway. */
+  owner?: AgentProfileRoute
   removedSessionIds?: ReadonlySet<string>
 }) {
   const { t } = useI18n()
@@ -133,11 +168,13 @@ function RepoFlatSection({
 
   // Main lanes are always visible; linked worktrees can be user-dismissed.
   // Discovery may resurrect a removed worktree, never an explicit sidebar hide.
+  const laneKey = (group: SidebarSessionGroup) => worktreeDismissalId(group.id, owner)
+
   const ordered = overlaidGroups.filter(
     group =>
       group.isMain ||
-      !dismissedWorktrees.includes(group.id) ||
-      (removedWorktrees.includes(group.id) && group.path && discoveredWorktreePaths.has(group.path))
+      !dismissedWorktrees.includes(laneKey(group)) ||
+      (removedWorktrees.includes(laneKey(group)) && group.path && discoveredWorktreePaths.has(group.path))
   )
 
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
@@ -152,8 +189,8 @@ function RepoFlatSection({
     }
 
     try {
-      await removeWorktreePath(repo.path, group.path, { force })
-      dismissWorktree(group.id, { removed: true })
+      await removeWorktreePath(repo.path, group.path, { force }, owner)
+      dismissWorktree(laneKey(group), { removed: true })
     } catch (err) {
       // git refuses a non-force remove on a dirty/locked worktree — offer force
       // rather than dead-ending on an error toast.
@@ -176,6 +213,7 @@ function RepoFlatSection({
           onNewSession={group.isKanban ? undefined : onNewSession}
           onNewSessionSplit={group.isKanban ? undefined : onNewSessionSplit}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
+          owner={owner}
           renderRows={renderRows}
         />
       ))}
@@ -207,7 +245,7 @@ function RepoFlatSection({
       open={Boolean(target)}
       secondaryAction={{
         label: s.projects.removeFromSidebar,
-        onClick: () => target && dismissWorktree(target.id)
+        onClick: () => target && dismissWorktree(laneKey(target))
       }}
       title={`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}
     />

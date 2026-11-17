@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: vercel
+connector_slug: vercel_mcp
 description: >-
   Deployments, logs, and projects via Vercel's hosted MCP.
 source: https://vercel.com/docs/mcp

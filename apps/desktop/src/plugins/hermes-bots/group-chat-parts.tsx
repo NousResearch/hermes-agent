@@ -9,8 +9,8 @@
  */
 
 import { Button, cn, Codicon, host, Input, RowButton, Textarea, useI18n, useValue } from '@hermes/plugin-sdk'
-import type { ClipboardEvent } from 'react'
-import { useRef, useState } from 'react'
+import type { ClipboardEvent, Ref, RefObject } from 'react'
+import { useImperativeHandle, useRef, useState } from 'react'
 
 import { $imagenAvailable, normalizeAvatarImage, pickImageFromDevice, probeImagen } from './avatar-image'
 import { $botMeta, botHandle, botMentionTag } from './data'
@@ -80,7 +80,7 @@ export function GroupImageControls({ image, onImage, seedName, seedMembers }: Gr
       })
 
       if (!res?.success) {
-        throw new Error(res?.error || 'generation failed')
+        throw new Error(res?.error || b.group.pictureGenerationFailed)
       }
 
       const img = res.image_data || res.image
@@ -159,12 +159,30 @@ interface GroupMentionInputProps {
   'aria-label'?: string
   autoFocus?: boolean
   className?: string
+  disabled?: boolean
+  /** The exact token a member's mention inserts, for rooms that resolve only frozen handles. */
+  handleFor?: (member: GroupMember) => string | undefined
   members: GroupMember[]
   onChange: (value: string) => void
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void
   onSubmitDraft?: () => void
   placeholder?: string
+  ref?: Ref<HTMLTextAreaElement>
   value: string
+}
+
+/** A hover Reply moves the user into the composer, caret after the seeded words, once React has painted them. */
+export function focusComposerEnd(input: RefObject<HTMLTextAreaElement | null>) {
+  requestAnimationFrame(() => {
+    const el = input.current
+
+    if (!el) {
+      return
+    }
+
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  })
 }
 
 /** Mention-aware composer input for group rooms. The core composer's
@@ -174,10 +192,11 @@ interface GroupMentionInputProps {
  *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
-export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
+export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft, ref, value, ...inputProps }: GroupMentionInputProps) {
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  useImperativeHandle(ref, () => inputRef.current as HTMLTextAreaElement)
   const [token, setToken] = useState<MentionToken | null>(null)
   const [selected, setSelected] = useState(0)
   const options: MentionOption[] = []
@@ -193,10 +212,10 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
     }
 
     for (const member of members) {
-      const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+      const handle = String(botHandle(member.name, member) || '').trim()
       const display = displayName(member, botRosterMeta(member, allMeta))
       // Renamed members complete on their friendly tag; parser resolves both.
-      const tag = String(botMentionTag(member) || handle).trim()
+      const tag = String(handleFor?.(member) ?? (botMentionTag(member) || handle)).trim()
 
       if (!tag) {
         continue
@@ -258,7 +277,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
   return (
     <div className="relative min-w-0 flex-1">
       {open ? (
-        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) py-1 shadow-lg">
+        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) py-1 shadow-lg">
           {options.map((option, index) => (
             <RowButton
               className={cn(
@@ -283,7 +302,13 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
         // Input whose form submitted on every Enter — newlines were
         // impossible. Enter (no Shift) still submits via onSubmitDraft;
         // Shift+Enter falls through to the textarea's native newline.
-        className={cn('max-h-40 min-h-9 resize-none', inputProps.className)}
+        // Grow with wrapped text/newlines so long briefs stay reviewable
+        // (#95300), then scroll internally before the composer takes over
+        // the room — same field-sizing idiom as the Kanban drawer.
+        className={cn(
+          'field-sizing-content max-h-[min(50vh,24rem)] min-h-9 resize-none overflow-y-auto',
+          inputProps.className
+        )}
         onBlur={() => setToken(null)}
         onChange={event => {
           onChange(event.target.value)
@@ -344,7 +369,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
 }
 
 /** A pending prompt as the room renders it. */
-export interface GroupRoomPrompt extends GroupPrompt {
+export type GroupRoomPrompt = GroupPrompt & {
   /** TODO(bot-mode-types): nothing ever sets this — syncGroupClarify builds
    *  every entry without a thread — so the answer GroupClarifyCard echoes back
    *  into the room always lands in the 'legacy' thread instead of the thread
@@ -374,6 +399,13 @@ interface GroupClarifyCardProps {
  *    closed choice. Answer sends via the member's own source. */
 export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const b = useBots()
+  const { t } = useI18n()
+
+  const approvalLabels: Record<string, string> = {
+    once: b.canonical.allowOnce, deny: b.canonical.deny,
+    session: t.assistant.approval.allowSession, always: t.assistant.approval.alwaysAllow
+  }
+
   const { group } = entry
   const isApproval = entry.kind === 'approval'
   const member = members.find(m => groupMemberKey(m) === entry.memberKey) || members.find(m => m.name === entry.member)
@@ -381,22 +413,21 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const [picked, setPicked] = useState<Record<string, string[]>>({})
   const [sending, setSending] = useState(false)
 
-  const questions: GroupClarifyQuestion[] =
-    entry.questions && entry.questions.length
-      ? entry.questions.map((q, i) => ({
-          qid: q?.qid ?? q?.id ?? `q${i}`,
-          question: typeof q?.question === 'string' ? q.question : '',
-          choices: Array.isArray(q?.choices) ? q.choices.filter(c => typeof c === 'string' && c) : [],
-          multiSelect: Boolean(q?.multi_select ?? q?.multiSelect)
-        }))
-      : [
-          {
-            qid: '__single__',
-            question: entry.question,
-            choices: entry.choices,
-            multiSelect: entry.multiSelect
-          }
-        ]
+  const questions: GroupClarifyQuestion[] = isApproval
+    ? [
+        {
+          qid: 'approval',
+          question: entry.question,
+          choices: entry.choices,
+          multiSelect: false
+        }
+      ]
+    : entry.questions.map(q => ({
+        qid: q.qid,
+        question: typeof q.question === 'string' ? q.question : '',
+        choices: Array.isArray(q.choices) ? q.choices.filter(c => typeof c === 'string' && c) : [],
+        multiSelect: Boolean(q.multi_select)
+      }))
 
   const answerFor = (q: GroupClarifyQuestion) => {
     const chosen = picked[q.qid] || []
@@ -408,23 +439,28 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
     return isApproval ? '' : (drafts[q.qid] || '').trim()
   }
 
-  const allAnswered = questions.every(q => answerFor(q))
+  const anyAnswered = questions.some(q => answerFor(q))
 
-  const submit = async () => {
-    if (!member || sending || !allAnswered) {
+  /** `chosen` short-circuits the staged answer: approval choices submit on
+   *  click (#91706), so the value travels with the click instead of waiting
+   *  for a re-render of `picked` and a second Respond click. */
+  const submit = async (chosen?: string) => {
+    const resolve = (q: GroupClarifyQuestion) => chosen ?? answerFor(q)
+
+    if (!member || sending || !questions.some(q => resolve(q))) {
       return
     }
 
     setSending(true)
 
     try {
-      if (isApproval || !(entry.questions && entry.questions.length)) {
-        await answerGroupClarify(entry, member, answerFor(questions[0]))
+      if (isApproval) {
+        await answerGroupClarify(entry, member, resolve(questions[0]))
       } else {
-        const answers: Record<string, string> = {}
+        const answers: Record<string, null | string> = {}
 
         for (const q of questions) {
-          answers[q.qid] = answerFor(q)
+          answers[q.qid] = resolve(q) || null
         }
 
         await answerGroupClarify(entry, member, answers)
@@ -432,8 +468,11 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
 
       // Echo the exchange into the room log so the thread reads complete.
       const summary = isApproval
-        ? `${answerFor(questions[0])} — ${entry.command || entry.question || b.group.commandApproval}`
-        : questions.map(q => (questions.length > 1 ? `${q.question}: ${answerFor(q)}` : answerFor(q))).join('\n')
+        ? `${resolve(questions[0])} — ${entry.command || entry.question || b.group.commandApproval}`
+        : questions
+            .filter(q => resolve(q))
+            .map(q => (questions.length > 1 ? `${q.question}: ${resolve(q)}` : resolve(q)))
+            .join('\n')
 
       appendGroupChatEntry(
         group,
@@ -481,8 +520,22 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                       'h-6 px-2 text-[0.7rem]',
                       isApproval && choice === 'deny' && !chosen && 'text-destructive'
                     )}
+                    disabled={sending || !member}
                     key={`choice:${q.qid}:${choice}`}
                     onClick={() => {
+                      // Approvals are a closed choice set: the click IS the
+                      // answer (#91706). Staging it behind a footer button
+                      // left users with a highlighted choice and no way to
+                      // send it when the footer was clipped or covered.
+                      if (isApproval) {
+                        setPicked({
+                          [q.qid]: [choice]
+                        })
+                        void submit(choice)
+
+                        return
+                      }
+
                       setDrafts(prev => ({
                         ...prev,
                         [q.qid]: ''
@@ -507,7 +560,7 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                     size="sm"
                     variant={chosen ? 'default' : 'secondary'}
                   >
-                    {choice}
+                    {isApproval ? approvalLabels[choice] || choice : choice}
                   </Button>
                 )
               })}
@@ -541,17 +594,20 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
                   void submit()
                 }
               }}
-              placeholder={q.choices.length ? 'Or type your own answer…' : 'Type your answer…'}
+              placeholder={q.choices.length ? b.group.ownAnswerPlaceholder : b.group.answerPlaceholder}
               value={drafts[q.qid] || ''}
             />
           )}
         </div>
       ))}
-      <div className="flex justify-end">
-        <Button disabled={sending || !allAnswered || !member} onClick={() => void submit()} size="sm">
-          {sending ? 'Sending…' : isApproval ? 'Respond' : 'Answer'}
-        </Button>
-      </div>
+      {/* Approval choices submit on click; only clarify answers need a footer. */}
+      {isApproval ? null : (
+        <div className="flex justify-end">
+          <Button disabled={sending || !anyAnswered || !member} onClick={() => void submit()} size="sm">
+            {sending ? b.group.sending : b.group.answer}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,9 +1,128 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
+import { act, cleanup, renderHook } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { chunkForCommentary, toLiveHistory } from '@/lib/voice-live'
+import { en } from '@/i18n/en'
+import { chunkForCommentary, toLiveHistory, type VoiceLiveHandlers } from '@/lib/voice-live'
+import { $notifications, clearNotifications } from '@/store/notifications'
 
-import { delegationPrompt } from './use-voice-live-conversation'
+import { delegationPrompt, useVoiceLiveConversation } from './use-voice-live-conversation'
+
+// The live-voice toasts must not show machine strings — neither the wire close
+// reasons (`connection_lost`, `closed`) nor the raw `DOMException` text a denied
+// `getUserMedia` throws (#111987).
+//
+// The transport is the only seam in the live hook, so the fake session records
+// the handlers it registers (tests drive the close/error paths directly) and
+// lets `start` reject with exactly what the real `getUserMedia` would throw.
+const transport = vi.hoisted(() => ({ failure: null as unknown, handlers: [] as VoiceLiveHandlers[] }))
+
+vi.mock('@/lib/voice-live', async importOriginal => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+
+  return {
+    ...actual,
+    VoiceLiveSession: class {
+      close = vi.fn()
+      instruct = vi.fn()
+      setMuted = vi.fn()
+      speak = vi.fn()
+      think = vi.fn()
+
+      constructor(handlers: VoiceLiveHandlers) {
+        transport.handlers.push(handlers)
+      }
+
+      async start(): Promise<void> {
+        if (transport.failure) {
+          throw transport.failure
+        }
+      }
+    }
+  }
+})
+
+const voice = en.notifications.voice
+
+function mountLive() {
+  return renderHook(() =>
+    useVoiceLiveConversation({
+      busy: false,
+      consumePendingResponse: vi.fn(),
+      enabled: true,
+      onSubmit: vi.fn(),
+      pendingResponse: () => null,
+      seedHistory: () => []
+    })
+  )
+}
+
+/** Mount, start, and hand back the handlers the started session registered. */
+async function openSession(): Promise<VoiceLiveHandlers> {
+  const hook = mountLive()
+
+  await act(async () => {
+    await hook.result.current.start()
+  })
+
+  return transport.handlers.at(-1) as VoiceLiveHandlers
+}
+
+/** Start a session whose transport fails the way the real one can. */
+async function failedStart(failure: unknown): Promise<void> {
+  transport.failure = failure
+  const hook = mountLive()
+
+  await act(async () => {
+    await hook.result.current.start()
+  })
+}
+
+function resetToasts() {
+  clearNotifications()
+  transport.failure = null
+  transport.handlers.length = 0
+}
+
+describe('Voice-live toast copy', () => {
+  beforeEach(resetToasts)
+  afterEach(cleanup)
+
+  it('names our own close reasons in copy and passes server-sent reasons through verbatim', async () => {
+    let handlers = await openSession()
+
+    act(() => {
+      handlers.onClosed('connection_lost', 127)
+    })
+
+    expect($notifications.get()[0].title).toBe(voice.liveEnded)
+    expect($notifications.get()[0].message).toBe(`${voice.liveEndedConnectionLost} (127s)`)
+
+    cleanup()
+    resetToasts()
+    handlers = await openSession()
+
+    act(() => {
+      handlers.onClosed('quota_exhausted', 12)
+    })
+
+    // Server strings are unbounded: no mapping, no redaction claim.
+    expect($notifications.get()[0].message).toBe('quota_exhausted (12s)')
+  })
+
+  it('maps a getUserMedia DOMException to the recorder mic copy and leaves non-mic failures alone', async () => {
+    await failedStart(new DOMException('The request is not allowed by the user agent.', 'NotAllowedError'))
+
+    expect($notifications.get()[0].title).toBe(voice.couldNotStartSession)
+    expect($notifications.get()[0].message).toBe(voice.microphonePermissionDenied)
+
+    cleanup()
+    resetToasts()
+    await failedStart(new Error('Missing local SDP offer'))
+
+    expect($notifications.get()[0].message).toBe('Missing local SDP offer')
+  })
+})
 
 describe('GPT-Live delegation → Hermes turn', () => {
   it('sends the latest user words as the turn and the exchange as model-only context', () => {

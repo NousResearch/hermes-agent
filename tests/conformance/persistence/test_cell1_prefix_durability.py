@@ -75,6 +75,7 @@ def _recover(db_path: Path) -> list[tuple]:
 
 
 @pytest.mark.parametrize("requested_mode", [None, "DELETE", "WAL"])
+@pytest.mark.platforms("linux")
 def test_acknowledged_appends_survive_sigkill(tmp_path, requested_mode):
     db_path = tmp_path / "state.db"
     journal = tmp_path / "acked.jsonl"

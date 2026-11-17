@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 # kitty CSI-u ORs lock-key state into the modifier parameter of every key event while a lock is
 # on: CapsLock=64, NumLock=128, both=192. Every fixed-modifier CSI-u (and legacy CSI-tilde /
 # CSI-letter) registration therefore needs lock-offset twins, or those events leak into the prompt
@@ -175,7 +177,9 @@ def install_modify_other_keys_aliases() -> int:
     ``_`` `` `` ``@``): same formats → the same ``Keys`` value the raw control byte maps to. *
     **Alt+letter** (a–z, A–Z): ``ESC[27;3;<codepoint>~`` and ``ESC[<codepoint>;3u`` → ``(Keys.Escape,
     <letter>)`` — matching how prompt_toolkit handles a bare ``ESC`` followed by a character. *
-    **Shift+letter** (a–z): → the uppercase character. * **Multi-modifier letters** (Shift+Alt=4,
+    **Shift+letter** (a–z): → the uppercase character. * **Shift+symbol** (tilde form only): ``ESC[27;2;<cp>~``
+    → ``chr(cp)`` for printable ASCII — xterm and Ghostty put the produced character in that codepoint (#114242).
+    * **Multi-modifier letters** (Shift+Alt=4,
     Ctrl+Shift=6, Ctrl+Alt=7, Ctrl+Alt+Shift=8): normalized onto the same targets — Ctrl-bearing combos
     behave as the Ctrl key (Alt adds an ``Escape`` prefix), matching how dte/kakoune normalize these
     protocols. * **Lock-bit variants**: every CSI-u mapping above is also installed with the CapsLock (64)
@@ -225,9 +229,10 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
     _install_paired(5, ctrl_key_map)
 
     # Letter combos. Alt+a -> (Escape, 'a') like bare Alt. Shift+a -> 'A' (safe on every Latin
-    # layout; Shift+digit symbols are layout-specific and deliberately NOT mapped — leaking beats
-    # wrong input). Kitty reports the UNSHIFTED codepoint, some modifyOtherKeys emitters the shifted
-    # one — map both. Ctrl-bearing combos normalize onto the Ctrl key (Alt adds an Escape prefix),
+    # layout). Kitty CSI-u reports the UNSHIFTED codepoint, modifyOtherKeys emitters the shifted
+    # one — map both. Shift+symbol is mapped only in the tilde form below: the CSI-u codepoint is
+    # unshifted (ESC[47;2u is Shift+/ on US, '?' — layout-specific), so there leaking beats wrong
+    # input. Ctrl-bearing combos normalize onto the Ctrl key (Alt adds an Escape prefix),
     # Shift+Alt onto (Escape, UPPER) — the same normalization dte/kakoune apply.
     for ch in letters:
         upper_char = chr(ch - 32)
@@ -240,6 +245,21 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
                 _install_paired(6, {cp: ctrl_key})
                 for modifier in (7, 8):  # Ctrl+Alt and Ctrl+Alt+Shift — same normalization
                     _install_paired(modifier, {cp: (Keys.Escape, ctrl_key)})
+
+    # Shift+printable ASCII under modifyOtherKeys (tilde form only, never CSI-u): xterm's own key
+    # table sends Shift+[ as ESC[27;2;123~ — the codepoint is the PRODUCED character '{', already
+    # resolved through the user's keymap — and Ghostty follows that spec (#114242, #102683). So
+    # ESC[27;2;<cp>~ -> chr(cp) is layout-safe on every tilde-form emitter; the
+    # unshifted-codepoint concern belongs to Kitty CSI-u, which never uses this spelling.
+    # Existing entries (Shift+Enter \x1b[27;2;13~, Shift+Tab, Shift+Space) win via setdefault.
+    # xterm/Ghostty only use this encoding for produced codepoints 0x40-0x7E (`IsControlInput`);
+    # '!' '#' '$' still arrive as plain text, so the 33-63 rows are inert there but harmless.
+    # Super+<printable> (modifier 9, Super+Shift 10) follows the same produced-codepoint rule:
+    # Ghostty sends Super+o as ESC[27;9;111~ (#114242). The CLI has no Super bindings, so type
+    # the character — what the terminal sends without modifyOtherKeys and what the Ink TUI does.
+    for cp in range(33, 127):
+        for modifier in (2, 9, 10):
+            _put(f"\x1b[27;{modifier};{cp}~", chr(cp))
 
     # The Esc KEY under Kitty disambiguate mode: ESC[27u (+ modifiers 1-16 incl. super 9+, and
     # lock twins of the modifier-less form, which is how a lone Esc arrives with a lock on).
@@ -298,10 +318,46 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
     return aliases
 
 
+# Replies to the startup image probe (``agent.terminal_image.probe_vscode_images``): XTSMGRAPHICS
+# ``ESC[?1;<status>;<value>S`` and DA1 ``ESC[?<params>c``. No key sends either. One that lands
+# after the probe stopped reading would otherwise be typed into the prompt.
+_PROBE_REPLY_RE = re.compile(r"\x1b\[\?[\d;]*[Sc]\Z")
+_PROBE_REPLY_PREFIX_RE = re.compile(r"\x1b\[\?[\d;]*\Z")
+
+
+def _install_probe_reply_filter() -> int:
+    """Parse a probe reply as one ``Keys.Ignore``, whenever it arrives. ``ANSI_SEQUENCES`` holds
+    fixed strings only, so this wraps the parser's matcher the way prompt_toolkit special-cases CPR."""
+    import prompt_toolkit.input.vt100_parser as vt100
+    from prompt_toolkit.keys import Keys
+
+    get_match = vt100.Vt100Parser._get_match
+    if getattr(get_match, "_hermes_probe_replies", False):
+        return 0
+    is_prefix = vt100._IsPrefixOfLongerMatchCache.__missing__
+
+    def _get_match(self, prefix):
+        return Keys.Ignore if _PROBE_REPLY_RE.match(prefix) else get_match(self, prefix)
+
+    def _missing(self, prefix):
+        if _PROBE_REPLY_PREFIX_RE.match(prefix):
+            self[prefix] = True
+            return True
+        return is_prefix(self, prefix)
+
+    _get_match._hermes_probe_replies = True
+    vt100.Vt100Parser._get_match = _get_match
+    vt100._IsPrefixOfLongerMatchCache.__missing__ = _missing
+    _clear_vt100_prefix_cache()
+    return 1
+
+
 def install_ignored_terminal_sequences() -> int:
-    """Map focus reports ``ESC[I`` / ``ESC[O`` (Ghostty, iTerm2, some xterms) to ``Keys.Ignore``.
+    """Parse terminal reports nobody typed as ``Keys.Ignore``: focus reports ``ESC[I`` / ``ESC[O``
+    (Ghostty, iTerm2, some xterms) and the image probe's replies.
 
     Parser-level handling beats post-hoc regex stripping because the bytes never reach the buffer.
     ``setdefault`` lets user/downstream registrations win.
     """
-    return _install(lambda _seqs, keys: {"\x1b[I": keys.Ignore, "\x1b[O": keys.Ignore}, overwrite=False)
+    focus = _install(lambda _seqs, keys: {"\x1b[I": keys.Ignore, "\x1b[O": keys.Ignore}, overwrite=False)
+    return focus + _install_probe_reply_filter()

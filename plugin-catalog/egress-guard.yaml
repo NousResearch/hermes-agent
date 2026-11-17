@@ -1,0 +1,31 @@
+name: egress-guard
+repo: https://github.com/moussetea315/egress-guard
+sha: "6c127c471751c6a50731bd594e16d8f9e70932d3"
+description: >-
+  Automated output vetting for AI agents.
+  Policy-driven guard for what leaves the agent. A pre_tool_call hook redacts credentials in
+  tool arguments and sends shell commands that upload data to non-allowlisted destinations
+  (curl/wget uploads, scp/rsync, cloud copies, gist create, git push to a URL, python/node
+  upload one-liners) to Hermes's approval prompt, showing a masked preview of the command
+  (fail-closed when nobody can approve). transform_tool_result and transform_llm_output
+  suppress small counts in tables, including complementary cells and percentages so hidden
+  values cannot be recovered (statistical disclosure control). Presets, an optional strict
+  network mode, and a /guard command (status, report, dry-run check). Disclosure: no network
+  access, subprocesses or tools; reads its policy from EGRESS_GUARD_POLICY,
+  ~/.hermes/egress-guard.yaml or the bundled default, and its own audit log for /guard report;
+  appends masked audit lines (never raw values) to ~/.hermes/egress-guard/audit.jsonl; never
+  auto-approves.
+maintainer: moussetea315
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - transform_tool_result
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

@@ -76,7 +76,7 @@ def probe(surface, scenario, directory):
     try:
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(pr, 'process_registry', registry))
-            stack.enter_context(patch.object(pr, 'CHECKPOINT_PATH', directory / 'processes.json'))
+            stack.enter_context(patch.object(pr, '_checkpoint_path', return_value=directory / 'processes.json'))
             stack.enter_context(patch.object(server, '_sessions', {'ui-owner': session}))
             stack.enter_context(patch.object(server, '_get_db', lambda: None))
             stack.enter_context(patch.object(server, '_emit', lambda *args: statuses.append(args)))

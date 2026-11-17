@@ -203,7 +203,7 @@ def test_declined_clarify_aborts_instead_of_waiting_for_a_reply():
     from types import SimpleNamespace
 
     from gateway.relay.egress import EGRESS_DECLINE_CODE
-    from gateway.run import _clarify_send_disposition
+    from gateway.run_turn_runner_clarify_delivery import _clarify_send_disposition
 
     cleared = []
     clarify_mod = SimpleNamespace(
@@ -233,7 +233,7 @@ def test_ambiguous_clarify_still_waits():
     """Control: a possibly-delivered card must STAY armed for a late reply."""
     from types import SimpleNamespace
 
-    from gateway.run import _clarify_send_disposition
+    from gateway.run_turn_runner_clarify_delivery import _clarify_send_disposition
 
     cleared = []
     clarify_mod = SimpleNamespace(

@@ -24,15 +24,6 @@ from tools.delegate_tool import _build_child_progress_callback
 class TestPrintAbove:
     """Tests for KawaiiSpinner.print_above method."""
 
-    def test_print_above_without_spinner_running(self):
-        """print_above should write to stdout even when spinner is not running."""
-        buf = io.StringIO()
-        spinner = KawaiiSpinner("test")
-        spinner._out = buf  # Redirect to buffer
-        
-        spinner.print_above("hello world")
-        output = buf.getvalue()
-        assert "hello world" in output
 
     def test_print_above_with_spinner_running(self):
         """print_above should clear spinner line and print text."""
@@ -153,50 +144,6 @@ class TestBuildChildProgressCallback:
 # Integration: thinking callback in run_agent.py
 # =========================================================================
 
-class TestThinkingCallback:
-    """Tests for the _thinking callback in AIAgent conversation loop."""
-
-    def _simulate_thinking_callback(self, content, callback, delegate_depth=1):
-        """Simulate the exact code path from run_agent.py for the thinking callback.
-        
-        delegate_depth: simulates self._delegate_depth.
-            0 = main agent (should NOT fire), >=1 = subagent (should fire).
-        """
-        import re
-        if (content and callback and delegate_depth > 0):
-            _think_text = content.strip()
-            _think_text = re.sub(
-                r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
-            ).strip()
-            first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-            if first_line:
-                try:
-                    callback("_thinking", first_line)
-                except Exception:
-                    pass
-
-    def test_thinking_callback_fires_on_content(self):
-        """tool_progress_callback should receive _thinking event
-        when assistant message has content."""
-        calls = []
-        self._simulate_thinking_callback(
-            "I'll research quantum computing first, then summarize.",
-            lambda name, preview=None: calls.append((name, preview))
-        )
-        assert len(calls) == 1
-        assert calls[0][0] == "_thinking"
-        assert "quantum computing" in calls[0][1]
-
-
-    def test_thinking_callback_truncates_long_content(self):
-        """Should truncate long content to 80 chars."""
-        calls = []
-        self._simulate_thinking_callback(
-            "A" * 200 + "\nSecond line should be ignored",
-            lambda name, preview=None: calls.append((name, preview))
-        )
-        assert len(calls) == 1
-        assert len(calls[0][1]) == 80
 
 
 

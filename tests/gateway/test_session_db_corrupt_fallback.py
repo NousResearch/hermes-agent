@@ -62,7 +62,7 @@ def test_corrupt_state_db_diverts_pending_without_fts_rebuild(tmp_path, monkeypa
         # No FTS surgery ran on either layer.
         assert store._db._fts_enabled is True
         assert store._db._fts_stale is False
-        assert store._fts_rebuild_attempted is False
+        assert store._fts_rebuild_last_attempt_at is None
         assert sid not in store._dirty_transcripts
         _assert_diverted(tmp_path, sid, "after-corrupt")
     finally:

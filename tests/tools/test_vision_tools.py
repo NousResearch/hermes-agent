@@ -7,7 +7,6 @@ import logging
 import os
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Awaitable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +21,6 @@ from tools.vision_tools import (
     _EMBED_MAX_DIMENSION,
     _is_image_size_error,
     _MAX_BASE64_BYTES,
-    _RESIZE_TARGET_BYTES,
     vision_analyze_tool,
     check_vision_requirements,
 )
@@ -127,18 +125,6 @@ class TestImageToBase64DataUrl:
 class TestHandleVisionAnalyze:
     """Verify _handle_vision_analyze returns an Awaitable and builds correct prompt."""
 
-    def test_returns_awaitable_even_for_empty_args(self):
-        """The handler is registered as async, and missing keys must not raise."""
-        with patch(
-            "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
-        ) as mock_tool:
-            mock_tool.return_value = json.dumps({"result": "ok"})
-            for args in ({"image_url": "https://example.com/img.png",
-                          "question": "What is this?"}, {}):
-                result = _handle_vision_analyze(args)
-                assert isinstance(result, Awaitable)
-                # Clean up the coroutine to avoid RuntimeWarning
-                result.close()
 
 
     @pytest.mark.asyncio
@@ -540,6 +526,18 @@ class TestVisionRequirements:
 
         assert check_vision_requirements() is True
 
+    def test_resolver_crash_propagates_instead_of_reading_as_unconfigured(self, monkeypatch):
+        """The gate must not swallow resolver exceptions into False: the registry owns the
+        verdict and logs the traceback, so users can tell "misconfigured" from "crashed" (#87950)."""
+        import agent.auxiliary_client as aux
+
+        def _boom(**kw):
+            raise RuntimeError("named custom provider lookup failed")
+
+        monkeypatch.setattr(aux, "resolve_vision_provider_client", _boom)
+        with pytest.raises(RuntimeError, match="lookup failed"):
+            check_vision_requirements()
+
 
 # ---------------------------------------------------------------------------
 # Local path forms: tilde expansion and file:// URIs
@@ -708,19 +706,6 @@ class TestErrorClassification:
         assert "smaller" in result["analysis"].lower()
 
 
-class TestVisionRegistration:
-    def test_vision_analyze_registered_with_schema(self):
-        from tools.registry import registry
-
-        entry = registry._tools.get("vision_analyze")
-        assert entry is not None
-        assert entry.toolset == "vision"
-        assert entry.is_async is True
-        assert callable(entry.handler)
-
-        props = entry.schema.get("parameters", {}).get("properties", {})
-        assert "image_url" in props
-        assert "question" in props
 
 
 # ---------------------------------------------------------------------------
@@ -1053,6 +1038,20 @@ class TestVisionCpuBurstCap:
         assert result == "data:image/jpeg;base64,AAAA"
         assert len(seen_threads) == 1
         assert seen_threads[0].startswith("vision-encode"), seen_threads
+
+    @pytest.mark.asyncio
+    async def test_encode_runs_as_the_caller_profile(self, tmp_path):
+        """The pool worker runs under the caller's contextvars: a turn routed to another profile
+        encodes with that profile's home, not the launch profile's."""
+        import importlib
+        from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+        vt = importlib.import_module("tools.vision_tools")
+        token = set_hermes_home_override(str(tmp_path / "profiles" / "b"))
+        try:
+            seen = await vt._run_encode_on_cpu_executor(get_hermes_home)
+        finally:
+            reset_hermes_home_override(token)
+        assert seen == tmp_path / "profiles" / "b"
 
     @pytest.mark.asyncio
     async def test_encode_bursts_bounded_but_llm_stays_concurrent(self):

@@ -1,24 +1,26 @@
 import { RowButton } from '@/components/ui/row-button'
 import { useI18n } from '@/i18n'
 import { Check, ChevronRight, Terminal } from '@/lib/icons'
+import { PROVIDER_DISPLAY_NAMES } from '@/lib/model-status-label'
 import type { OAuthProvider } from '@/types/hermes'
 
-const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
-  nous: { order: 0, title: 'Nous Portal' },
-  'openai-codex': { order: 1, title: 'ChatGPT or Codex Subscription' },
-  'minimax-oauth': { order: 2, title: 'MiniMax' },
-  'qwen-oauth': { order: 3, title: 'Qwen Code' },
-  'xai-oauth': { order: 4, title: 'xAI Grok' },
-  // Both Anthropic entries sit at the bottom: the API-key path first, then
-  // the subscription OAuth path (only works with extra usage credits).
-  anthropic: { order: 5, title: 'Anthropic API Key' },
-  'claude-code': { order: 6, title: 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription' }
+// Titles live in PROVIDER_DISPLAY_NAMES (shared with the model pill); this is
+// only the featured order. Both Anthropic entries sit at the bottom: the API-key
+// path first, then the subscription OAuth path (only works with extra usage credits).
+const PROVIDER_ORDER: Record<string, number> = {
+  nous: 0,
+  'openai-codex': 1,
+  'minimax-oauth': 2,
+  'qwen-oauth': 3,
+  'xai-oauth': 4,
+  anthropic: 5,
+  'claude-code': 6
 }
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
-const orderOf = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.order ?? 99
+export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY_NAMES[p.id] ?? p.name
+const orderOf = (p: OAuthProvider) => PROVIDER_ORDER[p.id] ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
   [...providers].sort((a, b) => orderOf(a) - orderOf(b) || a.name.localeCompare(b.name))

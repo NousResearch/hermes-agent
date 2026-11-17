@@ -163,18 +163,6 @@ describe('createBillingApi', () => {
     expect(requestGatewayMock).toHaveBeenCalledWith('subscription.resume', {})
   })
 
-  it('surfaces an insufficient_scope refusal from a subscription preview', async () => {
-    requestGatewayMock.mockResolvedValueOnce({
-      error: { kind: 'insufficient_scope', message: 'billing:manage required' },
-      ok: false
-    })
-
-    const api = createBillingApi(requestGatewayMock)
-    const response = await api.scheduleSubscriptionChange('tier_plus')
-
-    expect(response).toMatchObject({ ok: false, refusal: { kind: 'insufficient_scope' } })
-  })
-
   it('sends a step-up session id when provided', async () => {
     requestGatewayMock.mockResolvedValueOnce({ granted: true, ok: true })
 

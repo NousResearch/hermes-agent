@@ -1,0 +1,23 @@
+name: hermes-helm
+repo: https://github.com/phucnht/hermes-helm
+sha: "95df9a6e0313e2844486e90270b81a65b37dc26e"
+title: hermes-helm
+description: "One /helm menu in Discord or Telegram for the Hermes you run 24/7: switch MCP servers, skills and toolsets on or off, ranked by the tokens each adds to every request; resend the turns a gateway restart or crash killed; set a daily spend limit that blocks new turns; and get Discord replies too long for 8 messages as a .txt file instead of truncated. Owner-only, and menus open only in a DM. Disclosure — writes mcp_servers.<name>.enabled, skills.disabled, agent.disabled_toolsets and its own plugins.entries.hermes-helm.settings in config.yaml through one function that logs old and new values and refuses when the config is managed; stores the text of every top-level user turn, from any sender on any platform and from the CLI, for 7 days (to resend lost turns; subagent turns skipped), tokens and cost per model call, and the change log in plugin-data/hermes-helm/helm.db; writes helm-reply-*.txt into Hermes' document cache for long Discord replies; resends a lost turn with ctx.inject_message only when allow_gateway_injection is on, and Hermes re-checks the allowlist; reads some private Hermes internals (toolset resolution, pricing) behind try/except fallbacks. No network of its own, no shell, no credentials, no telemetry."
+maintainer: phucnht
+tier: community
+category: tools
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/phucnht/hermes-helm
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/phucnht/hermes-helm/95df9a6e0313e2844486e90270b81a65b37dc26e/docs/discord-menu.png
+  - https://raw.githubusercontent.com/phucnht/hermes-helm/95df9a6e0313e2844486e90270b81a65b37dc26e/docs/telegram-menu.png
+known_issues:
+  - "Telegram shows 60 commands in its menu, so /helm may be hidden. Typing it works; set platforms.telegram.extra.command_menu.priority: [helm] to list it first."
+  - "In a shared channel /helm with no arguments points you to a DM, because anyone on the bot's allowlist can tap a Hermes button card there. Typed commands such as /helm budget 5 work anywhere."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, pre_tool_call, on_session_end, agent_loop_stopped, post_api_request, post_auxiliary_call, transform_llm_output]
+  provides_middleware: []
+  requires_env: []

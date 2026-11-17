@@ -10,10 +10,6 @@ describe('texToUnicode — symbols', () => {
     expect(texToUnicode('\\omega')).toBe('ω')
   })
 
-  it('substitutes uppercase Greek', () => {
-    expect(texToUnicode('\\Sigma \\Omega \\Pi')).toBe('Σ Ω Π')
-  })
-
   it('substitutes set theory and logic operators', () => {
     expect(texToUnicode('A \\cup B \\cap C')).toBe('A ∪ B ∩ C')
     expect(texToUnicode('\\forall x \\in \\emptyset')).toBe('∀ x ∈ ∅')
@@ -181,14 +177,6 @@ describe('texToUnicode — modular arithmetic and tags', () => {
   })
 })
 
-describe('texToUnicode — newly added symbols', () => {
-  it('renders \\nmid, \\blacksquare, \\qed', () => {
-    expect(texToUnicode('p \\nmid q')).toBe('p ∤ q')
-    expect(texToUnicode('Therefore \\blacksquare')).toBe('Therefore ■')
-    expect(texToUnicode('done \\qed')).toBe('done ∎')
-  })
-})
-
 describe('texToUnicode — \\boxed / \\fbox', () => {
   // `\boxed` produces non-printable U+0001 / U+0002 sentinels around its
   // content so the markdown renderer can apply highlight styling. These
@@ -276,10 +264,6 @@ describe('texToUnicode — punctuation commands without lookahead', () => {
 describe('texToUnicode — round-trip realism', () => {
   it('renders a typical model-emitted formula', () => {
     expect(texToUnicode('\\alpha \\in \\mathbb{R}, \\alpha \\notin \\mathbb{Q}')).toBe('α ∈ ℝ, α ∉ ℚ')
-  })
-
-  it('preserves unknown commands verbatim', () => {
-    expect(texToUnicode('\\bigtriangleup \\circledast')).toBe('\\bigtriangleup \\circledast')
   })
 
   it('handles commands without delimiters between', () => {

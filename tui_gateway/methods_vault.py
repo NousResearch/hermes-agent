@@ -13,6 +13,9 @@ JSON-RPC channel every other Settings surface uses. Contracts:
   scrubbed with ``scrub_secret_from_text`` before they leave the handler.
 - ``vault.remove`` → {removed: bool}.
 - ``vault.sources`` / ``vault.source.set`` → external password-manager status and enable toggle.
+- ``vault.preview.fill`` → the Browser bar's key button: fill a saved login (identifier + password) into
+  the in-app browser tab the renderer pinned. The secret is resolved here and written through
+  ``preview.act`` server requests on the calling socket; the result carries counts and the origin only.
 - ``vault.unlock`` / ``vault.lock`` → per-session unlock of a manager from Settings; the master
   password is consumed by the manager CLI through its non-interactive channel and never stored
   or logged.
@@ -28,22 +31,11 @@ method_ctx.py) and may reference server module globals (``_ok``, ``_err``).
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
-
-
-def method(name: str):
-    """``@method(name)`` with ``params.profile`` bound (home + secret scope) around the handler."""
-    def deco(fn):
-        def scoped(rid, params: dict) -> dict:
-            try:
-                home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-            except FileNotFoundError as e:
-                return _err(rid, 5095, str(e))
-            if home is None:
-                return fn(rid, params)
-            with _session_profile_runtime_scope({"profile_home": str(home)}):
-                return fn(rid, params)
-        return _registry.method(name)(scoped)
-    return deco
+method = _registry.method
+# server.py's ``@_profile_scoped`` (applied at install): the one scoping path every RPC uses, so the
+# launch profile (no ``params.profile``) keeps its secret scope bound once the process multiplexes
+# instead of its manager-token reads raising ``UnscopedSecretError``.
+_profile_scoped = _registry.profile_scoped
 
 # JSON-RPC error code 5095 = vault failure (validation + store errors).
 # Kept as a literal inside handler bodies: handlers are rebound onto
@@ -51,6 +43,7 @@ def method(name: str):
 
 
 @method("vault.list")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Metadata-only listing across every enabled backend (local + unlocked password managers).
     Each item carries ``backend``; locked managers contribute nothing (see vault.sources)."""
@@ -68,6 +61,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.sources")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
     from agent.vault_backends import enabled_backends
@@ -85,18 +79,19 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.source.set")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Enable/disable an external manager: writes ``vault.<name>.enabled`` and locks it when disabling."""
     from agent.vault_backends.base import external_backend_classes
     from agent.vault_backends.unlock import lock
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import _ensure_dict, load_config, save_config
 
     name = str(params.get("name") or "")
     if name not in {cls.name for cls in external_backend_classes()}:
         return _err(rid, 5095, f"unknown vault source: {name}")
     enabled = bool(params.get("enabled"))
     cfg = load_config()
-    section = cfg.setdefault("vault", {}).setdefault(name, {})
+    section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
     if enabled:
         section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
     else:
@@ -108,6 +103,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.unlock")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
     from agent.vault_backends import enabled_backends
@@ -129,6 +125,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.lock")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Forget a manager's session token (or every one when ``name`` is omitted)."""
     from agent.vault_backends.unlock import lock
@@ -139,6 +136,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.add")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Add a vault item. ``secret`` values go straight into the encrypted store.
 
@@ -171,6 +169,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.remove")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Remove a vault item by id. Result: ``{removed: bool}``."""
     try:
@@ -184,6 +183,52 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5095, str(e))
 
 
+@method("vault.preview.fill")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Fill login ``handle`` into the in-app browser tab the renderer pinned as ``target``. Same vault path
+    as the agent's ``browser_vault`` fill (origin guard before any secret read, re-asserted in the page;
+    nonce-bound fields; redaction registration); never submits. Each page script travels as a session-less
+    ``preview.act`` request on THIS socket, so only the window that asked can answer it."""
+    import json as _json
+
+    from tools.browser_vault_preview import run_preview_vault
+    from tools.browser_vault_tool import browser_vault_fill
+    from tui_gateway import server_requests
+    from tui_gateway.transport import current_transport
+
+    from agent.vault_backends import UnlockRequired, backend_for_handle
+
+    handle, target = str(params.get("handle") or ""), str(params.get("target") or "")
+    if not handle or not target:
+        return _err(rid, 5095, "handle and target are required")
+    backend = backend_for_handle(handle)
+    try:
+        meta = backend.get_meta(handle) if backend is not None else None
+    except UnlockRequired:
+        return _ok(rid, {"success": False, "error_type": "unlock_required",
+                         "error": f"Unlock {backend.display_name} first."})
+    if meta is None or meta.kind != "login":
+        return _err(rid, 5095, "no saved login with this handle")
+
+    caller = current_transport()
+
+    def ask(payload: dict):
+        # Pinned to the socket that asked: only the window that minted ``target`` gets the scripts.
+        answer = server_requests.send("preview.act", "", dict(payload), timeout=30, transport=caller)
+        return (answer or {}).get("value", "")
+
+    raw = run_preview_vault(ask, lambda: browser_vault_fill(handle, task_id="desktop-browser-bar", with_identifier=True),
+                            target=target)
+    out = _json.loads(raw)
+    return _ok(rid, {key: out[key] for key in ("success", "filled_fields", "origin", "error", "error_type") if key in out})
+
+
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)
+    # ``vault.preview.fill`` round-trips page scripts through the renderer; ``vault.list`` can now
+    # prepare the real-profile snapshot and launch Chrome (up to ~30 s) the first time the browser
+    # login source is listed. Both must run on the RPC pool, never the socket's ordered request
+    # reader, or they hold later requests — Stop included — behind that work.
+    server._LONG_HANDLERS = server._LONG_HANDLERS | {"vault.preview.fill", "vault.list"}

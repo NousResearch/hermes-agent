@@ -8,7 +8,7 @@ import threading
 import time
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture
@@ -111,8 +111,6 @@ def actual_endpoint(monkeypatch):
     [
         "auto",
         "actual",
-        "actual-computer",
-        "actualcomputer",
         "aci",
         "custom",
         "custom:actual-relay",
@@ -202,7 +200,7 @@ def test_actual_background_tasks_reach_chat_completions(
         quiet_mode=True,
     )
     assert (
-        compressor._call_summary_llm("Summarize this conversation.", time.monotonic())
+        compressor._call_summary_llm([{"role": "user", "content": "Summarize this conversation."}], time.monotonic())
         == "The task is complete."
     )
     response = asyncio.run(
@@ -225,8 +223,6 @@ def test_actual_background_tasks_reach_chat_completions(
     [
         ("actual", False),
         ("aci", False),
-        ("actual-computer", False),
-        ("actualcomputer", False),
         ("custom", True),
         ("custom:actual-relay", True),
     ],
@@ -353,8 +349,6 @@ def test_actual_runtime_transitions_reach_chat_completions(
     [
         ("actual", False),
         ("aci", False),
-        ("actual-computer", False),
-        ("actualcomputer", False),
         ("custom", True),
         ("custom:actual-relay", True),
     ],

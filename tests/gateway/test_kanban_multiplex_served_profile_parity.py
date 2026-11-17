@@ -35,7 +35,7 @@ def served(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "docker")
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda *, home=None: root)
     set_multiplex_active(True)
     try:
         yield SimpleNamespace(root=root, alpha=alpha)
@@ -44,8 +44,8 @@ def served(tmp_path, monkeypatch):
 
 
 def test_worker_for_served_profile_gets_its_own_env_and_toolset_pin(served, monkeypatch):
-    """The dispatcher (root context) spawns alpha's worker: no launch-profile settings leak into the
-    child and the ``--toolsets`` pin (whose probes read credentials) is resolved under alpha's scope."""
+    """The dispatcher (root context) spawns alpha's worker client: no launch-profile settings leak
+    into the child; the toolset pin is resolved by alpha's owner (``kanban.run``), not the dispatcher."""
     kb.init_db()
     conn = kbc.connect()
     try:
@@ -68,7 +68,7 @@ def test_worker_for_served_profile_gets_its_own_env_and_toolset_pin(served, monk
     env = spawned["env"]
     assert env["HERMES_HOME"] == str(served.alpha)
     assert "HERMES_MODEL" not in env and "TERMINAL_ENV" not in env
-    assert "--toolsets" in spawned["argv"]
+    assert spawned["argv"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
 
 
 class RecordingAdapter:
@@ -112,7 +112,7 @@ def test_notifier_pings_run_under_the_subscribers_profile(served, monkeypatch):
 
     async def fake_sleep(delay):
         if delay == 5:
-            return None
+            return
         runner._running = False
         await real_sleep(0)
 

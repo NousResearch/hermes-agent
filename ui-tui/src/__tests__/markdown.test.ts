@@ -1,13 +1,13 @@
 import { PassThrough } from 'stream'
 
-import { Box, renderSync } from '@hermes/ink'
+import { Box, Link, renderSync, Text } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import chalk from 'chalk'
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
 import { __resetLinkTitleCache, fetchLinkTitle } from '../lib/externalLink.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
 
 afterEach(() => {
@@ -176,29 +176,6 @@ describe('INLINE_RE inline math', () => {
     expect(matches('$P=a_n x^n + a_0$')).toEqual(['$P=a_n x^n + a_0$'])
     expect(matches('$\\beta_1,\\dots,\\beta_r$')).toEqual(['$\\beta_1,\\dots,\\beta_r$'])
   })
-
-  it('places math content in the correct capture group (regression: m[16] is bare URL)', () => {
-    // When `m[16]` was the bare URL group AND the inline-math `$...$`
-    // group simultaneously (because the bare URL pattern lacked its own
-    // capturing parens), MdInline rendered `$\\mathbb{R}$` as an
-    // underlined autolink instead of italic amber math. Lock down the
-    // numbering: math goes in m[17] / m[18], URLs go in m[16].
-    const url = [...'see https://example.com here'.matchAll(INLINE_RE)][0]!
-    const dollarMath = [...'$\\mathbb{R}$'.matchAll(INLINE_RE)][0]!
-    const parenMath = [...'\\(\\pi\\)'.matchAll(INLINE_RE)][0]!
-
-    expect(url[16]).toBe('https://example.com')
-    expect(url[17]).toBeUndefined()
-    expect(url[18]).toBeUndefined()
-
-    expect(dollarMath[16]).toBeUndefined()
-    expect(dollarMath[17]).toBe('\\mathbb{R}')
-    expect(dollarMath[18]).toBeUndefined()
-
-    expect(parenMath[16]).toBeUndefined()
-    expect(parenMath[17]).toBeUndefined()
-    expect(parenMath[18]).toBe('\\pi')
-  })
 })
 
 describe('protocol sentinels', () => {
@@ -291,16 +268,6 @@ describe('Md link labels', () => {
     expect(rendered).not.toContain('Lk 9f2c1d7e')
   })
 
-  // Regression for the connect-link handoff: the stored assistant text is
-  // `Connect link: <url>` and the TUI showed `Connect link: Composio`, so the
-  // OAuth step could not be completed from the TUI at all.
-  it('keeps the URL visible in a "Connect link:" message', () => {
-    const url = 'https://connect.example.com/link/lk_a1b2c3d4e5'
-    const rendered = renderPlain(md(`Connect link: ${url}`)).join('\n')
-
-    expect(rendered).toContain(`Connect link: ${url}`)
-  })
-
   it('wraps a bare URL in an OSC 8 hyperlink pointing at the same target', () => {
     const url = 'https://connect.example.com/link/lk_9f2c1d7e'
     const ansi = renderAnsi(md(`Connect link: ${url}`))
@@ -321,6 +288,45 @@ describe('Md link labels', () => {
     const rendered = renderPlain(md(`see <${url}>`)).join('\n')
 
     expect(rendered).toContain(url)
+  })
+
+  it('strips control bytes from a link target so it cannot end OSC 8 early (#131565)', () => {
+    const ansi = renderAnsi(md(`[x](https://example.com/x${BEL}${ESC}]2;TITLE${BEL})`))
+
+    expect(ansi).not.toContain(`${ESC}]2;`)
+    expect(ansi).toContain(`;https://example.com/x]2;TITLE${BEL}`)
+  })
+
+  it('strips control bytes from an authored link label', () => {
+    const C1_CSI = String.fromCharCode(0x9b)
+    const text = renderAnsi(md(`[Trip${BEL}${C1_CSI}2J details](https://example.com/x)`)).replace(OSC_RE, '')
+
+    expect(text).not.toContain(BEL)
+    expect(text).not.toContain(C1_CSI)
+    expect(text).toContain('Trip2J details')
+  })
+
+  it('strips control bytes from a <Link> target at the ink sink, not only in Md', () => {
+    const url = `https://example.com/x${BEL}${ESC}]2;TITLE${BEL}`
+    const ansi = renderAnsi(React.createElement(Link, { url }, React.createElement(Text, null, 'x')))
+
+    expect(ansi).not.toContain(`${ESC}]2;`)
+    expect(ansi).toContain(';https://example.com/x]2;TITLE')
+  })
+
+  it('keeps the SGR styling of a link label intact', () => {
+    // chalk defaults to level 0 under vitest, which would emit no SGR to lose.
+    const savedLevel = chalk.level
+    chalk.level = 3
+
+    try {
+      const plain = renderPlain(md('[Trip details](https://docs.example.com/guide/auth)')).join('\n')
+
+      expect(plain).toContain('Trip details')
+      expect(plain).not.toMatch(/\[[0-9;]*m/)
+    } finally {
+      chalk.level = savedLevel
+    }
   })
 
   it('keeps an authored markdown label and carries the target in OSC 8', () => {

@@ -25,9 +25,13 @@
 // Everything here is pure so it can be unit-tested without Electron; the side
 // effects (writing the script, spawning) live in main.ts.
 
+import { backendProfileArg } from './profile-id-guard'
+
 /** Argv for resuming a session in the TUI, profile-pinned when we know it. */
 export function tuiResumeArgs(sessionId: string, profile?: string): string[] {
-  const head = profile ? ['--profile', profile] : []
+  // A non-slug profile value must never cross into spawn argv (#88842).
+  const pinned = backendProfileArg(profile)
+  const head = pinned ? ['--profile', pinned] : []
 
   return [...head, '--tui', '--resume', sessionId]
 }

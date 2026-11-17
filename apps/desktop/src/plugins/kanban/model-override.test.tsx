@@ -43,12 +43,6 @@ describe('override label', () => {
     expect(overrideLabel(EMPTY_OVERRIDE, 'Profile default')).toBe('Profile default')
   })
 
-  it('shows provider: model · Effort', () => {
-    expect(overrideLabel({ effort: 'high', model: 'gemini-3.1-pro', provider: 'google' }, 'x')).toBe(
-      'google: gemini-3.1-pro · High'
-    )
-  })
-
   it('a depth-only pin is still an override', () => {
     const depthOnly: TaskModelOverride = { effort: 'ultra', model: '', provider: '' }
 

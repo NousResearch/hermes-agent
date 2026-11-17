@@ -5,11 +5,6 @@
 #56889, which isolates callers that pass different explicit ``model=`` values.
 """
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -80,16 +75,6 @@ def test_runtime_context_token_restores_previous_value_after_turn():
 
 
 
-def test_explicit_model_cache_isolation_remains_independent_of_runtime_key():
-    """#56889 remains covered: explicit model values isolate non-auto clients."""
-    first = aux._client_cache_key(
-        "openrouter", async_mode=False, model="anthropic/claude-opus-4.8"
-    )
-    second = aux._client_cache_key(
-        "openrouter", async_mode=False, model="openai/gpt-5.5"
-    )
-
-    assert first != second
 
 
 

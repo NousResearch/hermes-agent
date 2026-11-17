@@ -1,0 +1,14 @@
+name: job-search
+repo: https://github.com/agent-data/job-search
+sha: dba0c0992e9d7fc6533dd1be3003df7a311168f0
+description: A private, local-first job-search assistant that finds postings, judges them against your
+  prose preferences (no scores), and writes digests on a schedule you control.
+maintainer: agent-data
+tier: community
+category: automation
+docs_url: https://github.com/agent-data/job-search#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

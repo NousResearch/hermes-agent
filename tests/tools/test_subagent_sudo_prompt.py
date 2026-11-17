@@ -67,7 +67,7 @@ class TestDelegatedChildNeverPrompts:
         monkeypatch.setattr(
             tts,
             "_prompt_for_sudo_password",
-            lambda timeout_seconds=45: calls.append(1) or "hunter2",
+            lambda timeout_seconds=45, *, command="": calls.append(1) or "hunter2",
         )
 
         transformed, sudo_stdin = _transform_in_child("sudo apt-get update")
@@ -100,7 +100,7 @@ class TestDelegatedChildNeverPrompts:
         """The fix must not break interactive prompting outside children."""
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.setattr(
-            tts, "_prompt_for_sudo_password", lambda timeout_seconds=45: "hunter2"
+            tts, "_prompt_for_sudo_password", lambda timeout_seconds=45, *, command="": "hunter2"
         )
 
         transformed, sudo_stdin = tts._transform_sudo_command("sudo whoami")
@@ -124,7 +124,7 @@ class TestDelegatedChildFailureMessaging:
             out = tts._handle_sudo_failure(
                 "sudo: a password is required", env_type="local"
             )
-        assert "Subagents cannot prompt" in out
+        assert "cannot prompt for a sudo password" in out
         assert "SUDO_PASSWORD" in out
 
     def test_parent_output_unchanged(self, monkeypatch):
@@ -136,3 +136,37 @@ class TestDelegatedChildFailureMessaging:
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         out = tts._handle_sudo_failure("sudo: a password is required", env_type="local")
         assert "To enable sudo over messaging" in out
+
+
+def test_single_query_never_prompts(monkeypatch):
+    """`hermes chat -q` exports HERMES_INTERACTIVE=1 and registers the CLI sudo callback, but never renders the
+    panel (a 45 s wait per sudo call for nobody): it is headless, like a delegated child."""
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    calls = []
+    tt.set_sudo_password_callback(lambda: calls.append(1) or "pw")
+    monkeypatch.setattr(tts, "_prompt_for_sudo_password",
+                        lambda timeout_seconds=45, *, command="": calls.append(2) or "pw")
+
+    transformed, sudo_stdin = tts._transform_sudo_command("sudo whoami")
+
+    assert calls == []
+    assert sudo_stdin is None
+    assert transformed == "sudo whoami"
+
+
+def test_single_query_sudo_failure_gets_the_headless_tip_and_no_reprompt_promise(monkeypatch):
+    """A -q sudo failure is told how to fix it (SUDO_PASSWORD), never promised a prompt it will not get."""
+    from tools.terminal_tool_result import _sudo_annotations
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    out = tts._handle_sudo_failure("sudo: a password is required", env_type="local")
+    assert "cannot prompt for a sudo password" in out and "SUDO_PASSWORD" in out
+
+    tt.set_sudo_password_callback(lambda: "pw")
+    tts._set_cached_sudo_password("wrong")
+    out, auth_failed, cache_cleared = _sudo_annotations("sudo whoami", "sudo: 3 incorrect password attempts", "local")
+    assert auth_failed and cache_cleared
+    assert "prompted again" not in out

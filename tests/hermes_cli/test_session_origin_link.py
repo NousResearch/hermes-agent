@@ -35,11 +35,15 @@ def client(_isolate_hermes_home):
 
     root = get_hermes_home()
     worker = root / "profiles" / "worker"
+    # The worker disables Slack: its Slack session must get no link even though the launch
+    # profile (root) loads the same bundled plugin and links its own Slack session.
     rows = {root: {"local-cli": None, "slack-thread": _SLACK},
-            worker: {"discord-chan": _DISCORD, "tg-topic": _TELEGRAM_TOPIC, "tg-dm": _TELEGRAM_DM}}
+            worker: {"discord-chan": _DISCORD, "tg-topic": _TELEGRAM_TOPIC, "tg-dm": _TELEGRAM_DM,
+                     "worker-slack": _SLACK}}
+    configs = {root: "{}\n", worker: "plugins:\n  disabled: [slack-platform]\n"}
     for home, sessions in rows.items():
         home.mkdir(parents=True, exist_ok=True)
-        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (home / "config.yaml").write_text(configs[home], encoding="utf-8")
         db = SessionDB(db_path=home / "state.db")
         try:
             for sid, origin in sessions.items():
@@ -60,6 +64,7 @@ def test_session_lists_link_each_messaging_session_to_its_conversation(client):
         "discord-chan": "https://discord.com/channels/111/222/333",
         "tg-topic": "https://t.me/c/1234567890/7/42",
         "tg-dm": None,  # Telegram gives a private chat no link
+        "worker-slack": None,  # Slack is disabled in the owning profile
     }
     listed = {s["id"]: s["origin_url"] for s in client.get("/api/profiles/sessions?limit=50").json()["sessions"]}
     assert listed == expected
@@ -67,12 +72,18 @@ def test_session_lists_link_each_messaging_session_to_its_conversation(client):
     sidebar = client.get("/api/profiles/sessions/sidebar").json()
     sidebar_rows = {s["id"]: s["origin_url"] for key in ("recents", "messaging") for s in sidebar[key]["sessions"]}
     assert sidebar_rows == {sid: expected[sid] for sid in sidebar_rows}
-    assert "discord-chan" in sidebar_rows and "slack-thread" in sidebar_rows
+    assert {"discord-chan", "slack-thread", "worker-slack"} <= set(sidebar_rows)
 
     own = {s["id"]: s["origin_url"] for s in client.get("/api/sessions?limit=50").json()["sessions"]}
     assert own == {"local-cli": None, "slack-thread": expected["slack-thread"]}
     detail = client.get("/api/sessions/discord-chan", params={"profile": "worker"}).json()
     assert detail["origin_url"] == expected["discord-chan"]
+    worker_slack = client.get("/api/sessions/worker-slack", params={"profile": "worker"}).json()
+    assert worker_slack["origin_url"] is None
+
+    # Search results carry the same link as the list rows.
+    found = {r["id"]: r.get("origin_url") for r in client.get("/api/sessions/search", params={"q": "hi"}).json()["results"]}
+    assert found == {"local-cli": None, "slack-thread": expected["slack-thread"]}
 
 
 def test_platform_without_thread_url_gets_no_link(_isolate_hermes_home):

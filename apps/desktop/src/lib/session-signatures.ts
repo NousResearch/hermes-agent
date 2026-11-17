@@ -35,7 +35,9 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       // frozen copy forever. An idle conversation never moves any of the
       // fields above again, which is exactly when a pin gets toggled (#76919).
       session.pinned === other.pinned &&
-      session.archived === other.archived
+      session.archived === other.archived &&
+      // The menu's platform link reads this row; a backend that starts sending it changes nothing else.
+      (session.origin_url ?? null) === (other.origin_url ?? null)
     )
   })
 }

@@ -293,6 +293,22 @@ function SidebarSessionRowImpl({
     </SidebarRowLeadGlyph>
   ) : null
 
+  // One verb set for the kebab and the right-click menu; `origin` is the row the menu acts on.
+  const menuActions = {
+    archived: Boolean(session.archived),
+    onArchive,
+    onBranch,
+    onDelete,
+    onPin,
+    onToggleUnread,
+    origin: session,
+    pinned: isPinned,
+    profile: session.profile,
+    sessionId: session.id,
+    title,
+    unread
+  }
+
   // The trailing metadata sits in normal flow and the kebab lifts out of it,
   // so this cluster's intrinsic width IS the metadata's. In the one-line row
   // it rides the shell's `auto` actions column and the title truncates
@@ -325,19 +341,7 @@ function SidebarSessionRowImpl({
           {node}
         </span>
       ))}
-      <SessionActionsMenu
-        archived={Boolean(session.archived)}
-        onArchive={onArchive}
-        onBranch={onBranch}
-        onDelete={onDelete}
-        onPin={onPin}
-        onToggleUnread={onToggleUnread}
-        pinned={isPinned}
-        profile={session.profile}
-        sessionId={session.id}
-        title={title}
-        unread={unread}
-      >
+      <SessionActionsMenu {...menuActions}>
         <Button
           aria-label={r.sessionActions}
           className={cn(
@@ -356,19 +360,7 @@ function SidebarSessionRowImpl({
   )
 
   return (
-    <SessionContextMenu
-      archived={Boolean(session.archived)}
-      onArchive={onArchive}
-      onBranch={onBranch}
-      onDelete={onDelete}
-      onPin={onPin}
-      onToggleUnread={onToggleUnread}
-      pinned={isPinned}
-      profile={session.profile}
-      sessionId={session.id}
-      title={title}
-      unread={unread}
-    >
+    <SessionContextMenu {...menuActions}>
       <SidebarRowShell
         actions={card ? undefined : actionsNode}
         className={cn(

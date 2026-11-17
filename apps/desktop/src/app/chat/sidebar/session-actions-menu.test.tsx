@@ -157,9 +157,7 @@ describe('SessionActionsMenu', () => {
 
     const openMenu = async (originUrl: null | string) => {
       cleanup()
-      vi.mocked(ownerLookupSessionRows).mockReturnValue([
-        { id: 's1', origin_url: originUrl, source: 'slack' } as never
-      ])
+      vi.mocked(ownerLookupSessionRows).mockReturnValue([{ id: 's1', origin_url: originUrl, source: 'slack' } as never])
       render(
         <SessionActionsMenu sessionId="s1" title="My session">
           <button aria-label="Session actions" type="button">
@@ -180,6 +178,37 @@ describe('SessionActionsMenu', () => {
     await openMenu(url)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open in Slack' }))
     expect(openExternalLink).toHaveBeenCalledWith(url)
+  })
+
+  it("reads the platform link from the displayed row, never another profile's same-id row", async () => {
+    const { ownerLookupSessionRows } = await import('@/store/session')
+    const url = 'https://discord.com/channels/111/222'
+    vi.mocked(ownerLookupSessionRows).mockReturnValue([
+      { id: 's1', origin_url: 'https://slack.com/archives/C1', profile: 'other', source: 'slack' } as never
+    ])
+
+    const openMenu = async (props: { origin?: { origin_url: string; source: string } }) => {
+      cleanup()
+      render(
+        <SessionActionsMenu profile="worker" sessionId="s1" title="My session" {...props}>
+          <button aria-label="Session actions" type="button">
+            ⋮
+          </button>
+        </SessionActionsMenu>
+      )
+      const trigger = screen.getByRole('button', { name: 'Session actions' })
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+      await screen.findByRole('menu')
+    }
+
+    await openMenu({})
+    expect(screen.queryByRole('menuitem', { name: /Open in/ })).toBeNull()
+
+    // An archived row is outside the lookup slices; the row it renders still carries the link.
+    await openMenu({ origin: { origin_url: url, source: 'discord' } })
+    expect(screen.getByRole('menuitem', { name: 'Open in Discord' })).toBeTruthy()
   })
 
   it('opens the rename dialog focused on its input, not the row trigger', async () => {

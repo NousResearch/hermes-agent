@@ -57,12 +57,7 @@ import {
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
 import { ambientRequestFor } from '@/store/session-gone-latch'
-import {
-  $sessionStates,
-  $sessionTiles,
-  closeAllOpenSessionTiles,
-  requestForOwnedSession
-} from '@/store/session-states'
+import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles, requestForOwnedSession } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -161,9 +156,21 @@ export async function renameSessionPreferringRpc(
 }
 
 /** "Open in Slack/Discord/Telegram": the conversation a messaging session came from, when the
- *  backend built a link for its row (`origin_url`). */
-function originLinkItems(sessionId: string, r: { openInPlatform: (platform: string) => string; openInPlatformFallback: string }) {
-  const row = ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))
+ *  backend built a link for its row (`origin_url`). A sidebar row passes the row it displays
+ *  (archived rows live outside the owner-lookup slices); a tab has no row, so it looks one up,
+ *  tied to the session's owning profile so a same-id row from another profile never answers. */
+function originLinkItems(
+  sessionId: string,
+  profile: string | undefined,
+  origin: SessionActions['origin'],
+  r: { openInPlatform: (platform: string) => string; openInPlatformFallback: string }
+) {
+  const row =
+    origin ??
+    ownerLookupSessionRows().find(
+      s => sessionMatchesStoredId(s, sessionId) && (!profile || !s.profile || s.profile === profile)
+    )
+
   const url = row?.origin_url
 
   if (!url) {
@@ -185,6 +192,8 @@ interface SessionActions {
    *  archive verb becomes Unarchive and restores the session (#98813). */
   archived?: boolean
   profile?: string
+  /** The displayed row's platform link and source (sidebar rows); omitted on tabs. */
+  origin?: { origin_url?: null | string; source: null | string }
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -287,6 +296,7 @@ function useSessionActions({
   unread = false,
   archived = false,
   profile,
+  origin,
   onPin,
   onToggleUnread,
   onBranch,
@@ -574,66 +584,66 @@ function useSessionActions({
 
   // Built when the menu opens: the row is read then, not subscribed per row (see Open in terminal).
   const renderItems = (kit: MenuKit) => {
-    const open = [...openItems, ...originLinkItems(sessionId, r)]
+    const open = [...openItems, ...originLinkItems(sessionId, profile, origin, r)]
 
     return (
-    <>
-      {open.map(item => renderActionItem(kit, item))}
-      {open.length > 0 && <kit.Separator />}
-      {identityItems.map(item => renderActionItem(kit, item))}
-      <kit.Sub>
-        <kit.SubTrigger disabled={!sessionId}>
-          <Codicon name="symbol-color" size="0.875rem" />
-          <span>{t.sidebar.projects.menuAppearance}</span>
-        </kit.SubTrigger>
-        <kit.SubContent className="p-2">
-          <SessionColorSwatches sessionId={sessionId} />
-        </kit.SubContent>
-      </kit.Sub>
-      <CopyButton
-        appearance={kit.copyAppearance}
-        disabled={!sessionId}
-        errorMessage={r.copyIdFailed}
-        iconClassName="size-3.5 text-current"
-        key={r.copyId}
-        label={r.copyId}
-        onCopyError={err => notifyError(err, r.copyIdFailed)}
-        text={sessionId}
-      />
-      <kit.Separator />
-      {workItems.map(item => renderActionItem(kit, item))}
-      <kit.Sub>
-        <kit.SubTrigger disabled={!sessionId}>
-          <Codicon name="folder" size="0.875rem" />
-          <span>{t.sidebar.projects.moveToProject}</span>
-        </kit.SubTrigger>
-        <kit.SubContent>
-          <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
-        </kit.SubContent>
-      </kit.Sub>
-      {tabItems.length > 0 && (
-        <>
-          <kit.Separator />
-          {tabItems.map(item => renderActionItem(kit, item))}
-        </>
-      )}
-      <kit.Separator />
-      {dangerItems.map(item => renderActionItem(kit, item))}
-      {onHideTabBar && (
-        <>
-          <kit.Separator />
-          {renderActionItem(kit, {
-            disabled: false,
-            icon: 'eye-closed',
-            label: r.hideTabBar,
-            onSelect: () => {
-              triggerHaptic('selection')
-              onHideTabBar()
-            }
-          })}
-        </>
-      )}
-    </>
+      <>
+        {open.map(item => renderActionItem(kit, item))}
+        {open.length > 0 && <kit.Separator />}
+        {identityItems.map(item => renderActionItem(kit, item))}
+        <kit.Sub>
+          <kit.SubTrigger disabled={!sessionId}>
+            <Codicon name="symbol-color" size="0.875rem" />
+            <span>{t.sidebar.projects.menuAppearance}</span>
+          </kit.SubTrigger>
+          <kit.SubContent className="p-2">
+            <SessionColorSwatches sessionId={sessionId} />
+          </kit.SubContent>
+        </kit.Sub>
+        <CopyButton
+          appearance={kit.copyAppearance}
+          disabled={!sessionId}
+          errorMessage={r.copyIdFailed}
+          iconClassName="size-3.5 text-current"
+          key={r.copyId}
+          label={r.copyId}
+          onCopyError={err => notifyError(err, r.copyIdFailed)}
+          text={sessionId}
+        />
+        <kit.Separator />
+        {workItems.map(item => renderActionItem(kit, item))}
+        <kit.Sub>
+          <kit.SubTrigger disabled={!sessionId}>
+            <Codicon name="folder" size="0.875rem" />
+            <span>{t.sidebar.projects.moveToProject}</span>
+          </kit.SubTrigger>
+          <kit.SubContent>
+            <MoveToProjectItems kit={kit} profile={profile} sessionId={sessionId} />
+          </kit.SubContent>
+        </kit.Sub>
+        {tabItems.length > 0 && (
+          <>
+            <kit.Separator />
+            {tabItems.map(item => renderActionItem(kit, item))}
+          </>
+        )}
+        <kit.Separator />
+        {dangerItems.map(item => renderActionItem(kit, item))}
+        {onHideTabBar && (
+          <>
+            <kit.Separator />
+            {renderActionItem(kit, {
+              disabled: false,
+              icon: 'eye-closed',
+              label: r.hideTabBar,
+              onSelect: () => {
+                triggerHaptic('selection')
+                onHideTabBar()
+              }
+            })}
+          </>
+        )}
+      </>
     )
   }
 
@@ -804,7 +814,9 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
       // Same all-slices resolution as above: a messaging row's rename must
       // carry its owning bot profile, not the ambient gateway profile.
       const targetProfile =
-        (profile ?? '').trim() || ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
+        (profile ?? '').trim() ||
+        ownerLookupSessionRows().find(s => sessionMatchesStoredId(s, sessionId))?.profile ||
+        undefined
 
       const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
       const finalTitle = result.title || next || ''

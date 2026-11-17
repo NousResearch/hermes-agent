@@ -11,7 +11,7 @@ from hermes_state import SessionDB
 from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, settle_session_input
 
 
-def _settled_native_document(tmp_path, monkeypatch, note):
+def _settled_native_document(tmp_path, monkeypatch, note, mentioned_in='s'):
     from gateway.platforms.base import get_document_cache_dir
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     staged = get_document_cache_dir() / 'doc_1_report.pdf'
@@ -20,7 +20,9 @@ def _settled_native_document(tmp_path, monkeypatch, note):
     retained = media[0]['path']
     db = SessionDB(db_path=tmp_path / 'state.db')
     db.create_session('s', source='telegram')
-    db.append_message('s', 'user', note(retained))
+    if mentioned_in != 's':
+        db.create_session(mentioned_in, source='telegram')
+    db.append_message(mentioned_in, 'user', note(retained))
     epoch = begin_runtime_epoch(db, instance_id='owner')
     row = admit_session_input(db, epoch=epoch, principal_id='p', session_id='s', request_id='m1',
                               payload={'text': 'page 3?', 'native_text_v1': {'media': media}})
@@ -48,5 +50,35 @@ def test_settled_native_document_named_by_the_transcript_survives_settlement(tmp
         monkeypatch.setattr(media_module, '_last_sweep', {}, raising=False)
         release_admission_media(db, row['admission_id'])
         assert not os.path.exists(retained) and list(_media_root().iterdir()) == []
+    finally:
+        db.close()
+
+
+def test_settlement_reads_only_its_own_transcript_when_that_names_the_input(tmp_path, monkeypatch):
+    """The settled turn's own rows decide it through the session index: a picture turn must not
+    scan every conversation's transcript before the queued follow-up may start."""
+    import gateway.session_ingress_media as media_module
+    db, row, retained = _settled_native_document(tmp_path, monkeypatch, lambda path: f'It is saved at: {path}.')
+    monkeypatch.setattr(media_module, '_last_sweep', {db.db_path: time.time()}, raising=False)
+    scans, real = [], media_module._history_mentions
+    monkeypatch.setattr(media_module, '_history_mentions',
+                        lambda conn, refs, **kw: scans.append(kw.get('session_id')) or real(conn, refs, **kw))
+    try:
+        release_admission_media(db, row['admission_id'])
+        assert os.path.exists(retained)
+        assert scans == ['s'], 'a whole-store transcript scan ran although the own transcript names the input'
+    finally:
+        db.close()
+
+
+def test_input_named_only_by_another_conversation_still_survives(tmp_path, monkeypatch):
+    """A branch or compression copy can be the only row naming it: the store-wide pass still runs."""
+    import gateway.session_ingress_media as media_module
+    monkeypatch.setattr(media_module, '_last_sweep', {}, raising=False)
+    db, row, retained = _settled_native_document(tmp_path, monkeypatch, lambda path: f'It is saved at: {path}.',
+                                                 mentioned_in='branch')
+    try:
+        release_admission_media(db, row['admission_id'])
+        assert os.path.exists(retained)
     finally:
         db.close()

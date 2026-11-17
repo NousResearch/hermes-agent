@@ -490,8 +490,9 @@ def release_admission_media(db, admission_id):
     # so they are history context like an API image: they go once no live row and no transcript row
     # names them, never while a follow-up turn can still be told to read them. Session deletion
     # collects them through ``retire_media``; ``sweep_settled_media`` bounds the rest at main's 24 h.
-    released = release_unheld_media(db, admission_media_references(row['payload']))
-    released += release_unheld_media(db, hosted_document_references(row['request_id'], row['payload']))
+    own = row['target_session_id']
+    released = release_unheld_media(db, admission_media_references(row['payload']), session_id=own)
+    released += release_unheld_media(db, hosted_document_references(row['request_id'], row['payload']), session_id=own)
     return released + sweep_settled_media(db)
 
 
@@ -553,10 +554,11 @@ def collect_unheld_api_images(db):
         return 0
 
 
-def _history_mentions(conn, references, after_id=0):
+def _history_mentions(conn, references, after_id=0, session_id=None):
     """Candidate paths any transcript row (id > after_id) mentions raw or JSON-escaped, in ONE
-    messages pass. Rows are prefiltered in SQL on the literal text before each candidate's digest
-    directory, so only rows that could name a candidate reach Python's exact substring test."""
+    messages pass (only ``session_id``'s rows when given). Rows are prefiltered in SQL on the literal
+    text before each candidate's digest directory, so only rows that could name a candidate reach
+    Python's exact substring test."""
     # Matched by the content-addressed tail ``<sha256>/<name>`` with either separator, so every
     # spelling a note can carry (the host path, a sandbox backend's ``to_agent_visible_cache_path``)
     # counts as a mention.
@@ -568,10 +570,12 @@ def _history_mentions(conn, references, after_id=0):
     prefixes = sorted({reference['sha256'] for reference in references})
     # The digests are ONE bound JSON array, never one ``instr`` term each: the statement's size
     # must not grow with the candidate count (SQLite's expression-depth limit fails at ~1000 terms).
-    query = ('WITH digests(value) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT content FROM messages '
-             'WHERE EXISTS (SELECT 1 FROM digests WHERE instr(content, digests.value))' + (' AND id>?' if after_id else ''))
+    query = ('WITH digests(value) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT content FROM messages WHERE '
+             + ('session_id=? AND ' if session_id is not None else '')
+             + 'EXISTS (SELECT 1 FROM digests WHERE instr(content, digests.value))' + (' AND id>?' if after_id else ''))
+    params = (json.dumps(prefixes), *((session_id,) if session_id is not None else ()), *((after_id,) if after_id else ()))
     mentioned = set()
-    for (content,) in conn.execute(query, (json.dumps(prefixes), *((after_id,) if after_id else ()))):
+    for (content,) in conn.execute(query, params):
         text = content.decode('utf-8', 'replace') if isinstance(content, bytes) else str(content)
         mentioned.update(raw for needle, raw in needles.items() if needle in text)
     return mentioned
@@ -582,13 +586,15 @@ def _collectable(references, root):
             and Path(reference['path']).parent.name == reference['sha256'] and Path(reference['path']).exists()]
 
 
-def release_unheld_media(db, references, *, retain_history=True):
+def release_unheld_media(db, references, *, retain_history=True, session_id=None):
     """Delete unowned references, preserving accepted admission and retained transcript owners.
 
     The history owner check is one read-snapshot pass over messages, outside the write lock; under
     the lock only rows inserted after that snapshot (an indexed id range) are re-checked. A new
     transcript mention of a retained image comes from an admission holding it (re-checked under the
-    lock) or from a copied row (branch/compress insert, caught by the range)."""
+    lock) or from a copied row (branch/compress insert, caught by the range). ``session_id`` (the
+    settled turn's conversation) is read first through its index: its own transcript nearly always
+    names the input, and that verdict needs no scan of every conversation's rows."""
     root = _media_root()
     references = _collectable(references or (), root)
     if not references:
@@ -598,8 +604,12 @@ def release_unheld_media(db, references, *, retain_history=True):
         with db._read_ctx() as conn:
             conn.execute('BEGIN')  # one snapshot: the id watermark and the scan agree
             try:
-                last_id = conn.execute('SELECT coalesce(max(id), 0) FROM messages').fetchone()[0]
-                seen = _history_mentions(conn, references)
+                if session_id is not None:
+                    own = _history_mentions(conn, references, session_id=session_id)
+                    references = [reference for reference in references if reference['path'] not in own]
+                if references:
+                    last_id = conn.execute('SELECT coalesce(max(id), 0) FROM messages').fetchone()[0]
+                    seen = _history_mentions(conn, references)
             finally:
                 if conn.in_transaction:
                     conn.execute('ROLLBACK')

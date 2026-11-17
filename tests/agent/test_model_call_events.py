@@ -82,3 +82,16 @@ def test_rate_limited_then_streamed_call_emits_wait_and_usage(tmp_path, monkeypa
     # The streamed attempt's own timing, not the turn-long span that included the 3 s wait.
     assert isinstance(usage["first_token_ms"], int) and 0 <= usage["first_token_ms"] <= usage["duration_ms"]
     assert usage["duration_ms"] < 3000
+
+
+def test_unbounded_retry_after_is_reported_as_unknown():
+    from types import SimpleNamespace
+
+    from agent.model_call_events import emit_rate_limited
+
+    seen = []
+    agent = SimpleNamespace(model="m", provider="p", _current_api_request_id=None,
+                            tool_progress_callback=lambda event, *_a, **kw: seen.append(kw))
+    # ``Retry-After: 1e400`` parses to inf; the meter must not take down the retry path.
+    emit_rate_limited(agent, retry_after_s=float("inf"), wait_s=600.0, attempt=1, max_attempts=3)
+    assert seen[0]["retry_after_ms"] is None and seen[0]["wait_ms"] == 600000

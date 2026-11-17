@@ -15,6 +15,7 @@ adapters render its text into the chat. ``EVENT_FIELDS`` is the wire key set eac
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any, Optional
 
@@ -41,7 +42,8 @@ def model_call_payload(event_type: str, fields: dict[str, Any]) -> dict[str, Any
 
 
 def _ms(seconds: Optional[float]) -> Optional[int]:
-    return None if seconds is None else max(0, round(seconds * 1000))
+    # A provider's Retry-After is unbounded input ("1e400" parses to inf): unknown, never a crash.
+    return None if seconds is None or not math.isfinite(seconds) else max(0, round(seconds * 1000))
 
 
 def note_attempt_started(agent: Any) -> None:

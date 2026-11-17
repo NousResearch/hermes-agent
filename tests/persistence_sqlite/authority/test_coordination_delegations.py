@@ -226,7 +226,7 @@ def test_recover_abandoned(backend, scope_a, monkeypatch):
                       for item in c.list_inflight_delegations() if not alive(item.owner_pid, item.owner_started_at)]
         return c.recover_abandoned_delegations(recoveries=recoveries)
     before, after = run_ledger_both(backend, scope_a, monkeypatch, rows, legacy, verb)
-    assert before == ("ok", 2)
+    assert before == ("ok", 1)
     assert_same(before, after)
 
 

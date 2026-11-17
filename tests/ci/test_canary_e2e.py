@@ -141,6 +141,15 @@ def test_every_call_is_the_claims_call_on_the_canary_commit():
         assert job.get("secrets") == claim[0].get("secrets"), name
 
 
+@pytest.mark.parametrize(("dry_run", "shared"), [(False, True), (True, False)])
+def test_a_live_tracker_replay_queues_with_automatic_runs(dry_run, shared):
+    """Two runs that can write the issue at once could both create one; a preview writes nothing."""
+    ctx = {"github": {"event_name": "workflow_dispatch", "run_id": RUN_ID, "event": {}},
+           "inputs": {"run-id": "1", "dry-run": dry_run}}
+    group = gha.render(load("install-e2e-red.yml")["concurrency"]["group"], ctx)
+    assert group == ("install-e2e-red-tracker-auto" if shared else f"install-e2e-red-tracker-{RUN_ID}")
+
+
 def _call_closure(rel: str, seen: set[str]) -> None:
     if rel in seen:
         return

@@ -3,15 +3,14 @@ import { type FC, useState } from 'react'
 
 import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
+import { PluginCardRow, useClaimedPluginCard } from '@/components/assistant-ui/thread/plugin-card'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
-import { ClaimedDirective, useDirectiveClaimed } from '@/components/assistant-ui/transcript-directive'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { LogView } from '@/components/ui/log-view'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { useI18n } from '@/i18n'
-import type { PluginCard } from '@/lib/chat-messages'
 import { LinkifiedText } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
@@ -93,9 +92,7 @@ export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
-  const pluginCard = useAuiState(s => s.message.metadata.custom?.pluginCard as PluginCard | undefined)
-  const directive = pluginCard?.directive
-  const claimed = useDirectiveClaimed(directive?.name)
+  const pluginCard = useClaimedPluginCard()
 
   const contentRefused = useAuiState(
     s => s.message.metadata.custom?.contentRefused as undefined | { notice?: string }
@@ -113,17 +110,8 @@ export const SystemMessage: FC = () => {
 
   // A plugin's card whose Desktop half claims the directive renders as that
   // plugin's component; unclaimed, it falls through to the plain text row.
-  if (directive && claimed) {
-    return (
-      <MessagePrimitive.Root
-        className="w-full min-w-0 self-start py-1 pl-(--message-text-indent)"
-        data-plugin-card={pluginCard.cardId}
-        data-role="system"
-        data-slot="aui_system-message-root"
-      >
-        <ClaimedDirective attrs={directive.attrs} name={directive.name} />
-      </MessagePrimitive.Root>
-    )
+  if (pluginCard) {
+    return <PluginCardRow card={pluginCard} />
   }
 
   if (processResult || (typeof asyncResult === 'string' && asyncResult)) {

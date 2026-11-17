@@ -281,6 +281,14 @@ no further turn and no cron job for the profile, but it stays up until it is
 stopped, so stop it before marking. A marker that cannot be read still counts;
 only the plugin name is then unknown.
 
+While a profile is marked, host processes load no env file and no secret source
+from its home when they start: a `hermes -p <profile> …` command, and a plugin's
+own host process started under that home, read no `.env` or `.op.env` there and
+resolve none of its `secrets:` sources, and a host gateway or dashboard that
+serves the profile resolves none of them either. The marking plugin supplies
+what its own host process needs. A command that looks up one named value, such
+as `hermes -p <profile> status`, still reads the `.env` file.
+
 The marker lives under the Hermes root, never in a profile home, so the
 profile's own backend cannot remove it. Host-side plugin code sets, reads and
 clears it with three functions of the

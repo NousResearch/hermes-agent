@@ -18,6 +18,15 @@ whether or not the plugin's own process is running:
   session, file and Webapp requests for it answer 409, and a dashboard session's deferred agent
   build refuses before the profile's MCP servers are started.
 
+While a profile is marked, its home is written by the backend the plugin runs, so host processes
+load no env file and no secret source from it: ``load_hermes_dotenv`` (run at the import of every
+``hermes`` start, before any command can refuse) reads no ``.env`` or ``.op.env`` there, takes no
+config-backend selector from them and resolves none of its ``secrets:`` sources, and a host that
+serves the profile resolves none of them either (``hydrate_profile_secret_sources``). The marking
+plugin supplies what its own host process needs. Two readers still open the ``.env`` file: code
+that asks for one named value (``hermes_cli.config.get_env_value``), and the secret scope a host
+builds for a profile it serves.
+
 The marker is the file ``<hermes root>/profiles_run_elsewhere/<profile>.json``. It lives under the
 Hermes root and never inside a profile home, so the profile's backend cannot remove it. The file's
 presence is the marker; its contents (``{"plugin": ..., "since": ...}``) only name the owner in
@@ -25,7 +34,8 @@ messages, so a marker that cannot be read still marks the profile.
 
 The plugin keeps this folder from the backend it runs elsewhere. A process that is denied the
 folder (permission error) is therefore that backend, not the host, and refuses nothing: it keeps
-running its own profile. Any other error reading the folder refuses every profile.
+running its own profile and loads its own env files. Any other error reading the folder refuses
+every profile, and no profile's env files or secret sources are loaded until it can be read.
 """
 
 from __future__ import annotations
@@ -122,7 +132,8 @@ def _read_folder(folder: Path) -> _MarkerFolder:
                   "plugin runs elsewhere, so it refuses no profile", folder)
         return _MarkerFolder()
     except OSError as exc:  # a file where the folder belongs, an I/O error, ...
-        _log_once(logging.ERROR, "Cannot read %s (%s); running no profile until it can be read", folder, exc)
+        _log_once(logging.ERROR, "Cannot read %s (%s); running no profile and loading no profile's "
+                  "env files until it can be read", folder, exc)
         return _MarkerFolder(error=exc)
     # Writers stage a marker under a dot-prefixed name; any name but <profile>.json is not a marker.
     return _MarkerFolder(frozenset(name[:-len(_SUFFIX)] for name in names

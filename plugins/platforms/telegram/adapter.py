@@ -5,20 +5,119 @@ import asyncio
 import contextlib
 import dataclasses
 import hashlib
+import importlib
 import inspect
 import json
 import logging
 import os
 import html as _html
 import re
+import subprocess
+import sys
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone, UTC
+from pathlib import Path
 from weakref import WeakValueDictionary
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set, cast
 from hermes_cli import setup_platforms
+from hermes_constants import get_hermes_home
+from integrations.sonos_commands import (
+    _podcast_reader_command_argv,
+    _speaker_command_argv as _sonos_speaker_command_argv,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _speaker_command_argv(action: str, **kwargs) -> list[str]:
+    """Expose the strict Sonos argv builder with adapter's legacy overlay contract."""
+    argv = _sonos_speaker_command_argv(action, **kwargs)
+    if str(action).lower() in {"npc", "haunted"} and "--only-if-idle" in argv:
+        argv.remove("--only-if-idle")
+    return argv
+
+
+def _parse_speaker_command(args: list[str]) -> tuple[str, dict[str, Any]]:
+    """Parse Telegram /speaker arguments into fixed, shell-free controller actions."""
+    tokens = [str(arg).strip() for arg in args]
+    lowered = [token.lower() for token in tokens]
+    if not tokens:
+        return "panel", {}
+    action = lowered[0]
+    if action == "schedule" and len(tokens) == 1:
+        return "panel", {}
+    if action in {"status", "start", "stop", "next"} and len(tokens) == 1:
+        _speaker_command_argv(action)
+        return action, {}
+    if action == "volume":
+        if len(tokens) == 1:
+            _speaker_command_argv("volume")
+            return "volume", {}
+        if len(tokens) == 2 and lowered[1] in {"up", "down", "mute", "unmute"}:
+            _speaker_command_argv("volume", volume_action=lowered[1])
+            return "volume", {"volume_action": lowered[1]}
+        if len(tokens) == 2 and lowered[1].isdigit():
+            _speaker_command_argv("volume", volume_level=lowered[1])
+            return "volume", {"volume_level": lowered[1]}
+        raise ValueError("Use /speaker volume [up|down|mute|unmute|0-100].")
+    if action == "fm" and len(tokens) == 2:
+        _speaker_command_argv("fm", duration=lowered[1], switch=False)
+        return "fm", {"duration": lowered[1], "switch": False}
+    if action in {"npc", "haunted"}:
+        text = " ".join(tokens[1:])
+        _speaker_command_argv(action, text=text)
+        return action, {"text": text}
+    if action == "roulette" and len(tokens) <= 2:
+        rule = lowered[1] if len(tokens) == 2 else "random"
+        _speaker_command_argv(action, rule=rule)
+        return action, {"rule": rule}
+    if action in {"hn", "podcast"} and len(tokens) == 1:
+        _speaker_command_argv(action)
+        return action, {}
+    if action == "oracle" and len(tokens) >= 2:
+        event = tokens[1]
+        detail = " ".join(tokens[2:])
+        _speaker_command_argv(action, oracle_event=event, oracle_detail=detail)
+        return action, {"oracle_event": event, "oracle_detail": detail}
+    if action in {"sleep", "sleep-timer"} and len(tokens) == 2:
+        _speaker_command_argv("sleep-timer", sleep_timer_hours=lowered[1])
+        return "sleep-timer", {"sleep_timer_hours": lowered[1]}
+    if action == "fmcenter":
+        raise ValueError("FM Center controls are not connected to a verified local controller.")
+    raise ValueError("Use /speaker status|start|stop|next, /speaker schedule, /speaker volume [up|down|mute|unmute|0-100], /speaker fm <duration>, /speaker npc|haunted <text>, /speaker roulette [rule], /speaker oracle <event> [details], or /speaker sleep <off|1h|2h|3h|4h|6h|8h|12h>.")
+
+
+
+
+
+
+
+
+
+
+def _speaker_button_rows() -> list[list[tuple[str, str]]]:
+    """Fixed compact allowlist for the living-room speaker panel."""
+    return [
+        [("🔊 Status", "sp:status"), ("▶️ Start", "sp:start")],
+        [("⏹ Stop", "sp:stop"), ("⏭ Next", "sp:next")],
+        [("🎼 Sources", "sp:sources"), ("📻 FM", "sp:fm")],
+        [("🎙 FM Center", "sp:fmcenter"), ("🎧 Podcast", "sp:podcast")],
+        [("🗞 News", "sp:news"), ("🔉 Volume", "sp:volume")],
+        [("🌙 Sleep timer", "sp:sleep"), ("🤖 NPC", "sp:npc")],
+        [("👻 Haunted", "sp:haunted"), ("🎲 Roulette", "sp:roulette")],
+        [("⏰ Schedules", "sp:schedule")],
+    ]
+
+
+def _format_device_value(value: Any) -> str:
+    return _html.escape(str(value))
+
+
+
+
+
+
 
 from agent.deadline import run_bounded_async
 from agent.ssl_verify import platform_ssl_context
@@ -138,7 +237,7 @@ except ImportError as _import_exc:
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
     ContextTypes = type("_MockContextTypes", (), {"DEFAULT_TYPE": Any})
 
-import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
 from agent.i18n import get_language, t
@@ -4325,6 +4424,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                             extra=self.config.extra)):
                         await handler(query, data, chat_id)
                 return
+        if data.startswith("sp:"):
+            await self._handle_speaker_callback(query, data, **cb)
+            return
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
@@ -5856,8 +5958,1092 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         if not self._gate_or_observe(msg, update, MessageType.TEXT):
             return
+        if await self._consume_speaker_form_reply(msg):
+            return
         await self._ensure_forum_commands(update.message)
         self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _speaker_panel_keyboard(self):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        return markup([[button(text, callback_data=callback) for text, callback in row]
+                       for row in _speaker_button_rows()])
+
+    def _speaker_source_keyboard(self):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        return markup([
+            [button("Plex Music", callback_data="sp:source:plex")],
+            [button("Sonos Music", callback_data="sp:source:sonos")],
+            [button("Radio stations", callback_data="sp:source:radio")],
+            [button("Menu", callback_data="sp:menu")],
+        ])
+
+    def _speaker_plex_duration_keyboard(self):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        rows = [[button("Search Plex library", callback_data="sp:plex:search")]]
+        rows.extend([
+            [button(label, callback_data=f"sp:source:plex:{duration}")]
+            for label, duration in (("Random mix · 30 min", "30m"), ("Random mix · 1 hour", "1h"),
+                                    ("Random mix · 1.5 hours", "1.5h"), ("Random mix · 2 hours", "2h"))
+        ])
+        rows.extend([[button("Sources", callback_data="sp:sources")], [button("Menu", callback_data="sp:menu")]])
+        return markup(rows)
+
+    def _speaker_radio_station_keyboard(self, stations: list[dict[str, Any]]):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        rows = []
+        for station in stations[:50]:
+            station_id = str(station.get("id", ""))
+            if not re.fullmatch(r"[A-Za-z0-9_-]{6,16}", station_id):
+                continue
+            label = " ".join(str(station.get("name", "")).split())[:48]
+            if label:
+                rows.append([
+                    button(label, callback_data=f"sp:radio:play:{station_id}"),
+                    button("Use after news", callback_data=f"sp:news:after-station:{station_id}"),
+                ])
+                rows.append([button("Remove", callback_data=f"sp:radio:remove:{station_id}")])
+        if not rows:
+            rows.append([button("No stations yet", callback_data="sp:radio:list")])
+        rows.extend([
+            [button("Add station", callback_data="sp:radio:add")],
+            [button("Refresh", callback_data="sp:source:radio"), button("Sources", callback_data="sp:sources")],
+            [button("Menu", callback_data="sp:menu")],
+        ])
+        return markup(rows)
+
+    def _speaker_radio_remove_confirmation_keyboard(self, station_id: str):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6,16}", station_id):
+            return markup([[button("Radio stations", callback_data="sp:source:radio")]])
+        return markup([[
+            button("Remove station", callback_data=f"sp:radio:confirm-remove:{station_id}"),
+            button("Cancel", callback_data="sp:source:radio"),
+        ]])
+
+    def _speaker_sonos_favorites_keyboard(self, favorites: list[dict[str, Any]]):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        rows = []
+        for favorite in favorites[:50]:
+            position = favorite.get("position")
+            title = " ".join(str(favorite.get("title", "")).split())[:48]
+            if type(position) is int and 1 <= position <= 100 and title and favorite.get("uri"):
+                token = hashlib.sha256(f"{position}|{title}|{favorite['uri']}".encode()).hexdigest()[:8]
+                rows.append([button(title, callback_data=f"sp:source:sonos:{position}:{token}")])
+        if not rows:
+            rows.append([button("No playable Sonos Favorites", callback_data="sp:source:sonos")])
+        rows.extend([[button("Refresh", callback_data="sp:source:sonos"), button("Sources", callback_data="sp:sources")],
+                     [button("Menu", callback_data="sp:menu")]])
+        return markup(rows)
+
+    def _speaker_plex_results_keyboard(self, records: list[dict[str, Any]]):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        rows = []
+        for track in records[:10]:
+            track_id = str(track.get("id", ""))
+            if not re.fullmatch(r"\d{1,20}", track_id):
+                continue
+            artist = " ".join(str(track.get("artist", "")).split())[:22]
+            title = " ".join(str(track.get("title", "")).split())[:30]
+            label = f"{artist} — {title}".strip(" —")[:48]
+            if label:
+                rows.append([button(label, callback_data=f"sp:plex:play:{track_id}")])
+        if not rows:
+            rows.append([button("No matching Plex tracks", callback_data="sp:plex:search")])
+        rows.extend([
+            [button("Search again", callback_data="sp:plex:search")],
+            [button("Sources", callback_data="sp:sources"), button("Menu", callback_data="sp:menu")],
+        ])
+        return markup(rows)
+
+    @staticmethod
+    def _format_plex_search_results(raw: str) -> tuple[str, list[dict[str, Any]]]:
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "<b>Plex search</b>\nSearch unavailable; no playback was started.", []
+        tracks = payload.get("tracks", []) if isinstance(payload, dict) and payload.get("success") else []
+        safe_tracks = []
+        for item in tracks[:20] if isinstance(tracks, list) else []:
+            if not isinstance(item, dict):
+                continue
+            track_id = str(item.get("id", ""))
+            title = " ".join(str(item.get("title", "")).split())[:120]
+            artist = " ".join(str(item.get("artist", "")).split())[:120]
+            album = " ".join(str(item.get("album", "")).split())[:120]
+            duration_ms = item.get("duration_ms")
+            if not re.fullmatch(r"\d{1,20}", track_id) or not title:
+                continue
+            safe_tracks.append({
+                "id": track_id, "title": title, "artist": artist, "album": album,
+                "duration_ms": duration_ms if type(duration_ms) is int and duration_ms >= 0 else 0,
+            })
+        if not safe_tracks:
+            return "<b>Plex search</b>\nNo matching tracks found.", []
+        lines = [f"<b>Plex search</b> · {len(safe_tracks)} tracks"]
+        for track in safe_tracks:
+            artist = _format_device_value(track["artist"] or "Unknown artist")
+            title = _format_device_value(track["title"])
+            album = _format_device_value(track["album"])
+            lines.append(f"• {artist} — {title}" + (f" · <i>{album}</i>" if album else ""))
+        return "\n".join(lines), safe_tracks
+
+    @staticmethod
+    def _format_plex_play_result(raw: str) -> str:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "Plex playback was not confirmed."
+        if not isinstance(data, dict) or data.get("success") is not True or data.get("started") is not True:
+            return "Plex track could not be started; no playback success was confirmed."
+        track = data.get("track") if isinstance(data.get("track"), dict) else {}
+        artist = _format_device_value(track.get("artist") or "Unknown artist")
+        title = _format_device_value(track.get("title") or "Selected track")
+        return f"Plex track request accepted: {artist} — {title}."
+
+    def _speaker_fm_duration_keyboard(self):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        return markup([[button(label, callback_data=f"sp:fm:{duration}")] for label, duration in
+                       (("30 min", "30m"), ("1 hour", "1h"), ("1.5 hours", "1.5h"), ("2 hours", "2h"))] +
+                      [[button("Custom duration", callback_data="sp:fm:custom")], [button("Menu", callback_data="sp:menu")]])
+
+    def _speaker_fm_center_keyboard(self):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        names = (("On air", "onair"), ("Mic", "mic"), ("Playlist", "playlist"), ("Jingles", "jingles"),
+                 ("Next", "next"), ("Pause", "pause"), ("End", "end"), ("Menu", "menu"))
+        return markup([[button(label, callback_data=f"sp:{'menu' if value == 'menu' else 'fmcenter:' + value}")]
+                       for label, value in names])
+
+    def _speaker_volume_keyboard(self):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        rows = [
+            [button("Volume down", callback_data="sp:vol:down"), button("Volume up", callback_data="sp:vol:up")],
+            [button("Mute", callback_data="sp:vol:mute"), button("Unmute", callback_data="sp:vol:unmute")],
+            [button(str(level), callback_data=f"sp:vol:set:{level}") for level in (0, 25, 50, 75, 100)],
+            [button("Menu", callback_data="sp:menu")],
+        ]
+        return markup(rows)
+
+    def _speaker_sleep_timer_keyboard(self):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        values = ("off", "1h", "2h", "3h", "4h", "6h", "8h", "12h")
+        rows = [[button(value, callback_data=f"sp:sleep:{value}")] for value in values]
+        rows.append([button("Menu", callback_data="sp:menu")])
+        return markup(rows)
+
+    def _speaker_schedule_keyboard(self):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        return markup([[button("List schedules", callback_data="sp:schedule:list")],
+                       [button("Add schedule", callback_data="sp:schedule:add")],
+                       [button("Menu", callback_data="sp:menu")]])
+
+    def _speaker_schedule_list_keyboard(self, schedules: list[dict[str, Any]]):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        rows = []
+        for schedule in schedules[:10]:
+            schedule_id = str(schedule.get("id", ""))
+            if not re.fullmatch(r"[A-Fa-f0-9]{8}", schedule_id):
+                continue
+            label = " ".join(str(schedule.get(key, "")) for key in ("time", "duration", "days"))
+            state = "on" if schedule.get("enabled") else "paused"
+            rows.append([button(f"{_format_device_value(label)} · {state}"[:60],
+                                callback_data=f"sp:schedule:job:{schedule_id}:detail")])
+        rows.extend([[button("Add schedule", callback_data="sp:schedule:add")],
+                     [button("Schedules", callback_data="sp:schedule"), button("Menu", callback_data="sp:menu")]])
+        return markup(rows)
+
+    def _speaker_schedule_detail_keyboard(self, schedule: dict[str, Any]):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        schedule_id = str(schedule.get("id", ""))
+        if not re.fullmatch(r"[A-Fa-f0-9]{8}", schedule_id):
+            return markup([[button("Schedules", callback_data="sp:schedule:list")],
+                           [button("Menu", callback_data="sp:menu")]])
+        return markup([[button("Run now · idle-safe", callback_data=f"sp:schedule:job:{schedule_id}:run")],
+                       [button("Edit", callback_data=f"sp:schedule:job:{schedule_id}:edit")],
+                       [button("Delete", callback_data=f"sp:schedule:job:{schedule_id}:delete")],
+                       [button("Schedules", callback_data="sp:schedule:list")]])
+
+    def _speaker_schedule_confirmation_keyboard(self, schedule_id: str):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        if not re.fullmatch(r"[A-Fa-f0-9]{8}", schedule_id):
+            return markup([[button("Schedules", callback_data="sp:schedule:list")]])
+        return markup([[button("Confirm removal", callback_data=f"sp:schedule:job:{schedule_id}:confirm-delete")],
+                       [button("Cancel", callback_data=f"sp:schedule:job:{schedule_id}:cancel")]])
+
+    @staticmethod
+    def _format_fm_schedules(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+        schedules = result.get("schedules", []) if result.get("success") else []
+        schedules = [item for item in schedules if isinstance(item, dict)] if isinstance(schedules, list) else []
+        if not schedules:
+            message = "No FM schedules are configured." if result.get("success") else "FM schedules are unavailable."
+            return f"<b>FM schedules</b>\n{message}", []
+        lines = ["<b>FM schedules</b>"]
+        for item in schedules[:10]:
+            schedule_id = str(item.get("id", ""))
+            if not re.fullmatch(r"[A-Fa-f0-9]{8}", schedule_id):
+                continue
+            detail = " · ".join(_format_device_value(item.get(key, "")) for key in ("time", "duration", "days"))
+            lines.append(f"• {detail} · {'enabled' if item.get('enabled') else 'paused'}")
+        return "\n".join(lines), schedules
+
+    async def _run_fm_schedule_manager(
+        self, action: str, *, schedule_id: str = "", spec_text: str = ""
+    ) -> dict[str, Any]:
+        try:
+            from integrations import sonos_fm_scheduler as scheduler
+
+            if action == "list":
+                return await asyncio.to_thread(scheduler.list_fm_schedules)
+            if action == "get" and re.fullmatch(r"[A-Fa-f0-9]{8}", schedule_id):
+                return await asyncio.to_thread(scheduler.get_fm_schedule, schedule_id)
+            if action == "run" and re.fullmatch(r"[A-Fa-f0-9]{8}", schedule_id):
+                return await asyncio.to_thread(scheduler.run_fm_schedule, schedule_id)
+            if action == "add":
+                scheduler.parse_schedule_spec(spec_text)
+                return await asyncio.to_thread(scheduler.create_fm_schedule, spec_text)
+            if action == "edit" and re.fullmatch(r"[A-Fa-f0-9]{8}", schedule_id):
+                scheduler.parse_schedule_spec(spec_text)
+                return await asyncio.to_thread(scheduler.update_fm_schedule, schedule_id, spec_text)
+            if action == "delete" and re.fullmatch(r"[A-Fa-f0-9]{8}", schedule_id):
+                return await asyncio.to_thread(scheduler.remove_fm_schedule, schedule_id)
+            return {"success": False, "error": "Unsupported schedule operation."}
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+        except Exception as exc:  # health: allow BLE001 -- scheduler backends and device libraries raise transport-specific exceptions; the user receives a safe unavailable result
+            logger.warning("FM schedule operation failed: %s", type(exc).__name__)
+            return {"success": False, "error": "FM schedule service unavailable."}
+
+    async def _prompt_speaker_form(self, query, *, chat_id, user_id, action: str, schedule_id: str = "") -> None:
+        prompt_text = ("Reply with an FM duration such as `30m` or `1.5h`." if action == "fm" else
+                       "Reply with `HH:MM duration days` (example: `08:05 1.5h weekdays`).")
+        if action == "plex-search":
+            prompt_text = "Reply with an artist, album, or track name to search Plex."
+        if action == "radio-add":
+            prompt_text = "Reply with `Station name | https://direct-stream-url`. The station name is shown in the picker; the URL is kept out of the reply."
+        if action == "schedule-edit":
+            prompt_text = "Reply with the revised `HH:MM duration days` schedule."
+        message = getattr(query, "message", None)
+        reply_text = getattr(message, "reply_text", None)
+        if not callable(reply_text):
+            await query.edit_message_text("I could not open a reply form. No setting was changed.",
+                                          reply_markup=self._speaker_panel_keyboard(), parse_mode="HTML")
+            return
+        prompt = await cast(Callable[..., Awaitable[Any]], reply_text)(prompt_text)
+        prompt_id = getattr(prompt, "message_id", None)
+        if prompt_id is None:
+            await query.edit_message_text("Reply form unavailable. No setting was changed.",
+                                          reply_markup=self._speaker_panel_keyboard(), parse_mode="HTML")
+            return
+        forms = getattr(self, "_speaker_form_state", {})
+        forms[f"{chat_id}:{user_id}"] = {
+            "action": action, "schedule_id": schedule_id, "prompt_message_id": prompt_id,
+            "expires_at": time.monotonic() + 600,
+        }
+        self._speaker_form_state = forms
+
+    async def _speaker_form_fm_reply(self, text: str, state: dict[str, Any]) -> tuple[str, Any]:
+        _speaker_command_argv("fm", duration=text, switch=False)
+        raw = await self._run_speaker_subprocess("fm", duration=text, switch=False)
+        output = self._safe_speaker_output(raw)
+        return f"FM request sent ({text})." + (f"\n{output}" if output else ""), None
+
+    async def _speaker_form_plex_search_reply(self, text: str, state: dict[str, Any]) -> tuple[str, Any]:
+        _speaker_command_argv("plex-search", query=text, limit=10)
+        raw = await self._run_speaker_subprocess("plex-search", query=text, limit=10)
+        response, records = self._format_plex_search_results(raw)
+        return response, self._speaker_plex_results_keyboard(records)
+
+    async def _speaker_form_radio_add_reply(self, text: str, state: dict[str, Any]) -> tuple[str, Any]:
+        if "|" not in text:
+            raise ValueError("Use the format `Station name | https://direct-stream-url`.")
+        name, stream_url = (part.strip() for part in text.split("|", 1))
+        from integrations.sonos_radio_stations import add_station
+
+        station = await asyncio.to_thread(add_station, name, stream_url)
+        station_name = " ".join(str(station.get("name", name)).split())[:48]
+        keyboard = self._speaker_radio_station_keyboard(await asyncio.to_thread(self._load_radio_stations))
+        return f"Added radio station {station_name}.", keyboard
+
+    async def _speaker_form_schedule_reply(self, text: str, state: dict[str, Any]) -> tuple[str, Any]:
+        from integrations.sonos_fm_scheduler import parse_schedule_spec
+
+        spec = parse_schedule_spec(text)
+        action = str(state.get("action", ""))
+        schedule_id = str(state.get("schedule_id", ""))
+        manager_action = "add" if action == "schedule-add" else "edit"
+        result = await self._run_fm_schedule_manager(
+            manager_action, schedule_id=schedule_id, spec_text=text)
+        if not result.get("success"):
+            return "Schedule was not changed: " + _html.unescape(
+                _format_device_value(result.get("error") or "scheduler error")), None
+        label = "created" if manager_action == "add" else "updated"
+        return f"FM schedule {label}: {spec['time']} · {spec['duration']} · {spec['days']}.", None
+
+    async def _consume_speaker_form_reply(self, message) -> bool:
+        forms = getattr(self, "_speaker_form_state", {})
+        user_id = str(getattr(getattr(message, "from_user", None), "id", ""))
+        chat_id = str(getattr(message, "chat_id", getattr(getattr(message, "chat", None), "id", "")))
+        key = f"{chat_id}:{user_id}"
+        state = forms.get(key)
+        if not isinstance(state, dict):
+            return False
+        expired = time.monotonic() > float(state.get("expires_at", 0))
+        reply = getattr(message, "reply_to_message", None)
+        if getattr(reply, "message_id", None) != state.get("prompt_message_id"):
+            if expired:
+                forms.pop(key, None)
+            return False
+        if expired:
+            forms.pop(key, None)
+            await message.reply_text("That speaker form expired. Reopen the panel to try again.")
+            return True
+        text = str(getattr(message, "text", "") or "").strip()
+        if text.casefold() == "cancel":
+            forms.pop(key, None)
+            await message.reply_text("Cancelled; no change was made.")
+            return True
+        action = str(state.get("action", ""))
+        handlers = {
+            "fm": self._speaker_form_fm_reply,
+            "plex-search": self._speaker_form_plex_search_reply,
+            "radio-add": self._speaker_form_radio_add_reply,
+            "schedule-add": self._speaker_form_schedule_reply,
+            "schedule-edit": self._speaker_form_schedule_reply,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            forms.pop(key, None)
+            await message.reply_text("Unknown form; no change was made.")
+            return True
+        try:
+            response, reply_markup = await handler(text, state)
+        except (ImportError, OSError, RuntimeError):
+            forms.pop(key, None)
+            response = ("Radio station could not be saved; its URL was not echoed."
+                        if action == "radio-add" else "Speaker form service unavailable; no change was confirmed.")
+            await message.reply_text(response)
+            return True
+        except ValueError as exc:
+            await message.reply_text(str(exc))
+            return True
+        forms.pop(key, None)
+        await message.reply_text(response, reply_markup=reply_markup)
+        return True
+
+    @staticmethod
+    def _format_speaker_status(raw: str) -> str:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "<b>Speaker status</b>\nStatus unavailable."
+        if not isinstance(data, dict) or data.get("success") is False or data.get("ok") is False:
+            return "<b>Speaker status</b>\nStatus unavailable."
+        transport = _format_device_value((data.get("transport") or "unknown").upper())
+        media = data.get("media", {})
+        loaded = bool(media.get("current_uri") or media.get("track_count")) if isinstance(media, dict) else False
+        return f"<b>Speaker status</b>\nState: <code>{transport}</code>\nTrack loaded: <b>{'yes' if loaded else 'no'}</b>"
+
+    @staticmethod
+    def _format_speaker_volume(raw: str) -> str:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict) or data.get("success") is False or data.get("ok") is False:
+            return "<b>Speaker volume</b>\nStatus unavailable."
+        raw_volume = data.get("volume")
+        volume = f"{raw_volume}/100" if type(raw_volume) is int and 0 <= raw_volume <= 100 else "unknown"
+        muted_value = data.get("muted")
+        muted = "yes" if muted_value is True else "no" if muted_value is False else "unknown"
+        return f"<b>Speaker volume</b>\nVolume: <b>{volume}</b>\nMuted: <b>{muted}</b>"
+
+    @staticmethod
+    def _format_speaker_command_result(action: str, raw: str) -> str:
+        labels = {"fm": "FM", "npc": "NPC overlay", "haunted": "Haunted overlay",
+                  "roulette": "Roulette", "hn": "Hourly-news brief", "podcast": "Podcast brief",
+                  "sleep-timer": "Sleep timer", "start": "Start", "stop": "Stop", "next": "Next track",
+                  "oracle": "Oracle"}
+        label = labels.get(action, "Speaker")
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict) and (data.get("success") is False or data.get("ok") is False):
+            return f"{label} command failed; success was not confirmed."
+        lowered = raw.lower()
+        if any(marker in lowered for marker in ("could not start", "command failed", "timed out", "was stopped")):
+            return f"{label} command failed or timed out; success was not confirmed."
+        return f"{label} command submitted; playback or speaker output has not been independently verified."
+
+    async def _run_hourly_news_manager(self, action: str, **kwargs) -> str:
+        """Read or update allowlisted hourly-news preferences; this never triggers playback."""
+        try:
+            from integrations.sonos_hourly_news import settings_operation
+
+            if action == "status":
+                result = await asyncio.to_thread(settings_operation, "status")
+                try:
+                    from integrations.sonos_radio_stations import list_stations
+
+                    result["radio_stations"] = [
+                        {"id": str(item.get("id", "")), "name": str(item.get("name", ""))[:48]}
+                        for item in await asyncio.to_thread(list_stations)
+                        if re.fullmatch(r"[A-Za-z0-9_-]{6,16}", str(item.get("id", "")))
+                    ]
+                except (ImportError, OSError, ValueError, RuntimeError):
+                    result["radio_stations"] = []
+            elif action == "set_enabled" and type(kwargs.get("enabled")) is bool:
+                result = await asyncio.to_thread(settings_operation, action, enabled=kwargs["enabled"])
+            elif action == "set_duration" and kwargs.get("duration_minutes") in {5, 10, 15, 30}:
+                result = await asyncio.to_thread(settings_operation, action, duration_minutes=kwargs["duration_minutes"])
+            elif action == "set_mode" and kwargs.get("mode") in {"idle", "interrupt"}:
+                result = await asyncio.to_thread(settings_operation, action, mode=kwargs["mode"])
+            elif action == "set_station" and kwargs.get("station") in {"france24", "dw", "bbc", "ua_news_1"}:
+                result = await asyncio.to_thread(settings_operation, action, station=kwargs["station"])
+            elif action == "set_after_news_action" and kwargs.get("after_news_action") in {"radio", "resume", "idle"}:
+                result = await asyncio.to_thread(settings_operation, action, after_news_action=kwargs["after_news_action"])
+            elif action == "set_after_news_station" and re.fullmatch(r"[A-Za-z0-9_-]{6,16}", str(kwargs.get("station_id", ""))):
+                result = await asyncio.to_thread(settings_operation, action, station_id=kwargs["station_id"])
+            elif action in {"kill_automations", "trigger_if_idle"}:
+                result = await asyncio.to_thread(settings_operation, action)
+            else:
+                return json.dumps({"success": False, "error": "unsupported hourly-news setting"})
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as exc:  # health: allow BLE001 -- the optional news integration has platform-specific failures; return an explicit unavailable result
+            logger.warning("Hourly-news settings operation failed: %s", type(exc).__name__)
+            return json.dumps({"success": False, "error": "hourly-news settings unavailable"})
+
+    @staticmethod
+    def _format_hourly_news_settings(raw: str):
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            data = {}
+        settings = data.get("settings", {}) if isinstance(data, dict) else {}
+        station = str(settings.get("station", "france24"))
+        mode = str(settings.get("mode", "idle"))
+        enabled = settings.get("enabled") is True
+        duration = settings.get("duration_minutes")
+        duration = duration if type(duration) is int and duration in {5, 10, 15, 30} else 15
+        mode_text = "interrupt current audio" if mode == "interrupt" else "play only when idle"
+        stations = data.get("stations", {}) if isinstance(data, dict) else {}
+        news_stations = stations if isinstance(stations, dict) else {}
+        radio_stations = data.get("managed_radio_stations", data.get("radio_stations", [])) if isinstance(data, dict) else []
+        radio_stations = [item for item in radio_stations if isinstance(item, dict)] if isinstance(radio_stations, list) else []
+        selected_id = str(settings.get("after_news_station_id", ""))
+        selected_radio = next((item for item in radio_stations if str(item.get("id", "")) == selected_id), None)
+        after_action = str(settings.get("after_news_action", "idle"))
+        after_labels = {"radio": "play selected radio", "resume": "resume previous source", "idle": "stay silent"}
+        after_label = after_labels.get(after_action, "stay silent")
+        if after_action == "radio":
+            after_label = f"play {_format_device_value(selected_radio.get('name', 'selected station') if selected_radio else 'no station selected')}"
+        text = (f"<b>Hourly news</b>\nNews: <b>{'ON' if enabled else 'OFF'}</b> · "
+                f"Station: {_format_device_value(news_stations.get(station, station))} · "
+                f"Duration: <b>{duration} minutes</b> · Mode: {_format_device_value(mode)} ({mode_text})\n"
+                f"After news: <b>{after_label}</b>")
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        enabled_callback = "off" if enabled else "on"
+        rows = [[button("Disable news" if enabled else "Enable news", callback_data=f"sp:news:enabled:{enabled_callback}"),
+                 button("Pause automations", callback_data="sp:news:kill")]]
+        rows.append([button(f"{value} min ✓" if value == duration else f"{value} min", callback_data=f"sp:news:duration:{value}")
+                     for value in (5, 10, 15, 30)])
+        rows.append([button("Interrupt" if mode == "interrupt" else "Interrupt · set", callback_data="sp:news:mode:interrupt"),
+                     button("When idle" if mode == "idle" else "When idle · set", callback_data="sp:news:mode:idle")])
+        rows.extend([[button(_format_device_value(name), callback_data=f"sp:news:station:{key}")]
+                     for key, name in news_stations.items() if str(key) in {"france24", "dw", "bbc", "ua_news_1"}])
+        rows.append([button("▶ Play now · idle only", callback_data="sp:news:play")])
+        rows.append([button("After: radio", callback_data="sp:news:after:radio"),
+                     button("After: resume", callback_data="sp:news:after:resume"),
+                     button("After: idle", callback_data="sp:news:after:idle")])
+        for item in radio_stations[:20]:
+            station_id = str(item.get("id", ""))
+            name = " ".join(str(item.get("name", "")).split())[:36]
+            if name and re.fullmatch(r"[A-Za-z0-9_-]{6,16}", station_id):
+                mark = " ✓" if station_id == selected_id else ""
+                rows.append([button(f"Post-news: {name}{mark}", callback_data=f"sp:news:after-station:{station_id}")])
+        rows.append([button("Radio stations", callback_data="sp:source:radio"), button("Menu", callback_data="sp:menu")])
+        return text, markup(rows)
+
+    @staticmethod
+    def _format_podcast_picker(raw: str, page: int = 0):
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = []
+        records = payload.get("episodes", payload.get("summaries", [])) if isinstance(payload, dict) else payload
+        records = [item for item in records if isinstance(item, dict)] if isinstance(records, list) else []
+        start = max(0, page) * 10
+        end = min(start + 10, len(records))
+        lines = [f"<b>Podcast reader</b> · {start + 1}–{end} of {len(records)}"]
+        for item in records[start:end]:
+            title = _format_device_value(item.get("title") or "Untitled")
+            lines.append(f"• {title}")
+        return "\n".join(lines), records
+
+    def _podcast_picker_keyboard(self, records: list[dict[str, Any]], page: int = 0):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        start = max(0, page) * 10
+        rows = [[button(_format_device_value(item.get("title") or "Episode")[:40],
+                        callback_data=f"sp:pr:select:{item['id']}")]
+                for item in records[start:start + 10]
+                if re.fullmatch(r"[A-Fa-f0-9]{8,32}", str(item.get("id", "")))]
+        if start:
+            rows.append([button("Previous", callback_data=f"sp:pr:list:{page - 1}")])
+        if start + 10 < len(records):
+            rows.append([button("Next", callback_data=f"sp:pr:list:{page + 1}")])
+        rows.append([button("Menu", callback_data="sp:menu")])
+        return markup(rows)
+
+    def _podcast_detail_keyboard(self, summary_id: str):
+        button = cast(Callable[..., Any], InlineKeyboardButton)
+        markup = cast(Callable[..., Any], InlineKeyboardMarkup)
+        return markup([[button("Play when idle", callback_data=f"sp:pr:play:{summary_id}")],
+                       [button("Switch to readout", callback_data=f"sp:pr:switch:{summary_id}")],
+                       [button("Regenerate", callback_data=f"sp:pr:regen:{summary_id}")],
+                       [button("Back", callback_data="sp:pr:list:0")]])
+
+    @staticmethod
+    def _format_podcast_reader_result(raw: str) -> str:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "Podcast reader response unavailable."
+        if not isinstance(data, dict):
+            return "Podcast reader response unavailable."
+        if data.get("success") is False:
+            return "Podcast reader request failed."
+        if data.get("switched") is True:
+            return "Switched to the readout."
+        if data.get("success") is True:
+            return "Podcast reader request completed."
+        return "Podcast reader response unavailable."
+
+    async def _run_speaker_subprocess(self, action: str, **kwargs) -> str:
+        argv = _speaker_command_argv(action, **kwargs)
+        try:
+            # health: allow HX006 -- communicate below is bounded, and timeout kills and reaps this child
+            process = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
+                                                           stderr=asyncio.subprocess.PIPE,
+                                                           cwd=str(get_hermes_home() / "sonos-brain"))
+        except (OSError, subprocess.SubprocessError):
+            return "Speaker command could not start."
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=12)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(process.wait(), timeout=2)
+            return "Speaker command timed out and was stopped."
+        returncode = getattr(process, "returncode", None)
+        if returncode not in (None, 0):
+            return f"Speaker command failed (exit {returncode})."
+        return self._safe_speaker_output(stdout or stderr or b"")
+
+    async def _run_podcast_reader_subprocess(self, action: str, **kwargs) -> str:
+        argv = _podcast_reader_command_argv(action, **kwargs)
+        try:
+            # health: allow HX006 -- communicate below is bounded, and timeout kills and reaps this child
+            process = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
+                                                           stderr=asyncio.subprocess.PIPE,
+                                                           cwd=str(get_hermes_home() / "sonos-brain"))
+        except (OSError, subprocess.SubprocessError):
+            return json.dumps({"success": False})
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=12)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(process.wait(), timeout=2)
+            return json.dumps({"success": False})
+        if getattr(process, "returncode", None) not in (None, 0):
+            return json.dumps({"success": False})
+        return self._safe_speaker_output(stdout or stderr or b"")
+
+    @staticmethod
+    def _load_radio_stations() -> list[dict[str, Any]]:
+        from integrations.sonos_radio_stations import list_stations
+
+        return list_stations()
+
+    @staticmethod
+    def _read_sonos_favorites() -> list[dict[str, Any]]:
+        try:
+            process = subprocess.run(
+                ["sonos", "favorites", "list", "--name", "Kitchen Speaker", "--format", "json"],
+                capture_output=True, text=True, timeout=8, check=False,
+            )
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            return []
+        if process.returncode != 0:
+            return []
+        try:
+            payload = json.loads(process.stdout)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        favorites: list[dict[str, Any]] = []
+        for index, entry in enumerate(items[:100], 1) if isinstance(items, list) else []:
+            item = entry.get("item") if isinstance(entry, dict) else None
+            if not isinstance(item, dict):
+                continue
+            title = " ".join(str(item.get("title", "")).split())[:80]
+            uri = str(item.get("uri", "")).strip()
+            position = entry.get("position", index)
+            if title and uri and type(position) is int and 1 <= position <= 100:
+                favorites.append({"position": position, "title": title, "uri": uri})
+        return favorites
+
+    @staticmethod
+    def _play_sonos_favorite(position: int, token: str) -> dict[str, Any]:
+        favorites = TelegramAdapter._read_sonos_favorites()
+        favorite = next((item for item in favorites if item["position"] == position), None)
+        if not favorite:
+            return {"success": False, "message": "Sonos Favorites changed; refresh and choose again."}
+        expected = hashlib.sha256(
+            f"{position}|{favorite['title']}|{favorite['uri']}".encode()
+        ).hexdigest()[:8]
+        if not re.fullmatch(r"[a-f0-9]{8}", token) or token != expected:
+            return {"success": False, "message": "Sonos Favorites changed; refresh and choose again."}
+        from hermes_constants import get_hermes_home
+        brain_path = str(get_hermes_home() / "sonos-brain")
+        if brain_path not in sys.path:
+            sys.path.insert(0, brain_path)
+        try:
+            sonos_brain = importlib.import_module("sonos_brain")
+            operation_lock = sonos_brain.SPEAKER_OPERATION_LOCK
+            with sonos_brain._exclusive_operation_lock(operation_lock):
+                if sonos_brain.quiet_hours_active():
+                    return {"success": False, "message": "Quiet-hours policy blocked playback."}
+                sonos_brain._set_manual_stop(False)
+                process = subprocess.run(
+                    ["sonos", "favorites", "open", "--name", "Kitchen Speaker", "--index", str(position)],
+                    capture_output=True, text=True, timeout=15, check=False,
+                )
+        except (ImportError, OSError, subprocess.SubprocessError, TimeoutError):
+            return {"success": False, "message": "Could not start the Sonos Favorite."}
+        if process.returncode != 0:
+            return {"success": False, "message": "Could not start the Sonos Favorite."}
+        return {"success": True, "message": f"Sonos Favorite request sent · {favorite['title']}. Playback was not independently verified."}
+
+    @staticmethod
+    def _play_radio_station(station_id: str) -> dict[str, Any]:
+        try:
+            from integrations.sonos_radio_stations import get_station
+
+            station = get_station(station_id)
+        except (ImportError, OSError, ValueError, RuntimeError):
+            return {"success": False, "message": "Radio station list unavailable."}
+        if not isinstance(station, dict):
+            return {"success": False, "message": "Radio station not found."}
+        from hermes_constants import get_hermes_home
+        brain_path = str(get_hermes_home() / "sonos-brain")
+        if brain_path not in sys.path:
+            sys.path.insert(0, brain_path)
+        try:
+            sonos_brain = importlib.import_module("sonos_brain")
+            client = sonos_brain.SonosClient()
+            with sonos_brain._exclusive_operation_lock(sonos_brain.SPEAKER_OPERATION_LOCK):
+                if sonos_brain.quiet_hours_active():
+                    return {"success": False, "message": "Quiet-hours policy blocked playback."}
+                sonos_brain._set_manual_stop(False)
+            started = sonos_brain.play_uri(
+                str(station["url"]), client=client, wait=False,
+                metadata={"title": str(station["name"]), "artist": "Radio"},
+            )
+        except (ImportError, OSError, ValueError, RuntimeError, TimeoutError):
+            return {"success": False, "message": "Could not start the radio station."}
+        return {
+            "success": started,
+            "message": (f"Radio request sent · {station['name']}. Playback was not independently verified."
+                        if started else "Radio playback was blocked."),
+        }
+
+    def _speaker_callback_result(self, text: str, keyboard=None, action: str | None = None,
+                                 kwargs: dict[str, Any] | None = None):
+        if keyboard is None:
+            keyboard = self._speaker_panel_keyboard()
+        return text, keyboard, action, kwargs or {}
+
+    async def _handle_speaker_callback(self, query, data: str, *, chat_id, chat_type, thread_id, user_name) -> None:
+        if not self._is_callback_user_authorized(
+            str(getattr(query.from_user, "id", "")), chat_id=chat_id,
+            chat_type=chat_type, thread_id=thread_id, user_name=user_name):
+            await query.answer(text="not authorized", show_alert=True)
+            return
+        try:
+            await query.answer()
+        except Exception:
+            logger.debug("Expired speaker callback", exc_info=True)
+            return
+        parts = data.split(":")
+        handlers = {
+            "menu": self._speaker_navigation_callback,
+            "sources": self._speaker_navigation_callback,
+            "source": self._speaker_source_callback,
+            "plex": self._speaker_plex_callback,
+            "radio": self._speaker_radio_callback,
+            "fm": self._speaker_controls_callback,
+            "fmcenter": self._speaker_controls_callback,
+            "sleep": self._speaker_controls_callback,
+            "volume": self._speaker_controls_callback,
+            "vol": self._speaker_controls_callback,
+            "status": self._speaker_controls_callback,
+            "start": self._speaker_controls_callback,
+            "stop": self._speaker_controls_callback,
+            "next": self._speaker_controls_callback,
+            "npc": self._speaker_controls_callback,
+            "haunted": self._speaker_controls_callback,
+            "roulette": self._speaker_controls_callback,
+            "podcast": self._speaker_podcast_callback,
+            "pr": self._speaker_podcast_callback,
+            "news": self._speaker_news_callback,
+            "schedule": self._speaker_schedule_callback,
+        }
+        handler = handlers.get(parts[1]) if len(parts) > 1 and parts[0] == "sp" else None
+        outcome = await handler(query, parts, chat_id) if handler else None
+        if outcome is None:
+            await query.edit_message_text("Unsupported speaker control.",
+                                          reply_markup=self._speaker_panel_keyboard(), parse_mode="HTML")
+            return
+        text, keyboard, action, kwargs = outcome
+        if not text and keyboard is None:
+            return
+        if action:
+            raw = await self._run_speaker_subprocess(action, **kwargs)
+            if action == "status":
+                text = self._format_speaker_status(raw)
+            elif action == "volume":
+                text = self._format_speaker_volume(raw)
+            elif action == "fm":
+                source = "Plex Music" if kwargs.get("switch") else "FM"
+                result = (self._format_speaker_command_result(action, raw)
+                          if kwargs.get("switch") else _html.escape(raw))
+                text = f"{source} · {kwargs['duration']}\n{result}"
+            else:
+                text = _html.escape(raw or text)
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+    def _speaker_navigation_callback(self, query, parts: list[str], chat_id):
+        if parts == ["sp", "menu"]:
+            return self._speaker_callback_result("<b>Speaker controls</b>", self._speaker_panel_keyboard())
+        if parts == ["sp", "sources"]:
+            return self._speaker_callback_result(
+                "Choose a music source. Nothing starts until you pick a source.", self._speaker_source_keyboard())
+        if parts == ["sp", "source", "plex"]:
+            return self._speaker_callback_result(
+                "Choose Plex random-mix duration or search your library for a specific track.",
+                self._speaker_plex_duration_keyboard())
+        if parts == ["sp", "source", "sonos"]:
+            favorites = self._read_sonos_favorites()
+            return self._speaker_callback_result("Choose a Sonos Favorite.", self._speaker_sonos_favorites_keyboard(favorites))
+        return None
+
+    async def _speaker_source_callback(self, query, parts: list[str], chat_id):
+        if parts == ["sp", "source", "plex"]:
+            return self._speaker_callback_result(
+                "Choose Plex random-mix duration or search your library for a specific track.",
+                self._speaker_plex_duration_keyboard())
+        if parts == ["sp", "source", "sonos"]:
+            favorites = await asyncio.to_thread(self._read_sonos_favorites)
+            return self._speaker_callback_result("Choose a Sonos Favorite.", self._speaker_sonos_favorites_keyboard(favorites))
+        if parts == ["sp", "source", "radio"]:
+            return await self._speaker_radio_callback(query, parts, chat_id)
+        if len(parts) == 4 and parts[:3] == ["sp", "source", "plex"] and parts[3] in {"30m", "1h", "1.5h", "2h"}:
+            return self._speaker_callback_result(
+                f"Plex Music · {parts[3]} · starting.", self._speaker_source_keyboard(),
+                "fm", {"duration": parts[3], "switch": True})
+        if (len(parts) == 5 and parts[:3] == ["sp", "source", "sonos"]
+                and parts[3].isdigit() and 1 <= int(parts[3]) <= 100
+                and re.fullmatch(r"[a-f0-9]{8}", parts[4])):
+            result = await asyncio.to_thread(self._play_sonos_favorite, int(parts[3]), parts[4])
+            return self._speaker_callback_result(
+                _html.escape(str(result.get("message", "Sonos Music result unavailable."))), self._speaker_source_keyboard())
+        return None
+
+    async def _speaker_plex_callback(self, query, parts: list[str], chat_id):
+        if parts == ["sp", "plex", "search"]:
+            await self._prompt_speaker_form(query, chat_id=chat_id,
+                                            user_id=getattr(query.from_user, "id", ""), action="plex-search")
+            return "", None, None, {}
+        if len(parts) == 4 and parts[:3] == ["sp", "plex", "play"] and re.fullmatch(r"\d{1,20}", parts[3]):
+            raw = await self._run_speaker_subprocess("plex-play", track_id=parts[3])
+            text = self._format_plex_play_result(raw)
+            try:
+                payload = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if payload.get("success") is True and payload.get("started") is True:
+                text += "\n\n" + self._format_speaker_status(await self._run_speaker_subprocess("status"))
+            return self._speaker_callback_result(text, self._speaker_plex_duration_keyboard())
+        return None
+
+    async def _speaker_radio_callback(self, query, parts: list[str], chat_id):
+        if parts == ["sp", "radio", "add"]:
+            await self._prompt_speaker_form(query, chat_id=chat_id,
+                                            user_id=getattr(query.from_user, "id", ""), action="radio-add")
+            return "", None, None, {}
+        if parts == ["sp", "source", "radio"] or parts == ["sp", "radio", "list"]:
+            try:
+                stations = await asyncio.to_thread(self._load_radio_stations)
+                text = "Choose a radio station." if stations else "No radio stations saved yet. Add one with its stream URL."
+            except (ImportError, OSError, ValueError, RuntimeError):
+                stations, text = [], "Radio station list unavailable."
+            return self._speaker_callback_result(text, self._speaker_radio_station_keyboard(stations))
+        if len(parts) == 4 and parts[:3] == ["sp", "radio", "remove"] and re.fullmatch(r"[A-Za-z0-9_-]{6,16}", parts[3]):
+            try:
+                stations = await asyncio.to_thread(self._load_radio_stations)
+                station = next((item for item in stations if item.get("id") == parts[3]), None)
+            except (ImportError, OSError, ValueError, RuntimeError):
+                station, stations = None, []
+            if station is None:
+                return self._speaker_callback_result("That radio station is no longer available.", self._speaker_radio_station_keyboard(stations))
+            name = _html.escape(" ".join(str(station.get("name", "")).split())[:48])
+            text = f"Remove radio station <b>{name}</b>? This only removes it from your saved list."
+            return self._speaker_callback_result(text, self._speaker_radio_remove_confirmation_keyboard(parts[3]))
+        if len(parts) == 4 and parts[:3] == ["sp", "radio", "confirm-remove"] and re.fullmatch(r"[A-Za-z0-9_-]{6,16}", parts[3]):
+            try:
+                from integrations.sonos_radio_stations import remove_station
+                removed = await asyncio.to_thread(remove_station, parts[3])
+                stations = await asyncio.to_thread(self._load_radio_stations)
+                text = "Radio station removed." if removed else "That radio station was already removed."
+            except (ImportError, OSError, ValueError, RuntimeError):
+                stations, text = [], "Radio station could not be removed."
+            return self._speaker_callback_result(text, self._speaker_radio_station_keyboard(stations))
+        if len(parts) == 4 and parts[:3] == ["sp", "radio", "play"] and re.fullmatch(r"[A-Za-z0-9_-]{6,16}", parts[3]):
+            result = await asyncio.to_thread(self._play_radio_station, parts[3])
+            return self._speaker_callback_result(
+                _html.escape(str(result.get("message", "Radio result unavailable."))), self._speaker_source_keyboard())
+        return None
+
+    async def _speaker_controls_callback(self, query, parts: list[str], chat_id):
+        if parts == ["sp", "fm"]:
+            return self._speaker_callback_result("Choose FM duration.", self._speaker_fm_duration_keyboard())
+        if parts == ["sp", "fm", "custom"]:
+            await self._prompt_speaker_form(query, chat_id=chat_id,
+                                            user_id=getattr(query.from_user, "id", ""), action="fm")
+            return "", None, None, {}
+        if len(parts) == 3 and parts[1] == "fm" and parts[2] in {"30m", "1h", "1.5h", "2h"}:
+            return self._speaker_callback_result(f"FM · {parts[2]}", action="fm", kwargs={"duration": parts[2], "switch": False})
+        if len(parts) >= 2 and parts[:2] == ["sp", "fmcenter"]:
+            return self._speaker_callback_result(
+                "FM Center controls are unavailable: no verified local controller is connected. No speaker action was sent.")
+        if parts == ["sp", "sleep"]:
+            return self._speaker_callback_result("Choose a sleep timer.", self._speaker_sleep_timer_keyboard())
+        if len(parts) == 3 and parts[1] == "sleep" and parts[2] in {"off", "1h", "2h", "3h", "4h", "6h", "8h", "12h"}:
+            return self._speaker_callback_result("Sleep timer updated.", action="sleep_timer", kwargs={"sleep_timer_hours": parts[2]})
+        if parts == ["sp", "volume"]:
+            return self._speaker_callback_result("Volume status", self._speaker_volume_keyboard(), "volume")
+        if len(parts) == 3 and parts[:2] == ["sp", "vol"] and parts[2] in {"up", "down", "mute", "unmute"}:
+            return self._speaker_callback_result("Volume updated.", self._speaker_volume_keyboard(), "volume", {"volume_action": parts[2]})
+        if len(parts) == 4 and parts[:3] == ["sp", "vol", "set"] and parts[3] in {"0", "25", "50", "75", "100"}:
+            return self._speaker_callback_result("Volume updated.", self._speaker_volume_keyboard(), "volume", {"volume_level": parts[3]})
+        if len(parts) == 2 and parts[1] in {"status", "start", "stop", "next"}:
+            messages = {"status": "Speaker status", "start": "Speaker started.", "stop": "Speaker stopped.", "next": "Next track requested."}
+            return self._speaker_callback_result(messages[parts[1]], action=parts[1])
+        if len(parts) == 2 and parts[1] in {"npc", "haunted", "roulette"}:
+            return self._speaker_callback_result("", action=parts[1])
+        return None
+
+    async def _speaker_podcast_callback(self, query, parts: list[str], chat_id):
+        if parts == ["sp", "podcast"]:
+            raw = await self._run_podcast_reader_subprocess("list")
+            text, records = self._format_podcast_picker(raw)
+            return self._speaker_callback_result(text, self._podcast_picker_keyboard(records))
+        if len(parts) == 4 and parts[:3] == ["sp", "pr", "list"]:
+            page = int(parts[3]) if parts[3].isdigit() else 0
+            raw = await self._run_podcast_reader_subprocess("list")
+            text, records = self._format_podcast_picker(raw, page)
+            return self._speaker_callback_result(text, self._podcast_picker_keyboard(records, page))
+        if len(parts) == 4 and parts[:3] == ["sp", "pr", "select"] and re.fullmatch(r"[A-Fa-f0-9]{8,32}", parts[3]):
+            return self._speaker_callback_result("Choose how to read this episode.", self._podcast_detail_keyboard(parts[3]))
+        if len(parts) == 4 and parts[1] == "pr" and parts[2] in {"play", "switch", "regen"} and re.fullmatch(r"[A-Fa-f0-9]{8,32}", parts[3]):
+            action = "play" if parts[2] == "regen" else parts[2]
+            raw = await self._run_podcast_reader_subprocess(
+                action, summary_id=parts[3], switch=parts[2] == "switch", regenerate=parts[2] == "regen")
+            return self._speaker_callback_result(self._format_podcast_reader_result(raw))
+        return None
+
+    async def _speaker_news_callback(self, query, parts: list[str], chat_id):
+        if parts == ["sp", "news"]:
+            raw = await self._run_hourly_news_manager("status")
+            text, keyboard = self._format_hourly_news_settings(raw)
+            return self._speaker_callback_result(text, keyboard)
+        if parts == ["sp", "news", "play"]:
+            result = await self._run_hourly_news_manager("trigger_if_idle")
+            try:
+                payload = json.loads(result)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if payload.get("started") is True:
+                text = "<b>Hourly news started.</b> Playback status is not proof of audible sound."
+            elif payload.get("skipped") == "busy":
+                text = "<b>News not started:</b> the speaker is not idle. Current playback was left alone."
+            elif payload.get("success") is True:
+                text = f"<b>News not started:</b> {_format_device_value(payload.get('skipped') or 'request skipped')}. Current playback was left alone."
+            else:
+                text = "<b>Could not start hourly news.</b> Current playback was left alone if handover had not started."
+            return self._speaker_callback_result(text, self._speaker_panel_keyboard())
+        if parts == ["sp", "news", "kill"]:
+            result = await self._run_hourly_news_manager("kill_automations")
+            try:
+                success = json.loads(result).get("success") is True
+            except (TypeError, ValueError, json.JSONDecodeError):
+                success = False
+            raw = await self._run_hourly_news_manager("status")
+            text, keyboard = self._format_hourly_news_settings(raw)
+            label = "Automatic news and post-news radio paused." if success else "Could not confirm the automation kill switch."
+            return self._speaker_callback_result(f"<b>{label}</b>\n" + text, keyboard)
+        if len(parts) == 4 and parts[1] == "news" and parts[2] in {"mode", "station", "enabled", "duration", "after"}:
+            operation, option = self._hourly_news_setting(parts[2], parts[3])
+            if operation is None:
+                return self._speaker_callback_result("Unsupported hourly-news setting.")
+            result = await self._run_hourly_news_manager(operation, **option)
+            raw = await self._run_hourly_news_manager("status")
+            text, keyboard = self._format_hourly_news_settings(raw)
+            try:
+                payload = json.loads(result)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {"success": False, "error": "settings response unavailable"}
+            if not payload.get("success"):
+                text += f"\n\n⚠️ {_format_device_value(payload.get('error') or 'Settings unchanged.')}"
+            return self._speaker_callback_result(text, keyboard)
+        if len(parts) == 4 and parts[:3] == ["sp", "news", "after-station"]:
+            station_id = parts[3]
+            saved = (await self._run_hourly_news_manager("set_after_news_station", station_id=station_id))
+            try:
+                saved = json.loads(saved).get("success") is True
+            except (TypeError, ValueError, json.JSONDecodeError):
+                saved = False
+            if saved:
+                result = await self._run_hourly_news_manager("set_after_news_action", after_news_action="radio")
+                try:
+                    saved = json.loads(result).get("success") is True
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    saved = False
+            raw = await self._run_hourly_news_manager("status")
+            text, keyboard = self._format_hourly_news_settings(raw)
+            if not saved:
+                text += "\n\n⚠️ Post-news station was not confirmed."
+            return self._speaker_callback_result(text, keyboard)
+        return None
+
+    @staticmethod
+    def _hourly_news_setting(setting: str, value: str) -> tuple[str | None, dict[str, Any]]:
+        allowed = {
+            "mode": ({"idle", "interrupt"}, "set_mode", "mode"),
+            "station": ({"france24", "dw", "bbc", "ua_news_1"}, "set_station", "station"),
+            "enabled": ({"on", "off"}, "set_enabled", "enabled"),
+            "duration": ({"5", "10", "15", "30"}, "set_duration", "duration_minutes"),
+            "after": ({"radio", "resume", "idle"}, "set_after_news_action", "after_news_action"),
+        }
+        accepted = allowed.get(setting)
+        if accepted is None or value not in accepted[0]:
+            return None, {}
+        _, operation, key = accepted
+        selected: str | bool | int = value
+        if setting == "enabled":
+            selected = value == "on"
+        elif setting == "duration":
+            selected = int(value)
+        return operation, {key: selected}
+
+    async def _speaker_schedule_callback(self, query, parts: list[str], chat_id):
+        if parts == ["sp", "schedule"]:
+            return self._speaker_callback_result("FM schedules.", self._speaker_schedule_keyboard())
+        if parts == ["sp", "schedule", "list"]:
+            result = await self._run_fm_schedule_manager("list")
+            text, schedules = self._format_fm_schedules(result)
+            return self._speaker_callback_result(text, self._speaker_schedule_list_keyboard(schedules))
+        if parts == ["sp", "schedule", "add"]:
+            await self._prompt_speaker_form(query, chat_id=chat_id,
+                                            user_id=getattr(query.from_user, "id", ""), action="schedule-add")
+            return "", None, None, {}
+        if (len(parts) != 5 or parts[:3] != ["sp", "schedule", "job"]
+                or not re.fullmatch(r"[A-Fa-f0-9]{8}", parts[3])
+                or parts[4] not in {"detail", "run", "edit", "delete", "confirm-delete", "cancel"}):
+            return None
+        schedule_id, operation = parts[3], parts[4]
+        if operation == "edit":
+            await self._prompt_speaker_form(query, chat_id=chat_id,
+                                            user_id=getattr(query.from_user, "id", ""),
+                                            action="schedule-edit", schedule_id=schedule_id)
+            return "", None, None, {}
+        if operation == "delete":
+            return self._speaker_callback_result(
+                "Remove this FM schedule? It will remain unchanged until you confirm.",
+                self._speaker_schedule_confirmation_keyboard(schedule_id))
+        if operation == "confirm-delete":
+            result = await self._run_fm_schedule_manager("delete", schedule_id=schedule_id)
+            text = "FM schedule removed." if result.get("success") else "FM schedule was not removed."
+            return self._speaker_callback_result(text, self._speaker_schedule_keyboard())
+        if operation == "run":
+            result = await self._run_fm_schedule_manager("run", schedule_id=schedule_id)
+            text = ("Idle-safe FM schedule run submitted; speaker output is not independently verified."
+                    if result.get("success") else "The FM schedule could not be run.")
+            return self._speaker_callback_result(text, self._speaker_schedule_keyboard())
+        result = await self._run_fm_schedule_manager("get", schedule_id=schedule_id)
+        schedule = result.get("schedule") if result.get("success") else None
+        if not isinstance(schedule, dict):
+            return self._speaker_callback_result("FM schedule is unavailable.", self._speaker_schedule_keyboard())
+        text, _ = self._format_fm_schedules({"success": True, "schedules": [schedule]})
+        return self._speaker_callback_result(text, self._speaker_schedule_detail_keyboard(schedule))
+
+    @staticmethod
+    def _safe_speaker_output(raw: bytes | str) -> str:
+        text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+        try:
+            from agent.redact import redact_sensitive_text
+            text = redact_sensitive_text(text, force=True)
+        except Exception:  # health: allow BLE001 -- redaction fails closed by replacing all subprocess output
+            text = "Speaker output redacted."
+        safe_lines = [line for line in text.splitlines()
+                      if not any(marker in line.lower() for marker in
+                                 ("http://", "https://", "plex-token", "x-plex-token", "uri="))]
+        return "\n".join(safe_lines)[:2500]
+
+    async def _send_speaker_panel(self, message) -> None:
+        try:
+            raw = await self._run_speaker_subprocess("status")
+            text = self._format_speaker_status(raw)
+        except Exception:  # health: allow BLE001 -- the panel remains available when a device status request fails
+            text = "<b>Speaker controls</b>\nStatus unavailable."
+        await message.reply_text(text, reply_markup=self._speaker_panel_keyboard(), parse_mode="HTML")
+
+
+
+
+
+
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -5870,6 +7056,31 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             self._log_blocked_user(msg)
             return
         await self._ensure_forum_commands(msg)
+        command, *args = msg.text.split()
+        command_name = command.split("@", 1)[0].lower()
+        if command_name == "/speaker":
+            if not args:
+                await self._send_speaker_panel(msg)
+                return
+            try:
+                action, options = _parse_speaker_command(args)
+            except ValueError as exc:
+                await msg.reply_text(str(exc))
+                return
+            if action == "panel":
+                await self._send_speaker_panel(msg)
+                return
+            raw = await self._run_speaker_subprocess(action, **options)
+            if action == "status":
+                response = self._format_speaker_status(raw)
+                await msg.reply_text(response, parse_mode="HTML")
+            elif action == "volume":
+                response = self._format_speaker_volume(raw)
+                await msg.reply_text(response, parse_mode="HTML")
+            else:
+                response = self._format_speaker_command_result(action, raw)
+                await msg.reply_text(response)
+            return
         event = await self._build_triggered_event(msg, update, MessageType.COMMAND)
         # A >4096-char command paste arrives as a near-limit COMMAND chunk plus TEXT continuations; dispatching
         # immediately would orphan them. Near-limit commands go through text batching.

@@ -311,6 +311,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True, desktop="terminal", args_hint="[update|auto-update [on|off]]",
                subcommands=("update", "auto-update")),
 
+    # Local speaker controls (gateway-only; Telegram presents the richer button panel).
+    CommandDef("speaker", "Control the Kitchen Sonos speaker", "Plugins",
+               gateway_only=True, busy_policy="dispatch", args_hint="[status|start|stop|volume|fm|schedule|...]",
+               subcommands=("status", "start", "stop", "next", "volume", "fm", "schedule",
+                            "npc", "haunted", "roulette", "hn", "podcast", "oracle", "sleep-timer")),
+
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]", busy_policy="dispatch",

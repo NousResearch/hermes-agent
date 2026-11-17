@@ -37,6 +37,9 @@ const MAX_ROWS = 60;
  * @returns {{action: 'open' | 'update' | 'close' | 'none', title?: string, body?: string}}
  */
 export function planTracker(run, jobs, openIssue) {
+  // A run a newer one replaced while it was still pending ends cancelled with
+  // no jobs: nothing ran, so it says nothing about the commit.
+  if (run.conclusion === 'cancelled' && jobs.length === 0) return { action: 'none' };
   const red = jobs.filter((j) => RED.has(String(j.conclusion)));
   const runRed = RED.has(String(run.conclusion)) || red.length > 0;
   if (!runRed) {

@@ -26,6 +26,13 @@ test('one tracker: a red run opens it, the next red run rewrites it, a green run
   expect(planTracker(run('success'), [jobs[2]], null).action).toBe('none')
 })
 
+test('a run replaced while pending (cancelled, no jobs) leaves the tracker alone', () => {
+  expect(planTracker(run('cancelled'), [], null).action).toBe('none')
+  expect(planTracker(run('cancelled'), [], { number: 7 }).action).toBe('none')
+  // A run cancelled after its jobs started still reports them.
+  expect(planTracker(run('cancelled'), [leg('Full CI pipeline / e2e', 'cancelled', 'Run e2e tests')], null).action).toBe('open')
+})
+
 test('the tracker names the commit under test, never the workflow_run head', () => {
   const failed = [leg('Full CI pipeline / Python tests / e2e', 'failure', 'Run e2e tests')]
   for (const plan of [planTracker(run('failure'), failed, null), planTracker(run('success'), [], { number: 7 })]) {

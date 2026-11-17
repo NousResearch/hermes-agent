@@ -2264,6 +2264,8 @@ export const jaOverrides = {
       unarchive: 'アーカイブを解除',
       newWindow: '新しいウィンドウ',
       openInTerminal: 'ターミナルで開く',
+      openInPlatform: platform => `${platform}で開く`,
+      openInPlatformFallback: 'チャットアプリ',
       copyIdFailed: 'セッション ID をコピーできませんでした',
 
       sessionActions: 'セッションアクション',

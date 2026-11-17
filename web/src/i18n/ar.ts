@@ -155,6 +155,7 @@ export const ar = defineLocale({
     sessionDeleted: "تم حذف الجلسة",
     failedToDelete: "فشل حذف الجلسة",
     resumeInChat: "استئناف في المحادثة",
+    openInPlatform: "فتح في {platform}",
     previousPage: "الصفحة السابقة",
     nextPage: "الصفحة التالية",
     roles: {

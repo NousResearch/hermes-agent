@@ -68,6 +68,7 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_vault_code import SlackVaultCodeMixin
     from .adapter_image_batch import collect_image_uploads
+    from .thread_link import _slack_permalink_path, slack_thread_url
     from .adapter_forwarded import (
         append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
         slack_file_marker as _slack_file_marker)
@@ -82,6 +83,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_socket_lifecycle import SlackSocketLifecycleMixin  # type: ignore
     from adapter_vault_code import SlackVaultCodeMixin  # type: ignore
     from adapter_image_batch import collect_image_uploads  # type: ignore
+    from thread_link import _slack_permalink_path, slack_thread_url  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -420,14 +422,6 @@ def _rewrite_known_bang_command(text: str) -> str:
     except Exception:  # pragma: no cover - defensive
         pass
     return text
-
-
-def _slack_permalink_path(channel_id: str | None, message_ts: str | None) -> str:
-    """Workspace-independent tail (``archives/<channel>/p<ts>``) of a permalink.
-    Only the tail can be rebuilt from a payload, so dedupe compares on it."""
-    if not channel_id or not message_ts:
-        return ""
-    return f"archives/{channel_id}/p{str(message_ts).replace('.', '')}"
 
 
 def _str_or_empty(value: Any) -> str:
@@ -1006,6 +1000,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
     # ``reply_in_thread: false`` gives both a flat outbound reply and a whole-channel
     # session bucket, so a flat continuable cron continues on a plain reply.
     supports_inchannel_continuable = True
+    thread_url = staticmethod(slack_thread_url)  # the session lists' "Open in Slack"
 
     # Bounded-cache caps (instance assignment in tests overrides per adapter).
     _USER_NAME_CACHE_MAX = _CHANNEL_NAME_CACHE_MAX = _DM_CONVERSATION_CACHE_MAX = 5000
@@ -7074,6 +7069,7 @@ def register(ctx) -> None:
         # Out-of-process cron delivery; without it deliver=slack cron jobs fail with
         # "No live adapter" when cron runs apart from the gateway.
         standalone_sender_fn=_standalone_send,
+        thread_url_fn=SlackAdapter.thread_url,
         # Slack allows 40,000 chars; leave margin.
         max_message_length=39000,
         emoji="💼",

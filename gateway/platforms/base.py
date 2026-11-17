@@ -1808,14 +1808,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     # the whole-channel bucket ``(platform, chat_id, None)``; needs a flat-reply outbound gate too
     # (Slack ``reply_in_thread: false``). False fails SAFE -> ``thread``.
     supports_inchannel_continuable: bool = False
-    # A human can answer "session restored — what next?"; webhook-style platforms set False so
-    # auto-resume finishes the work instead of asking nobody.
-    # The startup auto-resume turn (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
-    # branch in ``_handle_message_with_agent``) reads this to pick its guidance: interactive platforms
-    # (Telegram, Slack, Discord DMs, …) get "report the restore and ask what the user wants next";
-    # non-interactive event platforms (webhook) get "finish the interrupted work" because nobody is there to
-    # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
-    # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
+    # A human can answer "session restored — what next?"; webhook-style platforms set False so the
+    # startup auto-resume turn finishes the work instead of asking nobody (#57056). Read generically
+    # via ``getattr(adapter, "interactive_resume", True)``.
     interactive_resume: bool = True
     # Port-binding adapter that answers ``/p/<profile>/...`` for every served profile on the default
     # listener under ``gateway.multiplex_profiles``. Declared per adapter (not in a central list) so
@@ -4642,6 +4637,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         """Format a message for this platform (override for e.g. Telegram
         MarkdownV2); default returns content as-is."""
         return content
+
+    @staticmethod
+    def thread_url(source: SessionSource) -> Optional[str]:
+        """https link opening *source*'s conversation in the platform's own client; None = no link."""
+        return None
 
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,

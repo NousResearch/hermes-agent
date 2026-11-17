@@ -3737,6 +3737,8 @@ export const frOverrides = {
       unarchive: 'Restaurer',
       newWindow: 'Nouvelle fenêtre',
       openInTerminal: 'Ouvrir dans le terminal',
+      openInPlatform: platform => `Ouvrir dans ${platform}`,
+      openInPlatformFallback: 'l’app de discussion',
       hideTabBar: "Masquer la barre d'onglets",
       openInNewTab: 'Ouvrir dans un nouvel onglet',
       openInSplit: 'Ouvrir en split',

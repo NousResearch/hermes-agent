@@ -313,6 +313,8 @@ export const arChrome = {
       unarchive: 'إلغاء الأرشفة',
       newWindow: 'فتح في نافذة جديدة',
       openInTerminal: 'فتح في الطرفية',
+      openInPlatform: platform => `فتح في ${platform}`,
+      openInPlatformFallback: 'تطبيق المحادثة',
       copyIdFailed: 'فشل نسخ المعرف',
 
       sessionActions: 'إجراءات الجلسة',

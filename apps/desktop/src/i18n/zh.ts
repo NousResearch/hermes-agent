@@ -3184,6 +3184,8 @@ export const zhOverrides = {
       unarchive: '取消归档',
       newWindow: '新窗口',
       openInTerminal: '在终端中打开',
+      openInPlatform: platform => `在 ${platform} 中打开`,
+      openInPlatformFallback: '聊天应用',
       hideTabBar: '隐藏标签栏',
       openInNewTab: '在新标签页中打开',
       openInSplit: '在分屏中打开',

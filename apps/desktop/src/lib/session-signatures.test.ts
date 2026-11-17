@@ -21,6 +21,15 @@ describe('sameCronSignature', () => {
     expect(sameCronSignature(populated, [session('a', 't', { [field]: 'workspace' })])).toBe(true)
   })
 
+  it('is false when only the platform link changed', () => {
+    const url = 'https://discord.com/channels/1/2'
+    expect(sameCronSignature([session('a', 't')], [session('a', 't', { origin_url: url })])).toBe(false)
+    expect(sameCronSignature([session('a', 't', { origin_url: url })], [session('a', 't', { origin_url: url })])).toBe(
+      true
+    )
+    expect(sameCronSignature([session('a', 't', { origin_url: null })], [session('a', 't')])).toBe(true)
+  })
+
   it('is true when ids and titles match in order', () => {
     const a = [session('a', 'one'), session('b', 'two')]
     const b = [session('a', 'one'), session('b', 'two')]

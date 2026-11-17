@@ -19,6 +19,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 from hermes_cli.session_listing import subagent_listing_scope
+from hermes_cli.session_origin_link import stamp_origin_urls
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _session_latest_descendant
@@ -233,6 +234,7 @@ def get_sessions(
                 # SQLite stores the flags as 0/1; expose real JSON booleans.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
+            stamp_origin_urls(sessions, Path(db.db_path).parent)
             if not full:
                 _strip_session_list_rows(sessions)
             # ``storage`` tells an empty page apart from an unreadable store (#72046); same
@@ -389,7 +391,8 @@ async def search_sessions(
                         "preview": row.get("preview"),
                         "parent_session_id": row.get("parent_session_id"),
                         "profile": _serving_profile(profile),
-                        "archived": bool(row.get("archived"))})
+                        "archived": bool(row.get("archived")),
+                        "origin_json": row.get("origin_json")})
                 else:
                     payload["id"] = sid
                 seen[root] = payload
@@ -457,7 +460,13 @@ async def search_sessions(
                     add_lineage_result(
                         sid, hit_payload(row, preview or f"Session title matched: {q.strip()}",
                                          None, row.get("started_at")))
-            return {"results": list(seen.values())}
+            results = list(seen.values())
+            # Same "Open in <platform>" link as the list rows, built from the rich row's origin.
+            if linked := [r for r in results if r.get("origin_json")]:
+                stamp_origin_urls(linked, _session_db_path_for_profile(profile).parent)
+            for r in results:
+                r.pop("origin_json", None)
+            return {"results": results}
 
         # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
         return await asyncio.to_thread(_with_db, profile, _search, read_only=True)
@@ -568,6 +577,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         # clients resolve them to whichever gateway happened to be active.
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
+        stamp_origin_urls([session], _session_db_path_for_profile(profile).parent)
         # A cron run's liveness is scheduler ownership, not the 300s activity
         # window (#88443): a run inside a long tool call is still owned. A
         # unified-runtime run's local id names no job, so stamp its identity first.

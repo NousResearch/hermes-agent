@@ -174,6 +174,7 @@ export const ru: Translations = {
     selectedSessionsSkippedActive: "Удалено: {deleted}; сохранено: {count}, так как ход ещё выполняется",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
+    openInPlatform: "Открыть в {platform}",
     newChat: "Новый чат",
     workspace: "рабочая папка",
     workspaceDefault: "По умолчанию",

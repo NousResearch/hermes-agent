@@ -174,6 +174,7 @@ export const tr: Translations = {
     selectedSessionsSkippedActive: "{deleted} silindi; bir tur çalıştığı için {count} tutuldu",
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
+    openInPlatform: "{platform} içinde aç",
     newChat: "Yeni sohbet",
     workspace: "çalışma alanı",
     workspaceDefault: "Varsayılan",

@@ -1,6 +1,7 @@
 import {
   Clock,
   Database,
+  ExternalLink,
   Globe,
   Hash,
   MessageCircle,
@@ -100,4 +101,33 @@ export function sourceLabel(source: string): string {
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(" ");
   }
+}
+
+/** "Open in Slack/Discord/…": the messaging conversation a session came from,
+ *  shown only when the backend built a link for it (`origin_url`). */
+export function OriginLink({
+  session,
+  label,
+}: {
+  session: { origin_url?: string | null; source: string | null };
+  label: string;
+}) {
+  if (!session.origin_url) return null;
+  const text = label.replace(
+    "{platform}",
+    session.source ? sourceLabel(session.source) : "chat",
+  );
+  return (
+    <a
+      href={session.origin_url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground"
+      aria-label={text}
+      title={text}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <ExternalLink className="h-4 w-4" />
+    </a>
+  );
 }

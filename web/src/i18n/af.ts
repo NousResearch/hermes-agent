@@ -174,6 +174,7 @@ export const af: Translations = {
     selectedSessionsSkippedActive: "{deleted} geskrap; {count} behou omdat 'n beurt nog loop",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
+    openInPlatform: "Maak oop in {platform}",
     newChat: "Nuwe klets",
     workspace: "werkruimte",
     workspaceDefault: "Verstek",

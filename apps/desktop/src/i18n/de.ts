@@ -3730,6 +3730,8 @@ export const deOverrides = {
       unarchive: 'Archivierung aufheben',
       newWindow: 'Neues Fenster',
       openInTerminal: 'Im Terminal öffnen',
+      openInPlatform: platform => `In ${platform} öffnen`,
+      openInPlatformFallback: 'der Chat-App',
       hideTabBar: 'Tab-Leiste ausblenden',
       openInNewTab: 'In neuem Tab öffnen',
       openInSplit: 'Im Split öffnen',

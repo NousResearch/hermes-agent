@@ -174,6 +174,7 @@ export const ga: Translations = {
     selectedSessionsSkippedActive: "Scriosadh {deleted}; coinníodh {count} mar go bhfuil seal ar siúl",
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
+    openInPlatform: "Oscail in {platform}",
     newChat: "Comhrá nua",
     workspace: "spás oibre",
     workspaceDefault: "Réamhshocrú",

@@ -215,6 +215,7 @@ export const en: Translations = {
       "{deleted} deleted; {count} kept because a turn is running",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
+    openInPlatform: "Open in {platform}",
     newChat: "New chat",
     workspace: "workspace",
     workspaceDefault: "Default",

@@ -174,6 +174,7 @@ export const es: Translations = {
     selectedSessionsSkippedActive: "{deleted} eliminadas; {count} conservadas porque hay un turno en curso",
     failedToDeleteSelected: "No se pudieron eliminar las sesiones seleccionadas",
     resumeInChat: "Reanudar en el chat",
+    openInPlatform: "Abrir en {platform}",
     newChat: "Nuevo chat",
     workspace: "espacio de trabajo",
     workspaceDefault: "Predeterminado",

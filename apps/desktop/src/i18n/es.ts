@@ -3718,6 +3718,8 @@ export const esOverrides = {
       unarchive: 'Desarchivar',
       newWindow: 'Nueva ventana',
       openInTerminal: 'Abrir en el terminal',
+      openInPlatform: platform => `Abrir en ${platform}`,
+      openInPlatformFallback: 'la app de chat',
       hideTabBar: 'Ocultar barra de pestañas',
       openInNewTab: 'Abrir en una pestaña nueva',
       openInSplit: 'Abrir en vista dividida',

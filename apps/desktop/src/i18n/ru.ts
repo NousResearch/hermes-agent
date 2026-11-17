@@ -2523,6 +2523,8 @@ export const ruOverrides = {
       unarchive: 'Восстановить',
       newWindow: 'Новое окно',
       openInTerminal: 'Открыть в терминале',
+      openInPlatform: platform => `Открыть в ${platform}`,
+      openInPlatformFallback: 'мессенджере',
       hideTabBar: 'Скрыть панель вкладок',
       openInNewTab: 'Открыть в новой вкладке',
       openInSplit: 'Открыть в сплит-виде',

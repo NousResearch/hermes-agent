@@ -174,6 +174,7 @@ export const zhHant: Translations = {
     selectedSessionsSkippedActive: "已刪除 {deleted} 個；{count} 個因仍有回合執行中而保留",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
+    openInPlatform: "在 {platform} 中開啟",
     newChat: "新對話",
     workspace: "工作區",
     workspaceDefault: "預設",

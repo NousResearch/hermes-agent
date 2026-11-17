@@ -885,8 +885,8 @@ compression:
 # TUI, Desktop, messaging), "5m" for subagents, cron, one-shots, webhooks,
 # Kanban, the API server and batch runs. Other values are ignored and "5m" is used.
 #
-prompt_caching:
-  cache_ttl: "auto" # or pin "5m" / "1h" for every session
+# prompt_caching:
+#   cache_ttl: "auto"   # or pin "5m" / "1h" for every session
 
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)

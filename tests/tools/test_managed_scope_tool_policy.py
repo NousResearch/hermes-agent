@@ -80,3 +80,26 @@ def test_managed_credential_files_are_mounted(managed_profile):
     mounts = credential_files.get_credential_file_mounts()
     assert [m["container_path"] for m in mounts] == ["/root/.hermes/managed-creds.json"]
     assert mounts[0]["host_path"] == str(managed_profile / "managed-creds.json")
+
+
+def test_managed_credential_files_reject_master_store(managed_profile):
+    """A managed mount list cannot bypass the guard for Hermes' own credentials."""
+    (managed_profile / "auth.json").write_text("{}\n", encoding="utf-8")
+    managed_dir = managed_scope.get_managed_dir()
+    assert managed_dir is not None
+    (managed_dir / "config.yaml").write_text(
+        _MANAGED_CONFIG.replace(
+            "    - managed-creds.json\n",
+            "    - auth.json\n    - managed-creds.json\n",
+        ),
+        encoding="utf-8",
+    )
+    managed_scope.invalidate_managed_cache()
+    credential_files._config_files.clear()
+
+    # The skill-registration path already rejects this file. The managed
+    # config path must do the same without dropping an ordinary credential.
+    assert credential_files.register_credential_file("auth.json") is False
+    assert [m["container_path"] for m in credential_files.get_credential_file_mounts()] == [
+        "/root/.hermes/managed-creds.json",
+    ]

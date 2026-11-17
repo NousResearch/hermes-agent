@@ -158,6 +158,19 @@ def _load_config_files() -> list[dict[str, str]]:
                 "credential_files: rejected absolute config path %r",
                 "credential_files: rejected config path traversal %r (%s)")
             if resolved_path is not None and resolved_path.is_file():
+                # Config/managed mounts must honor the same master-store read guard as
+                # skill registrations: containment alone does not protect auth.json.
+                if get_read_block_error is None:
+                    logger.error("credential_files: refusing configured %r — read guard unavailable", rel)
+                    continue
+                try:
+                    denied = get_read_block_error(str(resolved_path))
+                except Exception:
+                    logger.exception("credential_files: refusing configured %r — read guard raised", rel)
+                    continue
+                if denied and not _is_mountable_service_token(resolved_path, hermes_home):
+                    logger.warning("credential_files: refused configured %r — protected credential store", rel)
+                    continue
                 result.append(_mount(resolved_path, f"/root/.hermes/{rel}"))
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)

@@ -201,17 +201,24 @@ def test_a_plugin_chain_ending_in_a_core_block_needs_the_grant_at_every_link(aux
     assert resolve("follows_own")["model"] == "vendor/own"  # a plugin-owned route is not a core one
 
 
-@pytest.mark.parametrize("bad", ["goal_judge", "moa_aggregator"])
-def test_core_blocks_off_the_inheritance_allowlist_are_refused(aux_home, patched_manager, caplog, bad):
+@pytest.mark.parametrize("base", ["goal_judge", "moa_aggregator", "monitor"])
+def test_picker_core_blocks_are_inheritable_bases(aux_home, patched_manager, caplog, base):
+    """Picker tasks are inheritable bases by construction (``plugins_aux_tasks`` builds the
+
+    allowlist from ``_AUX_TASKS``), so blocks that used to be config.yaml-only — pinned as
+    refused in the pre-#125413 registries — inherit cleanly once the picker lists them.
+    """
     import logging
 
     from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.main_provider_setup import _AUX_TASKS
 
-    assert isinstance(DEFAULT_CONFIG["auxiliary"].get(bad), dict)  # a real core block, just not a base
+    assert isinstance(DEFAULT_CONFIG["auxiliary"].get(base), dict)  # a real core block
+    assert base in {k for k, _name, _desc in _AUX_TASKS}  # and a picker task since #125413
     with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
-        _register(patched_manager, "plug_aux", inherit_from=bad)
-    assert "ignoring inherit_from" in caplog.text
-    assert patched_manager._aux_tasks["plug_aux"]["inherit_from"] is None
+        _register(patched_manager, "plug_aux", inherit_from=base)
+    assert "ignoring inherit_from" not in caplog.text
+    assert patched_manager._aux_tasks["plug_aux"]["inherit_from"] == base
 
 
 @pytest.mark.parametrize("bad", ["no_such_task", "plug_aux", ""])

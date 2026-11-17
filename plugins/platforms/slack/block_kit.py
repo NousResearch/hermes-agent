@@ -692,11 +692,11 @@ def _defuse_broadcasts(node: Any) -> Any:
     return node
 
 
-def _agent_fences(content: str) -> List[Tuple[int, int, str]]:
+def _agent_fences(content: str) -> list[tuple[int, int, str]]:
     """``(start, end, body)`` of each closed ```slack-blocks fence, in one pass over the lines: an
     opener with no matching closer (same fence string, on its own line) is not a fence."""
-    spans: List[Tuple[int, int, str]] = []
-    opened: Optional[Tuple[int, str, int]] = None   # (start, fence string, body start)
+    spans: list[tuple[int, int, str]] = []
+    opened: Optional[tuple[int, str, int]] = None   # (start, fence string, body start)
     pos = 0
     for line in content.splitlines(keepends=True):
         stripped = line.strip()
@@ -711,7 +711,7 @@ def _agent_fences(content: str) -> List[Tuple[int, int, str]]:
     return spans
 
 
-def _blocks_summary(blocks: List[Block]) -> str:
+def _blocks_summary(blocks: list[Block]) -> str:
     """A one-line ``text`` for blocks that came without one: the header, else the first section."""
     for block in blocks:
         text_obj = block.get("text")
@@ -722,19 +722,19 @@ def _blocks_summary(blocks: List[Block]) -> str:
     return "(Block Kit message)"
 
 
-def extract_agent_blocks(content: str) -> Optional[Tuple[str, List[Block]]]:
+def extract_agent_blocks(content: str) -> Optional[tuple[str, list[Block]]]:
     """``(text, blocks)`` when ``content`` holds exactly one ```slack-blocks fenced JSON payload, else
     ``None``. ``text`` is ``content`` without the fence, else the payload's ``text``, else a summary
     of the blocks. The blocks are sanitized (:func:`sanitize_blocks`) with broadcast mentions made
-    inert. Never raises: a payload that won't parse, or two of them, returns ``None`` and the reply
-    is sent as plain text, fence and all, so nothing is lost."""
+    inert. A payload that won't parse (or nests deeper than the JSON parser allows), or two of them,
+    returns ``None`` and the reply is sent as plain text, fence and all, so nothing is lost."""
     if not content or AGENT_BLOCKS_LANG not in content:
         return None
+    fences = _agent_fences(content)
+    if len(fences) != 1:
+        return None
+    start, end, body = fences[0]
     try:
-        fences = _agent_fences(content)
-        if len(fences) != 1:
-            return None
-        start, end, body = fences[0]
         payload = json.loads(body)
         text = ""
         if isinstance(payload, dict):
@@ -742,10 +742,11 @@ def extract_agent_blocks(content: str) -> Optional[Tuple[str, List[Block]]]:
             payload = payload.get("blocks")
         if not isinstance(payload, list):
             return None
-        blocks = sanitize_blocks(_defuse_broadcasts(payload))
-        if not blocks:
-            return None
-        rest = (content[:start] + content[end:]).strip()
-        return rest or _defuse_broadcasts(text) or _blocks_summary(blocks), blocks
-    except Exception:
+        defused = _defuse_broadcasts(payload)
+    except (ValueError, RecursionError):
         return None
+    blocks = sanitize_blocks(defused)
+    if not blocks:
+        return None
+    rest = (content[:start] + content[end:]).strip()
+    return rest or _defuse_broadcasts(text) or _blocks_summary(blocks), blocks

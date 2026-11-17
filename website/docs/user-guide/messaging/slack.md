@@ -487,6 +487,47 @@ env-over-YAML rule as every other setting). Avoid
 `all` when peer bots can answer each other without an explicit mention, because
 their own reply policies can still create loops.
 
+### Agent-authored cards (`agent_blocks`)
+
+With `platforms.slack.extra.agent_blocks: true`, the agent can post a Block Kit
+card itself (a header, a row of metrics, a chart, buttons) by putting one
+fenced code block tagged `slack-blocks` in its reply:
+
+````text
+Here are this week's numbers.
+
+```slack-blocks
+[{"type": "header", "text": {"type": "plain_text", "text": "Weekly metrics"}},
+ {"type": "section", "fields": [{"type": "mrkdwn", "text": "*Searches/day*\n131K"},
+                                {"type": "mrkdwn", "text": "*Paying*\n9"}]}]
+```
+````
+
+Slack receives the blocks, and "Here are this week's numbers." becomes the
+notification and fallback text. If the JSON doesn't parse, the reply has two
+fences, or nothing survives sanitizing, the reply goes out as ordinary text with
+the fence shown, so nothing is lost. If Slack rejects the blocks
+(`invalid_blocks`), the fallback text is still delivered. A streamed answer is
+rewritten in place to the blocks when it finishes.
+
+The flag changes delivery only, not the system prompt. To tell the model the
+fence exists, add a line through `platform_hints` (resolved at session start, so
+prompt caching is unaffected):
+
+```yaml
+platforms:
+  slack:
+    extra:
+      agent_blocks: true
+platform_hints:
+  slack:
+    append: >
+      For a structured answer (metrics, a status card, a chart) you may reply with
+      exactly one fenced code block tagged slack-blocks holding a JSON list of Slack
+      Block Kit blocks, or {"text": "...", "blocks": [...]}. Text outside the fence
+      is the notification text.
+```
+
 ### Working-State Status Line
 
 While the agent processes a message, Slack shows a status line next to the bot

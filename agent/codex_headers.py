@@ -101,7 +101,6 @@ def _codex_compression_enabled() -> bool:
         return False
 
 
-# Request extensions: the raw JSON a zstd body was made from, and "never compress this one".
 _RAW_BODY_EXT = "hermes_codex_raw_body"
 _PLAIN_BODY_EXT = "hermes_codex_plain_body"
 
@@ -155,22 +154,24 @@ def _plain_json_request(request: Any, raw: bytes) -> Any:
     headers = httpx.Headers(request.headers)
     del headers["content-encoding"]
     del headers["content-length"]
-    extensions = {k: v for k, v in request.extensions.items() if k != _RAW_BODY_EXT}
-    extensions[_PLAIN_BODY_EXT] = True
-    return httpx.Request(request.method, request.url, headers=headers, content=raw, extensions=extensions)
+    return httpx.Request(request.method, request.url, headers=headers, content=raw,
+                         extensions={**request.extensions, _PLAIN_BODY_EXT: True})
 
 
-def _log_plain_json_replay(request: Any) -> None:
+def _log_plain_json_replay(raw: bytes) -> None:
     logger.warning("Codex answered a zstd request body with a bare 400; resending it once as plain JSON "
-                   "(%d bytes, #148898)", len(request.extensions[_RAW_BODY_EXT]))
+                   "(%d bytes, #148898)", len(raw))
 
 
 @functools.cache
 def codex_zstd_replay_client_cls(async_mode: bool = False) -> type:
     """httpx client class that resends a zstd body once as plain JSON on the bare 400 (#148898).
 
-    Only requests the compression hook encoded carry the raw body, so nothing else is resent. A
-    second rejection of the plain body is returned as is and classified like any other 400.
+    Only requests the compression hook encoded carry the raw body, so nothing else is resent. The
+    raw body is dropped from the request as soon as the response arrives, so a long SSE stream does
+    not keep a second copy alive. A rejection of the plain body is returned like any other 400.
+    The budget is one resend per ``send``: an SDK-level retry (Hermes runs the agent client with
+    ``max_retries=0``) builds a new request and may resend once more.
     """
     import httpx
 
@@ -178,28 +179,38 @@ def codex_zstd_replay_client_cls(async_mode: bool = False) -> type:
         class _CodexZstdReplayAsyncClient(httpx.AsyncClient):
             async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
                 response = await super().send(request, **kwargs)
-                if _RAW_BODY_EXT not in request.extensions or response.status_code != 400:
+                raw = request.extensions.pop(_RAW_BODY_EXT, None)
+                if raw is None or response.status_code != 400:
                     return response
-                await response.aread()
+                try:
+                    await response.aread()
+                except BaseException:
+                    await response.aclose()
+                    raise
                 if not _is_bare_bad_request(response):
                     return response
                 await response.aclose()
-                _log_plain_json_replay(request)
-                return await super().send(_plain_json_request(request, request.extensions[_RAW_BODY_EXT]), **kwargs)
+                _log_plain_json_replay(raw)
+                return await super().send(_plain_json_request(request, raw), **kwargs)
 
         return _CodexZstdReplayAsyncClient
 
     class _CodexZstdReplayClient(httpx.Client):
         def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
             response = super().send(request, **kwargs)
-            if _RAW_BODY_EXT not in request.extensions or response.status_code != 400:
+            raw = request.extensions.pop(_RAW_BODY_EXT, None)
+            if raw is None or response.status_code != 400:
                 return response
-            response.read()
+            try:
+                response.read()
+            except BaseException:
+                response.close()
+                raise
             if not _is_bare_bad_request(response):
                 return response
             response.close()
-            _log_plain_json_replay(request)
-            return super().send(_plain_json_request(request, request.extensions[_RAW_BODY_EXT]), **kwargs)
+            _log_plain_json_replay(raw)
+            return super().send(_plain_json_request(request, raw), **kwargs)
 
     return _CodexZstdReplayClient
 

@@ -258,6 +258,7 @@ worktrees:
   archive_max_file_mb: 50      # untracked files above this are not archived; their tree is kept
   archive_retention_days: 30   # 0 keeps archives forever
   max_total_gb: 0              # optional budget for idle trees; oldest are archived + removed first
+  shed_artifacts_after_hours: 0  # e.g. 24: idle trees drop git-ignored dependency dirs; 0 = off
   install_state_retention_days: 14  # dependency state of a missing checkout outside .worktrees/ and
                                # the data root, unused this long, is reclaimed; 0 keeps it forever.
                                # Read from the root profile's config: its profiles share installs/
@@ -270,6 +271,23 @@ evicts idle trees past their tier.
 Subagent worktrees (`delegation.worktree_isolation: true`) follow the same
 rule when the child finishes: a clean tree is removed, and a tree with commits
 or edits is archived and removed with its branch kept for the parent to merge.
+
+### Shedding dependency folders from idle trees
+
+A tree you are not working in can still hold gigabytes of `node_modules/`,
+`.venv/` or `target/`. Set `worktrees.shed_artifacts_after_hours` (24 is a good
+start; 0, the default, turns it off) and every sweep deletes, from each tree
+idle that long, the directories git ignores whose name is one of
+`node_modules`, `.venv`, `venv`, `target`, `.next`, `.nuxt`, `.turbo`,
+`.parcel-cache`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`,
+`.tox` or `.gradle`. The tree itself stays: tracked files, uncommitted edits,
+untracked files that are not ignored, the branch and the index are never
+touched, so `npm install` / `uv sync` brings it back to work. Symlinked
+directories (a shared venv) are skipped, and so are Kanban trees, trees a
+resumable subagent owns, trees whose lock owner runs, trees a live process
+works in, and trees with any edit inside the window. Each deleted folder is
+logged (`Sweep: shed ignored <tree>/<dir>`); `hermes worktree prune --dry-run`
+lists what would go.
 
 ## Putting It All Together
 

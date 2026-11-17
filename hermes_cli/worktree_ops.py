@@ -1144,9 +1144,13 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     MERGED on GitHub, or the head EXACTLY matches origin (tree reaped, branch kept). Live-locked
     trees are skipped; dead locks are unlocked first. Phases: ``_prune_candidates`` ->
     ``_classify_prune_candidates`` -> ``_reap_prune_verdicts`` -> ``_prune_orphaned_branches``.
+    Either mode then sheds ignored dependency dirs of idle survivors when
+    ``worktrees.shed_artifacts_after_hours`` is set (``worktree_sweep.shed_idle_artifacts``).
     """
     try:
         _prune_stale_worktree_trees(repo_root, max_age_hours)
+        from hermes_cli import worktree_sweep
+        worktree_sweep.shed_idle_artifacts(repo_root, worktree_sweep.sweep_settings())
     finally:
         _reclaim_orphan_install_states()
 

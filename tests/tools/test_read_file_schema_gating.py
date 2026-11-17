@@ -26,7 +26,7 @@ class TestReadFileSchemaStatic(unittest.TestCase):
 
 
 
-    def test_hosted_ocr_available_gate_states(self):
+    def test_hosted_ocr_gate_states(self):
         """Maintainer decision: ONLY a direct FIRECRAWL_API_KEY unlocks —
         not config true, not the Nous gateway."""
         import tools.read_extract as rx
@@ -35,23 +35,23 @@ class TestReadFileSchemaStatic(unittest.TestCase):
         with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
             with patch("hermes_cli.config.load_config_readonly",
                        return_value={}):
-                self.assertTrue(rx.hosted_ocr_available())
+                self.assertTrue(rx._hosted_ocr_config()[0])
         # config false beats key
         with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
             with patch("hermes_cli.config.load_config_readonly",
                        return_value={"file_tools": {"hosted_ocr": False}}):
-                self.assertFalse(rx.hosted_ocr_available())
+                self.assertFalse(rx._hosted_ocr_config()[0])
         # config true WITHOUT key → False (key is the one gate)
         with patch.dict(rx.os.environ, {}, clear=False):
             rx.os.environ.pop("FIRECRAWL_API_KEY", None)
             with patch("hermes_cli.config.load_config_readonly",
                        return_value={"file_tools": {"hosted_ocr": True}}):
-                self.assertFalse(rx.hosted_ocr_available())
+                self.assertFalse(rx._hosted_ocr_config()[0])
         # nothing → False (Nous gateway alone must NOT unlock)
         with patch("hermes_cli.config.load_config_readonly",
                    return_value={}):
             rx.os.environ.pop("FIRECRAWL_API_KEY", None)
-            self.assertFalse(rx.hosted_ocr_available())
+            self.assertFalse(rx._hosted_ocr_config()[0])
 
     def test_runtime_route_is_direct_key_only(self):
         """_hosted_ocr_config never resolves the Nous gateway: api_url is

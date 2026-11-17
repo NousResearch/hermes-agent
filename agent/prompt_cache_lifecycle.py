@@ -49,6 +49,7 @@ import re
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from typing import Any, Callable, Optional
@@ -755,6 +756,7 @@ class PromptCacheWarmer:
                 return  # a miss of the session a reset ended: the new one is warmed afresh
             # The route the keep-alive was sent on: a switch since then leaves the new route warmable.
             self._missed_route = _route_key(b["provider"], b["base_url"], b["model"])
+            _remember_missed_route(b["session_id"], self._missed_route)
         logger.info("%sprompt cache warming disabled for session: keep-alive missed", self._prefix())
 
     def _send(self, run: _Run) -> Any:
@@ -1144,10 +1146,41 @@ def _offload_reason(agent: Any, warmer: PromptCacheWarmer, now: float) -> str:
 
 # -- agent-facing seams (each a no-op when nothing is armed) ---------------------------------------
 
+#: Session id -> the route whose keep-alive missed. A miss ends warming for the SESSION, which outlives
+#: one agent: the gateway evicts and rebuilds agents (cache-edge compaction, idle eviction), and a
+#: compaction moves the conversation to a child session id (``carry_missed_route``). Bounded LRU.
+_MISSED_ROUTES: OrderedDict[str, tuple] = OrderedDict()
+_MISSED_ROUTES_MAX = 1000
+_missed_routes_lock = threading.Lock()
+
+
+def _remember_missed_route(session_id: Optional[str], route: Optional[tuple]) -> None:
+    if not session_id:
+        return
+    with _missed_routes_lock:
+        if route is None:
+            _MISSED_ROUTES.pop(session_id, None)
+            return
+        _MISSED_ROUTES[session_id] = route
+        _MISSED_ROUTES.move_to_end(session_id)
+        while len(_MISSED_ROUTES) > _MISSED_ROUTES_MAX:
+            _MISSED_ROUTES.popitem(last=False)
+
+
+def carry_missed_route(old_session_id: Optional[str], new_session_id: Optional[str]) -> None:
+    """A compaction continued the conversation in a child session: its keep-alive miss goes with it."""
+    with _missed_routes_lock:
+        route = _MISSED_ROUTES.get(old_session_id or "")
+    if route is not None:
+        _remember_missed_route(new_session_id, route)
+
+
 def get_prompt_cache_warmer(agent: Any) -> PromptCacheWarmer:
     warmer = getattr(agent, "_prompt_cache_warmer", None)
     if warmer is None:
         warmer = PromptCacheWarmer(agent)
+        with _missed_routes_lock:  # an agent rebuilt for the same session keeps its miss
+            warmer._missed_route = _MISSED_ROUTES.get(getattr(agent, "session_id", None) or "")
         agent._prompt_cache_warmer = warmer
     return warmer
 
@@ -1168,7 +1201,7 @@ def reset_prompt_cache_session(agent: Any) -> None:
     if warmer is not None:
         warmer.cancel("session reset")
         with warmer._lock:
-            warmer._missed_route = None
+            warmer._missed_route = None  # a new session id: nothing remembered for it
             warmer._budget, warmer._spent, warmer._compacted, warmer._offloaded = None, None, False, False
 
 

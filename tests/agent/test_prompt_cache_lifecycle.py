@@ -198,6 +198,7 @@ def test_a_miss_goes_straight_to_the_compact_or_offload_decision():
     assert pcl.get_prompt_cache_warmer(agent).edge_decision(now=warmer._spent.due_at).compact == "due"
 
     small = _chat(client=_Client(read=0, write=119_950), tokens=50_000)
+    small.session_id = "small"  # another chat: the first one's miss is its own
     w2 = pcl.get_prompt_cache_warmer(small)
     _respond(small, _request(), _WRITE_1H)
     _fire(w2)

@@ -371,3 +371,17 @@ def test_a_per_request_fee_is_reserved_before_the_send(fee, warms):
     pricing = SimpleNamespace(**vars(_OPUS), request_cost=fee)
     decision = pcl.evaluate_economics(pricing, 120_000, 3)
     assert (decision.action == "warm") is warms
+
+
+def test_a_keep_alive_miss_survives_the_agent_rebuild_and_the_compaction_child_session():
+    """Greptile on d42bea43: the gateway evicts and rebuilds the agent after a cache-edge compaction, and the
+    compaction moves the conversation to a child session id; neither re-arms warming after a miss."""
+    agent = _chat(session_id="miss-parent")
+    warmer = pcl.get_prompt_cache_warmer(agent)
+    assert _respond(agent) is None
+    warmer._disable_warming(warmer._run)
+    rebuilt = _chat(session_id="miss-parent")
+    assert pcl.get_prompt_cache_warmer(rebuilt).warming_disabled
+    pcl.carry_missed_route("miss-parent", "miss-child")
+    assert pcl.get_prompt_cache_warmer(_chat(session_id="miss-child")).warming_disabled
+    assert not pcl.get_prompt_cache_warmer(_chat(session_id="another-chat")).warming_disabled

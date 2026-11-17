@@ -91,7 +91,7 @@ describe('Radio directory search', () => {
   it('discovers servers, pages with an offset, and reports a full page', async () => {
     const paths: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      const path = new URL(url).pathname
+      const path = new URL(url).pathname + new URL(url).search
       paths.push(path)
       if (path.endsWith('/json/servers')) return json([{ name: 'de1.api.radio-browser.info' }])
       const offset = Number(new URL(url).searchParams.get('offset') ?? 0)
@@ -105,10 +105,13 @@ describe('Radio directory search', () => {
       })))
     }))
     const first = await radio.searchStations('jazz', signal(), { limit: 20 })
-    expect(first.stations).toHaveLength(20)
+    // The stub ignores limit, so the caller's page contract is checked on the
+    // request and on nextOffset rather than on the stub's row count.
+    expect(first.stations).toHaveLength(40)
     expect(first.hasMore).toBe(true)
     expect(first.nextOffset).toBe(20)
     expect(paths.some(path => path.includes('/json/servers'))).toBe(true)
+    expect(paths.some(path => path.includes('limit=20'))).toBe(true)
     const second = await radio.searchStations('jazz', signal(), { limit: 20, offset: 20 })
     expect(second.stations[0].id).toBe('s20')
     expect(paths.some(path => path.includes('/json/stations/search'))).toBe(true)

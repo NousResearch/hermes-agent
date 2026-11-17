@@ -159,6 +159,11 @@ function streamUrl(value) {
   } catch { return null }
 }
 
+async function nowPlaying(ctx, url) {
+  if (typeof ctx.rest !== 'function') return { ok: false, title: '' }
+  return ctx.rest(`/now-playing?${new URLSearchParams({ url })}`, { timeoutMs: 12000 })
+}
+
 async function fetchJson(url, signal) {
   const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]), credentials: 'omit' })
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -372,6 +377,7 @@ function createPlayer(ctx) {
   const volume = atom(Number.isFinite(storedVolume) ? Math.max(0, Math.min(100, storedVolume)) : 25)
   const status = atom('paused')
   const meterMode = atom('levels')
+  const lastError = atom('')
   const plainStreams = new Set()
   const open = atom(false)
   let audio = null
@@ -415,6 +421,7 @@ function createPlayer(ctx) {
     station.set(next)
     ctx.storage.set('local.station', next)
     status.set('connecting')
+    lastError.set('')
     bus.postMessage({ type: 'play', sender: windowId })
     const element = new Audio()
     audio = element
@@ -434,7 +441,12 @@ function createPlayer(ctx) {
       if (metered) {
         plainStreams.add(next.url)
         void play(next, false)
-      } else stop('error')
+        return
+      }
+      const reason = mediaFailure(element, next)
+      lastError.set(reason)
+      reportFailure(ctx, next, reason)
+      stop('error')
     }
     element.addEventListener('playing', () => {
       if (current()) { clearTimeout(timeout); playGeneration = token; status.set('live') }
@@ -643,7 +655,7 @@ function createPlayer(ctx) {
     bus.close()
     if (audioContext) void audioContext.close()
   })
-  return { station, stations, favorites, volume, status, meterMode, open, play, stop, toggle, next, setVolume, mute, favorite, updateStation, removeStation, addStation, waveform, startIfRequested, restoreDefaults }
+  return { station, stations, favorites, volume, status, meterMode, lastError, open, play, stop, toggle, next, setVolume, mute, favorite, updateStation, removeStation, addStation, waveform, startIfRequested, restoreDefaults }
 }
 
 function brailleTrace(samples, rows = 2) {
@@ -720,6 +732,37 @@ function SmallAction({ label, icon, onClick, size = 'micro', pressed, className,
     variant: 'ghost', size, className: `hermes-radio-action ${className ?? ''}`, 'aria-label': label, 'aria-pressed': pressed, onClick,
     children: jsx('span', { className: 'hermes-radio-action-icon', children: busy ? jsx(GlyphSpinner, { ariaLabel: label }) : jsx(icon, {}) })
   }) })
+}
+
+const MEDIA_ERRORS = { 1: 'aborted', 2: 'network error', 3: 'decode error', 4: 'unsupported stream format' }
+
+function mediaFailure(element, station) {
+  let host = station.url
+  try { host = new URL(station.url).hostname } catch {}
+  return `${MEDIA_ERRORS[element?.error?.code] ?? 'the stream did not connect'} (${host})`
+}
+
+async function checkStream(ctx, url) {
+  if (typeof ctx.rest !== 'function') return null
+  try {
+    const verdict = await ctx.rest(`/probe?${new URLSearchParams({ url })}`, { timeoutMs: 15000 })
+    return verdict && typeof verdict.ok === 'boolean' ? verdict : null
+  } catch { return null }
+}
+
+// A failed stream leaves two trails: the panel's reason and one line in the
+// backend's station log, so "why did this station not play" stays answerable.
+function reportFailure(ctx, station, reason) {
+  console.error(`[radio] ${station.name} <${station.url}>: ${reason}`)
+  if (typeof ctx.rest !== 'function') return
+  void ctx.rest('/log', {
+    method: 'POST',
+    body: { name: station.name, url: station.url, reason, at: new Date().toISOString() }
+  }).catch(() => {})
+  void checkStream(ctx, station.url).then(verdict => {
+    if (!verdict?.kind) return
+    console.error(`[radio] probe ${station.url}: ${verdict.kind} ${verdict.status} ${verdict.contentType} ${verdict.reason ?? ''}`)
+  })
 }
 
 function trackCredit(source) {
@@ -802,27 +845,38 @@ async function resolveMusicBrainzArtist(artist, signal, ctx) {
   return artistProfile(profile.relations)
 }
 
+function liveTrack(announced, station, status) {
+  if (status !== 'live') return ''
+  return announced || station.nowPlaying || ''
+}
+
+function signalText(status, track, activityNote, lastError, t) {
+  if (status === 'live') return track || (activityNote ? t('audioOnly') : '')
+  if (status === 'error' && lastError) return lastError
+  return t(status)
+}
+
 function Signal({ player, ctx }) {
   const t = usePluginI18n(ID)
   const station = useValue(player.station)
   const status = useValue(player.status)
   const mode = useValue(player.meterMode)
-  const stream = new URL(station.url)
-  const endpoints = {
-    'stream.nightride.fm': `${NIGHTRIDE}status-json.xsl`,
-    'media01.gamingnow.net': 'https://media01.gamingnow.net:8010/status-json.xsl'
-  }
-  const endpoint = endpoints[stream.hostname]
+  const lastError = useValue(player.lastError)
+  // The stream announces its track through ICY metadata, which the renderer
+  // cannot read: most stations send no CORS headers, and the metadata is
+  // interleaved into the audio. The plugin route reads it for every station,
+  // so directory rows and addresses added by hand get the same track line.
   const metadata = useQuery({
-    queryKey: [ID, 'metadata', endpoint],
-    queryFn: ({ signal }) => fetchJson(endpoint, signal),
-    enabled: status === 'live' && Boolean(endpoint),
-    staleTime: 20000, refetchInterval: status === 'live' ? 25000 : false, retry: 1
+    queryKey: [ID, 'now-playing', station.url],
+    queryFn: () => nowPlaying(ctx, station.url),
+    enabled: status === 'live' && typeof ctx.rest === 'function',
+    staleTime: 15000, refetchInterval: status === 'live' ? 20000 : false, retry: 0
   })
-  const sources = metadata.data?.icestats?.source
-  const source = (Array.isArray(sources) ? sources : sources ? [sources] : []).find(source => source.listenurl?.endsWith(stream.pathname))
-  const track = status === 'live' && typeof source?.title === 'string' ? source.title : ''
-  const credit = trackCredit(track ? source : null)
+  // A Shoutcast row already knows what was on air when it was fetched. Keep
+  // that for the moment before the stream's first announcement.
+  const announced = metadata.data?.title || ''
+  const track = liveTrack(announced, station, status)
+  const credit = trackCredit(track ? { title: track } : null)
   const artist = useQuery({
     queryKey: [ID, 'artist-profile', credit.artist],
     queryFn: ({ signal }) => resolveArtist(credit.artist, signal, ctx),
@@ -830,7 +884,7 @@ function Signal({ player, ctx }) {
     retry: 1, retryDelay: 3000, refetchOnWindowFocus: false
   })
   const artistUrl = credit.artist ? artist.data : null
-  const text = status === 'live' ? track || (mode === 'activity' ? t('audioOnly') : '') : t(status)
+  const text = signalText(status, track, mode === 'activity', lastError, t)
   return jsxs('div', { className: 'hermes-radio-signal', children: [
     jsx(Waveform, { player }),
     jsxs('div', { className: 'hermes-radio-track', 'data-track': Boolean(track), role: 'status', children: [
@@ -1203,7 +1257,7 @@ function RadioSettingsPage({ ctx, player }) {
 
 export {
   artistProfile, resolveArtist, trackCredit, autoplayOnLaunch, shouldAutoplay, RadioSettingsPage,
-  streamUrl, validStation, PRESETS, parseQuery, searchParams, searchStations, popularStations,
+  nowPlaying, mediaFailure, checkStream, reportFailure, streamUrl, validStation, PRESETS, createPlayer, parseQuery, searchParams, searchStations, popularStations,
   rowsToStations, transliterate, fold, searchTerms, matchScore, listRows, isHlsRow,
   shoutcastStations, tuneinStations, Stations
 }

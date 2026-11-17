@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { atom } from 'nanostores'
 import type { ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -12,10 +13,7 @@ const modules = import.meta.glob<RadioModule>('../plugins/radio/plugin.js', { ea
 const { Stations, PRESETS } = Object.values(modules)[0]
 
 const stored = [...PRESETS]
-const value = <T,>(initial: T) => {
-  let current = initial
-  return { get: () => current, set: (next: T) => { current = next } }
-}
+const value = <T,>(initial: T) => atom(initial)
 const player = {
   station: value(PRESETS[0]),
   stations: value(stored),
@@ -89,6 +87,8 @@ describe('Radio picker panel', () => {
     expect(screen.queryByText(PRESETS[0].name)).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'sourceTunein' }))
+    // TuneIn has no top list, so the row appears only once a name is typed.
+    fireEvent.change(screen.getByPlaceholderText('search'), { target: { value: 'jazz' } })
     expect(await screen.findByText('BNR TuneIn')).toBeTruthy()
     expect(screen.getByText(/1 skippedNote/)).toBeTruthy()
   })

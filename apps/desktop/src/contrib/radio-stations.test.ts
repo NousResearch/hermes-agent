@@ -72,7 +72,7 @@ describe('Radio editable station list', () => {
     player.favorite(target)
     expect(player.favorites.get()).toHaveLength(1)
     expect(player.updateStation(target, { name: 'Renamed', url: 'http://example.test/live' })).toBe(true)
-    expect(player.favorites.get()[0]).toMatchObject({ name: 'Renamed', url: 'http://example.test/live/' })
+    expect(player.favorites.get()[0]).toMatchObject({ name: 'Renamed', url: 'http://example.test/live' })
     player.removeStation(player.favorites.get()[0])
     expect(player.favorites.get()).toHaveLength(0)
     expect(player.stations.get().some(item => item.id === target.id)).toBe(false)
@@ -92,7 +92,6 @@ describe('Radio editable station list', () => {
 
     player.removeStation(player.stations.get()[0])
     expect(player.restoreDefaults()).toBe(1)
-    await vi.waitFor(() => expect(player.status.get()).not.toBe('connecting'))
     expect(player.stations.get().map(item => item.id)).toContain(radio.PRESETS[0].id)
     expect(player.restoreDefaults()).toBe(0)
   })

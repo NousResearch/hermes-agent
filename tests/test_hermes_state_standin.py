@@ -147,6 +147,11 @@ def test_writes_land_as_their_replacements_read_them(store, legacy):
     assert legacy.list_meta_prefix("") == []
 
 
+def test_append_message_still_takes_the_old_compression_lock_holder_keyword(store, legacy):
+    message_id = legacy.append_message("s1", "user", "kept", compression_lock_holder="holder-1")
+    assert store.messages.read_transcript("s1")[-1].id == message_id
+
+
 def test_clearing_a_session_ended_by_compression_deletes_its_messages(store, legacy):
     legacy.end_session("s1", "compression")
     assert legacy.clear_messages("s1") is None

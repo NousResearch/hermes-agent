@@ -412,6 +412,7 @@ class _SessionDB:
         turn_lease_holder: "Optional[str]" = None, turn_lease_ttl_seconds: "float" = 300.0,
         message_uid: "Optional[str]" = None,
     ) -> "int":
+        """``compression_lock_holder`` is accepted as the old class took it; the store takes no such argument."""
         from persistence.conversation.messages import NewMessage
 
         message = dict(
@@ -423,8 +424,8 @@ class _SessionDB:
             _compressed_summary=_compressed_summary, timestamp=timestamp, api_content=api_content,
             display_kind=display_kind, display_metadata=display_metadata, message_uid=message_uid)
         return self._store.messages.append(
-            session_id, NewMessage.from_live(message), compression_lock_holder=compression_lock_holder,
-            turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            session_id, NewMessage.from_live(message), turn_lease_holder=turn_lease_holder,
+            turn_lease_ttl_seconds=turn_lease_ttl_seconds)
 
     @_held
     def get_messages(

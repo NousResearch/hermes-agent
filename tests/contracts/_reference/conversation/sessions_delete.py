@@ -130,6 +130,17 @@ class SessionDeleteMixin:
             del workers[execution_id]
         for sid in doomed:
             sessions.pop(sid, None)
+        # Main deletes the rows' messages with them, and its session_model_usage rows cascade on the row's delete:
+        # the deleted conversation's transcript and usage leave in the same transition.
+        messages = staged_scope.get("messages", {})
+        usage = staged_scope.get("usage", {})
+        for sid in doomed:
+            messages.get("transcripts", {}).pop(sid, None)
+            usage.get("sessions", {}).pop(sid, None)
+            for name in ("routes", "route_usage", "route_last_write", "route_costs"):
+                table = usage.get(name, {})
+                for key in [k for k in table if isinstance(k, tuple) and k and k[0] == sid]:
+                    del table[key]
         # Routes whose entry points at a doomed id vanish with the row, in the same transition.
         for entries in staged_scope.get("routing", {}).values():
             for key in [k for k, entry in entries.items() if str(entry.session_id) in doomed_set]:

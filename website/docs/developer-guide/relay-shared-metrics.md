@@ -476,8 +476,10 @@ offline (no network call, no subprocess):
   Each profile's snapshot counts the group chats its gateway hosts (in its `state.db`); the root
   profile's also counts a standalone `hermes serve` backend's (in the root `shared-state.db`) that its
   gateway has not taken over, so each group chat is counted once.
-  The stores are only read, never created or given `-wal`/`-shm` files: no store reads `0`, and a store
-  that cannot be read leaves the four fields out rather than reporting a false zero.
+  The stores are only read and never created: no store reads `0`, and a store that cannot be read leaves
+  the four fields out rather than reporting a false zero.
+  This read adds no `-wal`/`-shm` files to a store no process has open; a store copied with its `-wal` but
+  not its `-shm` gains the `-shm` SQLite needs to read that `-wal`.
   A group chat created and disbanded inside the window is not counted as created.
   Room ids, names, members, link targets and message text are never read into the event.
 - `hosting` (`self_hosted`, `nous_cloud`): who hosts the install.

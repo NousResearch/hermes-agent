@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -187,6 +188,24 @@ def test_reading_a_closed_store_leaves_no_wal_or_shm_files(root_home):
 
     assert _group_chat_fields(collect_install_snapshot({}))["group_chat_count_bucket"] == "2"
     assert sorted(os.listdir(root_home)) == before
+
+
+def test_a_store_copied_with_its_wal_but_not_its_shm_still_counts_the_wal(root_home, tmp_path):
+    # A backup or restore can carry the -wal without the -shm. The read has to replay that WAL (an
+    # immutable read would miss its group chats), so SQLite adds the -shm any reader needs. The root
+    # shared-state.db is used because only the group chat read opens it.
+    live = tmp_path / "live" / "shared-state.db"
+    live.parent.mkdir()
+    hosted_rooms._connect(live).close()
+    with contextlib.closing(sqlite3.connect(live)) as writer:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        with writer:
+            _room(writer, "only-in-the-wal", created_days_ago=1)
+        assert Path(f"{live}-wal").stat().st_size > 0
+        for suffix in ("", "-wal"):
+            shutil.copy(f"{live}{suffix}", f"{root_home / 'shared-state.db'}{suffix}")
+
+    assert _group_chat_fields(collect_install_snapshot({}))["group_chat_count_bucket"] == "1"
 
 
 @pytest.mark.parametrize("name", ["home#1", "home?x=1", "home%41"])

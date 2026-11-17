@@ -132,7 +132,7 @@ def test_terminal_asks_per_command_and_session_grant_is_exact(gate_env):
 
 
 def test_dangerous_command_is_asked_once_by_the_command_guard(gate_env):
-    from tools.approval_tool_gate import pop_record
+    from tools.approval_gate.gate import pop_record
 
     target = gate_env["workspace"] / "scratch"
     target.mkdir()
@@ -190,7 +190,7 @@ def test_deny_rule_blocks_before_the_human_is_asked(gate_env):
 
 
 def test_decision_is_recorded_off_the_model_visible_result(gate_env):
-    from tools.approval_tool_gate import pop_record
+    from tools.approval_gate.gate import pop_record
 
     human = _Human("session")
     set_approval_callback(human)
@@ -297,7 +297,7 @@ def test_background_delegation_runs_synchronously_while_every_call_is_asked(gate
 
 @pytest.mark.parametrize("gate_env", ["dangerous"], indirect=True)
 def test_default_scope_keeps_background_delegation(gate_env):
-    from tools.approval_tool_gate import asks_every_call
+    from tools.approval_gate.gate import asks_every_call
 
     set_approval_callback(_Human())
     assert asks_every_call() is False

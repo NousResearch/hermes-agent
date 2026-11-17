@@ -54,7 +54,7 @@ from agent.tool_dispatch_helpers import (
     _context_pruned_argument_paths, _plan_tool_batch_segments, emit_blocked_progress, make_tool_result_message,
 )
 from session_rules.turns import _is_multimodal_tool_result, _multimodal_text_summary
-from tools.approval_tool_gate import pop_record as pop_approval_record
+from tools.approval_gate import pop_record as pop_approval_record
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (

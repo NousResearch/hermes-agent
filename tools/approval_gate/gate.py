@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 import threading
 from typing import Any, Callable, Optional
 
-from tools import approval_decisions
+from tools.approval_gate import decisions as approval_decisions
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ def _effective_workdir(args: dict, task_id: str) -> str:
 def _terminal_scope(tool_name: str, args: dict, task_id: str) -> _Scope:
     command = _str_arg(args, "command", "")
     workdir = _effective_workdir(args, task_id)
-    digest = hashlib.sha256(f"{command.strip()}\0{workdir}".encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(f"{command.strip()}\0{workdir}".encode()).hexdigest()[:16]
     return _Scope(f"terminal:cmd:{digest}", f"{command}\n(in {workdir})" if workdir else command,
                   f"this exact command in {workdir or 'the current directory'} only")
 
@@ -375,7 +375,7 @@ def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Op
         no_human_block_message=blocked, title=title,
     )
     if not result.get("approved"):
-        from tools.approval_tool_gate_preview import forget_plan
+        from tools.approval_gate.preview import forget_plan
         forget_plan(args)
         _record(tool_name, tool_call_id, {"decision": "denied", "scope": scope.grant})
         return str(result.get("message") or blocked)

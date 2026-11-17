@@ -485,7 +485,7 @@ def _dispatch_background(batch: _Batch) -> str:
     of one call shares ONE pool slot (``slot_key``), so grouping never changes capacity accounting. Falls back to
     running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
     async pool is at capacity, or when every call is put to a human (``approvals.scope: all``)."""
-    from tools.approval_tool_gate import asks_every_call
+    from tools.approval_gate import asks_every_call
     if asks_every_call():
         logger.info("delegate_task: approvals.scope is 'all'; running the batch synchronously so its prompts reach the user.")
         return _run_sync_with_note(batch, "approval_scope")

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS } from '@/lib/with-timeout'
 
-import { activeConnection, pluginSocket } from './plugins'
+import { activeConnection, pluginRestProfile, pluginSocket } from './plugins'
 
 // desktop.getConnection/getConnectionFor are IPC round-trips into the main
 // process with no timeout of their own (#93454). A wedged main-process
@@ -443,5 +443,67 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     expect(mint).toHaveBeenCalledTimes(2)
     expect(FakeSocket.all).toHaveLength(1)
     dispose()
+  })
+})
+
+// A Bot on a second connection has its own backend: a plugin showing that Bot's
+// data must reach its own plugin_api.py there, never the window's.
+describe('pluginRestProfile', () => {
+  const server = { connectionId: 'hermes-server', profile: 'default' }
+
+  const bridge = () => {
+    const api = vi.fn(async () => ({ ok: true }))
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
+
+    return api
+  }
+
+  afterEach(() => {
+    setApiRequestConnection(null)
+    setApiRequestProfile(null)
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it("asks the plugin's own namespace on the route's connection, not the window's", async () => {
+    const api = bridge()
+    setApiRequestConnection('local')
+    setApiRequestProfile('coder')
+
+    await pluginRestProfile('meter', server, '/health?profile=default', { timeoutMs: 5_000 })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'hermes-server',
+        path: '/api/plugins/meter/health?profile=default',
+        profile: 'default',
+        timeoutMs: 5_000
+      })
+    )
+  })
+
+  it('carries writes the same way', async () => {
+    const api = bridge()
+
+    await pluginRestProfile('meter', server, 'guard/answer', { body: { id: 'q1', allow: true }, method: 'POST' })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ body: { allow: true, id: 'q1' }, connectionId: 'hermes-server', method: 'POST', path: '/api/plugins/meter/guard/answer' })
+    )
+  })
+
+  it('keeps the namespace boundary', async () => {
+    const api = bridge()
+
+    await expect(pluginRestProfile('meter', server, '/../kanban/board')).rejects.toThrow('illegal path traversal')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it("refuses a route without a connection instead of falling back to the window's", async () => {
+    const api = bridge()
+
+    await expect(pluginRestProfile('meter', { connectionId: ' ', profile: 'default' }, '/health')).rejects.toThrow(
+      'route must include connectionId and profile'
+    )
+    expect(api).not.toHaveBeenCalled()
   })
 })

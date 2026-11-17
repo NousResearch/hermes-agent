@@ -245,6 +245,11 @@ model:
 check, native plugin discovery during migration, and the long-lived app-server subprocess.
 The value is a single executable path, not a shell command — no quoting or extra arguments.
 
+When any profile a gateway or `hermes serve` backend hosts selects this runtime, the host reads
+the codex native binaries (the files the npm `codex` launcher actually runs) once in a background
+thread at startup, so the first Codex turn after a reboot spawns from the OS page cache instead of
+disk. Nothing stays in Hermes' memory; failures are logged at debug level and ignored.
+
 ## Self-improvement loop (memory + skill nudges)
 
 Hermes' background self-improvement fires on counter thresholds:

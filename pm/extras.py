@@ -44,6 +44,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "discord": "discord",
     "slack": "slack_bolt",
     "matrix": ("mautrix", "vodozemac", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks"),
+    "matrix-libolm": ("mautrix", "olm", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks"),
     "dingtalk": "dingtalk_stream",
     "feishu": "lark_oapi",
     "wecom": "defusedxml",

@@ -229,12 +229,116 @@ def test_crypto_store_migration_backs_up_and_preserves_keys(tmp_path):
 def test_select_backend_prefers_vodozemac(monkeypatch):
     from plugins.platforms.matrix import crypto_backend
     monkeypatch.setattr(crypto_backend, "_selected", None)
+    monkeypatch.delenv(crypto_backend.ENV_VAR, raising=False)
     if "olm" in sys.modules and sys.modules["olm"] is not vz:
         pytest.skip("real python-olm already imported in this process")
     assert crypto_backend.select_backend() == crypto_backend.VODOZEMAC
     assert sys.modules["olm"] is vz
     assert sys.modules["_libolm"].ffi is None
     assert crypto_backend.select_backend() == crypto_backend.VODOZEMAC  # idempotent
+
+
+def _fresh_backend(monkeypatch, requested: str | None, *, vodozemac: bool, python_olm: bool):
+    """crypto_backend in a state where only the given implementations are importable."""
+    import importlib.util
+    from plugins.platforms.matrix import crypto_backend
+    monkeypatch.setattr(crypto_backend, "_selected", None)
+    if requested is None:
+        monkeypatch.delenv(crypto_backend.ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(crypto_backend.ENV_VAR, requested)
+    monkeypatch.delitem(sys.modules, "olm", raising=False)
+    monkeypatch.delitem(sys.modules, "_libolm", raising=False)
+    real_find_spec = importlib.util.find_spec
+    present = {"vodozemac": vodozemac, "olm": python_olm}
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: (
+        (real_find_spec("json") if present[name] else None) if name in present else real_find_spec(name, *a)))
+    return crypto_backend
+
+
+def test_explicit_vodozemac_never_falls_back_to_libolm(monkeypatch):
+    backend = _fresh_backend(monkeypatch, "vodozemac", vodozemac=False, python_olm=True)
+    assert backend.select_backend() == backend.NONE
+    assert "olm" not in sys.modules
+
+
+def test_explicit_libolm_never_installs_the_vodozemac_layer(monkeypatch):
+    backend = _fresh_backend(monkeypatch, "libolm", vodozemac=True, python_olm=True)
+    assert backend.select_backend() == backend.LIBOLM
+    assert "olm" not in sys.modules  # the real python-olm is imported by mautrix later, not us
+
+
+def test_auto_falls_back_to_libolm_only_without_vodozemac(monkeypatch):
+    backend = _fresh_backend(monkeypatch, None, vodozemac=False, python_olm=True)
+    assert backend.select_backend() == backend.LIBOLM
+    backend = _fresh_backend(monkeypatch, "auto", vodozemac=False, python_olm=False)
+    assert backend.select_backend() == backend.NONE
+
+
+def test_unknown_backend_selects_nothing(monkeypatch):
+    backend = _fresh_backend(monkeypatch, "olm-please", vodozemac=True, python_olm=True)
+    assert backend.select_backend() == backend.NONE
+    assert "olm" not in sys.modules
+
+
+# ------------------------------------------------------------------ fail-closed store handling
+
+
+def test_backup_failure_raises_and_leaves_no_partial_copy(tmp_path, monkeypatch):
+    pytest.importorskip("mautrix")
+    pytest.importorskip("aiosqlite")
+    from plugins.platforms.matrix import crypto_migration
+
+    db_path = tmp_path / "crypto.db"
+    _seed_libolm_store(db_path, "@hermes:example.org")
+
+    import sqlite3
+    import types
+
+    class _FailingBackup:  # a connection whose copy fails mid-way (disk full, I/O error)
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def backup(self, target, *args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(crypto_migration, "sqlite3", types.SimpleNamespace(
+        connect=lambda *a, **k: _FailingBackup(sqlite3.connect(*a, **k)), Error=sqlite3.Error))
+    with pytest.raises(crypto_migration.CryptoStoreBackupError):
+        crypto_migration.backup_if_libolm_store(db_path, (PASS,))
+    assert crypto_migration.latest_backup(db_path) is None
+
+
+def test_backup_is_never_world_readable_even_with_open_umask(tmp_path):
+    pytest.importorskip("mautrix")
+    pytest.importorskip("aiosqlite")
+    from plugins.platforms.matrix import crypto_migration
+
+    db_path = tmp_path / "crypto.db"
+    _seed_libolm_store(db_path, "@hermes:example.org")
+    old = os.umask(0)
+    try:
+        first = crypto_migration.backup_if_libolm_store(db_path, (PASS,))
+        second = crypto_migration.backup_if_libolm_store(db_path, (PASS,))  # same second: no clobber
+    finally:
+        os.umask(old)
+    assert first is not None and second is not None and first != second
+    for backup in (first, second):
+        assert stat.S_IMODE(os.stat(backup).st_mode) == 0o600
+
+
+def test_first_prekey_plaintext_expires(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(vz.time, "monotonic", lambda: clock[0])
+    vz._remember_first_plaintext("sid", b"ct", b"room key")
+    clock[0] += vz._FIRST_PLAINTEXT_TTL + 1
+    assert vz._take_first_plaintext("sid", b"ct") is None
+    vz._remember_first_plaintext("sid", b"ct", b"room key")
+    assert vz._take_first_plaintext("sid", b"ct") == b"room key"
+    assert vz._take_first_plaintext("sid", b"ct") is None  # one-shot
 
 
 # ------------------------------------------------------------------ interop with real libolm

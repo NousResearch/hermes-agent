@@ -24,6 +24,7 @@ import logging
 import os
 import sqlite3
 import time
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -57,16 +58,40 @@ def _is_vodozemac_pickle(vz_cls: Any, pickled: bytes, pickle_key: str) -> bool:
         return False
 
 
+BACKUP_INFIX = ".libolm-backup-"
+
+
+class CryptoStoreBackupError(RuntimeError):
+    """A libolm store needs a rollback copy before vodozemac writes to it, and none was written."""
+
+
+def _create_private_file(path: Path) -> Path:
+    """Create *path* empty with mode 0600 (never pre-existing), so key material is never
+    readable through the umask while it is being copied. Adds a counter on a name clash."""
+    for attempt in range(100):
+        candidate = path if attempt == 0 else path.with_name(f"{path.name}.{attempt}")
+        try:
+            os.close(os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError(f"no free backup name next to {path}")
+
+
 def backup_if_libolm_store(db_path: Path, pickle_keys: Iterable[str]) -> Path | None:
     """Copy *db_path* aside if any Olm account in it is not a vodozemac pickle under *pickle_keys*.
 
-    Synchronous and side-effect free unless a backup is written. Never raises.
+    Returns the backup, or None when there is nothing to back up (no store, or already
+    vodozemac). Raises :class:`CryptoStoreBackupError` when a backup is needed but could not be
+    written: the vodozemac layer re-pickles rows in its own format on the next save, so without
+    the copy there is no way back to libolm, and the caller must not open the store.
     """
     if not db_path.exists():
         return None
+    backup: Path | None = None
     try:
         import vodozemac
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='crypto_account'").fetchone()
             rows = conn.execute("SELECT account FROM crypto_account").fetchall() if has_table else []
@@ -75,15 +100,47 @@ def backup_if_libolm_store(db_path: Path, pickle_keys: Iterable[str]) -> Path | 
             _is_vodozemac_pickle(vodozemac.Account, row[0], key) for key in keys)]
         if not legacy:
             return None
-        backup = db_path.with_name(f"{db_path.name}.libolm-backup-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
-        with sqlite3.connect(db_path) as src, sqlite3.connect(backup) as dst:
-            src.backup(dst)  # consistent copy, includes WAL contents
-        os.chmod(backup, 0o600)
-        logger.info("Matrix: backed up libolm crypto store to %s before migrating it to vodozemac", backup)
-        return backup
+        backup = _create_private_file(db_path.with_name(
+            f"{db_path.name}{BACKUP_INFIX}{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"))
+        with closing(sqlite3.connect(db_path)) as src, closing(sqlite3.connect(backup)) as dst:
+            src.backup(dst)  # consistent copy, includes WAL contents; dst inherits 0600
     except (ImportError, OSError, sqlite3.Error) as exc:
-        logger.warning("Matrix: could not back up crypto store before vodozemac migration: %s", exc)
-        return None
+        if backup is not None:  # never leave a partial copy that looks like a rollback point
+            with suppress(OSError):
+                backup.unlink()
+        raise CryptoStoreBackupError(
+            f"could not back up the libolm crypto store before migrating it to vodozemac: {exc}") from exc
+    logger.info("Matrix: backed up libolm crypto store to %s before migrating it to vodozemac", backup)
+    return backup
+
+
+def latest_backup(db_path: Path) -> Path | None:
+    """The newest ``crypto.db.libolm-backup-*`` next to *db_path*, if any."""
+    backups = sorted(db_path.parent.glob(f"{db_path.name}{BACKUP_INFIX}*"))
+    return backups[-1] if backups else None
+
+
+async def libolm_store_problem(crypto_db: Any, account_id: str, pickle_key: str, db_path: Path) -> str | None:
+    """Why python-olm cannot open this store (it was migrated to vodozemac), or None if it can.
+
+    Checked before mautrix loads the account, so a libolm fallback on a migrated store fails
+    closed with a remedy instead of a bare unpickling error.
+    """
+    import olm  # the real python-olm: only called when crypto_backend selected libolm
+
+    row = await crypto_db.fetchrow("SELECT account FROM crypto_account WHERE account_id=$1", account_id)
+    if row is None or row["account"] is None:
+        return None  # fresh store: libolm creates its own account
+    try:
+        olm.Account.from_pickle(bytes(row["account"]), pickle_key)
+    except olm.OlmAccountError:
+        backup = latest_backup(db_path)
+        restore = (f"or stop Hermes and restore {backup} as {db_path}" if backup else
+                   "no libolm backup of it exists")
+        return ("the crypto store cannot be read by python-olm/libolm (it was migrated to "
+                "vodozemac, which is one-way). Set MATRIX_E2EE_BACKEND=vodozemac (or auto), "
+                f"{restore}")
+    return None
 
 
 async def migrate_store_to_vodozemac(crypto_db: Any, account_id: str, pickle_key: str) -> MigrationReport:

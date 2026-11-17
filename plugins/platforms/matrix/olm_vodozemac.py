@@ -45,6 +45,7 @@ import importlib.machinery
 import os
 import sys
 import threading
+import time
 import types
 from collections import OrderedDict
 from typing import Any, Optional
@@ -189,21 +190,37 @@ def _curve25519(key: _BytesLike) -> Any:
 
 # ------------------------------------------------- one-shot plaintext of a pre-key message
 
+# Decrypted to-device payloads (typically room keys) wait here only until mautrix's immediate
+# decrypt() of the same pre-key message, so entries that are never taken (that flow failed
+# between session creation and decrypt) expire instead of staying in memory for the process
+# lifetime.
 _FIRST_PLAINTEXT_MAX = 1024
-_first_plaintext: OrderedDict[tuple[str, bytes], bytes] = OrderedDict()
+_FIRST_PLAINTEXT_TTL = 60.0  # seconds
+_first_plaintext: OrderedDict[tuple[str, bytes], tuple[float, bytes]] = OrderedDict()
 _first_plaintext_lock = threading.Lock()
+
+
+def _expire_first_plaintext(now: float) -> None:
+    while _first_plaintext:
+        stored_at, _ = next(iter(_first_plaintext.values()))
+        if now - stored_at < _FIRST_PLAINTEXT_TTL and len(_first_plaintext) <= _FIRST_PLAINTEXT_MAX:
+            return
+        _first_plaintext.popitem(last=False)  # insertion order == age order
 
 
 def _remember_first_plaintext(session_id: str, ciphertext: bytes, plaintext: bytes) -> None:
     with _first_plaintext_lock:
-        _first_plaintext[(session_id, ciphertext)] = plaintext
-        while len(_first_plaintext) > _FIRST_PLAINTEXT_MAX:
-            _first_plaintext.popitem(last=False)
+        now = time.monotonic()
+        _first_plaintext[(session_id, ciphertext)] = (now, plaintext)
+        _first_plaintext.move_to_end((session_id, ciphertext))  # keep insertion order == age order
+        _expire_first_plaintext(now)
 
 
 def _take_first_plaintext(session_id: str, ciphertext: bytes) -> Optional[bytes]:
     with _first_plaintext_lock:
-        return _first_plaintext.pop((session_id, ciphertext), None)
+        _expire_first_plaintext(time.monotonic())
+        entry = _first_plaintext.pop((session_id, ciphertext), None)
+        return None if entry is None else entry[1]
 
 
 # --------------------------------------------------------------------------- utility

@@ -1084,7 +1084,12 @@ class MatrixAdapter(BasePlatformAdapter):
             _on_vodozemac = _crypto_backend.selected_backend() == _crypto_backend.VODOZEMAC
             if _on_vodozemac:  # one-way libolm -> vodozemac migration below: keep a rollback copy
                 from plugins.platforms.matrix.crypto_migration import backup_if_libolm_store
+                # Raises CryptoStoreBackupError when the copy is needed but failed: the store is
+                # then never opened, because the first vodozemac save would make it unreadable
+                # to libolm with no way back.
+                phase = "back up the crypto store for the"
                 backup_if_libolm_store(self._crypto_db_path, (_pickle_key, f"{_acct_id}:default", _acct_id))
+                phase = "create"
             crypto_db = Database.create(
                 f"sqlite:///{self._crypto_db_path}", upgrade_table=PgCryptoStore.upgrade_table)
             await crypto_db.start()
@@ -1107,6 +1112,14 @@ class MatrixAdapter(BasePlatformAdapter):
                     logger.warning("Matrix: libolm -> vodozemac crypto store migration did not "
                                    "complete (%s); it will be retried on the next start", exc,
                                    exc_info=True)
+            elif _crypto_backend.selected_backend() == _crypto_backend.LIBOLM and not _store_was_reset:
+                from plugins.platforms.matrix.crypto_migration import libolm_store_problem
+                problem = await libolm_store_problem(crypto_db, _acct_id, _pickle_key, self._crypto_db_path)
+                if problem:  # fail closed with the remedy, before mautrix touches the store
+                    phase = "open the libolm crypto store for the"
+                    await crypto_db.stop()
+                    self._crypto_db = None
+                    raise RuntimeError(problem)
             from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
             crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
             olm = OlmMachine(client, crypto_store, crypto_state)

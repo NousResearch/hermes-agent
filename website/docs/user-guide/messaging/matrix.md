@@ -377,10 +377,20 @@ E2EE runs on [vodozemac](https://github.com/matrix-org/vodozemac), the Matrix.or
 python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
-If an environment still has the legacy python-olm/libolm package but not vodozemac (it has not been re-synced since this change), Hermes falls back to libolm and logs a deprecation warning.
+`MATRIX_E2EE_BACKEND` selects the Olm/Megolm implementation:
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | vodozemac. Falls back to the legacy python-olm/libolm package only when vodozemac is missing (an environment not re-synced since this change), with a deprecation warning. |
+| `vodozemac` | vodozemac only; never falls back to libolm. |
+| `libolm` | The deprecated python-olm/libolm backend, as a temporary fallback for a vodozemac regression. Linux only: install it with `pm.sync_venv(['matrix-libolm'], explicit=True)`. libolm is unmaintained and has unfixed advisories (CVE-2024-45191, CVE-2024-45192, CVE-2024-45193). |
+
+Any other value selects no backend, so `MATRIX_E2EE_MODE=required` refuses to connect.
 
 :::info Upgrading an existing E2EE bot from libolm
-The first start on vodozemac migrates `crypto.db` in place: the Olm account (same identity keys and device), Olm sessions and every inbound Megolm session are kept, so existing rooms keep decrypting. Outbound Megolm sessions written by libolm cannot be imported and are rotated: the bot simply shares a fresh room key on its next encrypted message. Before migrating, Hermes copies the store to `crypto.db.libolm-backup-<timestamp>`. The migration is one-way; to roll back, stop the gateway, downgrade Hermes and restore that copy as `crypto.db`.
+The first start on vodozemac migrates `crypto.db` in place: the Olm account (same identity keys and device), Olm sessions and every inbound Megolm session are kept, so existing rooms keep decrypting. Outbound Megolm sessions written by libolm cannot be imported and are rotated: the bot simply shares a fresh room key on its next encrypted message. Before migrating, Hermes copies the store to `crypto.db.libolm-backup-<timestamp>` (mode `0600`; it holds the bot's private keys). If that copy cannot be written, E2EE setup stops and the store is left untouched.
+
+The migration is one-way. To go back to libolm, stop the gateway, restore the backup as `crypto.db`, and start with `MATRIX_E2EE_BACKEND=libolm`. Starting `libolm` on a migrated store without restoring refuses to connect and names the backup to restore. Messages received after the migration are only in the migrated store, so a rollback loses their keys.
 :::
 
 ### Enable E2EE

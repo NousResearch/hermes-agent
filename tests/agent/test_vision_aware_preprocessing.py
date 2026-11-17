@@ -246,3 +246,36 @@ class TestSharedImageFallbackCache:
             with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
                 _SHARED_IMAGE_FALLBACK_CACHE.clear()
 
+
+    def test_failure_is_retried_by_same_agent(self):
+        """A transient vision outage must not poison a long-lived agent's image cache."""
+        import json
+        from unittest.mock import AsyncMock
+
+        from agent.vision_message_prep import (
+            _SHARED_IMAGE_FALLBACK_CACHE,
+            _SHARED_IMAGE_FALLBACK_CACHE_LOCK,
+        )
+
+        with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+            _SHARED_IMAGE_FALLBACK_CACHE.clear()
+        try:
+            agent = _make_agent()
+            url = "https://example.invalid/retry-after-outage.png"
+            vision = AsyncMock(side_effect=[
+                RuntimeError("temporary outage"),
+                json.dumps({"analysis": "Recovered description"}),
+            ])
+
+            with patch("tools.vision_tools.vision_analyze_tool", vision):
+                failed = agent._describe_image_for_anthropic_fallback(url, "user")
+                recovered = agent._describe_image_for_anthropic_fallback(url, "user")
+                cached = agent._describe_image_for_anthropic_fallback(url, "user")
+
+            assert "Image analysis failed" in failed
+            assert "Recovered description" in recovered
+            assert cached == recovered
+            assert vision.await_count == 2
+        finally:
+            with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+                _SHARED_IMAGE_FALLBACK_CACHE.clear()

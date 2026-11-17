@@ -149,8 +149,8 @@ class VisionMessagePrepMixin:
         if vision_source and not is_data_url:
             note += f"\n[If you need a closer look, use vision_analyze with image_url: {vision_source}]"
 
-        self._anthropic_image_fallback_cache[cache_key] = note
         if description and not description.startswith("Image analysis failed"):
+            self._anthropic_image_fallback_cache[cache_key] = note
             _shared_image_fallback_put(cache_key, note)
         return note
 

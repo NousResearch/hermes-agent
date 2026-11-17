@@ -32,7 +32,7 @@
     "sha": "09326a8d0f28e0b6c7c39392fac6f18323c3fd6c",
     "path": "engine/godotinstall.mjs",
     "sha256": "0897b3ec361a1fe377dcdcaef59dc0485a734172aa6639bdc777fea27eb59c75",
-    "why": "installs the third-party Godot 4.7.2 editor (and its web export templates) only when the user asks in the game chat: the pinned godotengine release archive, checked against the release's published SHA-512 before unpacking into <data folder>/godot/<version>/; never fetches or replaces swarm-studio's own files (PR #154007)"
+    "why": "installs the third-party Godot 4.7.2 editor and its Web export templates only when the user asks in the game chat. The templates, and the editor unless Homebrew installs it on macOS, come from the pinned godotengine 4.7.2-stable release, checked for size and against the release's published SHA-512 before unpacking: the editor into <data folder>/godot/4.7.2/, and the two Web templates into Godot's own export_templates folder outside HERMES_HOME (left alone when already there). On macOS with Homebrew the editor comes from `brew install --cask godot` (Homebrew's current cask, not pinned). Never fetches or replaces swarm-studio's own files (PR #154007)"
   },
   {
     "repo": "https://github.com/Pukujan/swarm-studio",

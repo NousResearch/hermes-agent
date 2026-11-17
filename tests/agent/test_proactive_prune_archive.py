@@ -15,7 +15,7 @@ import pytest
 
 from agent.context_compressor import ContextCompressor
 from hermes_state import SessionDB
-from tools.tool_result_storage import cleanup_spillover_cache
+from tools.tool_result_storage import archive_compaction_drops, archive_pruned_originals, cleanup_spillover_cache
 
 
 @pytest.fixture
@@ -203,3 +203,19 @@ def test_a_plugin_engine_without_the_builtins_fields_still_prunes():
     msgs = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
     with patch("agent.compaction_events.publish_prune"):
         assert _proactive_tool_result_prune(agent, Engine(), msgs, 100_000) == msgs[:1]
+
+
+def test_existing_pointer_is_not_archived_again(home):
+    stub = "[old result] — full result: ~/cache/pruned/old.txt"
+    original = [{"role": "tool", "content": stub}]
+    replacement = [{"role": "tool", "content": "shorter"}]
+    rows, written, reverted = archive_pruned_originals(original, replacement, "s1")
+    assert (rows, written, reverted) == (replacement, [], 0)
+    assert not (home / "cache" / "pruned").exists()
+
+
+def test_compaction_remote_backend_keeps_plain_stubs(home, monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    original = [{"role": "tool", "content": "original" * 1000}]
+    replacement = [{"role": "tool", "content": "shorter"}]
+    assert archive_compaction_drops(original, replacement, "s1") == (replacement, [], 0)

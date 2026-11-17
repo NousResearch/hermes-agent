@@ -3,11 +3,14 @@ same cold offload a turn start on a changed route gets, before the old tool outp
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent.agent_init import _init_prompt_cache_config
 from agent.context_compressor import ContextCompressor
 from agent.prompt_cache_clock import CacheEvent, _route_key
+from agent.prompt_cache_lifecycle import get_prompt_cache_warmer
 from run_agent import AIAgent
 
 _PRIMARY = ("openrouter", "https://openrouter.ai/api/v1", "test/primary")
@@ -93,3 +96,39 @@ def test_fallback_first_request_offloads_old_tool_output():
     assert not any(m.get("role") == "tool" and len(str(m.get("content"))) >= 20_000 for m in fallback)
     assert any("full result: " in str(m.get("content")) for m in fallback if m.get("role") == "tool")
     assert fallback[-1]["role"] == "user" and "next question" in str(fallback[-1]["content"])
+
+
+def test_release_and_close_cancel_the_live_warmer():
+    agent = _agent()
+    warmer = get_prompt_cache_warmer(agent)
+    for release in (agent.release_clients, agent.close):
+        timer = MagicMock()
+        run = SimpleNamespace(cancelled=False, lock=threading.RLock(), timer=timer, warm_count=0)
+        warmer._run = run
+        release()
+        release()  # idempotent cleanup does not resurrect the timer
+        assert run.cancelled and warmer._run is None
+        timer.cancel.assert_called_once()
+
+
+def test_early_turn_exit_ends_machine_warming():
+    agent = _agent()
+    warmer = get_prompt_cache_warmer(agent)
+    result = {"final_response": "done", "messages": [], "completed": True}
+    for idle_ok in (False, True):
+        timer = MagicMock()
+        run = SimpleNamespace(cancelled=False, lock=threading.RLock(), timer=timer, warm_count=0, idle_ok=idle_ok)
+        warmer._run = run
+        with patch("agent.conversation_loop._run_conversation_turn", return_value=result):
+            agent.run_conversation("hello")
+        assert run.cancelled is not idle_ok
+        assert (warmer._run is run) is idle_ok
+        assert timer.cancel.call_count == (0 if idle_ok else 1)
+        warmer.cancel("test cleanup")
+
+
+def test_list_cache_ttl_falls_back_to_short_tier():
+    agent = SimpleNamespace(_anthropic_prompt_cache_policy=lambda: (True, False), platform="cli")
+    with patch("hermes_cli.config.load_config_readonly", return_value={"prompt_caching": {"cache_ttl": []}}):
+        _init_prompt_cache_config(agent)
+    assert agent._cache_ttl == "5m" and not agent._cache_disabled

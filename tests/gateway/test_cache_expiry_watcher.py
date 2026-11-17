@@ -204,3 +204,91 @@ async def test_a_job_queued_behind_a_summary_skips_a_key_that_new_rerouted(make_
     await _compact_and_settle(runner)
 
     assert runner.compacted == []
+
+
+@pytest.mark.asyncio
+async def test_running_chat_is_not_claimed_by_the_scan(make_runner, monkeypatch):
+    import agent.prompt_cache_lifecycle as decision
+
+    runner = make_runner({"k1": _entry("k1", "s1", _source())}, ["k1"])
+    claims = []
+    monkeypatch.setattr(decision, "claim_compaction", lambda agent: claims.append(agent) or True)
+    runner._session_state("k1").turn.agent = object()
+    assert runner._cache_expiry_due_keys() == []
+    assert claims == []
+    runner._session_state("k1").turn.agent = None
+    assert len(runner._cache_expiry_due_keys()) == 1
+    assert len(claims) == 1
+
+
+@pytest.mark.asyncio
+async def test_summary_slots_bound_parallel_work_without_dropping_queued_chats(make_runner):
+    entries = {f"k{i}": _entry(f"k{i}", f"s{i}", _source(f"c{i}")) for i in range(4)}
+    runner = make_runner(entries, list(entries))
+    release = asyncio.Event()
+
+    async def compress(source, entry, history, request, *, trigger=None):
+        runner.compacted.append(entry.session_id)
+        await release.wait()
+    runner._run_manual_compression = compress
+    try:
+        await runner._compact_idle_sessions_before_cache_expiry()
+        await async_wait_until(lambda: len(runner.compacted) >= 3, timeout=5)
+        # Give the fourth job an event-loop turn to reach the same semaphore.
+        await asyncio.sleep(0)
+        assert len(runner.compacted) == 3
+        assert len(runner._cache_expiry_jobs) == 4
+    finally:
+        release.set()
+        await asyncio.gather(*getattr(runner, "_background_tasks", ()), return_exceptions=True)
+    assert sorted(runner.compacted) == ["s0", "s1", "s2", "s3"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["already_running", "started_during_read", "short_history"])
+async def test_claimed_job_rechecks_running_state_and_minimum_history(make_runner, state):
+    entry = _entry("k1", "s1", _source())
+    runner = make_runner({"k1": entry}, ["k1"])
+    loaded = []
+
+    async def load(session_id):
+        loaded.append(session_id)
+        if state == "started_during_read":
+            runner._session_state("k1").turn.agent = object()
+        return HISTORY[:2] if state == "short_history" else list(HISTORY)
+
+    async def compress(*args, **kwargs):
+        runner.compacted.append("unexpected")
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store, load_transcript=load)
+    runner._run_manual_compression = compress
+    if state == "already_running":
+        runner._session_state("k1").turn.agent = object()
+    agent = runner._agent_cache["k1"][0]
+    await runner._compact_claimed_session("k1", entry, agent)
+    assert runner.compacted == []
+    assert loaded == ([] if state == "already_running" else ["s1"])
+
+
+@pytest.mark.asyncio
+async def test_cold_claim_offloads_instead_of_requesting_a_summary(make_runner, monkeypatch):
+    import agent.prompt_cache_lifecycle as decision
+    import agent.turn_proactive_prune as prune
+
+    entry = _entry("k1", "s1", _source())
+    runner = make_runner({"k1": entry}, ["k1"])
+    agent = runner._agent_cache["k1"][0]
+    offloads = []
+    monkeypatch.setattr(decision, "claim_compaction", lambda agent: False)
+    monkeypatch.setattr(decision, "claim_offload", lambda agent: True)
+
+    def offload(live_agent, history, session_id):
+        offloads.append((live_agent is agent, history == HISTORY, session_id))
+        return history
+
+    async def compress(*args, **kwargs):
+        runner.compacted.append("unexpected")
+    monkeypatch.setattr(prune, "offload_cold_history", offload)
+    runner._run_manual_compression = compress
+    await _compact_and_settle(runner)
+    assert offloads == [(True, True, "s1")]
+    assert runner.compacted == []

@@ -21,6 +21,7 @@ from agent import prepared_compaction as pc
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
 from tools.tool_result_storage import ARCHIVE_POINTER_SEP
 from agent.prepared_compaction import PreparedCompaction
+from agent.conversation_compression_manual import CompressRequest, compress_now
 
 _SUMMARY = "## Goal\nRead the files.\n## Progress\nRead them."
 
@@ -193,6 +194,23 @@ def test_manual_compress_now_summarizes_originals_then_archives_what_it_drops(ho
         assert files and {f.read_bytes() for f in files} <= {b.encode("utf-8") for b in originals.values()}
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("trigger", [None, "cache_expiry"])
+@pytest.mark.parametrize("flag", [None, "noop", "aborted", "refused_would_grow"])
+def test_manual_and_automatic_compression_preserve_commit_and_force_contracts(trigger, flag):
+    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": "row " * 20} for i in range(6)]
+    summary = {"headline": "Compressed", **({flag: True} if flag else {})}
+    compress = MagicMock(return_value=(history[-2:], None))
+    agent = SimpleNamespace(_compress_context=compress, compression_summary=summary,
+                            _compression_skipped_due_to_lock=False)
+
+    result = compress_now(agent, history, CompressRequest(), trigger=trigger)
+
+    assert result.status == "compressed"
+    assert result.committed is (flag is None)
+    assert compress.call_args.kwargs["force"] is (trigger is None)
+    assert compress.call_args.kwargs.get("trigger") == trigger
 
 
 def test_a_failed_archive_write_keeps_that_result_whole_and_compaction_still_commits(home, summarizer):

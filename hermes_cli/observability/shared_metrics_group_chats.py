@@ -46,6 +46,7 @@ def _read(database: Path, since: float) -> tuple[dict[str, list[int]], set[str]]
     if not database.is_file():
         return {}, set()
     # Without -wal/-shm no process has the store open; reading it immutable keeps SQLite from creating them.
+    # With either one, the WAL may hold rows, so read it normally (a copied -wal alone gains a -shm).
     in_use = any(os.path.exists(f"{database}{suffix}") for suffix in ("-wal", "-shm"))
     uri = f"{database.absolute().as_uri()}?mode=ro{'' if in_use else '&immutable=1'}"
     with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=1)) as connection:

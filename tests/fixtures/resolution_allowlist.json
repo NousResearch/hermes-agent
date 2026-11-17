@@ -444,12 +444,12 @@
     "kind": "bare_which"
   },
   {
-    "path": "agent/checkpoints/manager.py",
+    "path": "tools/checkpoint_manager.py",
     "symbol": "_init_store",
     "kind": "bare_which"
   },
   {
-    "path": "agent/checkpoints/manager.py",
+    "path": "tools/checkpoint_manager.py",
     "symbol": "_run_git",
     "kind": "bare_which"
   },

@@ -5,5 +5,6 @@ value changes. Plain dicts and no imports, because a process from an older relea
 """
 
 MOVES: dict[str, str] = {
+    "tools.checkpoint_manager": "agent.checkpoints.manager",
     "tools.plugin_guard": "hermes_cli.plugins_install_scan",
 }

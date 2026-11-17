@@ -128,6 +128,9 @@ REQUIRED_NAMES: dict[str, str] = {
     "hermes_state_common": "module",  # v0.22.7..v0.23.1: the updater reads its text, see REQUIRED_TEXT
     "model_tools": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
     "run_agent": "module",  # v0.22.7..v0.23.0: fresh-process import, hermes_cli/update_cmd_validation.py:10
+    # A process that outlives the update and built no agent before it (an editor's idle ACP server)
+    # imports this lazily when it builds its next agent.
+    "tools.checkpoint_manager": "module",  # v0.21.6..v0.23.2: agent/agent_init.py:1090@v0.23.2
     "tools.env_passthrough": "module",  # v0.22.7..v0.23.0: tools/environments/local.py:322@v0.23.0
     "tools.environments": "module",  # v0.22.7..v0.23.0: tools/environments/local_pythonpath.py:24@v0.23.0
     "tools.environments.local": "module",  # v0.21.6..v0.23.0: hermes_cli/update_cmd_posix_pause.py:527@v0.23.0

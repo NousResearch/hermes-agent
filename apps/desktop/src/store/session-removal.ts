@@ -20,8 +20,12 @@ export const $removedSessionIds = atom<Set<string>>(new Set())
  * whose target changed, without blocking unrelated ids or a later explicit
  * resume that starts after the lifecycle has settled.
  */
-export type SessionTombstoneGenerationSnapshot = ReadonlyMap<string, number>
-let tombstoneGenerations: SessionTombstoneGenerationSnapshot = new Map()
+export interface SessionTombstoneGenerationSnapshot {
+  ids: ReadonlyMap<string, number>
+  profiles: ReadonlyMap<string, ReadonlyMap<string, number>>
+}
+let tombstoneGenerations: ReadonlyMap<string, number> = new Map()
+let profileRemovalGenerations: SessionTombstoneGenerationSnapshot['profiles'] = new Map()
 
 // Direction of the LAST lifecycle edge per id: true = tombstoned (added to the
 // removal set), false = released (untombstoned). Membership alone cannot serve
@@ -75,7 +79,20 @@ function setRemovedSessionIds(next: Set<string>): void {
 
 /** Generation snapshot to compare against later (see `tombstoneLifecycleChanged`). */
 export function captureSessionTombstoneGenerations(): SessionTombstoneGenerationSnapshot {
-  return tombstoneGenerations
+  return { ids: tombstoneGenerations, profiles: profileRemovalGenerations }
+}
+
+/** A committed external deletion fences older reads only, scoped to its owner.
+ * Fresh authoritative pages may re-admit a restored ID. Do not put these IDs
+ * into the legacy ID-only optimistic overlay: another profile can own a twin. */
+export function recordProfileSessionRemovals(ids: string[], profile: string): void {
+  const generations = new Map(profileRemovalGenerations.get(profile))
+
+  for (const id of ids) {
+    generations.set(id, (generations.get(id) ?? 0) + 1)
+  }
+
+  profileRemovalGenerations = new Map(profileRemovalGenerations).set(profile, generations)
 }
 
 /** True when any id's tombstone lifecycle moved since `snapshot` (ABA-safe). */
@@ -90,7 +107,7 @@ export function tombstoneLifecycleChanged(
       return false
     }
 
-    return snapshot.get(target) !== tombstoneGenerations.get(target)
+    return snapshot.ids.get(target) !== tombstoneGenerations.get(target)
   })
 }
 
@@ -102,7 +119,8 @@ export function tombstoneLifecycleChanged(
  *  last-edge direction survive membership changes (#123685). */
 export function sessionRemovalIntersected(
   snapshot: SessionTombstoneGenerationSnapshot,
-  id: null | string | undefined
+  id: null | string | undefined,
+  profile = 'default'
 ): boolean {
   const target = id?.trim()
 
@@ -110,7 +128,13 @@ export function sessionRemovalIntersected(
     return false
   }
 
-  return snapshot.get(target) !== tombstoneGenerations.get(target) && lastRemovalEdge.get(target) === true
+  const externalRemoval =
+    snapshot.profiles.get(profile)?.get(target) !== profileRemovalGenerations.get(profile)?.get(target)
+
+  return (
+    externalRemoval ||
+    (snapshot.ids.get(target) !== tombstoneGenerations.get(target) && lastRemovalEdge.get(target) === true)
+  )
 }
 
 /** Every id the row answers to, for tombstone matching: the live id, the

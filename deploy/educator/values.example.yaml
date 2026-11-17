@@ -31,3 +31,5 @@ MONTHLY_BUDGET_USD: "100"
 PER_RUN_BUDGET_USD: "1.5"
 BUDGET_ALERT_MENTION: "<@U0EXAMPLE01>"
 RELEASE_WATCH_JOB_ID: 0123456789ab     # printed by apply_cron_jobs.py
+
+PERSONA_NAME: Example Persona          # setup value: the persona's name (SOUL.md, Slack app)

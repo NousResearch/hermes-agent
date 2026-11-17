@@ -1,0 +1,70 @@
+# Slack app manifest for the educator bot — its OWN app, separate from the
+# default bot. api.slack.com/apps → Create New App → From an app manifest →
+# YAML → paste. Replace the display name/description with the persona's.
+#
+# Based on the repo's generator (`hermes slack manifest --agent-view`,
+# hermes_cli/slack_cli.py) with these deliberate differences:
+#   + reactions:write   slack_react (floor toolset `slack`)
+#   + users:read.email  per-user identity lookups (users.info email)
+#   - commands / slash_commands   none: the default bot already registers the
+#     Hermes slash commands in this workspace; a second app with the same
+#     names makes Slack ask users which app they meant. Talk to it by mention
+#     or DM. (Add later with `hermes slack manifest --slashes-only` if wanted.)
+# slack_post_thread needs only chat:write (chat.postMessage, chat.getPermalink).
+# The veto ❌ check needs reactions:read. Socket Mode: no public URL; create an
+# app-level token with connections:write → SLACK_APP_TOKEN.
+#
+# tests/deploy/test_educator_package.py keeps this a superset of the generator.
+
+display_information:
+  name: "{{PERSONA_NAME}}"
+  description: Product education teammate — drafts release comms and proposes ideas.
+  background_color: "#1a1a2e"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: "{{PERSONA_NAME}}"
+    always_online: true
+  agent_view:
+    agent_description: Ask about release comms, the help center, or product education.
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - assistant:write
+      - channels:history
+      - channels:read
+      - chat:write
+      - files:read
+      - files:write
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - mpim:history
+      - mpim:read
+      - reactions:read
+      - reactions:write
+      - users:read
+      - users:read.email
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_context_changed
+      - app_home_opened
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+      - reaction_added
+      - reaction_removed
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

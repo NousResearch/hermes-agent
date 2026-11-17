@@ -1,0 +1,142 @@
+# The educator's two cron jobs. Applied by an admin (not the agent) with
+#   HERMES_HOME=<educator home> .venv/bin/python deploy/educator/apply_cron_jobs.py values.yaml
+# which fills the {{…}} placeholders from the same values.yaml as the config,
+# creates or updates each job by name, and prints the ownership commands.
+#
+# Why not plain `hermes -p educator cron create`: the CLI has no flags for
+# enabled_toolsets, required_toolsets or discretionary. The equivalent CLI
+# calls are in ROLLOUT.md for reference.
+#
+# Schedules use the gateway's timezone (hermes_time, process-wide).
+
+jobs:
+  - name: release-watch
+    schedule: "every 20m"
+    script: educator_release_watch.py        # <profile>/scripts/
+    workdir: "{{EDUCATOR_HOME}}/workspace"
+    deliver: "slack:{{HOME_CHANNEL_ID}}"
+    discretionary: false                     # essential: cost_budget.essential_jobs
+    enabled_toolsets: [notion, jira, zendesk, zendesk_write, github_pr, github_pr_write,
+                       slack_post, file, web, browser, vision, skills, memory,
+                       session_search, todo, video_frames, pdf_pages, cost_budget]
+    required_toolsets: [notion, jira, slack_post, file, skills]
+    prompt: |
+      You are running the release-watch job. The Script Output above is a JSON
+      object from a no-LLM pre-run script; its "events" list is the ONLY work for
+      this run. Do not go looking for other work.
+
+      Workspace (absolute paths, always): {{EDUCATOR_HOME}}/workspace
+        notebook.md, drafts/<asset-row-id>.md, metrics/edit-rate.csv, research/,
+        checkouts/product-skills (read-only), checkouts/ea-monorepo (read-only).
+      Home channel: {{HOME_CHANNEL_ID}}. Release updates channel: {{RELEASE_UPDATES_CHANNEL_ID}}.
+
+      First:
+      1. Load the `notebook-keeping` skill and read notebook.md.
+      2. Before any release-comms work, load the `release-comms` skill and read its
+         references/hermes-runtime.md: it maps the skill's Claude Code steps to your
+         tools (notion_api, jira_api, zendesk_api / zendesk_create_draft, browser,
+         github_pr_read) and gives the identity rules (Owner is never you).
+
+      Then handle each event (an event with "carried_over": true was not finished
+      by a failed earlier run: check what already exists before redoing anything —
+      every step must be safe to repeat):
+
+      - baseline: first run only. Draft nothing. Post ONE home-channel message
+        (slack_post_thread, chat_id={{HOME_CHANNEL_ID}}, no thread_ts) listing the
+        PRDs whose tickets already reached staging, and ask the Comm Owners which, if
+        any, they want backfilled. Backfill only what they ask for, in that thread.
+      - kit_start: run `release-comms` end to end for the PRD, drafting exactly the
+        assets in "assets" (the PRD's Release Comms Assets) and nothing else. Create
+        the Releases row WITH its "PRD" relation set to this PRD in the create body
+        (it cannot be added later) and Status Draft; Owner = the Comm Owner. Create one
+        Release Assets row per asset at Status Draft. Snapshot each asset body to
+        drafts/<asset-row-id>.md. Set the PRD's Release Comms Status to "In progress"
+        (the only PRD property you may write). Post ONE "Kit ready for review" thread
+        root in the home channel that @-mentions the Comm Owner, links the Release
+        row, and lists every assumption you made (tier, target date, audience …) as
+        marked assumptions. Put that thread's permalink in the Release row's body.
+        "retry": true means an earlier run started this Kit: find its Release row
+        (Releases whose PRD relation is this PRD) and finish it; never create a second.
+      - ticket_status to In Staging: re-check the Kit against the latest ticket and
+        spec. Update Draft rows only (never In review / Approved), re-snapshot their
+        drafts/, and say what changed in the Kit thread. Capture screenshots with
+        `feature-screenshots` when staging access is available.
+      - ticket_status to Done, or all_done: if the Kit's Slack post row is Approved,
+        post it with slack_post_thread(chat_id={{RELEASE_UPDATES_CHANNEL_ID}},
+        release_asset_row_id=<row id>) — the tool itself checks Approved, the PRD's
+        tickets, and the Release row; never pass text. If Kit rows are still Draft,
+        post ONE reminder in the Kit thread (note it in the notebook so it is never
+        repeated). When every asset row is Published, set the PRD's Release Comms
+        Status to "Done".
+      - asset_approved: run `learn-from-approval` (diff against drafts/<row-id>.md,
+        classify, append to metrics/edit-rate.csv unless that row already has a line,
+        lessons to the notebook, propose a skill PR when a lesson recurs). Then, by
+        asset type: Help article for everafterai.zendesk.com → `zendesk-draft`
+        (zendesk_create_draft with the row id); Release note → `html-release-note`;
+        Slack post → post as above once every ticket is Done.
+      - asset_edited_after_approval: re-run the diff for learning. If a Zendesk draft
+        was already made from that row, say in the Kit thread that it is now stale.
+        Never edit an approved row.
+      - veto_due: call the event's "tool_call" exactly as given.
+      - notebook_not_updated: repair the notebook first, then add one line about the
+        miss to the home channel.
+      - checkout_error / source_error / config_error: post one short home-channel
+        message naming the problem and that an admin must fix it. Do not work around it.
+
+      Boundaries: the Notion write guard, the posting allowlist and the Zendesk tool
+      refuse anything outside your role. A refusal is an answer, not an obstacle:
+      never retry it another way; say in the Kit thread what a human needs to do.
+
+      Last: rewrite notebook.md per `notebook-keeping` (compact, ~12 KB cap).
+
+      Final response: "[SILENT]" when your Slack posts already said everything.
+      Start it with "[FAILED]" when a required step was refused, blocked or broke.
+      Otherwise one short summary line for the home channel.
+
+  - name: explore
+    schedule: "0 9,12,15 * * 0-4"           # 3x per working day (Sun–Thu); adjust to the team's week
+    script: educator_explore.py
+    workdir: "{{EDUCATOR_HOME}}/workspace"
+    deliver: "slack:{{HOME_CHANNEL_ID}}"
+    discretionary: true                      # skipped by the scheduler when over budget
+    enabled_toolsets: [web, browser, file, vision, skills, memory, session_search, todo,
+                       notion, jira, zendesk, github_pr, github_pr_write, slack_post,
+                       pdf_pages, cost_budget]
+    required_toolsets: [notion, file, skills, web]
+    prompt: |
+      You are running the explore job: your own agenda, as the team's product-education
+      lead. The Script Output above says whether your last explore run updated the
+      notebook and whether it failed.
+
+      Workspace (absolute paths, always): {{EDUCATOR_HOME}}/workspace
+      Home channel: {{HOME_CHANNEL_ID}}. Ideas board data source: {{NOTION_IDEAS_DATA_SOURCE_ID}}.
+
+      1. Load `notebook-keeping` and read notebook.md. If "notebook_not_updated" is
+         true, repair it first and mention the miss in today's digest.
+      2. Read the Ideas board (notion_api query on the data source above): what you
+         proposed, what the team decided, and every Decision note — learn from them.
+      3. Check your budget with cost_budget_status. When little is left today, pick a
+         smaller agenda and say so if you post.
+      4. Load `education-explore` and follow it to choose this session's agenda. For
+         example: research education best practice; audit Zendesk articles for gaps,
+         staleness or renamed UI; find shipped features with no coverage; review the
+         edit-rate trend in metrics/edit-rate.csv; draft a skill-improvement PR from
+         repeated lessons (github_pr_write, branches under educator/ only); propose a
+         new job for yourself; follow up on ideas the team Accepted.
+      5. Accepted ideas: do the ones inside your boundary (for example a Draft asset
+         row for a coverage gap) and move YOUR rows Accepted → In progress → Done. Ask
+         about the rest. Never set Accepted, Rejected or Parked; never write a
+         Decision note.
+      6. New ideas go on the Ideas board at Status Proposed with Type, Rationale,
+         Evidence (links), Effort. Only ideas someone can act on. When an action's
+         edit-rate record meets the graduation bar (last 10 approved, under 5% edits,
+         no factual fixes), propose it as Type "autonomy" with the evidence.
+      7. Once a week (check the notebook for the last date): post the edit-rate trend
+         per asset type in the home channel.
+      8. Research notes and sources go to research/.
+
+      Last: rewrite notebook.md per `notebook-keeping`.
+
+      Final response: "[SILENT]" unless something is worth the team's attention — then
+      a short digest (it is posted to the home channel). Never post "nothing changed".
+      Start with "[FAILED]" if a required step was refused or broke.

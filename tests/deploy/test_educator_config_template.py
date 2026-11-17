@@ -55,7 +55,8 @@ def cfg(tmp_path, monkeypatch) -> dict:
 def test_template_is_yaml_and_values_cover_every_placeholder():
     render = _render_module()
     yaml.safe_load(_template())  # every placeholder is quoted
-    assert render.placeholders(_template()) == set(_values())
+    assert render.placeholders(_template()) <= set(_values())
+    assert render.package_placeholders() == set(_values())  # one values file fills the package
 
 
 def test_render_refuses_missing_or_unknown_values():

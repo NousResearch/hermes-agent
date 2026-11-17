@@ -134,9 +134,11 @@ export async function enablePackageDesktopHalf(packageName: string, { keepUserCh
 /** Agent-package names enabled in the profile last listed. A CLI install writes
  *  that list without opening this app, so the desktop half has to catch up. */
 let enabledAgentPackages = new Set<string>()
+let canApplyEnabledAgentPackages = () => true
 
-export function noteEnabledAgentPackages(names: Iterable<string>): void {
+export function noteEnabledAgentPackages(names: Iterable<string>, canApply = () => true): void {
   enabledAgentPackages = new Set(names)
+  canApplyEnabledAgentPackages = canApply
   void applyEnabledPackageHalves()
 }
 
@@ -144,7 +146,13 @@ export function noteEnabledAgentPackages(names: Iterable<string>): void {
  *  explicitly switched that half off. No-op until the half is inventoried;
  *  the disk scan calls this again once the row exists. */
 export async function applyEnabledPackageHalves(): Promise<void> {
-  for (const name of enabledAgentPackages) {
+  const names = enabledAgentPackages
+
+  for (const name of names) {
+    if (names !== enabledAgentPackages || !canApplyEnabledAgentPackages()) {
+      return
+    }
+
     await enablePackageDesktopHalf(name, { keepUserChoice: true })
   }
 }

@@ -208,6 +208,30 @@ describe.sequential('boot catch-up for an enabled unified package', () => {
     })
   })
 
+  it('ignores a remote list that replies after switching to local', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    await withUnifiedHalf('meter-late', 'hermes-subscription-meter', async register => {
+      const pending = loadAgentPlugins(listRequest([meter]), 'default')
+      $connection.set({ mode: 'local' } as never)
+      await pending
+      await discoverRuntimePlugins()
+
+      expect(register).not.toHaveBeenCalled()
+      expect($pluginRecords.get()['meter-late']?.status).toBe('disabled')
+    })
+  })
+
+  it('does not apply a deferred local catch-up while connected to a remote', async () => {
+    await withUnifiedHalf('meter-deferred', 'hermes-subscription-meter', async register => {
+      await loadAgentPlugins(listRequest([meter]), 'default')
+      $connection.set({ mode: 'remote' } as never)
+      await discoverRuntimePlugins()
+
+      expect(register).not.toHaveBeenCalled()
+      expect($pluginRecords.get()['meter-deferred']?.status).toBe('disabled')
+    })
+  })
+
   it('does not enable a local half from another profile list', async () => {
     $activeGatewayProfile.set('default')
 

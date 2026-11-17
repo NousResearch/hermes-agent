@@ -1,7 +1,7 @@
 name: iacg-board
 repo: https://github.com/RajaRenga/iacgenius-ce
 subdir: profiles/iacgenius/dashboard-plugins/iacg-board
-sha: af56febda3c6061a7381b4b4129fa1753eed15b8
+sha: 7ba880ee2968adbbd80b41341d49fc69797887a5
 version: "0.1.0"
 title: IaCGenius Board — mission evidence dashboard tab
 description: >-
@@ -9,15 +9,16 @@ description: >-
   version, repair attempts spent/allowed, disposition and next owner. It renders the snapshot the
   iacg-desk service writes and never invents live state; an empty state is shown until a snapshot
   exists. Disclosure — read-only; reads the desk's board.json/board.html over the local Unix socket
-  or shared data dir; registers no agent tools, hooks or middleware; makes no network calls, runs no
-  subprocess and stores nothing; no telemetry, no self-update.
+  or shared data dir; renders the board in a sandboxed iframe (allow-scripts, no allow-same-origin)
+  and accepts postMessage only from that iframe; registers no agent tools, hooks or middleware; makes
+  no network calls, runs no subprocess and stores nothing; no telemetry, no self-update.
 maintainer: RajaRenga
 tier: community
 category: desktop
-docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/af56febda3c6061a7381b4b4129fa1753eed15b8/profiles/iacgenius/dashboard-plugins/iacg-board#readme
-image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/af56febda3c6061a7381b4b4129fa1753eed15b8/docs/media/marketplace-banner.png
+docs_url: https://github.com/RajaRenga/iacgenius-ce/tree/7ba880ee2968adbbd80b41341d49fc69797887a5/profiles/iacgenius/dashboard-plugins/iacg-board#readme
+image: https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/7ba880ee2968adbbd80b41341d49fc69797887a5/docs/media/marketplace-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/af56febda3c6061a7381b4b4129fa1753eed15b8/docs/media/screens/01-board.png
+  - https://raw.githubusercontent.com/RajaRenga/iacgenius-ce/7ba880ee2968adbbd80b41341d49fc69797887a5/docs/media/screens/01-board.png
 requires_hermes: ">=0.23.1"
 platforms: [linux]
 known_issues:

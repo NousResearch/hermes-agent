@@ -62,6 +62,8 @@ class SessionAuthorities:
             raise RuntimeError('the launch session authority cannot be removed')
         self._names.pop(key, None)
         self._end_start(key)
+        from gateway.session_event_log import release_home
+        release_home(home)
         return self._by_key.pop(key, None)
 
     def _end_start(self, key) -> None:

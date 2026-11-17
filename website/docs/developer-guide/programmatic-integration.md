@@ -197,7 +197,11 @@ GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
 GET  /health, /health/detailed
+GET  /api/sessions/{id}/events    Durable numbered event log, long-poll (sessions.event_log)
 ```
+
+`GET /v1/runs/{id}` also accepts `wait_ms` (max 30000) and `status=` to long-poll a run to a
+target state (default: any terminal state); details in [API Server](../user-guide/features/api-server#session-event-log-long-poll).
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 

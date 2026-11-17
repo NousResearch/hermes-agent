@@ -1,4 +1,4 @@
-"""Prompt-cache warming (agent/prompt_cache_lifecycle.py, port of earendil-works/pi#9668).
+"""Prompt-cache warming (agent/prompt_cache_lifecycle/, port of earendil-works/pi#9668).
 
 The timer callback is invoked directly after the armed timer is cancelled, so no test sleeps.
 """
@@ -300,7 +300,7 @@ def test_a_refresh_that_misses_the_cache_stops_warming_and_says_why(priced, capl
         agent = _cc_agent(client)
         warmer = pcw.get_prompt_cache_warmer(agent)
         assert _arm(agent, _cc_request(), _RESPONSE) is None
-        with caplog.at_level(logging.INFO, logger=pcw.__name__):
+        with caplog.at_level(logging.INFO, logger=pcw.warmer.__name__):
             _fire(warmer)
         assert warmer._run is None and len(requests) == 1
     reason = warmer.status["reason"]
@@ -330,7 +330,7 @@ def test_the_spend_cap_counts_what_refreshes_were_billed_not_an_assumed_read(pri
 
 def test_every_stop_reason_is_logged_once_at_info(priced, caplog):
     agent = _agent(api_mode="codex_responses")
-    with caplog.at_level(logging.INFO, logger=pcw.__name__):
+    with caplog.at_level(logging.INFO, logger=pcw.warmer.__name__):
         for _ in range(3):
             _arm(agent, _request(), _RESPONSE)
     stops = [r for r in caplog.records if "prompt cache warming stopped" in r.getMessage()]

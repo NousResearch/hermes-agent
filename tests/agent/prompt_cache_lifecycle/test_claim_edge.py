@@ -6,11 +6,12 @@ import threading
 from types import SimpleNamespace
 
 import agent.prompt_cache_lifecycle as pcl
+import agent.prompt_cache_lifecycle.edge as edge
 
 
 def _due_warmer(monkeypatch):
     warmer = pcl.PromptCacheWarmer(SimpleNamespace(compression_enabled=True))
-    warmer._spent = pcl._Spent(due_at=0.0, tier_s=3600.0, witness=())
+    warmer._spent = edge._Spent(due_at=0.0, tier_s=3600.0, witness=())
     barrier = threading.Barrier(2, timeout=1)
 
     def slow_gate(agent):
@@ -19,9 +20,9 @@ def _due_warmer(monkeypatch):
         except threading.BrokenBarrierError:
             pass
 
-    monkeypatch.setattr(pcl, "_session_gate", slow_gate)
-    monkeypatch.setattr(pcl, "_window_gate", lambda agent, spent, now: None)
-    monkeypatch.setattr(pcl, "_grew_enough", lambda agent: True)
+    monkeypatch.setattr(edge, "_session_gate", slow_gate)
+    monkeypatch.setattr(edge, "_window_gate", lambda agent, spent, now: None)
+    monkeypatch.setattr(edge, "_grew_enough", lambda agent: True)
     return warmer, barrier
 
 

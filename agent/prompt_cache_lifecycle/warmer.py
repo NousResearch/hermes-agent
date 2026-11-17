@@ -1,43 +1,5 @@
-"""The prompt-cache lifecycle: one controller per chat, driven by the shared prompt-cache clock.
-
-When a chat's cache is about to expire the controller makes ONE decision, in this order:
-
-1. WARM: re-send the last request with a tiny output cap at 5/6 of the entry's TTL (port of
-   earendil-works/pi#9668): one cache READ keeps the whole prefix warm for another TTL. While a tool
-   call runs, keep-alives continue until it returns, uncounted, bounded only by money: one tool wait's
-   keep-alives together cost no more than the rewrite they prevent. While a chat a person types into
-   is idle, up to :data:`WARM_BUDGET` per USER message. Machine-paced sessions (subagents, cron,
-   one-shots, /bg, /btw, the API server) warm only while a tool runs. The first keep-alive that misses
-   (comes back mostly written, not read) ends warming for the rest of the session on that route, and
-   step 2 or 3 is decided right then.
-2. COMPACT: once the budget is spent, an idle human chat compacts IF its window is at least
-   :data:`MIN_COMPACT_WINDOW_SECONDS` (a 1h or 30m tier, never a 5m one), its context is at least half
-   of the compaction threshold, and it grew since its last compaction; at most one compaction per
-   idle stretch. The summary is a fresh auxiliary request, so whether the old prefix is still warm
-   does not change its cost and is not checked. Nothing is sent after it until the next user message.
-   The surface that owns the chat (CLI input loop, TUI ticker, gateway watcher) polls
-   ``PromptCacheWarmer.claim_edge`` and runs the action it returns through the normal pipeline. A
-   budget ends at whichever comes first: its keep-alives, or the owner releasing the agent (gateway
-   idle/LRU eviction, TUI idle reap); at release the owner asks ``claim_edge(releasing=True)`` and acts
-   on the answer first.
-3. EXPIRE + OFFLOAD: otherwise the entry dies, and ``claim_edge`` answers ``"offload"``: the owner
-   offloads old tool output right then (the same cold offload as a return after expiry), so the chat is
-   already small when the person comes back. A release past the window offloads before it releases.
-4. COLD RETURN lives in ``agent.turn_proactive_prune``: the next request after a proven or declared
-   expiry, or on a new route, offloads old tool results first.
-
-An unknown or assumed clock means nothing acts. A keep-alive is sent only when its read costs less
-than the rewrite it prevents, the budget's keep-alives together cost no more than one rewrite, the
-cache prices are known, and the cached prefix clears the smallest cacheable size. A keep-alive is
-bound to the prompt and route it replays (``prompt_cache_clock.context_witness``), admitted under the
-lock ``cancel`` takes, and fires the auxiliary call hooks (``aux_task="cache_warm"``). Every stop
-reason is logged at INFO (once per change).
-
-Requests are replayed on the Anthropic Messages wire and on the Chat Completions wire (Nous Portal,
-OpenRouter and other gateways): Claude by its ``cache_control`` markers, every other model as an
-OpenAI-spec automatic cache the clock declares at 30 minutes, renewed by a read. A request whose
-thinking is budget-based is skipped because the replay's small output cap would change ``budget_tokens``.
-"""
+"""The per-chat controller: keep-alives on the shared prompt-cache clock (per-user-turn budget, tool-wait
+warming, the first-miss stop), the cache-edge claim, and the agent-facing seams."""
 
 from __future__ import annotations
 
@@ -45,14 +7,32 @@ import contextlib
 import contextvars
 import copy
 import logging
-import re
 import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import asdict, dataclass, field, replace
-from decimal import Decimal
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Optional
+
+from agent.prompt_cache_lifecycle.economics import (
+    CacheWarmingDecision,
+    evaluate_economics,
+)
+from agent.prompt_cache_lifecycle.edge import (
+    EdgeDecision,
+    _compaction_reason,
+    _offload_reason,
+    _Spent,
+    human_paced,
+)
+from agent.prompt_cache_lifecycle.replay import (
+    WARMABLE_API_MODES,
+    bounded_chat_replay,
+    has_cache_markers,
+    is_replayable,
+    replay_cap_honoured,
+    replay_output_cap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,26 +41,8 @@ logger = logging.getLogger(__name__)
 WARM_BUDGET = 3
 #: Why a session warms no more after a keep-alive missed on its route.
 WARMING_DISABLED = "prompt cache warming disabled for session: keep-alive missed"
-#: No entry exists below this prefix: the smallest documented minimum (Anthropic 1,024 for Sonnet/Opus,
-#: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching ; OpenAI 1,024,
-#: https://developers.openai.com/api/docs/guides/prompt-caching ; Qwen 1,024,
-#: https://www.alibabacloud.com/help/en/model-studio/context-cache).
-MIN_CACHEABLE_PREFIX_TOKENS = 1024
-#: Shortest cache window a chat is compacted before: below it, ordinary pauses outlast the window.
-MIN_COMPACT_WINDOW_SECONDS = 30 * 60
-#: A chat is compacted only once its context is at least this share of the compaction threshold.
-COMPACT_CONTEXT_FRACTION = 0.5
-#: How often the surface owners poll ``PromptCacheWarmer.claim_edge``.
-CHECK_INTERVAL_SECONDS = 30.0
-#: Telemetry trigger name for cache-edge compactions.
-TRIGGER = "cache_expiry"
-#: Wires the warmer can replay a request on.
-WARMABLE_API_MODES = frozenset({"anthropic_messages", "chat_completions"})
 #: Replays are one HTTP round trip; never let a hung socket pin the timer thread.
 WARM_REQUEST_TIMEOUT_S = 60.0
-
-
-_OPENAI_REASONING_MODEL = re.compile(r"(^|/)(gpt-[5-9]|o[1-9])")
 
 
 def cache_warming_delay_s(ttl_s: float) -> Optional[float]:
@@ -128,155 +90,6 @@ def learned_window(agent: Any, window: tuple[float, float], marked: bool
         return None, rule
     life = min(float(rule.split(":", 1)[1]), tier_s)
     return (deadline - (tier_s - life), life), rule
-
-
-def has_cache_markers(api_kwargs: dict[str, Any]) -> bool:
-    """True when the request carries at least one ``cache_control`` marker (system, tools or
-    messages): Anthropic spec. Without one the route caches automatically (OpenAI spec)."""
-
-    def _walk(node: Any) -> bool:
-        if isinstance(node, dict):
-            if "cache_control" in node:
-                return True
-            return any(_walk(v) for v in node.values())
-        if isinstance(node, list):
-            return any(_walk(v) for v in node)
-        return False
-
-    return any(_walk(api_kwargs.get(k)) for k in ("system", "tools", "messages"))
-
-
-def is_replayable(api_kwargs: dict[str, Any]) -> bool:
-    """Whether replaying with the small output cap (:func:`replay_output_cap`) leaves the cache entry untouched.
-
-    Budget-based thinking (``{"type": "enabled", "budget_tokens": N}``) requires
-    ``max_tokens > budget_tokens`` and Anthropic keys the message cache on the budget, so the
-    replay is both rejected and useless. Adaptive thinking and no thinking replay fine.
-    """
-    thinking = api_kwargs.get("thinking")
-    if isinstance(thinking, dict) and thinking.get("type") == "enabled" and "budget_tokens" in thinking:
-        return False
-    # Chat Completions gateways turn ``reasoning`` into a thinking budget for Claude models that
-    # predate adaptive thinking, so a bounded replay would change (or be refused for) that budget.
-    reasoning = (api_kwargs.get("extra_body") or {}).get("reasoning")
-    model = str(api_kwargs.get("model") or "")
-    if ("claude" in model.lower() and isinstance(reasoning, dict) and reasoning.get("enabled", True)
-            and reasoning.get("effort") != "none"):
-        from agent.anthropic_adapter import _supports_adaptive_thinking
-
-        return _supports_adaptive_thinking(model)
-    return True
-
-
-def replay_output_cap(model: str) -> int:
-    """The smallest output cap the replay may carry: OpenAI's GPT-5 family and o-series refuse an
-    output cap below 16 (``max_output_tokens`` minimum, also behind Chat Completions gateways that
-    translate to Responses: Nous Portal answers 400 "Expected a value >= 16" to a cap of 1)."""
-    return 16 if _OPENAI_REASONING_MODEL.search((model or "").lower()) else 1
-
-
-#: ``extra_body`` keys that raise the output cap past ``max_tokens`` (Gemini's long-decode budget, or a
-#: gateway's own cap field merged into the body): output-only, so the replay drops them.
-_EXTRA_BODY_OUTPUT_CAPS = ("max_tokens", "max_completion_tokens", "max_output_tokens")
-
-
-def bounded_chat_replay(api_kwargs: dict[str, Any], model: str) -> dict[str, Any]:
-    """The Chat Completions keep-alive: the same prompt with the smallest output cap ``model`` accepts
-    (:func:`replay_output_cap`), not streamed, and no ``extra_body`` field that could lift that cap."""
-    kwargs = {k: v for k, v in api_kwargs.items() if k not in ("stream", "stream_options")}
-    kwargs["max_completion_tokens" if "max_completion_tokens" in kwargs else "max_tokens"] = replay_output_cap(model)
-    extra = kwargs.get("extra_body")
-    if isinstance(extra, dict) and any(k in extra for k in _EXTRA_BODY_OUTPUT_CAPS):
-        kwargs["extra_body"] = {k: v for k, v in extra.items() if k not in _EXTRA_BODY_OUTPUT_CAPS}
-    return kwargs
-
-
-def _sdk_client_types(api_mode: str) -> tuple[type, ...]:
-    """The SDK clients that send a request's kwargs as given on ``api_mode``'s wire."""
-    if api_mode == "chat_completions":
-        from openai import OpenAI
-
-        return (OpenAI,)
-    try:
-        import anthropic
-    except ImportError:  # no SDK installed: no Anthropic client can exist either
-        return ()
-    return (anthropic.Anthropic, anthropic.AnthropicBedrock, anthropic.AnthropicVertex)
-
-
-def replay_cap_honoured(client: Any, api_kwargs: dict[str, Any], model: str, api_mode: str) -> bool:
-    """Whether ``client`` sends the bounded replay's output cap as given, so a keep-alive costs at most
-    that many output tokens. The OpenAI and Anthropic SDKs send the kwargs as they are. Any other client
-    must report the cap it would really send through ``effective_output_cap(**kwargs)``: the native
-    Gemini clients translate to another wire and lift the cap to 65,535 tokens when thinking is on. A
-    client that reports nothing (ACP subprocess clients, an unknown plugin client) or would raise the
-    cap is never warmed."""
-    replay = bounded_chat_replay(api_kwargs, model) if api_mode == "chat_completions" else {**api_kwargs, "max_tokens": 1}
-    cap = replay.get("max_completion_tokens", replay.get("max_tokens"))
-    effective = getattr(client, "effective_output_cap", None)
-    if callable(effective):
-        return effective(**replay) <= cap
-    return isinstance(client, _sdk_client_types(api_mode))
-
-
-@dataclass(frozen=True)
-class CacheWarmingDecision:
-    """Inputs and outcome of one warm-or-stop decision."""
-
-    warm_cost: float
-    miss_cost: float
-    expected_savings: float
-    economics_available: bool
-    action: str  # "warm" | "stop"
-    within_miss: bool = True
-
-    @property
-    def stop_reason(self) -> str:
-        if not self.economics_available:
-            return "cache economics unavailable"
-        if not self.within_miss:
-            return "refreshes would cost more than the cache write they prevent"
-        return "a refresh would cost more than the cache write it prevents"
-
-
-def _per_token(rate: Optional[Decimal]) -> float:
-    return float(rate) / 1_000_000 if rate is not None else 0.0
-
-
-def evaluate_economics(
-    pricing: Any, cached_tokens: int, uncached_tokens: int = 0, *,
-    spent_usd: float = 0.0, observed_warm_usd: float = 0.0, output_tokens: int = 1,
-) -> CacheWarmingDecision:
-    """Price one refresh against the miss it prevents using a ``PricingEntry``-shaped object
-    (``input/output/cache_read/cache_write_cost_per_million``).
-
-    ``cached_tokens`` is the marked prefix the entry holds (read on a refresh, re-written on a
-    miss); ``uncached_tokens`` is the tail past the last marker, billed at the input rate either
-    way, so it adds to the refresh's cost and nothing to the miss it prevents. A refresh is
-    reserved at no less than ``observed_warm_usd`` (what the last one was actually billed), and
-    ``spent_usd`` (what the run's refreshes were billed so far) plus that reservation may not
-    exceed the miss: past it, warming is dearer than letting the entry expire once. There is no
-    absolute dollar floor: a cheap route warms whenever the read is cheaper than the rewrite; a prefix
-    below :data:`MIN_CACHEABLE_PREFIX_TOKENS` has no entry to keep."""
-    read = _per_token(getattr(pricing, "cache_read_cost_per_million", None))
-    write = _per_token(getattr(pricing, "cache_write_cost_per_million", None))
-    inp = _per_token(getattr(pricing, "input_cost_per_million", None))
-    out = _per_token(getattr(pricing, "output_cost_per_million", None))
-    fee = float(getattr(pricing, "request_cost", None) or 0)  # a per-request fee the refresh pays on top
-    tail_cost = uncached_tokens * inp
-    hit_cost = cached_tokens * read
-    miss_full = cached_tokens * (write if write > 0 else inp)
-    warm_cost = max(hit_cost + tail_cost + output_tokens * out + fee, observed_warm_usd)
-    miss_cost = max(0.0, miss_full - hit_cost)
-    economics_available = cached_tokens > 0 and (hit_cost > 0 or miss_full > 0)
-    expected = miss_cost - warm_cost
-    within_miss = spent_usd + warm_cost <= miss_cost
-    economics_available = economics_available and cached_tokens >= MIN_CACHEABLE_PREFIX_TOKENS
-    action = "warm" if economics_available and within_miss and expected > 0 else "stop"
-    return CacheWarmingDecision(
-        warm_cost=warm_cost, miss_cost=miss_cost, expected_savings=expected,
-        economics_available=economics_available, action=action, within_miss=within_miss,
-    )
 
 
 @dataclass
@@ -335,25 +148,6 @@ class _Budget:
     last_warm_usd: float = 0.0
     #: Set when the budget ended (keep-alives spent, or a miss): no more keep-alives this user turn.
     ended: bool = False
-
-
-@dataclass(frozen=True)
-class EdgeDecision:
-    """What the cache edge calls for now: ``action`` is ``"compact"`` (step 2), ``"offload"`` (step 3)
-    or ``None``; ``compact`` / ``offload`` say why each step is or is not due (``"due"`` when it is)."""
-
-    action: Optional[str]
-    compact: str
-    offload: str
-
-
-@dataclass(frozen=True)
-class _Spent:
-    """A warm budget that ran out with the entry still warm: the moment step 2 decides."""
-
-    due_at: float  # when the next keep-alive would have gone out
-    tier_s: float
-    witness: tuple
 
 
 class PromptCacheWarmer:
@@ -995,140 +789,6 @@ class PromptCacheWarmer:
 
     def _prefix(self) -> str:
         return getattr(self.agent, "log_prefix", "") or ""
-
-
-# -- step 2: the cache-edge compaction decision ---------------------------------------------------
-
-def human_paced(agent: Any) -> bool:
-    """A chat a person types into (CLI, TUI, Desktop, messaging). Subagents, side agents (/bg),
-    forks (/btw) and machine-paced sources (cron, one-shots, the API server, ...) are not."""
-    from agent.prompt_caching import MACHINE_PACED_SOURCES
-    from agent.session_source import session_source_for
-
-    if int(getattr(agent, "_delegate_depth", 0) or 0) > 0 or getattr(agent, "side_agent", False) is True:
-        return False
-    if getattr(agent, "_skip_prompt_cache_warming", False):
-        return False
-    return session_source_for(getattr(agent, "platform", None)) not in MACHINE_PACED_SOURCES
-
-
-def _context_tokens(agent: Any) -> int:
-    tokens = getattr(getattr(agent, "context_compressor", None), "last_prompt_tokens", 0)
-    return tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else 0
-
-
-def _compressor_blocked(agent: Any) -> Optional[str]:
-    compressor = getattr(agent, "context_compressor", None)
-    if compressor is None:
-        return "no_compressor"
-    if getattr(compressor, "awaiting_real_usage_after_compression", False) is True:
-        return "awaiting_usage"
-    cooldown = getattr(compressor, "get_active_compression_failure_cooldown", None)
-    if callable(cooldown) and cooldown():
-        return "cooldown"
-    return None
-
-
-def _rough_tokens(agent: Any, messages: Optional[list] = None) -> int:
-    from agent.conversation_compression_manual import estimate_request_tokens
-
-    return estimate_request_tokens(agent, list(getattr(agent, "_session_messages", None) or ())
-                                   if messages is None else messages)
-
-
-def _compaction_baseline(agent: Any) -> int:
-    """Rough size the last compaction left: the compressor's own figure or, on an agent rebuilt since
-    (the gateway evicts after compacting), the transcript through its newest summary handoff plus
-    the tail budget kept verbatim after it. 0 when the session never compacted."""
-    compressor = agent.context_compressor
-    last = getattr(compressor, "last_compression_rough_tokens", 0)
-    if isinstance(last, int) and not isinstance(last, bool) and last > 0:
-        return last
-    messages = list(getattr(agent, "_session_messages", None) or ())
-    is_summary = getattr(compressor, "_is_context_summary_message", None)
-    handoff = next((i for i in range(len(messages) - 1, -1, -1) if callable(is_summary) and is_summary(messages[i])), None)
-    if handoff is None:
-        return 0
-    kept_tail = getattr(compressor, "tail_token_budget", 0)
-    return _rough_tokens(agent, messages[:handoff + 1]) + (kept_tail if isinstance(kept_tail, int) else 0)
-
-
-def _grew_enough(agent: Any) -> bool:
-    """Growth guard: a chat that stays large after compacting must gain a floor's worth of new
-    content (the compressor's post-compaction target) before it is summarised again."""
-    compressor = agent.context_compressor
-    try:
-        floor = int(compressor.threshold_tokens * compressor.summary_target_ratio)
-    except (AttributeError, TypeError, ValueError):
-        floor = 0
-    baseline = _compaction_baseline(agent)
-    return baseline <= 0 or _rough_tokens(agent) > baseline + floor
-
-
-def _session_gate(agent: Any) -> Optional[str]:
-    """Why *agent*'s chat is never compacted at the cache edge, or None (cheap checks only)."""
-    if agent is None or not getattr(agent, "compression_enabled", False):
-        return "disabled"
-    if getattr(agent, "api_mode", None) == "codex_app_server":
-        return "codex_app_server"
-    if not human_paced(agent):
-        return "machine_paced"
-    threshold = getattr(getattr(agent, "context_compressor", None), "threshold_tokens", 0) or 0
-    if _context_tokens(agent) < COMPACT_CONTEXT_FRACTION * threshold or threshold <= 0:
-        return "small_context"
-    return _compressor_blocked(agent)
-
-
-def _window_gate(agent: Any, spent: _Spent, now: float) -> Optional[str]:
-    """Why the spent budget's window does not compact now, or None."""
-    from agent.prompt_cache_clock import DECLARED, PROVEN, cache_window, context_witness
-
-    if spent.tier_s < MIN_COMPACT_WINDOW_SECONDS:
-        return f"short_window:{int(spent.tier_s)}s"
-    if now < spent.due_at:
-        return "not_yet"
-    window = cache_window(agent)
-    if window is None or window.confidence not in (PROVEN, DECLARED):
-        return "window_not_proven"
-    # No warmth check: the summary is a fresh auxiliary request, not a replay of the cached prefix, so
-    # a cold prefix costs it nothing extra (and the gateway's 300 s housekeeping lands past the 5/6 mark).
-    if context_witness(agent) != spent.witness:
-        return "context_changed"
-    return None
-
-
-def _compaction_reason(agent: Any, warmer: PromptCacheWarmer, releasing: bool, now: float) -> str:
-    """Why step 2 does not run now (``"due"`` when it does). Caller holds ``warmer._lock``.
-
-    Due only when this chat's warm budget is over (spent or missed; at a release, a live budget ends
-    now) on a proven/declared window of at least 30 minutes, its context is at least half the
-    compaction threshold and grew since the last compaction, and no compaction ran this stretch."""
-    spent, run = warmer._spent, warmer._run
-    if spent is None and releasing and run is not None:
-        spent = _Spent(now, run.ttl_s, run.witness)
-    if spent is None:
-        return "compacted_this_stretch" if warmer._compacted else "budget_not_spent"
-    if releasing:
-        spent = replace(spent, due_at=min(spent.due_at, now))
-    reason = _session_gate(agent) or _window_gate(agent, spent, now)
-    if reason is None and not _grew_enough(agent):  # last: the estimate walks the transcript
-        reason = "no_growth"
-    return reason or "due"
-
-
-def _offload_reason(agent: Any, warmer: PromptCacheWarmer, now: float) -> str:
-    """Why step 3's offload does not run now (``"due"`` when it does): the chat is idle and its cache
-    is over (past the clock's proven/declared end, or its route changed). Once per stretch; the cold
-    prune applies its own gates (protected tail, >= 16k reclaim). Caller holds ``warmer._lock``."""
-    from agent.prompt_cache_clock import prompt_cache_is_cold
-
-    if warmer._offloaded:
-        return "offloaded_this_stretch"
-    if warmer._run is not None:
-        return "still_warming"
-    if not getattr(agent, "compression_enabled", False):
-        return "disabled"
-    return "due" if prompt_cache_is_cold(agent, now=now) else "not_cold"
 
 
 # -- agent-facing seams (each a no-op when nothing is armed) ---------------------------------------

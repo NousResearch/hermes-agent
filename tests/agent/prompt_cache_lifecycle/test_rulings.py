@@ -68,7 +68,7 @@ def _setup(monkeypatch, tmp_path):
     entry = PricingEntry(**{k: Decimal(str(v)) for k, v in vars(_OPUS).items()}, source="official_docs_snapshot")
     monkeypatch.setattr("agent.usage_pricing.get_pricing_entry", lambda *a, **k: entry)
     monkeypatch.setattr(pcl.PromptCacheWarmer, "_pricing", lambda self: _OPUS)
-    monkeypatch.setattr(pcl.threading, "Timer", _InertTimer)
+    monkeypatch.setattr(pcl.warmer.threading, "Timer", _InertTimer)
 
 
 def _chat(client=None, **over):

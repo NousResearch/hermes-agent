@@ -53,7 +53,7 @@ def _spend_budget(agent, *, due_at=_SENT + 54 * 60):
 
     window = cache_window(agent)
     warmer = pcl.get_prompt_cache_warmer(agent)
-    warmer._spent = pcl._Spent(due_at, TTL_SECONDS.get(window.tier or "", 0), context_witness(agent))
+    warmer._spent = pcl.edge._Spent(due_at, TTL_SECONDS.get(window.tier or "", 0), context_witness(agent))
     return agent
 
 

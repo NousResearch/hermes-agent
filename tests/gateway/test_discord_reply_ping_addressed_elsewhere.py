@@ -83,3 +83,12 @@ def test_reply_tagging_someone_in_a_bot_thread_keeps_the_thread_exemption(monkey
     msg = _reply_to_bot(f"<@{OTHER_USER_ID}> see this", extra_mentions=[other])
     msg.channel = channel
     assert _admit(adapter, msg) is True
+
+def test_reply_ping_requires_resolved_other_user_mention(monkeypatch):
+    monkeypatch.delenv("DISCORD_IGNORE_NO_MENTION", raising=False)
+    other = SimpleNamespace(id=OTHER_USER_ID, bot=False)
+    actual_ping = _reply_to_bot(f"<@{OTHER_USER_ID}> please review", extra_mentions=[other])
+    # Discord includes the reply-pinged bot, but not code literals, in message.mentions.
+    literal = _reply_to_bot(f"Can you explain `<@{OTHER_USER_ID}>` syntax?")
+    assert _admit(_adapter(), actual_ping) is False
+    assert _admit(_adapter(), literal) is True

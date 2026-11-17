@@ -5030,8 +5030,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         handles instead: replying to the bot's post to say "@Alice, see this" is meant for Alice."""
         if not self._client or not self._client.user or self._self_is_raw_mentioned(message):
             return False
-        own_id = str(self._client.user.id)
-        return bool(self._raw_mentioned_user_ids(message) - {own_id})
+        other_ids = self._raw_mentioned_user_ids(message) - {str(self._client.user.id)}
+        # A literal user mention in inline code is not a resolved Discord mention.
+        return any(str(user.id) in other_ids for user in getattr(message, "mentions", ()))
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
         """True only for a literal ``<@bot>`` token: reply-pings add us to ``message.mentions``

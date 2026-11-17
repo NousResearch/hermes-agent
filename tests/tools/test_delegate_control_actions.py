@@ -123,6 +123,28 @@ def test_list_shows_only_own_children():
 
 
 
+def test_list_shows_minutes_without_edit_until_the_first_edit():
+    import time
+
+    from tools.delegate_tool_child_run import _edit_tracking
+
+    parent = _StubParent()
+    _register("sid-ctl-edit", _StubChild(parent), started_at=time.time() - 600)
+    callback = _edit_tracking(None, "sid-ctl-edit")
+    try:
+        callback("tool.started", "read_file", "x", {})
+        entry = json.loads(_handle_control_action("list", None, None, parent))["subagents"][0]
+        assert entry["first_edit_at"] is None and entry["minutes_without_edit"] >= 10.0
+
+        before = time.time()
+        callback("tool.started", "patch", "x", {})
+        callback("tool.started", "write_file", "y", {})
+        entry = json.loads(_handle_control_action("list", None, None, parent))["subagents"][0]
+        assert entry["minutes_without_edit"] is None and before <= entry["first_edit_at"] <= time.time()
+    finally:
+        _unregister_subagent("sid-ctl-edit")
+
+
 # ---------------------------------------------------------------------------
 # action='steer'
 # ---------------------------------------------------------------------------

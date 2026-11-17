@@ -48,6 +48,34 @@ def is_spawn_paused() -> bool:
     with _spawn_pause_lock:
         return _spawn_paused
 
+def note_child_tool_started(subagent_id: str, tool_name: str, tool_count: int) -> None:
+    """Record a live child's running tool count and last tool (display relay)."""
+    with _active_subagents_lock:
+        rec = _active_subagents.get(subagent_id)
+        if rec is not None:
+            rec["tool_count"] = tool_count
+            rec["last_tool"] = tool_name
+
+
+def note_child_edit(subagent_id: str, tool_name: str) -> None:
+    """Stamp ``first_edit_at`` on a live child's first file-editing tool call; action='list' turns its absence into
+    minutes without an edit, so a parent can steer a child still exploring."""
+    from agent.tool_result_classification import FILE_MUTATING_TOOL_NAMES
+    if tool_name not in FILE_MUTATING_TOOL_NAMES:
+        return
+    with _active_subagents_lock:
+        rec = _active_subagents.get(subagent_id)
+        if rec is not None and rec.get("first_edit_at") is None:
+            rec["first_edit_at"] = time.time()
+
+
+def _edit_progress(record: dict[str, Any], now: float) -> dict[str, Any]:
+    """``first_edit_at`` (epoch seconds or None) and ``minutes_without_edit`` (None once the child edited)."""
+    first_edit, started = record.get("first_edit_at"), record.get("started_at")
+    idle = None if first_edit is not None or not isinstance(started, (int, float)) else round((now - started) / 60, 1)
+    return {"first_edit_at": first_edit, "minutes_without_edit": idle}
+
+
 def _register_subagent(record: dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
@@ -283,6 +311,7 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
     with _active_subagents_lock:
         records = list(_active_subagents.values())
     entries = []
+    now = time.time()
     for r in records:
         if not _owns_subagent_record(r, parent_agent):
             continue
@@ -293,7 +322,8 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
             "goal": r.get("goal"),
             "model": r.get("model"),
             "status": r.get("status"),
-            "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
+            "running_seconds": round(now - started, 1) if isinstance(started, (int, float)) else None,
+            **_edit_progress(r, now),
             "accepting_steer": bool(r.get("accepting_steer", False)),
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
         })

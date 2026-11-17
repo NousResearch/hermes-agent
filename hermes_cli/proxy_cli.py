@@ -17,6 +17,9 @@ from agent.proxy_sources import iron_proxy as ip
 from agent.redact import mask_secret
 from hermes_cli._secrets_common import console_safe
 from hermes_cli.config import load_config, load_env, save_config
+from tools.environments.docker import find_docker
+from tools.environments.docker_egress_network import (
+    ensure_internal_network, existing_internal_gateway, internal_network_name)
 
 
 def register_cli(parent_parser: argparse.ArgumentParser) -> None:
@@ -255,6 +258,11 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
         upstream_deny_cidrs=proxy_cfg.get("upstream_deny_cidrs"),
     )
     cfg_path = ip.write_proxy_config(iron_cfg)
+    try:
+        _sync_tunnel_bind(proxy_cfg, console)
+    except RuntimeError as exc:
+        console.print(f"  [red]✗ {console_safe(str(exc))}[/red]")
+        return None
     mappings_path = ip.write_mappings(mappings)
     # The generated config enables a loopback management listener (used by ``egress reload``);
     # the daemon requires its bearer key env var to be non-empty at startup, so mint it now.
@@ -388,6 +396,11 @@ def cmd_start(args: argparse.Namespace) -> int:
                 "project, or switch back via `hermes egress setup --no-bitwarden`.",
             )
     try:
+        _sync_tunnel_bind(proxy_cfg, console)
+    except RuntimeError as exc:
+        return _refuse(console, console_safe(str(exc)), "Fix the Docker network or set "
+                       "`proxy.docker_internal_network: false`.")
+    try:
         status = ip.start_proxy(
             install_if_missing=bool(proxy_cfg.get("auto_install", True)),
             refresh_secrets_from_bitwarden=refresh_bw,
@@ -404,6 +417,38 @@ def cmd_start(args: argparse.Namespace) -> int:
         f"[green]✓[/green] iron-proxy running  pid={status.pid}  port={status.tunnel_port}  {listening}"
     )
     return 0
+
+
+def _sync_tunnel_bind(proxy_cfg: dict, console: Console) -> None:
+    """Point proxy.yaml's listeners at the right host before the daemon starts.
+
+    ``proxy.docker_internal_network`` on: bind the profile's internal network gateway (created
+    here if missing; raises when it cannot be verified internal). Off: if a previous run left
+    the bind on that gateway, restore the default bridge/loopback bind so the default-network
+    sandbox can reach the proxy again."""
+    cfg_path = ip._proxy_state_dir() / "proxy.yaml"
+    if (yaml := ip._yaml()) is None or not cfg_path.exists():
+        return
+    data = yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig")) or {}
+    listeners = data.get("proxy") or {}
+    current = ip._parse_listen(listeners.get("tunnel_listen") or listeners.get("http_listen") or "")
+    if current is None:
+        return
+    host, port = current
+    docker_exe = find_docker() or "docker"
+    if proxy_cfg.get("docker_internal_network"):
+        network = ensure_internal_network(docker_exe)
+        want = network.gateway
+        console.print(f"[dim]Docker internal network {network.name}: iron-proxy binds {want}:{port}[/dim]")
+    elif host == existing_internal_gateway(docker_exe):
+        want = ip._default_http_listen(port)[0].rsplit(":", 1)[0]
+    else:
+        return
+    if want == host:
+        return
+    listeners["tunnel_listen"], listeners["http_listen"] = f"{want}:{port}", f"{want}:{port + 1}"
+    data["proxy"] = listeners
+    ip.write_proxy_config(data)
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
@@ -639,4 +684,6 @@ def _status_rows(proxy_cfg: dict, status, *, yn, dim) -> list[tuple[str, str]]:
         ("Listening", yn(status.listening)),
         ("Credential src", str(proxy_cfg.get("credential_source", "env"))),
         ("Docker enforce", yn(bool(proxy_cfg.get("enforce_on_docker", True)))),
+        ("Docker network", internal_network_name() + " (internal; iron-proxy is the only exit)"
+         if proxy_cfg.get("docker_internal_network") else "default bridge (raw sockets bypass the proxy)"),
     ]

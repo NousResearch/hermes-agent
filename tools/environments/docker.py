@@ -709,6 +709,11 @@ class DockerEnvironment(BaseEnvironment):
         volume_args.extend(_readonly_skill_mount_args())
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
+        if not network and "--network" in egress_host_args:
+            # docker_network: false (--network=none) is stricter than the internal egress
+            # network, and Docker rejects a second --network.
+            i = egress_host_args.index("--network")
+            egress_host_args = egress_host_args[:i] + egress_host_args[i + 2:]
         volume_args.extend(egress_volume_args)
         user_args = _host_user_args(run_as_host_user)
 

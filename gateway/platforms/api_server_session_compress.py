@@ -124,7 +124,11 @@ def _compress_admitted(adapter, db, target: str, request: CompressRequest) -> tu
             return 200, _payload(result.status, target, result.before_tokens, result.after_tokens)
         # _compress_context already committed (in place, or a published continuation).
         finalize_context_engine_compression_notification(agent, committed=True)
-        return 200, _payload("compressed", str(agent.session_id or target), result.before_tokens,
+        # Nothing summarizable outside the protected tail, an aborted summary or a refused growth:
+        # the same "No changes" report /compress prints, not a success.
+        summary = result.summary or {}
+        status = "noop" if any(summary.get(k) for k in ("noop", "aborted", "refused_would_grow")) else "compressed"
+        return 200, _payload(status, str(agent.session_id or target), result.before_tokens,
                              result.after_tokens, result.removed, result.summary)
     finally:
         finalize_context_engine_compression_notification(agent, committed=False)

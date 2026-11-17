@@ -1013,10 +1013,16 @@ class AuthorityConnection:
             logging.getLogger(__name__).debug('dropping response for %s id=%r', what, frame.get('id'))
 
     async def respond(self, ref, params):
-        if set(params) != {"session_id", "execution_generation", "prompt_id", "choice"}:
+        # 'reason' (optional) carries a deny-with-reason's free text; the core four keys keep
+        # today's exact shape. Its type/length bound is PendingControls' domain check.
+        if set(params) - {"session_id", "execution_generation", "prompt_id", "choice", "reason"} \
+                or not {"session_id", "execution_generation", "prompt_id", "choice"} <= set(params):
             raise AuthorityRefusal("invalid_params")
+        response = {"choice": params["choice"]}
+        if "reason" in params:
+            response["reason"] = params["reason"]
         return await self.authority.respond(self.actor, ref, params["execution_generation"],
-                                            params["prompt_id"], {"choice": params["choice"]})
+                                            params["prompt_id"], response)
 
     async def respond_clarify(self, ref, params):
         if set(params) != {"session_id", "execution_generation", "prompt_id", "answer"}:

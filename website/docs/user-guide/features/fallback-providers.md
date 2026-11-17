@@ -166,6 +166,8 @@ Fallback is **turn-scoped**: each new user message starts with the primary model
 The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
 
 When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
+
+The switch is also recorded on the session itself (`effective_route` in the session row's `model_config`: the requested model and provider, the effective ones, the reason). The desktop app's sidebar cards and Command Center session list show `Effective model: <fallback> (fallback from <requested>)` while a fallback answers a session; the first turn back on the requested model clears it and keeps the switch as `last_fallback`. This is session metadata only: it never touches the system prompt or the prompt cache.
 :::
 
 ### Examples

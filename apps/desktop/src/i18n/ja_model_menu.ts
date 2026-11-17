@@ -14,6 +14,7 @@ export const jaModelMenu = {
   cacheRead: 'キャッシュ読み取り',
   priceTitle: (input: string, output: string, cache: string) =>
     `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : ''),
+  effectiveFallback: (model: string, requested: string) => `実際のモデル: ${model}（${requested} からのフォールバック）`,
   localSetup: {
     title: 'ローカルで実行 · 無料・プライベート',
     text: (model: string, size: string) => `${model} はこのマシンで動きます · ${size} をダウンロード`,

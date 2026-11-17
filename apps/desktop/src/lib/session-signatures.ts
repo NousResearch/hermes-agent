@@ -35,7 +35,10 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       // frozen copy forever. An idle conversation never moves any of the
       // fields above again, which is exactly when a pin gets toggled (#76919).
       session.pinned === other.pinned &&
-      session.archived === other.archived
+      session.archived === other.archived &&
+      // A fallback switch (or the recovery after it) can be the row's only delta.
+      session.effective_route?.active === other.effective_route?.active &&
+      session.effective_route?.at === other.effective_route?.at
     )
   })
 }

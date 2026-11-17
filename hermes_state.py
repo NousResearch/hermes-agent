@@ -574,6 +574,9 @@ class SessionDB(
                     value = cfg.get("_branched_from")
                     if isinstance(value, str) and value.strip():
                         data["_branched_from"] = value.strip()
+                # Requested vs effective model (agent/session_route_record.py), for the same lists.
+                if isinstance(route := cfg.get("effective_route"), dict):
+                    data.setdefault("effective_route", route)
         return data
 
     @staticmethod

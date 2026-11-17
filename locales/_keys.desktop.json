@@ -4607,6 +4607,7 @@
     "shell.modelMenu.addFavorite",
     "shell.modelMenu.cacheRead",
     "shell.modelMenu.editModels",
+    "shell.modelMenu.effectiveFallback",
     "shell.modelMenu.fast",
     "shell.modelMenu.favoriteShortcut",
     "shell.modelMenu.favorites",

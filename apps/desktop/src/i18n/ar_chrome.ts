@@ -363,6 +363,7 @@ export const arChrome = {
       cacheRead: 'قراءة من الذاكرة المؤقتة',
       priceTitle: (input: string, output: string, cache: string) =>
         `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : ''),
+      effectiveFallback: (model: string, requested: string) => `النموذج الفعلي: ${model} (بديل عن ${requested})`,
       localSetup: {
         title: 'تشغيل محلي · مجاني وخاص',
         text: (model: string, size: string) => `${model} يناسب هذا الجهاز · تنزيل ${size}`,

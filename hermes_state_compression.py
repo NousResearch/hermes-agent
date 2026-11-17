@@ -88,7 +88,8 @@ _CHAIN_CAP = 1000
 # ``hermes sessions refresh-prompts`` request and rebuilds its prompt once more after eviction.
 # ``_chat_adopted`` (``gateway.session_lifecycle.CHAT_ADOPTED_MARKER``): a delegate row the user resumed a
 # chat onto stays that chat's conversation past a rotation, or the route guard rejects the new tip.
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted")
+# ``effective_route`` (agent/session_route_record.py): a fallback still answering stays named on the new tip.
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch", "_chat_adopted", "effective_route")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:

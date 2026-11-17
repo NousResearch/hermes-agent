@@ -52,6 +52,7 @@ import {
 } from './chrome'
 import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SessionCardModel } from './session-card-model'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
@@ -640,7 +641,7 @@ function SidebarSessionRowImpl({
                       SIDEBAR_TRUNCATED_LEADING
                     )}
                   >
-                    {model ? <span className="min-w-0 truncate">{model}</span> : null}
+                    {model ? <SessionCardModel model={model} session={session} /> : null}
                     {size ? <span className="shrink-0 tabular-nums">{size}</span> : null}
                     {todoProgress ? (
                       <span className="ml-auto shrink-0 tabular-nums" title={r.todoProgress}>

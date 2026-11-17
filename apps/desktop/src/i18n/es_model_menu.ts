@@ -14,6 +14,7 @@ export const esModelMenu = {
   cacheRead: 'lectura en caché',
   priceTitle: (input: string, output: string, cache: string) =>
     `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : ''),
+  effectiveFallback: (model: string, requested: string) => `Modelo efectivo: ${model} (respaldo de ${requested})`,
   localSetup: {
     title: 'Ejecutar en local · gratis, privado',
     text: (model: string, size: string) => `${model} cabe en este equipo · descarga de ${size}`,

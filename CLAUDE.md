@@ -159,8 +159,12 @@ secret scope and never self-heal (see "Multiplex" below).
 - **`notion_api` (`notion` toolset)** — [tools/notion_api_tool.py](tools/notion_api_tool.py).
   Wraps the `ntn` CLI (`ntn api <v1/...> -X <METHOD>`, JSON body via **stdin**,
   `shell=False` fixed-argv so nothing the model supplies can inject). GET/POST/PATCH/DELETE;
-  supports a `markdown` body + the `v1/pages/<id>/markdown` endpoint (ntn does
-  Markdown→blocks). Creds `NOTION_API_KEY`/`NOTION_API_TOKEN` (bridged), `NOTION_KEYRING=0`
+  page bodies go through the `v1/pages/<id>/markdown` **command** endpoint —
+  `{"type":"insert_content","insert_content":{"content":…}}` (append),
+  `update_content` (`content_updates:[{old_str,new_str}]`) or `replace_content`
+  (`{new_str}`); `POST v1/pages` takes **no** markdown (properties/children only),
+  so a new page is two calls: create → `insert_content` (verified live on ntn
+  0.15.1). Creds `NOTION_API_KEY`/`NOTION_API_TOKEN` (bridged), `NOTION_KEYRING=0`
   for headless. **Granted to the `operator` built-in role**; cross-platform; the agent is
   told to reach Notion ONLY through this tool (never curl/shell/python). Design:
   [docs/superpowers/specs/2026-06-15-notion-api-tool-design.md](docs/superpowers/specs/2026-06-15-notion-api-tool-design.md).
@@ -412,11 +416,22 @@ secret scope and never self-heal (see "Multiplex" below).
   Token and secret are scrubbed from every error. `hc:write` also covers
   publish/delete, so `_zendesk_write` stays the boundary. **The token acts as
   the user the OAuth client belongs to** — that user's rights are the real
-  ceiling. **Admin Center setup:** (1) create a dedicated service user (not a
-  person, not an account admin): an agent whose custom role grants **Manage
-  APIs** (Zendesk lets admins *or* agents with that permission create OAuth
-  clients) and as little ticket access as the plan allows, with Guide role
-  **Help Center manager**; (2) signed in as that user, Admin Center → Apps and
+  ceiling: effective rights = the client's scopes ∩ that user's role.
+  **Decision (2026-11-17): the educator's client is owned by an account
+  admin** — no free seat for a dedicated service agent. Accepted because the
+  tool's chokepoint (draft-create only) is the real boundary; the costs are
+  full *Help Center* admin power within the `hc:*` scopes, Zendesk audit
+  attributing the teammate's actions to that admin, and the integration
+  breaking if that account loses admin. **Mitigations (mandatory):** the
+  client is **Confidential**; its Allowed scopes are pinned to exactly
+  `hc:read hc:write` — **never empty** (empty = all scopes = full account
+  admin); any change to this client's scopes is a security change; the secret
+  lives only in the password manager and the profile's `.env`. Preferred when
+  a seat frees up: a dedicated service agent (not a person, not an account
+  admin) whose custom role grants only **Manage APIs** (Zendesk lets admins
+  *or* agents with that permission create OAuth clients) plus Guide role
+  **Help Center manager**. **Admin Center setup:** (1) sign in as the
+  owning user (see the decision above); (2) Admin Center → Apps and
   integrations → APIs → OAuth clients → add a **Confidential** client, and
   restrict its allowed scopes to `hc:read hc:write` (the client's `scope`
   field); copy the identifier and the secret (shown once); (3) put
@@ -834,7 +849,14 @@ Plan: [docs/superpowers/plans/2026-11-17-boundary-enforcement.md](docs/superpowe
   waiting is not re-announced and a vetoed row is never re-queued (it posts
   once a human sets it Approved). Shared driver:
   `autonomy.plan_veto` / `run_pending` / `due_pending_ids`.
-- **Deployment (educator profile):** set `agent_write_guard: true`, `notion.write_guard` with the real
+- **Deployment (educator profile):** the package is `deploy/educator/` (template,
+  scripts, jobs, manifest, `ROLLOUT.md`). Set `agent_write_guard: {enabled: true,
+  extra_paths: [workspace/checkouts, workspace/metrics]}` — the checkouts are
+  refreshed by the release-watch script (git with hooks/fsmonitor/helpers off,
+  `.git/config` validated in Python first) and `workspace/metrics/` (baselines,
+  approved snapshots, `edit-rate.csv`) is **script-owned** so the agent cannot
+  forge the edit-rate evidence its graduation proposals rely on; the agent
+  writes only `workspace/learning/`. Also set `notion.write_guard` with the real
   data-source ids, `slack.post_allowed_channels` (home + `#release-updates`),
   `slack.post_gated_channels` (`#release-updates`), a `release_updates:`
   block, `autonomy.announce_channel`; the Notion integration must be shared
@@ -1069,6 +1091,26 @@ Design: "Dependencies → 3. Cost budget + alerts" in
 [docs/superpowers/specs/2026-11-16-product-education-teammate-design.md](docs/superpowers/specs/2026-11-16-product-education-teammate-design.md).
 Plan:
 [docs/superpowers/plans/2026-11-16-cost-budget-alerts.md](docs/superpowers/plans/2026-11-16-cost-budget-alerts.md).
+
+### Educator profile package — [deploy/educator/](deploy/educator/)
+
+The deployable Product Education teammate (a second bot on the `educator`
+profile under multiplex): `config.yaml.template` + `values.example.yaml` +
+`render_config.py`, `SOUL.md`, `.env.example`, the two cron jobs
+(`cron-jobs.yaml`, applied by an admin with `apply_cron_jobs.py` because the
+CLI cannot set `enabled_toolsets` / `required_toolsets` / `discretionary`),
+their no-LLM wake-gate scripts (`scripts/educator_*.py`, installed into
+`<profile>/scripts/`), the Slack manifest, the Ideas DB schema and
+**`ROLLOUT.md`** (start there). Facts the package depends on: cron strips
+`SLACK_*` from script env, so the scripts only *detect* due veto actions and
+the agent runs `…(run_due=true)`; the script is not told its job id (it finds
+its job by script filename); script state lives in
+`<profile>/cron/educator-state/` (agent-unwritable); the Releases data source
+needs a one-way `PRD` relation added by hand; the Release Assets Slack type is
+`Slack post`; PRD `JIRA` is a URL; BA's status is `Ready for staging`. The
+template is validated through the real readers in
+[tests/deploy/](tests/deploy/) — change a boundary key and that test tells
+you. Plan: [docs/superpowers/plans/2026-11-17-educator-profile-package.md](docs/superpowers/plans/2026-11-17-educator-profile-package.md).
 
 ### Slack quiet channels + `slack_react`
 

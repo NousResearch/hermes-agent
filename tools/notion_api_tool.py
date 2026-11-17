@@ -7,9 +7,16 @@ trips the security-scan approval prompt). Internals run a FIXED argv
 (``ntn api <path> -X <METHOD>``) with the JSON body piped to the process's
 stdin — ntn 0.15.x reads the request body from stdin with no flag — and
 ``shell=False``, so nothing the model supplies can become a shell token. ``ntn``
-is wrapped (rather than calling api.notion.com directly) to reuse its
-Markdown->Notion-blocks conversion (the ``markdown`` body field and the
-``v1/pages/<id>/markdown`` endpoint).
+is wrapped (rather than calling api.notion.com directly) to reuse its auth
+and endpoint handling, including the ``v1/pages/<id>/markdown`` endpoint.
+
+Page-body shapes (verified live on ntn 0.15.1, 2026-06-16): ``POST v1/pages``
+takes NO markdown (properties, optional ``children`` blocks). The markdown
+endpoint is a command endpoint — ``PATCH v1/pages/<id>/markdown`` with
+``{"type": "insert_content", "insert_content": {"content": …}}`` (append),
+``{"type": "update_content", "update_content": {"content_updates":
+[{"old_str": …, "new_str": …}]}}`` or ``{"type": "replace_content",
+"replace_content": {"new_str": …}}``; ``GET`` returns ``{markdown, truncated}``.
 """
 from __future__ import annotations
 
@@ -34,9 +41,16 @@ NOTION_API_SCHEMA = {
         "work — never shell out, never use python/jq/curl for Notion. Pass the "
         "API path (e.g. 'v1/pages', 'v1/data_sources/<id>', "
         "'v1/data_sources/<id>/query', 'v1/pages/<id>', 'v1/pages/<id>/markdown'), "
-        "an HTTP method, and an optional JSON body object. Markdown bodies are "
-        "supported: include a 'markdown' field on a create body, or PATCH "
-        "'v1/pages/<id>/markdown' with {'markdown': '...'} to append to a page body."
+        "an HTTP method, and an optional JSON body object. Page bodies: POST "
+        "'v1/pages' takes properties (and optional 'children' blocks) but NO "
+        "markdown — create the page, then write its body with PATCH "
+        "'v1/pages/<id>/markdown' and a command body: "
+        "{'type': 'insert_content', 'insert_content': {'content': '...'}} appends; "
+        "{'type': 'update_content', 'update_content': {'content_updates': "
+        "[{'old_str': '...', 'new_str': '...'}]}} edits in place; "
+        "{'type': 'replace_content', 'replace_content': {'new_str': '...'}} "
+        "replaces the whole body. GET 'v1/pages/<id>/markdown' reads a body as "
+        "{markdown, truncated}."
     ),
     "parameters": {
         "type": "object",
@@ -53,7 +67,8 @@ NOTION_API_SCHEMA = {
             },
             "body": {
                 "type": "object",
-                "description": "JSON body object for POST/PATCH (properties, filter, markdown, …). Omit for GET.",
+                "description": ("JSON body object for POST/PATCH (properties, filter, a "
+                                "markdown-endpoint command, …). Omit for GET."),
             },
         },
         "required": ["path"],

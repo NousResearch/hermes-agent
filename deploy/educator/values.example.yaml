@@ -1,0 +1,40 @@
+# Example values for config.yaml.template — copy to values.yaml (keep it OFF
+# the repo: it holds Slack user ids and Notion ids) and replace every value.
+# The test suite renders this file, so every value here must pass the real
+# config validators; the ids are format-correct dummies.
+
+MODEL: gpt-5.6
+MODEL_PROVIDER: openai
+MODEL_INPUT_USD_PER_M: "1.25"
+MODEL_OUTPUT_USD_PER_M: "10"
+MODEL_CACHE_READ_USD_PER_M: "0.125"
+MODEL_CACHE_WRITE_USD_PER_M: "1.5625"
+
+EDUCATOR_HOME: /home/hermes/.hermes/profiles/educator   # absolute; `hermes -p educator config path` shows it
+
+ADMIN_SLACK_USER_ID: U0EXAMPLE01
+ADMIN_NAME: Example Admin
+PRODUCT_TEAM_SLACK_USER_ID: U0EXAMPLE02
+PRODUCT_TEAM_MEMBER_NAME: Example PM
+
+HOME_CHANNEL_ID: C0EXAMPLE01            # #product-education (name: setup value)
+RELEASE_UPDATES_CHANNEL_ID: C0EXAMPLE02 # #release-updates
+
+NOTION_IDEAS_DATA_SOURCE_ID: 0f0e0d0c-0b0a-4908-8706-050403020100   # notion-ideas-database.md
+NOTION_HOME_PAGE_ID: 1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d
+
+ZENDESK_PERMISSION_GROUP_ID: "1234567"
+WORKING_HOURS_TIMEZONE: Asia/Jerusalem
+
+DAILY_BUDGET_USD: "5"
+MONTHLY_BUDGET_USD: "100"
+PER_RUN_BUDGET_USD: "1.5"
+BUDGET_ALERT_MENTION: "<@U0EXAMPLE01>"
+RELEASE_WATCH_JOB_ID: 0123456789ab     # printed by apply_cron_jobs.py
+
+PERSONA_NAME: Example Persona          # setup value: the persona's name (SOUL.md, Slack app)
+
+# 09:00, 12:00, 15:00 Sun–Thu IN THE GATEWAY'S TIMEZONE (ROLLOUT §1). This value
+# assumes the gateway runs on Asia/Jerusalem; on a UTC gateway use
+# "0 7,10,13 * * 0-4" in winter (UTC+2) / "0 6,9,12 * * 0-4" in summer (UTC+3).
+EXPLORE_CRON: "0 9,12,15 * * 0-4"

@@ -228,8 +228,11 @@ def test_unknown_target_denied(lk):
 
 def test_kit_create_requires_draft(lk):
     parent = {"data_source_id": ASSETS}
-    assert check(lk, "POST", "v1/pages", {"parent": parent, "properties": {"Status": status("Draft")},
-                                          "markdown": "# hi"}) is None
+    assert check(lk, "POST", "v1/pages", {"parent": parent, "properties": {"Status": status("Draft")}}) is None
+    # POST v1/pages takes no markdown (the body is a second PATCH …/markdown call)
+    assert "markdown" in check(lk, "POST", "v1/pages", {"parent": parent,
+                                                       "properties": {"Status": status("Draft")},
+                                                       "markdown": "# hi"})
     assert check(lk, "POST", "v1/pages", {"parent": parent, "properties": {"Status": status("Approved")}})
     assert check(lk, "POST", "v1/pages", {"parent": parent, "properties": {"Name": {"title": []}}})
     assert check(lk, "POST", "v1/pages", {"parent": parent, "properties": {"Status": status("Draft")},
@@ -575,16 +578,22 @@ def test_design_example_bare_off_levels_keep_guard_valid():
     "< synced_block>x</synced_block>", '<mention-page url="x"/>', "<data_source/>",
 ])
 def test_markdown_object_tags_refused(lk, md):
-    assert "markdown" in check(lk, "PATCH", f"v1/pages/{HOME}/markdown",
-                               {"type": "insert_content", "insert_content": {"content": md}})
+    for body in ({"type": "insert_content", "insert_content": {"content": md}},
+                 {"type": "update_content", "update_content": {
+                     "content_updates": [{"old_str": "x", "new_str": f"a {md} b"}]}},
+                 {"type": "replace_content", "replace_content": {"new_str": md}}):
+        assert "markdown" in check(lk, "PATCH", f"v1/pages/{HOME}/markdown", body), body
     assert "markdown" in check(lk, "POST", "v1/pages", {"parent": {"page_id": HOME}, "properties": {},
                                                        "markdown": md})
 
 
 def test_plain_markdown_allowed(lk):
     md = "# Title\n\n**bold** and a [link](https://x.com) and `<code>` and a <br> tag"
-    assert check(lk, "PATCH", f"v1/pages/{HOME}/markdown",
-                 {"type": "insert_content", "insert_content": {"content": md}}) is None
+    for body in ({"type": "insert_content", "insert_content": {"content": md}},
+                 {"type": "update_content", "update_content": {
+                     "content_updates": [{"old_str": "# Old", "new_str": md}]}},
+                 {"type": "replace_content", "replace_content": {"new_str": md}}):
+        assert check(lk, "PATCH", f"v1/pages/{HOME}/markdown", body) is None, body
     # property text is not markdown: a title mentioning "<page" is fine
     assert check(lk, "PATCH", f"v1/pages/{'7' * 32}",
                  {"properties": {"title": {"title": [{"text": {"content": "<page> docs"}}]}}}) is None

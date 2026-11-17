@@ -27,6 +27,12 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert parsed == {"a": [1, 2]}
 
+    @pytest.mark.parametrize("value", ["x = [1, 2, ]", "d = {1: 2, }", 'say ", ]" and ",}"', "a\\\", ]"])
+    def test_trailing_comma_repair_leaves_string_values_alone(self, value):
+        # A ", ]" / ", }" inside a string is the content (code a write_file writes), not JSON structure.
+        raw = '{"path": "a.py", "content": ' + json.dumps(value) + ",}"
+        assert json.loads(_repair_tool_call_arguments(raw, "t")) == {"path": "a.py", "content": value}
+
 
     # -- Stage 4: unclosed brackets --
 

@@ -39,28 +39,46 @@ export interface CanonicalGroupLeadSettingProps {
 const ROUTING_HINT = { [EVERYONE]: 'routingEveryoneHint', [AUTO]: 'routingAutoHint' } as const
 
 /** Who answers a message that names nobody: everyone (the default), a model pick, or the member picked as lead. */
-export function CanonicalGroupLeadSetting({ autoRouting = false, disabled, draft, members, onChange }: CanonicalGroupLeadSettingProps) {
+export function CanonicalGroupLeadSetting({
+  autoRouting = false,
+  disabled,
+  draft,
+  members,
+  onChange
+}: CanonicalGroupLeadSettingProps) {
   const labels = useCanonicalGroupLabels()
   const lead = canonicalRoomLeadId(draft)
   const value = lead !== undefined ? MEMBER_PREFIX + lead : draft.routing === AUTO ? AUTO : EVERYONE
 
-  const choose = (next: string) => onChange(next.startsWith(MEMBER_PREFIX)
-    ? { ...draft, routing: 'lead', lead_member_id: next.slice(MEMBER_PREFIX.length) }
-    : { ...draft, routing: next === AUTO ? AUTO : EVERYONE, lead_member_id: '' })
+  const choose = (next: string) =>
+    onChange(
+      next.startsWith(MEMBER_PREFIX)
+        ? { ...draft, routing: 'lead', lead_member_id: next.slice(MEMBER_PREFIX.length) }
+        : { ...draft, routing: next === AUTO ? AUTO : EVERYONE, lead_member_id: '' }
+    )
 
   const hint = value in ROUTING_HINT ? labels[ROUTING_HINT[value as keyof typeof ROUTING_HINT]] : labels.routingLeadHint
 
-  return <label className="grid gap-1 text-xs">{labels.routingLabel}
-    <Select disabled={disabled || !members.length} onValueChange={choose} value={value}>
-      <SelectTrigger aria-label={labels.routingLabel} className="h-8 rounded-md"><SelectValue /></SelectTrigger>
-      <SelectContent>
-        <SelectItem value={EVERYONE}>{labels.routingEveryone}</SelectItem>
-        {(autoRouting || value === AUTO) && <SelectItem value={AUTO}>{labels.routingAuto}</SelectItem>}
-        {members.map(member => <SelectItem key={member.member_id} value={MEMBER_PREFIX + member.member_id}>{fill(labels.routingLead, { name: memberName(member) })}</SelectItem>)}
-      </SelectContent>
-    </Select>
-    <span className="text-(--ui-text-tertiary)">{hint}</span>
-  </label>
+  return (
+    <label className="grid gap-1 text-xs">
+      {labels.routingLabel}
+      <Select disabled={disabled || !members.length} onValueChange={choose} value={value}>
+        <SelectTrigger aria-label={labels.routingLabel} className="h-8 rounded-md">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={EVERYONE}>{labels.routingEveryone}</SelectItem>
+          {(autoRouting || value === AUTO) && <SelectItem value={AUTO}>{labels.routingAuto}</SelectItem>}
+          {members.map(member => (
+            <SelectItem key={member.member_id} value={MEMBER_PREFIX + member.member_id}>
+              {fill(labels.routingLead, { name: memberName(member) })}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <span className="text-(--ui-text-tertiary)">{hint}</span>
+    </label>
+  )
 }
 
 export interface CanonicalGroupAssignmentRowProps {
@@ -76,7 +94,11 @@ export function CanonicalGroupAssignmentRow({ event, members = [] }: CanonicalGr
   const lead = memberName(roster.get(payload.lead_member_id ?? ''), payload.lead_member_id)
   const chosen = (payload.member_ids ?? []).map(id => memberName(roster.get(id), id))
 
-  return <p className="px-2 py-1 text-xs text-(--ui-text-secondary)" data-testid="room-assignment">
-    {payload.fallback ? fill(labels.assignmentFallback, { lead }) : fill(labels.assignment, { lead, names: chosen.join(', ') })}
-  </p>
+  return (
+    <p className="px-2 py-1 text-xs text-(--ui-text-secondary)" data-testid="room-assignment">
+      {payload.fallback
+        ? fill(labels.assignmentFallback, { lead })
+        : fill(labels.assignment, { lead, names: chosen.join(', ') })}
+    </p>
+  )
 }

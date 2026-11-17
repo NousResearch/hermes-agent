@@ -2,11 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import {
-  electronProcessStartMarker,
-  parentWatchdogEnv,
-  spawnTag
-} from './parent-process-identity'
+import { electronProcessStartMarker, parentWatchdogEnv, spawnTag } from './parent-process-identity'
 
 test('electronProcessStartMarker uses Electron creation time only for its own PID', () => {
   assert.equal(electronProcessStartMarker(42, 42, 1_723_456_789_123.75), 'winms:1723456789123')

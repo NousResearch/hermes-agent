@@ -41,7 +41,12 @@ describe('showBrowserNotification', () => {
     const focus = vi.spyOn(window, 'focus').mockImplementation(() => undefined)
 
     expect(
-      showBrowserNotification({ focusSessionId: 'stored-1', kind: 'approval', sessionId: 'rt-1', title: 'Approval needed' })
+      showBrowserNotification({
+        focusSessionId: 'stored-1',
+        kind: 'approval',
+        sessionId: 'rt-1',
+        title: 'Approval needed'
+      })
     ).toBe(true)
     created[0].onclick?.()
 

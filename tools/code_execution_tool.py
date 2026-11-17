@@ -789,6 +789,11 @@ def execute_code(
         return record_execution_backend("code", "remote", _execute_remote(
             code, task_id, enabled_tools, reset=bool(reset), session_id=session_id, turn_id=turn_id,
             conversation_id=conversation_id))
+    from tools.environments.sandbox_egress import egress_for_backend
+    try:  # the local kernel never reaches _create_environment, which refuses for the terminal tool
+        egress_for_backend("local")
+    except ValueError as exc:
+        return tool_error(f"execute_code refused: {exc}")
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.

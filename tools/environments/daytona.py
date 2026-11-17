@@ -17,6 +17,7 @@ from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import ensure_lazy_dep
+from tools.environments.sandbox_egress import SandboxEgress, daytona_create_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +36,10 @@ class DaytonaEnvironment(BaseEnvironment):
 
     def __init__(self, image: str, cwd: str = "/home/daytona", timeout: int = 60, cpu: int = 1,
                  memory: int = 5120, disk: int = 10240, persistent_filesystem: bool = True,
-                 task_id: str = "default"):
+                 task_id: str = "default", egress: SandboxEgress | None = None):
         super().__init__(cwd=cwd, timeout=timeout)
+        # Validated before any SDK call: a list Daytona cannot enforce exactly refuses with no spend.
+        network = daytona_create_kwargs(egress) if egress is not None else {}
         ensure_lazy_dep("daytona")
         from daytona import (Daytona, CreateSandboxFromImageParams, DaytonaConfig, DaytonaError, Resources,
                              SandboxState)
@@ -81,8 +84,13 @@ class DaytonaEnvironment(BaseEnvironment):
                     self._sandbox = None
         if self._sandbox is None:
             self._sandbox = self._daytona.create(CreateSandboxFromImageParams(
-                image=image, name=sandbox_name, labels=labels, auto_stop_interval=0, resources=resources))
+                image=image, name=sandbox_name, labels=labels, auto_stop_interval=0, resources=resources,
+                **network))
             logger.info("Daytona: created sandbox %s for task %s", self._sandbox.id, task_id)
+        elif network:
+            # A resumed sandbox keeps the policy it was created with; apply the current one before any
+            # command runs. A failure propagates: the sandbox is never used under a stale policy.
+            self._sandbox.update_network_settings(**network)
 
         self._remote_home = "/root"
         with contextlib.suppress(Exception):

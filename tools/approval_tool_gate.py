@@ -7,7 +7,9 @@ for execute_code / connector entries / the MCP bridge) resolves its pre-call ver
 always under the real tool name (``tool_call`` is unwrapped before the hook fires).
 
 A session grant is bound to a tool and a scope: file tools to the task workspace or the exact
-out-of-workspace paths, ``terminal`` to one exact command, everything else to the tool.
+out-of-workspace paths, ``terminal`` to one exact command in one working directory, everything
+else to the tool. A terminal command the dangerous-command guard flags is left to that guard (one
+prompt, with its transport and once-only rules); the gate asks for every other command.
 Unattended contexts (-q / -z, cron, unattended platforms) keep the pattern-only behaviour; only a
 present human is asked. A delegated child inherits the parent's approval context, so its calls
 reach the same human (gateway) or the subagent callback (``delegation.subagent_auto_approve``).
@@ -43,7 +45,6 @@ class _Scope:
     key: str           # allowlist grain, stored as ``tool_scope:<key>``
     target: str        # what the prompt shows
     grant: str         # what "allow for this session / always" covers
-    warning: str = ""  # dangerous-pattern match: a flag in the prompt, never the decision
     preview: Optional[Callable[[], str]] = None  # replaces ``target``; built only when a human is asked
 
     def shown(self) -> str:
@@ -107,16 +108,35 @@ def _str_arg(args: dict, name: str, default: str) -> str:
     return value if isinstance(value, str) and value.strip() else default
 
 
-def _command_digest(command: str) -> str:
-    return hashlib.sha256(command.strip().encode("utf-8")).hexdigest()[:16]
+def _effective_workdir(args: dict, task_id: str) -> str:
+    """The directory the command will run in, resolved the way ``terminal_tool`` picks it: the
+    ``workdir`` argument, else this session's recorded ``cd`` state, else the configured cwd."""
+    workdir = _str_arg(args, "workdir", "")
+    if workdir:
+        return workdir
+    from agent.delegation_context import is_delegated_child_context
+    from tools.approval_context import get_current_session_key
+    from tools.terminal_tool import _get_env_config, get_session_cwd
+    session_key = get_current_session_key(default="") or task_id
+    cwd_key = task_id if is_delegated_child_context() else session_key
+    return get_session_cwd(cwd_key) or str(_get_env_config().get("cwd") or "")
 
 
 def _terminal_scope(tool_name: str, args: dict, task_id: str) -> _Scope:
-    from tools.approval_detection import detect_dangerous_command
     command = _str_arg(args, "command", "")
-    dangerous, _key, pattern = detect_dangerous_command(command)
-    return _Scope(f"terminal:cmd:{_command_digest(command)}", command, "this exact command only",
-                  warning=f"⚠️ Matches a dangerous pattern: {pattern}." if dangerous else "")
+    workdir = _effective_workdir(args, task_id)
+    digest = hashlib.sha256(f"{command.strip()}\0{workdir}".encode("utf-8")).hexdigest()[:16]
+    return _Scope(f"terminal:cmd:{digest}", f"{command}\n(in {workdir})" if workdir else command,
+                  f"this exact command in {workdir or 'the current directory'} only")
+
+
+def _command_guard_owns(command: str) -> bool:
+    """A command the dangerous-command guard flags (pattern, content rule, unfinished hardline
+    scan) is put to the human by that guard inside the terminal handler: it keeps the selected
+    approval transport, the once-only rules, the human-only scan rule and Desktop batching. The
+    tool gate asking first would be a second, weaker prompt for the same command."""
+    from tools.approval import _command_findings
+    return bool(_command_findings(command))
 
 
 def _edit_scope(tool_name: str, args: dict, task_id: str) -> _Scope:
@@ -139,37 +159,6 @@ _SCOPE_BUILDERS = {
     "patch": _edit_scope,
     "terminal": _terminal_scope,
 }
-
-
-# --- Terminal hand-off: one approval per command ---------------------------------------------------------------------
-# A gate-approved terminal command must not be asked again by the dangerous-pattern prompt inside
-# the handler; floors (hardline, approvals.deny, sudo, runtime self-delete) still run first there.
-
-_approved_commands: dict[str, set[str]] = {}
-_approved_commands_lock = threading.Lock()
-
-
-def _remember_approved_command(command: str) -> None:
-    from tools.approval_context import get_current_session_key
-    with _approved_commands_lock:
-        _approved_commands.setdefault(get_current_session_key(), set()).add(_command_digest(command))
-
-
-def consume_gate_approved_command(command: str) -> bool:
-    """True once for a command this session's tool gate just approved."""
-    from tools.approval_context import get_current_session_key
-    session_key, digest = get_current_session_key(), _command_digest(command)
-    with _approved_commands_lock:
-        approved = _approved_commands.get(session_key)
-        if not approved or digest not in approved:
-            return False
-        approved.discard(digest)
-        return True
-
-
-def forget_session(session_key: str) -> None:
-    with _approved_commands_lock:
-        _approved_commands.pop(session_key, None)
 
 
 # --- Gate ------------------------------------------------------------------------------------------------------------
@@ -318,10 +307,14 @@ def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Op
         return None
     from tools import approval
     if tool_name == "terminal":
-        floor = _terminal_floor_block(_str_arg(args, "command", ""))
+        command = _str_arg(args, "command", "")
+        floor = _terminal_floor_block(command)
         if floor is not None:
             _record(tool_name, tool_call_id, {"decision": "blocked", "by": "rule"})
             return floor
+        if _command_guard_owns(command):
+            _record(tool_name, tool_call_id, {"decision": "deferred", "to": "command_guard"})
+            return None
     scope = _with_declared_preview(_SCOPE_BUILDERS.get(tool_name, _tool_scope)(tool_name, args, task_id),
                                    entry, args, task_id)
     pattern_key = f"tool_scope:{scope.key}"
@@ -333,11 +326,7 @@ def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Op
                 "The call was denied and did not run. Do NOT retry it or try another route; report that it "
                 "needs approval and stop.")
     description = f"Tool call: {tool_name}. Allowing it for this session (or always) covers {scope.grant}."
-    if scope.warning:
-        title = t("cli.tui.approval_title")
-        description = f"{scope.warning} {description}"
-    else:
-        title = t("approval.command_title") if tool_name == "terminal" else t("approval.tool_title", tool=tool_name)
+    title = t("approval.command_title") if tool_name == "terminal" else t("approval.tool_title", tool=tool_name)
     blocked = f"BLOCKED: {tool_name} was not approved ({scope.grant})."
     result = approval._run_approval_gate(
         pattern_key=pattern_key, description=description,
@@ -354,11 +343,8 @@ def _evaluate(tool_name: str, args: dict, task_id: str, tool_call_id: str) -> Op
     decision = {"decision_id": _queue_decision(tool_name, args, tool_call_id, by)} if commits else {}
     _record(tool_name, tool_call_id, {
         "decision": "approved", "by": by,
-        **({"choice": choice} if choice else {}), "scope": scope.grant,
-        **({"flag": scope.warning} if scope.warning else {}), **decision,
+        **({"choice": choice} if choice else {}), "scope": scope.grant, **decision,
     })
-    if tool_name == "terminal":
-        _remember_approved_command(_str_arg(args, "command", ""))
     return None
 
 

@@ -274,6 +274,13 @@ class GatewayKanbanWatchersMixin:
         if getattr(self, "_kanban_dispatcher_lock_unsupported", False):
             return True
         handle, state = _acquire_singleton_lock(self._kanban_dispatcher_lock_path)
+        previous = getattr(self, "_kanban_dispatcher_lock_wait_state", None)
+        self._kanban_dispatcher_lock_wait_state = state
+        if state == "unavailable" and previous != "unavailable":
+            # Logged once per change: a lock file that stays broken would
+            # otherwise stop dispatch with no trace in the log.
+            logger.warning("kanban dispatcher: dispatcher lock unavailable at %s; not "
+                           "dispatching until it can be taken.", self._kanban_dispatcher_lock_path)
         if state != "held":
             return False
         self._kanban_dispatcher_lock_handle = handle

@@ -58,6 +58,26 @@ def test_management_token_path_is_single_authority(hermes_home):
     assert ip._management_token_path() == ip._proxy_state_dir_ro() / "management.token"
     assert not (hermes_home / "proxy").exists()
 
+    token = ip.ensure_management_token()
+    assert token.startswith("hermes-mgmt-")
+    p = ip._management_token_path()
+    assert p.is_file()
+    assert p.read_text(encoding="utf-8-sig").strip() == token
+    # 0600-style private write: reuse without minting a second token.
+    assert ip.ensure_management_token() == token
+    # Forced rotation mints a new token at the same single path.
+    rotated = ip.ensure_management_token(force=True)
+    assert rotated != token
+    assert ip._management_token_path().read_text(encoding="utf-8-sig").strip() == rotated
+
+
+    # Unknown providers (no entry in _BEARER_PROVIDERS) are skipped, not warned.
+
+
+# ---------------------------------------------------------------------------
+# Config / mapping serialization
+# ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("extra_secrets, error", [
     ([{"env_var": "github-token", "hosts": ["api.github.com"]}], "uppercase environment"),
@@ -91,28 +111,6 @@ def test_extra_secret_specs_reject_builtin_aliases_and_egress_control_names(env_
 def test_extra_secret_specs_reject_overlapping_host_scopes(extra_secrets):
     with pytest.raises(ValueError, match="overlaps mapping"):
         ip.parse_extra_secret_specs(extra_secrets)
-
-
-
-    token = ip.ensure_management_token()
-    assert token.startswith("hermes-mgmt-")
-    p = ip._management_token_path()
-    assert p.is_file()
-    assert p.read_text(encoding="utf-8-sig").strip() == token
-    # 0600-style private write: reuse without minting a second token.
-    assert ip.ensure_management_token() == token
-    # Forced rotation mints a new token at the same single path.
-    rotated = ip.ensure_management_token(force=True)
-    assert rotated != token
-    assert ip._management_token_path().read_text(encoding="utf-8-sig").strip() == rotated
-
-
-    # Unknown providers (no entry in _BEARER_PROVIDERS) are skipped, not warned.
-
-
-# ---------------------------------------------------------------------------
-# Config / mapping serialization
-# ---------------------------------------------------------------------------
 
 
 def _sample_mapping(env_name: str = "OPENROUTER_API_KEY") -> ip.TokenMapping:
@@ -192,6 +190,25 @@ def test_merge_mappings_preserves_token_for_normalized_unchanged_authority():
     merged = ip.merge_mappings(existing=[existing], discovered=[unchanged])
 
     assert merged[0].proxy_token == "old-token"
+
+
+def test_custom_secret_method_and_path_scope_reaches_iron_proxy_rules(hermes_home, tmp_path):
+    """Declared methods/path_prefix survive mappings.json and render as iron-proxy swap rules."""
+    spec = ip.parse_extra_secret_specs([{
+        "env_var": "GITHUB_READ_TOKEN", "hosts": ["api.github.com"],
+        "methods": ["get"], "path_prefix": "/repos/",
+    }])
+    ip.write_mappings(ip.discover_provider_mappings(available_env_names=["GITHUB_READ_TOKEN"], extra_specs=spec))
+    cfg = ip.build_proxy_config(mappings=ip.load_mappings(), ca_cert=tmp_path / "ca.crt", ca_key=tmp_path / "ca.key")
+
+    [rule] = cfg["transforms"][1]["config"]["secrets"]
+    assert rule["rules"] == [{"host": "api.github.com", "methods": ["GET"], "paths": ["/repos", "/repos/*"]}]
+
+
+@pytest.mark.parametrize("path_prefix", ["repos", "/repos/*", "/repos/%2e%2e", "/repos/../admin", "/repos?x=1"])
+def test_custom_secret_path_prefix_refuses_non_literal_scope(path_prefix):
+    with pytest.raises(ValueError, match=r"path_prefix must be"):
+        ip.parse_extra_secret_specs([{"env_var": "GITHUB_READ_TOKEN", "hosts": ["api.github.com"], "path_prefix": path_prefix}])
 
 
 # ---------------------------------------------------------------------------

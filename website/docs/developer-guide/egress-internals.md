@@ -170,7 +170,7 @@ All write paths use `os.open(O_WRONLY | O_CREAT | O_NOFOLLOW, 0o600)` + `os.fsta
 
 Regression: `test_subprocess_env_strips_unrelated_secrets`, `test_subprocess_env_strips_proxy_recursion_vars`, `test_subprocess_env_keeps_infrastructure_vars`.
 
-Operator-defined `proxy.extra_secrets` entries pass through `parse_extra_secret_specs()` before discovery. The parser accepts only uppercase env-var names, exact fully-qualified DNS hosts, and RFC-token header names; it rejects IP literals, wildcard scopes, URL components, built-in/duplicate env names, and routing/framing/hop-by-hop headers. Exact hosts are required because wildcard scopes can include attacker-controlled tenants under public or private suffixes. This validation is the security boundary that prevents a broad or malformed mapping from sending one credential to unintended requests.
+Operator-defined `proxy.extra_secrets` entries pass through `parse_extra_secret_specs()` before discovery. The parser accepts only uppercase env-var names, exact fully-qualified DNS hosts, and RFC-token header names; it rejects IP literals, wildcard scopes, URL components, built-in/duplicate env names, and routing/framing/hop-by-hop headers. Optional `methods` (uppercase tokens) and `path_prefix` (literal, no globs/escapes/dot segments) render into the secret's iron-proxy `rules` as `methods: [...]` and `paths: [prefix, prefix/*]`, so the method/path scope is enforced by iron-proxy's own matcher, not by Hermes. Exact hosts are required because wildcard scopes can include attacker-controlled tenants under public or private suffixes. This validation is the security boundary that prevents a broad or malformed mapping from sending one credential to unintended requests.
 
 ### Bind policy
 

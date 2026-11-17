@@ -161,7 +161,7 @@ def test_setup_discovers_validated_custom_secret_from_hermes_env(hermes_home, mo
     save_config(cfg)
     (hermes_home / ".env").write_text("EBIRD_API_KEY=real-ebird-secret\n", encoding="utf-8")
     monkeypatch.delenv("EBIRD_API_KEY", raising=False)
-    monkeypatch.setattr(ip, "load_mappings", lambda: [])
+    monkeypatch.setattr(ip, "load_mappings", list)
 
     mappings = proxy_cli._setup_mint_tokens(proxy_cli.Console(file=MagicMock()), _args())
 

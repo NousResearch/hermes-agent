@@ -164,7 +164,7 @@ def _setup_mint_tokens(console: Console, args: argparse.Namespace):
     except ValueError as exc:
         console.print(f"  [red]✗ Invalid custom credential mapping: {exc}[/red]")
         return None
-    available_env_names: List[str] = []
+    available_env_names: list[str] = []
     if _effective_credential_source(proxy_cfg, args) == "bitwarden":
         available_env_names = _bitwarden_env_names(console)
         if available_env_names is None:
@@ -587,7 +587,7 @@ def _bitwarden_env_names(console: Console) -> Optional[list[str]]:
         return None
 
 
-def _load_env_file_into_environ(*, extra_env_names: Optional[List[str]] = None) -> int:
+def _load_env_file_into_environ(*, extra_env_names: Optional[list[str]] = None) -> int:
     """Backfill configured credential keys from ``~/.hermes/.env`` into ``os.environ``."""
     try:
         file_env = load_env()

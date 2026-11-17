@@ -83,6 +83,7 @@ _NON_BEARER_PROVIDERS: tuple[str, ...] = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCES
 
 _ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_HTTP_METHOD_RE = re.compile(r"^[A-Z]{1,16}$")
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _FORBIDDEN_MATCH_HEADERS = frozenset({
     "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
@@ -180,10 +181,13 @@ class TokenMapping:
     OWN env at egress; ``alias_env_names`` are extra SANDBOX names for the same token."""
     proxy_token: str
     real_env_name: str
-    upstream_hosts: Tuple[str, ...]
-    match_headers: Tuple[str, ...] = ("Authorization",)
-    alias_env_names: Tuple[str, ...] = ()
+    upstream_hosts: tuple[str, ...]
+    match_headers: tuple[str, ...] = ("Authorization",)
+    alias_env_names: tuple[str, ...] = ()
     match_query: bool = True
+    # Request scope for the swap (iron-proxy ``rules`` methods/paths); empty = every request to the hosts.
+    methods: tuple[str, ...] = ()
+    path_prefix: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -191,8 +195,52 @@ class CredentialMappingSpec:
     """Validated operator-defined static-header credential mapping."""
 
     env_var: str
-    hosts: Tuple[str, ...]
-    match_headers: Tuple[str, ...]
+    hosts: tuple[str, ...]
+    match_headers: tuple[str, ...]
+    methods: tuple[str, ...] = ()
+    path_prefix: Optional[str] = None
+
+
+def _validate_extra_secret_methods(raw: object, *, path: str) -> tuple[str, ...]:
+    """Uppercase HTTP method tokens; absent = every method."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{path} must be a non-empty list of HTTP methods")
+    methods = []
+    for index, method in enumerate(raw):
+        if not isinstance(method, str) or not _HTTP_METHOD_RE.fullmatch(method.strip().upper()):
+            raise ValueError(f"{path}[{index}] must be an HTTP method name such as GET or POST")
+        methods.append(method.strip().upper())
+    return tuple(dict.fromkeys(methods))
+
+
+def _validate_extra_secret_path_prefix(raw: object, *, path: str) -> Optional[str]:
+    """Literal path-segment prefix (``/repos`` covers ``/repos`` and ``/repos/...``); absent = every path.
+
+    Glob metacharacters, percent-escapes and dot segments are refused so the rendered iron-proxy
+    ``paths`` glob can only ever mean "this literal prefix and below".
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.startswith("/"):
+        raise ValueError(f"{path} must be an absolute URL path starting with /")
+    prefix = raw.rstrip("/")
+    if any(c in prefix for c in "*?[]\\%#") or any(seg in (".", "..") for seg in prefix.split("/")):
+        raise ValueError(f"{path} must be a literal path without wildcards, escapes, queries or dot segments")
+    if not all(c.isprintable() and not c.isspace() for c in prefix):
+        raise ValueError(f"{path} must not contain whitespace or control characters")
+    return prefix or None
+
+
+def _swap_rules(mapping: TokenMapping) -> list[dict]:
+    """iron-proxy ``rules`` for one mapping: host, plus method/path scope when the operator declared one."""
+    scope: dict = {}
+    if mapping.methods:
+        scope["methods"] = list(mapping.methods)
+    if mapping.path_prefix:
+        scope["paths"] = [mapping.path_prefix, f"{mapping.path_prefix}/*"]
+    return [{"host": h, **scope} for h in mapping.upstream_hosts]
 
 
 def _host_scopes_overlap(left: str, right: str) -> bool:
@@ -234,7 +282,7 @@ def _validate_extra_secret_host(value: object, *, path: str) -> str:
     return hostname.lower()
 
 
-def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
+def parse_extra_secret_specs(raw: object) -> list[CredentialMappingSpec]:
     """Validate ``proxy.extra_secrets`` without ever reading secret values.
 
     Hosts are deliberately limited to exact DNS names, and
@@ -270,14 +318,14 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
         for host in provider["hosts"]
     ]
     seen_env_names = set()
-    specs: List[CredentialMappingSpec] = []
+    specs: list[CredentialMappingSpec] = []
     for index, item in enumerate(raw):
         path = f"proxy.extra_secrets[{index}]"
         if not isinstance(item, dict):
             raise ValueError(f"{path} must be a mapping")
         if any(not isinstance(key, str) for key in item):
             raise ValueError(f"{path} keys must be strings")
-        unknown = set(item) - {"env_var", "hosts", "match_headers"}
+        unknown = set(item) - {"env_var", "hosts", "match_headers", "methods", "path_prefix"}
         if unknown:
             raise ValueError(f"{path} has unsupported field(s): {', '.join(sorted(unknown))}")
 
@@ -310,7 +358,7 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
         raw_headers = item.get("match_headers", ["Authorization"])
         if not isinstance(raw_headers, list) or not raw_headers:
             raise ValueError(f"{path}.match_headers must be a non-empty list")
-        headers: List[str] = []
+        headers: list[str] = []
         seen_headers = set()
         for header_index, header in enumerate(raw_headers):
             header_path = f"{path}.match_headers[{header_index}]"
@@ -324,7 +372,11 @@ def parse_extra_secret_specs(raw: object) -> List[CredentialMappingSpec]:
                 seen_headers.add(normalized)
 
         seen_env_names.add(env_var)
-        specs.append(CredentialMappingSpec(env_var, hosts, tuple(headers)))
+        specs.append(CredentialMappingSpec(
+            env_var, hosts, tuple(headers),
+            _validate_extra_secret_methods(item.get("methods"), path=f"{path}.methods"),
+            _validate_extra_secret_path_prefix(item.get("path_prefix"), path=f"{path}.path_prefix"),
+        ))
         claimed_hosts.extend((env_var, host) for host in hosts)
     return specs
 
@@ -639,7 +691,7 @@ def build_proxy_config(
             "proxy_value": m.proxy_token, "match_headers": list(m.match_headers or ("Authorization",)),
             "match_query": m.match_query, "match_body": False, "require": True,
         },
-        "rules": [{"host": h} for h in m.upstream_hosts],
+        "rules": _swap_rules(m),
     } for m in mappings]
     # ONE string per listener field.  tunnel_listen is the CONNECT+MITM listener sandboxes reach via
     # HTTPS_PROXY (a CONNECT to http_listen is forwarded upstream and 400s); http_listen is plain-HTTP
@@ -705,7 +757,7 @@ def write_mappings(mappings: list[TokenMapping]) -> Path:
     payload = {"version": 1, "tokens": [{
         "proxy_token": m.proxy_token, "env_name": m.real_env_name, "upstream_hosts": list(m.upstream_hosts),
         "match_headers": list(m.match_headers), "alias_env_names": list(m.alias_env_names),
-        "match_query": m.match_query,
+        "match_query": m.match_query, "methods": list(m.methods), "path_prefix": m.path_prefix,
     } for m in mappings]}
     path = _proxy_state_dir() / "mappings.json"
     atomic_json_write(path, payload, mode=0o600)
@@ -728,29 +780,30 @@ def load_mappings() -> list[TokenMapping]:
                 item["proxy_token"], item["env_name"], tuple(item.get("upstream_hosts") or ()),
                 tuple(item.get("match_headers") or ("Authorization",)),
                 tuple(item.get("alias_env_names") or ()), bool(item.get("match_query", True)),
+                tuple(item.get("methods") or ()), item.get("path_prefix") or None,
             ))
     return out
 
 
 def discover_provider_mappings(
     *,
-    available_env_names: Optional[List[str]] = None,
+    available_env_names: Optional[list[str]] = None,
     extra_specs: Sequence[CredentialMappingSpec] = (),
-) -> List[TokenMapping]:
+) -> list[TokenMapping]:
     """One TokenMapping per configured credential whose env var is set (built-ins first). Canonical OR any alias
     present -> ONE mapping on the canonical name (the subprocess-env builder mirrors aliases).
     ``available_env_names`` (Bitwarden adapter) overrides the non-empty names in the host env."""
     names = set(available_env_names) if available_env_names is not None else {k for k, v in os.environ.items() if v}
-    specs = [(n, h, ("Authorization",), (), True) for n, h in _BEARER_PROVIDERS.items()] + [
-        (n, tuple(s["hosts"]), tuple(s["match_headers"]), tuple(s.get("aliases") or ()), True)
+    specs = [(n, h, ("Authorization",), (), True, (), None) for n, h in _BEARER_PROVIDERS.items()] + [
+        (n, tuple(s["hosts"]), tuple(s["match_headers"]), tuple(s.get("aliases") or ()), True, (), None)
         for n, s in _HEADER_AUTH_PROVIDERS.items()
-    ] + [(s.env_var, s.hosts, s.match_headers, (), False) for s in extra_specs]
+    ] + [(s.env_var, s.hosts, s.match_headers, (), False, s.methods, s.path_prefix) for s in extra_specs]
     return [
         TokenMapping(
             mint_proxy_token(prefix=env_name.lower().replace("_api_key", "")),
-            env_name, hosts, headers, aliases, match_query,
+            env_name, hosts, headers, aliases, match_query, methods, path_prefix,
         )
-        for env_name, hosts, headers, aliases, match_query in specs
+        for env_name, hosts, headers, aliases, match_query, methods, path_prefix in specs
         if env_name in names or any(a in names for a in aliases)
     ]
 
@@ -764,13 +817,13 @@ def known_credential_env_names(*, extra_env_names: Sequence[str] = ()) -> set[st
     return names
 
 
-def discover_uncovered_providers(*, available_env_names: Optional[List[str]] = None) -> List[str]:
+def discover_uncovered_providers(*, available_env_names: Optional[list[str]] = None) -> list[str]:
     """Env names of recognized providers the proxy can't swap (SigV4 / SDK-minted OAuth)."""
     names = set(available_env_names) if available_env_names is not None else {k for k, v in os.environ.items() if v}
     return [n for n in _NON_BEARER_PROVIDERS if n in names]
 
 
-def _mapping_authority(mapping: TokenMapping) -> Tuple:
+def _mapping_authority(mapping: TokenMapping) -> tuple:
     """Normalized authority granted to one sandbox-visible capability token."""
     return (
         mapping.real_env_name,
@@ -778,10 +831,12 @@ def _mapping_authority(mapping: TokenMapping) -> Tuple:
         tuple(sorted(header.lower() for header in mapping.match_headers)),
         tuple(sorted(mapping.alias_env_names)),
         mapping.match_query,
+        tuple(sorted(mapping.methods)),
+        mapping.path_prefix,
     )
 
 
-def merge_mappings(*, existing: List[TokenMapping], discovered: List[TokenMapping], rotate: bool = False) -> List[TokenMapping]:
+def merge_mappings(*, existing: list[TokenMapping], discovered: list[TokenMapping], rotate: bool = False) -> list[TokenMapping]:
     """Preserve tokens only while their complete authority remains unchanged."""
     by_authority = {} if rotate else {_mapping_authority(m): m for m in existing}
     return [

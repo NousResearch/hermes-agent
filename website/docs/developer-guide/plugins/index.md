@@ -1609,6 +1609,39 @@ The same grant also gates `deregister()`: without it, a plugin cannot
 remove a tool it does not own (which would otherwise be a way around the
 override check).
 
+### Ask the user before a tool acts (preview + apply) {#approval-tool-contract}
+
+A tool whose call commits something the user should see first (sending a message, spending money,
+publishing) can register a `preview` and an `apply` instead of a plain handler:
+
+```python
+import json
+
+def preview(args):
+    return f"Send to {args['channel']}:\n{args['text']}"
+
+def apply(args, decision_id):
+    # decision_id is stable for this approved call: pass it to the remote API as an
+    # idempotency key so a retry on their side cannot double-send either.
+    post(args["channel"], args["text"], idempotency_key=decision_id)
+    return json.dumps({"sent": True})
+
+def register(ctx):
+    ctx.register_tool(name="send_message", toolset="my_plugin", schema=SEND_SCHEMA,
+                      preview=preview, apply=apply)
+```
+
+- The tool is asked under every `approvals.scope` (it declared itself an approval tool); the card
+  shows `preview(args)`. `preview` may also accept `task_id`. Keep it pure: it runs before approval.
+- `apply` runs only with the exact approved `args`, and at most once per `decision_id`; a replayed
+  call returns the stored result. `apply` receives the usual optional dispatch kwargs (`task_id`,
+  `session_id`, ...) when its signature asks for them. `handler` may be omitted (it defaults to
+  `apply`).
+- `preview` alone (no `apply`) only changes what the `approvals.scope: all` card shows; the tool is
+  not gated under the default scope.
+- Tools that declare neither behave exactly as before. User-facing behaviour:
+  [Tools that ask before they act](../../user-guide/security.md#approval-tools).
+
 ### Register multiple hooks
 
 ```python

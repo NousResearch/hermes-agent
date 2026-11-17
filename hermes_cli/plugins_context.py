@@ -270,14 +270,20 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
 
     @_serialized_replacement
     def register_tool(
-        self, name: str, toolset: str, schema: dict, handler: Callable,
+        self, name: str, toolset: str, schema: dict, handler: Callable | None = None,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        preview: Callable | None = None, apply: Callable | None = None,
     ) -> Optional[PluginRegistration]:
         """Register a tool in the global registry and track it as plugin-provided. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
         needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
-        any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194)."""
+        any enabled plugin could silently replace a privileged built-in like ``write_file`` (#23194).
+
+        ``preview(args) -> str`` / ``apply(args, decision_id=...)`` declare an approval tool: the
+        user sees ``preview``'s text on the approval card and ``apply`` runs once from the exact
+        approved args (``handler`` may then be omitted). See tools/approval_decisions.py."""
+        handler = handler or apply
         if override and not self._tool_override_allowed(name):
             raise _facade().PluginToolOverrideError(
                 f"Plugin {self.manifest.name!r} cannot override built-in tool {name!r}. Set "
@@ -294,7 +300,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         registry.register(
             name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
             requires_env=requires_env, is_async=is_async, description=description, emoji=emoji,
-            override=override, scope=scope,
+            override=override, scope=scope, preview=preview, apply=apply,
         )
         registered = registry.snapshot_registration(name, scope=scope)
         handle = None

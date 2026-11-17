@@ -2215,6 +2215,23 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
+        # Pre-Flight API-Key Check (mandatory gate)
+        try:
+            from hermes_cli.kanban_preflight_api_keys import check_single_task
+            board_path = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "kanban.db"
+            should_block, reason = check_single_task(board_path, task_id)
+            if should_block:
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = ? "
+                    "WHERE id = ? AND status = 'ready'",
+                    ("missing-api-keys", task_id),
+                )
+                _append_event(conn, task_id, "blocked", {"reason": reason})
+                _append_event(conn, task_id, "preflight_block", {"reason": reason})
+                return None
+        except Exception:
+            # fail-open: if the preflight check itself errors, do not block the task
+            pass
         run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now, expect_assignee=expect_assignee)
         if run_id is None:
             return None

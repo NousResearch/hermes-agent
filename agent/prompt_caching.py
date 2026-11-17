@@ -260,6 +260,15 @@ def catalog_cache_markers(provider: str, base_url: str = "", model: str = "", ap
     return row["pricing"].get("cache_write") not in (None, "", "0")
 
 
+def learned_or_catalog_markers(provider: str, base_url: str = "", model: str = "", api_key: str = "") -> bool | None:
+    """Whether a Chat Completions request to ``model`` should carry markers: what Hermes learned from
+    this route's own usage (``prompt_cache_routes.marker_preference``) first, then its catalog."""
+    from agent.prompt_cache_routes import marker_preference
+
+    learned = marker_preference(provider, base_url, model)
+    return learned if learned is not None else catalog_cache_markers(provider, base_url, model, api_key)
+
+
 def route_ttl_ceiling(provider: str, base_url: str = "") -> str | None:
     """Longest cache tier the route keeps, or None when it keeps whatever is asked for.
 

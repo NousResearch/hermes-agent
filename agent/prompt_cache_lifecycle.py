@@ -103,6 +103,31 @@ def guaranteed_window(agent: Any) -> Optional[tuple[float, float]]:
     return float(window.guaranteed_until), float(ttl_s)
 
 
+def learned_window(agent: Any, window: tuple[float, float], marked: bool
+                   ) -> tuple[Optional[tuple[float, float]], Optional[str]]:
+    """``window`` as the route store (``agent.prompt_cache_routes``) has learned it really behaves:
+    ``(None, rule)`` when keep-alives cannot pay on it (``no-cache``, ``write-on-hit``, or a learned
+    lifetime too short to warm), the window shortened to a learned lifetime (never lengthened past the
+    tier), or unchanged."""
+    from agent.prompt_cache_routes import rule_for
+
+    deadline, tier_s = window
+    route = (getattr(agent, "provider", ""), getattr(agent, "base_url", ""), getattr(agent, "model", ""))
+    rule = rule_for(*route, marked, tier_s=tier_s)
+    if rule is None and not marked:
+        # Markers were dropped because the explicit cache never read back: the automatic one is no better
+        # until it proves a read of its own.
+        from agent.prompt_cache_routes import implicit_ever_read
+
+        rule = None if implicit_ever_read(*route) or rule_for(*route, True) != "no-cache" else "no-cache"
+    if rule is None:
+        return window, None
+    if not rule.startswith("lifetime:"):
+        return None, rule
+    life = min(float(rule.split(":", 1)[1]), tier_s)
+    return (deadline - (tier_s - life), life), rule
+
+
 def has_cache_markers(api_kwargs: dict[str, Any]) -> bool:
     """True when the request carries at least one ``cache_control`` marker (system, tools or
     messages) — without one there is no entry to keep warm."""
@@ -419,6 +444,9 @@ class PromptCacheWarmer:
         window = guaranteed_window(agent)
         if window is None or cache_warming_delay_s(window[1]) is None:
             return self._stop("cache window not guaranteed warm")
+        window, learned = learned_window(agent, window, self._marked)
+        if window is None:
+            return self._stop(f"learned: {learned}")
         cached_tokens, uncached_tokens = self._prompt_split(response)
         if cached_tokens + uncached_tokens <= 0:
             return self._stop("prompt size unavailable")
@@ -661,6 +689,11 @@ class PromptCacheWarmer:
                 self._stop(stale)
                 return
             window = guaranteed_window(self.agent)
+            if window is not None:
+                window, learned = learned_window(self.agent, window, self._marked)
+                if window is None:
+                    self._stop(f"learned: {learned}")
+                    return
             if window is None:
                 self._stop("cache window not guaranteed warm")
                 return

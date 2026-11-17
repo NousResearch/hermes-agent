@@ -3675,6 +3675,7 @@ export interface PromptCacheWindow {
   refreshed_at?: number | null
   coverage?: Record<string, number>
   warming_off?: boolean
+  learned?: string | null
 }
 export interface SessionCompressParams {
   session_id: string

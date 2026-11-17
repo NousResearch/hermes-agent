@@ -101,12 +101,6 @@ def _verified(name: str, info: dict) -> InternalNetwork:
     return InternalNetwork(name=name, gateway=gateway)
 
 
-def existing_internal_gateway(docker_exe: str) -> str | None:
-    """Gateway of this profile's internal network if it already exists (never creates it)."""
-    info = _inspect(docker_exe, internal_network_name())
-    return _gateway_ipv4(info) if info else None
-
-
 def ensure_internal_network(docker_exe: str) -> InternalNetwork:
     """Create the profile's internal network if missing, then verify it (fail closed)."""
     if facts.os_family() != "linux":

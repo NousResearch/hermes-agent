@@ -30,15 +30,13 @@ _PROXY_CONTROL_ENV = frozenset({
 
 def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str]]:
     """``(volume_args, env_overrides, host_args)`` for routing through iron-proxy; all empty
-    when the proxy is disabled/unconfigured/not running. With ``proxy.docker_internal_network``
-    ``host_args`` also carries ``--network <internal>`` so iron-proxy is the only route out. Under ``proxy.enforce_on_docker``
-    (default) any half-configured state raises so the sandbox refuses to start unprotected;
+    when the proxy is disabled/unconfigured/not running. Under ``proxy.enforce_on_docker``
+    (default, or whenever ``proxy.docker_internal_network`` is on) any half-configured state raises so the sandbox refuses to start unprotected;
     otherwise it warns and continues. Only ImportError is swallowed — a broken config must
     fail visibly rather than silently disable enforcement."""
     try:
         from hermes_cli.config import load_config
         from agent.proxy_sources import iron_proxy as ip
-        from tools.environments.docker import find_docker  # lazy: docker.py imports this module
     except ImportError as exc:
         logger.debug("Egress proxy plumbing unavailable: %s", exc)
         return ([], {}, [])
@@ -51,7 +49,9 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
     enforce = bool(proxy_cfg.get("enforce_on_docker", True))
 
     def _degraded(msg: str):
-        if enforce:
+        # docker_internal_network is an explicit opt-in to structural isolation: falling back to
+        # the open bridge is the posture the operator opted out of, whatever enforce_on_docker says.
+        if enforce or proxy_cfg.get("docker_internal_network"):
             raise RuntimeError(msg)
         logger.warning("%s — continuing without proxy (enforce_on_docker=false).", msg)
         return ([], {}, [])
@@ -112,23 +112,29 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
         for alias in getattr(m, "alias_env_names", ()) or ():
             env_overrides[alias] = m.proxy_token
 
-    if proxy_cfg.get("docker_internal_network"):
-        # Explicit opt-in to structural isolation: refuse even when enforce_on_docker is
-        # false, since falling back to the open bridge is the posture the operator opted out of.
-        network = ensure_internal_network(find_docker() or "docker")
-        bind_host = ip._probe_target()[0]
-        if bind_host != network.gateway:
-            raise RuntimeError(
-                f"proxy.docker_internal_network is on but iron-proxy listens on {bind_host}, not on "
-                f"{network.gateway} (the gateway of Docker network {network.name!r}). "
-                "Run `hermes egress restart` to rebind it.")
-        # The internal network's gateway is the sandbox's only reachable address, so
-        # host.docker.internal must point there rather than at docker0.
-        host_args = ["--network", network.name, "--add-host", f"host.docker.internal:{network.gateway}"]
-    else:
-        # Linux needs an explicit host-gateway mapping; Docker Desktop already has it.
-        host_args = ["--add-host", "host.docker.internal:host-gateway"]
+    # Linux needs an explicit host-gateway mapping; Docker Desktop already has it.
+    host_args = ["--add-host", "host.docker.internal:host-gateway"]
     return (volume_args, env_overrides, host_args)
+
+
+def internal_network_host_args(docker_exe: str, host_args: list[str]) -> list[str]:
+    """``host_args`` for an egress-enabled sandbox: unchanged unless ``proxy.docker_internal_network``
+    is on, then ``--network <internal> --add-host host.docker.internal:<gateway>`` so iron-proxy on
+    the gateway is the only reachable address. Raises (whatever enforce_on_docker says) when the
+    network can't be verified or iron-proxy isn't bound to its gateway."""
+    from hermes_cli.config import load_config
+    from agent.proxy_sources import iron_proxy as ip
+
+    if not (load_config().get("proxy") or {}).get("docker_internal_network"):
+        return host_args
+    network = ensure_internal_network(docker_exe)
+    bind_host = ip._probe_target()[0]
+    if bind_host != network.gateway:
+        raise RuntimeError(
+            f"proxy.docker_internal_network is on but iron-proxy listens on {bind_host}, not on "
+            f"{network.gateway} (the gateway of Docker network {network.name!r}). "
+            "Run `hermes egress restart` to rebind it.")
+    return ["--network", network.name, "--add-host", f"host.docker.internal:{network.gateway}"]
 
 
 def _egress_reuse_fingerprint(

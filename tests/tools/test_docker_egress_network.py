@@ -51,6 +51,8 @@ def egress_ready(tmp_path, monkeypatch):
     stub.write_text(_STUB.format(python=sys.executable, state=str(state)), encoding="utf-8")
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setattr(docker_env, "_docker_executable", str(stub))
+    monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(ip, "_port_listening", lambda h, p: True)
 
     from hermes_cli.config import load_config, save_config
 
@@ -65,13 +67,17 @@ def egress_ready(tmp_path, monkeypatch):
         http_listen=["172.31.0.1:9090"]))
     ip.write_mappings([mapping])
     (proxy_dir / "iron-proxy.pid").write_text("99999", encoding="utf-8")
-    monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(ip, "_port_listening", lambda h, p: True)
     cfg = load_config()
     cfg["proxy"] = {**(cfg.get("proxy") or {}), "enabled": True, "enforce_on_docker": True,
                     "docker_internal_network": True}
     save_config(cfg)
     return state
+
+
+def _sandbox_host_args():
+    """The egress ``host_args`` DockerEnvironment would hand to ``docker run``."""
+    _volumes, env, host_args = docker_egress._egress_proxy_args_for_docker()
+    return env, docker_egress.internal_network_host_args(docker_env.find_docker() or "docker", host_args)
 
 
 def _calls(state):
@@ -80,7 +86,7 @@ def _calls(state):
 
 
 def test_sandbox_joins_internal_network_with_proxy_as_only_exit(egress_ready):
-    _volumes, env, host_args = docker_egress._egress_proxy_args_for_docker()
+    env, host_args = _sandbox_host_args()
 
     created = [c for c in _calls(egress_ready) if c[:2] == ["network", "create"]]
     assert created and "--internal" in created[0] and "--ipv6=false" in created[0]
@@ -94,11 +100,29 @@ def test_sandbox_joins_internal_network_with_proxy_as_only_exit(egress_ready):
         docker_egress._egress_reuse_fingerprint([], env, ["--add-host", "host.docker.internal:host-gateway"]))
 
 
-def test_non_internal_network_refuses_sandbox_start(egress_ready):
-    # A pre-existing network under the profile's name that has a route out.
-    (egress_ready / "nets.json").write_text(json.dumps({"*": {
+def _route_out_network(state, monkeypatch):
+    """A pre-existing network under the profile's name that has a route out."""
+    (state / "nets.json").write_text(json.dumps({"*": {
         "Internal": False, "EnableIPv6": False,
         "IPAM": {"Config": [{"Subnet": "172.31.0.0/16", "Gateway": "172.31.0.1"}]}}}), encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="not internal"):
-        docker_egress._egress_proxy_args_for_docker()
+
+def _proxy_down_without_enforcement(state, monkeypatch):
+    """iron-proxy stopped and enforce_on_docker off: the legacy fallback is the open bridge."""
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["proxy"]["enforce_on_docker"] = False
+    save_config(cfg)
+    monkeypatch.setattr(ip, "_pid_alive", lambda pid: False)
+
+
+@pytest.mark.parametrize("break_it, error", [
+    (_route_out_network, "not internal"),
+    (_proxy_down_without_enforcement, "not running"),
+])
+def test_sandbox_refuses_to_start_off_the_internal_network(egress_ready, monkeypatch, break_it, error):
+    break_it(egress_ready, monkeypatch)
+
+    with pytest.raises(RuntimeError, match=error):
+        _sandbox_host_args()

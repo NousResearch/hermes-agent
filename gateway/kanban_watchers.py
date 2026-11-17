@@ -302,6 +302,10 @@ class GatewayKanbanWatchersMixin:
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
+                    # Same agreement for the concurrency caps — an edit to
+                    # kanban.max_in_progress must apply without a restart, which
+                    # is what strands in-flight workers.
+                    await _to_thread_process_service(dispatcher.refresh_caps, _load_config)
                     # See #49638.
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)

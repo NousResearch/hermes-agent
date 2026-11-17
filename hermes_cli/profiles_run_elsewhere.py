@@ -22,10 +22,19 @@ While a profile is marked, its home is written by the backend the plugin runs, s
 load no env file and no secret source from it: ``load_hermes_dotenv`` (run at the import of every
 ``hermes`` start, before any command can refuse) reads no ``.env`` or ``.op.env`` there, takes no
 config-backend selector from them and resolves none of its ``secrets:`` sources, and a host that
-serves the profile resolves none of them either (``hydrate_profile_secret_sources``). The marking
-plugin supplies what its own host process needs. Two readers still open the ``.env`` file: code
-that asks for one named value (``hermes_cli.config.get_env_value``), and the secret scope a host
-builds for a profile it serves.
+serves the profile resolves none of them either (``hydrate_profile_secret_sources``). Code that
+asks for one value later gets none from the home either: the ``.env`` tokenizer
+(``agent.secret_scope.load_env_file``, behind ``hermes_cli.config.load_env`` / ``get_env_value``,
+the credential pool's seeding and the secret scope a host builds for a profile) reads an env file
+in a marked home as empty and does not open it. Hermes's own ``.env`` writers still write there, so
+a key the user saves through the marking plugin's host process lands in the file. The marking
+plugin supplies what its own host process needs.
+
+Nor does a host process start a command the profile's own files name: the host features that do
+(``tools.hosted_tool_policy.RUNS_PROFILE_COMMANDS``: shell hooks, MCP stdio servers, cron scripts,
+inline skill shell) are off for a marked home, so ``hermes hooks test`` runs no hook, and the MCP
+probe behind ``hermes mcp test`` / ``mcp add`` refuses before it starts or calls a server.
+``config.yaml`` itself is still read (``hermes status`` and ``hermes config`` show it).
 
 The marker is the file ``<hermes root>/profiles_run_elsewhere/<profile>.json``. It lives under the
 Hermes root and never inside a profile home, so the profile's backend cannot remove it. The file's
@@ -84,6 +93,16 @@ class RunElsewhere:
         return (f"Profile '{self.profile}' runs elsewhere: the '{self.plugin}' plugin runs its backend, "
                 "so Hermes does not run it on this host. Use the profile from the Hermes desktop app, "
                 f"or turn this off in the '{self.plugin}' plugin to run it here.")
+
+    def keys_note(self) -> str:
+        """One line for the commands that list keys (``hermes status``, ``hermes config``): values
+        in this home's ``.env`` are not read on this host, so they show as not set."""
+        if self.folder_error is not None:
+            return (f"Hermes cannot read {self.path.parent}, so it reads no profile's .env keys on this "
+                    "host: they show as not set here.")
+        owner = f"the '{self.plugin}' plugin runs" if self.plugin is not None else "a plugin runs"
+        return (f"Profile '{self.profile}' runs elsewhere ({owner} its backend): Hermes does not read "
+                "its .env keys on this host, so they show as not set here.")
 
 
 class ProfileRunsElsewhere(RuntimeError):
@@ -195,6 +214,62 @@ def run_elsewhere_for_home(home: str | Path) -> RunElsewhere | None:
         if entry is not None:
             return entry
     return None
+
+
+# home -> ((marker folder, marker file) per reading of the home, their stamp, marked)
+_HOME_ANSWERS: dict[str, tuple[tuple[tuple[str, str], ...], tuple, bool]] = {}
+
+
+def _marker_stamp(markers: tuple[tuple[str, str], ...]) -> tuple:
+    """What a stat says about each marker's folder and file. A marker written or removed, or a
+    folder that appears, goes or stops being one, changes it."""
+    stamp: list[tuple] = []
+    for folder, marker in markers:
+        for path in (folder, marker):
+            try:
+                st = os.stat(path)
+            except OSError as exc:
+                stamp.append((type(exc), exc.errno))
+                if path is folder and isinstance(exc, FileNotFoundError):
+                    break  # no folder, so no marker in it
+            else:
+                stamp.append((st.st_mode, st.st_size, st.st_mtime_ns))
+    return tuple(stamp)
+
+
+def home_runs_elsewhere(home: str | Path) -> bool:
+    """``run_elsewhere_for_home(home) is not None``, for code that asks at every value it reads
+    (the ``.env`` tokenizer, the host features that start a profile's own command).
+
+    The answer is kept per process and home. Each call stats the home's marker file and the marker
+    folder, and asks again when that differs from the stat taken before the last asking, so a
+    profile marked or cleared by any process is seen at the next call. A marker folder that cannot
+    be read marks every home, as for running a profile, and is asked about again every time.
+    """
+    key = str(home)
+    known = _HOME_ANSWERS.get(key)
+    if known is not None and _marker_stamp(known[0]) == known[1]:
+        return known[2]
+    readings = _home_readings(Path(home).expanduser())
+    markers = tuple((str(folder), str(folder / f"{profile}{_SUFFIX}"))
+                    for profile, folder in ((profile, run_elsewhere_dir(root)) for profile, root in readings))
+    stamp = _marker_stamp(markers)  # before asking: a change made while asking shows at the next call
+    entry = next((e for e in (run_elsewhere(profile, root=root) for profile, root in readings) if e is not None), None)
+    if len(_HOME_ANSWERS) >= 256:  # homes are few; a process that asks about many starts over
+        _HOME_ANSWERS.clear()
+    if entry is None or entry.folder_error is None:
+        _HOME_ANSWERS[key] = (markers, stamp, entry is not None)
+    else:
+        _HOME_ANSWERS.pop(key, None)
+    return entry is not None
+
+
+def keys_note_for_this_home() -> str | None:
+    """:meth:`RunElsewhere.keys_note` for this process's home, or None when it runs here."""
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    entry = run_elsewhere_for_home(home) if home_runs_elsewhere(home) else None
+    return None if entry is None else entry.keys_note()
 
 
 def without_profiles_run_elsewhere(profiles: list[tuple[str, Path]]) -> list[tuple[str, Path]]:

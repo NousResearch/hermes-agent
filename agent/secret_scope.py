@@ -396,11 +396,18 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
     into ``os.environ``. Absent/unreadable → ``{}``.
 
+    A file in the home of a profile a plugin runs elsewhere (``hermes_cli.profiles_run_elsewhere``) also
+    reads as ``{}`` and is not opened: that backend writes the file, so no reader on this host takes a
+    value from it. Hermes's own ``.env`` writers do not read through here and still write it.
+
     Memoised per path on the file's exact bytes (see the cache comment above). Always
     returns a fresh dict: callers mutate what they get back (``build_profile_secret_scope`` layers
     external secrets over it).
     """
     key = str(env_path)
+    from hermes_cli.profiles_run_elsewhere import home_runs_elsewhere
+    if home_runs_elsewhere(Path(env_path).parent):
+        return {}
     try:
         with open(env_path, "rb") as handle:
             raw = handle.read()

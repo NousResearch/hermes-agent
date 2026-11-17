@@ -286,8 +286,13 @@ from its home when they start: a `hermes -p <profile> …` command, and a plugin
 own host process started under that home, read no `.env` or `.op.env` there and
 resolve none of its `secrets:` sources, and a host gateway or dashboard that
 serves the profile resolves none of them either. The marking plugin supplies
-what its own host process needs. A command that looks up one named value, such
-as `hermes -p <profile> status`, still reads the `.env` file.
+what its own host process needs. A command that looks up one value later gets
+none from that `.env` either, so `hermes -p <profile> status` and `hermes -p
+<profile> config` show the profile's keys as not set, with one line saying why;
+a key saved through the plugin's host process is still written to the file.
+Host commands also start nothing the profile's own files name: `hermes -p
+<profile> hooks test` runs no shell hook, and `hermes -p <profile> mcp test`
+(or `mcp add`) refuses before it starts or calls an MCP server.
 
 The marker lives under the Hermes root, never in a profile home, so the
 profile's own backend cannot remove it. Host-side plugin code sets, reads and

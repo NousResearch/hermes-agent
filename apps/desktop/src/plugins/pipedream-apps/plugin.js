@@ -154,6 +154,14 @@ const CSS = `
 .pd-wait-copy { font-size:0.8125rem; color:var(--ui-text-secondary); line-height:1.5; }
 .pd-link { font-family:var(--font-mono, monospace); font-size:0.7rem; word-break:break-all; color:var(--ui-text-tertiary); background:var(--ui-bg-tertiary); border-radius:0.375rem; padding:0.5rem; }
 .pd-actions { display:flex; align-items:center; justify-content:flex-end; gap:0.5rem; flex-wrap:wrap; }
+
+/* Apps replaces the built-in Connectors tab in Capabilities. Keep the tab row
+   visible at every width so the collapsed dropdown never lists Connectors. */
+[data-tour="page-tabs"]:has([data-tour="tab-connectors"]) > div:first-child { display:flex !important; }
+[data-tour="page-tabs"]:has([data-tour="tab-connectors"]) > div:last-child { display:none !important; }
+[data-tour="tab-connectors"] { display:none !important; }
+[data-tour="page-tabs"]:has([data-tour="tab-connectors"]) [data-tour="tab-pipedream-apps:apps"] { order:40; }
+[data-tour="page-tabs"]:has([data-tour="tab-connectors"]) [data-tour="tab-toolsets"] { order:50; }
 `
 
 export function appSlugOf(app) {
@@ -190,6 +198,10 @@ export function errorMessage(error) {
   if (typeof error === 'string') return error
   if (error && typeof error === 'object' && typeof error.message === 'string') return error.message
   return 'Something went wrong.'
+}
+
+export function appsTabHashFor(hash) {
+  return String(hash).replace(/([?&])tab=connectors(?=&|$)/, (_, prefix) => `${prefix}tab=${ID}:apps`)
 }
 
 export function createPipedreamApi(rest) {
@@ -1138,6 +1150,16 @@ export default {
     style.textContent = CSS
     document.head.append(style)
     ctx.onDispose(() => style.remove())
+
+    const showAppsForConnectors = () => {
+      const current = window.location.hash
+      const next = appsTabHashFor(current)
+
+      if (next !== current) host.navigate(next)
+    }
+
+    showAppsForConnectors()
+    ctx.addEventListener(window, 'hashchange', showAppsForConnectors)
 
     const stored = ctx.storage.get('externalUserId', '')
     const hasStored = typeof stored === 'string' && stored.length > 0

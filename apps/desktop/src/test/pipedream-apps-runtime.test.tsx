@@ -31,6 +31,17 @@ afterAll(() => {
 })
 
 describe('pipedream apps runtime plugin', () => {
+  it('rewrites Connectors deep links to the Apps tab', () => {
+    expect(plugin.appsTabHashFor('#/capabilities?tab=connectors')).toBe(
+      '#/capabilities?tab=pipedream-apps:apps'
+    )
+    expect(plugin.appsTabHashFor('#/capabilities?tab=connectors&server=github')).toBe(
+      '#/capabilities?tab=pipedream-apps:apps&server=github'
+    )
+    expect(plugin.appsTabHashFor('#/capabilities?tab=skills')).toBe('#/capabilities?tab=skills')
+    expect(plugin.appsTabHashFor('')).toBe('')
+  })
+
   it('maps app and account shapes', () => {
     expect(plugin.appSlugOf({ name_slug: 'slack' })).toBe('slack')
     expect(plugin.accountSlugOf({ app: { name_slug: 'slack' } })).toBe('slack')

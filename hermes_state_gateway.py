@@ -929,16 +929,16 @@ class SessionGatewayMixin:
         return counts
 
     @staticmethod
-    def session_resume_model(session_meta: Optional[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
-        """``(model, route_row)`` a resumed session runs: the model plus the row to read its route from
-        (``session_gateway_runtime``), so the pair always comes from one record.
+    def session_resume_route(session_meta: Optional[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+        """``(model, route)`` a resumed session runs, both from one record so they always pair.
 
         The ``model`` column is the billing record: the first accounted call rewrites it to whatever
-        served it, a turn-scoped fallback included, and leaves ``model_config`` alone. So the pick in
-        ``model_config.model`` wins, except where the column was written together with its route: a
-        ``gateway_runtime`` with a provider (gateway route sync, CLI/gateway ``/model``), or a confirmed
-        Browser/API lock still naming the column. ``billing_provider`` served the column model, so it
-        never fills the provider of a different pick."""
+        served it, a turn-scoped fallback included, and touches nothing in ``model_config``. So the
+        model comes from the record the route comes from: a ``gateway_runtime`` route's own ``model``
+        (every route writer stamps it), else the pick in ``model_config.model``. The column is used
+        only where nothing else names a model, plus two legacy cases written with the column: a
+        ``gateway_runtime`` from before the stamp, and a confirmed Browser/API lock still naming it.
+        ``billing_provider`` served the column model, so it never fills the provider of another."""
         row = session_meta or {}
         raw = row.get("model_config")
         if isinstance(raw, str):
@@ -950,12 +950,16 @@ class SessionGatewayMixin:
         column = str(row.get("model") or "").strip()
         picked = str(config.get("model") or "").strip()
         runtime, lock = config.get("gateway_runtime"), config.get("browser_model_lock")
-        locked = isinstance(lock, dict) and bool(lock.get("confirmed")) and str(lock.get("model") or "").strip() == column
-        if (isinstance(runtime, dict) and runtime.get("provider")) or locked:
+        if isinstance(runtime, dict) and runtime.get("provider"):
+            model = str(runtime.get("model") or "").strip() or column or picked
+        elif isinstance(lock, dict) and lock.get("confirmed") and str(lock.get("model") or "").strip() == column:
             model = column or picked
         else:
             model = picked or column
-        return model, (row if model == column else {**row, "billing_provider": None})
+        route_row = row if model == column else {**row, "billing_provider": None}
+        route = SessionGatewayMixin.session_gateway_runtime(route_row)
+        route.pop("model", None)
+        return model, route
 
     @staticmethod
     def session_gateway_runtime(session_meta: Optional[dict[str, Any]]) -> dict[str, Any]:

@@ -75,6 +75,22 @@ def test_resume_after_fallback_served_first_call_keeps_the_picked_pair(tmp_path)
         "claude-opus-4", "anthropic")
 
 
+def test_resume_after_model_switch_then_fallback_first_call_keeps_the_switched_pair(tmp_path):
+    """``/model`` before the first reply writes the nested route; a fallback serving that first call then
+    rewrites only the model column. Resume must keep the switched pair, not the fallback model on it."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="gpt-6-sol")
+    db.update_session_model("s1", "claude-opus-4", provider="anthropic")
+    db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="deepseek/deepseek-v4-flash",
+                           billing_provider="openrouter", api_call_count=1)
+    row = db.get_session("s1")
+    assert row["model"] == "deepseek/deepseek-v4-flash"
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-opus-4", "anthropic")
+    assert stored_session_route(row, current_model="gpt-6-sol", current_provider="nous")[:2] == (
+        "claude-opus-4", "anthropic")
+
+
 @pytest.mark.parametrize("picked", [
     {"model": "claude-opus-4", "provider": "anthropic"},
     {"model": "claude-opus-4"},

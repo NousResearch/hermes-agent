@@ -142,8 +142,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     # billing column; then nested ``gateway_runtime`` before the TUI's top-level keys, then a routable
     # ``billing_provider`` (#125942).
     from hermes_state import SessionDB
-    model, route_row = SessionDB.session_resume_model(row)
-    route = SessionDB.session_gateway_runtime(route_row)
+    model, route = SessionDB.session_resume_route(row)
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")

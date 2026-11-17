@@ -17,6 +17,7 @@ import pytest
 
 from agent.proxy_sources import iron_proxy as ip
 from hermes_cli import proxy_cli
+from hermes_cli.slash_exec import CommandContext, execute_command
 
 
 @pytest.fixture
@@ -50,6 +51,53 @@ def _args(**overrides):
     for k, v in overrides.items():
         setattr(ns, k, v)
     return ns
+
+
+def test_egress_slash_status_respects_display_language(hermes_home, monkeypatch):
+    (hermes_home / "config.yaml").write_text(
+        "display:\n  language: zh\nproxy:\n  enabled: true\n", encoding="utf-8"
+    )
+    token = "demo-proxy-token-for-test"
+    monkeypatch.setattr(ip, "get_status", lambda: ip.ProxyStatus(tunnel_port=12345))
+    monkeypatch.setattr(ip, "load_mappings", lambda: [
+        ip.TokenMapping(token, "EXAMPLE_API_KEY", ("api.example.com",)),
+    ])
+    monkeypatch.setattr(ip, "discover_uncovered_providers", lambda: ["OTHER_API_KEY"])
+
+    text = execute_command("egress", CommandContext(surface="gateway")).text
+
+    assert text.startswith("出站代理状态\n")
+    assert "已启用: 是" in text
+    assert "二进制文件: （缺失）" in text
+    assert "隧道端口: 12345" in text
+    assert "凭据来源: env" in text
+    assert "令牌映射:" in text
+    assert "EXAMPLE_API_KEY:" in text and "(api.example.com)" in text
+    assert token not in text
+    assert "未覆盖的提供方" in text and "OTHER_API_KEY" in text
+    assert "下一步：运行 `hermes egress setup`" in text
+
+
+def test_egress_cli_status_localizes_mapping_table_and_token_warning(
+    hermes_home, monkeypatch, capsys,
+):
+    (hermes_home / "config.yaml").write_text("display:\n  language: zh\n", encoding="utf-8")
+    token = "demo-proxy-token-for-test"
+    monkeypatch.setattr(ip, "get_status", ip.ProxyStatus)
+    monkeypatch.setattr(ip, "load_mappings", lambda: [
+        ip.TokenMapping(token, "EXAMPLE_API_KEY", ("api.example.com",)),
+    ])
+    monkeypatch.setattr(ip, "discover_uncovered_providers", list)
+    monkeypatch.setenv("COLUMNS", "120")
+
+    assert proxy_cli.cmd_status(_args(show_tokens=True)) == 0
+    output = capsys.readouterr().out
+
+    assert "实际环境变量" in output
+    assert "上游主机" in output
+    assert "代理令牌" in output
+    assert token in output
+    assert "已完整显示代理令牌" in output
 
 
 # ---------------------------------------------------------------------------

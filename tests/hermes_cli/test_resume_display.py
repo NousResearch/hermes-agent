@@ -6,6 +6,7 @@ conversation with correct formatting, truncation, and config behavior.
 """
 
 from io import StringIO
+import json
 from unittest.mock import MagicMock, patch
 from agent.i18n import t
 
@@ -522,8 +523,49 @@ class TestTranscriptResumeDisplay:
             "display_metadata": {WITHHELD_PROMPT: "My original typed question"},
         }]
         previewed = []
-        monkeypatch.setattr(cli, "_print_user_message_preview", previewed.append)
+        monkeypatch.setattr(cli, "_print_user_message_preview", lambda text, **kwargs: previewed.append(text))
 
         cli._display_resumed_history()
 
         assert previewed == ["My original typed question"]
+
+    def test_multiline_user_message_is_not_cut_in_the_middle(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        long_user = "\n".join(f"user-line-{i}" for i in range(1, 41))
+        formatted = cli._format_submitted_user_message_preview(long_user, full=True)
+
+        for i in (1, 20, 40):
+            assert f"user-line-{i}" in formatted
+        assert "more lines" not in formatted.lower()
+
+    def test_reasoning_is_replayed_in_full_before_the_answer(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli._modern_layout = True
+        cli.conversation_history = [
+            {"role": "assistant", "reasoning_content": "THINK-ALPHA\nTHINK-OMEGA", "content": "ANSWER"},
+            {"role": "assistant", "reasoning_details": [{"text": "THINK-ONLY-ROW"}], "content": ""},
+        ]
+        output = self._capture(cli, monkeypatch)
+
+        for thought in ("THINK-ALPHA", "THINK-OMEGA", "THINK-ONLY-ROW"):
+            assert thought in output
+        assert output.index("THINK-ALPHA") < output.index("ANSWER")
+
+    def test_terminal_tool_call_replays_every_command_line(self, monkeypatch):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "transcript"}})
+        cli._modern_layout = True
+        command = "echo one\necho two\necho three\necho four\necho five"
+        cli.conversation_history = [{
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": json.dumps({"command": command})},
+            }],
+        }]
+        output = self._capture(cli, monkeypatch)
+
+        for line in command.splitlines():
+            assert line in output
+        assert "+ 5 commands" not in output

@@ -146,6 +146,30 @@ def _user_display_text(content) -> str:
     return "" if content is None else str(content)
 
 
+def _reasoning_display_text(msg: dict) -> str:
+    """Full reasoning from a stored assistant row, across provider aliases.
+
+    Reasoning-only assistant rows (no visible content) are the normal shape for a
+    thinking model after a tool call, so resume must not drop them.
+    """
+    def text_of(value) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            return "\n".join(part for part in (text_of(v) for v in value) if part)
+        if isinstance(value, dict):
+            return "\n".join(
+                part for part in (text_of(value.get(k)) for k in ("summary", "thinking", "text", "content")) if part)
+        return ""
+
+    parts: list[str] = []
+    for key in ("reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items"):
+        part = text_of(msg.get(key))
+        if part and part not in parts:
+            parts.append(part)
+    return "\n\n".join(parts)
+
+
 def _tool_calls_summary(tool_calls) -> str:
     """``[N tool call(s): name, ...]`` with up to 4 distinct names."""
     names = []
@@ -956,10 +980,13 @@ class CLIAgentSetupMixin:
                 # text the human typed in display_metadata: the transcript shows the typed ask.
                 text = sanitize(withheld_prompt_text(msg) or _user_display_text(content))
                 if text.strip():
-                    self._print_user_message_preview(text)
+                    self._print_user_message_preview(text, full=True)  # type: ignore[attr-defined]
                 continue
             if role != "assistant":
                 continue  # tool results stay out of the replay; the call row below names the work
+            reasoning = sanitize(_reasoning_display_text(msg)).strip()
+            if reasoning:
+                self._print_resumed_reasoning(reasoning)
             text = sanitize(strip_reasoning("" if content is None else str(content))).strip()
             if text:
                 self._print_resumed_assistant(text)
@@ -974,11 +1001,47 @@ class CLIAgentSetupMixin:
                         args = {"command": args}
                 if not isinstance(args, dict):
                     args = {}
-                try:
-                    from hermes_cli.cli_modern_layout import completed_tool_line
-                    _cprint(completed_tool_line(self, name, args, 0.0))
-                except Exception:  # health: allow BLE001 -- a cosmetic tool-row render must never break the replay
-                    _cprint(f"  {_DIM}⚙ {_escape(name)}{_RST}")
+                self._print_resumed_tool_call(name, args, sanitize)
+
+    def _print_resumed_tool_call(self, name: str, args: dict, sanitize) -> None:
+        """Replay one tool call; shell/python bodies keep every line, not a ``+N commands`` summary."""
+        from cli import _DIM, _RST, _cprint
+        if name in ("terminal", "execute_code"):
+            key = "command" if name == "terminal" else "code"
+            body = args.get(key)
+            if not isinstance(body, str) and name == "terminal":
+                body = args.get("cmd")
+            if isinstance(body, str) and body.strip():
+                glyph = "💻 $" if name == "terminal" else "🐍"
+                lines = sanitize(body).rstrip().splitlines()
+                for index, line in enumerate(lines):
+                    prefix = f"  {_DIM}{glyph} " if index == 0 else f"  {_DIM}    "
+                    _cprint(f"{prefix}{_escape(line)}{_RST}")
+                return
+        try:
+            from hermes_cli.cli_modern_layout import completed_tool_line
+            _cprint(completed_tool_line(self, name, args, 0.0))
+        except Exception:  # health: allow BLE001 -- a cosmetic tool-row render must never break the replay
+            _cprint(f"  {_DIM}⚙ {_escape(name)}{_RST}")
+
+    def _print_resumed_reasoning(self, text: str) -> None:
+        """Print one stored reasoning block in full, in the live reasoning style."""
+        from cli import _cprint
+        text = text.strip()
+        if not text:
+            return
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import thought_rows
+            for row in thought_rows(None, text, True):
+                _cprint(row)
+            return
+        from cli import ChatConsole
+        from rich.panel import Panel
+        from rich.text import Text
+        ChatConsole().print(Panel(
+            Text(text, style="dim"),
+            title=f"[dim]{t('cli.chat.reasoning_label')}[/dim]",
+            border_style="dim", padding=(0, 1)))
 
     def _print_resumed_assistant(self, text: str) -> None:
         """Print one stored assistant message with the same styling a live answer gets."""

@@ -250,7 +250,7 @@ The recap:
 - **Caps** at the last 10 exchanges with a "... N earlier messages ..." indicator
 - Uses **dim styling** to distinguish from the active conversation
 
-To replay the entire previous conversation instead — every user and assistant message in full, with each tool call as a one-line row and no exchange/character caps — set:
+To replay the entire previous conversation instead — every user and assistant message in full, including the model's reasoning, with shell and Python tool calls replayed command-for-command and no exchange/character caps — set:
 
 ```yaml
 display:

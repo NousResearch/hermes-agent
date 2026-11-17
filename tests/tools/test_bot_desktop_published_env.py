@@ -165,7 +165,7 @@ def test_desktop_env_drops_this_machines_seat_for_a_sandbox_hosted_screen_but_st
 
 def test_browser_and_cua_driver_envs_carry_none_of_the_backend_values(sandbox_screen, monkeypatch):
     monkeypatch.setenv("DISPLAY", ":0")
-    from tools.browser_session import build_browser_env
+    from browser.session import build_browser_env
     from tools.computer_use.cua_backend import cua_driver_child_env
 
     browser_env = build_browser_env()
@@ -221,7 +221,7 @@ def test_processes_inside_the_backend_still_receive_the_published_values(sandbox
     backend["env_file"] = _env_file(LAUNCHER_VALUES)  # exactly what the launcher writes
     assert runtime.published_env() == LAUNCHER_VALUES
 
-    from tools import browser_session_sandbox
+    from browser import session_sandbox as browser_session_sandbox
     env, published = browser_session_sandbox._sandbox()
     assert env is sandbox_screen and published == LAUNCHER_VALUES
 

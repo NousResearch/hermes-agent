@@ -15,7 +15,7 @@ import pytest
 import tools.browser_use_cli as bu_cli
 from tools import browser_harness_dirs as harness_dirs
 from tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
-from tools import browser_session as bs
+from browser import session as bs
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def harness_env(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(bs, "get_session_info", lambda key: {
         "cdp_url": "ws://127.0.0.1:47000/devtools/browser/x", "features": {"local": True}})
-    from tools import browser_supervisor
+    from browser import supervisor as browser_supervisor
 
     class _Registry:
         def get_or_start(self, *a, **kw):
@@ -37,7 +37,7 @@ def harness_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(browser_supervisor, "SUPERVISOR_REGISTRY", _Registry())
     monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", lambda: {"browser": {}})
-    monkeypatch.setattr("tools.browser_session_cdp.resolve_cdp_override", lambda url: url)
+    monkeypatch.setattr("browser.session_cdp.resolve_cdp_override", lambda url: url)
     cli = tmp_path / "browser-harness"
     cli.write_text('#!/bin/sh\ncat > /dev/null\necho "{\\"home\\": \\"$HOME\\", \\"runtime\\": \\"$BH_RUNTIME_DIR\\", '
                    '\\"shared\\": \\"$BH_RUNTIME_DIR_SHARED\\", \\"name\\": \\"${BU_NAME:-default}\\"}"\n',

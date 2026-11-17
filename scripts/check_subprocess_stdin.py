@@ -33,6 +33,7 @@ from pathlib import Path
 TUI_CONTEXT_DIRS = [
     "agent/",
     "tools/",
+    "browser/",
     "plugins/",
     "tui_gateway/",
     # Optional-skill scripts can run inside the backend process (a command

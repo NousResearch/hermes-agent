@@ -5,5 +5,7 @@ value changes. Plain dicts and no imports, because a process from an older relea
 """
 
 MOVES: dict[str, str] = {
+    "tools.browser_supervisor": "browser.supervisor",
+    "tools.browser_supervisor_capture": "browser.supervisor_capture",
     "tools.plugin_guard": "hermes_cli.plugins_install_scan",
 }

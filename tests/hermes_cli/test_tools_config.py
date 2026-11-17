@@ -490,7 +490,7 @@ class TestBrowserExecEngineCheckedForEveryBrowserRow:
             "shutil.which", return_value=None
         ), patch("subprocess.run"), patch("pm.ensure"), patch(
             "hermes_cli.browser_runtime.chromium_executable", return_value="/pm/chrome"
-        ), patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
+        ), patch("browser.lightpanda.find_lightpanda_binary", return_value=None):
             _run_post_setup(key)
         ensure.assert_called_once()
 
@@ -1059,7 +1059,7 @@ class TestLightpandaPostSetup:
     def test_reports_binary_when_found(self, _stub_browser_use_install):
         from hermes_cli.tools_config import _run_post_setup
 
-        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"), \
+        with patch("browser.lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"), \
              patch("hermes_cli.tools_config_post_setup._print_success") as ok, \
              patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
             _run_post_setup("lightpanda")
@@ -1069,9 +1069,9 @@ class TestLightpandaPostSetup:
 
     def test_prints_install_hint_when_missing(self):
         from hermes_cli.tools_config import _run_post_setup
-        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_URL
+        from browser.lightpanda import LIGHTPANDA_INSTALL_URL
 
-        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None), \
+        with patch("browser.lightpanda.find_lightpanda_binary", return_value=None), \
              patch("hermes_cli.tools_config_post_setup._print_warning") as warn, \
              patch("hermes_cli.tools_config_post_setup._print_info") as info:
             _run_post_setup("lightpanda")
@@ -1086,9 +1086,9 @@ class TestLightpandaPostSetup:
         )
 
         assert "lightpanda" in valid_post_setup_keys()
-        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"):
+        with patch("browser.lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"):
             assert _POST_SETUP_READY["lightpanda"]() is True
-        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
+        with patch("browser.lightpanda.find_lightpanda_binary", return_value=None):
             assert _POST_SETUP_READY["lightpanda"]() is False
         # Not in the forced-setup gate: a missing binary must not nag every
         # user who toggles the browser toolset.

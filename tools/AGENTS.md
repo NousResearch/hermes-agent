@@ -79,17 +79,17 @@ one core browser tool (beside `browser_cdp` / `browser_dialog` / `browser_vault`
 ## Browser runtime
 
 `browser_exec` (`browser_use_cli.py`) drives a browser over CDP through browser-harness. Where that
-CDP endpoint comes from is `browser_session.get_session_info(cache_key)`: operator `BU_CDP_*` env (in
+CDP endpoint comes from is `browser.session.get_session_info(cache_key)`: operator `BU_CDP_*` env (in
 browser_exec) > CDP override (live `/browser connect` > `BROWSER_CDP_URL` > `browser.cdp_url`) >
 hybrid `::local` sidecar > cloud provider (failure → local session marked `fallback_from_cloud`) >
 local. The local branch is not a further fallback chain: it tries the consented real profile when
 `browser.use_real_profile` is on, and otherwise (consent off, the profile can't load, or a
 no-profile engine like Lightpanda) runs a browser that does not load the real profile, on the
-configured engine — the packaged Chromium from `browser_launcher.launch_chromium` by default, or
+configured engine — the packaged Chromium from `browser.launcher.launch_chromium` by default, or
 Lightpanda only when `browser.engine: lightpanda` is set (never tried automatically). That browser
 is fresh unless a persistent profile is configured (`browser.user_data_dir`, Bot Desktop). One
 browser per cache key (`--remote-debugging-port=0` + `DevToolsActivePort`). State lives in
-`browser_session.py`. Every launched Chromium is stopped
+`browser/session.py`. Every launched Chromium is stopped
 parent-first and recorded in a private 0700 dir (a throwaway profile's in
 `<HERMES_HOME>/cache/browser/chromium-records`; a persistent profile's per OS user under the host lock dir,
 one for every home pinning it) so a later process reaps a crashed owner's browser after checking pid + start
@@ -101,7 +101,7 @@ docstrings); never grow them.
 
 Several tools front pluggable backends: terminal environments in `tools/environments/` (local,
 docker, ssh, modal, daytona; `terminal_tool_backends.py`, `tool_backend_helpers.py`),
-browser (`browser_launcher.py` + `browser_session*.py`: lifecycle, cloud, cdp, real_profile, sandbox), MCP
+browser (`browser/launcher.py` + `browser/session*.py`: lifecycle, cloud, cdp, real_profile, sandbox), MCP
 client (`mcp_tool_*.py`: config, discovery, transport, registration, content, errors), TTS
 (`tts_tool_providers.py`, `tts_command_provider.py`), skills hub sources (`skills_hub_official.py`
 `OptionalSkillSource`). Adding a backend = a new sibling or provider entry in the existing table,

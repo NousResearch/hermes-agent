@@ -221,11 +221,11 @@ expiry, while the supervisor's long-lived connection keeps a valid session.
 
 ## File layout
 
-- `tools/browser_supervisor.py` — `CDPSupervisor`, `SupervisorRegistry`, `PendingDialog`, `FrameInfo`
-- `tools/browser_supervisor_capture.py` — `CapturedCDP` / `CapturedCDPInvalid`, the trusted-plugin CDP seam behind `SUPERVISOR_REGISTRY.capture`
+- `browser/supervisor.py` — `CDPSupervisor`, `SupervisorRegistry`, `PendingDialog`, `FrameInfo`
+- `browser/supervisor_capture.py` — `CapturedCDP` / `CapturedCDPInvalid`, the trusted-plugin CDP seam behind `SUPERVISOR_REGISTRY.capture`
 - `tools/browser_dialog_tool.py` — `browser_dialog` tool handler
-- `tools/browser_session_cdp.py` — `ensure_cdp_supervisor` / `stop_cdp_supervisor`, `/browser connect` reattach, dialog-policy config
-- `tools/browser_session_lifecycle.py` — per-session teardown (supervisor stopped first)
+- `browser/session_cdp.py` — `ensure_cdp_supervisor` / `stop_cdp_supervisor`, `/browser connect` reattach, dialog-policy config
+- `browser/session_lifecycle.py` — per-session teardown (supervisor stopped first)
 - `toolsets.py` — registers `browser_dialog` in `browser`, `hermes-acp`, `hermes-api-server`, and core toolsets (gated on CDP reachability)
 - `hermes_cli/config.py` — `browser.dialog_policy` and `browser.dialog_timeout_s` defaults
 
@@ -238,7 +238,7 @@ expiry, while the supervisor's long-lived connection keeps a valid session.
 
 ## Testing
 
-Unit tests (`tests/tools/test_browser_supervisor.py`) use an asyncio mock CDP
+Unit tests (`tests/browser/test_browser_supervisor.py`) use an asyncio mock CDP
 server that speaks enough of the protocol to exercise all state transitions:
 attach, enable, navigate, dialog fire, dialog dismiss, frame attach/detach,
 child target attach, session teardown. Real-backend E2E (Browserbase + local

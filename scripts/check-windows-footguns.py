@@ -910,7 +910,7 @@ def main(argv: list[str]) -> int:
         # Scan main Python packages + scripts
         roots = [
             REPO_ROOT / current_path(top)
-            for top in ("hermes_cli", "gateway", "tools", "cron", "agent", "plugins", "scripts", "acp_adapter")
+            for top in ("hermes_cli", "gateway", "tools", "browser", "cron", "agent", "plugins", "scripts", "acp_adapter")
         ]
         roots = [r for r in roots if r.exists()]
     elif args.diff:

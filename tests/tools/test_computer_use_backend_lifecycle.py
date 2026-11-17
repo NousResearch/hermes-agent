@@ -11,7 +11,8 @@ from contextlib import contextmanager
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tools.bot_desktop import browser, lease, runtime as desktop
+from browser import desktop_profile as browser
+from tools.bot_desktop import lease, runtime as desktop
 from tools.computer_use import tool as cu
 from tools.computer_use_tool import registry
 from tests.bot_desktop_lease import reset_lease

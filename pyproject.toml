@@ -735,6 +735,8 @@ include = [
   "tools.*",
   "utils",
   "utils.*",
+  "browser",
+  "browser.*",
 ]
 
 [tool.setuptools.package-data]

@@ -155,16 +155,16 @@ def _placed(monkeypatch, setting, backend):
 
 def _local_sessions(monkeypatch) -> list:
     """The session layer on a local backend with an empty cache; returns the HOST Chromium launches."""
-    from tools import browser_launcher, browser_session, browser_session_cdp, browser_session_cloud
-    from tools import browser_session_lifecycle
+    from browser import launcher as browser_launcher, session as browser_session, session_cdp as browser_session_cdp, session_cloud as browser_session_cloud
+    from browser import session_lifecycle as browser_session_lifecycle
 
     for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
         monkeypatch.setattr(browser_session, name, {})
     monkeypatch.setattr(browser_session_lifecycle, "start_cleanup_thread", lambda: None)
     monkeypatch.setattr(browser_session_cdp, "get_cdp_override", lambda: "")
     monkeypatch.setattr(browser_session_cloud, "get_cloud_provider", lambda: None)
-    monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("browser.session_real_profile.real_profile_cdp", lambda: (None, None))
+    monkeypatch.setattr("browser.lightpanda.using_lightpanda_engine", lambda: False)
     host_launches: list = []
     monkeypatch.setattr(browser_launcher, "launch_chromium",
                         lambda key, **kw: host_launches.append(key) or (None, "host Chromium must not start"))
@@ -175,7 +175,7 @@ def test_terminal_placement_starts_the_sandbox_screen_instead_of_running_on_the_
     """The placement boundary is policy, not liveness: with ``placement: terminal`` and the screen not yet
     up, the browser session and the CUA invocation bring the sandbox screen up (no ``auto_start`` opt-in
     needed inside the user's own sandbox) and route there. Neither hands the tool a host command."""
-    from tools import browser_session, browser_session_sandbox
+    from browser import session as browser_session, session_sandbox as browser_session_sandbox
     from tools.computer_use import cua_backend as cb
 
     host_launches = _local_sessions(monkeypatch)
@@ -205,7 +205,7 @@ def test_terminal_placement_starts_the_sandbox_screen_instead_of_running_on_the_
 
 
 def test_refused_placement_never_falls_back_to_the_host(monkeypatch, isolated_home):
-    from tools import browser_session
+    from browser import session as browser_session
     from tools.computer_use import cua_backend as cb
 
     host_launches = _local_sessions(monkeypatch)
@@ -218,7 +218,7 @@ def test_refused_placement_never_falls_back_to_the_host(monkeypatch, isolated_ho
 
 
 def test_sandbox_screen_that_cannot_come_up_is_an_error_not_a_host_browser(monkeypatch, isolated_home):
-    from tools import browser_session
+    from browser import session as browser_session
 
     host_launches = _local_sessions(monkeypatch)
     _placed(monkeypatch, "terminal", "docker")
@@ -353,7 +353,7 @@ def test_forward_port_carries_bytes_both_ways_through_the_exec_stream(monkeypatc
 def test_sandbox_cdp_endpoint_is_rewritten_to_the_forwarded_local_port(monkeypatch):
     """The sandbox Chromium's DevTools port is the sandbox's loopback: the session hands browser_exec the
     forwarded LOCAL port, keeping Chromium's browser id path."""
-    from tools import browser_session
+    from browser import session as browser_session
     from tools.bot_desktop import sandbox_host
 
     host_launches = _local_sessions(monkeypatch)

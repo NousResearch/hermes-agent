@@ -27,7 +27,7 @@ async def probe():
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.gateway.fixtures.local_recovery_probe import rpc
-    import tools.browser_session_lifecycle as lifecycle
+    import browser.session_lifecycle as lifecycle
     from websockets.asyncio.client import connect
 
     home = Path(os.environ['HERMES_HOME'])
@@ -45,7 +45,7 @@ async def probe():
     (bee / 'config.yaml').write_text('browser:\n  cdp_url: ws://bee.invalid/devtools/browser/PROFILE-B\n')
     from gateway.run import _profile_runtime_scope
     from hermes_constants import hermes_home_key
-    from tools import browser_session_cdp
+    from browser import session_cdp as browser_session_cdp
 
     def resolved(profile):
         with _profile_runtime_scope(profile, hydrate_secrets=False):

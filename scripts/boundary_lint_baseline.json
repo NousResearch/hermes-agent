@@ -779,6 +779,8 @@
     "plugins/web/xai/provider.py tools.xai_http.resolve_xai_http_credentials": 1
   },
   "core_to_module": {
+    "browser/session_cloud.py plugins.browser.browser_use.provider": 1,
+    "browser/session_cloud.py plugins.browser.browserbase.provider": 1,
     "gateway/outbound/senders.py plugins.platforms.matrix.adapter": 1,
     "gateway/platforms/api_server.py plugins.cron_providers.chronos.verify": 1,
     "gateway/run.py plugins.teams_pipeline.runtime": 1,
@@ -789,8 +791,6 @@
     "hermes_cli/web_routers/tools.py plugins.web.firecrawl.provider": 1,
     "hermes_cli/web_server.py plugins.dashboard_auth.nous": 1,
     "plugins/web/keyless_mcp.py plugins.web.firecrawl.provider": 2,
-    "tools/browser_session_cloud.py plugins.browser.browser_use.provider": 1,
-    "tools/browser_session_cloud.py plugins.browser.browserbase.provider": 1,
     "tools/image_generation_managed.py plugins.image_gen.krea": 1,
     "tools/image_generation_tool.py plugins.image_gen.krea": 3,
     "tools/web_tools.py plugins.web.firecrawl.provider": 1,

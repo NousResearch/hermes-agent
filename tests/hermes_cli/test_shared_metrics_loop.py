@@ -316,9 +316,9 @@ def browser_exec_route(monkeypatch):
     import subprocess
     from types import SimpleNamespace
 
-    import tools.browser_session as bs
-    import tools.browser_session_cloud as bs_cloud
-    import tools.browser_supervisor as supervisor
+    import browser.session as bs
+    import browser.session_cloud as bs_cloud
+    from browser import supervisor
     import tools.browser_use_cli as bu
 
     route = SimpleNamespace(fallback=False, features={"local": True})
@@ -370,7 +370,7 @@ def test_browser_exec_counts_against_the_browser_that_actually_served_it(home, m
 def test_a_local_call_names_the_engine_that_served_it_not_the_one_configured_now(home, browser_exec_route):
     """The label comes from the session the call ran on, never from ``browser.engine`` read afterwards: a Chromium
     session that outlived a switch to Lightpanda counts as Chromium, and a Lightpanda session as Lightpanda."""
-    import tools.browser_session_cloud as bs_cloud
+    import browser.session_cloud as bs_cloud
     from tools.browser_use_cli import _handle_browser_exec
 
     def call_with_engine_configured(engine, task_id):

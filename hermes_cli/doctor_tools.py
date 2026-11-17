@@ -350,7 +350,7 @@ def _check_chromium(should_fix: bool) -> None:
 def _check_lightpanda() -> None:
     """Lightpanda engine (browser.engine); browser_exec spawns ``lightpanda serve`` itself."""
     try:
-        from tools.browser_lightpanda import (
+        from browser.lightpanda import (
             LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary, lightpanda_engine_status, using_lightpanda_engine)
     except ImportError:  # a broken browser module is surfaced by the tool-availability rows
         return

@@ -12,7 +12,7 @@ Invariants under test:
 """
 import json
 
-from tests.tools.test_browser_real_profile import _auth_db
+from tests.browser.test_browser_real_profile import _auth_db
 
 
 class TestRealProfilePin:

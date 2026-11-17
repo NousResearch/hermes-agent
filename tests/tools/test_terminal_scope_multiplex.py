@@ -24,7 +24,7 @@ from tools.terminal_scope import (
     set_terminal_scope,
     terminal_env,
 )
-from tools import browser_session_cloud as bs_cloud
+from browser import session_cloud as bs_cloud
 
 _LAUNCH_CWD = "/home/launch-user/private"
 _LAUNCH_VOLUMES = '["/host/secret:/data:rw"]'

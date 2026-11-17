@@ -13,7 +13,8 @@ import json
 
 import pytest
 
-from tools import browser_session_cloud, browser_url_policy, browser_use_cli
+from browser import session_cloud as browser_session_cloud
+from tools import browser_url_policy, browser_use_cli
 
 PRIVATE_URL = "http://127.0.0.1:8080/secret"
 PUBLIC_URL = "https://example.com/page"
@@ -90,7 +91,8 @@ class TestExpressionScanHelper:
 
 @pytest.mark.parametrize("local_backend,allow_private", [(True, False), (False, True)])
 def test_raw_cdp_keeps_the_metadata_floor_when_the_private_guard_is_off(monkeypatch, local_backend, allow_private):
-    from tools import browser_cdp_tool, browser_session_cloud
+    from browser import session_cloud as browser_session_cloud
+    from tools import browser_cdp_tool
     monkeypatch.setattr(browser_session_cloud, "is_local_backend", lambda: local_backend)
     monkeypatch.setattr(browser_session_cloud, "allow_private_urls", lambda: allow_private)
     guard = browser_cdp_tool._browser_cdp_private_guard

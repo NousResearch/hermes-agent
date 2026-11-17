@@ -39,10 +39,11 @@ _MAX_SHAPE_DEPTH = 2
 # loggers rooted in a known package are named, the rest are counted as "(other)". Below the root,
 # only segments that exist as modules on disk are kept (see _module_path).
 _KNOWN_LOGGER_ROOTS = frozenset({
-    "acp_adapter", "agent", "cli", "cron", "gateway", "hermes", "hermes_cli", "hermes_constants",
-    "hermes_logging", "hermes_platform", "hermes_state", "model_tools", "pm", "plugins",
-    "providers", "run_agent", "toolsets", "tools", "tui_gateway", "asyncio", "httpx", "httpcore",
-    "openai", "anthropic", "urllib3", "websockets", "aiohttp", "uvicorn", "fastapi", "mcp"})
+    "acp_adapter", "agent", "browser", "cli", "cron", "gateway", "hermes", "hermes_cli",
+    "hermes_constants", "hermes_logging", "hermes_platform", "hermes_state", "model_tools", "pm",
+    "plugins", "providers", "run_agent", "toolsets", "tools", "tui_gateway", "asyncio", "httpx",
+    "httpcore", "openai", "anthropic", "urllib3", "websockets", "aiohttp", "uvicorn", "fastapi",
+    "mcp"})
 
 PUBLIC_SUMMARY_BANNER = (
     "[hermes debug share: PUBLIC SUMMARY. Allowlisted fields only (versions, config key "

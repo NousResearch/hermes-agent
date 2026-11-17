@@ -80,7 +80,7 @@ EOF
 echo "== 4. headed Chromium opens on the display"
 # Docker's default seccomp profile denies unprivileged user namespaces, so Chromium's own
 # layer-2 sandbox cannot start in any container; the container is the sandbox. The gateway's
-# launcher already injects this (tools/browser_launcher.needs_chromium_sandbox_bypass).
+# launcher already injects this (browser/launcher.needs_chromium_sandbox_bypass).
 docker exec -u pn "$NAME" bash -c '
   set -e; set -a; . /tmp/bd/env; set +a
   chrome=$(ls /opt/playwright/chromium-*/chrome-linux*/chrome | head -1)

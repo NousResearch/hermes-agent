@@ -48,7 +48,7 @@ def _check_vault_available() -> bool:
     agent can offer to remember a login the first time it meets a form; hiding the tool until an item
     exists meant nobody ever discovered the feature. Deferral keeps that presence nearly free."""
     from agent.browser_page_registry import list_providers
-    from tools.browser_session_cdp import get_cdp_override_raw
+    from browser.session_cdp import get_cdp_override_raw
     from tools.browser_use_cli import browser_exec_available
     return bool(browser_exec_available() or get_cdp_override_raw() or list_providers())
 
@@ -108,13 +108,13 @@ def _ensure_supervisor(task_id: str):
     """The supervisor for ``task_id`` (browser_exec attaches one on every call), attaching one on demand to
     the task's session CDP endpoint when none is running. None when no endpoint is known; a fill then
     refuses rather than touching argv."""
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from browser.supervisor import SUPERVISOR_REGISTRY
 
     supervisor = SUPERVISOR_REGISTRY.get(task_id)
     if supervisor is not None:
         return supervisor
-    from tools.browser_session import session_for_task
-    from tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
+    from browser.session import session_for_task
+    from browser.session_cdp import get_dialog_policy_config, resolve_cdp_override
 
     cdp_url = str(session_for_task(task_id).get("cdp_url") or "")
     if not cdp_url:
@@ -688,7 +688,7 @@ BROWSER_VAULT_SCHEMA = {
 
 
 def _bot_desktop_browser_session(task_id: Optional[str]) -> bool:
-    from tools.browser_session import session_for_task, shares_bot_desktop_browser
+    from browser.session import session_for_task, shares_bot_desktop_browser
     return shares_bot_desktop_browser(session_for_task(task_id))
 
 
@@ -696,7 +696,7 @@ def _fenced_page_op(task_id: Optional[str], fn) -> str:
     """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
     browser_exec; they must honour the Bot Desktop lease like every other page access, or a human
     typing a credential on the taken-over screen could be read or written to."""
-    from tools.browser_session import run_fenced, session_for_task
+    from browser.session import run_fenced, session_for_task
 
     res = run_fenced(session_for_task(task_id), lambda: {"raw": fn()})
     return res["raw"] if "raw" in res else json.dumps(res)

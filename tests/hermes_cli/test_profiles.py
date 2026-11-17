@@ -427,7 +427,7 @@ class TestCreateProfile:
         """Copied Chromium markers must not route the clone through the source profile's CDP port."""
         import http.server
         import threading
-        from tools.browser_launcher import running_instance
+        from browser.launcher import running_instance
 
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")

@@ -26,7 +26,7 @@ def homes(tmp_path, monkeypatch):
 def _reset():
     import hermes_cli.config as cfg
     from hermes_cli import config_effective, managed_scope
-    from tools import browser_session_cloud
+    from browser import session_cloud as browser_session_cloud
 
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
@@ -42,7 +42,7 @@ def _write(path, body):
 
 
 def test_user_data_dir_and_chromium_args_expand_env_references(homes, tmp_path, monkeypatch):
-    from tools.browser_session_cloud import chromium_args, user_data_dir
+    from browser.session_cloud import chromium_args, user_data_dir
 
     home, _managed = homes
     monkeypatch.setenv("FIXTURE_PROFILE_ROOT", str(tmp_path / "profiles"))
@@ -57,7 +57,7 @@ def test_user_data_dir_and_chromium_args_expand_env_references(homes, tmp_path, 
 
 
 def test_managed_profile_pin_and_flags_win_over_the_user_file(homes, tmp_path):
-    from tools.browser_session_cloud import chromium_args, user_data_dir
+    from browser.session_cloud import chromium_args, user_data_dir
 
     home, managed = homes
     _write(home / "config.yaml", f"""
@@ -77,7 +77,7 @@ def test_managed_profile_pin_and_flags_win_over_the_user_file(homes, tmp_path):
 def test_managed_local_cloud_provider_wins_over_the_user_file(homes, monkeypatch):
     """The cloud-provider read is a ``browser.*`` read too: a managed ``local`` keeps the user's own
     Browserbase selection (and its credentials) from routing every page to the cloud."""
-    from tools.browser_session_cloud import get_cloud_provider
+    from browser.session_cloud import get_cloud_provider
 
     home, managed = homes
     monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")

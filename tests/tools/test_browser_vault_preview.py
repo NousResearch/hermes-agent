@@ -128,7 +128,7 @@ def test_omitted_target_picks_the_preview_only_without_a_managed_page(home, monk
     plugin backend (e.g. Camofox), keeps filling that page."""
     from agent import tool_executor
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-    from tools import browser_session
+    from browser import session as browser_session
 
     managed = []
     monkeypatch.setattr(browser_vault_tool, "_fenced_page_op", lambda tid, _op: managed.append(tid) or "{}")

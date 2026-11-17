@@ -222,7 +222,7 @@ def test_an_idle_check_that_waited_on_the_lock_never_stops_the_replacement_scree
 
 def _spawn(monkeypatch, tmp_path) -> dict[str, str]:
     """Runs ``_spawn_and_wait`` up to the launcher's Popen (a launcher that exits at once); the env it got."""
-    from tools.bot_desktop import browser
+    from browser import desktop_profile as browser
 
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
     monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")

@@ -129,8 +129,9 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
     """Config-derived singletons (redaction switch, aux unhealthy marks, LSP service, browser
     engine/headed flags, MCP stderr log path) are keyed by the routed profile home."""
     from agent import auxiliary_client, lsp, redact
-    from tools import browser_session_cloud, mcp_tool_config
-    from tools.browser_session_lifecycle import cleanup_all_browsers
+    from browser import session_cloud as browser_session_cloud
+    from tools import mcp_tool_config
+    from browser.session_lifecycle import cleanup_all_browsers
 
     a, b = two_homes
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)  # launch profile opted out

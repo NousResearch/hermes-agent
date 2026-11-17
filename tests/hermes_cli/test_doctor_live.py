@@ -270,10 +270,10 @@ class TestLaunchBrowserProbe:
 
     def _fake_launcher(self, monkeypatch, result):
         calls = []
-        fake = ModuleType("tools.browser_launcher")
+        fake = ModuleType("browser.launcher")
         fake.launch_chromium = lambda key, **kw: calls.append(("launch", key, kw)) or result
         fake.stop_browser = lambda key: calls.append(("stop", key))
-        monkeypatch.setitem(sys.modules, "tools.browser_launcher", fake)
+        monkeypatch.setitem(sys.modules, "browser.launcher", fake)
         return calls
 
     def test_success_stops_the_browser(self, monkeypatch):

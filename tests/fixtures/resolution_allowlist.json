@@ -439,7 +439,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/browser_lightpanda.py",
+    "path": "browser/lightpanda.py",
     "symbol": "find_lightpanda_binary",
     "kind": "bare_which"
   },
@@ -614,7 +614,7 @@
     "kind": "known_path_table"
   },
   {
-    "path": "tools/bot_desktop/browser.py",
+    "path": "browser/desktop_profile.py",
     "symbol": "_system_executable",
     "kind": "bare_which"
   },

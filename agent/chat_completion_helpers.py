@@ -2273,7 +2273,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     terminal envs (``_cleanup_inactive_envs`` reaps them after ``terminal.lifetime_seconds``)
     and ``cleanup_browser`` in headed mode (the inactivity reaper handles idle sessions)."""
     def _headed() -> bool:
-        from tools.browser_session_cloud import is_headed_mode
+        from browser.session_cloud import is_headed_mode
         return is_headed_mode()
 
     for label, skip, skip_what, cleanup in (

@@ -55,11 +55,12 @@ def _restore_tool_and_agent_modules():
         or name.startswith("tools.")
         or name == "agent"
         or name.startswith("agent.")
+        or name.startswith("browser.")
     }
     try:
         yield
     finally:
-        _reset_modules(("tools", "agent"))
+        _reset_modules(("tools", "agent", "browser."))
         sys.modules.update(original_modules)
 
 
@@ -221,7 +222,7 @@ def test_browser_use_explicit_local_mode_stays_local_even_when_managed_gateway_i
     })
 
     with patch.dict(os.environ, env, clear=True):
-        browser_session_cloud = _load_tool_module("tools.browser_session_cloud", "browser_session_cloud.py")
+        browser_session_cloud = _load_tool_module("browser.session_cloud", "../browser/session_cloud.py")
 
         provider = browser_session_cloud.get_cloud_provider()
         local_backend = browser_session_cloud.is_local_backend()

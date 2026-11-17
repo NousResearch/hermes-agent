@@ -1,9 +1,9 @@
 """``browser_exec``: drive a real browser through the Browser Use CLI engine (browser-harness,
 https://browser-use.com), Hermes' only core browser tool.
 
-The harness speaks CDP to whatever ``tools.browser_session`` resolved for the call: an operator
+The harness speaks CDP to whatever ``browser.session`` resolved for the call: an operator
 ``BU_CDP_*`` endpoint, a ``/browser connect`` override, a cloud provider's session, or a local browser
-(real profile, Lightpanda, or the packaged Chromium started by ``tools.browser_launcher``).
+(real profile, Lightpanda, or the packaged Chromium started by ``browser.launcher``).
 """
 
 import contextlib
@@ -28,7 +28,7 @@ from hermes_cli.process_identity import (
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import (
     daemon_env, daemon_identity, harness_current_target, harness_pid_file, namespace_harness_dirs)
-from tools.browser_lightpanda import merge_sane_path
+from browser.lightpanda import merge_sane_path
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -122,7 +122,7 @@ def _lazy_call(module: str, name: str, default: Any, log_prefix: str) -> Any:
 
 
 def _real_profile_consented() -> bool:
-    return _lazy_call("tools.browser_session_cloud", "use_real_profile", False, "real-profile consent lookup failed")
+    return _lazy_call("browser.session_cloud", "use_real_profile", False, "real-profile consent lookup failed")
 
 
 def _set_cdp_env(env: dict, cdp: str) -> None:
@@ -181,7 +181,7 @@ def _harness_credentials() -> dict:
 
 
 def _base_subprocess_env() -> dict:
-    from tools.browser_session import build_browser_env
+    from browser.session import build_browser_env
     env = build_browser_env()
     env.update(_harness_credentials())
     # The harness runs on Hermes's own interpreter, but a bundled Desktop install boots that
@@ -208,7 +208,7 @@ def _base_subprocess_env() -> dict:
 def _read_browser_cfg() -> dict:
     """Return the ``browser:`` config section, or {} on any failure."""
     try:
-        from tools.browser_session_cloud import browser_section
+        from browser.session_cloud import browser_section
         return browser_section()
     except Exception as e:
         logger.debug("Could not read browser config section: %s", e)
@@ -344,7 +344,7 @@ def _sidecar_daemon_name(name: str) -> str:
 def _export_real_profile_note(env: dict, key: str) -> None:
     """The session layer decides real profile vs fresh browser once per key; carry its note (if it fell
     back) so the result reports the browser this call actually drives."""
-    from tools.browser_session import real_profile_note
+    from browser.session import real_profile_note
     note = real_profile_note(key)
     if note:
         env.setdefault(_REAL_PROFILE_FALLBACK_SENTINEL, note)
@@ -366,8 +366,8 @@ def _resolve_local_cdp(env: dict, task_id: Optional[str], session_name: str = ""
     """Local browser for this cache key through the session layer: the consented real profile, Lightpanda
     (``browser.engine: lightpanda``), or the packaged Chromium. Never the harness's own discovery of the
     user's installed Chrome (chrome://inspect toggle + Allow popup per run, blocked on Chrome >=136)."""
-    from tools.browser_lightpanda import using_lightpanda_engine
-    from tools.browser_session import get_session_info
+    from browser.lightpanda import using_lightpanda_engine
+    from browser.session import get_session_info
     key = _backend_cache_key(task_id, session_name, sidecar)
     session: dict = {}
 
@@ -406,9 +406,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     sidecar verdict never fires while a CDP override is set."""
     if _has_cdp_env(env):
         return None
-    from tools.browser_session import get_session_info
-    from tools.browser_session_cdp import get_cdp_override
-    from tools.browser_session_cloud import get_cloud_provider
+    from browser.session import get_session_info
+    from browser.session_cdp import get_cdp_override
+    from browser.session_cloud import get_cloud_provider
     override = _quiet(get_cdp_override, "")
     if override:
         _set_cdp_env(env, override)
@@ -477,9 +477,9 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     ``_route_backend`` then falls back to the normal backend and reports it, never silently."""
     if not _real_profile_consented() or _has_cdp_env(env):
         return None
-    from tools.browser_session_cdp import get_cdp_override_raw
-    from tools.browser_session_cloud import get_cloud_provider
-    from tools.browser_session_real_profile import real_profile_cdp
+    from browser.session_cdp import get_cdp_override_raw
+    from browser.session_cloud import get_cloud_provider
+    from browser.session_real_profile import real_profile_cdp
     if _quiet(get_cdp_override_raw, ""):
         return None
     # Only auto-upgrade genuinely-local attaches; any cloud path (provider, provider lookup failure, or
@@ -502,8 +502,8 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
     if not cdp:
         return
     try:
-        from tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from browser.session_cdp import get_dialog_policy_config, resolve_cdp_override
+        from browser.supervisor import SUPERVISOR_REGISTRY
         policy, timeout_s = get_dialog_policy_config()
         SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=resolve_cdp_override(cdp),
                                          dialog_policy=policy, dialog_timeout_s=timeout_s)
@@ -516,7 +516,7 @@ def _record_driven_tab(env: dict, task_id: Optional[str]) -> None:
     ``browser_vault`` fill lands in that tab rather than the first one on the origin."""
     if not (env.get("BU_CDP_WS") or env.get("BU_CDP_URL")):
         return
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from browser.supervisor import SUPERVISOR_REGISTRY
     supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
     if supervisor is not None:
         supervisor.set_driven_target(harness_current_target(env))
@@ -543,7 +543,7 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
     # layer makes the one real-profile-or-fresh decision and reports it (_resolve_local_cdp).
     if local and not _has_cdp_env(env) and (rp_err or not real_profile):
         if rp_err:
-            from tools.browser_session_real_profile import real_profile_fallback_note
+            from browser.session_real_profile import real_profile_fallback_note
             env[_REAL_PROFILE_FALLBACK_SENTINEL] = real_profile_fallback_note(rp_err)
         env[_LOCAL_FALLBACK_SENTINEL] = "1"
         force_local_sidecar = True
@@ -619,7 +619,7 @@ _OWN_DURING_CALL_S = 0.5
 # swap (/browser connect|disconnect) leaves later calls in the old browser until these are stopped.
 _driven_daemons: dict[tuple[str, ...], str] = {}  # daemon identity -> home
 _driven_daemons_lock = threading.Lock()
-_live_generation = functools.partial(_lazy_call, "tools.browser_session_cdp", "live_cdp_generation", 0,
+_live_generation = functools.partial(_lazy_call, "browser.session_cdp", "live_cdp_generation", 0,
                                      "live CDP generation lookup failed")  # this profile's publish count
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
 _exec_route_is_sidecar: dict[str, bool] = {}
@@ -868,7 +868,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             _record_driven_tab(env, task_id)  # only a call that ran: the supervisor is this call's browser's
 
     if bot_desktop_browser:
-        from tools.browser_session import run_fenced
+        from browser.session import run_fenced
         dispatched = run_fenced({"features": {"local": True}}, dispatch)
     else:
         dispatched = dispatch()
@@ -971,7 +971,7 @@ _HELPERS_DIGEST = (
 
 def _description_header() -> str:
     """Header tailored to whether screenshots ride back natively in this tool's results."""
-    if _lazy_call("tools.browser_lightpanda", "lightpanda_engine_status", (False, ""),
+    if _lazy_call("browser.lightpanda", "lightpanda_engine_status", (False, ""),
                   "lightpanda engine status unavailable")[0]:  # no screenshots, whatever the model sees
         return _HEADER_BASE + _HEADER_LIGHTPANDA
     if _lazy_call("tools.vision_tools", "_should_use_native_vision_fast_path", False, ""):
@@ -1031,7 +1031,7 @@ _exec_local_engine: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 def _handle_browser_exec(args: dict, **kw):
     """Registry handler; each call counts against the backend that served it (shared metrics, opt-in)."""
     from hermes_cli.observability.shared_metrics_loop import record_browser_call
-    from tools.browser_session_cloud import browser_backend_name
+    from browser.session_cloud import browser_backend_name
     token = _exec_local_engine.set(None)
     try:
         return record_browser_call(lambda: browser_exec(

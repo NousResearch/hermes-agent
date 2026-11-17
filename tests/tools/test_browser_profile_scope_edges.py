@@ -11,7 +11,7 @@ import pytest
 from agent import secret_scope
 from gateway.run import _profile_runtime_scope
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools import browser_session_cdp as bs_cdp
+from browser import session_cdp as bs_cdp
 from tools import browser_harness_dirs as harness_dirs
 from tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
 
@@ -272,7 +272,7 @@ def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not
     """``/browser connect`` reaps, publishes the new endpoint, then reaps again. A tool call that
     resolved the OLD endpoint before the publish but inserted its session after the second reap kept
     driving the old browser. The real ``_browser_connect`` handler runs mid-creation here."""
-    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
+    from browser import session as bs, session_lifecycle as lifecycle
     from tui_gateway import server  # binds methods_browser helpers onto server globals
 
     a, _b = profiles
@@ -305,7 +305,7 @@ def test_a_stale_session_is_closed_without_ever_being_handed_to_a_concurrent_cal
     """A session found stale after creation is closed by object, never published first: while its
     backend ``close`` runs, a concurrent ``get_session_info`` for the same key must not find it in
     ``_active_sessions`` (it would return a browser that is being closed underneath it)."""
-    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
+    from browser import session as bs, session_lifecycle as lifecycle
     from tui_gateway import server
 
     a, _b = profiles
@@ -341,7 +341,7 @@ def test_a_stale_session_is_closed_without_ever_being_handed_to_a_concurrent_cal
 
 
 def test_another_profiles_connect_does_not_invalidate_this_profiles_new_session(profiles, monkeypatch):
-    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
+    from browser import session as bs, session_lifecycle as lifecycle
     a, b = profiles
     sessions = {}
     monkeypatch.setattr(bs, "_active_sessions", sessions)
@@ -447,8 +447,8 @@ def real_profile_launches(tmp_path, monkeypatch):
     """Session + launcher registries isolated; the real-profile and fresh launches register a fake browser
     under whatever key the session layer asks for (what the launcher does), and every stop is recorded."""
     import os
-    from tools import browser_launcher as launcher, browser_lightpanda, browser_session as bs
-    from tools import browser_session_lifecycle as lifecycle
+    from browser import launcher, lightpanda as browser_lightpanda, session as bs
+    from browser import session_lifecycle as lifecycle
     from tools.bot_desktop import placement, runtime
     import hermes_cli.browser_connect as bc
     for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
@@ -484,7 +484,7 @@ def _consent(home, on: bool) -> None:
 def test_a_consent_off_profile_never_stops_another_profiles_real_profile_browser(profiles, real_profile_launches):
     """Profile B (consent off, the default) creating a local session revokes only ITS real-profile browser;
     profile A's keeps serving A's session."""
-    from tools import browser_session as bs
+    from browser import session as bs
     a, b = profiles
     _consent(a, True)
     _consent(b, False)
@@ -503,7 +503,7 @@ def test_a_consent_off_profile_never_stops_another_profiles_real_profile_browser
 
 def test_a_consenting_profile_never_reuses_another_profiles_real_profile_browser(profiles, real_profile_launches):
     """Two consenting profiles each get their own real-profile browser (their own snapshot, their own cookies)."""
-    from tools.browser_session_real_profile import real_profile_cdp
+    from browser.session_real_profile import real_profile_cdp
     a, b = profiles
     _consent(a, True)
     _consent(b, True)

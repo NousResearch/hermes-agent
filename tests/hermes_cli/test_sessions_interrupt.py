@@ -35,8 +35,9 @@ async def _serve(monkeypatch, snapshot, calls):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("verb", ["interrupt", "stop"])
 async def test_interrupt_sends_fenced_session_interrupt_for_the_running_generation(monkeypatch, capsys, verb):
-    snapshot = {"session_id": "local-abc", "stored_session_id": "local-abc",
-                "execution_state": "running", "execution_generation": 7}
+    # The owner's real resume reply: ``running`` plus the pending rows, no ``execution_state`` key.
+    snapshot = {"session_id": "local-abc", "stored_session_id": "local-abc", "running": True,
+                "execution_generation": 7, "pending": [{"admission_id": "a1", "status": "started"}]}
     calls = []
     server = await _serve(monkeypatch, snapshot, calls)
     try:
@@ -44,7 +45,7 @@ async def test_interrupt_sends_fenced_session_interrupt_for_the_running_generati
         assert await asyncio.to_thread(args.func, args) == 0
     finally:
         server.close()
-    assert calls == [("session.resume", {"session_id": "local-abc"}),
+    assert calls == [("session.resume", {"session_id": "local-abc", "omit_messages": True}),
                      ("session.interrupt", {"session_id": "local-abc", "execution_generation": 7})]
     out = json.loads(capsys.readouterr().out)
     assert out == {"session_id": "local-abc", "execution_state": "running",
@@ -53,8 +54,8 @@ async def test_interrupt_sends_fenced_session_interrupt_for_the_running_generati
 
 @pytest.mark.asyncio
 async def test_interrupt_on_an_idle_session_sends_nothing_and_exits_3(monkeypatch, capsys):
-    snapshot = {"session_id": "local-abc", "stored_session_id": "local-abc",
-                "execution_state": "idle", "execution_generation": 2}
+    snapshot = {"session_id": "local-abc", "stored_session_id": "local-abc", "running": False,
+                "execution_generation": 2, "pending": []}
     calls = []
     server = await _serve(monkeypatch, snapshot, calls)
     try:
@@ -68,8 +69,8 @@ async def test_interrupt_on_an_idle_session_sends_nothing_and_exits_3(monkeypatc
 
 @pytest.mark.asyncio
 async def test_interrupt_unknown_session_is_an_error(monkeypatch, capsys):
-    snapshot = {"session_id": "local-abc", "stored_session_id": "local-abc",
-                "execution_state": "running", "execution_generation": 1}
+    snapshot = {"session_id": "local-abc", "stored_session_id": "local-abc", "running": True,
+                "execution_generation": 1, "pending": [{"admission_id": "a1", "status": "started"}]}
     calls = []
     server = await _serve(monkeypatch, snapshot, calls)
     try:

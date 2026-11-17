@@ -40,6 +40,14 @@ def _add_wrap_response(parser, *, allow_inherit: bool = False) -> None:
             help="Remove this job's override so it follows the global cron.wrap_response again.")
 
 
+def _add_output_schema(parser, *, clearable: bool = False) -> None:
+    parser.add_argument(
+        "--output-schema", dest="output_schema", metavar="FILE",
+        help="JSON Schema file the job's final answer must satisfy: each run is validated (one "
+             "correction turn), delivered as JSON and stored on its `hermes cron runs` row; a run "
+             "that still fails the schema fails." + (" Pass empty string to clear." if clearable else ""))
+
+
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     """Attach the ``cron`` subcommand (and its sub-actions) to ``subparsers``."""
     cron_parser = subparsers.add_parser(
@@ -68,6 +76,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     _add_catch_up(cron_create)
     _add_wrap_response(cron_create)
+    _add_output_schema(cron_create)
     cron_create.add_argument("--skill", dest="skills", action="append",
         help="Attach a skill. Repeat to add multiple skills.")
     cron_create.add_argument("--script",
@@ -144,6 +153,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
     _add_catch_up(cron_edit)
     _add_wrap_response(cron_edit, allow_inherit=True)
+    _add_output_schema(cron_edit, clearable=True)
     cron_edit.add_argument("--skill", dest="skills", action="append",
         help="Replace the job's skills with this set. Repeat to attach multiple skills.")
     cron_edit.add_argument("--add-skill", dest="add_skills", action="append",
@@ -230,6 +240,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "runs", aliases=["history"], help="Show durable execution attempts")
     cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")
     cron_runs.add_argument("--limit", type=int, default=20, help="Rows to show (1-500)")
+    _flag(cron_runs, "--json", dest="json_output",
+          help="Print the rows as JSON (with each output_schema job's validated `result`).")
 
     # cron incidents — durable failure incidents (list/ack)
     cron_incidents = cron_subparsers.add_parser(

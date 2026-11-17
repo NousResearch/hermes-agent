@@ -99,6 +99,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     add_column_if_missing(conn, "executions", "progress_at", "progress_at TEXT")
+    # Validated ``output_schema`` result of a completed attempt (JSON text), NULL otherwise.
+    add_column_if_missing(conn, "executions", "result_json", "result_json TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
@@ -346,9 +348,10 @@ def mark_execution_running(execution_id: str) -> Optional[dict[str, Any]]:
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None, cancelled: bool = False,
+    delivery_outcome: Optional[str] = None, cancelled: bool = False, result_json: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """Write a terminal result once; terminal attempts cannot be rewritten.
+    """Write a terminal result once; terminal attempts cannot be rewritten. ``result_json`` (the
+    job's validated structured result) is kept only on a completed attempt.
 
     Only the owning process may finish its attempt; receipt recovery for a departed owner
     settles through ``recover_receipted_execution``.
@@ -365,10 +368,11 @@ def finish_execution(
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL, delivery_outcome=?
+                   handoff_started_at=NULL, delivery_outcome=?, result_json=?
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, delivery_outcome, execution_id, *owner),
+            (status, now, detail, delivery_outcome, result_json if status == "completed" else None,
+             execution_id, *owner),
         )
         if cur.rowcount != 1:
             return None
@@ -407,7 +411,8 @@ def record_missed_occurrences(
     return record
 
 
-def recover_receipted_execution(execution_id, job_id, *, success, error=None, delivery_outcome=None):
+def recover_receipted_execution(execution_id, job_id, *, success, error=None, delivery_outcome=None,
+                                result_json=None):
     """Settle a verified canonical receipt after owner loss, including its unknown audit row.
 
     Terminal verdicts stay immutable. A live firer still owns its bookkeeping
@@ -423,8 +428,9 @@ def recover_receipted_execution(execution_id, job_id, *, success, error=None, de
             return None
         conn.execute(
             """UPDATE executions SET status=?, finished_at=?, error=?, handoff_pending=0,
-               handoff_started_at=NULL, delivery_outcome=? WHERE id=?""",
-            ('completed' if success else 'failed', now, detail, delivery_outcome, execution_id))
+               handoff_started_at=NULL, delivery_outcome=?, result_json=? WHERE id=?""",
+            ('completed' if success else 'failed', now, detail, delivery_outcome,
+             result_json if success else None, execution_id))
         _prune_unlocked(conn)
         record = _fetch(conn, execution_id)
     _emit_execution_state(record, delivery_outcome=delivery_outcome)

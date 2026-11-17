@@ -33,3 +33,15 @@ def _normalize_failure_deliver(value: Any) -> Optional[str]:
     if isinstance(value, (list, tuple)):
         return ",".join(str(p).strip() for p in value if str(p).strip()) or None
     return _normalize_job_optional_text(value)
+
+
+def _normalize_output_schema(value: Any) -> Optional[dict[str, Any]]:
+    """A JSON Schema object (or its JSON text) -> the schema; ``None``/``""`` -> unset. An invalid
+    schema raises ValueError before anything is stored, with delegation's own error text."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    from tools.delegation_output_schema import coerce_output_schema
+    schema, error = coerce_output_schema(value)
+    if error:
+        raise ValueError(error)
+    return schema

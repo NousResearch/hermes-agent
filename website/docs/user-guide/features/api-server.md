@@ -511,6 +511,24 @@ foreign transcript in parallel with its live owner. To work on a chat from
 another surface, attach through the gateway WebSocket (a `prompt.submit` on the
 shared session) instead of the OpenAI-compatible routes.
 
+#### Structured results (`output_schema`)
+
+Send `output_schema` (a JSON Schema object) to get the run's answer as a validated object instead of
+text you have to parse:
+
+```json
+{"input": "Count the open bug issues",
+ "output_schema": {"type": "object", "properties": {"count": {"type": "integer"}}, "required": ["count"]}}
+```
+
+The schema is appended to the input as an output contract, using the validator that
+`delegate_task` uses. When the run completes, the run status and the `run.completed` event carry
+`result` (the parsed object) and `schema_valid: true`. If the answer does not satisfy the schema,
+they carry `result: null`, `schema_valid: false` and `schema_errors` (up to ten JSONPath-style
+messages), and `output` still holds the raw text. Unlike cron, a run does not get a correction turn.
+A malformed schema is refused with HTTP 400 `invalid_output_schema` before any work is reserved.
+Without `output_schema`, the run status has exactly the same fields as before.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.
@@ -527,6 +545,8 @@ Poll the current run state. This is useful for dashboards that need status witho
   "runtime": {"provider": "openai", "model": "gpt-5", "route_source": "global"}
 }
 ```
+
+A run started with [`output_schema`](#structured-results-output_schema) also carries `result`, `schema_valid` and (on a miss) `schema_errors`.
 
 `model` echoes what the request asked for. On a completed run, `runtime` is the provider/model pair that actually served the turn — after a [fallback provider](fallback-providers.md) switch it names the fallback pair, so a cost-attribution poller books the run to the right provider. `usage.cache_read_tokens` / `usage.cache_write_tokens` are the session's prompt-cache reads and writes, so cached input is not priced as full-price input. `runtime` has the same shape as on `/v1/chat/completions` and `/v1/responses`: `route_source` says how the runtime was chosen (`global`, `raw_request`, `model_routes`), and a request that named a `model`/`provider` also gets `requested: {provider, model}` so the asked-for and served pairs can be compared. The `run.completed` event on the events stream carries the same `usage` and `runtime` fields.
 

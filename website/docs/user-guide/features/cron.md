@@ -211,6 +211,35 @@ When `workdir` is set:
 Each agent run binds its `workdir` to that run's unique task identity. Workdir jobs therefore use the normal parallel pool without mutating process-global terminal state or leaking paths between concurrent runs. Set `cron.max_parallel_jobs` if you want to limit total cron concurrency.
 :::
 
+## Structured results (`output_schema`)
+
+Apps and scripts that read a job's result usually want JSON, not prose. Give the job a JSON
+Schema and every run's final answer has to satisfy it:
+
+```bash
+cat > ~/count.schema.json <<'EOF'
+{"type": "object", "properties": {"count": {"type": "integer"}}, "required": ["count"]}
+EOF
+hermes cron create "every 1h" "Count the open issues labelled bug" \
+  --output-schema ~/count.schema.json
+```
+
+- The schema is appended to the job's prompt as an output contract. It is fixed when you create or
+  edit the job, so every run sends the same bytes.
+- Hermes validates the final answer (code fences and surrounding prose are stripped first). If it
+  fails, the agent gets one correction turn with the validation errors. Delegation's
+  `output_schema` uses the same validator and the same retry.
+- A valid answer is delivered as pretty-printed JSON and stored on the run's execution-ledger
+  row. `hermes cron runs <job-id> --json` prints each row with its parsed `result`.
+- An answer that still fails after the correction turn **fails the run**
+  (`output_schema not satisfied: ...`), and the normal failure notice and incident handling apply.
+  Hermes never delivers unvalidated free text as if it were the structured result.
+- `hermes cron edit <job> --output-schema new.json` replaces the schema, and
+  `--output-schema ""` clears it. The REST API takes the same field as a JSON object on
+  `POST /api/jobs` and `PATCH /api/jobs/{id}`. The agent's `cronjob_manage` tool does not set it.
+- Jobs without a schema behave exactly as before. A `no_agent` job ignores the schema because it
+  has no model answer to validate.
+
 ## Per-job timezone
 
 By default a job's cron expression is read in your profile's timezone (`timezone:` in `config.yaml`). A job can pin its own zone instead, so one profile can serve several markets:
@@ -510,7 +539,8 @@ a worker deadlocked on a lock stops stamping and is released once the bound
 passes. Unknown attempts are audit records and are never automatically rerun.
 
 Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
-`history`). Terminal history is bounded; active attempts are never pruned. The
+`history`; add `--json` for machine-readable rows, including an
+[`output_schema`](#structured-results-output_schema) job's validated `result`). Terminal history is bounded; active attempts are never pruned. The
 ledger is included in quick backups.
 
 Scheduled attempts also record their exact scheduled instant, separately from

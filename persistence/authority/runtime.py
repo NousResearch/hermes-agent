@@ -203,7 +203,7 @@ class EditPolicy(_Command):
 
 @dataclass(frozen=True, slots=True)
 class Compress(_Command):
-    """``compress``: commit a prepared summary."""
+    """``compress``: commit a prepared summary; a rotation moves the conversation's name to the new segment."""
 
     focus: str | None = None
     preview: bool | None = None
@@ -250,7 +250,7 @@ class Rewind(_Command):
 
 @dataclass(frozen=True, slots=True)
 class Rename(_Command):
-    """``rename``: the user's title."""
+    """``rename``: the user's title, written on the live tip of the addressed row's compression chain (the receipt's ``title`` is the tip's). A committed write advances the revision of every row of that lineage and of a row the uniqueness rule freed the name from; a title that sanitizes to empty clears every row of the lineage under the same title rules, so the hidden canonical Bot Chat refuses. ``sidebar``'s ``title`` writes the same way."""
 
     title: str
     operation: ClassVar[str] = "rename"

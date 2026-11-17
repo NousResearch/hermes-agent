@@ -23,6 +23,7 @@ import {
   type PluginRunActionResult,
   runPluginAppAction
 } from '@/lib/keybinds/plugin-actions'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 import { $petActive } from '@/store/pet'
@@ -82,7 +83,10 @@ export interface PluginOs {
    *  to a `rest` call rather than trying to write it from the renderer. */
   pickSavePath: (options?: PluginFileDialogOptions) => Promise<null | string>
   /** Native open dialog, single file. Resolves the chosen path, or null on
-   *  cancel / when unavailable. */
+   *  cancel / when unavailable. A browser-hosted Desktop has no OS dialog —
+   *  its picker stages the file on the server instead — so it resolves null
+   *  there too; fall back to your own UI (paste, drop) rather than treating a
+   *  staged copy as the file the user picked. */
   pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
@@ -276,6 +280,17 @@ function createPluginOs(pluginId: string): PluginOs {
       }),
     pickOpenPath: options =>
       attemptPath(async bridge => {
+        // A browser-hosted renderer has no OS dialog. Its bridge's selectPaths
+        // stages the picked bytes at <hermes home>/uploads/web-<hex>-<name> and
+        // answers with that copy, which is not the path the user chose: plugin
+        // backends refuse a path inside the home, and every attempt left
+        // another staged copy behind (#156470). The capability is unavailable
+        // here, so it answers the documented null — the same answer
+        // pickSavePath gives without selectSavePath — and stages nothing.
+        if (isBrowserHostedDesktop()) {
+          return null
+        }
+
         const picked = await bridge.selectPaths?.({ ...options, multiple: false })
 
         return picked?.[0] ?? null

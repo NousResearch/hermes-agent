@@ -1610,6 +1610,15 @@ The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
 
+`ctx.os.pickOpenPath` and `ctx.os.pickSavePath` are native dialogs, so they
+answer `null` where there is no native shell: a browser-hosted Desktop has no
+OS file dialog, and its own picker stages the file on the server instead of
+naming the path the user chose. A plugin gets `null` there — never a staged
+copy presented as the picked path — so fall back to your own UI (paste, drop,
+a text field) instead of handing a path your backend will refuse. The two
+answers a `null` covers, cancelled and unavailable, are indistinguishable to
+the caller.
+
 ### Files — `ctx.files` {#plugin-files}
 
 `ctx.files` is the one sanctioned way for a plugin to touch files on the

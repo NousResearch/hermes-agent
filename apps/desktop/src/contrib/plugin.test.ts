@@ -91,6 +91,31 @@ describe('createPluginContext.os', () => {
     }
   })
 
+  it('pickOpenPath answers null in browser-hosted Desktop, and stages nothing', async () => {
+    // The browser bridge has no OS dialog: its picker POSTs the file to
+    // /api/chat/file-upload and resolves the copy the gateway staged inside the
+    // Hermes home. Handing that back as "the chosen path" is a pick that never
+    // happened — plugin backends refuse a path inside the home (#156470), and
+    // every attempt left another staged copy behind. The capability is
+    // unavailable there, which is the documented null.
+    const bridge = {
+      selectPaths: vi.fn().mockResolvedValue(['/home/u/.hermes/uploads/web-fcd110fdaff0a5df-hk_tasks.csv'])
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickOpenPath({ filters: [{ extensions: ['csv'], name: 'CSV' }] })).resolves.toBeNull()
+      expect(bridge.selectPaths).not.toHaveBeenCalled()
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+      delete document.documentElement.dataset.hermesDesktopHost
+    }
+  })
+
   it('file pickers degrade to null on an older shell that lacks them', async () => {
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {}
 

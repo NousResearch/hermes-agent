@@ -158,11 +158,12 @@ class CodexAppServerClient:
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
             default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
             kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
-            # A profile Codex home that deliberately opts into danger-full-access keeps it: appending the
-            # workspace-write override would silently narrow the worker back to the default sandbox.
-            if _codex_home_default_permissions(spawn_env.get("CODEX_HOME")) == _DANGER_DEFAULT_PERMISSIONS:
+            # An explicit (per-profile) Codex home that deliberately opts into danger-full-access keeps it:
+            # the workspace-write override would silently narrow the worker back to the default sandbox.
+            # An inherited/shared home keeps today's override.
+            if _codex_home_default_permissions(codex_home) == _DANGER_DEFAULT_PERMISSIONS:
                 logger.info("codex app-server: using profile default_permissions for kanban worker (CODEX_HOME=%s)",
-                            spawn_env.get("CODEX_HOME"))
+                            codex_home)
             else:
                 cmd += [
                     "-c", 'sandbox_mode="workspace-write"',

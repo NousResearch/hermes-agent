@@ -459,9 +459,13 @@ class TestRunConversationCodexPath:
         )
         return captured
 
-    def test_uses_profile_codex_home_when_profile_defines_one(
-        self, monkeypatch, tmp_path
+    @pytest.mark.parametrize("scope", ["profile", "shared"])
+    def test_codex_home_scope_selects_profile_or_inherited_home(
+        self, monkeypatch, tmp_path, scope
     ):
+        """``model.codex_home_scope: profile`` runs codex on the active profile's own home even when the
+        gateway/kanban parent exported a global CODEX_HOME; ``shared`` (the default) leaves the
+        inherited home alone, even when a profile codex-home directory already exists."""
         captured = self._capture_routing_agent(monkeypatch)
         profile_home = tmp_path / "profiles" / "coder-codex"
         codex_home = profile_home / "codex-home"
@@ -475,11 +479,16 @@ class TestRunConversationCodexPath:
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
         monkeypatch.setenv("CODEX_HOME", str(inherited_codex_home))
 
-        agent = _make_codex_agent()
-        with patch.object(agent, "_spawn_background_review", return_value=None):
-            agent.run_conversation("work a kanban task")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"model": {"codex_home_scope": scope}},
+        ):
+            agent = _make_codex_agent()
+            with patch.object(agent, "_spawn_background_review", return_value=None):
+                agent.run_conversation("work a kanban task")
 
-        assert captured.get("codex_home") == str(codex_home)
+        expected = str(codex_home) if scope == "profile" else None
+        assert captured.get("codex_home") == expected
 
     def test_approvals_mode_off_auto_approves_codex_server_requests(
         self, monkeypatch

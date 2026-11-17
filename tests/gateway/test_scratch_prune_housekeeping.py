@@ -62,7 +62,7 @@ def test_multiplexed_scratch_chore_reaches_every_served_profile(tmp_path, monkey
     import hermes_state
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     # Its ``git gc`` is not what this test is about, and it can block for tens of seconds.
-    from tools import checkpoint_maintenance
+    from agent.checkpoints import maintenance as checkpoint_maintenance
     monkeypatch.setattr(checkpoint_maintenance, "auto_prune_from_config", lambda: None)
 
     visited: list[str] = []

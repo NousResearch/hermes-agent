@@ -13,9 +13,11 @@ Fix: _search_files (find) and _search_with_grep both now exclude hidden
 directories, matching ripgrep's default behavior.
 """
 
-import subprocess
 
 import pytest
+
+from tools.file_operations import ShellFileOperations
+from tools.environments.local import LocalEnvironment
 
 
 @pytest.fixture
@@ -24,7 +26,7 @@ def searchable_tree(tmp_path):
     # Visible files
     visible_dir = tmp_path / "skills" / "my-skill"
     visible_dir.mkdir(parents=True)
-    (visible_dir / "SKILL.md").write_text("# My Skill\nThis is a real skill.")
+    (visible_dir / "SKILL.md").write_text("# My Skill\nThis is a visible document.")
 
     # Hidden directory mimicking .hub/index-cache
     hub_dir = tmp_path / "skills" / ".hub" / "index-cache"
@@ -38,88 +40,130 @@ def searchable_tree(tmp_path):
     git_dir.mkdir(parents=True)
     (git_dir / "pack-abc.idx").write_text("git internal data")
 
+    # An arbitrary hidden directory verifies the fallback is not limited to
+    # a hard-coded list of known cache names.
+    private_dir = tmp_path / "skills" / ".private-index"
+    private_dir.mkdir(parents=True)
+    (private_dir / "notes.txt").write_text("unlisted hidden content")
+
     return tmp_path / "skills"
 
 
-class TestFindExcludesHiddenDirs:
-    """_search_files uses find, which should exclude hidden directories."""
-
-    def test_find_skips_hub_cache_files(self, searchable_tree):
-        """find should not return files from .hub/ directory."""
-        cmd = (
-            f"find {searchable_tree} -not -path '*/.*' -type f -name '*.json'"
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "catalog.json" not in result.stdout
-        assert ".hub" not in result.stdout
-
-    def test_find_skips_git_internals(self, searchable_tree):
-        """find should not return files from .git/ directory."""
-        cmd = (
-            f"find {searchable_tree} -not -path '*/.*' -type f -name '*.idx'"
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "pack-abc.idx" not in result.stdout
-        assert ".git" not in result.stdout
-
-    def test_find_still_returns_visible_files(self, searchable_tree):
-        """find should still return files from visible directories."""
-        cmd = (
-            f"find {searchable_tree} -not -path '*/.*' -type f -name '*.md'"
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "SKILL.md" in result.stdout
 
 
 class TestGrepExcludesHiddenDirs:
-    """_search_with_grep should exclude hidden directories."""
+    """The real search_files grep fallback should search the default root."""
 
-    def test_grep_skips_hub_cache(self, searchable_tree):
-        """grep --exclude-dir should skip .hub/ directory."""
-        cmd = (
-            f"grep -rnH --exclude-dir='.*' 'ignore' {searchable_tree}"
+    @staticmethod
+    def _grep_ops(searchable_tree, monkeypatch):
+        ops = ShellFileOperations(
+            LocalEnvironment(cwd=str(searchable_tree)),
+            cwd=str(searchable_tree),
         )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        # Should NOT find the injection text in .hub/index-cache/catalog.json
-        assert ".hub" not in result.stdout
-        assert "catalog.json" not in result.stdout
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+        return ops
 
-    def test_grep_still_finds_visible_content(self, searchable_tree):
-        """grep should still find content in visible directories."""
-        cmd = (
-            f"grep -rnH --exclude-dir='.*' 'real skill' {searchable_tree}"
+    def test_grep_fallback_finds_visible_content(self, searchable_tree, monkeypatch):
+        """Searching ``.`` must not exclude the search root itself."""
+        result = self._grep_ops(searchable_tree, monkeypatch).search(
+            "visible document",
+            path=".",
+            target="content",
         )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "SKILL.md" in result.stdout
 
+        assert result.error is None
+        assert result.total_count > 0
+        assert any("SKILL.md" in match.path for match in result.matches)
 
-class TestRipgrepAlreadyExcludesHidden:
-    """Verify ripgrep's default behavior is to skip hidden directories."""
-
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
-    def test_rg_skips_hub_by_default(self, searchable_tree):
-        """rg should skip .hub/ by default (no --hidden flag)."""
-        result = subprocess.run(
-            ["rg", "--no-heading", "ignore", str(searchable_tree)],
-            capture_output=True, text=True,
+    def test_grep_fallback_finds_dot_relative_subdirectory(
+        self, searchable_tree, monkeypatch
+    ):
+        """An explicit ``./directory`` root must remain searchable too."""
+        result = self._grep_ops(searchable_tree, monkeypatch).search(
+            "visible document",
+            path="./my-skill",
+            target="content",
         )
-        assert ".hub" not in result.stdout
-        assert "catalog.json" not in result.stdout
 
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
-    def test_rg_finds_visible_content(self, searchable_tree):
-        """rg should find content in visible directories."""
-        result = subprocess.run(
-            ["rg", "--no-heading", "real skill", str(searchable_tree)],
-            capture_output=True, text=True,
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path.endswith("SKILL.md")
+
+    def test_grep_fallback_skips_hub_cache(self, searchable_tree, monkeypatch):
+        """The fallback must not expose cached community skill content."""
+        result = self._grep_ops(searchable_tree, monkeypatch).search(
+            "ignore previous instructions",
+            path=".",
+            target="content",
         )
-        assert "SKILL.md" in result.stdout
+
+        assert result.error is None
+        assert result.total_count == 0
+        assert not result.matches
+
+    def test_grep_fallback_skips_arbitrary_hidden_directory(
+        self, searchable_tree, monkeypatch
+    ):
+        """Hidden-directory exclusion must not rely on a directory allowlist."""
+        result = self._grep_ops(searchable_tree, monkeypatch).search(
+            "unlisted hidden content",
+            path=".",
+            target="content",
+        )
+
+        assert result.error is None
+        assert result.total_count == 0
+        assert not result.matches
+
+
+class TestGrepSearchesRootsUnderHiddenDirs:
+    """Regression for #18473: grep applies ``--exclude-dir='.*'`` to the command-line
+    root as well (GNU grep: to every component of it), so a search rooted anywhere
+    under a dot-directory such as ``~/.hermes`` returned nothing on the fallback."""
+
+    @staticmethod
+    def _hidden_tree(tmp_path):
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        (home / "skills" / "SKILL.md").write_text("visible document under a hidden home")
+        (home / ".hub").mkdir()
+        (home / ".hub" / "catalog.json").write_text("visible document cached from the hub")
+        return home
+
+    def test_absolute_root_under_hidden_dir_is_searched_but_hidden_children_are_not(
+        self, tmp_path, monkeypatch
+    ):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=str(home), target="content")
+
+        assert result.error is None
+        assert [m.path.rsplit("/", 1)[-1] for m in result.matches] == ["SKILL.md"]
+
+    def test_relative_root_resolves_against_a_hidden_cwd(self, tmp_path, monkeypatch):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(home)), cwd=str(home))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=".", target="content")
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path.endswith("SKILL.md")
+
+    def test_single_file_root_under_hidden_dir_is_searched(self, tmp_path, monkeypatch):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=str(home / "skills" / "SKILL.md"), target="content")
+
+        assert result.error is None
+        assert result.total_count == 1
+
+
 
 
 class TestIgnoreFileWritten:

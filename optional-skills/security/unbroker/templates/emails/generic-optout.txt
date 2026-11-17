@@ -1,0 +1,15 @@
+Subject: Opt-out and data removal request
+
+To the {broker_name} privacy team,
+
+I am writing to request the removal of my personal information from {broker_name} and any sites you
+operate or supply. My information currently appears at:
+{listing_urls}
+
+Please suppress and delete the record(s) associated with my name, {full_name}, and do not sell or
+share my personal information.
+
+Please confirm completion to this email address: {contact_email}
+
+Thank you,
+{full_name}

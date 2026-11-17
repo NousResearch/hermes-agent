@@ -12,6 +12,7 @@ Adapters without ``delete_message`` silently no-op.
 
 import asyncio
 import importlib
+import inspect as _inspect
 import sys
 import time
 import types
@@ -20,6 +21,17 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+
+
+async def _fire_post_delivery_cb(cb):
+    """Invoke a popped post-delivery callback, awaiting if it's async.
+
+    Chained registrations return an async wrapper; single registrations
+    return the raw sync callable. Either way, await any awaitable result.
+    """
+    result = cb()
+    if _inspect.isawaitable(result):
+        await result
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
 
@@ -41,7 +53,7 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
         self.edits = []
         self.deleted = []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -103,9 +115,9 @@ class ProgressAgent:
         cb = self.tool_progress_callback
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
-            time.sleep(0.25)
+            time.sleep(0.2)
             cb("tool.started", "terminal", "ls", {})
-            time.sleep(0.25)
+            time.sleep(0.2)
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
@@ -118,7 +130,7 @@ class FailingAgent:
         cb = self.tool_progress_callback
         if cb is not None:
             cb("tool.started", "terminal", "pwd", {})
-            time.sleep(0.25)
+            time.sleep(0.2)
         # Empty final_response + failed=True is the shape the gateway
         # actually returns on provider errors (see gateway/run.py where
         # failed keys are only propagated when final_response is empty).
@@ -144,7 +156,6 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
-    runner._session_run_generation = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -154,7 +165,13 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
+def _install_fakes(
+    monkeypatch,
+    agent_cls,
+    *,
+    cleanup_on: bool,
+    cleanup_platform: Platform = Platform.TELEGRAM,
+):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
@@ -165,7 +182,7 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 — register tool emoji
+    import tools.terminal_tool
 
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
@@ -175,7 +192,7 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     cfg = {
         "display": {
             "platforms": {
-                "telegram": {"cleanup_progress": True},
+                cleanup_platform.value: {"cleanup_progress": True},
             }
         }
     } if cleanup_on else {}
@@ -189,137 +206,49 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
 
 
 @pytest.mark.asyncio
-async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
-    """Without ``cleanup_progress: true``, firing whatever callback is
-    registered never reaches delete_message."""
+async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path):
+    """Writable gateway agents must receive the configured checkpoint limits."""
+    captured = {}
+
+    class CheckpointCaptureAgent(ProgressAgent):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            super().__init__(**kwargs)
+
     adapter = CleanupCaptureAdapter()
     runner = _make_runner(adapter)
-    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=False)
+    gateway_run = _install_fakes(
+        monkeypatch, CheckpointCaptureAgent, cleanup_on=False,
+    )
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "checkpoints": {
+                "enabled": True,
+                "max_snapshots": 9,
+                "max_total_size_mb": 444,
+                "max_file_size_mb": 6,
+            }
+        },
+    )
 
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
-
     result = await runner._run_agent(
         message="hello",
         context_prompt="",
         history=[],
         source=source,
-        session_id="sess-1",
-        session_key=session_key,
+        session_id="sess-checkpoints",
+        session_key="agent:main:telegram:group:-1001",
     )
 
     assert result["final_response"] == "done"
-    # Even if an unrelated callback got registered (background-review
-    # release lives in the same slot) firing it should never cause any
-    # delete_message calls when cleanup is off.
-    cb = adapter.pop_post_delivery_callback(session_key)
-    if cb is not None:
-        cb()
-        for _ in range(10):
-            await asyncio.sleep(0.01)
-    assert adapter.deleted == []
-
-
-@pytest.mark.asyncio
-async def test_cleanup_registers_callback_and_deletes_on_success(monkeypatch, tmp_path):
-    """With the flag on, the cleanup callback deletes the progress bubble."""
-    adapter = CleanupCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key=session_key,
-    )
-
-    assert result["final_response"] == "done"
-    # The cleanup callback should be registered for this session.
-    cb = adapter.pop_post_delivery_callback(session_key)
-    assert callable(cb)
-
-    # Fire it (base.py does this in _process_message_background's finally)
-    # and let the scheduled coroutine run to completion.
-    cb()
-    # delete_message is scheduled via run_coroutine_threadsafe → give the
-    # loop a couple of ticks to drain.
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-        if adapter.deleted:
-            break
-
-    # At least the first tool-progress bubble should have been deleted.
-    assert len(adapter.deleted) >= 1, f"deleted={adapter.deleted} sent={adapter.sent}"
-    for entry in adapter.deleted:
-        assert entry["chat_id"] == "-1001"
-
-
-@pytest.mark.asyncio
-async def test_cleanup_skipped_on_failed_run(monkeypatch, tmp_path):
-    """Failed runs skip cleanup registration — breadcrumbs stay."""
-    adapter = CleanupCaptureAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = _install_fakes(monkeypatch, FailingAgent, cleanup_on=True)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key=session_key,
-    )
-
-    assert result.get("failed") is True
-    # Whatever callback is registered should not trigger any deletion —
-    # the cleanup callback is skipped on failed runs.
-    cb = adapter.pop_post_delivery_callback(session_key)
-    if cb is not None:
-        cb()
-        for _ in range(10):
-            await asyncio.sleep(0.01)
-    assert adapter.deleted == []
-
-
-@pytest.mark.asyncio
-async def test_cleanup_noop_on_adapter_without_delete_support(monkeypatch, tmp_path):
-    """Adapters that inherit the base-class delete_message no-op are
-    detected up front — the cleanup path never registers its callback so
-    a stray bg-review callback (if present) can fire harmlessly."""
-    adapter = NoDeleteAdapter()
-    runner = _make_runner(adapter)
-    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
-    session_key = "agent:main:telegram:group:-1001"
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-1",
-        session_key=session_key,
-    )
-
-    assert result["final_response"] == "done"
-    # No deletion attempts on an adapter without delete_message support.
-    # (The NoDeleteAdapter.delete_message would raise AssertionError if
-    # the cleanup closure had somehow captured a reference to it.)
-    assert adapter.deleted == []
+    assert captured["checkpoints_enabled"] is True
+    assert captured["checkpoint_max_snapshots"] == 9
+    assert captured["checkpoint_max_total_size_mb"] == 444
+    assert captured["checkpoint_max_file_size_mb"] == 6
 
 
 @pytest.mark.asyncio
@@ -355,13 +284,191 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     cb = adapter.pop_post_delivery_callback(session_key)
     assert callable(cb)
-    cb()
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-        if adapter.deleted:
-            break
+    # Deletion is complete when the callback completes: no polling (a queued follow-up starts
+    # right after this await).
+    await _fire_post_delivery_cb(cb)
 
     # Both effects land: the pre-existing callback fires AND the cleanup
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+class QueuedFollowupAgent:
+    """Turn 1 emits progress, then a follow-up is queued; turn 2 records what the chat still showed."""
+
+    adapter = None
+    session_key = ""
+    deleted_at_turn2_start = None
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        from gateway.platforms.base import MessageEvent, MessageType
+        cls = type(self)
+        if message == "follow-up":
+            cls.deleted_at_turn2_start = list(cls.adapter.deleted)
+            return {"final_response": "second", "messages": [], "api_calls": 1}
+        cb = self.tool_progress_callback
+        cb("tool.started", "terminal", "pwd", {})
+        from tests.waiting import wait_until
+        wait_until(lambda: cls.adapter.sent, timeout=5, what="progress bubble delivered")
+        cls.adapter._pending_messages[cls.session_key] = MessageEvent(
+            text="follow-up", message_type=MessageType.TEXT,
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1001"))
+        return {"final_response": "first", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_starts_after_prior_turn_bubbles_are_deleted(monkeypatch, tmp_path):
+    """The queued follow-up path returns before the normal-path cleanup registration; turn 1's
+    progress bubbles must still be deleted, and deleted BEFORE turn 2 begins."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, QueuedFollowupAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    session_key = "agent:main:telegram:group:-1001"
+    QueuedFollowupAgent.adapter, QueuedFollowupAgent.session_key = adapter, session_key
+    QueuedFollowupAgent.deleted_at_turn2_start = None
+
+    result = await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1001"),
+        session_id="sess-1", session_key=session_key,
+    )
+
+    assert result["final_response"] == "second"
+    progress_ids = {m["message_id"] for m in adapter.sent if m["content"] != "first"}
+    assert progress_ids
+    assert QueuedFollowupAgent.deleted_at_turn2_start is not None
+    assert {d["message_id"] for d in QueuedFollowupAgent.deleted_at_turn2_start} >= progress_ids
+
+
+class HeldSendAdapter(CleanupCaptureAdapter):
+    """Holds every progress send open until the queued follow-up's turn starts."""
+
+    def __init__(self):
+        super().__init__()
+        self.loop = self.release = None
+        self.send_started = __import__("threading").Event()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        if content not in ("first", "second"):
+            self.send_started.set()
+            await self.release.wait()
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+
+class HeldSendAgent(QueuedFollowupAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
+        from gateway.platforms.base import MessageEvent, MessageType
+        from tests.waiting import wait_until
+        cls, adapter = type(self), type(self).adapter
+        if message == "follow-up":
+            adapter.loop.call_soon_threadsafe(adapter.release.set)
+            return {"final_response": "second", "messages": [], "api_calls": 1}
+        self.tool_progress_callback("tool.started", "terminal", "pwd", {})
+        wait_until(adapter.send_started.is_set, timeout=5, what="progress send in flight")
+        adapter._pending_messages[cls.session_key] = MessageEvent(
+            text="follow-up", message_type=MessageType.TEXT,
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1001"))
+        return {"final_response": "first", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_progress_send_in_flight_at_handoff_never_leaves_a_bubble(monkeypatch, tmp_path):
+    """A progress send still open when a queued follow-up takes over either lands before the
+    cleanup snapshot or never lands: no bubble from the finished turn outlives it."""
+    adapter = HeldSendAdapter()
+    adapter.loop, adapter.release = asyncio.get_running_loop(), asyncio.Event()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, HeldSendAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    session_key = "agent:main:telegram:group:-1001"
+    HeldSendAgent.adapter, HeldSendAgent.session_key = adapter, session_key
+
+    await runner._run_agent(
+        message="hello", context_prompt="", history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1001"),
+        session_id="sess-1", session_key=session_key,
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+    progress_ids = {m["message_id"] for m in adapter.sent if m["content"] not in ("first", "second")}
+    assert progress_ids <= {d["message_id"] for d in adapter.deleted}
+
+
+@pytest.mark.asyncio
+async def test_one_slow_delete_does_not_strand_the_other_bubbles(monkeypatch):
+    """Cleanup runs under the post-delivery timeout; a hung delete must not use it all."""
+    from gateway import run_turn_bubble_cleanup as cleanup
+    from gateway.platforms.base_post_delivery import run_post_delivery_callback
+
+    class HungFirstDelete(CleanupCaptureAdapter):
+        async def delete_message(self, chat_id, message_id) -> bool:
+            if message_id == "1":
+                await asyncio.Event().wait()
+            return await super().delete_message(chat_id, message_id)
+
+    monkeypatch.setattr(cleanup, "DELETE_TIMEOUT_SECONDS", 0.05, raising=False)
+    adapter = HungFirstDelete()
+    turn_ctx = SimpleNamespace(
+        _cleanup_adapter=adapter, _cleanup_msg_ids=["1", "2"], session_key="k", _cleanup_progress=True,
+        source=SimpleNamespace(chat_id="-1001"), run_generation=None)
+    cleanup.register_bubble_cleanup({"final_response": "done"}, turn_ctx)
+    await run_post_delivery_callback(adapter.pop_post_delivery_callback("k"), timeout=5)
+    assert [d["message_id"] for d in adapter.deleted] == ["2"]
+
+
+@pytest.mark.asyncio
+async def test_hung_sender_delays_the_followup_by_at_most_the_cap(monkeypatch):
+    """A sender whose cancel-time flush never returns holds the handoff for the cap, not forever."""
+    from gateway import run_turn_bubble_cleanup as cleanup
+
+    async def _hung_sender():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()  # cancel-time edit that never returns
+
+    monkeypatch.setattr(cleanup, "DELETE_TIMEOUT_SECONDS", 0.1)
+    sender = asyncio.ensure_future(_hung_sender())
+    await asyncio.sleep(0)
+    # The 0.1 s cap is what returns; without it the outer bound expires and the test fails.
+    await asyncio.wait_for(cleanup.settle_turn_senders(sender, None), timeout=5)
+    await asyncio.sleep(0)
+    assert sender.done()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_turn_during_the_sender_wait_starts_no_followup():
+    """A cancel aimed at the turn (shutdown, /stop) while it waits on its senders must propagate."""
+    from gateway import run_turn_bubble_cleanup as cleanup
+
+    release = asyncio.Event()
+
+    async def _slow_sender():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    events = []
+
+    async def _turn(sender):
+        await cleanup.settle_turn_senders(sender)
+        events.append("follow-up started")
+
+    sender = asyncio.ensure_future(_slow_sender())
+    await asyncio.sleep(0)
+    turn = asyncio.ensure_future(_turn(sender))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    assert events == []
+    release.set()
+    await asyncio.sleep(0)

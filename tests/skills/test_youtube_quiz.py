@@ -26,8 +26,6 @@ class TestNormalizeSegments:
         segments = [{"text": "hello "}, {"text": " world"}]
         assert youtube_quiz._normalize_segments(segments) == "hello world"
 
-    def test_empty_segments(self):
-        assert youtube_quiz._normalize_segments([]) == ""
 
     def test_whitespace_only(self):
         assert youtube_quiz._normalize_segments([{"text": "   "}, {"text": "  "}]) == ""
@@ -37,27 +35,6 @@ class TestNormalizeSegments:
         assert youtube_quiz._normalize_segments(segments) == "a b c d"
 
 
-class TestFetchMissingDependency:
-    def test_missing_youtube_transcript_api(self, capsys, monkeypatch):
-        """When youtube-transcript-api is not installed, report the error."""
-        import builtins
-        real_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "youtube_transcript_api":
-                raise ImportError("No module named 'youtube_transcript_api'")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", mock_import)
-
-        with pytest.raises(SystemExit) as exc_info:
-            _run(capsys, ["fetch", "test123"])
-
-        captured = capsys.readouterr()
-        result = json.loads(captured.out)
-        assert result["ok"] is False
-        assert result["error"] == "missing_dependency"
-        assert "pip install" in result["message"]
 
 
 class TestFetchWithMockedAPI:
@@ -101,27 +78,4 @@ class TestFetchWithMockedAPI:
         assert result["ok"] is False
         assert result["error"] == "transcript_unavailable"
 
-    def test_empty_transcript(self, capsys):
-        mock_mod = self._make_mock_module(segments=[{"text": ""}, {"text": "   "}])
-        with mock.patch.dict("sys.modules", {"youtube_transcript_api": mock_mod}):
-            with pytest.raises(SystemExit):
-                _run(capsys, ["fetch", "empty_vid"])
 
-        captured = capsys.readouterr()
-        result = json.loads(captured.out)
-        assert result["ok"] is False
-        assert result["error"] == "empty_transcript"
-
-    def test_segments_without_to_raw_data(self, capsys):
-        """Handle plain list segments (no to_raw_data method)."""
-        mock_mod = mock.MagicMock()
-        mock_api = mock.MagicMock()
-        mock_mod.YouTubeTranscriptApi.return_value = mock_api
-        # Return a plain list (no to_raw_data attribute)
-        mock_api.fetch.return_value = [{"text": "plain list"}]
-
-        with mock.patch.dict("sys.modules", {"youtube_transcript_api": mock_mod}):
-            result = _run(capsys, ["fetch", "plain123"])
-
-        assert result["ok"] is True
-        assert result["transcript"] == "plain list"

@@ -18,6 +18,7 @@ Cron 任务可以：
 - 将结果回传到来源会话、本地文件或已配置的平台目标
 - 在全新的 agent 会话中运行，使用正常的静态工具列表
 - 以**无 agent 模式**运行——按计划执行脚本，其 stdout 原样投递，零 LLM 参与（参见下方[无 agent 模式](#no-agent-mode-script-only-jobs)章节）
+- 由**外部事件触发**——设置了 `cron_job` 的 webhook 路由会在事情发生的那一刻（PR 收到反馈、服务发出告警）立即触发任务，而不是等待下一次定时 tick。参见[事件触发的 Cron 任务](../messaging/webhooks.md#event-triggered-cron-jobs)。
 
 所有这些功能均可通过 `cronjob` 工具由 Hermes 自身使用，因此你可以用自然语言创建、暂停、编辑和删除任务——无需 CLI。
 
@@ -113,12 +114,12 @@ cronjob(
 设置 `workdir` 后：
 
 - 该目录中的 `AGENTS.md`、`CLAUDE.md` 和 `.cursorrules` 会被注入系统 prompt（发现顺序与交互式 CLI 相同）
-- `terminal`、`read_file`、`write_file`、`patch`、`search_files` 和 `execute_code` 均以该目录为工作目录（通过 `TERMINAL_CWD`）
+- `terminal`、`read_file`、`write_file`、`patch`、`search_files` 和 `execute_code` 均以该目录为工作目录
 - 路径必须是已存在的绝对目录——相对路径和不存在的目录在创建/更新时会被拒绝
 - 编辑时传入 `--workdir ""`（或工具中的 `workdir=""`）可清除该设置并恢复原有行为
 
-:::note 串行化
-设置了 `workdir` 的任务在调度器 tick 时串行运行，而非在并行池中运行。这是有意为之——`TERMINAL_CWD` 是进程全局变量，两个 workdir 任务同时运行会互相破坏各自的 cwd。无 workdir 的任务仍像以前一样并行运行。
+:::note 隔离
+每次 agent 运行都会将其 `workdir` 绑定到该次运行的唯一任务标识。设置了 workdir 的任务因此可使用正常的并行池，不会修改进程全局终端状态，也不会在并发运行之间泄漏路径。如需限制 cron 的总并发量，请设置 `cron.max_parallel_jobs`。
 :::
 
 ## 在指定 profile 中运行 cron 任务
@@ -244,7 +245,13 @@ hermes cron status
 6. 投递最终响应
 7. 更新运行元数据和下次调度时间
 
-`~/.hermes/cron/.tick.lock` 处的文件锁防止重叠的调度器 tick 重复运行同一批任务。
+`~/.hermes/cron/.tick.lock` 文件锁可防止重叠的调度器 tick 重复运行同一批任务。
+
+### 执行历史
+
+Hermes 会在执行器或调度提供程序分派之前，将每次已领取的 cron 尝试记录到当前 profile 的 `~/.hermes/cron/executions.db`。尝试会依次进入 `claimed`、`running`，然后进入不可变的终态：`completed`、`failed` 或 `unknown`。重启后，只有原 PID 与进程启动时间指纹能够证明所有者已经消失时，Hermes 才会将遗留尝试标记为 `unknown`。未知尝试仅用于审计，绝不会自动重跑。
+
+使用 `hermes cron runs [job-id] --limit 20`（别名：`history`）查看最近的尝试。终态历史有界，活动尝试不会被清理；快速备份也包含该账本。
 
 ## 投递选项
 
@@ -266,7 +273,7 @@ hermes cron status
 | `"mattermost"` | Mattermost 主频道 | |
 | `"email"` | 邮件 | |
 | `"sms"` | 通过 Twilio 发送 SMS | |
-| `"homeassistant"` | Home Assistant | |
+| `"homeassistant"` | Home Assistant（插件） | 使用 `HASS_HOME_CHANNEL`；需要 [`homeassistant` 插件](../messaging/homeassistant.md) |
 | `"dingtalk"` | 钉钉 | |
 | `"feishu"` | 飞书/Lark | |
 | `"wecom"` | 企业微信 | |
@@ -319,6 +326,78 @@ cron:
   wrap_response: false
 ```
 
+### 可继续任务（回复 cron 投递）
+
+默认情况下，cron 投递是「发完即忘」的：消息发送出去，但不会进入聊天的对话历史，
+因此如果你回复它，agent 并不记得自己说过什么。将任务设为**可继续**后，投递的简报
+就变成一段你可以回复进去的对话——agent 会把简报保留在上下文中，而不会反问
+「Task #2 是什么？」。
+
+选择性启用，**默认关闭**。可在配置中全局启用，或通过 `cronjob` 工具的
+`attach_to_session` 按任务启用（会覆盖该任务的全局设置）：
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  mirror_delivery: false   # 设为 true 使 cron 投递可继续
+```
+
+行为为**优先使用话题**，范围限定在任务的来源聊天：
+
+- **支持话题的平台**（Telegram 话题、Discord/Slack/Matrix 话题）：每次投递都会新建
+  专用话题，并将简报植入该话题的会话中，因此在话题内回复即可带完整上下文继续。
+- **仅 DM 的平台**（WhatsApp、Signal、SMS）：不存在话题，因此简报会被镜像进
+  来源 DM 会话——DM 本身就是继续的载体。
+
+只有来源聊天会被触及：扇出/广播目标（`all`、显式的其他聊天投递）永远不会被设为可继续。
+
+#### 平铺频道内继续（Slack）
+
+上面的优先话题行为每次投递都会新建专用话题。如果你希望可继续任务**平铺落在频道
+时间线**中——不新建话题——将 Slack 的**继续投递方式**设为 `in_channel`：
+
+```yaml
+# ~/.hermes/config.yaml
+slack:
+  cron_continuable_surface: in_channel   # 默认："thread"
+  reply_in_thread: false                 # 必需搭配（见下）
+  require_mention: false                 # 纯文本回复即可继续任务
+```
+
+在 `in_channel` 模式下，简报作为普通的顶层频道消息投递（不新建话题），你的回复通过
+频道的共享会话继续任务。三项设置协同工作：
+
+- **`cron_continuable_surface: in_channel`**——投递时跳过新建话题。
+- **`reply_in_thread: false`**（必需）——让机器人在频道中*平铺*回复你，并将其
+  归入简报所植入的同一个整频道会话。缺少它时继续功能仍可用，但回复会出现在话题里
+  （安全回退为话题式继续，绝不会丢失回复——网关会在启动时记录一条警告便于发现不匹配）。
+- **`require_mention: false`**（或将该频道加入 `free_response_channels`）——这样你
+  可以用纯文本消息回复；否则机器人只在你每次 `@` 提及它时才被唤醒。
+
+由于继续载体是**整频道**会话，它是共享的：频道里的其他闲聊——以及第二个可继续的
+in_channel 任务——都会加入同一段滚动对话。这是「平铺在频道中」的固有取舍，与
+`reply_in_thread: false` 用户已经接受的取舍相同；若希望每次投递的后续讨论相互隔离，
+请使用默认的 `thread` 方式。
+
+这目前是 Slack 的能力。其他平台接受该键，但会回退到 `thread` 方式（它们的继续原语
+不同）；该选择按平台设置，位于各平台的配置下。这是网关侧的配置项——`/restart` 即可
+生效；无需重新安装 Slack 应用。
+
+:::note 1:1 私信（DM）
+`cron_continuable_surface` 是**频道**设置——1:1 私信没有「话题 vs 时间线」的区分
+（私信本身就是平铺的），因此该键在私信中无效。决定私信 cron 投递是否可继续的是另一个
+已有的独立开关 **`slack.dm_top_level_threads_as_sessions`**：
+
+- **`false`**——所有顶层私信共享同一个滚动私信会话，因此可继续的 cron 简报与你的回复
+  落在**同一个**会话里，任务得以带上下文继续。这正是私信中可继续 cron 所需要的。
+- **`true`**（默认）——每条顶层私信消息各自成为独立会话，因此对已投递简报的回复会开启
+  一个**全新**、不含该简报记录的会话。此模式下继续功能不可用（对 cron 或任何平铺投递皆然）。
+
+所以，若要让 cron 任务在 1:1 私信中可继续，请设置
+`slack.dm_top_level_threads_as_sessions: false`。私信不需要（也会忽略）
+`cron_continuable_surface`。
+:::
+
 ### 静默抑制
 
 如果 agent 的最终响应以 `[SILENT]` 开头，投递将被完全抑制。输出仍会保存到本地以供审计（位于 `~/.hermes/cron/output/`），但不会向投递目标发送任何消息。
@@ -364,7 +443,7 @@ hermes cron create "every 5m" \
 - 最后一行输出 `{"wakeAgent": false}` → 静默 tick（与 LLM 任务使用相同的门控）。
 - 无 token、无模型、无 provider 回退——任务永远不会触及推理层。
 
-`.sh`/`.bash` 文件在 `/bin/bash` 下运行；其他文件在当前 Python 解释器（`sys.executable`）下运行。脚本必须位于 `~/.hermes/scripts/`（与预运行脚本门控相同的沙箱规则）。
+`.sh`/`.bash` 文件优先使用 `PATH` 中的 `bash`，不可用时回退到 `/bin/bash`（这对 Windows Git Bash 尤其重要）；其他文件默认使用当前 Python 解释器（`sys.executable`）。脚本路径必须解析到 `$HERMES_HOME/scripts/` 内部——只要解析后的目标仍位于该目录，相对路径、绝对路径和以 `~` 开头的路径都可以；逃逸该目录的路径会被拒绝。Python `script` 或 `monitor_script` 也可以通过在创建/编辑时传入 `--interpreter ~/venvs/.../bin/python` 来指定一个用户自管的 venv（用于 Hermes 运行时不携带的包）——参见[使用你自己的 Python 环境](../../guides/cron-script-only.md#使用你自己的-python-环境)。Hermes 管理的 venv 仍归 Hermes 所有；系统不会自动安装或恢复任何包。子进程环境会被净化，因此 cron 脚本**不会**继承 provider API 凭据和其他由 Hermes 管理的秘密。
 
 ### Agent 为你设置这些
 
@@ -384,7 +463,7 @@ cronjob(action="create", schedule="every 5m",
 
 当消息内容完全由脚本决定时（看门狗、阈值告警、心跳），它会自动选择 `no_agent=True`。同一工具也让 agent 可以暂停、恢复、编辑和删除任务——整个生命周期都通过聊天驱动，无需任何人接触 CLI。
 
-参见[纯脚本 Cron 任务指南](/guides/cron-script-only)获取实际示例。
+参见[纯脚本 Cron 任务指南](../../guides/cron-script-only.md)获取实际示例。
 
 ## 通过 `context_from` 串联任务
 
@@ -446,7 +525,7 @@ cronjob(
 Cron 任务继承你配置的回退 provider 和凭证池轮换。如果主 API key 被限速或 provider 返回错误，cron agent 可以：
 
 - **回退到备用 provider**，前提是你在 `config.yaml` 中配置了 `fallback_providers`（或旧版 `fallback_model`）
-- **轮换到下一个凭证**，即同一 provider 的[凭证池](/user-guide/configuration#credential-pool-strategies)中的下一个
+- **轮换到下一个凭证**，即同一 provider 的[凭证池](../configuration.md#credential-pool-strategies)中的下一个
 
 这意味着高频运行或在高峰时段运行的 cron 任务更具弹性——单个被限速的 key 不会导致整次运行失败。
 
@@ -573,7 +652,7 @@ print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
 **文件变更门控**——仅在被监视文件自上次成功 tick 以来有新内容时运行。调度器记录每个任务的 `last_run_at`；将其与文件的 mtime 比较。
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/feed-changed.sh
 FEED="$HOME/data/feed.json"
 STATE="$HOME/.hermes/scripts/.feed-changed.last"
@@ -598,7 +677,7 @@ cronjob(action="create", name="process-feed",
 **外部标志门控**——仅在其他进程发出就绪信号时运行（例如，部署 hook 落下一个文件，CI 任务在状态存储中设置一个值）。
 
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 # ~/.hermes/scripts/flag-ready.sh
 if test -f /tmp/new-data-ready; then
   rm -f /tmp/new-data-ready
@@ -663,7 +742,11 @@ cronjob(action="create", name="daily-digest",
 
 任务存储在 `~/.hermes/cron/jobs.json`。任务运行的输出保存到 `~/.hermes/cron/output/{job_id}/{timestamp}.md`。
 
+如果手动编辑使 `jobs.json` 格式出错，调度器会在下次加载时修复它，而不是停止运行：`jobs` 列表中不是 JSON 对象的条目会被丢弃，不是非负整数的 `repeat.completed` 会被规范化为非负整数（无法解析时为 0）。每次修复都会记录一条警告（只记录值的类型，不记录内容）。
+
 任务可能将 `model` 和 `provider` 存储为 `null`。省略这些字段时，Hermes 在执行时从全局配置中解析它们。只有设置了单任务覆盖时，这些字段才会出现在任务记录中。
+
+单任务的 `base_url` 覆盖必须同时指定 `provider`。对于保存了密钥的 provider（具名自定义 provider 或内置 provider），覆盖地址必须与该 provider 配置的端点同源：协议、主机和端口都相同。其他协议、端口或子域名都会被拒绝，因此保存的密钥只会发往你配置的地址。单独的 `provider: custom` 可以使用任何不会携带保存密钥的 `base_url`。如果某个保存的密钥与该 URL 的主机名匹配（例如 `api.deepseek.com` 对应 `DEEPSEEK_API_KEY`），则适用同样的规则：`base_url` 必须与你配置的端点或内置 provider 的端点同源。
 
 存储使用原子文件写入，因此中断的写入不会留下部分写入的任务文件。
 

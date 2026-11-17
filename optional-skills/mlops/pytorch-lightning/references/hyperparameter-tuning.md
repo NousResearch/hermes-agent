@@ -158,7 +158,7 @@ import optuna
 
 # Shared database for distributed optimization
 storage = optuna.storages.RDBStorage(
-    url='postgresql://user:pass@localhost/optuna'
+    url='postgresql://user@localhost/optuna'  # password via ~/.pgpass or PGPASSWORD
 )
 
 study = optuna.create_study(

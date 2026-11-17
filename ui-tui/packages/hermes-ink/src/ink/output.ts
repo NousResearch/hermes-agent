@@ -57,13 +57,7 @@ type Options = {
 }
 
 export type Operation =
-  | WriteOperation
-  | ClipOperation
-  | UnclipOperation
-  | BlitOperation
-  | ClearOperation
-  | NoSelectOperation
-  | ShiftOperation
+  WriteOperation | ClipOperation | UnclipOperation | BlitOperation | ClearOperation | NoSelectOperation | ShiftOperation
 
 type WriteOperation = {
   type: 'write'

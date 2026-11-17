@@ -1,0 +1,49 @@
+name: inkbox
+repo: https://github.com/inkbox-ai/hermes-agent-plugin
+sha: 0948a16679f09fcfc78ed3d9171604b2c853402c
+description: Inkbox email, SMS/MMS, iMessage, voice, and A2A platform plugin for Hermes Agent.
+maintainer: inkbox-ai
+tier: community
+category: platform
+docs_url: https://github.com/inkbox-ai/hermes-agent-plugin#readme
+capabilities:
+  provides_tools:
+  - inkbox_a2a_ask_caller
+  - inkbox_a2a_call
+  - inkbox_a2a_check
+  - inkbox_a2a_complete
+  - inkbox_a2a_fail
+  - inkbox_a2a_reply
+  - inkbox_create_contact
+  - inkbox_delete_contact
+  - inkbox_get_a2a_sent_task
+  - inkbox_get_contact
+  - inkbox_get_imessage_conversation
+  - inkbox_get_text
+  - inkbox_get_text_conversation
+  - inkbox_imessage_triage_number
+  - inkbox_list_a2a_messages
+  - inkbox_list_a2a_sent_tasks
+  - inkbox_list_a2a_tasks
+  - inkbox_list_contacts
+  - inkbox_list_imessage_assignments
+  - inkbox_list_imessage_conversations
+  - inkbox_list_text_conversations
+  - inkbox_list_texts
+  - inkbox_lookup_contact
+  - inkbox_mark_imessage_conversation_read
+  - inkbox_mark_text_conversation_read
+  - inkbox_mark_text_read
+  - inkbox_place_call
+  - inkbox_send_email
+  - inkbox_send_imessage
+  - inkbox_send_imessage_reaction
+  - inkbox_send_sms
+  - inkbox_update_contact
+  - inkbox_whoami
+  provides_hooks:
+  - post_tool_call
+  - pre_llm_call
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

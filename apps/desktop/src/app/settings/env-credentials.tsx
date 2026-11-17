@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { type IconComponent } from '@/lib/icons'
+import { queryClient } from '@/lib/query-client'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -39,8 +42,15 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 
 // Owns the env-var fetch + the edit/reveal/save/delete lifecycle so multiple
 // credential pages (Providers, Keys) share one source of truth and one set of
-// mutation handlers instead of duplicating the plumbing.
-export function useEnvCredentials(): UseEnvCredentials {
+// mutation handlers instead of duplicating the plumbing. An optional `profile`
+// targets another profile's env store (the shared settings "Applies to"
+// scope); undefined keeps the app-wide active profile. Request-shaped on
+// purpose: the API helpers treat an explicit `null` as "target the
+// primary/default backend", which is never what a settings page means.
+export function useEnvCredentials(profile?: string): UseEnvCredentials {
+  const { t } = useI18n()
+  const credentials = t.settings.credentials
+  const toolsets = t.settings.toolsets
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
@@ -59,32 +69,42 @@ export function useEnvCredentials(): UseEnvCredentials {
   useEffect(() => {
     let cancelled = false
 
+    // Everything keyed by var name is dropped together with the reload: the
+    // cached `vars`, plus any in-flight edit or revealed value. Those maps are
+    // keyed by name alone, so leaving a draft behind after the target profile
+    // changed left its Save button live — writing the value into the profile
+    // now being targeted instead of the one it was typed for.
+    setVars(null)
+    setEdits({})
+    setRevealed({})
+
     void (async () => {
       try {
-        const next = await getEnvVars()
+        const next = await getEnvVars(profile)
 
         if (!cancelled) {
           setVars(next)
         }
       } catch (err) {
-        notifyError(err, 'API keys failed to load')
+        notifyError(err, t.settings.keys.failedLoad)
       }
     })()
 
     return () => void (cancelled = true)
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload per target profile; copy is stable
+  }, [profile])
 
   function patchVar(key: string, patch: Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>) {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))
   }
 
-  function clearLocalState(key: string) {
-    setEdits(c => withoutKey(c, key))
+  function clearLocalState(key: string, editKey = key) {
+    setEdits(c => withoutKey(c, editKey))
     setRevealed(c => withoutKey(c, key))
   }
 
-  async function handleSave(key: string) {
-    const value = edits[key]
+  async function handleSave(key: string, editKey = key) {
+    const value = edits[editKey]
 
     if (!value) {
       return
@@ -93,12 +113,13 @@ export function useEnvCredentials(): UseEnvCredentials {
     setSaving(key)
 
     try {
-      await setEnvVar(key, value)
+      await setEnvVar(key, value, profile)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
-      clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential saved', message: `${key} updated.` })
+      clearLocalState(key, editKey)
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+      notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
     } catch (err) {
-      notifyError(err, `Failed to save ${key}`)
+      notifyError(err, toolsets.failedSave(key))
     } finally {
       setSaving(null)
     }
@@ -111,41 +132,43 @@ export function useEnvCredentials(): UseEnvCredentials {
     const trimmed = value.trim()
 
     if (!trimmed) {
-      return { message: 'Enter a value first.', ok: false }
+      return { message: credentials.enterValueFirst, ok: false }
     }
 
     setSaving(key)
 
     try {
-      await setEnvVar(key, trimmed)
+      await setEnvVar(key, trimmed, profile)
       patchVar(key, { is_set: true, redacted_value: redactedValue(trimmed) })
       clearLocalState(key)
-      notify({ kind: 'success', message: `${key} updated.`, title: 'Credential saved' })
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+      notify({ kind: 'success', message: toolsets.savedMessage(key), title: toolsets.savedTitle })
 
       return { ok: true }
     } catch (err) {
-      notifyError(err, `Failed to save ${key}`)
+      notifyError(err, toolsets.failedSave(key))
 
-      return { message: err instanceof Error ? err.message : 'Could not save credential.', ok: false }
+      return { message: err instanceof Error ? err.message : credentials.couldNotSave, ok: false }
     } finally {
       setSaving(null)
     }
   }
 
-  async function handleClear(key: string) {
-    if (!window.confirm(`Remove ${key} from .env?`)) {
+  async function handleClear(key: string, editKey = key) {
+    if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) }))) {
       return
     }
 
     setSaving(key)
 
     try {
-      await deleteEnvVar(key)
+      await deleteEnvVar(key, profile)
       patchVar(key, { is_set: false, redacted_value: null })
-      clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential removed', message: `${key} removed.` })
+      clearLocalState(key, editKey)
+      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+      notify({ kind: 'success', title: toolsets.removedTitle, message: toolsets.removedMessage(key) })
     } catch (err) {
-      notifyError(err, `Failed to remove ${key}`)
+      notifyError(err, toolsets.failedRemove(key))
     } finally {
       setSaving(null)
     }
@@ -159,10 +182,10 @@ export function useEnvCredentials(): UseEnvCredentials {
     }
 
     try {
-      const result = await revealEnvVar(key)
+      const result = await revealEnvVar(key, profile)
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
-      notifyError(err, `Failed to reveal ${key}`)
+      notifyError(err, toolsets.failedReveal(key))
     }
   }
 

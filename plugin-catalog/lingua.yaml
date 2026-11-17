@@ -1,0 +1,24 @@
+name: lingua
+repo: https://github.com/tobadaniel/lingua
+sha: c9760302432469642766ea4dc3bab956a738bb4b
+description: "A language learning trainer for Hermes Agent: plenty of plugins give the agent a memory, Lingua gives the user one. Build vocabulary decks (one per language) and Hermes quizzes you in chat, grades your recall honestly (again, hard, good, easy), and schedules each card with SM-2 spaced repetition, the algorithm behind Anki, so words return right before you forget them: a good card comes back in 1 day, then 6, then stretches by its ease factor, and a failed card returns in about 10 minutes. A pre_llm_call hook nudges you at the start of a session, or when you mention practice, whenever reviews are due. Six tools (lingua_add, lingua_due, lingua_grade, lingua_list, lingua_remove, lingua_stats), a /lingua slash command (including one-command French and Spanish starter decks of 20 essentials each), and a bundled lingua-learning skill that teaches the agent to quiz one card at a time and never reveal an answer early. Decks live in a local SQLite database in the active profile's plugin data directory. Disclosure — no network calls, no shell commands, no background processes, no credentials read or stored, no telemetry; the only files touched are the plugin's own SQLite database and its bundled starter deck."
+maintainer: tobadaniel
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/tobadaniel/lingua
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - lingua_add
+    - lingua_due
+    - lingua_grade
+    - lingua_list
+    - lingua_remove
+    - lingua_stats
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

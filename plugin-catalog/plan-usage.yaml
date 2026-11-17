@@ -1,0 +1,20 @@
+name: plan-usage
+repo: https://github.com/ziadelboshy/hermes-plan-usage
+sha: "1853d6848d10bf4a96365294200b603e8d5ff263"
+description: "Plan usage across providers in the Hermes Desktop status bar: a named chip per Claude and ChatGPT/Codex account in Hermes's credential pool (5-hour and weekly windows from Hermes's own usage cache via model.options, a default-account star and 90% / fallback warnings that name the next account), Nous Portal credits, and month-to-date (UTC) API spend from optional Anthropic / OpenAI Admin keys. Preferences are a Settings -> Plugins page. Disclosure — its own network calls go only to api.anthropic.com/v1/organizations/cost_report and api.openai.com/v1/organization/costs, and only with the optional ANTHROPIC_ADMIN_KEY / OPENAI_ADMIN_KEY config_schema secrets read through get_secret, with redirects refused; Nous credits come from Hermes's build_credits_view (Hermes makes the Portal request); never reads or sends a subscription token, never opens .env or auth.json; writes only its own settings in plugin-data, the shown-warning ids in Desktop plugin storage, and, on an explicit star click, the credential-pool order through CredentialPool.move_entry; no subprocesses, no telemetry."
+maintainer: ziadelboshy
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/ziadelboshy/hermes-plan-usage#readme
+version: "0.2.0"
+title: "Plan Usage"
+platforms: []
+known_issues:
+  - "Claude windows at exactly 1% used can show as 100% (and warn): Hermes core reads Anthropic's utilization as a 0-1 fraction. Plan Usage shows what Hermes reports. Upstream issue NousResearch/hermes-agent#145660 (fix PRs #139916 and #145663, both open)."
+  - "Usage rows are matched to pool accounts by label in pool order; give each account its own --label so two accounts are never confused."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

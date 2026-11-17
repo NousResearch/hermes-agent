@@ -30,44 +30,6 @@ Open WebUI 与 Hermes 之间是服务器到服务器的通信，因此此集成�
 
 ## 快速设置
 
-### 本地一键引导（macOS/Linux，无需 Docker）
-
-如果你希望在本地将 Hermes 与 Open WebUI 连接并使用可复用的启动器，请运行：
-
-```bash
-cd ~/.hermes/hermes-agent
-bash scripts/setup_open_webui.sh
-```
-
-脚本执行内容：
-
-- 确保 `~/.hermes/.env` 包含 `API_SERVER_ENABLED`、`API_SERVER_HOST`、`API_SERVER_KEY`、`API_SERVER_PORT` 和 `API_SERVER_MODEL_NAME`
-- 重启 Hermes gateway 以启动 API 服务器
-- 将 Open WebUI 安装到 `~/.local/open-webui-venv`
-- 在 `~/.local/bin/start-open-webui-hermes.sh` 写入启动器
-- 在 macOS 上安装 `launchd` 用户服务；在支持 `systemd --user` 的 Linux 上安装用户服务
-
-默认值：
-
-- Hermes API：`http://127.0.0.1:8642/v1`
-- Open WebUI：`http://127.0.0.1:8080`
-- 向 Open WebUI 公告的模型名称：`Hermes Agent`
-
-常用覆盖参数：
-
-```bash
-OPEN_WEBUI_NAME='My Hermes UI' \
-OPEN_WEBUI_ENABLE_SIGNUP=true \
-HERMES_API_MODEL_NAME='My Hermes Agent' \
-bash scripts/setup_open_webui.sh
-```
-
-在 Linux 上，自动后台服务设置需要可用的 `systemd --user` 会话。如果你在无头 SSH 机器上并希望跳过服务安装，请运行：
-
-```bash
-OPEN_WEBUI_ENABLE_SERVICE=false bash scripts/setup_open_webui.sh
-```
-
 ### 1. 启用 API 服务器
 
 ```bash
@@ -271,7 +233,7 @@ Open WebUI 在首次启动后会将 OpenAI 兼容连接设置持久化到其自�
 
 ## 多用户设置与 Profiles
 
-要为每个用户运行独立的 Hermes 实例——各自拥有独立的配置、记忆和技能——请使用 [profiles](/user-guide/profiles)。每个 profile 在不同端口上运行自己的 API 服务器，并自动将 profile 名称作为模型名称公告给 Open WebUI。
+要为每个用户运行独立的 Hermes 实例——各自拥有独立的配置、记忆和技能——请使用 [profiles](../profiles.md)。每个 profile 在不同端口上运行自己的 API 服务器，并自动将 profile 名称作为模型名称公告给 Open WebUI。
 
 ### 1. 创建 profiles 并配置 API 服务器
 

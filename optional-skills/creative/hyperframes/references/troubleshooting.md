@@ -79,7 +79,7 @@ HyperFrames requires Node.js >= 22. Check with `node --version`.
 Renders are memory- and disk-hungry. Minimums:
 
 - **RAM:** 4 GB free (8 GB recommended for 60fps / `--quality high`)
-- **Disk:** 2 GB free scratch space — frames are written to `/tmp` during capture
+- **Disk:** 2 GB free scratch space — frames are written to the system temp dir (`$TMPDIR`) during capture
 
 Mitigations:
 - Lower quality: `--quality draft`.
@@ -131,6 +131,29 @@ npx hyperframes render --docker --docker-args "--cap-add=SYS_ADMIN"
 ```
 
 The headless browser needs namespace permissions for sandboxing.
+
+## Runaway CPU from leftover preview workers
+
+**Symptom:** load average climbs and stays high; `top` shows several `chrome-headless-shell --type=gpu-process` at ~300%+ CPU each, alive for hours/days, even when you're not rendering.
+
+**Cause:** `npx hyperframes preview` is a long-lived server that keeps Chrome render workers resident. On hosts with no real GPU (WSL, containers, most CI), each idle worker falls back to software WebGL (`swiftshader`) whose GPU process busy-spins a CPU core. A preview left open — or several started over time — stacks these up.
+
+**Diagnose:**
+
+```bash
+pgrep -af chrome-headless-shell        # list the workers + their parent flags
+pgrep -af "hyperframes.*preview"       # the preview server(s) holding them open
+uptime                                 # confirm elevated load average
+```
+
+**Fix:** stop the preview server and its workers (see [SKILL.md#cleanup](../SKILL.md)):
+
+```bash
+pkill -f "hyperframes.*preview"
+pkill -f chrome-headless-shell         # only if no other tool uses it — check pgrep first
+```
+
+**Avoid:** never leave a `preview` running after review; use `render` (one-shot, self-cleaning) for output. Keep `--workers` low on shared/GPU-less hosts.
 
 ## Bug reports
 

@@ -1,0 +1,20 @@
+name: mem0
+repo: https://github.com/mem0ai/mem0
+sha: 43849c6e9d4d773b83a8144b6373aedc67241a5d
+subdir: integrations/hermes-plugin-mem0
+version: "1.3.0"
+description: Mem0 memory provider — server-side LLM fact extraction with semantic search, automatic
+  deduplication and opt-in reranking, in platform, self-hosted or local OSS mode. Maintained by Mem0;
+  the same provider that shipped in-tree. Disclosure — conversation turns and recall queries go to the
+  configured Mem0 backend (api.mem0.ai in platform mode); at this pin the mem0ai library's anonymous
+  PostHog usage telemetry stays on unless MEM0_TELEMETRY=false is set; `hermes memory setup` can start
+  Docker (pgvector) and Ollama containers for local mode.
+maintainer: mem0ai
+tier: community
+category: memory
+docs_url: https://github.com/mem0ai/mem0/tree/main/integrations/hermes-plugin-mem0#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

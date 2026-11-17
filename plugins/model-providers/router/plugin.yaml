@@ -1,0 +1,5 @@
+name: router-provider
+kind: model-provider
+version: 1.0.0
+description: Ramp Router (router.com) — OpenAI Responses-compatible LLM gateway
+author: Neel Patel (Ramp)

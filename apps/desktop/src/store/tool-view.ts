@@ -1,26 +1,50 @@
-import { atom, computed, type ReadableAtom } from 'nanostores'
+import { atom, computed, onStop, type ReadableAtom } from 'nanostores'
 
+import { persistStore } from '@/lib/persist-store'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
+import { modeBound } from '@/store/interface-mode'
 
 export type ToolViewMode = 'product' | 'technical'
 
 type ToolDisclosureStates = Record<string, boolean>
 
 const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
+const HIDE_CODE_DIFFS_STORAGE_KEY = 'hermes.desktop.toolView.hideCodeDiffs'
 const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
 const MAX_DISCLOSURE_STATES = 240
 
-export const $toolViewMode = atom<ToolViewMode>(
+// Simple mode rests on product summaries, diffs folded, without touching either
+// preference.
+const $toolViewModePref = atom<ToolViewMode>(
   storedBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product'
 )
+
+const $hideCodeDiffsPref = atom(storedBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, false))
+
+export const $toolViewMode = modeBound('toolViewMode', $toolViewModePref, mode => $toolViewModePref.set(mode))
+export const $hideCodeDiffs = modeBound('hideCodeDiffs', $hideCodeDiffsPref, hidden => $hideCodeDiffsPref.set(hidden))
 export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosureStates())
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
+const anyDisclosureOpenCache = new Map<string, ReadableAtom<boolean>>()
 
-$toolViewMode.subscribe(mode => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical'))
+persistStore(
+  $toolViewModePref,
+  (mode, options) => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical', options),
+  'product'
+)
+persistStore(
+  $hideCodeDiffsPref,
+  (hidden, options) => persistBoolean(HIDE_CODE_DIFFS_STORAGE_KEY, hidden, options),
+  false
+)
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
 
 export function setToolViewMode(mode: ToolViewMode) {
   $toolViewMode.set(mode)
+}
+
+export function setHideCodeDiffs(hidden: boolean) {
+  $hideCodeDiffs.set(hidden)
 }
 
 export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefined> {
@@ -28,7 +52,35 @@ export function $toolDisclosureOpen(id: string): ReadableAtom<boolean | undefine
 
   if (!cached) {
     cached = computed($toolDisclosureStates, states => states[id])
+    onStop(cached, () => {
+      if (disclosureOpenCache.get(id) === cached) {
+        disclosureOpenCache.delete(id)
+      }
+    })
     disclosureOpenCache.set(id, cached)
+  }
+
+  return cached
+}
+
+/**
+ * Whether any of a set of disclosures is open — a run asking about its rows.
+ *
+ * Computed rather than reading the whole map so a toggle anywhere in the
+ * transcript only re-renders the runs whose own answer changed.
+ */
+export function $anyToolDisclosureOpen(ids: readonly string[]): ReadableAtom<boolean> {
+  const key = ids.join('|')
+  let cached = anyDisclosureOpenCache.get(key)
+
+  if (!cached) {
+    cached = computed($toolDisclosureStates, states => ids.some(id => Boolean(states[id])))
+    onStop(cached, () => {
+      if (anyDisclosureOpenCache.get(key) === cached) {
+        anyDisclosureOpenCache.delete(key)
+      }
+    })
+    anyDisclosureOpenCache.set(key, cached)
   }
 
   return cached

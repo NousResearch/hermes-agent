@@ -1,0 +1,42 @@
+name: safe-swap
+repo: https://github.com/itsolaph/hermes-safe-swap
+sha: "6e66f5fe6651e25951fcd3592a7ac2e75787e7f6"
+description: >-
+  Rewrites destructive shell commands into safe twins before they run instead of snapshotting afterwards:
+  git push --force becomes --force-with-lease --force-if-includes, rm -r becomes a move into a quarantine
+  folder (with a file and byte count), and git reset --hard, git checkout -- / git restore, git clean and
+  git stash drop take a private snapshot first, with /swaps and /unswap to undo and a visible note whenever
+  a destructive command was left unswapped.
+  Disclosure - rewrites the command of the terminal tool before it executes (modify only: never
+  blocks, never prompts, any error or doubt leaves the command unchanged); writes quarantine files
+  and receipts under the user's home on the machine where the command runs (~/.safe-swap/trash by
+  default) plus one SQLite file in the plugin data directory; for git clean, git reset --hard and git stash
+  drop it writes snapshot commits into the repository's own object store under private refs
+  refs/safe-swap/<id> (a git clean snapshot copies the content of the untracked files, and of the ignored
+  ones with -x, until a purge; sets above 20,000 files or 200 MB are skipped and reported); it prints one
+  marker line to stderr for an rm swap and removes it again from the tool result; the only deletion it ever
+  performs is an explicit /swaps purge (or hermes safe-swap purge) by the user, which runs rm on its own
+  quarantine directories and deletes its own private refs through the terminal tool and is subject to normal
+  approval; no network calls, no telemetry, no background processes, no self-update; reads no credential files
+  or .env, only the receipts it wrote and the sizes of the files an rm swap moves; approvals are respected:
+  the rewritten command goes through Hermes' normal approval gate, and because a swapped rm -r is a move it
+  no longer matches the recursive-delete pattern and does not prompt (the git rewrites keep prompting as
+  before). Targets such as /, ~, $HOME, system directories and anything in the system temp directory, privilege-elevated
+  commands, and commands with heredocs, subshells, command substitution or eval/xargs/find -exec are
+  deliberately left alone, and the agent is told so. Not covered, by design: mv, cp overwrite, sed -i,
+  redirects, write_file/patch, find -delete, git rebase (pair it with undo-effects for those).
+maintainer: itsolaph
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/itsolaph/hermes-safe-swap#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

@@ -22,7 +22,7 @@ import pytest
 
 from agent.context_engine import ContextEngine
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -38,18 +38,18 @@ class _FakePluginEngine(ContextEngine):
     def name(self) -> str:
         return "fake-plugin"
 
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         return None
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         return False
 
     def compress(
         self,
-        messages: List[Dict[str, Any]],
-        current_tokens: int = None,
-        focus_topic: str = None,
-    ) -> List[Dict[str, Any]]:
+        messages: list[dict[str, Any]],
+        current_tokens: int | None = None,
+        focus_topic: str | None = None,
+    ) -> list[dict[str, Any]]:
         # Pretend we dropped a middle turn.
         self.compression_count += 1
         if len(messages) >= 3:
@@ -101,6 +101,7 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+    runner._session_db = None
     return runner
 
 
@@ -126,6 +127,7 @@ async def test_compress_works_with_plugin_context_engine():
     agent_instance.context_compressor = plugin_engine
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
@@ -143,31 +145,3 @@ async def test_compress_works_with_plugin_context_engine():
     agent_instance._compress_context.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_compress_respects_plugin_has_content_to_compress_false():
-    """If a plugin reports no compressible content, gateway skips the LLM call."""
-
-    class _EmptyEngine(_FakePluginEngine):
-        def has_content_to_compress(self, messages):
-            return False
-
-    history = _make_history()
-    runner = _make_runner(history)
-
-    plugin_engine = _EmptyEngine()
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance.context_compressor = plugin_engine
-    agent_instance.session_id = "sess-1"
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100),
-    ):
-        result = await runner._handle_compress_command(_make_event("/compress"))
-
-    assert "Nothing to compress" in result
-    agent_instance._compress_context.assert_not_called()

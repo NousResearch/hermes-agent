@@ -152,10 +152,12 @@ Hermes 将：
 - 检出一个隔离分支（例如 `hermes/hermes-<hash>`）。
 - 在该 worktree 内运行完整的 CLI 会话。
 
+Hermes 检出该 worktree 时不会执行仓库自身的 git 配置：其 hooks、`core.fsmonitor` 和 clean/smudge 过滤器在这次检出中均被关闭，Hermes 为 kanban 任务和子代理创建的 worktree 也是如此。通过 Git LFS 存储文件的仓库在其中得到的是指针文件；如果会话需要这些文件的内容，请在该 worktree 内运行 `git lfs pull`。
+
 这是获得 worktree 隔离的最简便方式。也可与单次查询结合使用：
 
 ```bash
-hermes -w -q "Fix issue #123"
+hermes -w -z "Fix issue #123"
 ```
 
 如需并行运行多个 agent，在多个终端中分别运行 `hermes -w`——每次调用都会自动获得独立的 worktree 和分支。

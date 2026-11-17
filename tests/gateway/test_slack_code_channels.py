@@ -1,6 +1,8 @@
 """Slack Code channels: one agent session per channel (https://docs.slack.dev/ai/slack-code/).
 
-Behaviour contract:
+Behaviour contract (opt-in, ``platforms.slack.extra.code_channels: true``):
+  * Off (the default), nothing changes: no conversations.info lookup, code channels act like any
+    channel.
   * Recognition uses ``properties.record_channel.record_type == "agent_channel"`` from
     conversations.info; ordinary channels are unchanged and a failed lookup is retried.
   * In a code channel an unmentioned top-level message reaches the agent and the whole channel is
@@ -9,7 +11,9 @@ Behaviour contract:
     ``metadata.thread_id`` is the message's own ts and no ``reply_to`` is passed.
   * Status is channel-level: ``agents.sessions.setStatus`` without ``thread_ts`` -- ``processing``
     once per turn, ``active`` when the turn ends.
-  * ``agent_session_stopped`` is registered before the catch-all ack and runs ``/stop``.
+  * Everyone in a code channel shares the one session, even with ``group_sessions_per_user``.
+  * ``agent_session_stopped`` is registered before the catch-all ack, runs ``/stop`` for the
+    channel's session (authorized users only) and moves the status to ``active``.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -22,9 +26,8 @@ from plugins.platforms.slack.adapter import SlackAdapter
 CODE, PLAIN = "C0CODE", "C0PLAIN"
 
 
-@pytest.fixture()
-def adapter():
-    a = SlackAdapter(PlatformConfig(enabled=True, token="***"))
+def _make_adapter(**extra):
+    a = SlackAdapter(PlatformConfig(enabled=True, token="***", extra=extra))
     a._app = MagicMock()
     client = AsyncMock()
     client.users_info = AsyncMock(return_value={
@@ -46,8 +49,22 @@ def adapter():
     return a
 
 
+@pytest.fixture()
+def adapter():
+    return _make_adapter(code_channels=True)
+
+
 def _msg(channel, ts, text="add a risks section", **extra):
     return {"text": text, "user": "U_USER", "channel": channel, "channel_type": "group", "ts": ts, **extra}
+
+
+class TestOptIn:
+    @pytest.mark.asyncio
+    async def test_off_by_default_no_lookup_and_mention_still_required(self):
+        a = _make_adapter()
+        await a._handle_slack_message(_msg(CODE, "10.0"))
+        a._get_client.return_value.conversations_info.assert_not_awaited()
+        a.handle_message.assert_not_awaited()
 
 
 class TestRecognition:
@@ -55,14 +72,18 @@ class TestRecognition:
     async def test_record_channel_marks_a_code_channel(self, adapter):
         await adapter._handle_slack_message(_msg(CODE, "10.0"))
         await adapter._handle_slack_message(_msg(PLAIN, "11.0", text="hi all"))
-        assert adapter._is_known_code_channel(CODE)
-        assert not adapter._is_known_code_channel(PLAIN)
+        assert adapter._code_channels.is_code_channel(CODE)
+        assert not adapter._code_channels.is_code_channel(PLAIN)
 
     @pytest.mark.asyncio
     async def test_failed_lookup_is_retried(self, adapter):
         adapter._get_client.return_value.conversations_info = AsyncMock(side_effect=RuntimeError("boom"))
         await adapter._handle_slack_message(_msg(CODE, "10.0"))
-        assert CODE not in adapter._code_channels
+        assert not adapter._code_channels.is_code_channel(CODE)
+        adapter._get_client.return_value.conversations_info = AsyncMock(
+            return_value={"channel": {"properties": {"record_channel": {"record_type": "agent_channel"}}}})
+        await adapter._handle_slack_message(_msg(CODE, "10.1"))
+        assert adapter._code_channels.is_code_channel(CODE)
 
 
 class TestSession:
@@ -71,6 +92,13 @@ class TestSession:
         await adapter._handle_slack_message(_msg(CODE, "10.0"))
         adapter.handle_message.assert_awaited_once()
         assert adapter.handle_message.await_args[0][0].source.thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_participants_share_the_channel_session(self, adapter):
+        await adapter._handle_slack_message(_msg(CODE, "10.0"))
+        await adapter._handle_slack_message({**_msg(CODE, "10.5", text="and a summary"), "user": "U_OTHER"})
+        first, second = (c.args[0] for c in adapter.handle_message.await_args_list)
+        assert adapter._event_session_key(first) == adapter._event_session_key(second)
 
     @pytest.mark.asyncio
     async def test_plain_channel_still_needs_a_mention(self, adapter):
@@ -137,10 +165,27 @@ class TestStop:
         assert order.index("agent_session_stopped") < catch_all
 
     @pytest.mark.asyncio
-    async def test_stop_runs_the_session_stop_command(self, adapter):
+    async def test_stop_runs_the_session_stop_command_and_clears_status(self, adapter):
+        await adapter._handle_slack_message(_msg(CODE, "10.0"))
+        message = adapter.handle_message.await_args[0][0]
+        await adapter.send_typing(CODE, {"message_id": "10.0", "thread_id": None})
+        adapter.handle_message.reset_mock()
+        api_call = adapter._get_client.return_value.api_call
+        api_call.reset_mock()
+        await adapter._code_channels.on_session_stopped(
+            {"type": "agent_session_stopped", "channel": CODE, "user": "U_USER", "event_ts": "13.0",
+             "streaming_message_ts": []}, {})
+        stop = adapter.handle_message.await_args[0][0]
+        assert stop.text == "/stop" and stop.get_command() == "stop"
+        assert adapter._event_session_key(stop) == adapter._event_session_key(message)
+        calls = [c.kwargs["json"] for c in api_call.await_args_list if c.args[0] == "agents.sessions.setStatus"]
+        assert calls == [{"channel_id": CODE, "status": "active"}]
+
+    @pytest.mark.asyncio
+    async def test_stop_from_an_unauthorized_user_changes_nothing(self, adapter):
         await adapter._handle_slack_message(_msg(CODE, "10.0"))
         adapter.handle_message.reset_mock()
-        await adapter._handle_agent_session_stopped(
-            {"type": "agent_session_stopped", "channel": CODE, "user": "U_USER", "event_ts": "13.0"}, {})
-        event = adapter.handle_message.await_args[0][0]
-        assert event.text == "/stop" and event.source.thread_id is None
+        adapter._authorization_check = lambda *a, **kw: False
+        await adapter._code_channels.on_session_stopped(
+            {"type": "agent_session_stopped", "channel": CODE, "user": "U_EVIL", "event_ts": "13.0"}, {})
+        adapter.handle_message.assert_not_awaited()

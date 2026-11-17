@@ -474,6 +474,7 @@ platforms:
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). Markdown `[label](url)` links and Slack `<url\|label>` autolinks both become clickable links inside lists, quotes and table cells; mentions (`<@U…>`, `<#C…>`, `<!here>`) are left as-is. A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
 | `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles, unless you explicitly set `tool_progress: new`/`all`, which falls back to editable text progress there. Recoverable native API failures fall back to one continuously edited text update. |
+| `platforms.slack.extra.code_channels` | `false` | When `true`, Hermes works inside [Slack Code channels](#slack-code-channels): no @mention needed, one shared session per channel, top-level replies, channel-level status, Stop button as `/stop`. Pair with `hermes slack manifest --agent-view --code-channels`. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
@@ -568,25 +569,39 @@ streaming:
 ### Slack Code channels
 
 [Slack Code](https://docs.slack.dev/ai/slack-code/) channels are channels dedicated to one task
-with an agent: Slack shows the session status, a context bar and view tabs, and a Stop button. The
-Agent manifest (`hermes slack manifest --agent-view`) enables them: `features.code_channels`, the
-`code_channels:manage` scope, and the `agent_session_stopped` event. Reinstall the app after adding
-the scope.
+with an agent: Slack shows the session status, a context bar and view tabs, and a Stop button.
+Hermes can work inside them. It is off by default; turn it on in two places:
 
-In a code channel, Hermes:
+```bash
+hermes slack manifest --agent-view --code-channels --write
+```
+
+```yaml
+platforms:
+  slack:
+    extra:
+      code_channels: true
+```
+
+The manifest flag adds `features.code_channels`, the `code_channels:manage` scope and the
+`agent_session_stopped` event; reinstall the app after applying it (the scope is new). With
+`code_channels: true`, in a code channel Hermes:
 
 - recognises the channel from `conversations.info`
-  (`properties.record_channel.record_type == "agent_channel"`);
-- answers without an @mention and keeps the whole channel as one session; a thread a user starts
-  keeps its own session;
+  (`properties.record_channel.record_type == "agent_channel"`), one lookup per channel (a failed
+  lookup is retried on the next message);
+- answers without an @mention and keeps the whole channel as **one session shared by everyone in
+  it**, whatever `group_sessions_per_user` says; a thread a user starts under a message keeps its
+  own session and stays threaded;
 - replies top-level (not in a thread), including streamed replies;
 - shows the channel-level status: `processing` while working, `active` when the turn ends;
-- treats the Stop button as `/stop` for that session.
+- treats the Stop button as `/stop` for that session (same channel gates and user authorization
+  as a typed `/stop`), then sets the status back to `active`.
 
-The app also needs `message.channels` / `message.groups`, or `message.session` to receive only
-code-channel and agent-session messages. With `group_sessions_per_user: true` (the default) each
-participant gets their own session in a code channel; set it to `false` if several people work in
-the same channel with the agent.
+The app also needs `message.channels` / `message.groups` (the default manifest has both), or
+`message.session` to receive only code-channel and agent-session messages. Creating code channels,
+the context bar, view tabs and archiving are not part of this; Hermes participates in channels
+created from Slack's UI.
 
 ### Native Task Cards (live tool progress)
 

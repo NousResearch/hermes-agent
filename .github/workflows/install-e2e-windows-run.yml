@@ -184,7 +184,10 @@ jobs:
         || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
         || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
             && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
-    runs-on: windows-latest-32-core
+    # The standard runner is free on a public repo. On the 32-core larger runner these legs
+    # were ~70% of a claim's E2E bill, yet they are mostly the product's own install and
+    # update: on 2026-11-17, 121/121 legs passed here, a median 11% slower per leg.
+    runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     env:

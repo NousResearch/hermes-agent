@@ -1486,8 +1486,12 @@ def _classify_503(c: _Ctx) -> Verdict:
     the rate-limit family: retryable, and free to fall back once the backoff budget is spent.
     ``usage_window_outage`` tells the eager-fallback guard this is an outage, not a spent
     allowance, so "never switch models on a plan limit" still holds for the 402.
+
+    The code is Nous's, so it is honoured only on a Nous route (``_is_nous_route``), exactly as
+    ``_classify_402`` does: any other upstream sending 503 with that code keeps main's rules.
     """
-    if c.code == _NOUS_USAGE_WINDOW_503_CODE or _NOUS_USAGE_WINDOW_503_CODE in c.msg:
+    if _is_nous_route(c) and (
+            c.code == _NOUS_USAGE_WINDOW_503_CODE or _NOUS_USAGE_WINDOW_503_CODE in c.msg):
         context: dict[str, Any] = {"usage_window": True, "usage_window_outage": True}
         if display := _usage_window_display_message(c.body):
             context["display_message"] = display

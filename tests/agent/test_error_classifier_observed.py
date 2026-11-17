@@ -124,6 +124,17 @@ def test_usage_window_rate_limit_benches_the_model_not_the_whole_credential():
     assert pool_failure_reason(FailoverReason.rate_limit, {}, False) == FailoverReason.rate_limit.value
 
 
+def test_usage_window_503_code_from_another_provider_keeps_the_overload_rules():
+    """The code is Nous's. A non-Nous route sending the same 503 keeps main's classification, the
+    same boundary ``_classify_402`` already enforces for the usage-window 402 code."""
+    body = {"status": 503, "code": "usage_window_unavailable",
+            "message": "Hermes usage checks are temporarily unavailable. Please try again in a moment."}
+    result = classify_api_error(_status(openai.InternalServerError, 503, body), provider="openrouter", model="m")
+    assert result.reason == FailoverReason.overloaded
+    assert result.should_fallback is False
+    assert "usage_window" not in result.error_context
+
+
 def test_not_a_multimodal_model_is_an_image_rejection():
     body = str(_status(openai.BadRequestError, 400, NOT_MULTIMODAL_400))
     assert _looks_like_image_content_rejection(body), f"image rejection not recognised: {body[:120]}"

@@ -134,16 +134,20 @@ describe('GatewayMenuPanel recent activity source', () => {
     expect(screen.queryByText(/gui stale line/)).toBeNull()
   })
 
-  it('keeps the age of old gateway lines while removing display noise', async () => {
+  it('keeps the year for current and previous-year gateway lines while removing display noise', async () => {
+    const currentYear = new Date().getFullYear()
     logs.mockResolvedValue({
       file: 'gateway',
-      lines: ['2026-11-06 08:14:02,871 [runtime-1] WARNING gateway from a previous run']
+      lines: [
+        `${currentYear}-11-06 08:14:02,871 [runtime-1] INFO current-year gateway event`,
+        `${currentYear - 1}-11-06 08:14:02,871 [runtime-1] WARNING gateway from a previous year`
+      ]
     })
 
     renderPanel('open')
 
-    const line = await screen.findByText(/11-06 08:14\s+WARNING gateway from a previous run/)
-    expect(line).toBeTruthy()
+    expect(await screen.findByText(new RegExp(`${currentYear}-11-06 08:14\\s+INFO current-year gateway event`))).toBeTruthy()
+    expect(screen.getByText(new RegExp(`${currentYear - 1}-11-06 08:14\\s+WARNING gateway from a previous year`))).toBeTruthy()
     expect(screen.queryByText(/,871/)).toBeNull()
     expect(screen.queryByText(/\[runtime-1\]/)).toBeNull()
   })

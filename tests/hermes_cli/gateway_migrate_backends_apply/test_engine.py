@@ -1193,3 +1193,31 @@ def test_a_hand_started_backend_is_restarted_in_its_recorded_working_directory(h
     assert engine.restore(host, yes=True) == engine.EXIT_OK
 
     assert started == ["/srv/hermes-agent"]
+
+
+def test_an_old_backend_restarted_by_hand_is_no_proof_the_gateway_is_off(home):
+    """One listener on the port proves nothing about the gateway: the run stays at exit 5 and says what to do."""
+    host = FakeHost(home, supervisor="manual")
+    host.listener_unknown = True  # no readable gateway identity (macOS after `gateway uninstall`)
+    host.gateway_lies = True
+    host.fail_at["old_start"] = RuntimeError("could not start")
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+    host.fail_at.clear()
+    host.old["active"] = True  # the last printed step: the user started the old backend again by hand
+    host.calls.clear()
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    assert "old_start" not in host.calls
+    assert "stop it, then run this command again" in engine.status_payload(host)["message"]
+
+
+def test_an_unknown_listener_says_what_to_do_next(home):
+    host = FakeHost(home)
+    host.gateway_lies = True
+    host.listener_unknown = True
+    host.stray_listener = True
+
+    assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
+
+    assert "stop it, then run this command again" in engine.status_payload(host)["message"]

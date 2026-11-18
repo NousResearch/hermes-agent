@@ -151,6 +151,38 @@ class TestSingleTaskBatch(unittest.TestCase):
             result = _call([{"goal": GOOD_A}])
         self.assertNotIn("error", result)
 
+    def test_single_task_dict_wrapped_into_one_entry_list(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed", "summary": "done",
+                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
+            }
+            result = _call({"goal": GOOD_A, "context": "ctx"})
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), 1)
+
+    def test_single_task_json_object_string_wrapped_into_one_entry_list(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed", "summary": "done",
+                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
+            }
+            result = _call(json.dumps({"goal": GOOD_A, "context": "ctx"}))
+        self.assertNotIn("error", result)
+        self.assertEqual(len(result["results"]), 1)
+
+    def test_single_task_dict_still_validates_goal_and_placeholders(self):
+        missing = _call({})
+        self.assertIn("error", missing)
+        self.assertIn("missing a 'goal'", missing["error"])
+
+        placeholder = _call(json.dumps({"goal": "TODO"}))
+        self.assertIn("error", placeholder)
+        self.assertIn("placeholder", placeholder["error"].lower())
+
+        non_task = _call("42")
+        self.assertIn("error", non_task)
+
 
 class TestValidBatchStillRuns(unittest.TestCase):
     def test_two_distinct_goals_pass_validation(self):

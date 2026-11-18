@@ -68,6 +68,11 @@ _PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
 _FILL_VERIFY_INTERVAL_S = 0.05
 _FILL_VERIFY_CEILING_S = 0.5
 
+# Per-key pacing for a masked field. A mask processes keystrokes as they arrive, so a value typed
+# one character at a time (60 ms apart, roughly a fast human) survives where a bulk insert loses
+# characters. Only used after a bulk insert read back as a mismatch.
+_TYPE_PER_KEY_DELAY_S = 0.06
+
 
 def _page_backend(task_id: str):
     """The page this operation runs on when it is not the task's CDP session: the Desktop in-app browser
@@ -474,13 +479,15 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
 
 @plugin_errors_as_refusal
-def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_identifier: bool = False) -> str:
-    """Fill the current page's password field from a vault handle.
+def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_identifier: bool = True) -> str:
+    """Fill the current page's login from a vault handle: the identifier and the password.
 
-    Password-only: the identifier is agent-visible metadata (see
-    browser_vault_list) and is typed by the agent via normal input tools.
-    The password is resolved server-side and injected via in-page JS over
-    the supervisor CDP WebSocket; the result reports only counts/metadata.
+    Both fields go through the same path, so both are typed as trusted browser input and read
+    back. That matters on a framework-controlled form: a normal input tool writes the value into
+    the DOM without React/Vue/MUI accepting it, and the page then re-renders the field empty.
+    Pass ``with_identifier=False`` to write the password only.
+    The password is resolved server-side and never enters a result; the result reports only
+    counts and metadata.
     """
     from agent.vault_backends import UnlockRequired, backend_for_handle
 
@@ -555,6 +562,7 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
     ``{"ok": False, "success": False, "error_type": ..., "error": ...}``.
     """
     from agent.vault_login_classifier import (
+        build_clear_js,
         build_fill_js,
         build_fill_verify_js,
         build_focus_js,
@@ -604,31 +612,71 @@ def _trusted_typing_fill(supervisor: Any, task_id: str, type_fills: list[dict[st
                           "Nothing was written.")
         filled += int(js_result.get("filled", 0) or 0)
 
-    for f in type_fills:
-        focus = _script(build_focus_js([f], nonce))
-        if not isinstance(focus, dict) or focus.get("focused") != f["index"]:
+    def _type_field(f: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Type one field, read it back, and retype key by key when a mask mangled it.
+
+        Returns ``None`` when the field holds exactly the value we typed, or a finished refusal.
+        """
+        def _verify() -> Any:
+            return _script(build_fill_verify_js([f], nonce=nonce, unstamp=False))
+
+        def _holds(checked: Any) -> bool:
+            return (isinstance(checked, dict)
+                    and int(checked.get("landed", 0) or 0) == 1
+                    and not int(checked.get("reverted", 0) or 0))
+
+        def _assert_focus() -> Optional[dict[str, Any]]:
+            focus = _script(build_focus_js([f], nonce))
+            if isinstance(focus, dict) and focus.get("focused") == f["index"]:
+                return None
             tag = focus.get("tag") if isinstance(focus, dict) else None
             found = focus.get("found") if isinstance(focus, dict) else None
             return _abort("focus_lost",
                           f"Refused: focus moved off the target field (tag {tag or 'unknown'}, "
                           f"focus now on {found or 'nothing'}) before the value could be typed. "
                           "Nothing further was typed.")
+
+        aborted = _assert_focus()
+        if aborted:
+            return aborted
         typed = supervisor.insert_text(f["value"])
         if not typed.get("ok"):
             return _abort("fill_unverified",
-                          f"The browser refused the trusted input for one field: "
+                          "The browser refused the trusted input for one field: "
                           f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}")
-        # Read the value back: a trusted event is what a page accepts, but the page can still
-        # reject it. Keep the stamps (unstamp=False) for the next field.
-        verified = _script(build_fill_verify_js([f], nonce=nonce, unstamp=False))
+        verified = _verify()
         if not isinstance(verified, dict):
             return _abort("fill_unverified",
                           "The page could not be read back after the value was typed; "
                           "treating the fill as failed.")
-        if int(verified.get("reverted", 0) or 0) or not int(verified.get("landed", 0) or 0):
-            return _abort("fill_reverted",
-                          "The page rejected the value: the field reverted after the input event. "
-                          "Nothing is filled.")
+        if _holds(verified):
+            return None
+
+        # A bulk insert lands wrong in a masked field (phone, date, card): the mask drops or
+        # reformats characters as they stream in. Clear it and type the value one key at a time,
+        # the way a person does, then read it back again.
+        _script(build_clear_js([f], nonce))
+        aborted = _assert_focus()
+        if aborted:
+            return aborted
+        for char in str(f["value"]):
+            typed = supervisor.insert_text(char)
+            if not typed.get("ok"):
+                return _abort("fill_unverified",
+                              "The browser refused the trusted input for one field: "
+                              f"{scrub_secret_from_text(str(typed.get('error') or 'input failed'), secret)}")
+            time.sleep(_TYPE_PER_KEY_DELAY_S)
+        verified = _verify()
+        if _holds(verified):
+            return None
+        return _abort("fill_reverted",
+                      "The page rejected the value: the field did not hold it after it was "
+                      "typed key by key. Nothing is filled.")
+
+    for f in type_fills:
+        aborted = _type_field(f)
+        if aborted:
+            return aborted
 
     return {"ok": True, "filled": filled + len(type_fills)}
 
@@ -854,9 +902,9 @@ BROWSER_VAULT_SCHEMA = {
     "description": (
         "Fill saved logins, 2FA codes, cards and addresses on the CURRENT browser page. Secrets never "
         "enter the conversation. "
-        "Actions: list (call first: saved logins/cards/addresses as handles; logins carry the identifier you type "
-        "yourself with the browser's input tool; locked password managers appear under `locked`); fill (handle: "
-        "the password for a login, card fields after the user confirms, address fields; refused unless the page "
+        "Actions: list (call first: saved logins/cards/addresses as handles; locked password managers appear "
+        "under `locked`); fill (handle: a login writes the identifier and the password, card fields after the "
+        "user confirms, address fields; refused unless the page "
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "

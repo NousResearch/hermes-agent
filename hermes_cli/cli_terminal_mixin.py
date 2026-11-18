@@ -35,6 +35,7 @@ _RESIZE_SETTLE = 0.03
 # signal lands a few ms after the multiplexer re-wraps, and it reads our output promptly — in
 # tmux, paints that ended up to 4 ms before the signal were re-wrapped, never clipped (#95375).
 _RESIZE_PAINT_MARGIN = 0.01
+_PROGRAM_STATUS_WRITE_LOCK = threading.Lock()
 
 
 def _is_eio(exc: BaseException) -> bool:
@@ -86,23 +87,24 @@ class CLITerminalMixin:
         splice into an in-flight terminal frame. If that loop is closing, the advisory update is
         dropped rather than written from a second thread. Outside a Herdr TTY this is a strict no-op.
         """
-        if state != "clear" and getattr(self, "_program_status_closed", False):
-            return
-        if state == "clear":
-            # Latch before scheduling so turn/modal cleanup racing shutdown
-            # cannot recreate the root record after it has been cleared.
-            self._program_status_closed = True
-        if getattr(self, "_terminal_io_broken", False):
-            return
-        from hermes_cli.terminal_notify import program_status_sequence, program_status_supported, write_tty
+        with _PROGRAM_STATUS_WRITE_LOCK:
+            if state != "clear" and getattr(self, "_program_status_closed", False):
+                return
+            if state == "clear":
+                # Latch while holding the same lock as the direct writer so a
+                # worker cannot pass the check and emit after shutdown clears.
+                self._program_status_closed = True
+            if getattr(self, "_terminal_io_broken", False):
+                return
+            from hermes_cli.terminal_notify import program_status_sequence, program_status_supported, write_tty
 
-        if not program_status_supported():
-            return
-        seq = program_status_sequence(state, kind=kind)
-        app = getattr(self, "_app", None)
-        if app is None or not getattr(app, "_is_running", False):
-            write_tty(seq)
-            return
+            if not program_status_supported():
+                return
+            seq = program_status_sequence(state, kind=kind)
+            app = getattr(self, "_app", None)
+            if app is None or not getattr(app, "_is_running", False):
+                write_tty(seq)
+                return
 
         def _emit() -> None:
             # A worker may have passed the pre-scheduling latch check just

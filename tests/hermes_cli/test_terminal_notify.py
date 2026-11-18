@@ -6,6 +6,7 @@ import threading
 import pytest
 
 from cli import HermesCLI
+from hermes_cli import cli_terminal_mixin as terminal_mixin
 from hermes_cli import terminal_notify
 
 _WARP_OK = {
@@ -189,6 +190,29 @@ def test_clear_latches_and_suppresses_late_status(monkeypatch):
     cli._report_program_status("working")
 
     assert written == ["\x1b]7501;state=clear:app=hermes\x1b\\"]
+
+
+def test_direct_status_writes_hold_the_shutdown_serialization_lock(monkeypatch):
+    monkeypatch.setenv("HC_TERMINAL_ID", "t4")
+    monkeypatch.setattr(terminal_notify.os, "isatty", lambda fd: True)
+    written = []
+
+    def write_while_locked(seq):
+        assert terminal_mixin._PROGRAM_STATUS_WRITE_LOCK.locked()
+        written.append(seq)
+
+    monkeypatch.setattr(terminal_notify, "write_tty", write_while_locked)
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._app = None
+    cli._terminal_io_broken = False
+    cli._report_program_status("working")
+    cli._report_program_status("clear")
+
+    assert written == [
+        "\x1b]7501;state=working:app=hermes\x1b\\",
+        "\x1b]7501;state=clear:app=hermes\x1b\\",
+    ]
 
 
 def test_clear_suppresses_status_that_was_already_racing_to_the_app_loop(monkeypatch):

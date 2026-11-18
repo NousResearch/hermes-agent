@@ -512,6 +512,12 @@ def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _Va
     return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload)
 
 
+def _prior_epoch_reply(event: Mapping[str, Any], room: DiscussionRoom) -> bool:
+    epoch = event.get("authority_epoch")
+    return (event.get("kind") in {"message.member", *_TERMINAL_EVENT_KINDS}
+            and type(epoch) is int and 0 < epoch < room.authority_epoch)
+
+
 def _validated_events(events: Sequence[Mapping[str, Any]], *, room: DiscussionRoom) -> tuple[_ValidatedEvent, ...]:
     validated: list[_ValidatedEvent] = []
     event_ids: set[str] = set()
@@ -889,6 +895,8 @@ def plan_next_task(
             ("purpose", ""), ("notes", ""), ("routing", "everyone"), ("lead_member_id", ""))})
     except ValueError as exc:
         raise DiscussionValidationError(str(exc)) from exc
+    if read_messages is not None:
+        events = [event for event in events if not _prior_epoch_reply(event, room)]
     validated = _validated_events(events, room=room)
     if (discussion := _pending_discussion(validated)) is None:
         return DiscussionDecision(status="idle", reason="no_pending_user_event")
@@ -949,7 +957,7 @@ def plan_next_task(
             watermark = watermarks.get((thread_id, member.member_id), 0)
             messages = (
                 (_validate_event(event, room=room, previous_seq=0) for event in
-                 read_messages(thread_id=thread_id, watermark=watermark))
+                 read_messages(thread_id=thread_id, watermark=watermark) if not _prior_epoch_reply(event, room))
                 if read_messages is not None else iter(thread_messages))
             # Once replies exhaust the budget, only the finite input before Send remains.
             delta, attachments = _bounded_task_delta(

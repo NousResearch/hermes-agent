@@ -101,8 +101,14 @@ it('offers Retry after a registry rail switch fails to open its socket without r
   await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledWith('wss://research.invalid/ws'))
   expect($profileSwitchPending.get()).toBe('research')
   const drafts = $freshSessionRequest.get()
+  // Observe the failed attempt before a background reconnect timer can run.
+  const settled = Promise.withResolvers<void>()
+  const unlisten = $profileSwitchPending.listen(() => settled.resolve())
   dial.reject(new Error('backend unreachable'))
-  await vi.waitFor(() => expect($profileSwitchPending.get()).toBeNull())
+  await settled.promise
+  unlisten()
+  expect($profileSwitchPending.get()).toBeNull()
+  expect(gatewayMocks.connect.mock.calls.filter(([url]) => url === 'wss://research.invalid/ws')).toHaveLength(1)
   expect(activeGatewayProfileKey()).toBe('default')
   const failure = $profileSwitchFailure.get()
   expect(failure?.profile).toBe('research')

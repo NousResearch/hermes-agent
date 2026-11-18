@@ -311,6 +311,36 @@ def test_an_override_in_the_checkouts_dotenv_is_named_and_refused(tmp_path):
     assert project_env.read_text().count("throwaway-checkout-pw") == 1  # never edited
 
 
+def test_a_checkout_override_counts_only_when_the_loader_would_supply_it(tmp_path, monkeypatch):
+    """``${VAR}`` in the checkout's ``.env`` is expanded like ``load_hermes_dotenv`` does, against the
+    environment as it is after the cleanup; an empty result overrides nothing."""
+    from hermes_cli.dashboard_password import _checkout_refusal
+    monkeypatch.delenv("PR4_UNSET_REF", raising=False)
+    project_env = tmp_path / ".env"
+    project_env.write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${PR4_UNSET_REF}\n")
+    assert _checkout_refusal(project_env) is None
+    monkeypatch.setenv("PR4_SET_REF", "throwaway-expanded")
+    project_env.write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${PR4_SET_REF}\n")
+    assert "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD" in (_checkout_refusal(project_env) or "")
+
+
+def test_a_checkout_override_follows_the_loaders_precedence(tmp_path, monkeypatch):
+    """With the home's own ``.env`` present the checkout layer only fills gaps, so a value the calling
+    environment already sets (warned about separately) wins over it; without one the checkout layer
+    overrides that value too. A key in the home's ``.env`` the cleanup removes is no gap-filler."""
+    from hermes_cli.dashboard_password import _checkout_refusal
+    home = tmp_path / "home"
+    home.mkdir()
+    project_env = tmp_path / ".env"
+    project_env.write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=throwaway-checkout-pw\n")
+    monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "throwaway-inherited")
+    assert _checkout_refusal(project_env, home) is not None  # no home .env: the checkout overrides
+    (home / ".env").write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=throwaway-home\n")
+    assert _checkout_refusal(project_env, home) is None  # fills gaps only; the inherited value is there
+    monkeypatch.delenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD")
+    assert _checkout_refusal(project_env, home) is not None  # the home copy is removed, so a gap
+
+
 def _managed_dir(tmp_path, basic_auth: dict):
     managed = tmp_path / "managed"
     managed.mkdir()

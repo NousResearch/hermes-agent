@@ -53,6 +53,13 @@ _LITERAL_READS = re.compile(
     r"(?:\s*,\s*encoding\s*=\s*(['\"])[\w-]+\3)?\s*\)|"
     r"\bPath\s*\(\s*(['\"])[^'\"]+\4\s*\)\s*\.read_(?:text|bytes)\s*\(|"
     r"\breadFileSync\s*\(\s*(['\"])[^'\"]+\5")
+# A literal that is, unchanged, the whole path argument of a write call. Only such a literal is
+# known to be the destination: one that is sliced, rewritten (.replace, re.sub), joined or bound
+# to a name first may end up inside the skill.
+_DIRECT_WRITE_PATH = re.compile(
+    r"\bopen\s*\(\s*(['\"])(?P<open>[^'\"]+)\1\s*,|"
+    r"\bPath\s*\(\s*(['\"])(?P<path>[^'\"]+)\3\s*\)\s*\.write_(?:text|bytes)\s*\(|"
+    r"\b(?:write|append)FileSync\s*\(\s*(['\"])(?P<fs>[^'\"]+)\5\s*,")
 _PATH_DELIMITERS = frozenset(" \t\r\n'\"`(),;=<>|&[]")
 _UNRESOLVED_PATH_CHARS = frozenset("$`{}*?%:" + ("" if os.sep == "\\" else "\\"))
 
@@ -389,27 +396,27 @@ def _argv_refusal(argv: list[str], cwd: str, locked, record, depth: int,
     return next((r for check in _ARGV_CHECKS if (r := check(verb, argv[1:], scope))), None)
 
 
-def _elsewhere(text: str, start: int, end: int, root: str) -> bool:
-    """True when the mention ``text[start:end]`` sits in a plain absolute path that cannot reach
-    *root*: it resolves outside it, and its head up to the mention is not a trailing part of *root*
-    (``home + '/skills/x/SKILL.md'`` or Node's ``path.join(home, '/hh/skills/x')`` append such a
-    fragment). Relative, variable, f-string or glob paths still count as the skill."""
+def _elsewhere(text: str, start: int, end: int, root: str, direct: set[tuple[int, int]]) -> bool:
+    """True when the mention ``text[start:end]`` sits in a plain absolute path that resolves
+    outside *root* and is, unchanged, the whole path of a write call (a span in *direct*).
+    Relative, variable, f-string, glob, concatenated or transformed paths still count."""
     while start > 0 and text[start - 1] not in _PATH_DELIMITERS:
         start -= 1
     tail = end
     while tail < len(text) and text[tail] not in _PATH_DELIMITERS:
         tail += 1
     token = text[start:tail]
-    if not os.path.isabs(token) or _UNRESOLVED_PATH_CHARS & set(os.path.splitdrive(token)[1]):
+    if (start, tail) not in direct or not os.path.isabs(token):
         return False
-    if _inside(os.path.realpath(token), root):
+    if _UNRESOLVED_PATH_CHARS & set(os.path.splitdrive(token)[1]):
         return False
-    head = os.path.normpath(text[start:end]).lstrip(os.sep)
-    return root != os.sep + head and not root.endswith(os.sep + head)
+    return not _inside(os.path.realpath(token), root)
 
 
 def _names_skill(text: str, root: str, needles: Iterable[str]) -> bool:
-    return any(not _elsewhere(text, m.start(), m.end(), root)
+    direct = {m.span(group) for m in _DIRECT_WRITE_PATH.finditer(text)
+              for group in ("open", "path", "fs") if m.group(group)}
+    return any(not _elsewhere(text, m.start(), m.end(), root, direct)
                for needle in needles for m in re.finditer(re.escape(needle), text))
 
 
@@ -417,7 +424,7 @@ def _code_refusal(code: str, locked, record, cwd: str = "") -> str | None:
     """Inline interpreter code that looks like it writes AND names a locked skill (or the record),
     or runs with its working directory inside one (relative paths). A literal path that is only
     read, or an absolute path outside the skill that merely shares its ``skills/<name>`` segment
-    (another checkout), does not name it."""
+    (another checkout) and is written as is, does not name it."""
     from hermes_constants import get_hermes_home
     if not _WRITEISH_CODE.search(code):
         return None

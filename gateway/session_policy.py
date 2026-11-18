@@ -6,8 +6,7 @@ from functools import cached_property
 import contextlib
 import json
 import logging
-import ntpath
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from persistence.core.errors import AuthorityRefusal
 
@@ -1042,11 +1041,12 @@ def _stored_cwd_is_absolute(cwd: str) -> bool:
     install keeps ``C:\\Users\\<user>`` (not ``Path.is_absolute()`` on POSIX) and a POSIX install keeps
     ``/home/<user>`` (not absolute to ``WindowsPath``). Judging it with this host's ``Path`` rejected
     the whole otherwise-valid policy, so every control on a migrated session answered
-    ``storage_unavailable``; ``ntpath.isabs`` covers the foreign spelling while still refusing a
-    relative or drive-relative (``C:hermes``) path. Running a turn in that folder stays refused, by
+    ``storage_unavailable``. Both pure flavours accept only a fully rooted path: a relative, a
+    drive-relative (``C:hermes``) and, unlike ``ntpath.isabs`` before Python 3.13, a drive-less
+    rooted (``\\Users\\x``) path still refuse. Running a turn in a foreign folder stays refused, by
     name, through :func:`workspace_ready` -> ``workspace_unavailable``.
     """
-    return Path(cwd).is_absolute() or ntpath.isabs(cwd)
+    return PurePosixPath(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute()
 
 
 _POLICY_FIELDS = frozenset(field.name for field in fields(LocalSessionPolicy))
@@ -1081,8 +1081,9 @@ def restore_policy(data):
 
     Every refusal names the check that fired (``AuthorityRefusal.field`` / ``.detail``) so the gateway
     log and the client can tell the reasons' many checks apart instead of reporting the bare
-    ``storage_unavailable`` (#148540). The accepted set is unchanged: same checks, same order, same
-    decision — only the reporting became field-specific.
+    ``storage_unavailable`` (#148540). The wire code stays ``storage_unavailable``. The checks accept
+    exactly the shapes our own writers persist (an empty model, a peer-refreshed ``local`` label, a
+    cwd spelled for the other OS, a key another build wrote) and nothing looser.
     """
     try:
         policy = LocalSessionPolicy(**_adopt_stored_policy(data))
@@ -1204,7 +1205,8 @@ def policy_for_source(runner, source):
         if policy is None:
             # Cold recovery must restore the frozen policy before executing, not
             # reinterpret a LOCAL route as a default CLI launch.
-            raise AuthorityRefusal('storage_unavailable')
+            raise AuthorityRefusal('storage_unavailable', field='policy',
+                                   detail='the session has no restored policy (its receipt was refused or not yet recovered)')
         return policy
     return None
 

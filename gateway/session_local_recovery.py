@@ -481,7 +481,7 @@ def recover_local_sessions(authority, *, schedule=False):
         except (_ReceiptRefused, _CatchUpPending):
             continue  # logged: the check that refused it, or the catch-up handed to a worker
         except AuthorityRefusal as exc:
-            logging.getLogger(__name__).warning('Local session %s paused: %s', sid, exc.reason)
+            logging.getLogger(__name__).warning('Local session %s paused: %s', sid, _refused_check(exc))
     if schedule:
         # A last-viewer close the previous owner stopped before completing (#134889 LC-6b).
         from gateway.session_viewer_close import rearm_persisted_closes, settle_viewer_close

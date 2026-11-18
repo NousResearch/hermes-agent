@@ -126,3 +126,13 @@ def test_peer_history_reference_is_visible_but_never_downloadable(gateway):
     assert row["name"] == "remote.txt" and row["available"] is False
     assert reason(call(gateway.owner, "groups.attachment.download", room_id="room", event_id=event,
                        attachment_id=attachment)) == "attachment_unavailable"
+
+
+def test_cold_download_of_a_published_file_with_missing_store_is_retryable(gateway, monkeypatch):
+    event, attachment = share(gateway, 1, b"public version")
+    with sqlite3.connect(gateway.service.db_path) as conn:
+        conn.execute("DROP TABLE hosted_room_attachments")
+        conn.execute("DROP TABLE hosted_room_attachment_blobs")
+    monkeypatch.setattr(sqlite_attachments, "_STARTED", set())
+    reply = call(gateway.owner, "groups.attachment.download", room_id="room", event_id=event, attachment_id=attachment)
+    assert reason(reply) == "storage_unavailable"

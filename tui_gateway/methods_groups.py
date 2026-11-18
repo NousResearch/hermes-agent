@@ -505,7 +505,11 @@ def _(rid, params: dict, service) -> dict:
     from gateway.session_hosted_attachments import read_download
     room_id = params.get("room_id")
     service._room(room_id)
-    return _ok(rid, read_download(service, room_id, params))
+    from persistence import StoreUnavailable
+    try:
+        return _ok(rid, read_download(service, room_id, params))
+    except StoreUnavailable:
+        return _err(rid, 5123, "Room attachment storage is unavailable", {"reason": "storage_unavailable"})
 
 
 @_room_method("groups.attachment.list", code=5124, room_code=4128, service_code=4115)

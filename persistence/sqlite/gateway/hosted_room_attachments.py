@@ -954,6 +954,9 @@ class SQLiteHostedRoomAttachmentRepository:
                 raise AttachmentNotFoundError("attachment changed during viewer read")
             return current
         with translated():
+            if not self._files._hosted_read(placement, lambda conn: table_exists(conn, "hosted_room_attachments")):
+                # A viewer must not turn a missing backing store into an initialized, empty one.
+                raise AttachmentNotFoundError("attachment is not committed for this room")
             blob_root = self._read_root(placement, clock(now))
             row = self._read_rows(placement, _first)
             # No execution lock or SQLite snapshot spans filesystem/hash work.

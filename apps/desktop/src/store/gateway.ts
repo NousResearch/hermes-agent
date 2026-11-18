@@ -1176,6 +1176,7 @@ export async function requestGatewayForAgent<T>(
 
   // The owner-route probe is itself a dial, just like sharedPrimaryRoute.
   const owner = primaryIdentity()
+
   const rides = await ridesPrimaryBackend(connectionId, key).catch((error: unknown) => {
     recordDialFailure({ connectionId, scope }, error)
     throw error

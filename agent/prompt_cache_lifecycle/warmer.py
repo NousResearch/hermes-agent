@@ -682,9 +682,11 @@ class PromptCacheWarmer:
         try:
             from agent.prompt_cache_clock import request_write_tier
             from agent.turn_usage import with_write_tier
-            from agent.usage_pricing import estimate_usage_cost, normalize_usage
+            from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
-            canonical = normalize_usage(usage, provider=b["provider"], api_mode=b["api_mode"])
+            # The served tier (OpenAI ``service_tier`` on the response) prices it, as for a normal turn.
+            canonical = with_served_service_tier(
+                normalize_usage(usage, provider=b["provider"], api_mode=b["api_mode"]), message)
             # Priced at the tier the request declared (a 1h write is 2x input), as a normal response is.
             priced = with_write_tier(canonical, request_write_tier(
                 run.api_kwargs, canonical, provider=b["provider"], base_url=b["base_url"], api_mode=b["api_mode"],

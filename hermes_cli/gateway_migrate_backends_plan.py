@@ -646,10 +646,27 @@ def _gateway(plan: BackendPlan, host) -> None:
         plan.blockers.append(f"The gateway's user service cannot be driven from this shell: {reason}")
 
 
+def _restart_hint(plan: BackendPlan) -> str:
+    rec = plan.rec
+    if rec.get("supervisor") == "systemd" and rec.get("unit"):
+        user = " --user" if rec.get("scope") == "user" else ""
+        return f"{'sudo ' if not user else ''}systemctl{user} restart {rec['unit']}"
+    if rec.get("supervisor") == "launchd" and rec.get("unit") and rec.get("scope"):
+        return f"launchctl kickstart -k {rec['scope']}/{rec['unit']}"
+    return "stop it and start it again the way it was started"
+
+
 def _auth_and_turns(plan: BackendPlan, host, force_interrupt: bool) -> None:
     if not plan.rec["was_active"]:
         return
     status = host.http_status(plan.old_probe_host, plan.old_port)
+    if status is not None and status.get("health") == "missing":
+        plan.blockers.append(
+            f"The old backend on {format_address(plan.old_probe_host, plan.old_port)} runs a Hermes older than "
+            f"v2026.7.30: it has no GET /api/health, so its sign-in state and running turns cannot be read "
+            f"without changing files. Restart the old backend with the updated hermes "
+            f"({_restart_hint(plan)}), then re-run the dry run. Nothing changed.")
+        return
     if status is None:
         plan.blockers.append(f"The old backend runs but does not return a usable GET /api/health response on "
                              f"{format_address(plan.old_probe_host, plan.old_port)}, so its working state cannot "

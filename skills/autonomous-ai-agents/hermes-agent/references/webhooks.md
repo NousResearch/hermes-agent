@@ -216,7 +216,7 @@ If webhooks aren't working:
 
 1. **Is the gateway running?** Check with `systemctl --user status hermes-gateway` or `ps aux | grep gateway`
 2. **Is the webhook server listening?** `curl http://localhost:8644/health` should return `{"status": "ok"}`
-3. **Check gateway logs:** `grep webhook ~/.hermes/logs/gateway.log | tail -20`
+3. **Check gateway logs:** `search_files` for `webhook` in `~/.hermes/logs/gateway.log`
 4. **Signature mismatch?** Verify the secret in your service matches the route's `secret` in `webhook_subscriptions.json` (or the value passed with `--secret`). GitHub sends `X-Hub-Signature-256`, GitLab sends `X-Gitlab-Token`. A route pinned with `--signature` rejects every other scheme: re-run `subscribe` with the `--signature` matching the sender.
 5. **Firewall/NAT?** The webhook URL must be reachable from the service. For local development, use a tunnel (ngrok, cloudflared).
 6. **Wrong event type?** Check `--events` filter matches what the service sends. Use `hermes webhook test <name>` to verify the route works.

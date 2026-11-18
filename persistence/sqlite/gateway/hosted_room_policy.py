@@ -36,7 +36,7 @@ MAX_ACTIVE_POLICY_EVENTS = 64
 # budget, so they are bounded on their own: sizing the reply budget exactly must leave room.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 5  # 5: rebuild threads an old settle closed under a newer message
+_TRANSCRIPT_SCHEMA_VERSION = 6  # Replay v5 watermarks that skipped unread messages before a late reply.
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 # What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
 _REOPENED_KINDS = (*sorted(_TERMINAL_KINDS), "message.member", "room.assignment", "room.routed", "room.continued")

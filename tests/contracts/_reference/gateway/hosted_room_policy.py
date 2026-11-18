@@ -25,7 +25,7 @@ MAX_ACTIVE_POLICY_EVENTS = 64
 # Retry receipts (``turn.deferred``) are bounded apart from the discussion's other events.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 5
+_TRANSCRIPT_SCHEMA_VERSION = 6
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 # What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
 _REOPENED_KINDS = frozenset({*_TERMINAL_KINDS, "message.member", "room.assignment", "room.routed", "room.continued"})

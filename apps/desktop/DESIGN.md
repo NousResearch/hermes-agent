@@ -37,7 +37,7 @@ Figma (`EuTlgG8nMQo02z5RlImIu9`, see "Portal design language" below) gives direc
 architecture, layout, interaction and the overall visual language. It is not pixel-authoritative. When
 Figma and the implementation disagree, the implementation is what ships and what other surfaces
 should match, until someone deliberately changes a token or a primitive here. Known disagreements
-are listed, with the Figma value that should win, in "Still to unify"; the design system page shows
+are listed, with the value that should win, in "Still to unify"; the design system page shows
 that table rather than pretending to be complete.
 
 To change the design system, change the code: edit the token (see "How to change a token") or the
@@ -1223,7 +1223,7 @@ the text ladder outside the sidebar (U12), dialogs and drawers (U13: 24 padding 
 actions), page focus rings (U16), brand selection (U17: 25% / light 12%) and control and floating
 states (U18). What remains, one reviewable change per row:
 
-| # | Role | Today: value · where | Winner (Figma) |
+| # | Role | Today: value · where | Winner |
 |---|---|---|---|
 | U6 | Neutral selection | the pane tab-strip's active tab (ink 5, no stroke) | ink 5 + 0.5px ink 5 stroke (1036:7409) |
 | U7 | Caption | new-session picker label 0.08em/500/brand ink; gateway menu `tracking-[0.08em]` | 10/1.4, `--portal-tracking-caption` 0.06em, 400, tertiary (1036:7408) |
@@ -1233,6 +1233,9 @@ states (U18). What remains, one reviewable change per row:
 | U15 | Radius by role | `0.5rem` / `0.375rem` (agent overview menu and items), Tailwind `rounded-*` in redesign TSX (G2 warnings) | the seven `--portal-radius-*` roles |
 | U19 | Units | px font sizes, line heights and radii in `agent-settings.css`, `history.css`, capabilities `page.css` (the guard's baseline lists them) | rem through the type tokens |
 | U20 | Spacing drift | 3/5/7/9/11/13/15/17/22/23px insets (catalog, history, settings editor) | the 4px scale; Figma optical offsets keep `/* token-exempt */` |
+| U21 | Status and brand badges | `Badge` success / warn paint Tailwind emerald / amber; default / solid paint the skin's `--dt-primary` (`components/ui/badge.tsx`) | `--portal-status-online` / `--portal-status-pending` and the brand roles in `color.css` |
+| U22 | Alert | the classic card (`rounded-lg`, `bg-card`, `shadow-xs`); warning and success look the same (`components/ui/alert.tsx`) | the redesign card (ink 2 fill, ink 5 hairline, r4) with one status ink per variant |
+| U23 | Field sizes and invalid | Input xs / sm / default render at one height in the redesign; `aria-invalid` has no visible treatment (`components/ui/control.ts`) | one height per size; a danger stroke on an invalid field |
 
 ### Rules of thumb
 

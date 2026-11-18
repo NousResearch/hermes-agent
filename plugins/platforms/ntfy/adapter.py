@@ -86,12 +86,19 @@ def _clean_title(value: Any) -> str:
     return re.sub(r"[\x00-\x20\x7f]+", " ", folded).strip()[:_MAX_TITLE_LENGTH].strip()
 
 
-def _resolve_title(metadata: Optional[dict[str, Any]], extra: dict[str, Any]) -> str:
-    """``X-Title``: ``metadata["title"]``, then ``extra["title"]``, then ``NTFY_HOME_CHANNEL_NAME``; ``""`` if none.
+def _resolve_title(metadata: Optional[dict[str, Any]], extra: dict[str, Any], home_channel: Any = None) -> str:
+    """``X-Title``: ``metadata["title"]``, ``extra["title"]``, ``NTFY_HOME_CHANNEL_NAME``, then the saved
+    home channel's name; ``""`` if none.
 
-    The env var is read directly: the home channel's seeded name is "Home" on an unnamed install.
+    The env var is read directly. A name written under ``platforms.ntfy.home_channel`` loads as
+    ``PlatformConfig.home_channel``, not ``extra``. Two saved names are not labels (compared ignoring case and
+    surrounding space): "Home", the placeholder the core gives an unnamed home channel, and the topic itself,
+    which is what ``/sethome`` saves from ntfy.
     """
-    for candidate in ((metadata or {}).get("title"), extra.get("title"), _get_scoped_secret("NTFY_HOME_CHANNEL_NAME", "")):
+    saved = getattr(home_channel, "name", "")
+    if isinstance(saved, str) and saved.strip().casefold() in {"home", str(getattr(home_channel, "chat_id", "") or "").strip().casefold()}:
+        saved = ""
+    for candidate in ((metadata or {}).get("title"), extra.get("title"), _get_scoped_secret("NTFY_HOME_CHANNEL_NAME", ""), saved):
         title = _clean_title(candidate)
         if title:
             return title
@@ -314,7 +321,7 @@ class NtfyAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="HTTP client not initialized")
         extra = self.config.extra or {}
         headers = _publish_headers(
-            self._token, bool(extra.get("markdown", False)), title=_resolve_title(metadata, extra))
+            self._token, bool(extra.get("markdown", False)), title=_resolve_title(metadata, extra, self.config.home_channel))
         if len(content) > self.MAX_MESSAGE_LENGTH:
             logger.warning(
                 "[%s] Message truncated from %d to %d chars (ntfy limit)",
@@ -380,7 +387,7 @@ async def _standalone_send(
     token = _extra_or_secret(extra, "token", "NTFY_TOKEN")
     markdown_env = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
     markdown = bool(extra.get("markdown")) or markdown_env in _MARKDOWN_TRUTHY
-    headers = _publish_headers(token, markdown, auth_first=False, title=_resolve_title(None, extra))
+    headers = _publish_headers(token, markdown, auth_first=False, title=_resolve_title(None, extra, getattr(pconfig, "home_channel", None)))
     body = _truncate_body(message, context="ntfy standalone")
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

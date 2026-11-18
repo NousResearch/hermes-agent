@@ -197,6 +197,11 @@ def programmatic_file_read():
         _programmatic_read.reset(token)
 
 
+def is_programmatic_read() -> bool:
+    """True while an ``execute_code`` cell's tool call runs: its result is consumed by code."""
+    return _programmatic_read.get()
+
+
 def _dedup_lookup(task_id: str, dedup_key: tuple) -> tuple[dict, object, bool]:
     """``(task_data, cached_version, stub_eligible)`` for a read. Eligible means the model was
     already served this region since the last compaction boundary (the summary may have dropped

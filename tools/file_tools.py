@@ -41,7 +41,8 @@ from tools.file_tools_read_tracking import (
     _file_metadata, _file_version, _on_host,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _note_read_served, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
-    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
+    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp, is_programmatic_read)
+from tools.file_tools_read_views import directory_listing, raw_page_text, tail_offset, tail_request
 
 logger = logging.getLogger(__name__)
 
@@ -634,7 +635,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     → negative-result cache → dedup stub → real read.
     """
     try:
-        offset, limit = normalize_read_pagination(offset, limit)
+        tail = tail_request(offset)
+        offset, limit = normalize_read_pagination(offset, tail or limit)
 
         # On the RAW model-supplied string, before any expanduser()/resolve():
         # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
@@ -673,6 +675,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         if block_error:
             return tool_error(block_error)
 
+        if _file_ops_uses_host_paths(_get_file_ops(task_id)) and os.path.isdir(_resolved):
+            return json.dumps(directory_listing(str(_resolved), structured=is_programmatic_read()),
+                              ensure_ascii=False)
+
         extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
         if extracted is not None:
             return extracted
@@ -688,6 +694,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)
         if cached_not_found is not None:
             return cached_not_found
+        file_ops = _get_file_ops(task_id)
+        if tail:
+            offset = tail_offset(file_ops, resolved_str if _file_ops_uses_host_paths(file_ops) else path, limit)
 
         # Dedup: identical (path, offset, limit) on an unchanged file returns a
         # lightweight stub instead of re-sending the content.
@@ -695,7 +704,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         task_data, cached_version, content_served_in_generation = _dedup_lookup(task_id, dedup_key)
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
-        file_ops = _get_file_ops(task_id)
         version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
         if (cached_version is not None and not is_background_review()
                 and version_before == cached_version and content_served_in_generation):
@@ -718,7 +726,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # with a next_offset instead of rejecting.
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
-        if len(result.content or "") > max_chars:
+        # A cell's read is consumed by code (only what it prints enters context): no char budget.
+        if len(result.content or "") > max_chars and not is_programmatic_read():
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
@@ -729,6 +738,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 unredacted, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             redacted = result.content != unredacted
             result_dict["content"] = result.content
+            if is_programmatic_read():  # a cell parses the page: hand it over without the gutter
+                result_dict["text"] = raw_page_text(result.content)
 
         if result.content:
             conflicts = count_conflict_blocks(result.content)
@@ -1128,7 +1139,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 m.content = redact_sensitive_text(
                     m.content, file_read=True,
                     secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
-        result_dict = result.to_dict(densify=True)
+        # The path-grouped text block saves the model tokens; a cell wants the match dicts.
+        result_dict = result.to_dict(densify=not is_programmatic_read())
 
         if omitted:
             result_dict["_omitted"] = (
@@ -1179,12 +1191,12 @@ READ_FILE_SCHEMA = {
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination, or list a directory. Use this instead of cat/head/tail/ls in terminal. Output format: 'LINE_NUM|CONTENT'. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
+            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1); negative reads the last N lines", "default": 1},
             "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
         },
         "required": ["path"]

@@ -66,12 +66,15 @@ def test_observed_maximum_survives_outage_only_for_the_same_account_and_route(mo
     monkeypatch.setattr(metadata.time, "time", lambda: later)
     down()
     assert metadata.get_model_context_length(pin, **route) == 872_000
-    assert metadata.get_model_context_length(pin, **(route | {"api_key": _token("second")})) == 272_000
-    assert metadata.get_model_context_length(pin, **(route | {"base_url": "https://relay.example/codex"})) == 272_000
+    # Another account or endpoint gets the base model's registered Codex window, never the observed maximum.
+    fallback = metadata._CODEX_OAUTH_CONTEXT_FALLBACK[model]
+    assert fallback < 872_000
+    assert metadata.get_model_context_length(pin, **(route | {"api_key": _token("second")})) == fallback
+    assert metadata.get_model_context_length(pin, **(route | {"base_url": "https://relay.example/codex"})) == fallback
 
 
 @pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol"])
-@pytest.mark.parametrize("maximum,expected", [(872_000, 872_000), (1_050_000, 900_000), (200_000, 200_000), (None, 272_000)])
+@pytest.mark.parametrize("maximum,expected", [(872_000, 872_000), (1_050_000, 900_000), (200_000, 200_000), (None, None)])
 def test_custom_codex_route_uses_only_its_own_published_maximum(catalog, model, maximum, expected):
     serve, _, calls = catalog
     base_url = "https://relay.example/codex"
@@ -81,5 +84,6 @@ def test_custom_codex_route_uses_only_its_own_published_maximum(catalog, model, 
         model + "-900k", base_url=base_url, api_key="synthetic-relay-key", provider="custom:relay",
         custom_providers=[dict(name="relay", base_url=base_url, api_mode="codex_responses")],
     )
-    assert result == expected
+    # Without a published maximum, fall back to the base model's registered Codex window.
+    assert result == (metadata._CODEX_OAUTH_CONTEXT_FALLBACK[model] if expected is None else expected)
     assert calls and all(url.startswith(base_url + "/models?") for url in calls)

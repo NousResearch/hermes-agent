@@ -825,7 +825,7 @@ class TestExternalSkillMutations:
         ).read_text(encoding="utf-8")
 
 
-def _link_external_skill(tmp_path: Path, name: str = "linked-skill"):
+def _link_external_skill(tmp_path: Path, name: str = "linked-skill", *, category=False):
     """A shared skill installed into the external root as a directory symlink — the
     ``<external>/<skill> -> <elsewhere>/_src/<skill>`` layout a shared-skills tree uses.
     Returns ``(local, external, source)``; skips where directory symlinks are unavailable."""
@@ -836,7 +836,8 @@ def _link_external_skill(tmp_path: Path, name: str = "linked-skill"):
         f"---\nname: {name}\ndescription: A shared skill.\n---\n\n"
         "# Shared\n\nBody with OLD_MARKER here.\n", encoding="utf-8")
     try:
-        (external / name).symlink_to(source, target_is_directory=True)
+        alias = external / "category" if category else external / name
+        alias.symlink_to(source.parent if category else source, target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("Directory symlinks are unavailable on this platform")
     return local, external, source
@@ -852,6 +853,55 @@ class TestSymlinkedExternalSkill:
     (``iter_skill_index_files`` walks with followlinks=True); skill_manage must resolve the same
     skill and mutate it in place, through the public operations[] call. Regression for #54195.
     """
+
+    @pytest.mark.parametrize("category", [False, True])
+    def test_failed_batch_preserves_internal_symlinks(self, tmp_path, category):
+        local, external, source = _link_external_skill(tmp_path, category=category)
+        alias = next(external.iterdir())
+        original = (source / "SKILL.md").read_text(encoding="utf-8")
+        references = source / "references"
+        references.mkdir()
+        (references / "Existing.md").write_text("Supporting content", encoding="utf-8")
+        inner = references / "Alias.md"
+        inner.symlink_to("Existing.md")
+
+        with _two_roots(local, external):
+            result = _batch([
+                {"name": "linked-skill", "action": "patch",
+                 "old_string": "OLD_MARKER", "new_string": "NEW_MARKER"},
+                {"name": "linked-skill", "action": "remove_file",
+                 "file_path": "references/Missing.md"},
+            ])
+
+        assert result["success"] is False and result["failed_index"] == 1, result
+        assert "ROLLBACK FAILED" not in result["error"]
+        assert (source / "SKILL.md").read_text(encoding="utf-8") == original
+        assert alias.is_symlink()
+        assert inner.is_symlink() and inner.readlink() == Path("Existing.md")
+        assert inner.read_text(encoding="utf-8") == "Supporting content"
+
+    @pytest.mark.parametrize("category", [False, True])
+    def test_failed_batch_restores_removed_skill_index(self, tmp_path, category):
+        local, external, source = _link_external_skill(tmp_path, category=category)
+        alias = next(external.iterdir())
+        index = source / "SKILL.md"
+        original = index.read_text(encoding="utf-8")
+        supporting = source / "notes.txt"
+        supporting.write_text("Keep this file", encoding="utf-8")
+
+        with _two_roots(local, external):
+            result = _batch([
+                {"name": "linked-skill", "action": "remove_file", "file_path": "SKILL.md"},
+                {"name": "linked-skill", "action": "remove_file",
+                 "file_path": "references/Missing.md"},
+            ])
+
+        assert result["success"] is False and result["completed_before_failure"] == 1, result
+        assert "ROLLBACK FAILED" not in result["error"]
+        assert index.read_text(encoding="utf-8") == original
+        assert supporting.read_text(encoding="utf-8") == "Keep this file"
+        assert alias.is_symlink()
+        assert not source.with_name(source.name + ".rollback-broken").exists()
 
     def test_batch_patch_follows_directory_symlink_in_place(self, tmp_path):
         local, external, source = _link_external_skill(tmp_path)

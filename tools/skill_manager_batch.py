@@ -81,7 +81,7 @@ def _snapshot_skills(names, snap_root, find_skill):
         snap = snap_root / nm if pre_dir is not None and pre_dir.is_dir() else None
         if snap is not None:
             try:
-                shutil.copytree(pre_dir, snap)
+                shutil.copytree(pre_dir, snap, symlinks=True)
             except Exception as exc:  # noqa: BLE001 — no snapshot, no atomicity
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
         snapshots[nm] = (pre_dir, snap)
@@ -95,7 +95,7 @@ def _restore_snapshot(pre_dir, snap, post_dir) -> None:
             shutil.rmtree(post_dir)
         return
     if not post_exists:
-        shutil.copytree(snap, pre_dir)
+        shutil.copytree(snap, pre_dir, symlinks=True)
         return
     # Move the broken state aside and delete it only after the snapshot is
     # back, so a failed copytree (disk full, locked file) can't mean total loss.
@@ -103,7 +103,7 @@ def _restore_snapshot(pre_dir, snap, post_dir) -> None:
     shutil.rmtree(aside, ignore_errors=True)
     post_dir.rename(aside)
     try:
-        shutil.copytree(snap, pre_dir)
+        shutil.copytree(snap, pre_dir, symlinks=True)
     except Exception:
         # Restore failed: put the half-applied state back rather than nothing.
         shutil.rmtree(pre_dir, ignore_errors=True)
@@ -117,11 +117,15 @@ def _rollback(snapshots, find_skill):
     notes = []
     for nm, (pre_dir, snap) in snapshots.items():
         try:
-            post = find_skill(nm)
+            # SKILL.md may have been removed: restore the captured target even when
+            # discovery can no longer find the partially modified skill.
+            post_dir = pre_dir
             # A batch-created skill (no snapshot) is removed at its LEXICAL path: if an alias
             # already sat there, rmtree refuses the link (loud rollback failure, as on a plain
             # create) instead of following it into a shared tree.
-            post_dir = (Path(post["path"]) if post else None) if snap is None else _real_skill_dir(post)
+            if snap is None:
+                post = find_skill(nm)
+                post_dir = Path(post["path"]) if post else None
             _restore_snapshot(pre_dir, snap, post_dir)
         except Exception as exc:  # noqa: BLE001
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"

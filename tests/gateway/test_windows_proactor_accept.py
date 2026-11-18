@@ -1,148 +1,126 @@
-"""A dropped Windows AcceptEx must not close the gateway listening socket.
+"""A client that goes away before the gateway accepts it must not close the Windows listener.
 
-Regression for the gateway sibling of #120164. ``hermes serve`` runs on a
-selector loop. The gateway stays on the proactor (subprocesses need it), and
-CPython closes that listener when ``getpeername()`` raises WinError 10014.
-Desktop then sees connection refused while the process is still up.
+Gateway sibling of #120164. CPython's proactor closes the listening socket on any accept
+``OSError``: WinError 64 for a client reset in the listen queue (gh-93821) and WinError 10014
+from ``getpeername()``. The port then refuses Desktop while ``gateway ensure`` still reports ready.
 """
 
 import asyncio
-import types
+import socket
+import struct
 
-from gateway.windows_proactor_accept import (
-    _guarded_start_serving,
-    install_proactor_accept_guard,
-    transient_proactor_accept_error,
-)
+import pytest
 
-
-class _Future:
-    def __init__(self, result=None, error=None):
-        self._result = result
-        self._error = error
-        self.callbacks = []
-
-    def result(self):
-        if self._error is not None:
-            raise self._error
-        return self._result
-
-    def add_done_callback(self, callback):
-        self.callbacks.append(callback)
+from gateway.windows_proactor_accept import GuardedAccept, install_proactor_accept_guard
 
 
-class _Sock:
-    def __init__(self):
-        self.closed = False
-
-    def fileno(self):
-        return -1 if self.closed else 7
-
-    def close(self):
-        self.closed = True
-
-
-class _Loop:
-    def __init__(self, accepts):
-        self._accepts = list(accepts)
-        self._accept_futures = {}
-        self._proactor = self
-        self.scheduled = []
-        self.transports = []
-        self.handlers = []
-        self.closed = False
-
-    def accept(self, sock):
-        del sock
-        return self._accepts.pop(0)
-
-    def call_soon(self, callback):
-        self.scheduled.append(callback)
-
-    def is_closed(self):
-        return self.closed
-
-    def call_exception_handler(self, context):
-        self.handlers.append(context)
-
-    def _make_socket_transport(self, conn, protocol, extra=None, server=None):
-        self.transports.append((conn, protocol, extra, server))
-
-
-def _winerror(code):
-    exc = OSError(code, "accept failed")
+def _winerror(cls, code):
+    exc = cls(22, "accept failed")
     exc.winerror = code
     return exc
 
 
-def _start(loop, sock):
-    types.MethodType(_guarded_start_serving, loop)(lambda: object(), sock)
-    loop.scheduled.pop(0)()
+class _ScriptedAccept:
+    """A proactor ``accept`` whose futures settle, one per call, with the scripted outcomes."""
+
+    def __init__(self, loop, outcomes):
+        self._loop = loop
+        self._outcomes = list(outcomes)
+        self.issued = []
+
+    def __call__(self, listener):
+        future = self._loop.create_future()
+        self.issued.append(future)
+        outcome = self._outcomes.pop(0)
+        if outcome is not None:
+            settle = future.set_exception if isinstance(outcome, BaseException) else future.set_result
+            self._loop.call_soon(settle, outcome)
+        return future
 
 
-def test_transient_winerrors_are_dropped_peers():
-    assert transient_proactor_accept_error(_winerror(10014))
-    assert transient_proactor_accept_error(_winerror(10054))
-    assert not transient_proactor_accept_error(OSError(98, "address in use"))
+def _accept_through_guard(outcomes):
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        accept = _ScriptedAccept(loop, outcomes)
+        try:
+            return await GuardedAccept(loop, accept)(object()), accept.issued
+        except OSError as exc:
+            return exc, accept.issued
+
+    return asyncio.run(scenario())
 
 
-def test_winerror_10014_rearms_and_keeps_the_listener():
-    sock = _Sock()
-    failed = _Future(error=_winerror(10014))
-    rearmed = _Future()
-    loop = _Loop([failed, rearmed])
+def test_clients_that_went_away_are_skipped_and_the_next_connection_arrives():
+    connection = (object(), ("127.0.0.1", 50000))
+    outcomes = [
+        _winerror(OSError, 64),
+        # gh-93821's CPython re-raises the queued reset as ConnectionResetError, still winerror 64.
+        _winerror(ConnectionResetError, 64),
+        _winerror(OSError, 10014),
+        ConnectionAbortedError(53, "aborted"),
+        connection,
+    ]
 
-    _start(loop, sock)
-    assert sock.closed is False
-    assert failed.callbacks
+    result, issued = _accept_through_guard(outcomes)
 
-    failed.callbacks.pop(0)(failed)
-
-    assert sock.closed is False
-    assert loop.handlers == []
-    assert rearmed.callbacks
-    assert loop._accept_futures[7] is rearmed
-
-
-def test_other_oserror_still_closes_the_listener():
-    sock = _Sock()
-    failed = _Future(error=OSError(98, "address in use"))
-    loop = _Loop([failed])
-
-    _start(loop, sock)
-    failed.callbacks.pop(0)(failed)
-
-    assert sock.closed is True
-    assert loop.handlers and loop.handlers[0]["message"] == "Accept failed on a socket"
+    assert result is connection
+    assert len(issued) == 5
 
 
-def test_successful_accept_hands_off_and_arms_the_next():
-    sock = _Sock()
-    conn = object()
-    ok = _Future(result=(conn, ("127.0.0.1", 9)))
-    nxt = _Future()
-    loop = _Loop([ok, nxt])
+def test_an_accept_error_that_is_not_a_lost_client_reaches_the_server():
+    failure = _winerror(OSError, 10055)
 
-    _start(loop, sock)
-    ok.callbacks.pop(0)(ok)
+    result, issued = _accept_through_guard([failure])
 
-    assert loop.transports and loop.transports[0][0] is conn
-    assert sock.closed is False
-    assert nxt.callbacks
+    assert result is failure
+    assert len(issued) == 1
 
 
-def test_cancelled_accept_closes_the_listener():
-    sock = _Sock()
-    failed = _Future(error=asyncio.CancelledError())
-    loop = _Loop([failed])
+def test_cancelling_the_accept_cancels_the_accept_in_flight():
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        accept = _ScriptedAccept(loop, [_winerror(OSError, 64), None])
+        outer = GuardedAccept(loop, accept)(object())
+        for _ in range(100):
+            if len(accept.issued) == 2:
+                break
+            await asyncio.sleep(0)
+        outer.cancel()
+        await asyncio.sleep(0)
+        return accept.issued
 
-    _start(loop, sock)
-    failed.callbacks.pop(0)(failed)
+    issued = asyncio.run(scenario())
 
-    assert sock.closed is True
+    assert len(issued) == 2
+    assert issued[1].cancelled()
 
 
-def test_guard_stays_off_when_disabled_or_not_a_proactor():
-    loop = _Loop([])
-    assert install_proactor_accept_guard(loop, enabled=False) is False
-    assert install_proactor_accept_guard(loop, enabled=True) is False
+@pytest.mark.platforms("windows")
+def test_listener_keeps_serving_after_a_client_resets_in_the_listen_queue():
+    async def scenario():
+        install_proactor_accept_guard(asyncio.get_running_loop())
+
+        async def handle(_reader, writer):
+            writer.write(b"ok")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        # Both connects land while this coroutine holds the loop: the first meets the pending
+        # AcceptEx, the second waits in the listen queue and is reset there (linger 0).
+        first = socket.create_connection(("127.0.0.1", port))
+        second = socket.create_connection(("127.0.0.1", port))
+        second.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("HH", 1, 0))
+        second.close()
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), 10)
+            reply = await asyncio.wait_for(reader.readexactly(2), 10)
+            writer.close()
+            return reply
+        finally:
+            first.close()
+            server.close()
+
+    with asyncio.Runner(loop_factory=asyncio.ProactorEventLoop) as runner:
+        assert runner.run(scenario()) == b"ok"

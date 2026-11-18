@@ -10,23 +10,23 @@ import threading
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tui_gateway import server
 
 
 def _interrupted_db(tmp_path):
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    db = SessionDB(home / "state.db")
-    db.create_session("crashed", source="tui")
-    db.append_message("crashed", "user", "fix the flaky test", timestamp=100.0)
+    db = open_persistence(profile_scope(home=home))
+    seed_session(db, "crashed", "tui")
+    seed_messages(db, "crashed", {"role": "user", "content": "fix the flaky test", "timestamp": 100.0})
     return db, home
 
 
 def _mount(monkeypatch, db, home, tmp_path):
     scheduled = []
     built = threading.Event()
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **kwargs: db)
     monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))

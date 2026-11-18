@@ -17,7 +17,7 @@ description: >-
   comes from Rollstack's server at run time, so the pinned commit doesn't cover it. Hermes stores and
   refreshes the OAuth tokens. OAuth must be enabled with
   `hermes mcp add rollstack --url https://api.rollstack.com/public/v1/mcp --auth oauth --connect-timeout 300`;
-  the bundled mcp.json alone lists the tools but every call is refused until then.
+  the bundled mcp.json alone yields 401.
 maintainer: Rollstack
 tier: community
 category: tools

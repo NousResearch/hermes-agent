@@ -92,18 +92,21 @@ def sign_in_client(home) -> Optional[tuple[str, str]]:
     A record from an earlier build of Web Access names the dashboard's client, which it registered on
     then: that is not Web Access's own, so the Webapp keeps the configured client until the next Start
     registers one."""
-    record = _registration(home)
+    return _registration_client(_registration(home))
+
+
+def _registration_client(record: dict) -> Optional[tuple[str, str]]:
     client_id, portal = record.get("client_id"), record.get("portal")
     if record.get("own_client") is not True or not isinstance(portal, str) or not portal:
         return None
     return (client_id, portal) if isinstance(client_id, str) and client_id.startswith("agent:") else None
 
 
-def _registered_callback(home: Path) -> Optional[tuple[Optional[str], Optional[int]]]:
+def _registered_callback(record: dict) -> Optional[tuple[Optional[str], Optional[int]]]:
     """``(hostname, port)`` of the ``http://…/auth/callback`` Web Access last registered Nous sign-in
-    at for *home*'s Webapp on the LAN, or None."""
+    at for the Webapp on the LAN, or None."""
     try:
-        parts = urlsplit(_registration(home)["callback"])
+        parts = urlsplit(record["callback"])
         recorded_port = parts.port
     except (ValueError, KeyError, TypeError, AttributeError):
         return None
@@ -116,7 +119,7 @@ def registered_lan_origin(home: Path, port: int) -> Optional[str]:
     """``http://<LAN address>:<port>`` when Web Access last registered Nous sign-in for *home*'s
     Webapp on the LAN at that address and *port*, and the address is still this machine's; else None.
     Sign-in returns only to the callback the Portal has, so ``hermes webapp`` opens this address."""
-    callback = _registered_callback(home)
+    callback = _registered_callback(_registration(home))
     if callback is None or callback[1] != port or callback[0] != lan_address():
         return None
     return f"http://{callback[0]}:{port}"
@@ -130,12 +133,17 @@ def sign_in_address(home: Path, bound_host: str, port: int, public_url: str) -> 
     listens on besides loopback; a Web Access registration for another address cannot bring sign-in
     back there, so the note says so instead of opening that address. Every other bind keeps the
     registered LAN address, as before."""
-    from gateway.webapp_listener import bind_origin
+    from gateway.webapp_listener import _public_url as read_public_url, bind_origin
 
     own = bind_origin(bound_host, port)
     if public_url or own is None:
         return public_url or registered_lan_origin(home, port), None
-    callback = _registered_callback(home)
+    record = _registration(home)
+    saved = read_public_url(record.get("callback")) or ""
+    if _registration_client(record) and saved.lower().startswith("https://") and saved.endswith("/auth/callback"):
+        return own, ("The saved Web Access registration for Nous sign-in names the previous HTTPS URL, not this IP. "
+                     "Use a password provider, or restore webapp.public_url and its proxy and restart the gateway.")
+    callback = _registered_callback(record)
     if callback is None or callback == (bound_host, port):
         return own, None
     registered = bind_origin(callback[0] or "", callback[1] or 80) or f"http://{callback[0]}:{callback[1]}"

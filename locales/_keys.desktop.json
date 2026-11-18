@@ -1533,6 +1533,7 @@
     "cron.updated",
     "cron.weekdaysAt",
     "desktop.archiveFailed",
+    "desktop.archiveUndo",
     "desktop.archived",
     "desktop.attachFailed",
     "desktop.attachImages",

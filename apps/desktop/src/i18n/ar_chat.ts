@@ -437,6 +437,7 @@ export const arChat = {
     archiveFailed: 'فشلت الأرشفة',
     restored: 'تمت الاستعادة',
     unarchiveFailed: 'فشل إلغاء الأرشفة',
+    archiveUndo: 'تراجع',
     cwdChangeFailed: 'فشل تغيير مجلد العمل',
     cwdStagedTitle: 'تم تجهيز مجلد العمل',
     cwdStagedMessage: 'سيطبق مجلد العمل على الرسالة التالية.',

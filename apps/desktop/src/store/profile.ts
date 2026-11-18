@@ -470,9 +470,10 @@ export function requestFreshSession(): void {
 }
 
 // Opening a stored conversation also leaves the failed draft's retry behind.
+// Selection can be an automatic launch resume, not a new draft intent.
 $selectedStoredSessionId.listen(storedId => {
   if (storedId) {
-    invalidateNewChatIntent()
+    invalidateProfileSwitch()
   }
 })
 
@@ -851,6 +852,8 @@ export async function openGatewayAgent(connectionId: string, profile: string): P
 // null-connectionId profile fallthrough.
 export interface EnsureGatewayAgentOptions {
   beforeActivate?: () => boolean
+  /** Interactive rail picks surface a failed dial without changing other callers. */
+  rejectIfNotActivated?: boolean
   /** Revokes this caller's right to activate or publish after async work. */
   signal?: AbortSignal
 }
@@ -886,7 +889,7 @@ function releaseWhenAborted(promise: Promise<void>, signal?: AbortSignal): Promi
 export async function ensureGatewayAgent(
   connectionId: null | string,
   profile: string,
-  { beforeActivate, signal }: EnsureGatewayAgentOptions = {}
+  { beforeActivate, rejectIfNotActivated, signal }: EnsureGatewayAgentOptions = {}
 ): Promise<void> {
   const target = normalizeProfileKey(profile)
   const connection = (connectionId ?? '').trim() || null
@@ -931,11 +934,13 @@ export async function ensureGatewayAgent(
     }
 
     if (!activated) {
-      // The target stopped existing mid-dial (source edited/removed). Keep
-      // every atom on the previous backend; the caller's surfaces re-check
-      // what's active. Log so a dead agent click is diagnosable (#89622's
-      // silence lesson) — but never fail the whole switch closed here.
+      // Keep every atom on the previous backend. Interactive picks need a
+      // rejection for Retry; other callers retain their existing contract.
       console.warn(`[profile] agent gateway activation for "${connection}:${target}" did not land`)
+
+      if (rejectIfNotActivated && activated === false) {
+        throw new Error(`Could not activate profile "${target}" on connection "${connection}"`)
+      }
 
       return
     }
@@ -1051,7 +1056,10 @@ function runRailSwitch(target: string, failedTitle: string, onActivated?: () => 
   const connectionId = profilePickConnectionId(target)
 
   const attempt = (): void => {
-    const activation = connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
+    const activation = connectionId
+      ? ensureGatewayAgent(connectionId, target, { rejectIfNotActivated: true })
+      : ensureGatewayProfile(target)
+
     void trackProfileSwitch(target, activation, attempt)
       .then(onActivated)
       .catch((error: unknown) => {

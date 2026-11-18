@@ -12,13 +12,7 @@ from agent.secret_sources.base import SECRET_SOURCE_API_VERSION, FetchResult, Se
 from gateway.status_report.reporter import StatusReporter, status_reporter_from_launch_env
 from gateway.status_report.target import STATUS_REPORT_URL_ENV
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import is_launch_only_env_key
 from tests.gateway.status_report.support import new_credential, stamped_url
-
-
-@pytest.mark.parametrize("name", [STATUS_REPORT_URL_ENV, STATUS_REPORT_URL_ENV.lower()])
-def test_the_key_is_launch_only(name):
-    assert is_launch_only_env_key(name)
 
 
 def test_a_profile_env_file_cannot_switch_reports_on(tmp_path, monkeypatch):

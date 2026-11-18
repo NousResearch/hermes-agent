@@ -342,6 +342,28 @@ def test_a_pinned_username_refuses_another_name_and_keeps_its_own(tmp_path):
     assert _verify_password(PASSWORD, _basic_auth(home)["password_hash"])
 
 
+def test_a_managed_username_template_is_compared_by_its_effective_value(tmp_path):
+    home, env = _home(tmp_path)
+    (home / ".env").write_text("PR4_TEST_LOGIN=throwaway-login\n")
+    env = {**env, "HERMES_MANAGED_DIR": str(_managed_dir(tmp_path, {"username": "${PR4_TEST_LOGIN}"}))}
+    result = run_cli(env, "dashboard", "password", "--password-stdin", stdin=PASSWORD + "\n")
+    assert result.returncode == 0, result.stdout
+    assert "user 'throwaway-login'" in result.stdout
+    assert _verify_password(PASSWORD, _basic_auth(home)["password_hash"])
+
+
+def test_a_managed_username_template_on_an_override_it_removes_is_refused(tmp_path):
+    home, env = _home(tmp_path)
+    (home / ".env").write_text("HERMES_DASHBOARD_BASIC_AUTH_USERNAME=throwaway-login\n")
+    managed = _managed_dir(tmp_path, {"username": "${HERMES_DASHBOARD_BASIC_AUTH_USERNAME}"})
+    before = (home / ".env").read_bytes()
+    result = run_cli({**env, "HERMES_MANAGED_DIR": str(managed)}, "dashboard", "password", "--password-stdin",
+                     stdin=PASSWORD + "\n")
+    assert result.returncode == 1, result.stdout
+    assert "references an override this command removes" in result.stdout
+    assert (home / ".env").read_bytes() == before and _basic_auth(home) == {}
+
+
 def test_a_password_the_calling_environment_also_sets_is_named_and_still_wins_where_it_is_set(tmp_path):
     home, env = _home(tmp_path)
     (home / ".env").write_text("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=throwaway-dotenv-pw\n")

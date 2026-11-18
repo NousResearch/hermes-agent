@@ -134,11 +134,13 @@ def _shadow_refusal() -> Optional[str]:
             require_env_writable(name, "remove")
         except ValueError as exc:
             return f"{exc} It overrides config.yaml"
-    raw = ((read_raw_config().get("dashboard") or {}).get("basic_auth") or {})
-    raw_user = raw.get("username") if isinstance(raw, dict) else None
-    if isinstance(raw_user, str):
-        removing = set(load_env()).intersection(SHADOWING_ENV)
-        if any(_env_ref_var_name(ref.strip()) in removing for ref in _ENV_REF_RE.findall(raw_user)):
+    from hermes_cli import managed_scope
+    removing = set(load_env()).intersection(SHADOWING_ENV)
+    for config in (read_raw_config(), managed_scope.load_managed_config()):
+        raw = ((config.get("dashboard") or {}).get("basic_auth") or {})
+        raw_user = raw.get("username") if isinstance(raw, dict) else None
+        if isinstance(raw_user, str) and any(
+                _env_ref_var_name(ref.strip()) in removing for ref in _ENV_REF_RE.findall(raw_user)):
             return "Set dashboard.basic_auth.username to a literal first: it references an override this command removes"
     return None
 
@@ -161,6 +163,7 @@ def _managed_config_refusal(username: str) -> Optional[str]:
     a pinned ``password_hash``, or a pinned ``username`` other than *username*. ``save_config`` drops
     pinned keys with only a note, so this is asked before anything is written."""
     from hermes_cli import managed_scope
+    from hermes_cli.config import _expand_env_vars
     pinned = managed_scope.managed_config_keys()
     if not pinned:
         return None
@@ -172,7 +175,8 @@ def _managed_config_refusal(username: str) -> Optional[str]:
     if is_pinned("dashboard.basic_auth.password_hash"):
         return f"dashboard.basic_auth.password_hash is managed by your administrator ({source})"
     section = (managed_scope.load_managed_config().get("dashboard") or {}).get("basic_auth") or {}
-    pinned_user = str(section.get("username") or "").strip() if isinstance(section, dict) else ""
+    # The value in effect, expanded by the config loader's own rules (a ``${VAR}`` pin is not a rename).
+    pinned_user = str(_expand_env_vars(section.get("username") or "")).strip() if isinstance(section, dict) else ""
     if is_pinned("dashboard.basic_auth.username") and pinned_user != username:
         return (f"dashboard.basic_auth.username is managed by your administrator ({source}) as "
                 f"'{pinned_user}'; leave out --username to keep it")

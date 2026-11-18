@@ -269,12 +269,14 @@ class TestNonRegularFileReads(unittest.TestCase):
         self.assertTrue(surface, f"expected error or note, got: {result}")
         self.assertIn("not a regular file", surface)
 
-    def test_read_file_tool_on_directory_errors_instead_of_blocking(self):
+    def test_read_file_tool_on_directory_lists_it_instead_of_blocking(self):
         with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, "inside.txt"), "w").close()
             result = self._read_within_deadline(tmpdir, "dir_read_test")
 
-        self.assertIn("error", result)
-        self.assertIn("not a regular file", result["error"])
+        self.assertNotIn("error", result)
+        self.assertTrue(result["is_directory"])
+        self.assertIn("inside.txt", result["content"])
 
     def test_regular_file_still_reads(self):
         """The guard must not cost ordinary reads their content."""

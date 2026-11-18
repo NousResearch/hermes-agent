@@ -1,0 +1,24 @@
+name: visual-gate
+title: Visual Gate
+repo: https://github.com/salch-cred/visual-gate
+sha: 00101a7d80675b40c7392eaccc493cc92909e35c
+description: >-
+  Lets Hermes check the web UI it just built. Drives a real headless Chrome,
+  diffs the page against a stored baseline and audits WCAG 2.2 AA on the same
+  render, then returns one PASS or FAIL with changed regions, computed contrast
+  ratios and exact CSS selectors. A page that failed to load is an error, never
+  a pass, and text it cannot measure is reported for a person to check.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+docs_url: https://github.com/salch-cred/visual-gate
+version: "1.1.1"
+image: https://raw.githubusercontent.com/salch-cred/visual-gate/f5f0bde73bff267a56c48e735c9e04063e9693b3/docs/assets/catalog.jpg
+
+capabilities:
+  provides_tools: [vg_capture, vg_diff, vg_a11y, vg_gate, vg_baselines, vg_doctor]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -52,7 +52,8 @@ def worker_bootstrap() -> None:
         return
     from pm.environments import activate_dependencies
 
-    activate_dependencies(Path(__file__).resolve().parent.parent)
+    from hermes_cli._startup_fast import project_root_str
+    activate_dependencies(Path(project_root_str()))
 
 
 def finish_worker_boot() -> None:

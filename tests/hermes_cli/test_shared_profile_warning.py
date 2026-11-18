@@ -75,15 +75,16 @@ def test_warning_tracks_live_other_install_in_same_home(homes, tmp_path):
 @contextmanager
 def running_cli(home: Path, install: Path):
     """Run the real CLI constructor and entrypoint; stop at terminal interaction."""
-    env = dict(os.environ, HERMES_HOME=str(home), HOME=str(home.parent), USERPROFILE=str(home.parent))
+    env = dict(os.environ, HERMES_HOME=str(home), HOME=str(home.parent), USERPROFILE=str(home.parent),
+               HERMES_BUNDLED_LOCALES=str(Path(__file__).resolve().parents[2] / "locales"))
     for key in ("HERMES_SPAWN", "HERMES_PARENT_PID", "HERMES_PARENT_START_MARKER"):
         env.pop(key, None)
     script = """
 import sys
 from pathlib import Path
-import hermes_constants
+from hermes_cli import _startup_fast
 # Model two installed runtime roots without copying the source tree.
-hermes_constants.PROJECT_ROOT = Path(sys.argv[1])
+_startup_fast.project_root_str = lambda: sys.argv[1]
 import cli
 
 def terminal_boundary(self):
@@ -129,11 +130,11 @@ def test_cli_entrypoint_registers_and_warns_once_for_live_shared_home(homes, tmp
             assert own[0]["hermes_home"] == hermes_home_key(homes)
             assert shared_profile_warning(project_root=stable)
             # A CLI record must not make a terminal process an update-owned backend.
-            import hermes_constants
+            from hermes_cli import _startup_fast
             from hermes_cli.update_inventory import UpdatePlan, _collect_ledger_runtimes
 
             with monkeypatch.context() as patcher:
-                patcher.setattr(hermes_constants, "PROJECT_ROOT", canary, raising=False)
+                patcher.setattr(_startup_fast, "project_root_str", lambda: str(canary))
                 assert own == process_identity.ledger_entries(verified_only=True)
                 assert own[0]["purpose"] not in process_identity.REAPABLE_PURPOSES
                 plan = UpdatePlan()

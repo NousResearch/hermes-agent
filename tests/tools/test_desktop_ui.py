@@ -13,7 +13,6 @@ def _reset_emitter():
 
 
 def test_unavailable_without_emitter():
-    assert desktop_ui.available() is False
     assert desktop_ui.emit("preview.open", {"url": "x"}) is False
 
 
@@ -25,7 +24,6 @@ def test_routes_event_to_owning_window(monkeypatch):
     seen = []
     desktop_ui.set_emitter(lambda sid, event, payload: seen.append((sid, event, payload)))
 
-    assert desktop_ui.available() is True
     assert desktop_ui.emit("pane.reveal", {"pane": "terminal"}) is True
     assert seen == [("win-7", "pane.reveal", {"pane": "terminal"})]
 

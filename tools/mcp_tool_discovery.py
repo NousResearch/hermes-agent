@@ -113,7 +113,8 @@ def _owner_secret_mapping(home: Path) -> dict[str, str]:
     interval per home: every retry is a helper subprocess, and connect/reconnect loops are tight."""
     from agent.secret_scope import _is_process_home, build_profile_secret_scope
     from hermes_cli import env_loader
-    key = str(home.resolve())
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key(home)
     if time.monotonic() >= _hydrate_retry_after.get(key, 0.0):
         env_loader.hydrate_profile_secret_sources(home)
         if key not in env_loader._APPLIED_HOMES:
@@ -159,8 +160,11 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         # The config was rendered at load time (a lazy server's at boot): re-render under the
         # owner's fresh scope so a ref left literal before its secret source answered resolves
         # now, and refuse to send one that still does not.
-        config = _config._require_rendered_remote(
-            name, _config._interpolate_mcp_server_config(config))
+        config = _config._require_rendered_remote(name, _config._interpolate_mcp_server_config(config))
+        # A ref that resolves only now (unscoped portable load, late secret source) was validated
+        # as its literal placeholder: check the command actually about to be spawned.
+        if issues := _config._suspicious_mcp_issues(name, config):
+            raise ValueError(f"Refusing suspicious MCP server '{name}': {'; '.join(issues)}")
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel

@@ -15,6 +15,9 @@ from typing import Any, Dict, NamedTuple, Optional, Tuple
 from agent.error_classifier import FailoverReason
 from agent.stream_max_lifetime import StreamLifetimeExceeded
 from hermes_constants import display_hermes_home
+from persistence.conversation.messages import (
+    CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE,
+)
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
@@ -24,7 +27,7 @@ SITE_FAILURE_CODES = frozenset({
 
 
 def launch_credentials_copy(error: Any) -> str:
-    """The refusal for a session whose own launch/route API key changed or is gone (``RuntimeStoreError``
+    """The refusal for a session whose own launch/route API key changed or is gone (``AuthorityRefusal``
     or an RPC refusal carrying ``field``/``detail``). A session never sends a different key than it
     started with, so /retry repeats the refusal: the copy names /new on every surface."""
     from agent.i18n import t
@@ -82,12 +85,8 @@ FAILED_TURN_DISPLAY_KIND = "failed_turn"
 # SEEING their message: the user row is retained in the DISPLAY projection (never the model read)
 # and tagged with this display_kind, while the raw tool rounds + refusal detail collapse into
 # CONTENT_REFUSED_NOTICE. Rendered cross-surface (Desktop, CLI/TUI, ACP) as a greyed block.
-CONTENT_REFUSED_DISPLAY_KIND = "content_refused"
-CONTENT_REFUSED_NOTICE = (
-    "This message was refused by the model's safety filter — try a different query."
-)
-# messages.display_metadata key carrying the stored notice, so every surface renders one copy.
-CONTENT_REFUSED_METADATA_KEY = "content_refused"
+# The kind, the notice and the display_metadata key are the stored row shape the store's retention
+# and open-time repair write, so they are defined once, in the transcript contract (imported above).
 
 
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
@@ -262,6 +261,13 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
         "the proxy/WAF rules, or switch providers with /model."
     ),
+    FailoverReason.guardrail_blocked.value: (
+        "{label}'s prompt-injection guardrail rejected this request before it reached any model, so "
+        "the key is fine — a scanner judged the request payload (tool output is scanned too, not "
+        "just what you type), and retrying won't help. On OpenRouter: Workspaces → Guardrails → set "
+        "Prompt injection detection to Redact or Flag, or allowlist the phrase under Settings → "
+        "Privacy; the matched pattern names are in the error details."
+    ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
@@ -278,7 +284,8 @@ _AUTH_COPY: dict[str, str] = {
 CONTENT_POLICY_NEXT_STEPS = (
     "That message has been left out of this conversation, so you're not stuck — just ask "
     "something else and you can keep going. Rewording it, removing any sensitive attachments, "
-    "or switching models with /model can also help."
+    "or switching models with /model can also help. If a later message is refused too, start a "
+    "new chat with /new (in a Bot Chat, Archive it from its tab menu)."
 )
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------
@@ -298,6 +305,7 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.auth.value: "the AI model service rejected the sign-in",
     FailoverReason.auth_permanent.value: "the AI model service rejected the sign-in",
     FailoverReason.upstream_blocked.value: "a firewall/CDN in front of the AI model service blocked the request",
+    FailoverReason.guardrail_blocked.value: "the AI model service's prompt-injection guardrail rejected the request",
     FailoverReason.model_not_found.value: "the model {subject} uses was not found at the AI model service",
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (
@@ -461,7 +469,49 @@ def oauth_relogin_command(provider: Any) -> str:
     slug = str(provider or "").strip().lower()
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
+    if _login_owned_by_external_cli(slug):
+        # `auth add` refuses a plugin with no auth_handler. The plugin's own CLI login comes first:
+        # `hermes model` runs it too, but then saves the provider as the default.
+        from hermes_cli.auth_plugin_providers import plugin_profile
+
+        return declared_login_command(plugin_profile(slug)) or f"hermes {profile_cli_selector()}model"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def declared_login_command(profile: Any) -> str:
+    """The shell command for a plugin CLI's own sign-in: its resolved binary plus ``login_args``, or "".
+
+    Built from the profile's declaration and a PATH lookup only: hints are rendered on the gateway's
+    event loop, and a plugin's ``setup_status()`` can run its CLI (``claude auth status``) for seconds."""
+    login_args = tuple(getattr(profile, "login_args", ()) or ())
+    if profile is None or not login_args:
+        return ""
+    from hermes_cli.auth_external_process import external_process_command, resolve_external_process_command
+
+    command = external_process_command(profile)
+    binary = resolve_external_process_command(command) or command
+    return render_login_command([binary, *(str(part) for part in login_args)]) if binary else ""
+
+
+def render_login_command(argv: list[str]) -> str:
+    """``argv`` as one line a user can paste into their shell, or "" when no single line would run."""
+    import sys
+
+    if sys.platform == "win32":
+        # No POSIX quotes on Windows, and a quoted path runs in cmd.exe but not PowerShell (it needs `&`): keep the fallback.
+        import subprocess
+
+        line = subprocess.list2cmdline(argv)
+        return "" if line.startswith('"') else line
+    import shlex
+
+    return shlex.join(argv)
+
+
+def _login_owned_by_external_cli(slug: str) -> bool:
+    from hermes_cli.auth_plugin_providers import plugin_auth_handler, plugin_profile
+
+    return getattr(plugin_profile(slug), "auth_type", "") == "external_process" and plugin_auth_handler(slug) is None
 
 
 def relogin_command_hint(provider: Any) -> str:
@@ -476,7 +526,7 @@ def relogin_command_hint(provider: Any) -> str:
         return f"hermes {profile_cli_selector()}auth add <provider>"
     from agent.error_surface import auth_kind
 
-    if auth_kind(slug) == "oauth":
+    if _login_owned_by_external_cli(slug) or auth_kind(slug) == "oauth":
         return oauth_relogin_command(slug)
     return f"hermes {profile_cli_selector()}auth add {slug}"
 
@@ -497,8 +547,9 @@ def nonretryable_copy(
         f"'{prefix_suggestion}'?"
         if prefix_suggestion else ""
     )
+    relogin = oauth_relogin_command(provider) if "{relogin}" in template else ""
     body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
-                           relogin=oauth_relogin_command(provider))
+                           relogin=relogin)
     return f"{body}\n\nProvider said: {summary}"
 
 

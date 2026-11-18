@@ -130,6 +130,69 @@ def test_keys_follow_dependency_inputs_not_checkout_or_release_identity(tmp_path
     assert describe_cache(source, cache, "payload-only")["restore_keys"][1] != rerun["restore_keys"][1]
 
 
+# The Python entry points of desktop preparation. Importing them shows their module-level imports
+# at runtime; the late imports inside functions are covered by keying the preparation packages whole
+# (_INPUT_GLOBS), and shared modules a function imports late are listed by hand.
+_PYTHON_ENTRIES = ("scripts.bundles.desktop_prepare", "scripts.bundles.desktop", "scripts.bundles.native",
+                   "scripts.ci.desktop_build_cache")
+_LOADED_MODULES = """
+import importlib, json, sys
+from pathlib import Path
+root = Path.cwd().resolve()
+sys.path.insert(0, str(root))
+for entry in sys.argv[1:]:
+    importlib.import_module(entry)
+files = (Path(getattr(module, "__file__", None) or "").resolve() for module in list(sys.modules.values()))
+print(json.dumps(sorted(path.relative_to(root).as_posix() for path in files
+                        if path.is_file() and path.is_relative_to(root) and "site-packages" not in path.parts)))
+"""
+
+
+def _stale_modules(tmp_path, modules):
+    import shutil
+    from scripts.ci.desktop_build_cache import describe_cache
+
+    source = source_tree(tmp_path / "source")
+    for module in modules:
+        (source / module).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / module, source / module)
+    first = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    stale = []
+    for module in modules:
+        old = (source / module).read_bytes()
+        (source / module).write_bytes(old + b"\n")
+        if describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0] == first:
+            stale.append(module)
+        (source / module).write_bytes(old)
+    return stale
+
+
+def test_keys_follow_every_python_module_desktop_preparation_imports(tmp_path):
+    """Editing a repo module that preparation's Python loads must miss the input cache."""
+    graph = subprocess.run([sys.executable, "-c", _LOADED_MODULES, *_PYTHON_ENTRIES], cwd=ROOT,
+                           capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
+    assert graph.returncode == 0, graph.stdout + graph.stderr
+    modules = json.loads(graph.stdout)
+    assert {"scripts/bundles/desktop_prepare.py", "scripts/bundles/desktop.py"} < set(modules)
+    stale = _stale_modules(tmp_path, modules)
+    assert not stale, f"desktop cache key ignores imported modules: {stale}"
+
+
+@pytest.mark.parametrize("package", ["scripts/bundles", "scripts/build", "pm", "apps/desktop/scripts"])
+def test_a_new_module_in_a_preparation_package_misses_the_input_cache(tmp_path, package):
+    """A late import of a module added to a preparation package needs no key-list edit."""
+    from scripts.ci.desktop_build_cache import describe_cache
+
+    source = source_tree(tmp_path / "source")
+    (source / package).mkdir(parents=True, exist_ok=True)
+    first = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    (source / package / "new_helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    added = describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0]
+    assert added != first
+    (source / package / "new_helper.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert describe_cache(source, tmp_path / "cache", "desktop-production")["restore_keys"][0] != added
+
+
 def test_cache_roots_cannot_select_private_state_or_follow_workspace_symlinks(tmp_path, monkeypatch):
     from scripts.ci.desktop_build_cache import describe_cache
 
@@ -300,6 +363,11 @@ def test_restored_pnpm_store_installs_offline_and_excludes_job_secrets(tmp_path)
     (source / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
     (source / "pnpm-workspace.yaml").write_text("packages:\n  - editor\n", encoding="utf-8")
     (source / "editor/package.json").write_text(json.dumps({"name": "editor", "version": "1.0.0"}), encoding="utf-8")
+    # node-deps requires PM's pnpm pin; pin the pnpm this test runs.
+    pnpm_version = subprocess.run(["pnpm", "--version"], capture_output=True, text=True, encoding="utf-8",
+                                  timeout=60, check=True).stdout.strip()
+    (source / "pm").mkdir()
+    (source / "pm/lock.json").write_text(json.dumps({"packages": {"pnpm": {"version": pnpm_version}}}), encoding="utf-8")
     try:
         locked = run(source, cache, "--pnpm", "install", "--lockfile-only", offline=False)
         assert locked.returncode == 0, locked.stdout + locked.stderr
@@ -316,7 +384,7 @@ def test_restored_pnpm_store_installs_offline_and_excludes_job_secrets(tmp_path)
     description = describe_cache(source, cache, "test")
     assert not any(Path(path).is_relative_to(source) for path in description["paths"])
     restored_source, restored_cache = tmp_path / "new/source", tmp_path / "new/cache"
-    for name in ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "editor/package.json"):
+    for name in ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "editor/package.json", "pm/lock.json"):
         (restored_source / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / name, restored_source / name)
     for name in description["paths"]:

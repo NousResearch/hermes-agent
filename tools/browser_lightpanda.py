@@ -66,7 +66,10 @@ _SANE_PATH_DIRS = ("/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/sbin",
 
 
 def merge_sane_path(existing_path: str = "") -> str:
-    """``existing_path`` with the standard system dirs that exist appended (existing order kept)."""
+    """``existing_path`` with the standard system dirs that exist appended (existing order kept);
+    unchanged on Windows, where these POSIX dirs mean nothing."""
+    if os.name == "nt":
+        return existing_path
     parts = [p for p in (existing_path or "").split(os.pathsep) if p]
     return os.pathsep.join(parts + [d for d in _SANE_PATH_DIRS if d not in parts and os.path.isdir(d)])
 
@@ -131,10 +134,6 @@ def _binary_supports_http_cache(binary: str) -> bool:
     except Exception as e:
         logger.debug("lightpanda http-cache probe failed (%s); assuming no", e)
         return False
-
-
-def _record_path(session_name: str) -> Path:
-    return _state_dir() / f"{session_name}.json"
 
 
 def _browser_env() -> dict:

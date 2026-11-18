@@ -315,15 +315,45 @@ class TestCachedChatTypeResolution:
         submit.assert_called_once()
         assert seen == ["dm"]
 
-    def test_cache_miss_fails_closed_to_group(self):
+    def test_cache_miss_never_gets_dm_admission(self):
         adapter = _make_adapter()
-        check = _gateway_check({"ou_requester"})
-        adapter.set_authorization_check(check)
+        adapter.set_authorization_check(lambda user_id, chat_type=None, chat_id=None, **_kw: chat_type == "dm")
 
-        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
-            adapter._on_card_action_trigger(_approval_click("ou_requester"))
+        with patch("asyncio.run_coroutine_threadsafe") as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_requester"))
 
-        assert check.seen == [("ou_requester", "group", "oc_group")]
+        assert response.card is None
+        submit.assert_not_called()
+        assert 1 in adapter._approval_state
+
+    @pytest.mark.parametrize(("paired", "admitted"), [(False, False), (True, True)])
+    def test_cache_miss_real_gateway_check_admits_only_paired(self, paired, admitted, tmp_path, monkeypatch):
+        """Uncached chat through the runner's real check + PairingStore: unpaired is refused,
+        a paired operator is still admitted."""
+        from gateway.config import GatewayConfig, Platform
+        from gateway.pairing import PairingStore
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for var in ("FEISHU_ALLOWED_USERS", "FEISHU_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+                    "GATEWAY_ALLOW_ALL_USERS"):
+            monkeypatch.delenv(var, raising=False)
+        adapter = _make_adapter()
+        store = PairingStore()
+        if paired:
+            assert store.approve_code("feishu", store.generate_code("feishu", "ou_requester", "R")) is not None
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(platforms={Platform.FEISHU: adapter.config})
+        runner.adapters = {Platform.FEISHU: adapter}
+        runner._profile_adapters = {}
+        runner.pairing_store, runner.pairing_stores = store, {}
+        adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.FEISHU))
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_requester"))
+
+        assert (response.card is not None) is admitted
+        assert submit.call_count == int(admitted)
 
     def test_cached_group_mode_stays_group(self):
         adapter = _make_adapter()
@@ -360,6 +390,7 @@ class TestCachedChatTypeResolution:
     def test_private_visibility_topic_mode_maps_to_forum(self):
         """Counterexample: raw_type=private + raw_mode=topic must map to "forum", not "dm"."""
         adapter = _make_adapter()
+        adapter._approval_state[1]["chat_id"] = "oc_topic"  # the card was posted in the topic chat
         adapter._chat_info_cache["oc_topic"] = {"raw_type": "private", "raw_mode": "topic"}
         seen = []
 

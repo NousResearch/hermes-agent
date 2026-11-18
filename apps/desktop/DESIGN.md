@@ -845,6 +845,7 @@ blocks'; an override under a media query (a width class, a coarse pointer) is no
 | `--portal-status-bar-open-inset` | `2.5rem` | ″ |  |
 | `--portal-status-bar-corner` | `0.4375rem` | ″ |  |
 | `--portal-status-bar-glyph` | `0.8125rem` | ″ |  |
+| `--portal-notice-strip-height` | `1.5rem` | ″ | The notice strip (app/shell/butterbar.tsx: a new version, the terms) is one 24px row at the window's floor, under the frame; while it shows, the status bar stands on it rather than over it. |
 | `--portal-column-page` | `61.25rem` | ″ | The one column every rail page shares (Capabilities 919:9281: 980): Agents, Capabilities, Library, Routines, Messaging, Webhooks and the Spawn tree all centre it in their stage through the page stage contract (portal-pages.css), which is its only reader outside this folder (scripts/check_desktop_design_tokens.py). Figma draws forms and details at 840 (1036:7189); the owner keeps one width so no heading moves between pages. Then the conversation shared by the transcript and the docked composer: both 640 wide, the transcript flush with the composer's edges. Figma draws 440 (chat 16292:16175); the owner keeps the wider column. |
 | `--portal-column-conversation` | `40rem` | ″ |  |
 | `--portal-column-conversation-inset` | `0px` | ″ |  |
@@ -1142,7 +1143,8 @@ so until it closes. Community posts from the frames are not built.
 A Webapp tab that was open when a newer build was deployed (W1) says so in the notice strip
 (`Butterbar`) and in the tray, and never reloads under the person: the new build loads at the next
 new chat while nothing is running, on the next visit, or from "Refresh now"
-(`store/new-version.ts`, `lib/deployed-build.ts`).
+(`store/new-version.ts`, `lib/deployed-build.ts`). While the strip shows, the status bar stands on
+it (`--portal-notice-strip-height`) rather than over its message.
 
 ### The chat sidebar is a variant
 
